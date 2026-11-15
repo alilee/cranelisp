@@ -584,7 +584,7 @@ The `fn` form creates an anonymous function (lambda). The parameter list uses th
   (fn [x] (+ x n)))      ; closure capturing n
 ```
 
-### 2.3.6 Function Application [Tested+Neg crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_apply, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_vec_parses_as_call, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_12_runtime.rs::apply_arg_dual_panic_first_error_wins, tests/spec_04_expressions.rs::auto_curry_two_param_partial_apply, tests/spec_04_expressions.rs::auto_curry_too_many_args_error_neg]
+### 2.3.6 Function Application [Tested+Neg crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_apply, crates/cranelisp-frontend/src/ast_builder/tests.rs::test_vec_parses_as_call, tests/spec_08_modules.rs::annotation_in_paren_is_application_of_annotated_element, tests/spec_12_runtime.rs::apply_arg_dual_panic_exits_with_one_report, tests/spec_04_expressions.rs::auto_curry_two_param_partial_apply, tests/spec_04_expressions.rs::auto_curry_too_many_args_error_neg]
 
 ```ebnf
 apply_expr   = '(' expr expr* ')'

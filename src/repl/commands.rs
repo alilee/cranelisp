@@ -394,24 +394,39 @@ impl CompilerSession {
     /// failed for a failure in its own source, its file failing to parse
     /// included, and waits when a dependency standing failed refused it.
     fn load_mod_target(&mut self, target: &ModuleFullPath) -> Result<(), String> {
-        let lib_dirs = self.lib_dirs();
-        if crate::pipeline::resolve_module_file(target, &self.shared.project_root, &lib_dirs)
-            .is_none()
-        {
+        if !self.has_module_file(target) {
             return Err(format!("Module '{target}' not found."));
         }
+        self.load_module_by_reference(target)
+            .map_err(|mut failure| {
+                self.record_failed_load(&mut failure.reset);
+                failure.error.to_string()
+            })
+    }
+
+    /// Whether the module search finds a source file for `target`.
+    pub(crate) fn has_module_file(&self, target: &ModuleFullPath) -> bool {
+        let lib_dirs = self.lib_dirs();
+        crate::pipeline::resolve_module_file(target, &self.shared.project_root, &lib_dirs).is_some()
+    }
+
+    /// Load `target`, whose file the module search finds, through the
+    /// language's load-on-reference: the dependency drive and the eval
+    /// thread's wait. The `/mod` command and the test child share it. A
+    /// failure carries the modules the load left `Failed`, reset, for the
+    /// caller to record or discard.
+    pub(crate) fn load_module_by_reference(
+        &self,
+        target: &ModuleFullPath,
+    ) -> Result<(), crate::eval::FailedLoad> {
         let held = self.shared.scheduler.failed_modules();
         let current = self.current_module_path();
-        let loaded = match self.with_eval_compiler(&current, |ctx| {
+        match self.with_eval_compiler(&current, |ctx| {
             crate::process_form::drive_module_dep(ctx, &current, target, Span::SYNTHETIC)
         }) {
             Err(error) => Err(self.reset_failed_load(&held, error)),
             Ok(()) => self.register_dep_for_eval(target, &held),
-        };
-        loaded.map_err(|mut failure| {
-            self.record_failed_load(&mut failure.reset);
-            failure.error.to_string()
-        })
+        }
     }
 
     /// Make a cache-installed module editable: rebuild it and its dependents
@@ -1150,16 +1165,13 @@ impl CompilerSession {
         self.display_test_run(&modules)
     }
 
-    /// Run the tests of `modules` and display the report text unchanged,
-    /// preceded by one `; warning:` line per discovery warning.
+    /// Run the tests of `modules` in a test child and display the report text
+    /// unchanged, preceded by one `; warning:` line per discovery warning
+    /// (`design/int/test-runner.md` §7.2). The child is started with this
+    /// process's own arguments, which hold no mode flag.
     fn display_test_run(&self, modules: &[ModuleFullPath]) -> String {
-        let report = self
-            .shared
-            .scheduler
-            .wait_cached_loads_settled()
-            .map_err(CranelispError::from)
-            .and_then(|ready| self.run_test_modules(modules, ready));
-        let report = match report {
+        let client_args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        let report = match crate::session_v4::supervise_tests(&client_args, Some(modules)) {
             Ok(report) => report,
             Err(error) => return crate::style::error_line(&error.to_string()),
         };

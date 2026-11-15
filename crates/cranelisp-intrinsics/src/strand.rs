@@ -149,18 +149,6 @@ pub enum StrandEvent {
         /// The strand that completed.
         strand: StrandId,
     },
-    /// A supervised detached strand panicked or produced a runtime error; the
-    /// supervisor caught it (`catch_unwind` + the `take_runtime_error` capture)
-    /// and applied the §10 log/drop policy. **The load-bearing event of §11
-    /// point 2: supervisor drops vanish without it** — the only trace a dropped
-    /// (500'd) request leaves. Never re-raised, never aborts the drive (§2.12).
-    StrandFailed {
-        /// The strand that failed.
-        strand: StrandId,
-        /// The caught failure message (`"<panicked>"` for a Rust panic, or the
-        /// ferried runtime-error message).
-        message: String,
-    },
     /// The accept-loop launch parked on a full global admission budget — the
     /// (D+1)th detached strand under global degree D blocked until an in-flight
     /// strand completes (backpressure on accept, §2.13). Followed by a
@@ -180,8 +168,7 @@ pub enum StrandEvent {
         /// The strand whose global permit was released.
         strand: StrandId,
     },
-    /// A strand was **cancelled** — the cancellation counterpart to
-    /// [`StrandEvent::StrandFailed`] (slice 7, §2.15 step 5 / §2.18 / §2.19). A
+    /// A strand was **cancelled** (slice 7, §2.15 step 5 / §2.18 / §2.19). A
     /// branch future was dropped because it **lost a race** (including a derived
     /// `timeout`). Cancellation is the *consequence* of
     /// losing a race or exiting a scope (§9 — there is no `cancel` primitive), so
@@ -240,7 +227,6 @@ impl StrandEvent {
             | StrandEvent::TokenCapacityMismatch { strand, .. }
             | StrandEvent::StrandLaunched { strand, .. }
             | StrandEvent::StrandCompleted { strand }
-            | StrandEvent::StrandFailed { strand, .. }
             | StrandEvent::GlobalBudgetParked { strand }
             | StrandEvent::GlobalBudgetAcquired { strand }
             | StrandEvent::GlobalBudgetReleased { strand }
@@ -375,8 +361,8 @@ mod tests {
         }
     }
 
-    // spec: design/intrinsics/reactor.md §2.15 / §2.18 / §2.19 — `StrandCancelled` is the
-    // cancellation counterpart to `StrandFailed`: a strand dropped because it lost a
+    // spec: design/intrinsics/reactor.md §2.15 / §2.18 / §2.19 — `StrandCancelled`
+    // records a strand dropped because it lost a
     // race / timed out / was cleared by shutdown. It constructs with a
     // `CancelReason`, correlates back to its strand (so the `/strand` dump shows the
     // cancellation), and records through the recording sink like every other kind.
@@ -571,10 +557,6 @@ mod tests {
                 requested_capacity: 8,
             },
             StrandEvent::StrandCompleted { strand: s },
-            StrandEvent::StrandFailed {
-                strand: s,
-                message: "boom".to_string(),
-            },
             StrandEvent::GlobalBudgetParked { strand: s },
             StrandEvent::GlobalBudgetAcquired { strand: s },
             StrandEvent::GlobalBudgetReleased { strand: s },

@@ -4579,3 +4579,230 @@ fn run_ill_typed_imported_module_is_located_at_its_line() {
         out.stderr
     );
 }
+
+fn box_import_fixture(entry: &str) -> Cranelisp {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib.cl",
+            "(deftype Box [:Int value])\n(defn mk [] (Box 7))\n(defn unbox [b] (Box.value b))\n",
+        )
+        .file("main.cl", entry)
+        .cli_flag("--no-cache")
+}
+
+// spec: spec/08-modules.md §8.3.5 — unrenamed control for ACT-0997.
+#[test]
+fn box_import_unrenamed_control() {
+    box_import_fixture(
+        "(import [lib [Box]])\n(defn main [] (Pure (lib/unbox (Box (Box.value (lib/mk))))))",
+    )
+    .run("main.cl")
+    .output()
+    .assert_exit(7);
+}
+
+// spec: spec/08-modules.md §8.3.5 — a renamed type keeps its canonical identity.
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs found=S122 owner=/dev
+// ACT-0997; control: box_import_unrenamed_control.
+#[test]
+fn box_import_renamed_binds_canonical_type() {
+    box_import_fixture(
+        "(import [lib [(Box B)]])\n(defn main [] (Pure (lib/unbox (B (B.value (lib/mk))))))",
+    )
+    .run("main.cl")
+    .output()
+    .assert_exit(7);
+}
+
+// spec: spec/08-modules.md §8.3.5 — a self-rename is valid.
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs found=S122 owner=/dev
+// ACT-0997; control: box_import_unrenamed_control.
+#[test]
+fn box_import_self_rename_is_accepted() {
+    box_import_fixture("(import [lib [(Box Box)]])\n(defn main [] (Pure (Box.value (Box 7))))")
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}
+
+fn export_cycle_fixture() -> Cranelisp {
+    Cranelisp::new()
+        .file("c.cl", "(defn k [] 7)")
+        .file("a.cl", "(export [c [k]]) (export [b [g]]) (defn f [] 1)")
+        .file("b.cl", "(defn g [] (a/k))")
+        .user("(defn run [] (b/g))")
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]]) (defn main [] (Pure (b/g)))",
+        )
+        .cli_flag("--no-cache")
+}
+
+// spec: spec/08-modules.md §8.10.1–§8.10.3 — export edges close cycles too.
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev
+// ACT-1016 face 2; control: export_dependency_without_cycle_control.
+#[test]
+fn export_closed_cycle_run_reports_cycle_neg() {
+    let out = export_cycle_fixture().run("main.cl").output();
+    let text = combined(&out);
+    assert!(
+        out.status.code() == Some(1)
+            && text.contains("circular")
+            && (text.contains("a -> b -> a") || text.contains("b -> a -> b"))
+            && !text.contains("not found in module"),
+        "export-closed a/b cycle must report circular dependency, not unresolved name; {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1–§8.10.3 — startup observes export cycles.
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev
+// ACT-1016 face 2; control: export_dependency_without_cycle_control.
+#[test]
+fn export_closed_cycle_startup_reports_cycle_neg() {
+    let out = export_cycle_fixture().repl().stdin("/quit\n").output();
+    let text = combined(&out);
+    assert!(
+        text.contains("circular")
+            && (text.contains("a -> b -> a") || text.contains("b -> a -> b"))
+            && !text.contains("not found in module"),
+        "startup must report the export-closed a/b cycle, not unresolved name; {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1 — acyclic re-export control for ACT-1016.
+#[test]
+fn export_dependency_without_cycle_control() {
+    export_cycle_fixture()
+        .file("a.cl", "(export [c [k]]) (defn f [] 1)")
+        .run("main.cl")
+        .output()
+        .assert_exit(7);
+}
+
+fn impl_head_diagnostic(head: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .prelude("(export [primitives [*]]) (deftrait T (m [x] self))")
+        .file(
+            "tm.cl",
+            "(import [prelude []]) (import [primitives [*]]) (deftrait T (m [x] self))",
+        )
+        .file(
+            "main.cl",
+            &format!("(import [tm [T]]) (impl {head} Int (defn m [x] x)) (defn main [] (Pure 0))"),
+        )
+        .run("main.cl")
+        .cli_flag("--no-cache")
+        .output()
+}
+
+// spec: spec/07-traits.md §7.4; spec/08-modules.md §8.6.5 — unknown-head control.
+#[test]
+fn impl_unknown_trait_diagnostic_control() {
+    let out = impl_head_diagnostic("MissingTrait");
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(
+        out.stderr.contains("unknown trait: MissingTrait"),
+        "{}",
+        combined(&out)
+    );
+}
+
+// spec: spec/08-modules.md §8.6.5 — ambiguity names all surviving canonicals.
+// defect: class=error-swallow locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::resolve_impl_trait_ref found=S122 owner=/dev
+// ACT-1001 P-3; control: impl_unknown_trait_diagnostic_control.
+#[test]
+fn impl_ambiguous_trait_names_both_candidates_neg() {
+    let out = impl_head_diagnostic("T");
+    let text = combined(&out);
+    assert!(
+        out.status.code() == Some(1)
+            && text.contains("ambiguous")
+            && text.contains("prelude/T")
+            && text.contains("tm/T")
+            && !text.contains("unknown trait"),
+        "ambiguous impl head must name prelude/T and tm/T, not unknown trait; {text}"
+    );
+}
+
+fn failed_import_diagnostic(fail: bool) -> Cranelisp {
+    let helper = if fail {
+        "(defn f [] (primitives/add-i64 true 1))"
+    } else {
+        "(defn f [] 2)"
+    };
+    Cranelisp::new()
+        .file("helper.cl", helper)
+        .file("main.cl", "; distinct reference location\n\n(import [helper [f]])\n(defn main [] (primitives/Pure (f)))\n")
+}
+
+// spec: spec/08-modules.md §8.10.3 — ACT-1017 control imports a non-failed module.
+#[test]
+fn non_failed_import_diagnostic_control() {
+    failed_import_diagnostic(false)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(2);
+    failed_import_diagnostic(false)
+        .run("main.cl")
+        .output()
+        .assert_exit(2)
+        .assert_stderr_empty();
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5 — at most one located category prefix per diagnostic.
+// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev
+// ACT-1017 prefix; control: non_failed_import_diagnostic_control.
+#[test]
+fn failed_import_has_one_located_prefix_neg() {
+    let out = failed_import_diagnostic(true).link("main.cl").output();
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(
+        out.stderr.contains("type mismatch"),
+        "must reach dependency refusal; {}",
+        combined(&out)
+    );
+    let prefix =
+        regex::Regex::new(r"(?:module|type) error (?:in [^\n]+?: )?at \d+\.\.\d+:").unwrap();
+    for line in out
+        .stderr
+        .lines()
+        .filter(|line| line.contains("type mismatch"))
+    {
+        assert!(
+            prefix.find_iter(line).count() <= 1,
+            "failed-import diagnostic must have at most one located prefix; {line}"
+        );
+    }
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 — source location belongs to the named file.
+// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev fixed=S122/aed0fcb1
+// ACT-1017 location regression guard; control: non_failed_import_diagnostic_control. The helper
+// fails on line 1; main's import is line 3. Either may locate the refusal with
+// its own file, but the helper's offset must not be rendered inside main.cl.
+#[test]
+fn failed_import_location_belongs_to_named_file_neg() {
+    let out = failed_import_diagnostic(true).link("main.cl").output();
+    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert!(
+        out.stderr.contains("type mismatch"),
+        "must reach dependency refusal; {}",
+        combined(&out)
+    );
+    assert!(
+        out.stderr
+            .lines()
+            .any(|line| line.starts_with("main.cl:3:1:") || line.starts_with("helper.cl:1:")),
+        "failed-import location must name helper.cl:1 or main.cl:3:1; {}",
+        combined(&out)
+    );
+    assert!(
+        out.stderr
+            .lines()
+            .filter(|line| line.starts_with("main.cl:"))
+            .all(|line| line.starts_with("main.cl:3:")),
+        "failed helper's offset must not be rendered inside main.cl; {}",
+        combined(&out)
+    );
+}

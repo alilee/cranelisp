@@ -350,13 +350,7 @@ where
         idx_val: Value,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let panic_id = self
-            .ctx
-            .panic_func_id
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: "runtime/panic not declared".into(),
-                location: ErrorLocation::from_span(span),
-            })?;
+        let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
         let elem_category = self
             .vec_elem_type(vec_expr)
             .map(|t| signature_heap_category(&t, Some(self.ctx.symbol_tables)));
@@ -448,13 +442,7 @@ where
             }
         }
 
-        let panic_id = self
-            .ctx
-            .panic_func_id
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: "runtime/panic not declared".into(),
-                location: ErrorLocation::from_span(span),
-            })?;
+        let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
         let old_elem_category = elem_type
             .as_ref()
             .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
@@ -983,13 +971,7 @@ where
                 Ok(len)
             }
             ("vec-get", 2) => {
-                let panic_id =
-                    self.ctx
-                        .panic_func_id
-                        .ok_or_else(|| CranelispError::CodegenError {
-                            message: "runtime/panic not declared".into(),
-                            location: ErrorLocation::from_span(span),
-                        })?;
+                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
                 let vec_drop_id =
                     self.ctx
                         .vec_drop_func_id
@@ -1019,13 +1001,7 @@ where
                 Ok(elem)
             }
             ("vec-set", 3) => {
-                let panic_id =
-                    self.ctx
-                        .panic_func_id
-                        .ok_or_else(|| CranelispError::CodegenError {
-                            message: "runtime/panic not declared".into(),
-                            location: ErrorLocation::from_span(span),
-                        })?;
+                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
                 let inc_fn_ptr = self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
                 // Wrapper / curry body: params arrive OWNED (consuming-closure
                 // protocol), so the copy branch must release the source Vec's
@@ -1083,10 +1059,9 @@ where
 // ---------------------------------------------------------------------------
 
 /// The one Vec index guard (`design/backend/backend.md` §7). Loads the length;
-/// an index below zero or not below the length raises the spec §12.7.2.1 panic
-/// and returns the sentinel from the enclosing function. Leaves the builder in
-/// the in-range block, so everything the caller emits next is dominated by the
-/// comparison.
+/// an index below zero or not below the length raises the spec §12.7.2.1 panic.
+/// Leaves the builder in the in-range block, so everything the caller emits
+/// next is dominated by the comparison.
 fn emit_vec_index_guard<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1111,7 +1086,13 @@ fn emit_vec_index_guard<M: Module>(
 
     builder.switch_to_block(panic_block);
     builder.seal_block(panic_block);
-    emit_vec_bounds_panic(builder, module, panic_id, span)?;
+    crate::raise::emit_raise(
+        builder,
+        module,
+        panic_id,
+        crate::raise::RaiseMessage::Source(crate::raise::PanicSource::VecIndexOutOfBounds),
+        span,
+    )?;
 
     builder.switch_to_block(ok_block);
     builder.seal_block(ok_block);
@@ -1522,48 +1503,6 @@ pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
 
     builder.switch_to_block(cont_block);
     builder.seal_block(cont_block);
-}
-
-/// Emit the index guard's panic block: the spec §12.7.2.1 message, shared by
-/// `vec-get` and `vec-set`.
-fn emit_vec_bounds_panic<M: Module>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    panic_func_id: cranelift_module::FuncId,
-    span: Span,
-) -> Result<(), CranelispError> {
-    // runtime/panic(msg_ptr, msg_len) records the error and returns; we return the sentinel.
-    // We store the error message in a data section.
-    let msg = b"vec-get: index out of bounds";
-    let data_id =
-        module
-            .declare_anonymous_data(false, false)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare panic data: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-    let mut desc = cranelift_module::DataDescription::new();
-    desc.define(msg.to_vec().into_boxed_slice());
-    module
-        .define_data(data_id, &desc)
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to define panic data: {e}"),
-            location: ErrorLocation::from_span(span),
-        })?;
-
-    let gv = module.declare_data_in_func(data_id, builder.func);
-    let msg_ptr = builder.ins().global_value(types::I64, gv);
-    let msg_len = builder.ins().iconst(types::I64, msg.len() as i64);
-
-    let panic_ref = module.declare_func_in_func(panic_func_id, builder.func);
-    builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
-
-    // runtime_panic sets a thread-local error flag and returns.
-    // Return a dummy 0 value — the caller checks take_runtime_error().
-    let dummy = builder.ins().iconst(types::I64, 0);
-    builder.ins().return_(&[dummy]);
-
-    Ok(())
 }
 
 /// Decide whether a Vec-mutating primitive's new element argument needs a

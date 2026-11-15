@@ -4,8 +4,9 @@
 //! Each probe is a real JIT function over the production runtime: the guard
 //! and the `vec-set` core for one uniqueness case, called on a Vec the test
 //! builds with the intrinsics' own constructors. An out-of-range index must
-//! record the spec §12.7.2.1 message and return the sentinel before any
-//! element load, element release, uniqueness probe or `vec-set-copy` call.
+//! raise the spec §12.7.2.1 panic before any element load, element release,
+//! uniqueness probe or `vec-set-copy` call. The raise ends the process, so the
+//! out-of-range cells run the probe in a child (`crate::test_child`).
 
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
@@ -18,10 +19,12 @@ use super::{
 };
 use crate::heap::HeapCategory;
 use crate::jit::{Jit, declare_intrinsics_generic};
+use crate::test_child;
+use crate::test_support::{assert_raise_terminates, clif_blocks, clif_func_ref};
 use crate::test_support::{vec_elem_for_test, vec_len_for_test};
 
-/// The runtime-error slot's record of the spec §12.7.2.1 message.
-const BOUNDS_ERROR: &str = "runtime panic: vec-get: index out of bounds";
+/// The spec §12.7.2.1 message.
+const BOUNDS_MESSAGE: &str = "vec-get: index out of bounds";
 
 /// Negative, equal to the length of a three-element Vec, and far past it.
 const OUT_OF_RANGE: [i64; 3] = [-1, 3, 100_000_000];
@@ -133,16 +136,11 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
 }
 
 impl Probe {
-    /// Call the probe; `Err` carries the recorded runtime error.
-    fn call(&mut self, vec: i64, idx: i64, val: i64) -> Result<i64, String> {
+    /// Call the probe. An out-of-range index ends the process.
+    fn call(&mut self, vec: i64, idx: i64, val: i64) -> i64 {
         let code = self.jit.jit_module().get_finalized_function(self.func);
         let f: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(code) };
-        let _ = cranelisp_intrinsics::panic::take_runtime_error();
-        let result = f(vec, idx, val);
-        match cranelisp_intrinsics::panic::take_runtime_error() {
-            Some(message) => Err(message),
-            None => Ok(result),
-        }
+        f(vec, idx, val)
     }
 }
 
@@ -177,37 +175,83 @@ fn source_for(case: Case, shared: bool) -> i64 {
     v
 }
 
-fn assert_bounds_panic(outcome: Result<i64, String>, what: &str) {
-    assert_eq!(
-        outcome,
-        Err(BOUNDS_ERROR.to_string()),
-        "{what}: an out-of-range vec-set MUST record the §12.7.2.1 message and \
-         return the sentinel"
-    );
+const CHILD: &str = "child_calls_probe";
+
+// Child body: call the probe for `CASE` (an index into `CASES`), `ELEM`
+// (0 Int, 1 String), `SHARED` and `IDX`.
+#[test]
+fn child_calls_probe() {
+    if !test_child::selected(CHILD) {
+        return;
+    }
+    let case = CASES[test_child::arg::<usize>("CASE")];
+    let idx: i64 = test_child::arg("IDX");
+    let mut probe = if test_child::arg::<usize>("ELEM") == 0 {
+        build_probe(case, Elem::Int)
+    } else {
+        build_probe(case, Elem::String)
+    };
+    if test_child::arg::<usize>("ELEM") == 0 {
+        probe.call(source_for(case, test_child::arg("SHARED")), idx, 99);
+    } else {
+        probe.call(string_vec(&["a", "b", "c"]), idx, string("z"));
+    }
+    println!("{}", test_child::RESUMED);
+}
+
+/// Run the probe in a child at every out-of-range index and assert each run
+/// ends by the bounds panic.
+fn assert_panics_out_of_range(case: usize, elem: usize, shared: bool, what: &str) {
+    let path = test_child::child_path(module_path!(), CHILD);
+    for idx in OUT_OF_RANGE {
+        let env = [
+            ("CASE", case.to_string()),
+            ("ELEM", elem.to_string()),
+            ("SHARED", shared.to_string()),
+            ("IDX", idx.to_string()),
+        ];
+        test_child::run(&path, &env)
+            .assert_panicked_with(BOUNDS_MESSAGE, &format!("{what} at index {idx}"));
+    }
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 — every uniqueness case of the `vec-set`
 // lowering panics on a negative index, on index = length and far past it.
 #[test]
 fn every_vec_set_case_panics_out_of_range() {
-    for case in CASES {
-        let mut probe = build_probe(case, Elem::Int);
-        for idx in OUT_OF_RANGE {
-            let outcome = probe.call(source_for(case, false), idx, 99);
-            assert_bounds_panic(outcome, &format!("{case:?} at index {idx}"));
-        }
+    for (i, case) in CASES.iter().enumerate() {
+        assert_panics_out_of_range(i, 0, false, &format!("{case:?}"));
     }
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 (NEGATIVE) — the child harness tells a
+// raise from a return: the same child at an in-range index exits 0, reports no
+// panic and prints the resumed marker.
+#[test]
+fn in_range_child_resumes_without_a_report_neg() {
+    let path = test_child::child_path(module_path!(), CHILD);
+    let env = [
+        ("CASE", "0".to_string()),
+        ("ELEM", "0".to_string()),
+        ("SHARED", "false".to_string()),
+        ("IDX", "2".to_string()),
+    ];
+    let end = test_child::run(&path, &env);
+    assert_eq!(end.code, Some(0), "{}", end.stderr);
+    assert!(end.stdout.contains(test_child::RESUMED), "{}", end.stdout);
+    assert!(
+        !end.stderr
+            .contains(cranelisp_intrinsics::panic::PANIC_REPORT_PREFIX),
+        "{}",
+        end.stderr
+    );
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 — the dynamic case panics on its copy arm
 // too: a shared source reaches `vec-set-copy` only in range.
 #[test]
 fn dynamic_vec_set_on_a_shared_source_panics_out_of_range() {
-    let mut probe = build_probe(Case::Dynamic, Elem::Int);
-    for idx in OUT_OF_RANGE {
-        let outcome = probe.call(source_for(Case::Dynamic, true), idx, 99);
-        assert_bounds_panic(outcome, &format!("dynamic, shared, at index {idx}"));
-    }
+    assert_panics_out_of_range(1, 0, true, "dynamic, shared");
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 (NEGATIVE) — an in-range index is not a
@@ -222,9 +266,7 @@ fn every_vec_set_case_writes_in_range_without_panic_neg() {
         (Case::KnownShared, true),
     ] {
         let mut probe = build_probe(case, Elem::Int);
-        let result = probe
-            .call(source_for(case, shared), 2, 99)
-            .unwrap_or_else(|e| panic!("{case:?} (shared={shared}) in range: {e}"));
+        let result = probe.call(source_for(case, shared), 2, 99);
         assert_eq!(vec_len_for_test(result), 3, "{case:?}: length kept");
         assert_eq!(
             vec_elem_for_test(result, 2),
@@ -239,13 +281,8 @@ fn every_vec_set_case_writes_in_range_without_panic_neg() {
 // old-element release is the unsafe step, so the guard must precede it.
 #[test]
 fn in_place_vec_set_on_string_elements_panics_out_of_range() {
-    for case in [Case::ProvenUnique, Case::Dynamic] {
-        let mut probe = build_probe(case, Elem::String);
-        for idx in OUT_OF_RANGE {
-            let outcome = probe.call(string_vec(&["a", "b", "c"]), idx, string("z"));
-            assert_bounds_panic(outcome, &format!("{case:?}, String elements, index {idx}"));
-        }
-    }
+    assert_panics_out_of_range(0, 1, false, "ProvenUnique, String elements");
+    assert_panics_out_of_range(1, 1, false, "Dynamic, String elements");
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 (NEGATIVE) — an in-range String write
@@ -261,9 +298,7 @@ fn in_place_vec_set_on_string_elements_writes_in_range_neg() {
         // shows as a count of one rather than a free.
         cranelisp_intrinsics::rc::rc_inc(old);
         let new = string("z");
-        let result = probe
-            .call(source, 1, new)
-            .unwrap_or_else(|e| panic!("{case:?} String in range: {e}"));
+        let result = probe.call(source, 1, new);
         assert_eq!(
             vec_elem_for_test(result, 1),
             new,
@@ -285,48 +320,12 @@ fn in_place_vec_set_on_string_elements_writes_in_range_neg() {
 // Structure: the guard opens the lowering in every case.
 // ---------------------------------------------------------------------------
 
-/// The rendered function as `(label, instruction lines)` per block, in layout
-/// order.
-fn blocks(clif: &str) -> Vec<(String, Vec<String>)> {
-    let mut out: Vec<(String, Vec<String>)> = Vec::new();
-    for line in clif.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("block") && trimmed.ends_with(':') {
-            let label = trimmed
-                .split(['(', ':'])
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            out.push((label, Vec::new()));
-        } else if let Some((_, body)) = out.last_mut()
-            && !trimmed.is_empty()
-            && trimmed != "}"
-        {
-            body.push(trimmed.to_string());
-        }
-    }
-    out
-}
-
-/// The `fnN` reference the function uses for the module function `id`.
-fn func_ref(clif: &str, id: FuncId) -> String {
-    let name = format!("u0:{}", id.as_u32());
-    clif.lines()
-        .map(str::trim)
-        .find_map(|line| {
-            let (lhs, rhs) = line.split_once(" = ")?;
-            (lhs.starts_with("fn") && rhs.split_whitespace().any(|w| w == name))
-                .then(|| lhs.to_string())
-        })
-        .unwrap_or_else(|| panic!("no reference to {name}\n{clif}"))
-}
-
 /// Assert the guard shape: the entry block loads the length, compares the
-/// index below zero and at or above it, and branches to a block that calls
-/// `runtime/panic` and returns. The entry block performs no call and no store,
-/// so the element write and every helper call sit behind the guard.
+/// index below zero and at or above it, and branches to a block that raises.
+/// The entry block performs no call and no store, so the element write and
+/// every helper call sit behind the guard.
 fn assert_guard_opens(clif: &str, panic: FuncId, what: &str) {
-    let blocks = blocks(clif);
+    let blocks = clif_blocks(clif);
     let (_, entry) = &blocks[0];
     let has = |needle: &str| entry.iter().any(|l| l.contains(needle));
     assert!(
@@ -346,7 +345,7 @@ fn assert_guard_opens(clif: &str, panic: FuncId, what: &str) {
         .and_then(|rest| rest.split(", ").nth(1))
         .map(|t| t.split('(').next().unwrap_or(t).to_string())
         .unwrap_or_else(|| panic!("{what}: the entry block must end in the guard's brif\n{clif}"));
-    let panic_ref = func_ref(clif, panic);
+    let panic_ref = clif_func_ref(clif, panic);
     let (_, panic_block) = blocks
         .iter()
         .find(|(label, _)| *label == taken)
@@ -354,10 +353,10 @@ fn assert_guard_opens(clif: &str, panic: FuncId, what: &str) {
     assert!(
         panic_block
             .iter()
-            .any(|l| l.contains(&format!("call {panic_ref}(")))
-            && panic_block.last().is_some_and(|l| l.starts_with("return")),
-        "{what}: the guard's taken arm must call runtime/panic and return\n{clif}"
+            .any(|l| l.contains(&format!("call {panic_ref}("))),
+        "{what}: the guard's taken arm must call runtime/panic\n{clif}"
     );
+    assert_raise_terminates(clif, panic, what);
 }
 
 // spec: design/backend/backend.md §7 "One Vec index guard" — in every case the
@@ -378,7 +377,7 @@ fn guard_opens_every_vec_set_case() {
 fn each_vec_set_case_emits_only_its_arms() {
     let render = |case| {
         let probe = build_probe(case, Elem::Int);
-        let panic_call = format!("call {}(", func_ref(&probe.clif, probe.panic));
+        let panic_call = format!("call {}(", clif_func_ref(&probe.clif, probe.panic));
         let helper_calls = probe
             .clif
             .lines()
@@ -453,8 +452,8 @@ fn vec_get_clif() -> String {
 /// A whole-function byte pin of `vec_get_clif()`, first taken from the tree
 /// before ACT-1037 shared the guard with `vec-set`. It covers more than the
 /// guard: the element load and the element retain are pinned too, so any
-/// intended change to `vec-get` emission re-baselines it. After a re-baseline
-/// it records the rendering at that change, not the pre-ACT-1037 one.
+/// intended change to `vec-get` emission re-baselines it. Last re-baselined
+/// when the raise became a call and a trap (S123).
 const VEC_GET_CLIF: &str = r#"function u0:0(i64, i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64) system_v
@@ -472,19 +471,18 @@ block2:
     v7 = global_value.i64 gv0
     v8 = iconst.i64 28
     call fn0(v7, v8)  ; v8 = 28
-    v9 = iconst.i64 0
-    return v9  ; v9 = 0
+    trap user1
 
 block1:
-    v10 = load.i64 notrap aligned v0+32
-    v11 = iconst.i64 8
-    v12 = imul.i64 v1, v11  ; v11 = 8
-    v13 = iadd v10, v12
-    v14 = load.i64 notrap aligned v13
-    v15 = iadd_imm v14, 8
-    v16 = iconst.i64 1
-    v17 = atomic_rmw.i64 add v15, v16  ; v16 = 1
-    return v14
+    v9 = load.i64 notrap aligned v0+32
+    v10 = iconst.i64 8
+    v11 = imul.i64 v1, v10  ; v10 = 8
+    v12 = iadd v9, v11
+    v13 = load.i64 notrap aligned v12
+    v14 = iadd_imm v13, 8
+    v15 = iconst.i64 1
+    v16 = atomic_rmw.i64 add v14, v15  ; v15 = 1
+    return v13
 }
 "#;
 

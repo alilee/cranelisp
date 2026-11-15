@@ -18,37 +18,34 @@
 > [session transaction §2.5 and §5.2](../../design/int/session-transaction.md#52-no-symbol-is-left-broken),
 > [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
 > and the [API packet](../../sprints/s123-api-packet.md).
-> **Checkpoint:** HEAD `f747990f` plus the uncommitted Phase 3 specs and
-> designs, 2026-11-15. No compiler source is changed at this checkpoint.
+> **Checkpoint:** HEAD `b35bfb87`, 2026-11-15; design citations verified
+> against the designs committed there. No compiler source is changed at this checkpoint.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
 
 ## 1. Readiness
 
-**Verdict: ready for Phase 4, with one blocking gap scoped to the P1
-change-set.** Every other changed surface is testable through an existing or
-named observation seam, and no other ambiguity blocks evidence.
+**Verdict: ready.** Every changed surface is testable through an existing
+or named observation seam, and no ambiguity blocks evidence.
 
-### 1.1 Blocking
+### 1.1 The stdlib runner carries no panic isolation
 
-- **G1 — the stdlib in-language runner has no per-test process mechanism.**
-  The user ruled that `stdlib/testing/runner.cl` starts each test as its own
-  process. No design states the launch capability; the
-  [arch contract](../../design/arch/s123-panics-and-environment.md) §1.5 calls
-  it a platform concern and [test runner §6.5](../../design/int/test-runner.md#65-the-test-child)
-  assigns it to `dev`(stdlib) without a platform. No platform in `platforms/`
-  launches a process. Packet row P1 removes `catch-runtime-error`, which
+- **Ruling** ([S123 sprint plan](../../sprints/SPRINT.md), user rulings at the
+  Phase 3 → 4 checkpoint): the in-language runner `stdlib/testing/runner.cl`
+  drops panic isolation. `cranelisp --test`'s supervisor, which restarts its
+  child after a panic, is the isolation (T-1 to T-6). The P1 change-set is
+  unblocked.
+- **Consequence.** A panicking test in a direct in-language run ends the
+  process like any other panic (§12.7.4): the tests after it do not run and
+  no tally prints. T-7 evidences it.
+- **Language-facing rewrites.** P1 removes `catch-runtime-error`, which
   `stdlib/fn/result.cl`, `stdlib/testing/runner.cl`, `exemplar/main.cl`,
   `examples/32-concurrency-combinators.cl` and `tests/fixtures/web_fanout/main.cl`
-  import. At P1's landing `stdlib_conformance::stdlib_all_public_modules_compile_and_run`,
-  the exemplar tests and `examples` fail for a reason unrelated to the
-  change under test.
-  - **Owner:** `arch` (the launch capability's boundary and owner), then
-    `sprint` (whether the language-facing rewrites co-land with P1 or P1
-    waits for them).
-  - **Blocks:** the P1 change-set's wave only. An interim runner that a
-    panic ends is a narrowing of the ruling and needs the user.
+  import. Between P1's landing and the W1 `stdlib/`, `exemplar/` and
+  `examples/` rewrites, `stdlib_conformance::stdlib_all_public_modules_compile_and_run`,
+  the exemplar tests and `examples` fail on the unbound name. That failure is
+  expected inside W1, not a regression; W1 closes only with them green (T-8).
 
 ### 1.2 Not blocking — readings this record takes
 
@@ -175,11 +172,12 @@ RED.
 
 ### 3.2 Panics end the process
 
-The P cells observe: exit status non-zero and not by signal; stderr holding
-exactly one line matching `error: runtime panic: ` then an optional
-`<file>:<line>: ` then the message; for the REPL, a marker form after the
-panicking one producing no output and no further prompt. "Every mode" is the
-REPL, `--run` and `--link`.
+The P cells for language panics observe: exit status non-zero and not by
+signal; stderr holding exactly one line matching `error: runtime panic: `
+then an optional `<file>:<line>: ` then the message; for the REPL, a marker
+form after the panicking one producing no output and no further prompt.
+"Every mode" is the REPL, `--run` and `--link`. A platform dispatch fault is
+not a language panic and has its own report shape (P-7).
 
 - **P-1 — a callee's panic with a heap consumer** (ACT-1040 R1–R4, R6).
   *Harm:* SIGSEGV with no message. *Wrong:* sentinel resume; the REPL
@@ -192,15 +190,25 @@ REPL, `--run` and `--link`.
   message, and no `division by zero`. Every mode. **RED now.** *Class:*
   acceptance. *Owner:* `test`.
 - **P-3 — panic sources.** Non-exhaustive match, division by zero,
-  `MIN / -1`, `vec-get` and `vec-set` out of range: each message exact,
-  `--run`; the existing `vec_set_*` cells re-pointed (C-1). *Class:*
-  acceptance. *Owner:* `test`.
+  `vec-get` and `vec-set` out of range: each message exact, `--run`; the
+  existing `vec_set_*` cells re-pointed (C-1). The runtime match face is
+  reached through an IO value built by `bind`, because exhaustiveness
+  checking rejects every other incomplete match; its matched twin is the
+  control. `MIN / -1`: §12.7.3 requires a panic but §12.7.2.1 lists neither
+  the condition nor a message, so the cell asserts the panic shape with a
+  non-empty message and no quotient on stdout. It asserts the exact message
+  once `spec` records one. *Wrong:* `MIN / -1` wrapping to a value, or
+  trapping by signal. *Class:* acceptance. *Owner:* `test`.
 - **P-4 — concurrent sources.** A panic in a spark, a `Par` branch, a
   detached strand and an empty `select` each ends the process with its
   message. Two sparks panicking with distinct messages produce exactly one
   report, whose message is one of the two. *Wrong:* a worker panic ferried
-  to a join and resumed; two reports. `--run`, plus the REPL for empty
-  `select`. *Class:* acceptance. *Owner:* `test`.
+  to a join and resumed; two reports. *Fixture:* in each spark cell the
+  panicking computation is itself the sparked one, and a non-panicking twin
+  of the same program reports `[SPARK_STATS] spawns=` at least 1 (at least 2
+  for the two-spark cell). A fixture whose panic runs on the calling thread
+  cannot see either wrong outcome. `--run`, plus the REPL for empty `select`.
+  *Class:* acceptance. *Owner:* `test`.
 - **P-5 — output before the panic is delivered first.** `print` output and
   a prior REPL result precede the report on one merged stdout/stderr pipe.
   *Wrong:* exit without flushing host output. `--run` and the REPL.
@@ -208,10 +216,25 @@ REPL, `--run` and `--link`.
 - **P-6 — a panic during macro expansion ends the process** in `--run` and
   the REPL with its message, not an expansion compile error, and the REPL
   evaluates nothing after. *Class:* acceptance. *Owner:* `test`.
-- **P-7 — a platform dispatch fault ends the process.** The `boom` fixture:
-  one report naming the platform function and its cause, every mode.
-  *Wrong:* `PlatformError::DispatchError` returned and the REPL continuing.
-  *Class:* acceptance. *Owner:* `test`.
+- **P-7 — a platform dispatch fault ends the process** (§12.7.6; the
+  Phase 3 → 4 user ruling that dispatch faults report without the panic
+  prefix; [process lifecycle §1.1](../../design/intrinsics/process-lifecycle.md#11-one-terminator)).
+  The `boom` and `test-capture` `fault-now` fixtures, every mode: exit
+  non-zero and not by signal; exactly one stderr line naming the platform
+  function's FQ name, which also carries the platform's fault text; no stderr
+  line beginning with `error: runtime panic: `; the fault text absent from
+  stdout; in the REPL, no later marker evaluated and no further prompt. The
+  DLL's own panic hook prints the fault text first, from the DLL's runtime
+  ([platform §4.2](../../design/platform/platform.md#42-effect-forcing)), so the stderr line count
+  is not asserted. Connective wording such as `dispatch failed` is not fixed
+  by `spec` and is not asserted. *Wrong:* `PlatformError::DispatchError`
+  returned and the REPL continuing; the fault reported with the panic
+  prefix; two reports. *Limit:* an eligible test returns `(Option String)`
+  and cannot force a platform effect, so no `--test` cell can raise a dispatch
+  fault in a test child. The supervisor's classification of a status-1
+  ending without a prefixed line as a failure is
+  [test runner §10](../../design/int/test-runner.md#10-unit-test-design)'s
+  `dev` row (T-6). *Class:* acceptance. *Owner:* `test`.
 - **P-8 — negative leg.** A program with no panic prints no report and exits
   with its result; the P-1 in-range control (C3) carries it in every mode.
 - **P-9 — `catch-runtime-error` is removed.** A reference is an unbound-name
@@ -219,14 +242,22 @@ REPL, `--run` and `--link`.
 - **P-10 — `checked-quot`.** `None` for a zero divisor and for `MIN / -1`;
   `Some` truncated toward zero otherwise (`7 / -2` and `-7 / 2` give `-3`);
   no panic. `--run` and REPL display `(Option Int)`. *Wrong:* panicking,
-  floor division, `MIN / -1` wrapping to `Some`. *Class:* acceptance.
-  *Owner:* `test`, and `dev`(primitives) unit rows.
+  floor division, `MIN / -1` wrapping to `Some`. *Detection:* the primitive
+  does not exist before its change-set, so the committed cells fail on the
+  unbound name, which is not a clause red. The fixture values carry the
+  discrimination: each wrong implementation yields a different observable
+  (a panic report for `None`, `Some -4` for `Some -3`, `Some` of `MIN` for
+  `None`). The cells aggregate per-clause failures, and they are accepted
+  when they pass on the implementing build. `dev`'s unit rows are observed red
+  first. *Class:* acceptance. *Owner:* `test`, and `dev`(primitives) unit rows.
 - **P-11 — `poll-pool` survival fixture** becomes a process-exit fixture.
   *Owner:* `test`.
 - **P-12 — trace sinks flush on a panic exit**
   ([observability §7.1](../../design/int/observability.md#71-process-exit-and-panic-wiring)):
-  one `--run` cell with a file trace sink holding the pre-panic events.
-  *Class:* acceptance. *Owner:* `test`.
+  one `--run` cell whose trace dump, captured from the child's stderr to a
+  file, holds the pre-panic events. It passes before the terminator lands and
+  guards the exit path that would bypass the flush. *Class:* acceptance.
+  *Owner:* `test`.
 - **P-13 — exit-time diagnostics** (`dev`, intrinsics, child process). M3
   parity armed with a panic exits with the panic status and one stand-down
   line, not an abort; `[RC_STATS]` still prints. *Class:* safety fence.
@@ -263,7 +294,9 @@ REPL, `--run` and `--link`.
   counts the panic as a failure; `--test` exits 1; after `/run-tests` the
   REPL evaluates a marker form. *Wrong:* an in-process runner (REPL dies, `c`
   absent); a restart re-running `a`; the panic counted as a pass.
-  **RED now** for the REPL marker. *Class:* acceptance. *Owner:* `test`.
+  **RED now** for the `PANIC:` message and its single forwarding to stderr.
+  The REPL marker passes before the terminator lands and turns red if an
+  in-process runner meets it. *Class:* acceptance. *Owner:* `test`.
 - **T-2 — two panics.** Both reported, every other test run once.
 - **T-3 — warnings once.** A mistyped `test-` function beside a panicking
   test warns once.
@@ -277,7 +310,21 @@ REPL, `--run` and `--link`.
   test-child rows 1–8, including the child-count bound as the termination
   detection proof. *Class:* safety fence.
 
-T-2 to T-5 are acceptance and `test`'s.
+- **T-7 — a direct in-language run ends at a panicking test.** The C-2
+  rewrite of the former `discover_tests_and_catch_runtime_error_user_composition`, now `discover_tests_direct_run_stops_at_panicking_test`,
+  stdlib-free: in the REPL, user code calls the `discover-tests` callables of
+  `a` (passes), `b` (panics) and `c` (prints a marker) in order. *Observed:*
+  `a`'s result, then the panic report on stderr, a non-zero exit that is not
+  a signal, no `c` marker and no evaluation of a later form. *Wrong:* a
+  runner that survives the panic, through a retained catch or an in-process
+  recovery; `c` running. **RED now.** *Class:* acceptance. *Owner:* `test`.
+- **T-8 — the rewritten stdlib runner** (`dev`, stdlib). The runner's
+  self-tests (`stdlib/testing/runner/test.cl`) pass with no panicked
+  outcome, and `stdlib_conformance::stdlib_all_public_modules_compile_and_run`
+  is green at W1 close. *Class:* acceptance at the module layer for the
+  rewrite.
+
+T-2 to T-5 and T-7 are acceptance and `test`'s.
 
 ### 3.4 Environment supply and baked switches
 
@@ -382,7 +429,9 @@ A-3 and A-4 are acceptance and `test`'s.
   file, and its definitions stay callable; in a piped session later
   definitions leave the file absent. Negative legs: a write-then-rename save
   gives no notice; a file restored after deletion is reloaded. The consent
-  yes leg is `dev`'s unit row (REPL lifecycle §5, Deletion). **RED now.**
+  yes leg is `dev`'s unit row
+  ([REPL lifecycle §1.3.2](../../design/int/repl-lifecycle.md#132-module-evidence-dev),
+  Deletion). **RED now.**
   *Class:* acceptance. *Owner:* `test`.
 - **R-3 — ACT-1020.** `cranelisp core.str` loads `core/str.cl` under
   `--run`, `--test`, `--link` and the REPL (§0.5.6 says every mode); a REPL
@@ -402,9 +451,9 @@ control.
 
 | ID | Cell | Control | Fix in S123 |
 |---|---|---|---|
-| K-1 ACT-0997 | `(import [lib [(Box B)]])` binds `B` to `lib/Box`; the self-rename `(Box Box)` is accepted | The unrenamed import | No (packet B1, S124) |
-| K-2 ACT-1016 | Face 1: a session's reload accepts a module that a restart on the same files fails. Face 2: an `export`-closed cycle is reported as a cycle | Face 1's twin defining `(defn g2 [] (a/f))` | No |
-| K-3 ACT-1017 | Two cells. Prefix: one located prefix. Location: a location in the named file | A refusal of a non-failed import | Prefix only |
+| K-1 ACT-0997 | `(import [lib [(Box B)]])` binds `B` to `lib/Box`: a `B` value meets a `lib` function over `Box` in both directions, which a freshly minted type `B` fails. The self-rename `(Box Box)` is accepted | The unrenamed import | No (packet B1, S124) |
+| K-2 ACT-1016 | Face 1: a session's reload accepts a module that a restart on the same files fails. Face 2: an `export`-closed cycle is reported as a cycle at startup and under `--run`. Face 2's reload leg passes and is a regression guard | Face 1's twin defining `(defn g2 [] (a/f))`; face 2's acyclic re-export | No |
+| K-3 ACT-1017 | Prefix: a failed-import refusal repeats no category-and-span prefix, under `--link` and in the reload notice. Location: the refusal is located in the failed module's file and never at its offset in the dependent; this face passes and is a regression guard | A refusal of a non-failed import | Prefix only |
 | K-4 ACT-1001 P-3 | An `impl` of an ambiguous trait spelling is rejected as ambiguous, naming both | An unknown trait spelling is `unknown trait` | No |
 | K-5 ACT-0973 | A platform declaration in a root-level non-entry module, and in a nested one, is a compile-time error | The entry placement loads the platform | No |
 
@@ -418,10 +467,33 @@ control.
   `examples/` and `exemplar/` are purged before U-8, with the purge recorded.
   At the Phase 5 checkpoint `qa` runs `git status --ignored` after the suite
   and attributes any new cache. *Owner:* `test`. Required before U-8.
-- **M-2 — ACT-1025.** `dev`(src) makes
-  `dispatch_without_a_stored_continuation_retires_nothing` assert `user`'s
-  pool state, naming it, before the requeue. `qa` classifies from the next
-  occurrence. *Class:* diagnostic observer.
+- **M-2 — ACT-1025, a fixture assumption.** The in-memory wait in
+  `register_module` returns before the entry's terminal pool, so
+  `removal_session` waits for `user`'s typecheck to settle, and
+  `dispatch_without_a_stored_continuation_retires_nothing` asserts the
+  terminal pool, naming it, before the requeue.
+  `scheduler::tests::inmem_wait_returns_before_the_terminal_pool_so_a_requeue_waits_for_settling`
+  pins the seam: an unsettled pool refuses the requeue and a settled one
+  accepts it. Product reloads already settle before re-registering
+  (`src/session_v4/lifecycle.rs`). *Class:* maintenance check for the worker
+  module fixtures. *Owner:* `dev`.
+  The product residual, a hand-off of the entry before its pool is terminal,
+  is [int §6.1.2](../../design/int/int.md#612-the-entry-is-settled-before-the-eval-thread-owns-it)'s:
+  one scheduler transition publishes in-memory completion and
+  `TypecheckDone` together, so in-memory completion implies a terminal pool.
+  That grade is structural for every session hand-off. *Evidence:* the
+  scheduler unit row (the fused transition gives a terminal pool and an
+  accepted requeue) and its negative legs, of which
+  `notify_inmem_codegen_complete` leaving a `TypecheckWorking` module
+  incomplete is the executing check on the one remaining partial writer.
+  Before the change the pinning test above observes the gap; it is deleted
+  in the change-set. Its compile failure is recorded, but it alone is not
+  detection, because the removed argument breaks it whether or not another
+  call can still build the state. The session and recovery rows are
+  reachability checks. *Residual:* a scheduler edit adding a fourth writer of
+  in-memory completion, asserted with the design's falsifier; `review` runs
+  the writer census on any change-set touching the field. *Class:* safety
+  fence. *Owner:* `dev`.
 - **M-3 — `user/` samples execute.** Every fenced block in `user/` carries a
   classification `docs` assigns: a REPL transcript (input lines after the
   prompt, expected output on the following lines), a definition block that
@@ -448,6 +520,18 @@ control.
 - **M-6 — audit R11 records.** `test` repairs the guards' `// defect:` lines
   and owed `fixed=` stamps; `qa` refreshes
   [memory-safety coverage](memory-safety-coverage.md) §5 after U′ lands.
+- **M-7 — compiler web tests load no stdlib.** The `--run` spawns in
+  `concurrency_fanout_web.rs`, `launch_grid_corrupt.rs` and
+  `launch_vec_send_corrupt.rs` set `CRANELISP_LIB` to the workspace
+  `stdlib/`, and their fixtures do not suppress the implicit prelude, so a
+  stdlib failure stops them before the behaviour they test. P1 creates
+  exactly that failure until the W1 stdlib rewrite lands. `test` makes each
+  fixture module stdlib-free, for example by a null prelude import or by
+  dropping the stdlib from the spawn, in or before P1's change-set. Each
+  test then passes with `CRANELISP_LIB` pointing at an empty directory.
+  *Wrong:* a fixture that still resolves a name through the stdlib prelude.
+  *Class:* maintenance check for suite isolation (root stdlib-separation
+  rule). *Owner:* `test`, W1.
 
 ## 4. Traceability band
 
@@ -486,7 +570,7 @@ acceptance.
 
 - Every **RED now** cell, and every C-1 and C-3 re-pointed cell, was observed
   failing on its clause before its fix, and passes on a fresh build of the
-  final tree; K-1 to K-5 remain failing-not-ignored unless fixed.
+  final tree; K-1 to K-5's failing cells remain failing-not-ignored unless fixed.
 - No committed test asserts recovery after a panic, uses
   `catch-runtime-error`, or sets a runtime switch only on a linked program's
   run (C-1, C-2, C-5 censuses empty).
@@ -502,9 +586,9 @@ acceptance.
 - **`test`, now (Phase 5, test-first):** E-0's declaration and detection
   proof with the loader change-set; the C-1, C-2, C-3, C-5 and C-9 re-points;
   every **RED now** cell; U-1 to U-5; P-1 to P-12, P-18 and P-19; T-1 to
-  T-5; E-1 to E-6; B-1 to B-4; A-1 to A-6; R-1 to R-4; K-1 to K-5; M-1. Then
+  T-5, T-7; E-1 to E-6; B-1 to B-4; A-1 to A-6; R-1 to R-4; K-1 to K-5; M-1; M-7. Then
   C-6 and C-7 in their change-sets, M-3 with `docs`, M-4 and M-5 in Phase 6b.
 - **`dev`, with each surface:** U-6, U-7's structure, U-9; P-10's unit rows,
-  P-13 to P-17, P-18's guard rows; T-6; E-7; B-5; A-5's flag function; R-2's
-  consent row and R-4's worker rows; M-2.
+  P-13 to P-17, P-18's guard rows; T-6; T-8; E-7; B-5; A-5's flag function; R-2's
+  consent row and R-4's worker rows.
 - **`qa`:** U-8, U-10, M-1's post-suite census, M-6's §5 refresh, §4.

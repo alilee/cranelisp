@@ -27,7 +27,6 @@
 //!   to avoid recursion through RC-traced allocation paths.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
@@ -159,8 +158,8 @@ pub const IO_TRACE_BUFFER_CAPACITY: usize = 65_536;
 static NEXT_THREAD_ORD_ID: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    static IO_TRACE_BUF: RefCell<VecDeque<IoTraceEvent>> =
-        RefCell::new(VecDeque::with_capacity(IO_TRACE_BUFFER_CAPACITY));
+    static IO_TRACE_BUF: crate::trace_ring::LocalRing<IoTraceEvent> =
+        crate::trace_ring::LocalRing::new(IO_TRACE_BUFFER_CAPACITY, published_buffers);
 
     static IO_TRACE_THREAD_ORD: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
@@ -208,13 +207,7 @@ pub fn record_event(tag: IoTraceTag, payload: IoTracePayload) {
         tag,
         payload,
     };
-    IO_TRACE_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        if buf.len() == IO_TRACE_BUFFER_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(event);
-    });
+    crate::trace_ring::push(&IO_TRACE_BUF, event);
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +382,7 @@ pub fn install_if_enabled() {
 // ---------------------------------------------------------------------------
 
 pub fn dump_thread_buffer() -> Vec<IoTraceEvent> {
-    let mut out: Vec<IoTraceEvent> =
-        IO_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
+    let mut out: Vec<IoTraceEvent> = crate::trace_ring::drain_local(&IO_TRACE_BUF);
     out.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
     out
 }
@@ -632,13 +624,10 @@ mod tests {
     // -- Ring buffer discipline --
 
     fn force_push(count: usize) {
-        IO_TRACE_BUF.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            for i in 0..count {
-                if buf.len() == IO_TRACE_BUFFER_CAPACITY {
-                    buf.pop_front();
-                }
-                buf.push_back(IoTraceEvent {
+        for i in 0..count {
+            crate::trace_ring::push(
+                &IO_TRACE_BUF,
+                IoTraceEvent {
                     timestamp_ns: i as u64,
                     thread_id: std::thread::current().id(),
                     thread_ord_id: thread_ord_id(),
@@ -647,9 +636,9 @@ mod tests {
                         value: i as i64,
                         is_fresh: false,
                     },
-                });
-            }
-        });
+                },
+            );
+        }
     }
 
     #[test]

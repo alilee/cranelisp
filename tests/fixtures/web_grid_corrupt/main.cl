@@ -1,3 +1,4 @@
+(import [prelude []])
 ;; web_grid_corrupt/main.cl — the S97 launched-strand heap-corruption repro
 ;; fixture (bug #2 — DISTINCT from the now-fixed single-threaded inline-temporary
 ;; `emit_vec_drop_if_temporary` defect).

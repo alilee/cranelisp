@@ -25,7 +25,9 @@
 
 ;; Types for this example
 (deftype Point [:Int x :Int y])
-(deftype (Option a) None (Some [:a val]))
+;; 10 built an Option type by hand. The compiler's checked operations return
+;; primitives/Option, so use that type and its constructors here.
+(import [primitives [Option None Some checked-quot]])
 
 ;; --- Extracting fields from product types ---
 
@@ -103,19 +105,18 @@
   (add-i64 (add-opts (Some 10) (Some 20))
            (add-opts (Some 5) None)))
 
-;; --- Combining match with recursion ---
+;; --- Chaining checked operations ---
 
-;; A recursive safe-division that returns Option
-(defn safe-div [a b]
-  (if (eq-i64 b 0)
-    None
-    (Some (div-i64 a b))))
+;; A runtime panic ends the process, including in the REPL. Use a checked
+;; operation when failure is an expected outcome: checked-quot returns
+;; (Some quotient), or None for a zero divisor or Int.MIN divided by -1.
+;; Neither None case panics; match decides what the program does next.
 
-;; Chain two divisions: a / b / c
+;; Chain two divisions: a / b / c, choosing 0 if either has no quotient.
 (defn chain-div [a b c]
-  (match (safe-div a b)
+  (match (checked-quot a b)
     [None     0
-     (Some r) (match (safe-div r c)
+     (Some r) (match (checked-quot r c)
                 [None     0
                  (Some s) s])]))
 
@@ -123,7 +124,18 @@
   (add-i64 (chain-div 100 5 4)     ;; 100/5=20, 20/4=5
            (chain-div 100 0 4)))    ;; division by zero -> 0
 
-;; Expected: 4 + 7 + 1 + 15 + 2 + 35 + 5 = 69
+;; A valid negative quotient truncates toward zero. The overflow boundary
+;; returns None, so execution continues with an ordinary match arm.
+(defn check-checked-quot-boundaries []
+  (let [truncates (match (checked-quot -17 5)
+                   [(Some q) (if (eq-i64 q -3) 1 0)
+                    None 0])
+        overflow (match (checked-quot -9223372036854775808 -1)
+                   [None 1
+                    (Some _) 0])]
+    (add-i64 truncates overflow)))
+
+;; Expected: 4 + 7 + 1 + 15 + 2 + 35 + 5 + 2 = 71
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
@@ -134,4 +146,5 @@
           (add-i64 (check-get-or-default)
             (add-i64 (check-count-some)
               (add-i64 (check-add-opts)
-                       (check-chain-div)))))))))
+                (add-i64 (check-chain-div)
+                         (check-checked-quot-boundaries))))))))))

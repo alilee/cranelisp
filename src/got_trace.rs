@@ -15,7 +15,6 @@
 //! relaxed-load null check.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,8 +63,8 @@ const GOT_TRACE_BUFFER_CAPACITY: usize = 16_384;
 static NEXT_THREAD_ORD_ID: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    static GOT_TRACE_BUF: RefCell<VecDeque<StoredGotEvent>> =
-        RefCell::new(VecDeque::with_capacity(GOT_TRACE_BUFFER_CAPACITY));
+    static GOT_TRACE_BUF: crate::trace_ring::LocalRing<StoredGotEvent> =
+        crate::trace_ring::LocalRing::new(GOT_TRACE_BUFFER_CAPACITY, published_buffers);
     static GOT_TRACE_THREAD_ORD: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 
@@ -128,13 +127,7 @@ pub fn record(tag: GotEventTag, event: &GotEvent) {
         ptr: event.ptr as usize,
         provenance: event.provenance,
     };
-    GOT_TRACE_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        if buf.len() == GOT_TRACE_BUFFER_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(stored);
-    });
+    crate::trace_ring::push(&GOT_TRACE_BUF, stored);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,8 +149,7 @@ pub fn install_if_enabled() {
 // ---------------------------------------------------------------------------
 
 fn dump_thread_buffer() -> Vec<StoredGotEvent> {
-    let mut out: Vec<StoredGotEvent> =
-        GOT_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
+    let mut out: Vec<StoredGotEvent> = crate::trace_ring::drain_local(&GOT_TRACE_BUF);
     out.sort_by_key(|e| (e.timestamp_ns, e.thread_ord_id));
     out
 }
@@ -394,13 +386,7 @@ fn record_int_event(
         ptr,
         provenance,
     };
-    GOT_TRACE_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        if buf.len() == GOT_TRACE_BUFFER_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(stored);
-    });
+    crate::trace_ring::push(&GOT_TRACE_BUF, stored);
 }
 
 // ---------------------------------------------------------------------------

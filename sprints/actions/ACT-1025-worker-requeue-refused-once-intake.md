@@ -1,7 +1,7 @@
 ---
 id: ACT-1025
 title: A worker module test's requeue was refused once in a full run and passed in isolation
-status: deferred
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -70,3 +70,28 @@ as bounded attribution that preserves the observation and falsifier above
 ([checkpoint carries](../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
 First deferral. It did not recur in K4's full run or the checkpoint suite.
 Recommendation steps 1 and 2 are the first S123 acts.
+
+## Resolution (qa, 2026-11-15, S123 W0)
+
+- **Classified: a fixture assumption, not a product ordering defect.**
+  Opened `src/worker.rs::notify_processed_ready`: it publishes in-memory
+  completion before `notify_typecheck_done`, so `wait_inmem_complete_blocking`
+  can return while `user` is `TypecheckWorking`, and `requeue_for_typecheck`
+  then refuses. The fixture assumed a terminal pool.
+- **Control.**
+  `src/scheduler/tests.rs::inmem_wait_returns_before_the_terminal_pool_so_a_requeue_waits_for_settling`
+  reaches that state deterministically: the unsettled pool refuses the
+  requeue, and the same module accepts it once settled. `dev` observed it
+  failing first with this action's symptom. Refuted if a requeue is refused
+  with the pool terminal.
+- **Correction.** `removal_session` in `src/worker/tests.rs` waits with
+  `wait_module_typecheck_settled`, and
+  `dispatch_without_a_stored_continuation_retires_nothing` asserts the
+  terminal pool, naming it, before the requeue. QA ran both cells green.
+- **Product reach.** The reload paths in `src/session_v4/lifecycle.rs`
+  already settle before re-registering. The startup residual that `dev`
+  reported, a non-empty entry returning from registration unsettled, is
+  routed to `design`(int) through `sprint`; it is not this action.
+- Delete this action once
+  [FIXME 0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md)
+  no longer links it.

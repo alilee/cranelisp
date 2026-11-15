@@ -1,287 +1,93 @@
 use super::*;
 
-// spec: 12-runtime §12.7.2 — runtime panic with custom message
+// spec: spec/12-runtime.md §12.7.5 — a language panic's report is the prefix,
+// then the message, on one line (P-14 composition).
 #[test]
-fn test_panic_with_message() {
-    let msg = "test panic message";
-    runtime_panic(msg.as_ptr(), msg.len());
-    let err = take_runtime_error();
-    assert!(err.is_some());
-    assert!(err.unwrap().contains("test panic message"));
-}
-
-// spec: 12-runtime §12.7.2 — null pointer panic defaults to "match exhaustiveness failure"
-#[test]
-fn test_panic_with_null_ptr() {
-    runtime_panic(std::ptr::null(), 0);
-    let err = take_runtime_error();
-    assert!(err.is_some());
-    assert!(err.unwrap().contains("match exhaustiveness failure"));
-}
-
-// spec: 12-runtime §12.7.2 — zero-length message panic
-#[test]
-fn test_panic_with_empty_len() {
-    let msg = "ignored";
-    runtime_panic(msg.as_ptr(), 0);
-    let err = take_runtime_error();
-    assert!(err.is_some());
-}
-
-// spec: 12-runtime §12.7.2 — take clears the error
-#[test]
-fn test_take_clears_error() {
-    let msg = "clear test";
-    runtime_panic(msg.as_ptr(), msg.len());
-    assert!(take_runtime_error().is_some());
-    assert!(take_runtime_error().is_none());
-}
-
-// spec: 12-runtime §12.7.2 — no error when no panic
-#[test]
-fn test_no_error_by_default() {
-    // Clear any prior state
-    let _ = take_runtime_error();
-    assert!(take_runtime_error().is_none());
-}
-
-// spec: 12-runtime §12.4.3 — set_runtime_error stores into an empty slot
-#[test]
-fn test_set_runtime_error_empty_slot() {
-    let _ = take_runtime_error(); // clear
-    set_runtime_error("ferried error".to_string());
-    let err = take_runtime_error();
-    assert_eq!(err.as_deref(), Some("ferried error"));
-}
-
-// spec: design/arch/bounded-contexts.md §4b invariant 14 — the dispatch
-// fault slot round-trips a captured fault for int to compose.
-#[test]
-fn test_dispatch_fault_set_take_roundtrip() {
-    let _ = take_dispatch_fault(); // clear
-    set_dispatch_fault(DispatchFault {
-        fn_name: "stdio/read-line".to_string(),
-        cause: "device unavailable".to_string(),
-    });
-    let fault = take_dispatch_fault().expect("fault present");
-    assert_eq!(fault.fn_name, "stdio/read-line");
-    assert_eq!(fault.cause, "device unavailable");
-    // take clears the slot.
-    assert!(take_dispatch_fault().is_none());
-}
-
-// spec: design/arch/bounded-contexts.md §4b invariant 14 — the dispatch
-// fault slot is first-fault-wins (sequential abort semantics).
-#[test]
-fn test_dispatch_fault_first_fault_wins() {
-    let _ = take_dispatch_fault();
-    set_dispatch_fault(DispatchFault {
-        fn_name: "a".to_string(),
-        cause: "first".to_string(),
-    });
-    set_dispatch_fault(DispatchFault {
-        fn_name: "b".to_string(),
-        cause: "second".to_string(),
-    });
-    let fault = take_dispatch_fault().expect("fault present");
-    assert_eq!(fault.fn_name, "a", "first fault is kept");
-    assert_eq!(fault.cause, "first");
-}
-
-// spec: spec/12-runtime.md §12.7.4.2 — the `--link` runtime-error gate
-// (FIXME 0399) drains the slot message the startup stub prints. The thin
-// export wraps this with an `exit(1)`; the helper is the testable half.
-#[test]
-fn test_drain_runtime_error_message_surfaces_and_clears() {
-    let _ = take_runtime_error(); // clear
-    let msg = "division by zero";
-    runtime_panic(msg.as_ptr(), msg.len());
-    let drained = drain_runtime_error_message();
-    assert!(
-        drained
-            .as_deref()
-            .is_some_and(|m| m.contains("division by zero")),
-        "the --link gate must surface the panic message (got {drained:?})"
+fn panic_report_is_the_prefix_then_the_message() {
+    let fault = Fault::Panic("src/m.cl:3: division by zero");
+    assert_eq!(
+        fault.report(),
+        "error: runtime panic: src/m.cl:3: division by zero\n"
     );
-    // Draining clears the slot — the stub exits, but a clean re-read is None.
-    assert!(
-        drain_runtime_error_message().is_none(),
-        "the gate must clear the slot after surfacing the message"
-    );
+    assert_eq!(fault.exit_status(), PANIC_EXIT_STATUS);
+    assert_eq!(PANIC_EXIT_STATUS, 1);
 }
 
-// spec: spec/12-runtime.md §12.7.4.2 — a clean run leaves nothing to drain,
-// so the `--link` gate returns and `main`'s result proceeds (no spurious
-// exit). The negative half of the FIXME 0399 gate.
+// spec: spec/12-runtime.md §12.7.6 — a dispatch fault names the platform
+// function and its cause, without the panic prefix (P-14 composition).
 #[test]
-fn test_drain_runtime_error_message_none_on_clean_run() {
-    let _ = take_runtime_error(); // clear
-    assert!(
-        drain_runtime_error_message().is_none(),
-        "no runtime error => the gate must not surface anything"
-    );
-}
-
-// spec: 12-runtime §12.4.3 — set_runtime_error is first-error-wins
-#[test]
-fn test_set_runtime_error_first_error_wins() {
-    let _ = take_runtime_error(); // clear
-    set_runtime_error("first".to_string());
-    set_runtime_error("second".to_string());
-    // The first error is kept; the second is dropped.
-    assert_eq!(take_runtime_error().as_deref(), Some("first"));
-}
-
-/// Build a zero-arg closure whose body returns a captured constant.
-/// Layout: `[header(16) | code_ptr(8) | drop_glue_ptr(8) | capture(8)]`.
-fn make_const_thunk(value: i64) -> i64 {
-    extern "C" fn const_fn(env_ptr: i64) -> i64 {
-        unsafe { *((env_ptr as isize + 32) as *const i64) }
-    }
-    let base = crate::alloc::alloc_with_rc(24);
-    unsafe {
-        *((base as isize + 16) as *mut i64) = const_fn as *const () as i64;
-        *((base as isize + 24) as *mut i64) = 0; // drop glue
-        *((base as isize + 32) as *mut i64) = value;
-    }
-    base as i64
-}
-
-/// Build a zero-arg closure whose body raises a runtime panic and returns 0.
-fn make_panicking_thunk() -> i64 {
-    extern "C" fn boom_fn(_env_ptr: i64) -> i64 {
-        let msg = "boom";
-        runtime_panic(msg.as_ptr(), msg.len());
-        0
-    }
-    let base = crate::alloc::alloc_with_rc(16);
-    unsafe {
-        *((base as isize + 16) as *mut i64) = boom_fn as *const () as i64;
-        *((base as isize + 24) as *mut i64) = 0; // drop glue
-    }
-    base as i64
-}
-
-// spec: 12-runtime §12.7.2 — a passing thunk yields (Ok result)
-#[test]
-fn test_catch_runtime_error_ok() {
-    let _ = take_runtime_error();
-    let thunk = make_const_thunk(99);
-    let res = catch_runtime_error(thunk);
-    unsafe {
-        let tag = *((res as isize + ADT_TAG_OFFSET) as *const i64);
-        let field0 = *((res as isize + ADT_FIELD_0_OFFSET) as *const i64);
-        assert_eq!(tag, RESULT_TAG_OK, "passing thunk must yield Ok");
-        assert_eq!(field0, 99, "Ok payload must be the thunk result");
-    }
-    // Slot left clean after the call.
-    assert!(
-        take_runtime_error().is_none(),
-        "slot must be clean after Ok"
-    );
-    // The combinator consumed the thunk (one-shot, by-move) — only the Result
-    // is ours to free here. Freeing the thunk would double-free.
-    unsafe { crate::alloc::dealloc(res as *mut u8) };
-}
-
-// spec: 12-runtime §12.7.2 — a panicking thunk yields (Err message)
-#[test]
-fn test_catch_runtime_error_err() {
-    let _ = take_runtime_error();
-    let thunk = make_panicking_thunk();
-    let res = catch_runtime_error(thunk);
-    unsafe {
-        let tag = *((res as isize + ADT_TAG_OFFSET) as *const i64);
-        assert_eq!(tag, RESULT_TAG_ERR, "panicking thunk must yield Err");
-        // field0 is a heap String ptr; non-null and above the nullary threshold.
-        let field0 = *((res as isize + ADT_FIELD_0_OFFSET) as *const i64);
-        assert!(field0 != 0, "Err payload must be a heap String ptr");
-    }
-    // Slot left clean — the combinator consumed the error.
-    assert!(
-        take_runtime_error().is_none(),
-        "slot must be clean after the combinator consumes the panic"
-    );
-    // Free the Err string then the Result. The combinator already consumed the
-    // thunk (one-shot, by-move) — freeing it here would double-free.
-    unsafe {
-        let field0 = *((res as isize + ADT_FIELD_0_OFFSET) as *const i64);
-        crate::alloc::dealloc(field0 as *mut u8);
-        crate::alloc::dealloc(res as *mut u8);
-    }
-}
-
-// spec: spec/12-runtime.md §12.7.2 / §12.3 — the combinator CONSUMES its
-// one-shot thunk closure (the `io::call_continuation` `cont_is_fresh=true`
-// precedent). The backend hands the thunk by move and emits no post-call dec,
-// so the combinator owns its teardown; without it a catch-in-a-loop leaks
-// exactly one closure cell per call (S94 Wave-3b defect, e2e repro
-// `spec_12_runtime::catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg`).
-// Proven deterministically by the thunk's embedded drop glue running — an
-// `is_live` check is unreliable here because the freed thunk's same-size slot is
-// reused by the `(Ok …)` Result allocation.
-#[test]
-fn test_catch_runtime_error_consumes_thunk() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static DROPPED: AtomicBool = AtomicBool::new(false);
-    extern "C" fn flag_drop_glue(_closure: i64) {
-        DROPPED.store(true, Ordering::SeqCst);
-    }
-    extern "C" fn body(_env: i64) -> i64 {
-        7
-    }
-
-    let _ = take_runtime_error();
-    DROPPED.store(false, Ordering::SeqCst);
-    // A fresh rc=1 thunk WITH drop glue so its consumption is observable.
-    let thunk = {
-        let base = crate::alloc::alloc_with_rc(16);
-        unsafe {
-            *((base as isize + 16) as *mut i64) = body as *const () as i64;
-            *((base as isize + 24) as *mut i64) = flag_drop_glue as *const () as i64;
-        }
-        base as i64
+fn dispatch_fault_report_names_the_function_without_the_panic_prefix() {
+    let fault = Fault::Dispatch {
+        fn_name: "stdio/read-line",
+        cause: "device unavailable",
     };
-    // NB: the test must NOT free the thunk — the combinator owns its teardown
-    // (freeing it here would double-free).
-    let res = catch_runtime_error(thunk);
-    assert!(
-        DROPPED.load(Ordering::SeqCst),
-        "catch-runtime-error must consume the one-shot thunk (run its drop glue \
-         + free the cell) — else a catch-in-a-loop leaks one closure cell per call"
+    let report = fault.report();
+    assert_eq!(
+        report,
+        "platform fn `stdio/read-line` dispatch failed: device unavailable\n"
     );
-    unsafe { crate::alloc::dealloc(res as *mut u8) };
+    assert!(!report.starts_with(PANIC_REPORT_PREFIX));
+    assert_eq!(fault.exit_status(), PANIC_EXIT_STATUS);
 }
 
-// ---------------------------------------------------------------------
-// FIXME 0366 — the unified program driver `cranelisp_run_program`. The
-// driver owns the clear→call→pre-IO-peek→trampoline→post-IO-peek sequence
-// and returns a `ProgramOutcome` WITHOUT exiting and WITHOUT clearing the
-// slots. These tests assert the four outcome cases + the "slot left SET, no
-// exit" contract the callers depend on.
-// ---------------------------------------------------------------------
+// spec: design/intrinsics/process-lifecycle.md §1.1 — a runtime defect reports
+// `error: runtime defect: <payload>` on one line, and is not a language panic.
+#[test]
+fn runtime_defect_report_is_one_line_without_the_panic_prefix() {
+    let report = Fault::RuntimeDefect("index out of bounds").report();
+    assert_eq!(report, "error: runtime defect: index out of bounds\n");
+    assert!(!report.starts_with(PANIC_REPORT_PREFIX));
+    assert_eq!(Fault::RuntimeDefect("x").exit_status(), PANIC_EXIT_STATUS);
+}
+
+// spec: design/intrinsics/process-lifecycle.md §1.1 — the backstop is not a
+// language panic and keeps its own status.
+#[test]
+fn backstop_report_is_the_diagnostic_with_its_own_status() {
+    let backstop = Fault::BackstopExpired("block_on_reactor: OneShot backstop exceeded 1s");
+    assert_eq!(
+        backstop.report(),
+        "block_on_reactor: OneShot backstop exceeded 1s\n"
+    );
+    assert_eq!(backstop.exit_status(), 70);
+}
+
+// spec: design/intrinsics/process-lifecycle.md §1.1 — termination is claimed
+// once per process; every later claimant loses (P-14 claim transition).
+#[test]
+fn termination_is_claimed_once() {
+    let flag = AtomicBool::new(false);
+    assert_eq!(claim(&flag), Claim::Won);
+    assert_eq!(claim(&flag), Claim::Lost);
+    assert_eq!(claim(&flag), Claim::Lost);
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 — a non-IO main's result is the driver's
+// result.
+#[test]
+fn run_program_returns_a_non_io_main_result() {
+    assert_eq!(cranelisp_run_program(main_returns_7 as *const u8, false), 7);
+}
+
+// spec: spec/12-runtime.md §12.7.4.2 — an IO main is forced and reduces to its
+// inner value; the driver releases the tree.
+#[test]
+fn run_program_forces_an_io_main_to_its_inner_value() {
+    let before = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
+    assert_eq!(
+        cranelisp_run_program(main_returns_io_pure as *const u8, true),
+        42
+    );
+    let after = (crate::alloc::alloc_count(), crate::alloc::dealloc_count());
+    assert!(
+        after.1 - before.1 >= 1,
+        "the driver must release the IO tree it was handed"
+    );
+}
 
 /// A clean non-IO `main` returning a constant. `extern "C" fn() -> i64`.
 extern "C" fn main_returns_7() -> i64 {
     7
-}
-
-/// A non-IO `main` that raises a runtime panic and returns the panic-path
-/// sentinel `0` (the `emit_panic_return` shape — set slot, return 0).
-extern "C" fn main_panics() -> i64 {
-    let msg = "boom in main";
-    runtime_panic(msg.as_ptr(), msg.len());
-    0
-}
-
-/// A non-IO `main` that captures a platform-dispatch fault (modelling a
-/// fault captured during `main` evaluation) and returns the sentinel `0`.
-extern "C" fn main_dispatch_faults() -> i64 {
-    set_dispatch_fault(DispatchFault {
-        fn_name: "stdio/read-line".to_string(),
-        cause: "device unavailable".to_string(),
-    });
-    0
 }
 
 /// A `main` returning an IO `Pure(42)` node base pointer. ABI-10 layout
@@ -299,151 +105,119 @@ extern "C" fn main_returns_io_pure() -> i64 {
     base as i64
 }
 
-/// A `main` returning an IO `bind (Pure 1) (fn [_] <panic; sentinel 0>)`
-/// tree — the panic fires INSIDE the trampoline (during-IO case, FIXME 0401).
-extern "C" fn main_returns_io_bind_panic() -> i64 {
-    // Inner Pure(1), ABI-10 with a `Scalar` (0) payload witness.
-    let inner = {
-        let b = crate::alloc::alloc_with_rc(24);
-        unsafe {
-            *((b as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_PURE;
-            *((b as isize + 24) as *mut i64) = 1;
-            *((b as isize + 32) as *mut i64) = 0;
-        }
-        b as i64
-    };
-    // Panicking continuation closure.
-    extern "C" fn panic_cont(_env: i64, _val: i64) -> i64 {
-        let msg = "division by zero";
-        runtime_panic(msg.as_ptr(), msg.len());
-        0 // panic-path sentinel — NOT a valid IO node
+// ---------------------------------------------------------------------
+// P-14 / P-13 child cells: the terminator observed from outside a process.
+// ---------------------------------------------------------------------
+
+use crate::test_child::{self, selected};
+
+fn child(name: &str) -> String {
+    test_child::child_path(module_path!(), name)
+}
+
+fn raise(msg: &str) -> ! {
+    runtime_panic(msg.as_ptr(), msg.len())
+}
+
+#[test]
+fn child_raises_one_language_panic() {
+    if !selected("child_raises_one_language_panic") {
+        return;
     }
-    let cont = {
-        let b = crate::alloc::alloc_with_rc(16);
-        unsafe {
-            *((b as isize + 16) as *mut i64) = panic_cont as *const () as i64;
-            *((b as isize + 24) as *mut i64) = 0; // drop glue
-        }
-        b as i64
-    };
-    // Bind node [header | tag=BIND | inner | cont | input disposer].
-    let bind = crate::alloc::alloc_with_rc(32);
-    unsafe {
-        *((bind as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_BIND;
-        *((bind as isize + 24) as *mut i64) = inner;
-        *((bind as isize + 32) as *mut i64) = cont;
-        *((bind as isize + 40) as *mut i64) = 0;
+    print!("OUTPUT-BEFORE-PANIC");
+    raise("boom");
+}
+
+#[test]
+fn child_two_threads_raise_together() {
+    if !selected("child_two_threads_raise_together") {
+        return;
     }
-    bind as i64
-}
-
-// spec: spec/12-runtime.md §12.7.4.2 — a clean non-IO main yields a clean
-// outcome carrying main's result; no slot is touched.
-#[test]
-fn run_program_clean_non_io() {
-    let _ = take_runtime_error();
-    let _ = take_dispatch_fault();
-    let outcome = cranelisp_run_program(main_returns_7 as *const u8, false);
-    assert_eq!(outcome.error_kind, OUTCOME_CLEAN, "clean run");
-    assert_eq!(outcome.exit_code, 7, "exit_code is main's result");
-    assert!(take_runtime_error().is_none(), "no runtime error slot set");
-    assert!(
-        take_dispatch_fault().is_none(),
-        "no dispatch fault slot set"
-    );
-}
-
-// spec: spec/12-runtime.md §12.7.4.2 — a clean IO main is forced through the
-// trampoline and the outcome carries the inner IO value.
-#[test]
-fn run_program_clean_io_reduces_to_inner_value() {
-    let _ = take_runtime_error();
-    let _ = take_dispatch_fault();
-    let outcome = cranelisp_run_program(main_returns_io_pure as *const u8, true);
-    assert_eq!(outcome.error_kind, OUTCOME_CLEAN, "clean IO run");
-    assert_eq!(outcome.exit_code, 42, "exit_code is the inner Pure value");
-    assert!(take_runtime_error().is_none());
-    assert!(take_dispatch_fault().is_none());
-}
-
-// spec: spec/12-runtime.md §12.7.4.2 — a panic during `main` evaluation
-// (pre-IO, FIXME 0399) yields error_kind=1 and LEAVES the runtime-error slot
-// SET (the driver peeks, never takes; the caller drains). The driver does NOT
-// exit and does NOT reach the trampoline.
-#[test]
-fn run_program_pre_io_panic_leaves_slot_set() {
-    let _ = take_runtime_error();
-    let _ = take_dispatch_fault();
-    // main_returns_io=true so we also prove the pre-IO peek stops BEFORE the
-    // trampoline (forcing sentinel 0 would null-deref).
-    let outcome = cranelisp_run_program(main_panics as *const u8, true);
-    assert_eq!(
-        outcome.error_kind, OUTCOME_RUNTIME_ERROR,
-        "pre-IO runtime error"
-    );
-    // The slot is left SET — the caller is the surfacing point.
-    let drained = take_runtime_error();
-    assert!(
-        drained
-            .as_deref()
-            .is_some_and(|m| m.contains("boom in main")),
-        "runtime-error slot left SET with the panic message (got {drained:?})"
-    );
-    assert!(take_dispatch_fault().is_none());
-}
-
-// spec: spec/12-runtime.md §12.7.4.2 — a panic raised DURING the IO
-// trampoline (inside a `bind` continuation, FIXME 0401) yields error_kind=1
-// and LEAVES the runtime-error slot SET. The driver must NOT SIGSEGV.
-#[test]
-fn run_program_during_io_panic_leaves_slot_set() {
-    let _ = take_runtime_error();
-    let _ = take_dispatch_fault();
-    let outcome = cranelisp_run_program(main_returns_io_bind_panic as *const u8, true);
-    assert_eq!(
-        outcome.error_kind, OUTCOME_RUNTIME_ERROR,
-        "during-IO runtime error"
-    );
-    let drained = take_runtime_error();
-    assert!(
-        drained
-            .as_deref()
-            .is_some_and(|m| m.contains("division by zero")),
-        "runtime-error slot left SET with the continuation panic (got {drained:?})"
-    );
-    assert!(take_dispatch_fault().is_none());
-}
-
-// spec: design/arch/bounded-contexts.md §4b invariant 14 — a platform
-// dispatch fault captured during `main` yields error_kind=2 and LEAVES the
-// dispatch-fault slot SET for the caller to compose into
-// `PlatformError::DispatchError`. No exit; the runtime-error slot is clean.
-#[test]
-fn run_program_dispatch_fault_leaves_slot_set() {
-    let _ = take_runtime_error();
-    let _ = take_dispatch_fault();
-    let outcome = cranelisp_run_program(main_dispatch_faults as *const u8, false);
-    assert_eq!(outcome.error_kind, OUTCOME_DISPATCH_FAULT, "dispatch fault");
-    // The dispatch-fault slot is left SET; the runtime-error slot is empty.
-    assert!(take_runtime_error().is_none(), "no runtime-error slot set");
-    let fault = take_dispatch_fault().expect("dispatch-fault slot left SET");
-    assert_eq!(fault.fn_name, "stdio/read-line");
-    assert_eq!(fault.cause, "device unavailable");
-}
-
-// spec: 12-runtime §12.7.2 — the combinator clears a stale error before
-// running the thunk, so a prior thread error does not leak into the result.
-#[test]
-fn test_catch_runtime_error_clears_stale() {
-    let _ = take_runtime_error();
-    // Pollute the slot before the call.
-    set_runtime_error("stale".to_string());
-    let thunk = make_const_thunk(7);
-    let res = catch_runtime_error(thunk);
-    unsafe {
-        let tag = *((res as isize + ADT_TAG_OFFSET) as *const i64);
-        assert_eq!(tag, RESULT_TAG_OK, "stale error must not produce Err");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let threads: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|msg| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                raise(msg);
+            })
+        })
+        .collect();
+    for t in threads {
+        let _ = t.join();
     }
-    // Thunk consumed by the combinator; only the Result is ours to free.
-    unsafe { crate::alloc::dealloc(res as *mut u8) };
+    eprintln!("RESUMED-AFTER-PANIC");
+}
+
+#[test]
+fn child_leaks_then_panics() {
+    if !selected("child_leaks_then_panics") {
+        return;
+    }
+    let leaked = crate::alloc::alloc_with_rc(8) as i64;
+    // One counted inc reads the RC-stats gate, which registers its exit printer.
+    crate::rc::rc_inc(leaked);
+    raise("leaking panic");
+}
+
+// spec: spec/12-runtime.md §12.7.4, §12.7.5 — a panic reports once on stderr
+// with the prefix and ends the process with status 1 (P-14).
+#[test]
+fn terminator_reports_once_and_exits_with_panic_status() {
+    let end = test_child::run(&child("child_raises_one_language_panic"), &[]);
+    end.assert_panicked_with("boom");
+    assert!(
+        !end.stdout.contains(PANIC_REPORT_PREFIX),
+        "report on stdout"
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.5 — output written before the panic precedes
+// the report (P-14 ordering cell).
+#[test]
+fn terminator_flushes_prior_output_before_the_report() {
+    let merged = test_child::run_merged(&child("child_raises_one_language_panic"));
+    let before = merged.find("OUTPUT-BEFORE-PANIC");
+    let report = merged.find("error: runtime panic: boom");
+    assert!(
+        matches!((before, report), (Some(b), Some(r)) if b < r),
+        "prior output must precede the report:\n{merged}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — concurrent panics produce one report,
+// naming one of the raised messages (P-14 two-raiser cell).
+#[test]
+fn terminator_reports_one_of_two_concurrent_raisers() {
+    let end = test_child::run(&child("child_two_threads_raise_together"), &[]);
+    assert_eq!(end.code, Some(PANIC_EXIT_STATUS), "{}", end.stderr);
+    let lines = end.report_lines();
+    assert_eq!(lines.len(), 1, "exactly one report:\n{}", end.stderr);
+    assert!(
+        lines[0] == "error: runtime panic: first" || lines[0] == "error: runtime panic: second",
+        "{}",
+        lines[0]
+    );
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
+}
+
+// spec: design/intrinsics/process-lifecycle.md §1.4 — after a panic, armed
+// M3 parity stands down with one line instead of aborting, and `[RC_STATS]`
+// still prints (P-13).
+#[test]
+fn armed_parity_stands_down_after_a_panic() {
+    let end = test_child::run(
+        &child("child_leaks_then_panics"),
+        &[("CRANELISP_ALLOC_PARITY", "1"), ("CRANELISP_RC_STATS", "1")],
+    );
+    end.assert_panicked_with("leaking panic");
+    let stand_downs = end
+        .stderr
+        .lines()
+        .filter(|l| l.starts_with("[ALLOC_PARITY] not checked"))
+        .count();
+    assert_eq!(stand_downs, 1, "one stand-down line:\n{}", end.stderr);
+    assert!(!end.stderr.contains("IMBALANCE"), "{}", end.stderr);
+    assert!(end.stderr.contains("[RC_STATS]"), "{}", end.stderr);
 }

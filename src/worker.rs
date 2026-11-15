@@ -2128,8 +2128,7 @@ pub fn inline_jit_codegen_for_names(
     // 3. Build the JIT — the whole symbol set derives from `symbol_tables`
     //    (BC §3 / D41). The host-promised `discover-tests` extern
     //    (`DefKind::PrimitiveExtern`) is registered via `Jit::define_symbol`
-    //    inside `build_session_jit`. `catch-runtime-error` resolves from the
-    //    intrinsics catalog (no host promise needed). (FIXME 0271)
+    //    inside `build_session_jit`. (FIXME 0271)
     let mut jit = build_session_jit(tc_modules)?;
 
     // 4. Unified codegen entry — S75 5-arg shape (BC §3 invariant 3).
@@ -2629,33 +2628,28 @@ pub(crate) fn notify_processed_codegen(
     shared: &crate::session_v4::SharedState,
 ) {
     if let Some((module, names)) = processed.pending_codegen_notification.take() {
-        if names.is_empty() {
-            shared.scheduler.notify_inmem_codegen_complete(
-                &module,
-                &Symbol::from("__empty_module"),
-                true,
-            );
-        } else {
-            let total = names.len();
-            for (index, name) in names.iter().enumerate() {
-                shared
-                    .scheduler
-                    .notify_inmem_codegen_complete(&module, name, index + 1 == total);
-            }
+        for name in &names {
+            shared
+                .scheduler
+                .notify_inmem_codegen_complete(&module, name);
         }
     }
 }
 
-/// Publish a source module's complete scheduler readiness in the only valid
-/// order: finish the post-publish in-memory notification first, then expose
-/// `TypecheckDone` to dependent modules.
+/// Publish a source module's complete scheduler readiness: in-memory
+/// completion and `TypecheckDone` in one scheduler transition
+/// (`design/int/int.md` §6.1.2).
 fn notify_processed_ready(
     processed: &mut crate::cluster::ProcessedCluster,
     shared: &crate::session_v4::SharedState,
     module: &ModuleFullPath,
 ) {
-    notify_processed_codegen(processed, shared);
-    shared.scheduler.notify_typecheck_done(module);
+    let names = processed
+        .pending_codegen_notification
+        .take()
+        .map(|(_, names)| names)
+        .unwrap_or_default();
+    shared.scheduler.notify_source_pass_ready(module, &names);
 }
 
 /// The ABI names of the `DefKind::PrimitiveExtern` symbols whose bodies are
@@ -2671,7 +2665,7 @@ fn notify_processed_ready(
 ///
 /// The list is the structural discriminator the friendly-rejection gate keys on
 /// (test-discovery.md §4.5): a `PrimitiveExtern` named here is dev-session-only;
-/// other `PrimitiveExtern`s (`catch-runtime-error`, `bind`, the intrinsic-type
+/// other `PrimitiveExtern`s (`bind`, the intrinsic-type
 /// accessors) resolve in `--link` from binary-exported / intrinsics-catalog
 /// symbols and are NOT rejected. Prefer extending this list over a name match
 /// elsewhere so any future REPL-only extern inherits both the promise and the
@@ -2757,8 +2751,7 @@ pub(crate) fn classify_listing_entry(
 /// Build the session JIT from the symbol tables (the unified `Jit::new`
 /// boundary, BC §3), then register the host-promised dev-session-only externs.
 ///
-/// `Jit::new` registers the full intrinsics catalog (incl. trace +
-/// `catch-runtime-error`) + per-module GOT data symbols + platform-effect
+/// `Jit::new` registers the full intrinsics catalog (incl. trace) + per-module GOT data symbols + platform-effect
 /// jit-names. `discover-tests` is a `DefKind::PrimitiveExtern` whose body lives
 /// in int (it reads the live typed session state — `cranelisp-intrinsics`
 /// cannot name `Code`, Principle 18). int promises it here via the additive
@@ -2832,8 +2825,8 @@ fn lookup_got_slot(
 ///      slot (copied from `cranelisp_primitives::PRIMITIVES_TABLE` by
 ///      `populate_ring0_got_slots`), already registered by the GOT-pointer walk
 ///      below.
-///   2. Synthetic slot-less externs (`sconcat`, the Trace accessors,
-///      `catch-runtime-error`, …) — `DefKind::PrimitiveExtern` entries seeded by
+///   2. Synthetic slot-less externs (`sconcat`, the Trace accessors, …) —
+///      `DefKind::PrimitiveExtern` entries seeded by
 ///      `bootstrap.rs` with `code: None` and NO GOT slot (S83 reshape, FIXME
 ///      0356/0357/0360: these are by-ABI-name `Linkage::Import` callees, not
 ///      GOT-indirect). Their bodies are binary-exported symbols

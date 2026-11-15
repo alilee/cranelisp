@@ -18,13 +18,9 @@
 //! or codegen regresses for any sub-test, the example's exit drops to
 //! a smaller integer.
 //!
-//! Subprocess-driven (Command + current_dir) rather than the `Cranelisp`
-//! builder because each example must run with `examples/` as cwd so
-//! the example's `Cranelisp.toml` + local `lib/` are discovered. The
-//! builder's per-test fresh TempDir is the wrong cwd for this shape.
-//! That makes this file a deliberate exception to the "use the builder"
-//! convention (Wave 1's pure-quarantine pattern of preserving subprocess
-//! shape applies here too).
+//! Subprocess-driven so each example discovers its project configuration and
+//! local `lib/`. Read-only modes use `--no-cache`; linking uses a fresh copy of
+//! the example project because `--link` requires its module cache.
 //!
 //! FIXME(/spec): the "non-zero exit = sub-test pass count" convention is
 //! documented in `examples/CLAUDE.md` (training guidance), not in any spec/*.md file. The convention is a project-level
@@ -36,6 +32,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::Once;
 
 fn project_root() -> PathBuf {
+    // read-only on project_root — checked-in programs run with --no-cache.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -93,7 +90,7 @@ fn run_example(path: &Path) -> Output {
     );
     ensure_platform_cdylibs_built();
     Command::new(&binary)
-        .args(["--run", path.to_str().unwrap()])
+        .args(["--no-cache", "--run", path.to_str().unwrap()])
         // Put target/debug on the platform search path so the IO examples
         // resolve `libcranelisp_{stdio,test-capture}.{ext}` directly.
         .env("CRANELISP_PLATFORM_PATH", platform_search_path())
@@ -291,15 +288,38 @@ const METHOD_IMPORT_EXIT: i32 = 5;
 /// the cwd, platform path and null stdin `run_example` uses. A link that fails
 /// or produces no executable is returned as its diagnostic.
 fn link_and_execute_example(path: &Path, artifact: &Path) -> Result<Output, String> {
+    fn copy_sources(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).expect("create example scratch directory");
+        for entry in std::fs::read_dir(src).expect("read example sources") {
+            let path = entry.expect("example source entry").path();
+            if path.file_name().unwrap() == ".cranelisp-cache" {
+                continue;
+            }
+            let target = dst.join(path.file_name().unwrap());
+            if path.is_dir() {
+                copy_sources(&path, &target);
+            } else if matches!(
+                path.extension().and_then(|x| x.to_str()),
+                Some("cl" | "toml")
+            ) {
+                std::fs::copy(&path, target).expect("copy example source");
+            }
+        }
+    }
+    let scratch = tempfile::tempdir().expect("example link scratch");
+    copy_sources(&examples_dir(), scratch.path());
+    let entry = scratch
+        .path()
+        .join(path.strip_prefix(examples_dir()).expect("example path"));
     let link = Command::new(binary_path())
         .args([
             "--link",
             "-o",
             artifact.to_str().unwrap(),
-            path.to_str().unwrap(),
+            entry.to_str().unwrap(),
         ])
         .env("CRANELISP_PLATFORM_PATH", platform_search_path())
-        .current_dir(examples_dir())
+        .current_dir(scratch.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -315,7 +335,7 @@ fn link_and_execute_example(path: &Path, artifact: &Path) -> Result<Output, Stri
     }
     Ok(Command::new(artifact)
         .env("CRANELISP_PLATFORM_PATH", platform_search_path())
-        .current_dir(examples_dir())
+        .current_dir(scratch.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -587,7 +607,7 @@ fn program_tests_example_reports_four_passes_under_test_mode() {
     // read-only on project_root — runs the checked-in examples/38-program-tests.cl.
     let binary = binary_path();
     let out = Command::new(&binary)
-        .args(["--test", "38-program-tests.cl"])
+        .args(["--no-cache", "--test", "38-program-tests.cl"])
         .current_dir(examples_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

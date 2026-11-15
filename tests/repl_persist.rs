@@ -6258,3 +6258,130 @@ fn persist_save_over_backing_file_present_at_start_survives_definition_control()
 fn persist_save_over_backing_file_written_by_session_survives_definition_control() {
     assert_created_save_survives(BackingFile::WrittenBySession);
 }
+
+fn reexport_chain_saved_with_cycle(extra_b: &str, export_edge: bool) -> e2e::CrOutput {
+    let saved = if export_edge {
+        "(export [c [k]]) (export [b [g]]) (defn f [] 1)"
+    } else {
+        "(export [c [k]]) (defn f [] 1) (defn h [] (b/g))"
+    };
+    let out = Cranelisp::new()
+        .file("c.cl", "(defn k [] 7)")
+        .file("a.cl", "(export [c [k]]) (defn f [] 1)")
+        .file("b.cl", &format!("(defn g [] (a/k)) {extra_b}"))
+        .user("(defn run [] (b/g))")
+        .cli_flag("--no-cache")
+        .stdin(&format!("(run)\n{}/sig b/g\n/quit\n", save("a.cl", saved)))
+        .output();
+    assert!(
+        prompted_turns(&out.stdout)[1].contains(":primitives/Int 7"),
+        "initial acyclic chain must run; {}",
+        transcript(&out)
+    );
+    out
+}
+
+// spec: repl/spec/14-file-watching.md §14.6; spec/08-modules.md §8.10.3 — failed dependencies refuse dependents.
+// defect: class=silent-accept locus=src/session_v4/lifecycle.rs::run_reload_plan found=S122 owner=/dev
+// ACT-1016 face 1; control: reload_failed_reexport_dependency_missing_name_control.
+#[test]
+fn reload_failed_reexport_dependency_matches_restart_neg() {
+    let session = reexport_chain_saved_with_cycle("", false);
+    let session_text = transcript(&session);
+    let restart = session
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("/sig b/g\n/quit\n")
+        .output();
+    let restart_text = transcript(&restart);
+    assert!(
+        restart_text.contains("unknown symbol 'b/g'"),
+        "restart must refuse failed a; {restart_text}"
+    );
+    assert!(
+        session_text.contains("unknown symbol 'b/g'") && !session_text.contains("[updated: b.cl]"),
+        "reload must fail b like restart, even when b uses only a re-export; session:\n{session_text}\nrestart:\n{restart_text}"
+    );
+}
+
+// spec: repl/spec/14-file-watching.md §14.6; spec/08-modules.md §8.10.3 — ACT-1016 face 1 twin control uses a missing name too.
+#[test]
+fn reload_failed_reexport_dependency_missing_name_control() {
+    let out = reexport_chain_saved_with_cycle("(defn g2 [] (a/f))", false);
+    let text = transcript(&out);
+    assert!(
+        text.contains("circular")
+            && text.contains("unknown symbol 'b/g'")
+            && !text.contains("[updated: b.cl]"),
+        "missing-name twin must fail the complete chain; {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1–§8.10.2 — reload reports export edges as cycles.
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev fixed=S122/aed0fcb1
+// ACT-1016 face 2; control: export_dependency_without_cycle_control in spec_08_modules.
+// Regression guard: reload was last seen RED at d056842f.
+#[test]
+fn reload_export_closed_cycle_reports_cycle_neg() {
+    let out = reexport_chain_saved_with_cycle("", true);
+    let notice = save_notice(&prompted_turns(&out.stdout), 2);
+    assert!(
+        notice.contains("circular")
+            && (notice.contains("a -> b -> a") || notice.contains("b -> a -> b"))
+            && !notice.contains("not found in module"),
+        "reload must report export-closed a/b cycle, not unresolved name; {}",
+        transcript(&out)
+    );
+}
+
+fn failed_import_saved_helper(source: &str) -> e2e::CrOutput {
+    let out = Cranelisp::new()
+        .file("helper.cl", "(defn f [] 2)")
+        .user("(import [helper [f]])")
+        .cli_flag("--no-cache")
+        .stdin(&format!("(f)\n{}/quit\n", save("helper.cl", source)))
+        .output();
+    assert!(
+        prompted_turns(&out.stdout)[1].contains(":primitives/Int 2"),
+        "initial import must succeed; {}",
+        transcript(&out)
+    );
+    out
+}
+
+// spec: repl/spec/14-file-watching.md §14.6 — ACT-1017 reload control saves a valid helper.
+#[test]
+fn non_failed_import_reload_control() {
+    let out = failed_import_saved_helper("(defn f [] 3)");
+    let notice = save_notice(&prompted_turns(&out.stdout), 2);
+    assert!(
+        notice.contains("[updated: helper.cl]") && !notice.contains("[errors:"),
+        "valid helper save must reload without errors; {}",
+        transcript(&out)
+    );
+    out.assert_exit(0).assert_stderr_empty();
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1, §5.5 — reload names the failed file without repeated prefixes.
+// defect: class=error-swallow locus=src/scheduler.rs::refuse_failed_dependency_locked found=S122 owner=/dev
+// ACT-1017 prefix; control: non_failed_import_reload_control.
+#[test]
+fn failed_import_reload_has_one_located_prefix_neg() {
+    let out = failed_import_saved_helper("(defn f [] (primitives/add-i64 true 1))");
+    let notice = save_notice(&prompted_turns(&out.stdout), 2);
+    assert!(
+        notice.contains("[errors: helper.cl]")
+            && !notice.contains("[errors: user.cl]")
+            && notice.contains("type mismatch"),
+        "failed-import reload must report the type failure under helper.cl; {}",
+        transcript(&out)
+    );
+    let prefix =
+        regex::Regex::new(r"(?:module|type) error (?:in [^\n]+?: )?at \d+\.\.\d+:").unwrap();
+    for line in notice.lines().filter(|line| line.contains("type mismatch")) {
+        assert!(
+            prefix.find_iter(line).count() <= 1,
+            "failed-import reload diagnostic must have at most one located prefix; {line}"
+        );
+    }
+}

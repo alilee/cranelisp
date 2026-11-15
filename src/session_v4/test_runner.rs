@@ -1,8 +1,8 @@
 // session_v4::test_runner — the shared test runner (`design/int/test-runner.md`).
 //
 // `/run-tests`, `/run-all-tests` and `--test` are one runner: `discovery` is
-// the one eligibility scan, `selection` chooses modules, and `run` prepares,
-// executes and reports. This parent holds the REPL-only `discover-tests`
+// the one eligibility scan, `selection` chooses modules, `run` prepares and
+// executes in the test child, and `child` supervises the child and reports. This parent holds the REPL-only `discover-tests`
 // extern, its `TestRunnerState` and the heap marshalling it needs; the only
 // session-side coupling is the `tc_modules` raw pointer patched in
 // `CompilerSession::new` via `set_tc_modules`.
@@ -13,10 +13,12 @@ use cranelisp_types::ModuleFullPath;
 
 use crate::code::SessionSymbolTable;
 
+mod child;
 mod discovery;
 mod run;
 mod selection;
 
+pub use self::child::supervise_tests;
 pub(crate) use self::discovery::{TestDefinition, classify_test_definition};
 pub use self::run::TestRunReport;
 

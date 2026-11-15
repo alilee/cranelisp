@@ -43,6 +43,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn workspace_root() -> PathBuf {
+    // read-only on project_root — checked-in sources run with --no-cache.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -131,6 +132,7 @@ fn spawn_server(port: u16) -> ServerGuard {
 
     let child = Command::new(&binary)
         .current_dir(&root)
+        .arg("--no-cache")
         .arg("--run")
         .arg("exemplar/main.cl")
         .env("CRANELISP_PORT", port.to_string())

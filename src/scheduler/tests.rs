@@ -675,8 +675,7 @@ fn harvest_notify_typecheck_done_then_inmem_completes() {
         sched.take_priority_work(),
         Some(PriorityWork::Typecheck { .. })
     ));
-    sched.notify_typecheck_done(&m);
-    sched.notify_inmem_codegen_complete(&m, &Symbol::from("main"), true);
+    sched.notify_source_pass_ready(&m, &[Symbol::from("main")]);
     assert!(sched.wait_inmem_complete().is_ok());
 }
 
@@ -836,8 +835,7 @@ fn harvest_inmem_codegen_complete_moves_to_complete() {
     let m = mod_path("mod_x");
     sched.register_module(m.clone(), no_sexps(), false);
     let _ = sched.take_priority_work();
-    sched.notify_typecheck_done(&m);
-    sched.notify_inmem_codegen_complete(&m, &Symbol::from("main"), true);
+    sched.notify_source_pass_ready(&m, &[Symbol::from("main")]);
     assert!(sched.wait_inmem_complete().is_ok());
 }
 
@@ -850,11 +848,9 @@ fn harvest_wait_inmem_complete_ok_when_all_complete() {
     sched.register_module(a.clone(), no_sexps(), false);
     sched.register_module(b.clone(), no_sexps(), false);
     let _ = sched.take_priority_work();
-    sched.notify_typecheck_done(&a);
+    sched.notify_source_pass_ready(&a, &[Symbol::from("fn_a")]);
     let _ = sched.take_priority_work();
-    sched.notify_typecheck_done(&b);
-    sched.notify_inmem_codegen_complete(&a, &Symbol::from("fn_a"), true);
-    sched.notify_inmem_codegen_complete(&b, &Symbol::from("fn_b"), true);
+    sched.notify_source_pass_ready(&b, &[Symbol::from("fn_b")]);
     assert!(sched.wait_inmem_complete().is_ok());
 }
 
@@ -2045,8 +2041,7 @@ fn hold_leaves_uncached_and_objectless_modules_unchanged() {
         Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, fresh),
         other => panic!("expected Typecheck(fresh), got {other:?}"),
     }
-    sched.notify_typecheck_done(&fresh);
-    sched.notify_inmem_codegen_complete(&fresh, &Symbol::from("main"), true);
+    sched.notify_source_pass_ready(&fresh, &[Symbol::from("main")]);
 
     sched.register_module_cached_no_object(objectless.clone(), HashSet::new());
     assert!(take_cache_load(&sched).is_none());
@@ -2673,4 +2668,112 @@ fn the_cycle_record_is_set_at_a_cycle_copied_through_a_refusal_and_cleared() {
 
     assert!(sched.re_register_module(&b, no_sexps()));
     assert!(!sched.cycle_failure(&b), "registration clears it");
+}
+
+// spec: design/int/int.md §6.1.2 — the fused source-pass transition publishes
+// in-memory completion and `TypecheckDone` together: once the in-memory wait
+// returns, the pool is terminal and a requeue is accepted (the ACT-1025 seam,
+// closed in the scheduler; M-2).
+#[test]
+fn source_pass_ready_leaves_a_terminal_pool_so_a_requeue_is_accepted() {
+    let sched = CompileScheduler::new();
+    let m = mod_path("user");
+    sched.register_module(m.clone(), no_sexps(), false);
+    let _ = sched.take_priority_work();
+    assert_eq!(sched.module_pool(&m), Some(ModulePool::TypecheckWorking));
+
+    sched.notify_source_pass_ready(&m, &[Symbol::from("h")]);
+
+    assert!(sched.wait_inmem_complete_blocking().is_ok());
+    assert_eq!(sched.module_pool(&m), Some(ModulePool::TypecheckDone));
+    assert!(sched.wait_module_inmem_complete_blocking(&m).is_ok());
+    assert!(sched.requeue_without_continuation(&m), "settled on arrival");
+}
+
+// spec: design/int/int.md §6.1.2 negative legs — a per-symbol completion never
+// sets in-memory completion, so a module a worker is mid-pass on is still
+// incomplete after it; and an unregistered module gains no state from the
+// fused transition.
+#[test]
+fn symbol_completion_never_completes_a_working_module() {
+    let sched = CompileScheduler::new();
+    let m = mod_path("user");
+    sched.register_module(m.clone(), no_sexps(), false);
+    let _ = sched.take_priority_work();
+
+    sched.notify_inmem_codegen_complete(&m, &Symbol::from("h"));
+
+    assert!(
+        matches!(
+            sched.wait_inmem_complete(),
+            Err(SchedulerError::InmemIncomplete { .. })
+        ),
+        "a working module is not in-memory complete"
+    );
+    assert_eq!(sched.module_pool(&m), Some(ModulePool::TypecheckWorking));
+
+    let unknown = mod_path("unregistered");
+    sched.notify_source_pass_ready(&unknown, &[]);
+    assert_eq!(sched.module_pool(&unknown), None);
+}
+
+// spec: design/int/int.md §6.11 (Diagnostic, ACT-1017) — a refusal by a failed
+// dependency carries ONE located prefix: the wrapper is located in the failed
+// module's own file, and its text is `module '<m>' failed:` followed by the
+// stored error without its span — a type error's category word and message,
+// a module error's bare message. The failed-module wait report uses the same
+// text.
+#[test]
+fn failed_dependency_refusal_has_one_located_prefix_in_the_failed_file() {
+    let sched = CompileScheduler::new();
+    let (helper, cyclic, user) = (mod_path("helper"), mod_path("cyclic"), mod_path("user"));
+    for module in [&helper, &cyclic, &user] {
+        sched.register_module(module.clone(), no_sexps(), false);
+    }
+    let helper_file = std::path::PathBuf::from("/p/helper.cl");
+    sched.notify_module_failed(
+        &helper,
+        CranelispError::TypeError {
+            message: "type mismatch".to_string(),
+            location: ErrorLocation::from_span_file(Span::new(11, 38), Some(helper_file.clone())),
+        },
+    );
+    sched.notify_module_failed(
+        &cyclic,
+        CranelispError::ModuleError {
+            message: "circular dependency detected: cyclic -> x -> cyclic".to_string(),
+            location: ErrorLocation::from_span_file(
+                Span::new(0, 15),
+                Some(std::path::PathBuf::from("/p/cyclic.cl")),
+            ),
+        },
+    );
+
+    let typed = sched
+        .refuse_failed_dependency(&user, &helper, Span::new(0, 5))
+        .unwrap_err();
+    assert_eq!(
+        typed.message(),
+        "module 'helper' failed: type error: type mismatch"
+    );
+    assert_eq!(typed.location().file.as_ref(), Some(&helper_file));
+    assert_eq!(typed.span(), Span::new(11, 38));
+    assert_eq!(typed.to_string().matches("11..38").count(), 1, "{typed}");
+
+    let moduled = sched
+        .refuse_failed_dependency(&user, &cyclic, Span::new(0, 5))
+        .unwrap_err();
+    assert_eq!(
+        moduled.message(),
+        "module 'cyclic' failed: circular dependency detected: cyclic -> x -> cyclic"
+    );
+    assert_eq!(moduled.to_string().matches("0..15").count(), 1, "{moduled}");
+
+    let state = sched.lock();
+    let waited = CranelispError::from(module_failed_error(&helper, &state.modules[&helper]));
+    assert_eq!(
+        waited.message(),
+        typed.message(),
+        "the wait report shares the text"
+    );
 }

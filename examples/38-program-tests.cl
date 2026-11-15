@@ -11,6 +11,9 @@
 ;; `--test` compiles the program, finds its test functions, runs every one
 ;; and reports each result. It never calls `main`. It exits 0 when no test
 ;; fails, and 1 when any test fails or panics.
+;; A panic ends the test child process. The --test supervisor reports the
+;; failure and starts another child for later tests; user code cannot resume
+;; after a panic.
 ;;
 ;; Running:
 ;;   ./target/debug/cranelisp --test examples/38-program-tests.cl

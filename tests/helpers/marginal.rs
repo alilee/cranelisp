@@ -538,13 +538,9 @@ fn run_child(spec: &Child, instrument: Instrument, timeout: Duration, role: &str
         cmd.env("CRANELISP_LIB", lib);
     }
     cmd.env("CRANELISP_PLATFORM_PATH", &platform_path);
-    // The instrument is armed on whichever process the counters are READ from.
-    // For the link drive that is the produced binary, not the linking compiler
-    // child — arming the linker too would publish a second, irrelevant ledger.
-    if spec.drive != Drive::LinkThenRun {
-        for (k, v) in instrument.env() {
-            cmd.env(k, v);
-        }
+    // Linked executables capture runtime switches at link time.
+    for (k, v) in instrument.env() {
+        cmd.env(k, v);
     }
     for (k, v) in &spec.extra_env {
         cmd.env(k, v);

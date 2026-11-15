@@ -60,19 +60,53 @@ use repl_input::{ReadOutcome, ReplInput};
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum Action {
     Run,
-    /// `--test`: compile as `--run` does, then run the program's tests
-    /// instead of `main` (`repl/spec/00-cli-invocation.md` §0.2.2).
-    Test,
+    /// `--test` (`repl/spec/00-cli-invocation.md` §0.2.2): supervise a test
+    /// child of this binary and report. This process compiles nothing
+    /// (`design/int/test-runner.md` §6.5).
+    TestSupervisor,
+    /// `--test` with the internal child arguments: compile as `--run` does,
+    /// then run the tests and stream their records for the supervisor.
+    TestChild(TestChildSpec),
     Link,
     Repl,
 }
+
+/// The test child's internal arguments (`design/int/test-runner.md` §6.5).
+/// Their spellings are not part of the public CLI
+/// (`repl/spec/00-cli-invocation.md` §0.2.2, Internal child arguments); the
+/// supervisor in `cranelisp::session_v4::test_runner` writes the same three.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+struct TestChildSpec {
+    records: PathBuf,
+    /// The REPL's module selection; `None` walks the entry chain.
+    modules: Option<Vec<cranelisp_types::ModuleFullPath>>,
+    resume_after: Option<cranelisp_types::FQSymbol>,
+}
+
+const CHILD_RECORDS_FLAG: &str = "--test-child-records";
+const CHILD_MODULE_FLAG: &str = "--test-child-module";
+const CHILD_RESUME_FLAG: &str = "--test-child-resume";
 
 impl Action {
     fn codegen_behaviour(&self) -> CodegenBehaviour {
         match self {
             Action::Link => CodegenBehaviour::ObjectOnly,
-            Action::Run | Action::Test | Action::Repl => CodegenBehaviour::InMemoryAndObject,
+            Action::Run | Action::TestSupervisor | Action::TestChild(_) | Action::Repl => {
+                CodegenBehaviour::InMemoryAndObject
+            }
         }
+    }
+
+    /// A REPL's test child compiles in memory only: the REPL's own workers
+    /// write the same cache entries (`design/int/test-runner.md` §6.5).
+    fn forces_no_cache(&self) -> bool {
+        matches!(
+            self,
+            Action::TestChild(TestChildSpec {
+                modules: Some(_),
+                ..
+            })
+        )
     }
 
     /// The session's run-mode (D1 ruling §4). This is the ONLY legitimate place
@@ -82,7 +116,7 @@ impl Action {
     /// exactly as `--run` does (Principle 11).
     fn run_mode(&self) -> RunMode {
         match self {
-            Action::Run | Action::Test => RunMode::Run,
+            Action::Run | Action::TestSupervisor | Action::TestChild(_) => RunMode::Run,
             Action::Link => RunMode::Link,
             Action::Repl => RunMode::Repl,
         }
@@ -101,6 +135,9 @@ struct LaunchSpec {
     auto_accept: bool,
     is_rule3: bool,
     output_override: Option<PathBuf>,
+    /// The command line without the program name and `--test`: the test
+    /// supervisor starts its child with these.
+    test_client_args: Vec<std::ffi::OsString>,
 }
 
 /// The raw flags recognised by the argument parse loop, before resolution into a
@@ -120,6 +157,9 @@ struct ParsedFlags {
     agent_off: bool,
     yes: bool,
     target: Option<String>,
+    child_records: Option<PathBuf>,
+    child_modules: Vec<String>,
+    child_resume: Option<String>,
 }
 
 // The usage line. The agent-related advertisement is cfg-split so usage never
@@ -141,12 +181,11 @@ const USAGE: &str = "usage: cranelisp [target] [--run | --test | --link] [-o <pa
 // ---------------------------------------------------------------------------
 
 fn main() {
-    // Observability — flush scheduler + IO traces on normal exit AND panic.
-    // Guards fire on `main()` return (Drop); panic hook fires on unwind.
-    // NOTE: `std::process::exit` below bypasses Drop — the matching
-    // `flush_traces()` call is invoked explicitly before every such call
-    // site (Run-mode exit-code escape + early-error paths). See
-    // `design/int/observability.md §7.1` for the wiring rationale.
+    // Observability (`design/int/observability.md` §7.1): the guards flush on
+    // `main()` return, the panic hooks on a Rust unwind, and the exit hook on
+    // every `exit`, including a runtime panic's, which ends the process inside
+    // the runtime.
+    register_trace_exit_hook();
     io_trace::install_panic_hook();
     got_trace::install_panic_hook();
     observability::install_panic_hook();
@@ -195,7 +234,6 @@ fn main() {
 
     if let Err(e) = run(spec) {
         eprintln!("{}", format_error(&e, &entry_file));
-        flush_traces();
         process::exit(1);
     }
 }
@@ -264,14 +302,26 @@ fn derive_line_col(file: &Path, byte_offset: usize) -> (u32, u32) {
     (line, col)
 }
 
-/// Explicitly drain all observability traces to stderr. Must be called
-/// immediately before any `std::process::exit` site that would otherwise
-/// bypass the RAII guards held in `main()`. Safe to call when the traces
+/// Drain all observability traces to stderr. Safe to call when the traces
 /// are disabled — each `flush_to_stderr` short-circuits on the filter.
 fn flush_traces() {
     observability::flush_to_stderr();
     io_trace::flush_to_stderr();
     got_trace::flush_to_stderr();
+}
+
+extern "C" fn flush_traces_at_exit() {
+    flush_traces();
+}
+
+/// Register the process-exit flush. It neither exits nor changes the status,
+/// and draining empties the rings, so it and the guards print each event once.
+fn register_trace_exit_hook() {
+    // SAFETY: `flush_traces_at_exit` is a plain `extern "C" fn()` that does
+    // not unwind: the trace sinks read destroyed thread-locals as empty.
+    unsafe {
+        libc::atexit(flush_traces_at_exit);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +341,11 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
         auto_accept,
         is_rule3,
         output_override,
+        test_client_args,
     } = spec;
+    if let Action::TestSupervisor = action {
+        return run_test_supervisor(&test_client_args);
+    }
     let project_root: &Path = &project_root;
     let entry_module_name: &str = &entry_module;
     let output_override = output_override.as_deref();
@@ -341,31 +395,24 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
             result.release();
             s.wait_object_complete()?;
             s.shutdown();
-            // Observability: drain traces before `process::exit` bypasses
-            // the RAII guards held in `main()` (design/int/observability.md §7.1).
-            flush_traces();
             process::exit(exit_code);
         }
-        // §0.2.2: compile as `--run` does, then run the tests instead of
-        // `main`. Warnings go to stderr and the report to stdout; the exit
-        // code is the report's.
-        Action::Test => {
-            use std::io::Write;
+        Action::TestSupervisor => {
+            unreachable!("invariant: the test supervisor returned before the session was built")
+        }
+        // §6.5: the test child compiles as `--run` does, then runs the tests
+        // and records each for its supervisor. It writes no report.
+        Action::TestChild(child) => {
             startup?;
             s.wait_inmem_complete()?;
-            let report = s.run_tests()?;
-            for warning in report.warnings() {
-                eprintln!("warning: {}", warning.message);
+            s.run_tests(
+                &child.records,
+                child.modules.as_deref(),
+                child.resume_after.as_ref(),
+            )?;
+            if child.modules.is_none() {
+                s.wait_object_complete()?;
             }
-            let mut stdout = std::io::stdout().lock();
-            let _ = writeln!(stdout, "{}", report.text());
-            // `process::exit` skips destructors, so flush explicitly.
-            let _ = stdout.flush();
-            drop(stdout);
-            s.wait_object_complete()?;
-            s.shutdown();
-            flush_traces();
-            process::exit(report.exit_code());
         }
         // §8: Link mode.
         Action::Link => {
@@ -389,6 +436,23 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
 
     s.shutdown();
     Ok(())
+}
+
+/// `--test` (§0.2.2): supervise the test child, then write the warnings to
+/// stderr, the report to stdout and exit with the report's code. This process
+/// builds no session and compiles nothing (`design/int/test-runner.md` §7.1).
+fn run_test_supervisor(client_args: &[std::ffi::OsString]) -> Result<(), CranelispError> {
+    use std::io::Write;
+    let report = cranelisp::session_v4::supervise_tests(client_args, None)?;
+    for warning in report.warnings() {
+        eprintln!("warning: {}", warning.message);
+    }
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(stdout, "{}", report.text());
+    // `process::exit` skips destructors, so flush explicitly.
+    let _ = stdout.flush();
+    drop(stdout);
+    process::exit(report.exit_code());
 }
 
 /// The REPL arm of [`run`] (§6): startup recovery, prologue, the read-eval loop,
@@ -431,10 +495,6 @@ fn run_repl(
     let mut input = ReplInput::new(project_root, &mut stdout);
 
     let buffer = repl_read_eval_loop(s, &mut input, &mut stdout);
-
-    // §10.8: persist the per-project history on session end (TTY only;
-    // covers both `/quit` and Ctrl-D). Non-fatal on failure.
-    input.save_history(&mut stdout);
 
     // EOF reached. If a form was still being accumulated (unbalanced
     // parens awaiting a continuation line that never came), it is an
@@ -867,7 +927,7 @@ fn parse_args() -> LaunchSpec {
 
     let settings = SessionSettings {
         no_color: flags.no_color,
-        no_cache: flags.no_cache,
+        no_cache: flags.no_cache || action.forces_no_cache(),
         codegen_behaviour,
         priority_workers: flags.priority_workers.unwrap_or(1),
         nice_workers: flags.nice_workers.unwrap_or(1),
@@ -883,7 +943,14 @@ fn parse_args() -> LaunchSpec {
         auto_accept,
         is_rule3,
         output_override: flags.output_override,
+        test_client_args: test_client_args(std::env::args_os().skip(1)),
     }
+}
+
+/// The supervisor's child arguments: the client's own arguments without its
+/// mode flag (`design/int/test-runner.md` §6.5). The child adds `--test` back.
+fn test_client_args(args: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    args.filter(|arg| arg != "--test").collect()
 }
 
 /// The mode the flags select, or the usage error that rejects them (§0.3).
@@ -893,10 +960,13 @@ fn select_action(flags: &ParsedFlags) -> Result<Action, String> {
     let action = match (flags.action_run, flags.action_test, flags.action_link) {
         (false, false, false) => Action::Repl,
         (true, false, false) => Action::Run,
-        (false, true, false) => Action::Test,
+        (false, true, false) => test_action(flags)?,
         (false, false, true) => Action::Link,
         _ => return Err("only one of --run, --test and --link may be given".to_string()),
     };
+    if !flags.action_test && has_child_arguments(flags) {
+        return Err("unknown flag: test-child arguments require --test".to_string());
+    }
     if flags.no_cache && matches!(action, Action::Link) {
         return Err("--no-cache is not supported with --link".to_string());
     }
@@ -904,6 +974,51 @@ fn select_action(flags: &ParsedFlags) -> Result<Action, String> {
         return Err("-o <path> is only supported with --link".to_string());
     }
     Ok(action)
+}
+
+fn has_child_arguments(flags: &ParsedFlags) -> bool {
+    flags.child_records.is_some() || !flags.child_modules.is_empty() || flags.child_resume.is_some()
+}
+
+/// `--test` alone is the supervisor; with the record file it is the child.
+fn test_action(flags: &ParsedFlags) -> Result<Action, String> {
+    let Some(records) = flags.child_records.clone() else {
+        if has_child_arguments(flags) {
+            return Err(format!(
+                "{CHILD_RECORDS_FLAG} is required by the test-child arguments"
+            ));
+        }
+        return Ok(Action::TestSupervisor);
+    };
+    let resume_after = match &flags.child_resume {
+        None => None,
+        Some(text) => Some(
+            parse_test_name(text)
+                .ok_or_else(|| format!("{CHILD_RESUME_FLAG}: not a test name: {text}"))?,
+        ),
+    };
+    let modules = (!flags.child_modules.is_empty()).then(|| {
+        flags
+            .child_modules
+            .iter()
+            .map(|m| cranelisp_types::ModuleFullPath::from(m.as_str()))
+            .collect()
+    });
+    Ok(Action::TestChild(TestChildSpec {
+        records,
+        modules,
+        resume_after,
+    }))
+}
+
+/// A test's FQ name as the supervisor writes it: the module path, which
+/// contains no `/`, then `/` and the symbol.
+fn parse_test_name(text: &str) -> Option<cranelisp_types::FQSymbol> {
+    let (module, symbol) = text.split_once('/')?;
+    (!module.is_empty() && !symbol.is_empty()).then(|| cranelisp_types::FQSymbol {
+        module: cranelisp_types::ModuleFullPath::from(module),
+        symbol: cranelisp_types::Symbol::from(symbol),
+    })
 }
 
 /// The argument-recognition loop: walk `args`, matching each flag into
@@ -942,6 +1057,18 @@ fn parse_arg_flags(args: &[String]) -> ParsedFlags {
             "--link" => {
                 flags.action_link = true;
                 i += 1;
+            }
+            CHILD_RECORDS_FLAG => {
+                flags.child_records = Some(PathBuf::from(require_value(args, i)));
+                i += 2;
+            }
+            CHILD_MODULE_FLAG => {
+                flags.child_modules.push(require_value(args, i).to_string());
+                i += 2;
+            }
+            CHILD_RESUME_FLAG => {
+                flags.child_resume = Some(require_value(args, i).to_string());
+                i += 2;
             }
             // §0.2.1.1 `-o <path>` / `--output <path>` — the `--link` output-path
             // override (S106, FIXME 0550). Takes the next argument as the path.
@@ -1022,6 +1149,19 @@ fn parse_arg_flags(args: &[String]) -> ParsedFlags {
     }
 
     flags
+}
+
+/// The value following a value-taking flag, exiting with a usage error when it
+/// is missing.
+fn require_value(args: &[String], i: usize) -> &str {
+    match args.get(i + 1) {
+        Some(value) => value,
+        None => {
+            eprintln!("error: {} requires a value", args[i]);
+            eprintln!("{USAGE}");
+            process::exit(1);
+        }
+    }
 }
 
 /// Parse the numeric argument following a worker-count flag
@@ -1116,6 +1256,7 @@ fn make_absolute(path: &Path, base: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::{FQSymbol, ModuleFullPath};
 
     /// Spec §8.11.1: the project root is the directory *containing the entry
     /// file*. When the target names a `<name>.cl` file in cwd, that file is the
@@ -1271,11 +1412,102 @@ mod tests {
     #[test]
     fn test_flag_selects_test_action_with_run_mode_and_in_memory_codegen() {
         let action = select_action(&flags_of(&["--test", "t"])).expect("a valid invocation");
-        assert_eq!(action, Action::Test);
+        assert_eq!(action, Action::TestSupervisor);
         assert_eq!(action.run_mode(), RunMode::Run);
         assert_eq!(
             action.codegen_behaviour(),
             CodegenBehaviour::InMemoryAndObject
+        );
+    }
+
+    // spec: design/int/test-runner.md §10 `main.rs` row 4 — `--test` selects
+    // the supervisor and `--test` with the child arguments the child, which
+    // compiles as `--run` does; a REPL child, which has a module selection,
+    // writes no cache.
+    #[test]
+    fn test_flag_with_child_arguments_selects_the_child() {
+        let chain = select_action(&flags_of(&["--test", "t", CHILD_RECORDS_FLAG, "/r"]))
+            .expect("a child invocation");
+        assert_eq!(
+            chain,
+            Action::TestChild(TestChildSpec {
+                records: PathBuf::from("/r"),
+                modules: None,
+                resume_after: None,
+            })
+        );
+        assert_eq!(chain.run_mode(), RunMode::Run);
+        assert!(!chain.forces_no_cache(), "a --test child writes the cache");
+
+        let repl = select_action(&flags_of(&[
+            "--test",
+            CHILD_RECORDS_FLAG,
+            "/r",
+            CHILD_MODULE_FLAG,
+            "a.b",
+            CHILD_MODULE_FLAG,
+            "c",
+            CHILD_RESUME_FLAG,
+            "a.b/test-x",
+        ]))
+        .expect("a REPL child invocation");
+        let Action::TestChild(spec) = &repl else {
+            panic!("expected the child, got {repl:?}");
+        };
+        assert_eq!(
+            spec.modules,
+            Some(vec![ModuleFullPath::from("a.b"), ModuleFullPath::from("c")])
+        );
+        assert_eq!(
+            spec.resume_after,
+            Some(FQSymbol {
+                module: ModuleFullPath::from("a.b"),
+                symbol: cranelisp_types::Symbol::from("test-x"),
+            })
+        );
+        assert!(
+            repl.forces_no_cache(),
+            "a REPL child compiles in memory only"
+        );
+    }
+
+    // spec: design/int/test-runner.md §10 `main.rs` row 4 — the child
+    // arguments alone, or a selection without the record file, are a usage
+    // error; so is a resume point that is not a test name.
+    #[test]
+    fn child_arguments_without_test_or_records_are_usage_errors() {
+        for args in [
+            &[CHILD_RECORDS_FLAG, "/r", "t"][..],
+            &["--run", CHILD_RECORDS_FLAG, "/r", "t"][..],
+            &["--test", CHILD_MODULE_FLAG, "a"][..],
+            &[
+                "--test",
+                CHILD_RECORDS_FLAG,
+                "/r",
+                CHILD_RESUME_FLAG,
+                "no-slash",
+            ][..],
+        ] {
+            assert!(select_action(&flags_of(args)).is_err(), "{args:?}");
+        }
+    }
+
+    // spec: design/int/test-runner.md §10 test-child row 4 — the supervisor's
+    // child arguments are the client's arguments less `--test`, so a
+    // `--test` client's `--test` is not repeated; a REPL client's arguments
+    // pass unchanged.
+    #[test]
+    fn supervisor_child_arguments_drop_only_the_mode_flag() {
+        let args = |list: &[&str]| -> Vec<std::ffi::OsString> {
+            list.iter().map(std::ffi::OsString::from).collect()
+        };
+        assert_eq!(
+            test_client_args(args(&["t", "--test", "--no-cache"]).into_iter()),
+            args(&["t", "--no-cache"])
+        );
+        assert_eq!(
+            test_client_args(args(&["t", "--nice-workers", "2"]).into_iter()),
+            args(&["t", "--nice-workers", "2"])
         );
     }
 

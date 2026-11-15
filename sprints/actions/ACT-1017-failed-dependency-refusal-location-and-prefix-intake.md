@@ -52,6 +52,28 @@ refers_to:
     span under `user.cl`'s header. Whether the REPL should print this line and
     exit 1 at all is a separate spec question, routed through `sprint`. This
     record covers only its location and prefix.
+- **Remeasured (qa, 2026-11-15, S123 W0).** Binary built from `b35bfb87`,
+  whose compiler source equals the S122 close `aed0fcb1`. Opened
+  `src/scheduler.rs::refuse_failed_dependency_locked`: it reuses the failed
+  module's stored location, and that location now names the failed module's
+  file.
+  - **Location face: fixed.** `--run`, `--link` and the reload notice all
+    locate the refusal in the failed module (`helper.cl:1:12`, and
+    `[errors: helper.cl]` in the REPL). The 88bbbd12 and 2026-10-01
+    observations above were the last RED, so `aed0fcb1` fixed it.
+    `tests/spec_08_modules.rs::failed_import_location_belongs_to_named_file_neg`
+    passes and is the regression guard. The REPL session-end stderr line no
+    longer prints: `/quit` exits 0 with nothing on stderr.
+  - **Prefix face: open.** Every seam still renders
+    `module error in …/helper.cl: at 11..38: module 'helper' failed: type error at 11..38: …`.
+    `tests/spec_08_modules.rs::failed_import_has_one_located_prefix_neg` is
+    RED under `--link`, and a reload leg is allocated. The user's Phase 2 → 3
+    ruling in the [S123 plan](../SPRINT.md) has the prefix correction proceed,
+    so §5.5 is read as governing it.
+  - Completion item 2's `design`(int) wording correction still applies:
+    [int §6.11](../../design/int/int.md#611-module-cycles-at-publication)
+    "Diagnostic as delivered" says the refusal carries no file, which is
+    stale.
 
 ## Request
 

@@ -60,7 +60,9 @@ row hand-copies the pair. Three copies disagree with their functions:
     narrower parameter would be declared as `i64` by
     `declare_intrinsics_generic` and misread, so it must not compile.
   - **A return is `i64` (`has_return: true`), or `()` or `!`
-    (`has_return: false`).**
+    (`has_return: false`).** A narrower return, such as the 32-bit `Poll`,
+    must not compile through this trait. The one row that has one is governed
+    by §2.2.
 - **`IntrinsicEntry`'s public fields are unchanged**, so consumers and
   `public-api.txt` see no delta. Only the construction is private.
 - **The table stays a promoted `'static` slice.** The derived fields are
@@ -85,6 +87,52 @@ row hand-copies the pair. Three copies disagree with their functions:
 Retiring the entries that have no emitter (`rc_underflow_check`,
 `string_read`) is a separate public-API decision and is not part of this
 derivation.
+
+### 2.2 Address-only rows: the runtime poll leaf (S123 ruling)
+
+`runtime/sleep_pollfn` is not a call target. The backend takes its address
+with `func_addr` and stores it as a poll node's `code_ptr`. The trampoline
+calls it through `PollFn`, whose return is the 32-bit `repr(i32)` `Poll`. Its
+row exists for two reasons. JIT construction and the cache-hit load must
+register its pointer under its name (§4). The backend also needs a Cranelift
+`Import` declaration to take the address from.
+
+- **The row is built by a second crate-private constructor, the poll-leaf
+  row.** It accepts a function only through a cast to
+  `cranelisp_platform::PollFn`. This compile-time check is the one that
+  matters for this row: the leaf must have exactly the ABI that
+  `io.rs::await_poll_node` transmutes its `code_ptr` to. The §2.1 rule
+  guarantees an emitted call's ABI. This constructor instead guarantees that
+  the leaf matches the trampoline's ABI.
+- **Its pair is a fixed constant of that constructor: `(3, true)`.** This is
+  the uniform-word declaration that the address is taken from, and its
+  consumer is the backend's `sleep` lowering. It does not describe a call
+  ABI: the three pointer parameters are 64-bit words, but the `Poll` return
+  is not an `i64`. §4's "exactly describes" promise is therefore scoped to
+  call-target rows.
+- **The general derivation stays strict.** `Poll` is not admitted as a
+  return there. Admitting it would make every narrow return type look like a
+  callable `i64` return, and an emitted call would read the upper bits of the
+  return register, which are undefined.
+- **Invariant, asserted with a named falsifier: emitted code never calls a
+  poll-leaf row.** The falsifier is an emitted `call` whose callee is the
+  `FuncId` of `runtime/sleep_pollfn`, or a CLIF dump of a `sleep` lowering
+  that shows one. This is a debt. It becomes structural when the backend takes
+  this row's `FuncId` from the catalog declaration as an address-only handle
+  and stops making its own matching declaration. That change is
+  `design`(backend)'s.
+- **Rejected:**
+  - *Changing the leaf's signature.* The trampoline's `PollFn` fixes it.
+  - *Removing the row.* Then no catalog entry would register the pointer
+    for the JIT and the cache-hit load, and a second roster would be needed,
+    which Principle 07 forbids.
+  - *A public field that marks a row as address-only.* That is a change to
+    `IntrinsicEntry`, a public API, for a single row whose misuse already has
+    a named falsifier. Principle 06 weighs against it. If a second
+    address-only row appears, reopen this as a delta for `arch`.
+- **No public-API delta.** The constructor is crate-private, and
+  `IntrinsicEntry` and its values are unchanged. `public-api.txt` stays
+  +0/−0.
 
 ## 3. Contents
 
@@ -116,7 +164,8 @@ Three resolution points, none of them at codegen:
 From this crate's side the contract is: the table is iterable, every `name` is
 the exact emitted-call ABI string, every `ptr` is a valid function address for
 the process lifetime, and `param_count`/`has_return` exactly describe the
-extern's `i64` ABI — by construction once §2.1 lands.
+extern's `i64` ABI — by construction once §2.1 lands. That promise covers
+call-target rows. The address-only poll-leaf row is governed by §2.2.
 
 ## 5. The ABI name agreement
 

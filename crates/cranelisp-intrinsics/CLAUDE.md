@@ -172,11 +172,14 @@ discipline_guard.rs` is the standing gate). The plant children in
 `diagnostics/tests.rs` are ordinary non-ignored tests that no-op unarmed, so
 unarmed byte-inertness is executed on every suite run.
 
-The **fork-join error-slot ferry** (`ivar.rs`, `panic.rs`, `test-discovery.md`
-§6): a spark thunk's runtime panic lands in the *worker's* `RUNTIME_ERROR`
-thread-local; the worker ferries `Some(msg)` into the IVar `error` field (`+40`,
-published under the RESOLVED store), and every reader re-raises it join-side via
-`panic::set_runtime_error` (first-error-wins) — so lenient eval stays
-observationally equivalent to sequential (spec §12.4.3). Platform-dispatch
-faults use the same intrinsics-sets-slot / int-reads-and-composes split
-(`panic::DispatchFault`, FIXME 0327) — intrinsics is diagnostics-free by charter.
+**A fault ends the process** (`design/intrinsics/process-lifecycle.md` §1).
+`panic::terminate` is the only fault exit: language panics (`runtime/panic`,
+an empty `select`, the nested-trace guard), platform dispatch faults
+(`io_guard`), runtime defects (the supervised-strand `catch_unwind`) and the
+`OneShot` backstop all enter it. It claims termination once per process (later
+claimants park forever, never return), flushes stdout, writes one stderr report
+and exits; nothing is carried back to a host, so there is no error slot, no
+ferry and no fault arm in the trampoline (`TrampolineOutcome::Stopped` means
+cancellation only). Test any path that raises as a child-process cell through
+`test_child` (`selected` + `run`), never in-process: the raise exits the test
+process.

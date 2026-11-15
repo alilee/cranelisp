@@ -12,7 +12,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -815,7 +815,40 @@ impl CrInvocationOwned {
                 for (k, v) in &self.env {
                     cmd2.env(k, v);
                 }
-                let out2 = cmd2.output().map_err(CrError::SpawnFailed)?;
+                let mut linked_child = cmd2.spawn().map_err(CrError::SpawnFailed)?;
+                let drain = |mut pipe: Box<dyn Read + Send>| {
+                    std::thread::spawn(move || {
+                        let mut bytes = Vec::new();
+                        pipe.read_to_end(&mut bytes).map(|_| bytes)
+                    })
+                };
+                let linked_stdout = drain(Box::new(linked_child.stdout.take().unwrap()));
+                let linked_stderr = drain(Box::new(linked_child.stderr.take().unwrap()));
+                while linked_child
+                    .try_wait()
+                    .map_err(CrError::SpawnFailed)?
+                    .is_none()
+                {
+                    if started2.elapsed() >= self.timeout {
+                        let _ = linked_child.kill();
+                        let _ = linked_child.wait();
+                        let _ = linked_stdout.join();
+                        let _ = linked_stderr.join();
+                        return Err(CrError::Timeout(self.timeout));
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let out2 = std::process::Output {
+                    status: linked_child.wait().map_err(CrError::SpawnFailed)?,
+                    stdout: linked_stdout
+                        .join()
+                        .unwrap()
+                        .map_err(CrError::SpawnFailed)?,
+                    stderr: linked_stderr
+                        .join()
+                        .unwrap()
+                        .map_err(CrError::SpawnFailed)?,
+                };
                 stdout.push_str(&String::from_utf8_lossy(&out2.stdout));
                 stderr.push_str(&String::from_utf8_lossy(&out2.stderr));
                 status = out2.status;
@@ -2001,4 +2034,83 @@ pub fn assert_safety_matrix(program: &str, prelude: PreludeVariant, expect_exit:
         .prelude(prelude)
         .expect_exit(expect_exit)
         .assert();
+}
+
+/// S123 §12.7: an exiting panic has one stderr report and cannot resume a REPL.
+/// `repl_prompts` counts the input forms through the panicking form.
+pub fn panic_exit_problems(
+    out: &CrOutput,
+    message: &str,
+    repl_prompts: Option<usize>,
+    linked: bool,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !matches!(out.status.code(), Some(code) if code != 0) {
+        problems.push(format!(
+            "expected non-zero, non-signal exit; got {:?}",
+            out.status
+        ));
+    }
+    if linked && out.linked_execution_elapsed.is_none() {
+        problems.push("linked executable did not run".into());
+    }
+    let pattern = format!(
+        r"^error: runtime panic: (?:.+:[0-9]+: )?{}$",
+        regex::escape(message)
+    );
+    let report = regex::Regex::new(&pattern).unwrap();
+    let lines: Vec<_> = out
+        .stderr
+        .lines()
+        .filter(|line| !line.starts_with("; Linking:"))
+        .collect();
+    if lines.len() != 1 || !report.is_match(lines.first().copied().unwrap_or("")) {
+        problems.push(format!(
+            "expected exactly one stderr line matching {pattern:?}"
+        ));
+    }
+    if out.stdout.contains(message) || out.stdout.contains("runtime panic:") {
+        problems.push("panic report appeared on stdout".into());
+    }
+    if let Some(expected) = repl_prompts {
+        if out.stdout.contains(":primitives/Int 813") {
+            problems.push("REPL evaluated the post-panic marker".into());
+        }
+        let prompts = out.stdout.matches("user> ").count();
+        if prompts != expected {
+            problems.push(format!(
+                "expected {expected} prompts through panic, got {prompts}"
+            ));
+        }
+    }
+    problems
+}
+
+pub fn assert_panic_exit(out: &CrOutput, message: &str, prompts: Option<usize>, linked: bool) {
+    let problems = panic_exit_problems(out, message, prompts, linked);
+    assert!(
+        problems.is_empty(),
+        "panic exit contract: {problems:?}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+/// Assert that a non-panicking spark twin reached the parallel runtime arm.
+pub fn assert_spark_spawns(out: &CrOutput, minimum: u64) {
+    let spawns = out
+        .stderr
+        .lines()
+        .find(|l| l.starts_with("[SPARK_STATS]"))
+        .and_then(|l| {
+            l.split_whitespace()
+                .find_map(|t| t.strip_prefix("spawns=")?.parse::<u64>().ok())
+        });
+    println!("spark twin: spawns={spawns:?}, minimum={minimum}");
+    assert!(
+        spawns.is_some_and(|n| n >= minimum),
+        "expected at least {minimum} sparks: {spawns:?}\n{}",
+        out.stderr
+    );
 }

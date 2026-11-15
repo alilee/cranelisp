@@ -138,18 +138,17 @@ fn define_cstr_data(
     Ok(id)
 }
 
-/// The five always-present imported runtime functions the startup stub calls:
-/// user `main`, the unified program driver (`cranelisp_run_program`), the
-/// runtime-error drain, libc `exit`, and the primitives-GOT initialiser.
+/// The four always-present imported runtime functions the startup stub calls:
+/// user `main`, the program driver (`cranelisp_run_program`), libc `exit`, and
+/// the primitives-GOT initialiser.
 struct RuntimeImports {
     main: cranelisp_backend::cranelift_module::FuncId,
     run_program: cranelisp_backend::cranelift_module::FuncId,
-    check_runtime_error: cranelisp_backend::cranelift_module::FuncId,
     exit: cranelisp_backend::cranelift_module::FuncId,
     init_primitives: cranelisp_backend::cranelift_module::FuncId,
     /// The canonical per-concrete drop glue for `main`'s inner result type
     /// (`design/int/result-owner.md` §3.3). `None` for a scalar/value-layout
-    /// result — the sixth import exists only when there is something to
+    /// result — the fifth import exists only when there is something to
     /// release. The defining module's own `.o` carries the exported body (the
     /// object path runs the same result-root pre-request the JIT path does), so
     /// the system linker resolves the relocation; a missing one is a LINK
@@ -177,7 +176,7 @@ struct PlatformInits {
     manifests: Vec<cranelisp_backend::cranelift_module::FuncId>,
 }
 
-/// Declare the five always-present imported runtime functions.
+/// Declare the four always-present imported runtime functions.
 fn declare_runtime_imports(
     obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
     entry_fn_name: &str,
@@ -196,46 +195,19 @@ fn declare_runtime_imports(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    // Declare `cranelisp_run_program` as imported — the unified program driver
-    // (FIXME 0366). It owns the WHOLE drive-main → pre-IO-drain → IO-trampoline →
-    // post-IO-drain sequence that the `--run` host also calls; the stub shrinks
-    // to one call + an outcome branch. Signature:
-    //   `(main_ptr: i64, main_returns_io: i8) -> ProgramOutcome { i64, i32 }`.
-    // The `ProgramOutcome` `#[repr(C)]` carrier (i64 exit_code + i32 error_kind)
-    // returns in the AArch64 AAPCS / SysV integer return registers (x0:x1 /
-    // rax:rdx), matched here by the two scalar return AbiParams. `main_returns_io`
-    // is passed as an i8 bool (the C-ABI `bool` width).
+    // Declare `cranelisp_run_program` as imported — the program driver the
+    // `--run` host also calls. A fault ends the process inside it, so it
+    // returns only the program's result word:
+    //   `(main_ptr: i64, main_returns_io: i8) -> i64`.
+    // `main_returns_io` is passed as an i8 bool (the C-ABI `bool` width).
     let mut run_program_sig = obj_module.make_signature();
     run_program_sig.params.push(AbiParam::new(types::I64)); // main_ptr
     run_program_sig.params.push(AbiParam::new(types::I8)); // main_returns_io (bool)
-    run_program_sig.returns.push(AbiParam::new(types::I64)); // exit_code
-    run_program_sig.returns.push(AbiParam::new(types::I32)); // error_kind
+    run_program_sig.returns.push(AbiParam::new(types::I64)); // result word
     let run_program = obj_module
         .declare_function("cranelisp_run_program", Linkage::Import, &run_program_sig)
         .map_err(|e| CranelispError::CodegenError {
             message: format!("failed to declare cranelisp_run_program: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-
-    // Declare `cranelisp_check_runtime_error` as imported (zero-arg). Since the
-    // FIXME 0366 unification the stub calls this at ONE site — on a non-zero
-    // `ProgramOutcome::error_kind` after `cranelisp_run_program`. The driver
-    // left the relevant slot SET; this gate drains it, prints the message to
-    // stderr, and `exit(1)`s — a clean batch-mode exit mirroring the `--run`
-    // host (spec §12.7.4.2). It drains BOTH the runtime-error and dispatch-fault
-    // slots, so it surfaces the pre-IO (FIXME 0399) and during-IO (FIXME 0401)
-    // cases with one body. Resolved by the system linker against
-    // `cranelisp-intrinsics` (force-linked via `cranelisp-exe-bundle`'s
-    // `pub use …::panic`).
-    let check_runtime_error_sig = obj_module.make_signature();
-    let check_runtime_error = obj_module
-        .declare_function(
-            "cranelisp_check_runtime_error",
-            Linkage::Import,
-            &check_runtime_error_sig,
-        )
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to declare cranelisp_check_runtime_error: {e}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
@@ -293,7 +265,6 @@ fn declare_runtime_imports(
     Ok(RuntimeImports {
         main,
         run_program,
-        check_runtime_error,
         exit,
         init_primitives,
         release,
@@ -411,8 +382,8 @@ fn declare_start_export(
 }
 
 /// Emit the entry-stub body: populate the primitives GOT, init platforms, run
-/// the layout-hash gate, drive the program via `cranelisp_run_program`, and
-/// branch on its `ProgramOutcome` to exit or drain+report the runtime error.
+/// the layout-hash gate, drive the program via `cranelisp_run_program`, then
+/// observe, release and exit with its result.
 fn build_startup_func(
     obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
     rt: &RuntimeImports,
@@ -472,12 +443,10 @@ fn build_startup_func(
             }
         }
 
-        // 2. Run the program via the unified driver (FIXME 0366). Take main's
-        // address (it is imported `Linkage::Import` and never called directly
-        // now) + the `main_returns_io` flag, and hand the whole
-        // drive-main → drain → trampoline → drain sequence to
-        // `cranelisp_run_program`. It returns `ProgramOutcome { exit_code,
-        // error_kind }` in the two integer return registers.
+        // 2. Run the program via the driver. Take main's address (it is
+        // imported `Linkage::Import` and never called directly) and the
+        // `main_returns_io` flag. The driver returns the result word only after
+        // a clean run.
         let main_ref = obj_module.declare_func_in_func(rt.main, builder.func);
         let main_addr = builder.ins().func_addr(types::I64, main_ref);
         let returns_io_flag = builder
@@ -487,53 +456,19 @@ fn build_startup_func(
         let run_inst = builder
             .ins()
             .call(run_program_ref, &[main_addr, returns_io_flag]);
-        let results = builder.inst_results(run_inst);
-        let exit_code_i64 = results[0];
-        let error_kind = results[1];
+        let exit_code_i64 = builder.inst_results(run_inst)[0];
 
-        // 3. Outcome branch: on a non-zero `error_kind` the driver left the
-        // relevant slot SET — drain+print+exit(1) via `cranelisp_check_runtime_error`
-        // (it prints from whichever slot is set and exits). Otherwise exit with
-        // the reduced exit_code. This is the stub's whole error-surfacing
-        // responsibility (the three former lockstep slot-check points now live
-        // once inside `cranelisp_run_program`).
-        let error_block = builder.create_block();
-        let clean_block = builder.create_block();
-        let zero = builder.ins().iconst(types::I32, 0);
-        let is_error = builder.ins().icmp(IntCC::NotEqual, error_kind, zero);
-        builder
-            .ins()
-            .brif(is_error, error_block, &[], clean_block, &[]);
-
-        // Error path: drain the SET slot, print, and exit(1) inside the export.
-        builder.switch_to_block(error_block);
-        builder.seal_block(error_block);
-        let check_re_ref = obj_module.declare_func_in_func(rt.check_runtime_error, builder.func);
-        builder.ins().call(check_re_ref, &[]);
-        // `cranelisp_check_runtime_error` exits on a set slot; defensively trap
-        // if control returns (it won't on a genuine error_kind != 0).
-        builder.ins().trap(TrapCode::user(1).unwrap());
-
-        // Clean path — the typed-context exit (`design/int/result-owner.md`
-        // §3.3). The order is binding and is the SAME order `--run` and the
-        // REPL obey:
+        // 3. The typed-context exit (`design/int/result-owner.md` §3.3). The
+        // order is binding and is the SAME order `--run` and the REPL obey:
         //
         //   1. retain the driver's result word (`exit_code_i64`);
         //   2. OBSERVE it — compute the process `i32` exit code while it is
         //      still live. `Int` narrows (`ireduce`); every other inner type
-        //      exits 0. Pre-0745 this arm `ireduce`d unconditionally, so a
-        //      non-`Int` `main` exited with the low 32 bits of a heap POINTER
-        //      (a `--run`/`--link` divergence: the `--run` host has always
-        //      applied the type-driven rule);
+        //      exits 0, so a non-`Int` `main` never exits with the low 32 bits
+        //      of a heap pointer;
         //   3. RELEASE it — one call to the relocated `extern "C" fn(i64)`
         //      glue, when the inner type owns heap;
         //   4. `exit(computed_code)`.
-        //
-        // The error block above deliberately does none of this: a non-zero
-        // `error_kind` means `ProgramOutcome` carries no successful result, so
-        // there is no result owner and no glue call.
-        builder.switch_to_block(clean_block);
-        builder.seal_block(clean_block);
         let exit_code = if result_exit.result_is_exit_code {
             builder.ins().ireduce(types::I32, exit_code_i64)
         } else {
@@ -674,9 +609,8 @@ pub fn first_dispatch_within(
 ///   dev-session-only `PrimitiveExtern` (so a user `mod/discover-tests` UserFn is
 ///   not caught).
 ///
-/// `catch-runtime-error` is deliberately NOT in the set — it is a self-contained
-/// intrinsic that resolves in `--link` (test-discovery.md §6), so it is never
-/// rejected here.
+/// Every other host-promised primitive, such as `bind`, resolves in `--link`
+/// and is never rejected here.
 ///
 /// Bodies restored from the module cache are scanned too: a restored entry
 /// keeps its `ast`.
@@ -1379,6 +1313,23 @@ mod tests {
         );
     }
 
+    // spec: design/int/io-integration.md §1.2 — a fault ends the process inside
+    // the runtime, so the stub has no error block: it imports the program driver
+    // and no runtime-error drain (S123 packet rows P4, P5).
+    #[test]
+    fn startup_stub_imports_no_runtime_error_drain() {
+        let bytes = startup_bytes_for(&scalar_exit()).expect("emit scalar stub");
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(
+            text.contains("cranelisp_run_program"),
+            "control: the driver is imported"
+        );
+        assert!(
+            !text.contains("cranelisp_check_runtime_error"),
+            "the stub must not import the retired drain"
+        );
+    }
+
     // spec: design/int/result-owner.md §3.3 step 3 — an owning inner result
     // makes the stub import the canonical MODULE-QUALIFIED glue symbol, and
     // the object differs from the scalar stub (the call is really emitted).
@@ -1682,8 +1633,8 @@ mod tests {
     use cranelisp_types::Expr;
 
     /// A `primitives` table declaring `name` as a `PrimitiveExtern` (the
-    /// dev-session-only `discover-tests` / the also-extern-but-link-OK
-    /// `catch-runtime-error`) so callee-kind confirmation resolves.
+    /// dev-session-only `discover-tests`, or another extern that links) so
+    /// callee-kind confirmation resolves.
     fn primitives_table_with_extern(name: &str) -> crate::code::SessionSymbolTable {
         use cranelisp_types::{Scheme, Symbol, Visibility};
         use std::collections::HashMap;
@@ -1846,25 +1797,20 @@ mod tests {
         );
     }
 
-    // spec: design/arch/test-discovery.md §6 — `catch-runtime-error` (a
-    // self-contained intrinsic that resolves in `--link`) is NOT in the
-    // dev-session-only set, so importing it under `--link` is ACCEPTED. The
-    // asymmetry with `discover-tests` is deliberate and settled.
+    // spec: design/int/test-runner.md §7.3 — only the dev-session-only set is
+    // refused: a call to another host-promised extern, which resolves in
+    // `--link`, is ACCEPTED.
     #[test]
-    fn link_does_not_reject_catch_runtime_error() {
+    fn link_does_not_reject_another_host_promised_extern() {
         use cranelisp_types::Symbol;
         let tables = dashmap::DashMap::new();
         tables.insert(
             ModuleFullPath::from("primitives"),
-            primitives_table_with_extern("catch-runtime-error"),
+            primitives_table_with_extern("bind"),
         );
-        // `safe/guarded` actually CALLS catch-runtime-error — still accepted, it
-        // is a self-contained intrinsic that resolves in --link.
+        // `safe/guarded` actually calls the extern — still accepted.
         let body = Expr::Apply {
-            callee: Box::new(Expr::var(
-                Symbol::from("catch-runtime-error"),
-                Span::SYNTHETIC,
-            )),
+            callee: Box::new(Expr::var(Symbol::from("bind"), Span::SYNTHETIC)),
             args: vec![Expr::IntLit {
                 value: 0,
                 span: Span::SYNTHETIC,
@@ -1880,7 +1826,7 @@ mod tests {
         tables.insert(ModuleFullPath::from("safe"), safe);
         assert!(
             refuse_dev_session_externs(&tables).is_ok(),
-            "catch-runtime-error works in --link and must not be rejected"
+            "an extern that links must not be rejected"
         );
     }
 

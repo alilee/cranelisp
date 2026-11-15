@@ -678,3 +678,162 @@ fn test_mode_empty_run_reports_no_tests_found_and_exits_zero() {
     );
     checks.finish(&[&out]);
 }
+
+fn s123_runner_case(two_panics: bool, warning: bool) {
+    let mut program = String::from(
+        "(import [primitives [*]])\n(defn test-a [] None)\n(defn test-b [] (if (eq-i64 (div-i64 1 0) 0) None (Some \"never\")))\n(defn test-c [] None)\n",
+    );
+    if two_panics {
+        program.push_str("(defn test-d [] (if (eq-i64 (vec-get [1] 9) 0) None (Some \"never\")))\n(defn test-e [] None)\n");
+    }
+    if warning {
+        program.push_str("(defn test-wrong [] (Some 7))\n");
+    }
+    let cli = Cranelisp::new().user(&program).test("user.cl").output();
+    let repl = Cranelisp::new()
+        .user(&program)
+        .stdin("/run-tests\n(primitives/add-i64 800 13)\n")
+        .output();
+    let mut checks = Checks::default();
+    for (host, out) in [("--test", &cli), ("/run-tests", &repl)] {
+        let lines = if host == "--test" {
+            stdout_lines(out)
+        } else {
+            repl_output_lines(&out.stdout)
+        };
+        let results = result_lines(&lines);
+        let wanted = if two_panics {
+            vec!["a", "b", "c", "d", "e"]
+        } else {
+            vec!["a", "b", "c"]
+        };
+        let expected: Vec<_> = wanted.iter().map(|n| format!("user/test-{n}")).collect();
+        checks.check(
+            results.iter().map(|r| &r.name).eq(expected.iter()),
+            format!("{host}: each FQ name once in order {expected:?}; got {results:?}"),
+        );
+        for (i, result) in results.iter().enumerate() {
+            let message = match i {
+                1 => Some("division by zero"),
+                3 if two_panics => Some("vec-get: index out of bounds"),
+                _ => None,
+            };
+            checks.check(
+                match message {
+                    Some(m) => result.line.ends_with(&format!("PANIC: {m}")),
+                    None => result.line.ends_with(" ok"),
+                },
+                format!("{host}: wrong outcome: {}", result.line),
+            );
+            if let Some(m) = message {
+                checks.check(
+                    out.stderr.matches(m).count() == 1,
+                    format!("{host}: panic {m:?} forwarded once to stderr"),
+                );
+            }
+        }
+        let summary = if two_panics {
+            "3 passed, 2 failed"
+        } else {
+            "2 passed, 1 failed"
+        };
+        checks.check(
+            summaries(&lines) == [summary],
+            format!("{host}: panics count as failed: {summary}"),
+        );
+        if warning {
+            let warnings = out
+                .stdout
+                .lines()
+                .chain(out.stderr.lines())
+                .filter(|l| l.to_lowercase().contains("warning") && l.contains("user/test-wrong"))
+                .count();
+            checks.check(
+                warnings == 1,
+                format!("{host}: mistyped test warns once, got {warnings}"),
+            );
+        }
+    }
+    checks.check(cli.status.code() == Some(1), "--test exits 1");
+    checks.check(
+        repl.status.success() && repl.stdout.contains(":primitives/Int 813"),
+        "/run-tests: parent evaluates the later marker",
+    );
+    checks.finish(&[&cli, &repl]);
+}
+
+// spec: repl/spec/16-test-discovery.md §16.2 — T-1: pass, panic, pass; parent survives.
+#[test]
+fn panicking_test_does_not_end_run_or_repl() {
+    s123_runner_case(false, false);
+}
+
+// spec: repl/spec/16-test-discovery.md §16.2 — T-2: two panics, completed tests run once.
+#[test]
+fn two_panicking_tests_run_each_remaining_test_once() {
+    s123_runner_case(true, false);
+}
+
+// spec: repl/spec/16-test-discovery.md §16.1 — T-3: warnings do not repeat on restart.
+#[test]
+fn mistyped_test_warns_once_beside_panicking_test() {
+    s123_runner_case(false, true);
+}
+
+// spec: repl/spec/16-test-discovery.md §16.6 — T-4: a REPL test child refuses references.
+#[test]
+fn repl_test_child_refuses_discover_tests_before_any_test_runs() {
+    let out = Cranelisp::new().user("(import [primitives [*]])\n(defn finder [] (discover-tests []))\n(defn test-a [] None)\n").stdin("/run-tests\n(primitives/add-i64 800 13)\n").output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    let mut checks = Checks::default();
+    checks.check(
+        ["discover-tests", "finder", "REPL", "--test"]
+            .iter()
+            .all(|n| combined.contains(n)),
+        "test child refuses with §16.6 diagnostic naming discover-tests, finder, REPL and --test",
+    );
+    checks.check(
+        result_lines(&repl_output_lines(&out.stdout)).is_empty(),
+        "refused run executes no test",
+    );
+    checks.check(
+        out.status.success() && out.stdout.contains(":primitives/Int 813"),
+        "parent survives the refused run",
+    );
+    checks.finish(&[&out]);
+}
+
+// spec: repl/spec/16-test-discovery.md §16.2 — T-5: all-pass report stays unchanged.
+#[test]
+fn all_pass_run_keeps_existing_report() {
+    let user = "(import [primitives [*]])\n(defn test-a [] None)\n(defn test-b [] None)\n";
+    let cli = Cranelisp::new()
+        .user(user)
+        .test("user.cl")
+        .output()
+        .assert_ok();
+    let repl = Cranelisp::new()
+        .user(user)
+        .stdin("/run-tests\n(primitives/add-i64 800 13)\n")
+        .output()
+        .assert_ok();
+    let cli_lines = stdout_lines(&cli);
+    let repl_lines = repl_output_lines(&repl.stdout);
+    assert_eq!(result_lines(&cli_lines), result_lines(&repl_lines));
+    assert_eq!(summaries(&cli_lines), ["2 passed"]);
+    assert_eq!(summaries(&repl_lines), ["2 passed"]);
+    assert_eq!(
+        result_lines(&cli_lines)
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>(),
+        ["user/test-a", "user/test-b"]
+    );
+    assert!(
+        result_lines(&cli_lines)
+            .iter()
+            .all(|r| r.line.ends_with(" ok"))
+    );
+    assert!(repl.stdout.contains(":primitives/Int 813"));
+    assert!(cli.stderr.is_empty() && repl.stderr.is_empty());
+}

@@ -1,3 +1,4 @@
+(import [prelude []])
 ;; web_launch_vec_send_corrupt/main.cl — the SMALLER reduction of exemplar-web
 ;; bug #2 (FIXME 0486): a launched per-connection handler that renders TWO live
 ;; `(Vec Int)`s via the borrowed-Var `get`/`assoc` wrappers, then `send-conn`s the

@@ -171,8 +171,9 @@ pub struct ModuleState {
     /// two workers claiming the same symbol).
     pub jit_reserved: HashSet<Symbol>,
 
-    /// All in-memory codegen complete for this module.
-    pub inmem_done: bool,
+    /// All in-memory codegen complete for this module. Set only with the
+    /// module in `TypecheckDone` (`design/int/int.md` §6.1.2).
+    inmem_done: bool,
 
     /// Who owns this module's cached-object load, if it has one
     /// (`design/int/int.md` §7.1). Read only through
@@ -1303,22 +1304,20 @@ impl CompileScheduler {
         else {
             return Ok(());
         };
-        // `CranelispError` is not `Clone`; reconstruct from the recorded
-        // message and location (the `await_signature_barrier` precedent). The
-        // dependency's own location, its file included, is preferred over
-        // `ref_span`: it points AT the real fault inside the failed dependency.
-        let (message, location) = ms
-            .error
-            .as_ref()
-            .map(|e| (wrapped_message(e), e.location().clone()))
-            .unwrap_or_else(|| {
-                (
-                    format!("module '{dependency}' failed to load"),
-                    ErrorLocation::from_span_file(ref_span, None),
-                )
-            });
+        // `CranelispError` is not `Clone`; rebuild it as the failed-module
+        // report every wait gives, located at the dependency's own fault, its
+        // file included (`design/int/int.md` §6.11, Diagnostic). `ref_span`
+        // locates it only when the dependency recorded no error.
+        let error = if ms.error.is_some() {
+            CranelispError::from(module_failed_error(dependency, ms))
+        } else {
+            CranelispError::ModuleError {
+                message: format!("module '{dependency}' failed to load"),
+                location: ErrorLocation::from_span_file(ref_span, None),
+            }
+        };
         Self::record_refusal_locked(state, module, dependency);
-        Err(CranelispError::ModuleError { message, location })
+        Err(error)
     }
 
     pub fn block_for_typecheck(
@@ -1448,22 +1447,54 @@ impl CompileScheduler {
             module.as_ref(),
         );
         let mut state = self.lock();
+        Self::typecheck_done_locked(&mut state, module);
+        drop(state);
+        self.notify_settled();
+    }
 
-        // Skip modules not registered with the scheduler (e.g., the REPL
-        // entry module in Additive mode). Without this guard the
-        // typecheck_done deque grows unbounded. (Keyed on `contains_key`, not
-        // the module name — the entry module's name is the CLI target, not
-        // necessarily "user", per S78 §1.)
+    /// A worker's source pass on `module` is complete: its definitions are
+    /// published and its in-memory code for `names` is live
+    /// (`design/int/int.md` §6.1.2). Under ONE acquisition of the lock this
+    /// releases the pass's JIT reservations, sets in-memory completion, moves
+    /// the pool to `TypecheckDone` and sweeps the typecheck waiters, so no
+    /// thread can observe in-memory completion while the pass is still
+    /// `TypecheckWorking`. Dependents still see in-memory completion before
+    /// `TypecheckDone`. In-memory completion therefore implies a terminal
+    /// pool.
+    pub fn notify_source_pass_ready(&self, module: &ModuleFullPath, names: &[Symbol]) {
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateTypechecked,
+            module.as_ref(),
+        );
+        let mut state = self.lock();
+        let Some(ms) = state.modules.get_mut(module) else {
+            return;
+        };
+        for name in names {
+            ms.jit_reserved.remove(name);
+        }
+        ms.inmem_done = true;
+        Self::typecheck_done_locked(&mut state, module);
+        drop(state);
+        self.notify_settled();
+    }
+
+    /// Move a registered `module` to `TypecheckDone` and sweep its typecheck
+    /// waiters. Modules not registered with the scheduler (e.g. the REPL
+    /// entry module in Additive mode) are skipped, so the `typecheck_done`
+    /// deque cannot grow unbounded. (Keyed on `contains_key`, not the module
+    /// name — the entry module's name is the CLI target, per S78 §1.)
+    fn typecheck_done_locked(state: &mut SchedulerState, module: &ModuleFullPath) {
         if !state.modules.contains_key(module) {
             return;
         }
-        Self::set_pool_locked(&mut state, module, ModulePool::TypecheckDone);
+        Self::set_pool_locked(state, module, ModulePool::TypecheckDone);
         // Phase-A barrier (S93): the terminal pool transition IS the signature
-        // publication edge. `notify_typecheck_done` runs post-`finalize_cluster`
-        // (the cluster's Defs are already installed in `symbol_tables[module]`),
-        // so `pool → TypecheckDone` happens-after publication — the barrier
+        // publication edge. It runs post-`finalize_cluster` (the cluster's Defs
+        // are already installed in `symbol_tables[module]`), so
+        // `pool → TypecheckDone` happens-after publication — the barrier
         // predicate (`signatures_ready_locked`) reads the pool directly, with no
-        // separate bit. Waking `completion` below releases any barrier waiter.
+        // separate bit. Waking `completion` releases any barrier waiter.
         state.typecheck_done.push_back(module.clone());
 
         // Sweep: collect all modules waiting for typecheck on any symbol
@@ -1491,23 +1522,15 @@ impl CompileScheduler {
             if let Some(ws) = state.modules.get_mut(&waiter_module) {
                 ws.blocked_on = None;
             }
-            Self::try_unblock_locked(&mut state, &waiter_module);
+            Self::try_unblock_locked(state, &waiter_module);
         }
+    }
 
-        // Wake workers — new TypecheckDone module is potential work.
-        // Nice workers get object codegen; priority workers may have
-        // JitCodegen work (Level 4) or unblocked modules.
-        //
-        // ALSO wake `completion`: the TypecheckWorking → TypecheckDone pool
-        // transition is a settle event a reload caller may be parked on. The
-        // worker sets `inmem_done = true` mid-codegen (before this transition),
-        // so a caller can observe `inmem_done` while the pool is still
-        // TypecheckWorking. `re_register_module` refuses a mid-typecheck module
-        // (returns false), so `reload_module` must be able to wait for this
-        // transition before re-registering — otherwise the reload is silently
-        // dropped (S82 reload-during-compile race). See
-        // `wait_module_typecheck_settled`.
-        drop(state);
+    /// Wake everything a `TypecheckDone` transition may release: nice workers
+    /// get object codegen, priority workers may have unblocked modules, and
+    /// `completion` wakes in-memory waiters, the barrier and callers of
+    /// [`Self::wait_module_typecheck_settled`].
+    fn notify_settled(&self) {
         self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
         self.completion.notify_all();
@@ -1520,15 +1543,11 @@ impl CompileScheduler {
     /// (`TypecheckDone`/`Complete`/`Failed`) pool, or when the module is
     /// unknown / shutdown is signalled.
     ///
-    /// S82 reload-during-compile race fix. A worker sets `inmem_done = true`
-    /// partway through codegen, *before* it finishes the pass and calls
-    /// `notify_typecheck_done` (which moves the module out of
-    /// `TypecheckWorking`). A caller that observed `inmem_done` via
-    /// `wait_inmem_complete_blocking` can therefore reach `reload_module` while
-    /// the worker is still mid-pass; `re_register_module` then hits its
-    /// "mid-typecheck — skip" guard and returns `false`, and the reload is
-    /// silently lost. `reload_module` calls this first so the in-flight pass
-    /// settles and the subsequent `re_register_module` reliably succeeds.
+    /// A reload calls this before re-registering, because
+    /// `re_register_module` refuses a module a worker is mid-pass on, and it
+    /// also waits out `TypecheckBlocked`. In-memory completion already implies
+    /// a terminal pool (`design/int/int.md` §6.1.2), so a caller that waited
+    /// for it finds the module settled.
     pub fn wait_module_typecheck_settled(&self, module: &ModuleFullPath) {
         let mut state = self.lock();
         loop {
@@ -1561,24 +1580,15 @@ impl CompileScheduler {
         self.completion.notify_all();
     }
 
-    /// JIT codegen of a symbol is complete.
-    /// Removes from jit_reserved. If `no_remaining` is true, sets inmem_done.
-    /// If inmem_done and object_done, moves module to Complete.
-    pub fn notify_inmem_codegen_complete(
-        &self,
-        module: &ModuleFullPath,
-        symbol: &Symbol,
-        no_remaining: bool,
-    ) {
+    /// JIT codegen of one symbol is complete: release its reservation. This
+    /// never sets in-memory completion, which only a whole pass sets
+    /// ([`Self::notify_source_pass_ready`]) or a cached object load.
+    pub fn notify_inmem_codegen_complete(&self, module: &ModuleFullPath, symbol: &Symbol) {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(module) {
             ms.jit_reserved.remove(symbol);
-            if no_remaining {
-                ms.inmem_done = true;
-            }
             Self::try_complete_locked(&mut state, module);
         }
-        // Wake callers waiting for inmem completion.
         drop(state);
         self.completion.notify_all();
     }
@@ -3111,14 +3121,21 @@ impl std::fmt::Display for SchedulerError {
 impl std::error::Error for SchedulerError {}
 
 /// The text a failed module's error contributes to a wrapping error, which
-/// carries the location itself: a module error's bare message, so the error
-/// is wrapped once, and any other error in full, which names its kind
-/// (`design/int/repl-lifecycle.md` §1.3.1, PF-1 Spans).
+/// carries the one location itself (`design/int/int.md` §6.11, Diagnostic): a
+/// module error's bare message, so the error is wrapped once; another located
+/// error's category word and bare message, so the user still learns what kind
+/// of fault to look for; and a platform error's own text, which has no span.
 fn wrapped_message(error: &CranelispError) -> String {
-    match error {
-        CranelispError::ModuleError { message, .. } => message.clone(),
-        other => other.to_string(),
-    }
+    let category = match error {
+        CranelispError::ModuleError { message, .. } => return message.clone(),
+        CranelispError::Platform(platform) => return platform.to_string(),
+        CranelispError::ParseError { .. } => "parse error",
+        CranelispError::TypeError { .. } => "type error",
+        CranelispError::CodegenError { .. } => "codegen error",
+        CranelispError::MacroError { .. } => "macro error",
+        _ => return error.to_string(),
+    };
+    format!("{category}: {}", error.message())
 }
 
 /// The failure a waiter reports for a failed module.

@@ -441,12 +441,13 @@ use cranelisp_types::ErrorLocation;
 ///
 /// Per Decision 0042 / FIXME 0104, `PlatformError` lives in
 /// `cranelisp-types` (so all crates can construct + match), with
-/// `ErrorLocation` carriers per variant. The four variants are
-/// `LoadFailed`, `ManifestNotFound`, `AbiVersionMismatch`, and
-/// `DispatchError` — each carrying `dll: PathBuf` / `cause` /
-/// `expected` / `found` / `fn_name: Symbol` as appropriate, plus a
-/// uniform `location: ErrorLocation`. See `cranelisp_types::error::PlatformError`
-/// for the canonical definition.
+/// `ErrorLocation` carriers per variant. Its variants are load-time
+/// failures — `LoadFailed`, `ManifestNotFound`, `AbiVersionMismatch` and
+/// `LayoutHashMismatch` — each carrying a uniform `location: ErrorLocation`.
+/// See `cranelisp_types::error::PlatformError` for the canonical definition.
+///
+/// A fault in DLL code while an effect is forced is not a `PlatformError`:
+/// it ends the process (`spec/12-runtime.md` §12.7.6).
 ///
 /// Platform-origin failures construct `PlatformError` and surface via
 /// `CranelispError::Platform(PlatformError)`; `int`'s `Sess::format_error`

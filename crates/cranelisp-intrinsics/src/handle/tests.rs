@@ -159,7 +159,6 @@ fn typed_handle_trusted_base_matches_the_approved_intrinsics_allow_list() {
             ("io.rs::cranelisp_run_io", 1),
             ("io.rs::feed_continuation", 2),
             ("io.rs::read_bind_transition", 1),
-            ("panic.rs::catch_runtime_error", 1),
             ("panic.rs::cranelisp_run_program", 1),
             ("reactor.rs::StateClosure::consume", 1),
             ("reactor.rs::supervised", 1),

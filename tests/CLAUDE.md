@@ -50,7 +50,8 @@ The support collection comprises [isolation evidence](plan/0488-isolation.md),
 [agent context tuning](plan/agent-context-tuning.md),
 [agent strategy](plan/agent-testing-strategy.md), [helper design](plan/helpers.md),
 [helper reference](plan/helpers-api.md), [memory-safety coverage](plan/memory-safety-coverage.md),
-[risks](plan/risks.md), [S122 evidence](plan/s122-evidence-delta.md), and
+[risks](plan/risks.md), [S122 evidence](plan/s122-evidence-delta.md),
+[S123 evidence](plan/s123-evidence-delta.md), and
 [checker reconciliation](plan/s122-document-checker-reconciliation/README.md).
 
 Retained `plan/s{NN}-*.md` files are dated records listed in

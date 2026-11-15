@@ -83,28 +83,6 @@ fn platform_error_abi_version_mismatch_constructs_and_displays() {
     assert_eq!(err.location().span, Span::new(20, 30));
 }
 
-// spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 — `DispatchError`
-// carries `fn_name`, `cause`, `location`.
-#[test]
-fn platform_error_dispatch_error_carries_fn_name() {
-    use cranelisp_types::Symbol;
-    let err = PlatformError::DispatchError {
-        fn_name: Symbol::from("read-line"),
-        cause: "null fn pointer".to_string(),
-        location: ErrorLocation::from_span(Span::new(100, 120)),
-    };
-    let displayed = format!("{err}");
-    assert!(
-        displayed.contains("read-line"),
-        "Display must surface the fn name; got: {displayed}"
-    );
-    assert!(
-        displayed.contains("null fn pointer"),
-        "Display must surface the cause; got: {displayed}"
-    );
-    assert_eq!(err.location().span, Span::new(100, 120));
-}
-
 // spec: crates/cranelisp-platform/src/lib.rs PlatformError rustdoc + bounded-contexts.md §5 — DLL-author /
 // int code constructs `PlatformError` and wraps via `CranelispError`.
 // The `From<PlatformError> for CranelispError` blanket conversion

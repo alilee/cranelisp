@@ -41,7 +41,7 @@ test function (38).
 | 08 | Float literals and the monomorphic float primitives | 01, 02 |
 | 09 | The `String` type and basic string operations | 04 |
 | 10 | Product and sum types with typed fields; generated `Type.field` accessors named | 06 |
-| 11 | Pattern matching that binds constructor fields | 10 |
+| 11 | Pattern matching that binds constructor fields; chaining `checked-quot` through `Option` | 10 |
 | 12 | Anonymous functions (`fn`) and capture | 04 |
 | 13 | Functions as arguments and results; composition | 12 |
 | 14 | `Vec` literals and operations; vec primitives as values through one generic helper | 13 |
@@ -74,6 +74,9 @@ test function (38).
 
 These notes prevent plausible but wrong edits.
 
+- **11.** 10 constructs an `Option` by hand; 11 imports `primitives/Option`
+  because that is the type `checked-quot` returns. Checked division handles
+  expected failure as a value, including the `Int.MIN / -1` boundary.
 - **21 and 22.** 21 is the complete IO introduction and the only example that
   loads `(platform stdio)`. 22 adds only the `test-capture` platform. Do not
   re-teach 21's primitives in 22.
@@ -85,7 +88,8 @@ These notes prevent plausible but wrong edits.
 - **32.** Each `race` and `select` branch is a named helper because that reads
   more clearly. The timeout pattern is written inline because stdlib `timeout`
   is outside the free-standing boundary. Per the spec, `(select [])` is a
-  fatal runtime raise that cannot be caught, not a hang.
+  runtime panic that ends the process. A panic in any branch ends the process;
+  cancellation does not contain it. 11 teaches checked operations instead.
 - **33.** Batch definition ordering is the lesson. Live replacement across
   separate REPL inputs is a different operation, owned by the REPL and user
   guides.
@@ -132,6 +136,9 @@ last full outside-in assessment against `spec/` was S115 (2026-07-21). S122
 against the S122 language and CLI delta. Entries marked *scan 2026-09-22*
 were re-checked by a static corpus search; *probe 2026-09-30* entries were
 run. Other entries carry S115 evidence that has not been re-probed.
+S123 W1 (2026-11-15) checks the corpus for obsolete panic recovery teaching
+and updates 11 and 32 for process termination and checked division. This
+bounded pass does not replace the full-sequence verification gate.
 
 **Verdict.** The sequence is sound where it teaches. It is not comprehensive,
 its tail is ordered by delivery rather than by dependency, and it rarely
@@ -141,7 +148,7 @@ teaches boundaries as a subject.
 
 | Gap | Spec | Evidence | Notes |
 |---|---|---|---|
-| **A1** The error model: runtime panics and their sources, `catch-runtime-error` with `Result`, the temporal-bracket boundary, errors encoded in types, wrapping arithmetic, `Inf`/`NaN` | §12.7, App A.3 | scan 2026-09-22: only 32's comment mentions `catch-runtime-error`; S115 probe buildable free-standing | Unlocks runnable negative space (§4.3) |
+| **A1** The full error model: panic sources and process termination in every mode, errors encoded in types, wrapping arithmetic, `Inf`/`NaN` | §12.7, App A.3 | S123 W1: 11 teaches checked division with `Option`; 32 explains process termination for branch panics | Checked failure cases run; panic sources still need teaching as a subject (§4.3) |
 | **A2** Generated `Type.field` accessors as the idiomatic single-field read. 10 names them; no example uses them. The boundary to teach is that accessors are minted for product fields only, while sum-constructor payload labels mint none | §5.2.6 | S115 probe; spec settled S121 | A corpus-wide style pass, not one beat |
 | **A4** Module visibility and the import/export surface: private `-` forms and the private-import rejection, `export`/re-export, glob, member, alias and renamed imports, `super`, shadowing and conflict | §8.3–§8.7 | scan 2026-09-22: no `defn-`, `(export`, or `[*]` in any example | Grow `16-modules/` |
 | **A5** The string surface beyond basics, including `parse-int` to `Option` as the fallible-input idiom | App A.3, §12.1.2 | scan 2026-09-22: 09's comment defers these | Extend 09; no `Byte`/text examples until those facilities ship |
@@ -149,7 +156,7 @@ teaches boundaries as a subject.
 | **B3** Macro hygiene and auto-gensym. 18's `with-double` presents an anaphoric capture as ordinary technique | §9.8 | scan 2026-09-22: no gensym spelling in the corpus | Teach the trap as a trap |
 | **B4** String byte length versus character length | §12.1.2 | S115 | — |
 | **B5** Strict left-to-right evaluation, named as the contrast for 27, 28 and 30 | §12.4.1 | S115 | Prose beat |
-| **B6** Detached strands, launch-and-continue, supervision | §10.12.7, §12.7.9 | S122: the cancellation-context and drain obligations are marked uncovered in the spec | Wait for evidence of the delivered behaviour |
+| **B6** Detached strands, launch-and-continue, cancellation and draining; any strand's panic ends the process | §10.12.7, §12.7.9 | S122: the cancellation-context and drain obligations are marked uncovered in the spec; S123: panics terminate the whole process | Wait for evidence of the delivered behaviour |
 | **B7** Docstrings in all six positions | §5.2.5, §5.12, §7.1.2, §9.2.4 | S115 | — |
 | **B7a** Reader surface: string escapes, comma as whitespace, `'form`, `#(… %1)`, `x#` | §1.2–§1.5 | scan 2026-09-22: no escapes, `#(` or `x#` | — |
 | **B7b** `trace` and the `Trace`/`TraceCall` ADT | §2.3.10, §4.12.4 | scan 2026-09-22: absent | — |
@@ -184,9 +191,11 @@ Few examples teach boundaries: 11, 29 (the best boundary writing in the
 corpus), 32, 33, 35 and 36. No example has a boundary as its subject. A
 runnable example cannot contain a type error, so compile-time boundaries can
 only be comments, and comments go stale unobserved. S115 found six false
-comment claims, all corrected then. Runtime boundaries can run as sub-tests
-through `catch-runtime-error`, which is the strongest argument for A1. A
-boundaries example should follow A1 and gather §6.6's prohibitions,
+comment claims, all corrected then. Checked operations let expected failures
+run as sub-tests: 11 matches the `Option` from checked division. A runtime
+panic ends the process, so panic demonstrations require separate executions
+rather than sub-tests that continue afterward. A boundaries example should
+follow A1 and gather §6.6's prohibitions,
 exhaustiveness, the binder rules, the annotation traps and ambiguity.
 Quoting batch diagnostics waits on ACT-1017 and ACT-1036: today each one
 repeats its category-and-span prefix.

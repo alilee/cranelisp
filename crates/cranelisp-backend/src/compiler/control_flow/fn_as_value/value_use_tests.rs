@@ -259,12 +259,8 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
         !ptr.is_null(),
         "consumer must finalize to a non-null fn ptr"
     );
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     let adt_ptr = func();
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        panic!("runtime panic running consumer: {msg}");
-    }
     assert!(
         adt_ptr != 0,
         "constructor-as-value must allocate a heap ADT"
@@ -538,15 +534,26 @@ fn vec_set_value_consumer(idx: i64) -> Defn {
     )
 }
 
-// spec: spec/12-runtime.md §12.7.2.1 — `vec-set` as a VALUE panics out of range:
-// the wrapper body reaches the same guarded core as a static site (ACT-1037).
+// Child body: run the value-position `vec-set` consumer at index `IDX`.
+#[test]
+fn child_runs_vec_set_value_consumer() {
+    if !crate::test_child::selected("child_runs_vec_set_value_consumer") {
+        return;
+    }
+    run_vec_query_value_consumer(vec_set_value_consumer(crate::test_child::arg("IDX")));
+    println!("{}", crate::test_child::RESUMED);
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 — `vec-set` as a VALUE panics out of range,
+// ending the process: the wrapper body reaches the same guarded core as a
+// static site (ACT-1037).
 #[test]
 fn vec_set_as_value_wrapper_panics_out_of_range() {
-    for idx in [-1, 3, 100_000_000] {
-        assert_eq!(
-            try_run_vec_query_value_consumer(vec_set_value_consumer(idx)),
-            Err("runtime panic: vec-get: index out of bounds".to_string()),
-            "value-position vec-set at index {idx} MUST raise the bounds panic"
+    let child = crate::test_child::child_path(module_path!(), "child_runs_vec_set_value_consumer");
+    for idx in [-1i64, 3, 100_000_000] {
+        crate::test_child::run(&child, &[("IDX", idx.to_string())]).assert_panicked_with(
+            "vec-get: index out of bounds",
+            &format!("value-position vec-set at index {idx}"),
         );
     }
 }
@@ -555,8 +562,7 @@ fn vec_set_as_value_wrapper_panics_out_of_range() {
 // written without a panic.
 #[test]
 fn vec_set_as_value_wrapper_writes_last_index_neg() {
-    let vec_ptr = try_run_vec_query_value_consumer(vec_set_value_consumer(2))
-        .expect("an in-range value-position vec-set MUST NOT panic");
+    let vec_ptr = run_vec_query_value_consumer(vec_set_value_consumer(2));
     assert_eq!(vec_len_for_test(vec_ptr), 3, "length preserved");
     assert_eq!(vec_elem_for_test(vec_ptr, 2), 99, "last element updated");
 }

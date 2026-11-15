@@ -43,7 +43,6 @@
 //! is forbidden.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
@@ -291,8 +290,8 @@ pub const SCHEDULER_TRACE_BUFFER_CAPACITY: usize = 65_536;
 static NEXT_THREAD_ORD_ID: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    static SCHEDULER_TRACE_BUF: RefCell<VecDeque<SchedulerTraceEvent>> =
-        RefCell::new(VecDeque::with_capacity(SCHEDULER_TRACE_BUFFER_CAPACITY));
+    static SCHEDULER_TRACE_BUF: crate::trace_ring::LocalRing<SchedulerTraceEvent> =
+        crate::trace_ring::LocalRing::new(SCHEDULER_TRACE_BUFFER_CAPACITY, published_buffers);
 
     static SCHEDULER_TRACE_THREAD_ORD: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
@@ -356,13 +355,7 @@ pub fn record_event(tag: SchedulerTraceTag, payload: SchedulerTracePayload) {
         tag,
         payload,
     };
-    SCHEDULER_TRACE_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        if buf.len() == SCHEDULER_TRACE_BUFFER_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(event);
-    });
+    crate::trace_ring::push(&SCHEDULER_TRACE_BUF, event);
 }
 
 // ---------------------------------------------------------------------------
@@ -456,8 +449,7 @@ pub fn install_symbol_table_ensure_hook_to_scheduler_trace() {
 /// Drain this thread's ring buffer and return it, sorted by
 /// `(timestamp, thread_ord_id)`. The thread-local buffer is left empty.
 pub fn dump_thread_buffer() -> Vec<SchedulerTraceEvent> {
-    let mut out: Vec<SchedulerTraceEvent> =
-        SCHEDULER_TRACE_BUF.with(|cell| cell.borrow_mut().drain(..).collect());
+    let mut out: Vec<SchedulerTraceEvent> = crate::trace_ring::drain_local(&SCHEDULER_TRACE_BUF);
     out.sort_by_key(|e| (e.timestamp, e.thread_ord_id));
     out
 }

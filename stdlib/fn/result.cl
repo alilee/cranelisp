@@ -3,10 +3,8 @@
 ;; The Result type represents a computation that can succeed (Ok) or fail
 ;; (Err). Used for error handling without exceptions.
 ;;
-;; `Result` is seeded by `primitives` (it is the return type of
-;; `catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))`).
-;; To keep ONE canonical `Result` type across the system, this module
-;; RE-EXPORTS the primitives `Result`/`Ok`/`Err` rather than defining a
+;; `Result` is seeded by `primitives`. To keep ONE canonical `Result` type
+;; across the system, this module RE-EXPORTS the primitives `Result`/`Ok`/`Err` rather than defining a
 ;; second, distinct ADT — mirroring `fn.option`. The combinators below
 ;; operate over the SAME `primitives/Result` type.
 ;;

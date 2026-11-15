@@ -519,7 +519,8 @@ pub(crate) fn invoke_clause(
 
 /// Invoke a JIT function pointer with crash protection.
 ///
-/// Uses `catch_unwind` to catch Rust panics from `runtime_panic`. Also
+/// A runtime panic in the clause ends the process and never returns here.
+/// `catch_unwind` covers a Rust panic in this host closure. The function also
 /// installs signal handlers for SIGFPE/SIGILL/SIGBUS that use
 /// `sigsetjmp`/`siglongjmp` to recover from hardware traps without
 /// unwinding through the JIT code frames.
@@ -535,7 +536,6 @@ fn invoke_jit_protected(
 ) -> Result<i64, CranelispError> {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    // catch_unwind handles Rust panics from runtime_panic.
     let result = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: We use sigsetjmp/siglongjmp (declared below via raw FFI)
         // to recover from hardware traps. sigsetjmp saves the execution
@@ -562,8 +562,6 @@ fn invoke_jit_protected(
             let func: extern "C" fn(i64) -> i64 = match abi {
                 MacroClauseAbi::SexpListToSexpI64V1 => std::mem::transmute(entry.as_ptr()),
             };
-            // Clear any stale error before the JIT call.
-            let _ = cranelisp_intrinsics::panic::take_runtime_error();
             // `into_raw` is the ownership transfer. On a signal recovery the
             // JIT frame and that transferred tree are forfeited; the host has
             // no remaining handle it could incorrectly release.
@@ -576,14 +574,9 @@ fn invoke_jit_protected(
         }
     }));
 
-    // Check thread-local error flag (set by runtime_panic in JIT code).
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return Err(CranelispError::MacroError {
-            message: format!("runtime error during macro expansion: {msg}"),
-            location: ErrorLocation::from_span(span),
-        });
-    }
-
+    // A runtime panic in the clause never returns here: it ends the process
+    // (`design/int/io-integration.md` §1.2). Signals are not panics and keep
+    // their recovery below.
     match result {
         Ok(Ok(val)) => Ok(val),
         Ok(Err(sig)) => {
@@ -605,7 +598,7 @@ fn invoke_jit_protected(
             })
         }
         Err(panic_payload) => {
-            // Rust panic caught (e.g., from runtime_panic).
+            // A Rust panic raised by host code in this closure.
             let message = if let Some(s) = panic_payload.downcast_ref::<String>() {
                 s.clone()
             } else if let Some(s) = panic_payload.downcast_ref::<&str>() {

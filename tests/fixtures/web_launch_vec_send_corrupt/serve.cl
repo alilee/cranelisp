@@ -1,3 +1,4 @@
+(import [prelude []])
 ;; serve -- the web connection-lifecycle convenience wrappers.
 ;;
 ;; S97 ABI v9 (ctx-vtable handle model; design/platform/poll-support.md §3.5.3).

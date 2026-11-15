@@ -42,6 +42,10 @@ for all three. [Uncovered S123 — was Tested+Neg tests/test_runner.rs::test_mod
   single line `No tests found`.
 - **Tracing.** The runner does not trace failing tests (§16.4).
 
+**Panic message placement (user ruling, 2026-11-15).** For all three compiler runners, a test child's panic report MUST appear on the parent's stderr as it arrives. The panic message MUST also appear in that test's `PANIC: <message>` report line. This repetition is required, as accepted from [test-runner design §6.5](../../design/int/test-runner.md#65-the-test-child); the report follows the host's output rules above.
+
+**Child ending without a result (open, 2026-11-15; non-normative).** The report form for a test whose child ends without a result and is not classified as a panic awaits the user's decision in [S123-Q13](../../spec/appendix-d-open-questions.md#s123-q13-test-child-ending-without-a-result). The design and built diagnostic wording cited there do not establish a required display format.
+
 **Project and library modules.** The runner's selections (§0.2.2, §16.2.2)
 distinguish two kinds of module:
 
@@ -146,7 +150,7 @@ Standard library convenience functions (e.g., `format-test-run`, `failures-only`
 
 `discover-tests` is a test-harness capability, available only in the REPL. It
 is not available under `--run`, `--link` or `--test`. Under `--test` the
-compiler discovers and runs the tests itself (§0.2.2). [Tested+Neg tests/spec_12_runtime::discover_tests_and_catch_runtime_error_user_composition, tests/test_runner.rs::batch_modes_neg_refuse_uncalled_discover_tests_reference_with_one_diagnostic, tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests — the REPL calls it; `--run`, `--link` and `--test` refuse it; `--test` runs the tests without it]
+compiler discovers and runs the tests itself (§0.2.2). [Tested+Neg tests/spec_12_runtime::discover_tests_direct_run_stops_at_panicking_test, tests/test_runner.rs::batch_modes_neg_refuse_uncalled_discover_tests_reference_with_one_diagnostic, tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests — the REPL calls it; `--run`, `--link` and `--test` refuse it; `--test` runs the tests without it]
 
 **User ruling, 2026-11-15.** `discover-tests` is also refused inside a test child (§16.2), including a child launched by a REPL runner. The compile-time refusal below applies there too.
 

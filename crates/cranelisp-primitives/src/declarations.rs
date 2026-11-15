@@ -509,6 +509,24 @@ primitive_declarations! {
             ), Mode::Owned)
         }
         user_extern {
+            name: "checked-quot",
+            shim: shim_checked_quot(a: i64, b: i64) -> Owned => crate::int::checked_quot, call: (a, b),
+            metadata: PrimitiveDef {
+            name: Symbol::from("checked-quot"),
+            ty: Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Option"), vec![Type::Int])),
+            ),
+            param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Integer quotient truncated toward zero; None for a zero divisor or Int.MIN / -1",
+        },
+            type_vars: vec![],
+            ownership: ownership_facts::copy_fresh_for_type(&Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::adt(ModuleFullPath::from("primitives"), TypeName::from("Option"), vec![Type::Int])),
+            ))
+        }
+        user_extern {
             name: "substring",
             shim: shim_str_substring(s: Owned, start: i64, end: i64) -> Owned => crate::string::str_substring, call: (s, start, end),
             metadata: PrimitiveDef {

@@ -194,3 +194,5 @@ before recreating the file. Without consent it MUST NOT recreate the file,
 including after a later definition. Transient absence during an editor's
 write-then-rename save is not a confirmed deletion; detection is assessed after
 the save-coalescing window.
+
+**Deletion notice and consent prompt (user ruling, 2026-11-15).** A confirmed deletion MUST produce one notification line, `[deleted: <file>]`. Before the first regeneration that would recreate that file, the REPL MUST ask for consent using its `[y/N]` prompt. These record the notice proposed in [REPL lifecycle design §1.4](../../design/int/repl-lifecycle.md#14-notification) and the consent prompt in that design's deletion rule. The exact question sentence remains open in [S123-Q12](../../spec/appendix-d-open-questions.md#s123-q12-deleted-file-recreation-question).

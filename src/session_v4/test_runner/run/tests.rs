@@ -6,6 +6,7 @@ use super::*;
 use crate::result_owner::test_support::{
     RecordingResolver, record, tables_with_adt, take_events, test_code,
 };
+use crate::session_v4::test_runner::child::{Record, RecordSink};
 
 /// The last `(Some "boom")` box a failing test body returned.
 static FAIL_VALUE: AtomicI64 = AtomicI64::new(0);
@@ -27,12 +28,6 @@ extern "C" fn fails() -> i64 {
     }
     FAIL_VALUE.store(some as i64, Ordering::SeqCst);
     some as i64
-}
-
-extern "C" fn panics() -> i64 {
-    record("call panic");
-    cranelisp_intrinsics::panic::set_runtime_error("division by zero".to_string());
-    0
 }
 
 fn user() -> ModuleFullPath {
@@ -77,45 +72,54 @@ fn id(name: &str) -> FQSymbol {
     }
 }
 
-fn outcomes(prepared: Vec<PreparedTest>) -> Vec<(String, TestOutcome)> {
-    execute(prepared)
-        .into_iter()
-        .map(|(id, outcome)| (id.to_string(), outcome))
-        .collect()
+/// Execute `prepared` into a fresh record file and read back its records.
+fn records_of(prepared: Vec<PreparedTest>) -> Vec<Record> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("records");
+    let mut sink = RecordSink::create(&path).unwrap();
+    execute(prepared, &mut sink).expect("records are writable");
+    super::super::child::read_records(&path).expect("the records decode")
 }
 
-// spec: repl/spec/16-test-discovery.md §16.2 Running Tests — a failure and a
-// panic do not stop the run: pass, fail, panic, pass give four outcomes in
-// order and the last test runs (design/int/test-runner.md §10 run row 1).
+/// The `(test, outcome)` pairs `prepared` records, in order.
+fn outcomes(prepared: Vec<PreparedTest>) -> Vec<(String, TestOutcome)> {
+    let mut open = None;
+    let mut out = Vec::new();
+    for record in records_of(prepared) {
+        match record {
+            Record::Start(id) => open = Some(id.to_string()),
+            Record::Outcome(outcome) => out.push((open.take().expect("started"), outcome)),
+            other => panic!("execution records only starts and outcomes, got {other:?}"),
+        }
+    }
+    out
+}
+
+// spec: design/int/test-runner.md §6.5 — the child records `start` before each
+// call and the outcome after releasing its result, in order; a failure does
+// not stop the run (§10 run row 1, with the panic leg in the supervisor rows).
 #[test]
-fn failure_and_panic_do_not_stop_the_run() {
+fn each_test_is_started_then_resolved_in_order() {
     take_events();
-    let got = outcomes(vec![
+    let records = records_of(vec![
         prepared("test-a", passes),
         prepared("test-b", fails),
-        prepared("test-c", panics),
-        prepared("test-d", passes),
+        prepared("test-c", passes),
     ]);
+    let fail = FAIL_VALUE.load(Ordering::SeqCst);
     assert_eq!(
-        got,
+        records,
         [
-            ("user/test-a".to_string(), TestOutcome::Pass),
-            (
-                "user/test-b".to_string(),
-                TestOutcome::Fail {
-                    reason: "boom".to_string()
-                }
-            ),
-            (
-                "user/test-c".to_string(),
-                TestOutcome::Panic {
-                    reason: "division by zero".to_string()
-                }
-            ),
-            ("user/test-d".to_string(), TestOutcome::Pass),
+            Record::Start(id("test-a")),
+            Record::Outcome(TestOutcome::Pass),
+            Record::Start(id("test-b")),
+            Record::Outcome(TestOutcome::Fail {
+                reason: "boom".to_string()
+            }),
+            Record::Start(id("test-c")),
+            Record::Outcome(TestOutcome::Pass),
         ]
     );
-    let fail = FAIL_VALUE.load(Ordering::SeqCst);
     assert_eq!(
         take_events(),
         [
@@ -123,7 +127,6 @@ fn failure_and_panic_do_not_stop_the_run() {
             "glue(0)".to_string(),
             "call fail".to_string(),
             format!("glue({fail})"),
-            "call panic".to_string(),
             "call pass".to_string(),
             "glue(0)".to_string(),
         ]
@@ -161,20 +164,6 @@ fn passing_none_is_released_once() {
     assert_eq!(take_events(), ["call pass", "glue(0)"]);
 }
 
-// spec: repl/spec/16-test-discovery.md §16.2 Running Tests — a panicking test
-// produces no result, so no release glue runs (§10 run row 4).
-#[test]
-fn panic_runs_no_release_glue() {
-    take_events();
-    assert_eq!(
-        outcomes(vec![prepared("test-c", panics)])[0].1,
-        TestOutcome::Panic {
-            reason: "division by zero".to_string()
-        }
-    );
-    assert_eq!(take_events(), ["call panic"]);
-}
-
 // spec: repl/spec/16-test-discovery.md §16.2 Running Tests — an eligible test
 // with no callable code is reported failed, never passed (§10 run row 5).
 #[test]
@@ -190,10 +179,7 @@ fn test_without_code_is_reported_failed() {
         }
     );
     let report = TestRunReport::new(
-        execute(vec![PreparedTest {
-            id: id("test-x"),
-            call: None,
-        }]),
+        vec![(id("test-x"), got[0].1.clone())],
         Vec::new(),
         Duration::ZERO,
     );

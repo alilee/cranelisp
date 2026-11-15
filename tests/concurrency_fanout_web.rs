@@ -1,5 +1,5 @@
 //! Sprint 96 — effect-concurrency C-fanout wave: the marquee "server with no
-//! `spawn`" headline e2e (concurrent per-connection fan-out) + the web 500-mapping
+//! `spawn`" headline e2e (concurrent per-connection fan-out) + detached panic exit
 //! + a server-survives-an-abandoned-connection liveness fence, PLUS the
 //! launch-eligibility negative matrix (E1/E2/E3) observable face.
 //!
@@ -10,7 +10,7 @@
 //! sub-tree launch; eligibility predicate E1/E2/E3 at `effect-concurrency.md`
 //! §4.1). Spec of record:
 //!   - `spec/10-io.md` §10.12.7  (Launch-and-Continue — the fan-out, E1/E2/E3)
-//!   - `spec/12-runtime.md` §12.7.9 (Supervised Detached Strands — 500/log/drop)
+//!   - `spec/12-runtime.md` §12.7.9 (a detached panic ends the process)
 //!
 //! ## Fixture
 //!
@@ -56,13 +56,13 @@ const FANOUT_FIXTURE: &str = "tests/fixtures/web_fanout/main.cl";
 /// A deliberately-slow handler route in the fixture (≈ this many ms per request) —
 /// the fan-out overlap witness. Co-landed in the fixture by /port.
 const SLOW_ROUTE: &str = "/slow";
-/// A fault-injecting route — the handler deliberately faults ⇒ the supervisor maps
-/// it to a 500 for that request (§12.7.9). Co-landed in the fixture.
+/// A fault-injecting route whose handler panic ends the process (§12.7.9).
 const FAULT_ROUTE: &str = "/fault";
 /// A normal fast route (the form page / health check) — proves the server lives.
 const OK_ROUTE: &str = "/";
 
 fn workspace_root() -> PathBuf {
+    // read-only on project_root — checked-in sources run with --no-cache.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -77,6 +77,7 @@ fn free_port() -> u16 {
 /// never leaks the process (which would hold the port).
 struct ServerGuard {
     child: Child,
+    _empty_lib: tempfile::TempDir,
 }
 
 impl Drop for ServerGuard {
@@ -99,20 +100,25 @@ fn spawn_server(fixture_rel: &str, port: u16) -> ServerGuard {
         binary.display()
     );
 
+    let empty_lib = tempfile::tempdir().expect("empty library directory");
     let child = Command::new(&binary)
         .current_dir(&root)
+        .arg("--no-cache")
         .arg("--run")
         .arg(fixture_rel)
         .env("CRANELISP_PORT", port.to_string())
         .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
-        .env("CRANELISP_LIB", root.join("stdlib"))
+        .env("CRANELISP_LIB", empty_lib.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn fan-out web server");
 
-    let mut guard = ServerGuard { child };
+    let mut guard = ServerGuard {
+        child,
+        _empty_lib: empty_lib,
+    };
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -224,36 +230,59 @@ fn web_server_fans_out_concurrent_requests_overlap() {
 }
 
 // =============================================================================
-// §C-fanout 2 — the web 500-mapping: a faulting handler → 500 for that request,
-// the server keeps serving (the supervisor turns the panic into a response).
+// §C-fanout 2 — a faulting detached handler ends the server process.
 // =============================================================================
 
-// spec: spec/12-runtime.md §12.7.9 — a request to a fault-injecting route gets a
-// 500 / error response for THAT request (the supervisor maps the detached handler
-// strand's `StrandFailed` to a 500, §10/§11), and a subsequent normal GET on a
-// fresh connection STILL succeeds — the accept loop + supervising context outlived
-// the fault. The load-bearing negative half: the fault did NOT kill the server.
-// Dependency: C-fanout (a detached supervised handler strand to fault — only exists
-// under the fan-out; with a serial loop there are no per-connection strands to map).
+// spec: spec/12-runtime.md §12.7.9 — a detached handler panic ends the server process.
 #[test]
-fn web_handler_fault_yields_500_for_that_request_server_lives() {
+fn web_handler_fault_ends_server_process() {
     let port = free_port();
-    let _server = spawn_server(FANOUT_FIXTURE, port);
-
-    // The fault route → 500 for that request.
-    let fault_resp = http_request(port, "GET", FAULT_ROUTE);
+    let mut server = spawn_server(FANOUT_FIXTURE, port);
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream
+        .write_all(format!("GET {FAULT_ROUTE} HTTP/1.0\r\n\r\n").as_bytes())
+        .unwrap();
+    // Process exit can close or reset the socket before a response exists.
+    let _ = stream.read_to_string(&mut String::new());
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "detached handler panic must end the server within 3s"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    let mut stdout = String::new();
+    server
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    server
+        .child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let report =
+        regex::Regex::new(r"^error: runtime panic: (?:.+:[0-9]+: )?division by zero$").unwrap();
     assert!(
-        fault_resp.contains("500"),
-        "a faulting handler must yield a 500 for THAT request (the supervisor maps \
-         the strand fault to a 500, §12.7.9); got:\n{fault_resp}"
-    );
-
-    // The server keeps serving: a subsequent normal GET still succeeds.
-    let ok_resp = http_request(port, "GET", OK_ROUTE);
-    assert!(
-        !ok_resp.contains("500") && !ok_resp.is_empty(),
-        "the server must KEEP SERVING after a handler fault (the fault must not kill \
-         the accept loop / crash the process, §12.7.9); subsequent GET got:\n{ok_resp}"
+        matches!(status.code(), Some(c) if c != 0)
+            && stderr.lines().count() == 1
+            && report.is_match(stderr.trim_end())
+            && !stdout.contains("division by zero"),
+        "detached panic must exit without a signal and report once on stderr\nstatus: {status:?}\nstdout:{stdout}\nstderr:{stderr}"
     );
 }
 
@@ -388,13 +417,15 @@ fn spawn_server_env(fixture_rel: &str, port: u16, env: &[(&str, &str)]) -> Serve
         binary.display()
     );
 
+    let empty_lib = tempfile::tempdir().expect("empty library directory");
     let mut cmd = Command::new(&binary);
     cmd.current_dir(&root)
+        .arg("--no-cache")
         .arg("--run")
         .arg(fixture_rel)
         .env("CRANELISP_PORT", port.to_string())
         .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
-        .env("CRANELISP_LIB", root.join("stdlib"))
+        .env("CRANELISP_LIB", empty_lib.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -402,7 +433,10 @@ fn spawn_server_env(fixture_rel: &str, port: u16, env: &[(&str, &str)]) -> Serve
         cmd.env(k, v);
     }
     let child = cmd.spawn().expect("spawn idle-armed web server");
-    let mut guard = ServerGuard { child };
+    let mut guard = ServerGuard {
+        child,
+        _empty_lib: empty_lib,
+    };
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {

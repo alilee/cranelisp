@@ -58,7 +58,7 @@ mod test_runner;
 pub(crate) use self::test_runner::{
     TestDefinition, classify_test_definition, discover_tests_extern, set_test_runner_state,
 };
-pub use self::test_runner::{TestRunReport, TestRunnerState};
+pub use self::test_runner::{TestRunReport, TestRunnerState, supervise_tests};
 
 // nice_worker.rs — the nice-worker object-codegen subsystem (S87 §2.1 / §3.3).
 // `nice_worker_loop` is called by `CompilerSession::new`; `spawn_nice_workers`

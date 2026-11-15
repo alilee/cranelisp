@@ -1281,16 +1281,8 @@ pub(crate) fn test_compile_and_run(
     // owns a lifecycle-minted slot, while this helper invokes the entry symbol
     // directly by name.
     let ptr = jit.get_ptr_by_name(&name, 0)?;
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-    let value = func();
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return Err(CranelispError::CodegenError {
-            message: format!("runtime panic: {}", msg),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
-    }
-    Ok(value)
+    Ok(func())
 }
 
 /// Test helper: compile a program via `compile_to_module`, finalize JIT,
@@ -1380,16 +1372,8 @@ pub(crate) fn test_compile_program_and_run(
         location: ErrorLocation::from_span(Span::SYNTHETIC),
     })?;
     let ptr = jit.get_ptr_by_name(&entry_name, 0)?;
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-    let value = func();
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return Err(CranelispError::CodegenError {
-            message: format!("runtime panic: {}", msg),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
-    }
-    Ok(value)
+    Ok(func())
 }
 
 /// Build symbol tables with an Option type for ADT tests.
@@ -1584,15 +1568,9 @@ pub(crate) fn vec_elem_for_test(ptr: i64, idx: usize) -> i64 {
 /// Shared fixture driver for the vec-query fn-as-value seam: builds a
 /// `primitives` table holding slotless inline Vec-query
 /// entries and a `user` module with the given consumer defn, compiles the
-/// consumer, and runs it end-to-end. Returns the consumer's i64 result.
+/// consumer, and runs it end-to-end. Returns the consumer's i64 result; a
+/// runtime panic ends the process.
 pub(crate) fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
-    try_run_vec_query_value_consumer(consumer)
-        .unwrap_or_else(|msg| panic!("runtime panic running vec-query consumer: {msg}"))
-}
-
-/// [`run_vec_query_value_consumer`], returning the recorded runtime error
-/// instead of panicking on it.
-pub(crate) fn try_run_vec_query_value_consumer(consumer: Defn) -> Result<i64, String> {
     let user = ModuleFullPath::from("user");
     let prims = ModuleFullPath::from("primitives");
     let vec_int = || {
@@ -1685,13 +1663,8 @@ pub(crate) fn try_run_vec_query_value_consumer(consumer: Defn) -> Result<i64, St
         !ptr.is_null(),
         "consumer must finalize to a non-null fn ptr"
     );
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-    let result = func();
-    match cranelisp_intrinsics::panic::take_runtime_error() {
-        Some(msg) => Err(msg),
-        None => Ok(result),
-    }
+    func()
 }
 
 /// Fully-annotated `(Vec Int)` literal `[e0 e1 ...]` fixture node.
@@ -2083,4 +2056,83 @@ pub(crate) mod cow_site_fixture {
     pub(crate) fn releases(clif: &str) -> usize {
         super::count_release_ops(clif)
     }
+}
+
+/// A rendered CLIF function as `(label, instruction lines)` per block, in
+/// layout order.
+pub(crate) fn clif_blocks(clif: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for line in clif.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("block") && trimmed.ends_with(':') {
+            let label = trimmed
+                .split(['(', ':'])
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            out.push((label, Vec::new()));
+        } else if let Some((_, body)) = out.last_mut()
+            && !trimmed.is_empty()
+            && trimmed != "}"
+        {
+            body.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+/// Every `fnN` reference a rendered function declares for the module function
+/// `id`. Each `declare_func_in_func` makes a fresh one.
+pub(crate) fn clif_func_refs(clif: &str, id: cranelift_module::FuncId) -> Vec<String> {
+    let name = format!("u0:{}", id.as_u32());
+    clif.lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            let (lhs, rhs) = line.split_once(" = ")?;
+            (lhs.starts_with("fn") && rhs.split_whitespace().any(|w| w == name))
+                .then(|| lhs.to_string())
+        })
+        .collect()
+}
+
+/// The first `fnN` reference a rendered function uses for the module function
+/// `id`.
+pub(crate) fn clif_func_ref(clif: &str, id: cranelift_module::FuncId) -> String {
+    clif_func_refs(clif, id)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no reference to u0:{}\n{clif}", id.as_u32()))
+}
+
+/// Assert that every call to `runtime/panic` (`panic`) in the rendered
+/// function is followed only by the block's `trap` terminator, so no code is
+/// reachable after a raise (`design/backend/backend.md` §7). Returns the
+/// number of raises, which is at least one.
+#[track_caller]
+pub(crate) fn assert_raise_terminates(
+    clif: &str,
+    panic: cranelift_module::FuncId,
+    what: &str,
+) -> usize {
+    let calls: Vec<String> = clif_func_refs(clif, panic)
+        .iter()
+        .map(|r| format!("call {r}("))
+        .collect();
+    let mut raises = 0;
+    for (label, body) in clif_blocks(clif) {
+        for (i, line) in body.iter().enumerate() {
+            if !calls.iter().any(|c| line.contains(c)) {
+                continue;
+            }
+            raises += 1;
+            let rest = &body[i + 1..];
+            assert!(
+                rest.len() == 1 && rest[0].starts_with("trap "),
+                "{what}: {label} continues after its raise; only a trap terminator \
+                 may follow `{line}`\n{clif}"
+            );
+        }
+    }
+    assert!(raises > 0, "{what}: no call to runtime/panic\n{clif}");
+    raises
 }

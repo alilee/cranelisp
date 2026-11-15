@@ -34,7 +34,7 @@ const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
 /// 0327, the dispatch funnel). The DLL's `CLIO::effect*` reserves it as null;
 /// the backend stamps the statically-known fn-name handle here after the
 /// platform-fn call returns (step 2). The fault guard reads it (step 3) so a
-/// fault in foreign code can surface `PlatformError::DispatchError { fn_name }`.
+/// fault in foreign code is reported with the platform fn's name.
 /// A null handle ⇒ `fn_name: "<unknown>"`. Step 1 (the node-widen) leaves this
 /// field reserved-but-unread; it is named here so steps 2/3 read it
 /// consistently.
@@ -73,9 +73,9 @@ impl ResultDisposer {
     }
 }
 
-/// A trampoline either transfers a produced value or stops without one.
-/// Keeping the outcomes distinct prevents cancellation and fault sentinels
-/// from acquiring value-disposal authority.
+/// A trampoline either transfers a produced value or stops without one because
+/// it was cancelled. Keeping the outcomes distinct prevents a cancellation
+/// sentinel from acquiring value-disposal authority.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TrampolineOutcome {
     Completed(i64),
@@ -365,13 +365,9 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                     force_pure_node(current, current_is_fresh),
                     edge_disposer,
                 ),
-                t if t == IO_TAG_EFFECT => match force_effect_node(current) {
-                    EffectStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
-                    EffectStep::Aborted => {
-                        frame.armed = false;
-                        return TrampolineOutcome::Stopped;
-                    }
-                },
+                t if t == IO_TAG_EFFECT => {
+                    ProducedValue::with_disposer(force_effect_node(current), edge_disposer)
+                }
                 // A poll-shape effect node suspends/resumes on the reactor via
                 // `EffectPoll`. Admission is the platform poll-fn's `ctx.acquire`
                 // (`reactor.md` §7), not a read of the node.
@@ -439,19 +435,6 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                 _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
             };
 
-            // A combinator arm may have raised a runtime error while producing a
-            // sentinel (e.g. an empty `(select [])` → "select over empty
-            // collection", FIXME 0475). Abort BEFORE feeding the continuation so the
-            // sentinel `0` is never applied — at a heap-typed `a` the `0` is an
-            // unsound null the continuation would dereference. Mirrors the
-            // `IO_TAG_EFFECT` `EffectStep::Aborted` early-return; int reads the slot
-            // at the trampoline boundary (or a `catch-runtime-error` bracket drains
-            // it) — not the return value.
-            if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
-                frame.armed = false;
-                return TrampolineOutcome::Stopped;
-            }
-
             match feed_continuation(
                 &mut frame.cont_stack,
                 current,
@@ -460,10 +443,6 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                 CancellationProbe::Never,
             ) {
                 Step::Advance(new_io) => {
-                    if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
-                        frame.armed = false;
-                        return TrampolineOutcome::Stopped;
-                    }
                     frame.current = new_io;
                     frame.current_is_fresh = true;
                 }
@@ -687,17 +666,9 @@ async fn run_select_node(
     let branch_disposer =
         ResultDisposer::from_raw(unsafe { read_node_field(node, FIELD_1_OFFSET) });
     if branches.is_empty() {
-        // Degenerate `(select [])` — no branch can win and there is no value to
-        // return (FIXME 0475 / `reactor.md §9`; `spec/10-io.md §10.12.8`). Raise a
-        // recoverable runtime error through the standard runtime-error slot — the
-        // same §12.7.2 class as match-non-exhaustion / div-by-zero — instead of
-        // returning a synthesised Unit `0` (an unsound null at a heap-typed `a`
-        // that the continuation would dereference) and instead of hanging. Returning
-        // the sentinel `0` here is safe: the trampoline's post-arm error-slot check
-        // (`run_io_trampoline_inner_async`) aborts BEFORE feeding the continuation,
-        // so the `0` is never applied.
-        crate::panic::set_runtime_error("select over empty collection".to_string());
-        return TrampolineOutcome::Stopped;
+        // No branch can win and there is no value to return (`reactor.md` §9;
+        // `spec/10-io.md` §10.12.8): a language panic.
+        crate::panic::terminate(crate::panic::Fault::Panic("select over empty collection"));
     }
 
     let mut futures = Vec::with_capacity(branches.len());
@@ -820,8 +791,7 @@ async fn run_blocking_partition(
 }
 
 /// One blocking branch: admit → `rayon::spawn` run-to-completion → await the
-/// wakeable `oneshot` → ferry any worker-thread runtime error → release the
-/// permit (waking the front parked waiter). The permit is **held across the
+/// wakeable `oneshot` → release the permit (waking the front parked waiter). The permit is **held across the
 /// bridge** (acquired before the spawn, released after completion), which is what
 /// bounds same-token concurrency to the pool's capacity.
 async fn run_blocking_branch(
@@ -836,18 +806,11 @@ async fn run_blocking_branch(
     // 1. Admit on the reactor thread (capacity-N parking; capacity-1 FIFO =
     //    source order). `token == 0` ⇒ inert no-op permit.
     let permit = env.acquire(token, capacity, strand).await;
-    // A capacity-1 sibling may have failed while this branch was parked. It has
-    // not started yet, so sequential left-to-right semantics require aborting
-    // before the worker is spawned. Dropping the acquired permit wakes the next
-    // waiter without performing this branch's effect.
-    if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
-        return (idx, None);
-    }
 
     // 2. Offload run-to-completion to rayon across the wakeable bridge. The
     //    reactor thread is freed while the worker runs; the `oneshot` send wakes
     //    the reactor through the executor's mio-backed waker (NOT block_on).
-    let (tx, rx) = futures::channel::oneshot::channel::<(Option<ProducedValue>, Option<String>)>();
+    let (tx, rx) = futures::channel::oneshot::channel::<Option<ProducedValue>>();
     let (lease, ticket) = env.bridge_join.start_bridge();
     let mut cancel_guard = crate::reactor::CancelBridgeGuard::new(ticket, Some(permit));
     rayon::spawn(move || {
@@ -855,16 +818,11 @@ async fn run_blocking_branch(
         // later by `consume_io_tree`) — the same model as the sync dispatcher.
         let outcome = run_io_trampoline_with_bridge(branch.io, &lease, strand, branch.disposer);
         // The nested trampoline transfers its terminal value out as a raw word.
-        // Re-arm it immediately, before any fault/cancellation policy can choose
-        // to abandon the completion.
+        // Re-arm it immediately, before cancellation can abandon the completion.
         let produced =
             outcome.map_completed(|value| ProducedValue::with_disposer(value, branch.disposer));
-        // Worker-side: capture + clear this thread's runtime-error slot (a
-        // different thread-local than the reactor thread reads) so it can be
-        // ferried back — the fork-join error-slot ferry (test-discovery.md §6).
-        let err = crate::panic::take_runtime_error();
         if !lease.is_cancelled() {
-            let published = tx.send((produced, err)).is_ok();
+            let published = tx.send(produced).is_ok();
             #[cfg(test)]
             if published {
                 ready_handoff_test_barrier(branch.io);
@@ -875,23 +833,11 @@ async fn run_blocking_branch(
     });
 
     // 3. Await completion (reactor thread parks here, freed for the poll
-    //    partition). A dropped sender (rayon panic) yields the sentinel 0.
-    let (result, err) = rx.await.unwrap_or((None, None));
+    //    partition). A dropped sender yields no value.
+    let result = rx.await.unwrap_or(None);
     cancel_guard.complete();
 
-    // 4. Re-raise the ferried error into the reactor thread's slot. This is
-    //    first-to-*complete*-wins: across distinct-token concurrent blocking
-    //    branches the winner is whichever rayon worker resolves first (NOT source
-    //    order) — inherently racy, the same as the sync path for concurrent work.
-    //    It is deterministic only for same-token capacity-1 branches, which run
-    //    serial+ordered (the permit holds them to source order).
-    if let Some(msg) = err
-        && !crate::panic::has_runtime_error()
-    {
-        crate::panic::set_runtime_error(msg);
-    }
-
-    // 5. The guard released the permit after disarming cancellation — this
+    // 4. The guard released the permit after disarming cancellation — this
     //    increments the pool and wakes the front parked waiter.
     (idx, result)
 }
@@ -1025,17 +971,10 @@ async fn run_poll_partition(
     let futs = branches.into_iter().map(|(idx, branch)| async move {
         let strand = crate::strand::next_strand();
         let outcome = run_io_trampoline_inner_async(branch.io, env, strand, branch.disposer).await;
-        // A completed nested trampoline has transferred the raw value. Restore
-        // its owner before consulting shared fault state; returning `None` then
-        // drops the armed value rather than leaking it.
+        // A completed nested trampoline has transferred the raw value; restore
+        // its owner.
         let produced =
             outcome.map_completed(|value| ProducedValue::with_disposer(value, branch.disposer));
-        let produced = if !crate::panic::has_runtime_error() && !crate::panic::has_dispatch_fault()
-        {
-            produced
-        } else {
-            None
-        };
         (idx, produced)
     });
     futures::future::join_all(futs).await
@@ -1251,15 +1190,6 @@ fn feed_continuation(
     }
 }
 
-/// Outcome of forcing an `IO_TAG_EFFECT` node under the fault guard.
-enum EffectStep {
-    /// The thunk produced this value; proceed to the continuation.
-    Value(i64),
-    /// A fault was captured in the dispatch-fault slot; abort the trampoline
-    /// with the sentinel (int reads the slot, not the return value).
-    Aborted,
-}
-
 /// Force a `Pure` node, minting the consumer's reference where the node owns one
 /// so the node keeps its own for later forces and its teardown
 /// (`ownership-and-disposal.md` §6.1).
@@ -1283,11 +1213,10 @@ fn force_pure_node(node: i64, is_fresh: bool) -> i64 {
 /// Reads the thunk + resource token + baked fn-name from the node, emits the
 /// `PlatformEffect` event, then forces the thunk via
 /// `io_guard::force_effect_thunk_protected`. A fault in foreign platform code
-/// (Rust panic or SIGFPE/SIGILL/SIGBUS/SIGSEGV) is captured into the
-/// dispatch-fault slot (paired with the fn-name) for int to compose into
-/// `PlatformError::DispatchError`. The thunk is borrowed: the node keeps it for
+/// (Rust panic or SIGFPE/SIGILL/SIGBUS/SIGSEGV) ends the process as a dispatch
+/// fault naming the platform fn. The thunk is borrowed: the node keeps it for
 /// later forces and discharges it at teardown (`ownership-and-disposal.md` §6.2).
-fn force_effect_node(node: i64) -> EffectStep {
+fn force_effect_node(node: i64) -> i64 {
     // SAFETY: `node` is the live `current` Effect node base pointer; its
     // thunk/token fields are within its payload.
     let thunk_ptr = unsafe { read_node_field(node, FIELD_0_OFFSET) };
@@ -1312,10 +1241,7 @@ fn force_effect_node(node: i64) -> EffectStep {
     // SAFETY: `thunk_ptr` is the Effect node's field 0, a live `CLIO::effect*`
     // thunk; the caller holds a counted reference to `node`, so teardown cannot
     // discharge it during this force.
-    match unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, &fn_name) } {
-        crate::io_guard::ForceOutcome::Value(v) => EffectStep::Value(v),
-        crate::io_guard::ForceOutcome::Faulted => EffectStep::Aborted,
-    }
+    unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, &fn_name) }
 }
 
 /// A test `Effect` node built by the platform constructor, as a platform DLL
@@ -1450,15 +1376,9 @@ fn run_io_trampoline_inner(
                 force_pure_node(current, current_is_fresh),
                 edge_disposer,
             ),
-            t if t == IO_TAG_EFFECT => match force_effect_node(current) {
-                EffectStep::Value(value) => ProducedValue::with_disposer(value, edge_disposer),
-                // Abort: the fault is in the dispatch-fault slot. Return the
-                // sentinel (0), mirroring the `runtime_panic` convention.
-                EffectStep::Aborted => {
-                    frame.armed = false;
-                    return TrampolineOutcome::Stopped;
-                }
-            },
+            t if t == IO_TAG_EFFECT => {
+                ProducedValue::with_disposer(force_effect_node(current), edge_disposer)
+            }
             t if t == IO_TAG_BIND => {
                 let (inner, cont, input_disposer) = read_bind_transition(current, current_is_fresh);
                 io_observer::emit(
@@ -1506,20 +1426,6 @@ fn run_io_trampoline_inner(
             cancellation,
         ) {
             Step::Advance(new_io) => {
-                // The continuation just ran user code (`call_continuation`). If
-                // that user code raised a runtime error (e.g. div-by-zero via
-                // `runtime_panic`) or a platform-dispatch fault, the closure
-                // returned the panic-path sentinel `0` — `new_io` is NOT a valid
-                // IO node. Stop the walk and return the sentinel WITHOUT
-                // dereferencing `new_io` (which would `read_node_tag(0)` →
-                // null-deref → SIGSEGV). The slot is left SET (peeked, not
-                // taken) so the HOST surfaces it — the trampoline is not the
-                // surfacing point (FIXME 0401). Mirrors the
-                // `EffectStep::Aborted => return 0` convention above.
-                if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
-                    frame.armed = false;
-                    return TrampolineOutcome::Stopped;
-                }
                 frame.current = new_io;
                 frame.current_is_fresh = true;
             }
@@ -1631,11 +1537,9 @@ fn read_effect_fn_name(io_ptr: i64) -> String {
 }
 
 /// Result of running one Par work item: the branch results placed at their
-/// original indices, plus the first runtime panic ferried off the worker thread
-/// (the fork-join error-slot ferry, test-discovery.md §6).
+/// original indices.
 struct ItemResult {
     positioned: Vec<(usize, ProducedValue)>,
-    error: Option<String>,
     cancelled: bool,
 }
 
@@ -1715,11 +1619,7 @@ fn dispatch_par_branches_with_trace(
         }
     }
 
-    // Dispatch via rayon and collect results. Each work item also ferries any
-    // runtime panic raised on the worker thread back to the join site — the
-    // worker's `take_runtime_error()` slot is a *different* thread-local than the
-    // joining thread reads, so without this the panic is silently swallowed
-    // (test-discovery.md §6 — the fork-join error-slot ferry, first-error-wins).
+    // Dispatch via rayon and collect results.
     let item_results: Vec<ItemResult> = work_items
         .into_par_iter()
         .map(|item| match item {
@@ -1742,18 +1642,13 @@ fn dispatch_par_branches_with_trace(
                         produced
                     }
                 };
-                // Worker-side: capture and clear this thread's slot so it does
-                // not pollute later rayon work on the same thread.
-                let err = crate::panic::take_runtime_error();
                 ItemResult {
                     positioned: result.into_iter().map(|value| (idx, value)).collect(),
-                    error: err,
                     cancelled: cancellation.is_cancelled(),
                 }
             }
             WorkItem::SerialGroup(entries) => {
                 let mut positioned = Vec::with_capacity(entries.len());
-                let mut error: Option<String> = None;
                 let mut cancelled = false;
                 for (idx, branch) in entries {
                     if cancellation.is_cancelled() {
@@ -1767,49 +1662,34 @@ fn dispatch_par_branches_with_trace(
                         branch.disposer,
                     );
                     // Re-arm immediately after the nested trampoline transfers
-                    // its terminal raw value. Any following error/cancellation
-                    // branch then disposes it by dropping `produced`.
+                    // its terminal raw value. A following cancellation then
+                    // disposes it by dropping `produced`.
                     let produced = outcome.map_completed(|value| {
                         ProducedValue::with_disposer(value, branch.disposer)
                     });
-                    if let Some(e) = crate::panic::take_runtime_error() {
-                        error = Some(e);
-                        // A capacity-1 token group is observably sequential in
-                        // source order. Once this entry fails, later entries
-                        // have not started and the enclosing structured join
-                        // aborts as-if ordinary left-to-right evaluation.
-                        break;
-                    }
                     if cancellation.is_cancelled() {
                         cancelled = true;
                         break;
                     }
-                    if error.is_none()
-                        && let Some(value) = produced
-                    {
+                    if let Some(value) = produced {
                         positioned.push((idx, value));
                     }
                 }
                 ItemResult {
                     positioned,
-                    error,
                     cancelled,
                 }
             }
         })
         .collect();
 
-    // Place results in correct positions; re-raise the first ferried error into
-    // the joining thread's slot (first-error-wins matches sequential semantics).
+    // Place results in correct positions.
     let mut results: Vec<Option<ProducedValue>> = (0..branches.len()).map(|_| None).collect();
     let mut cancelled = cancellation.is_cancelled();
     for item in item_results {
         cancelled |= item.cancelled;
         for (idx, val) in item.positioned {
             results[idx] = Some(val);
-        }
-        if let Some(msg) = item.error {
-            crate::panic::set_runtime_error(msg);
         }
     }
 

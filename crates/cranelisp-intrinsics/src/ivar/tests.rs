@@ -35,9 +35,9 @@ fn test_ivar_create() {
         let stored_thunk = *((ivar as isize + THUNK_OFFSET) as *const i64);
         assert_eq!(stored_thunk, thunk);
 
-        // Alloc size should be 48 (16 header + 32 payload).
+        // Alloc size should be 40 (16 header + 24 payload).
         let alloc_size = *(ivar as *const i64);
-        assert_eq!(alloc_size, 48);
+        assert_eq!(alloc_size, 40);
         // RC should be 1
         let rc = *((ivar as isize + RC_OFFSET) as *const i64);
         assert_eq!(rc, 1);
@@ -131,12 +131,17 @@ fn test_multiple_ivars() {
     // Thunks were already freed by ivar_force (B2 fix).
 }
 
-/// Build a zero-arg thunk that raises a runtime panic and returns 0.
+use crate::test_child::{self, selected};
+
+fn child(name: &str) -> String {
+    test_child::child_path(module_path!(), name)
+}
+
+/// Build a zero-arg thunk that raises a runtime panic.
 fn make_panicking_thunk() -> i64 {
     extern "C" fn boom_fn(_env_ptr: i64) -> i64 {
         let msg = "ivar boom";
-        crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-        0
+        crate::panic::runtime_panic(msg.as_ptr(), msg.len())
     }
     let base = alloc_with_rc(16); // code_ptr + drop_glue, no captures
     unsafe {
@@ -146,74 +151,25 @@ fn make_panicking_thunk() -> i64 {
     base as i64
 }
 
-// spec: 12-runtime §12.4.3 — a thunk panic is ferried through the IVar so the
-// forcing (joining) thread re-raises it, instead of silently swallowing it.
 #[test]
-fn test_ivar_force_ferries_panic_to_joiner() {
-    let _ = crate::panic::take_runtime_error(); // clear
-    let thunk = make_panicking_thunk();
-    let ivar = ivar_create(thunk);
-
-    // Force on this (the joining) thread — the thunk panics; the ferry
-    // stashes the message in the IVar's error field and re-raises it here.
-    let result = ivar_force(ivar);
-    assert_eq!(result, 0, "panicked thunk yields the sentinel 0");
-
-    let err = crate::panic::take_runtime_error();
-    assert!(
-        err.is_some(),
-        "panic must be re-raised on the joining thread"
-    );
-    assert!(
-        err.unwrap().contains("ivar boom"),
-        "the ferried message must be the thunk's panic"
-    );
-
-    // The error field holds the heap String; `ivar_dealloc` frees both it
-    // and the cell (the production drop path).
-    unsafe {
-        let err_str = *((ivar as isize + ERROR_OFFSET) as *const i64);
-        assert!(err_str != 0, "error field must hold the ferried String");
-        ivar_dealloc(ivar);
+fn child_forces_a_panicking_thunk() {
+    if !selected("child_forces_a_panicking_thunk") {
+        return;
     }
+    let _ = ivar_force(ivar_create(make_panicking_thunk()));
+    eprintln!("RESUMED-AFTER-PANIC");
 }
 
-// spec: 12-runtime §12.4.3 — deallocating a panicked IVar must free the
-// ferried error String, not just the cell (production drop path; without
-// this the heap String leaks on every fork-join panic).
+// spec: 12-runtime §12.4.3 — a thunk's panic ends the process from the thread
+// that runs the thunk; the forcing caller never receives a value.
 #[test]
-#[cfg(debug_assertions)]
-fn test_ivar_dealloc_frees_ferried_error_string() {
-    let _ = crate::panic::take_runtime_error(); // clear
-    let thunk = make_panicking_thunk();
-    let ivar = ivar_create(thunk);
-
-    // Force so the ferry stashes the error String in the cell.
-    let _ = ivar_force(ivar);
-    let _ = crate::panic::take_runtime_error(); // drain re-raised slot
-
-    let err_str = unsafe { *((ivar as isize + ERROR_OFFSET) as *const i64) };
-    assert!(err_str != 0, "error field must hold the ferried String");
-    assert!(
-        crate::alloc::is_live(err_str as usize),
-        "error String must be live before dealloc"
-    );
-
-    // Production drop path: dealloc the cell.
-    ivar_dealloc(ivar);
-
-    assert!(
-        !crate::alloc::is_live(err_str as usize),
-        "ivar_dealloc must free the ferried error String (no leak)"
-    );
-    assert!(
-        !crate::alloc::is_live(ivar as usize),
-        "ivar_dealloc must free the cell itself"
-    );
+fn ivar_force_of_a_panicking_thunk_ends_the_process() {
+    let end = test_child::run(&child("child_forces_a_panicking_thunk"), &[]);
+    end.assert_panicked_with("ivar boom");
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }
 
-// spec: 12-runtime §12.4.3 — ivar_dealloc on a clean (non-panicked) IVar
-// frees the cell and does not touch the (null) error field.
+// spec: 12-runtime §12.4.3 — ivar_dealloc frees the cell.
 #[test]
 #[cfg(debug_assertions)]
 fn test_ivar_dealloc_clean_frees_cell() {
@@ -228,25 +184,15 @@ fn test_ivar_dealloc_clean_frees_cell() {
     );
 }
 
-// spec: 12-runtime §12.4.3 — a passing thunk leaves the slot clean (no
-// spurious error, the ferry only fires on a real panic).
+// spec: 12-runtime §12.4.3 — a resolved cell carries the thunk's value.
 #[test]
-fn test_ivar_force_clean_thunk_leaves_slot_clean() {
-    let _ = crate::panic::take_runtime_error(); // clear
+fn test_ivar_force_clean_thunk_resolves_to_its_value() {
     let thunk = make_const_thunk(123);
     let ivar = ivar_create(thunk);
 
     let result = ivar_force(ivar);
     assert_eq!(result, 123);
-    assert!(
-        crate::panic::take_runtime_error().is_none(),
-        "a clean thunk must not set the error slot"
-    );
-    unsafe {
-        let err_str = *((ivar as isize + ERROR_OFFSET) as *const i64);
-        assert_eq!(err_str, 0, "error field must be 0 for a clean thunk");
-        dealloc(ivar as *mut u8);
-    }
+    unsafe { dealloc(ivar as *mut u8) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,9 +960,18 @@ fn hier_decline_worker_spark_runs_at_parent_plus_one_depth() {
         "a spark dispatched from depth 0 runs on the worker at depth 1 (parent + 1)"
     );
 
-    // ivar_spark inc'd RC to 2 and the worker dec'd it back to 1; the thunk was
-    // freed inside the worker's `ivar_force`. Free the cell.
-    unsafe { dealloc(ivar as *mut u8) };
+    // `ivar_spark` inc'd RC to 2 for the worker. The worker publishes RESOLVED
+    // inside `ivar_force` BEFORE its own `fetch_sub`, so the worker may still hold
+    // its reference here. Release ours; whichever side takes the RC to 0 frees the
+    // cell. (The thunk was freed inside the worker's `ivar_force`.)
+    let old_rc = unsafe {
+        let rc_ptr = (ivar as isize + RC_OFFSET) as *const AtomicI64;
+        (*rc_ptr).fetch_sub(1, Ordering::SeqCst)
+    };
+    if old_rc == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        unsafe { dealloc(ivar as *mut u8) };
+    }
     IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
 }
 
@@ -1080,9 +1035,9 @@ fn hier_decline_main_thread_claim_increments_depth() {
 // spin→yield→sleep backoff that yields the core so N idle waiters do not starve
 // the 1 running claimant. These tests pin the WAIT-side correctness: a value
 // forced while another thread is mid-EVALUATING resolves to the right value (no
-// deadlock, no lost wakeup), and a ferried panic re-raises correctly through the
-// backoff wait (unwind-safe). The wait changes; the RESOLVED handshake + ferry
-// do not — so these assert the protocol is preserved across the new wait.
+// deadlock, no lost wakeup), and a claimant's panic ends the process while a
+// joiner waits. The wait changes; the RESOLVED handshake does not — so these
+// assert the protocol is preserved across the new wait.
 // ---------------------------------------------------------------------------
 
 /// Build a zero-arg thunk that spins on a shared gate before returning `value`,
@@ -1157,42 +1112,31 @@ fn ivar_force_backoff_wait_resolves_to_claimant_value() {
     unsafe { dealloc(ivar as *mut u8) };
 }
 
-// spec: 12-runtime §12.4.3 — first-error-wins is preserved across the backoff
-// wait: a thunk panic captured by the claimant is ferried and re-raised into a
-// backoff-WAITING joiner's slot (the wait path's `reraise_ferried_error` on the
-// RESOLVED handshake, unchanged by the backoff).
 #[test]
-fn ivar_force_backoff_wait_reraises_ferried_panic() {
+fn child_claimant_panics_while_a_joiner_waits() {
+    if !selected("child_claimant_panics_while_a_joiner_waits") {
+        return;
+    }
     static GATE: AtomicBool = AtomicBool::new(false);
-    GATE.store(false, Ordering::SeqCst);
 
     // A gated panicking thunk: spin on the gate, then raise a runtime panic.
-    extern "C" fn gated_boom_fn(env_ptr: i64) -> i64 {
-        let gate_ptr = unsafe { *((env_ptr as isize + 32) as *const i64) } as *const AtomicBool;
-        while !unsafe { (*gate_ptr).load(Ordering::SeqCst) } {
+    extern "C" fn gated_boom_fn(_env_ptr: i64) -> i64 {
+        while !GATE.load(Ordering::SeqCst) {
             std::hint::spin_loop();
         }
         let msg = "backoff boom";
-        crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-        0
+        crate::panic::runtime_panic(msg.as_ptr(), msg.len())
     }
     let thunk = {
-        let b = alloc_with_rc(24); // code_ptr + drop_glue + 1 capture (gate)
+        let b = alloc_with_rc(16);
         unsafe {
             *((b as isize + 16) as *mut i64) = gated_boom_fn as *const () as i64;
             *((b as isize + 24) as *mut i64) = 0;
-            *((b as isize + 32) as *mut i64) = &GATE as *const AtomicBool as i64;
         }
         b as i64
     };
     let ivar = ivar_create(thunk);
-
-    let claimant = std::thread::spawn(move || {
-        let _ = crate::panic::take_runtime_error(); // clear this thread's slot
-        let v = ivar_force(ivar);
-        let e = crate::panic::take_runtime_error();
-        (v, e)
-    });
+    let claimant = std::thread::spawn(move || ivar_force(ivar));
 
     let state_ptr = unsafe { &*((ivar as isize + STATE_OFFSET) as *const AtomicI64) };
     assert!(
@@ -1202,89 +1146,20 @@ fn ivar_force_backoff_wait_reraises_ferried_panic() {
         ),
         "claimant must reach EVALUATING"
     );
-
-    let joiner = std::thread::spawn(move || {
-        let _ = crate::panic::take_runtime_error(); // clear this thread's slot
-        let v = ivar_force(ivar);
-        let e = crate::panic::take_runtime_error();
-        (v, e)
-    });
+    let joiner = std::thread::spawn(move || ivar_force(ivar));
     std::thread::sleep(Duration::from_millis(20)); // drive the joiner into backoff
 
     GATE.store(true, Ordering::SeqCst);
-    let (cv, ce) = claimant.join().expect("claimant thread panicked");
-    let (jv, je) = joiner.join().expect("joiner thread panicked");
-
-    assert_eq!(cv, 0, "panicked thunk yields the sentinel on the claimant");
-    assert_eq!(
-        jv, 0,
-        "panicked thunk yields the sentinel through the backoff wait"
-    );
-    assert!(
-        ce.map(|m| m.contains("backoff boom")).unwrap_or(false),
-        "claimant re-raises the ferried panic"
-    );
-    assert!(
-        je.map(|m| m.contains("backoff boom")).unwrap_or(false),
-        "the backoff waiter must re-raise the SAME ferried panic (join-side)"
-    );
-
-    ivar_dealloc(ivar);
+    let _ = claimant.join();
+    let _ = joiner.join();
+    eprintln!("RESUMED-AFTER-PANIC");
 }
 
-/// Build a panicking thunk carrying a custom message (for the dual-panic test).
-fn make_panicking_thunk_msg(msg: &'static str) -> i64 {
-    // We bake the message pointer/len into two captures so one generic body
-    // serves both distinct messages.
-    extern "C" fn boom_fn(env_ptr: i64) -> i64 {
-        let ptr = unsafe { *((env_ptr as isize + 32) as *const i64) } as *const u8;
-        let len = unsafe { *((env_ptr as isize + 40) as *const i64) } as usize;
-        crate::panic::runtime_panic(ptr, len);
-        0
-    }
-    let base = alloc_with_rc(32); // code_ptr + drop_glue + 2 captures
-    unsafe {
-        *((base as isize + 16) as *mut i64) = boom_fn as *const () as i64;
-        *((base as isize + 24) as *mut i64) = 0; // no drop glue
-        *((base as isize + 32) as *mut i64) = msg.as_ptr() as i64;
-        *((base as isize + 40) as *mut i64) = msg.len() as i64;
-    }
-    base as i64
-}
-
-// spec: 12-runtime §12.4.3 — Task B: first-error-wins on the INLINE-claim path.
-// Two thunks panic with DISTINCT messages. Forcing the first inline sets the
-// caller's slot to "first boom"; forcing the second inline must NOT clobber it —
-// the save/restore around the inline thunk keeps the FIRST error (matching a
-// sequential left-to-right evaluation that aborts on the first). Run many times
-// to prove the outcome is deterministic, not racy. This is the `let`-path /
-// inline-claim analogue of the apply-path `apply_arg_dual_panic_first_error_wins`
-// e2e — the bug lived in the inline path polluting the caller's error slot.
+// spec: 12-runtime §12.4.3 — a panic on the claimant's thread ends the process
+// while another thread waits on the same cell; neither caller resumes.
 #[test]
-fn ivar_inline_claim_dual_panic_first_error_wins() {
-    for i in 0..2000 {
-        let _ = crate::panic::take_runtime_error(); // clear the slot
-
-        let a = ivar_create(make_panicking_thunk_msg("first boom"));
-        let b = ivar_create(make_panicking_thunk_msg("second boom"));
-
-        // Barrier order: force A first (sets the first error), then B.
-        let _ = ivar_force(a);
-        let _ = ivar_force(b);
-
-        let err = crate::panic::take_runtime_error();
-        let msg = err.unwrap_or_default();
-        assert!(
-            msg.contains("first boom"),
-            "iter {i}: first-error-wins — expected 'first boom', got {msg:?}"
-        );
-        assert!(
-            !msg.contains("second boom"),
-            "iter {i}: the second (inline) panic must NOT clobber the first, got {msg:?}"
-        );
-
-        // Cleanup both cells (each holds a ferried error String).
-        ivar_dealloc(a);
-        ivar_dealloc(b);
-    }
+fn claimant_panic_ends_the_process_while_a_joiner_waits() {
+    let end = test_child::run(&child("child_claimant_panics_while_a_joiner_waits"), &[]);
+    end.assert_panicked_with("backoff boom");
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }

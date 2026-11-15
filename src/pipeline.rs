@@ -86,7 +86,7 @@ pub fn execute_compiled_expr(
     shared: &crate::session_v4::SharedState,
     current_module: &ModuleFullPath,
     _ready: crate::scheduler::ExecutionReadiness,
-) -> Result<ExprOutcome, CranelispError> {
+) -> Result<crate::result_owner::OwnedProgramResult, CranelispError> {
     let symbol_tables = &shared.symbol_tables;
     // Read the GOT address + inferred type + code lifetime owner for the
     // compiled `__expr` entry, in ONE read (`design/int/result-owner.md` §4.3
@@ -158,25 +158,9 @@ pub fn execute_compiled_expr(
         .or(expr_ty)
         .unwrap_or(Type::Int);
 
-    // Run through the SAME unified C-ABI driver `--run`/`--link` use
-    // (`cranelisp_intrinsics::panic::cranelisp_run_program`, FIXME 0366) —
-    // the single clear→call→pre-IO-peek→drive_io→post-IO-peek sequence
-    // documented on that function as "REPL-safe (no `process::exit` inside
-    // the driver)". FIXME 0499: the REPL eval path used to hand-roll a
-    // partial mirror of this sequence (`take_runtime_error()` immediately
-    // after `func()`, then `unwrap_io_inline` with no error-slot check
-    // afterward) — that mirror checked the runtime-error slot only BEFORE
-    // driving the IO tree, never AFTER. A fatal runtime error raised DURING
-    // the drive (e.g. an empty `(select [])` hitting the count-zero guard in
-    // `run_select_node`, `crates/cranelisp-intrinsics/src/io.rs`) therefore
-    // synthesised its sentinel `0` straight through to display instead of
-    // aborting the expression (spec/10-io.md §10.12.8 violation) — a
-    // single-driver/dual-host-wrapper divergence, not a second IO driver.
-    // Delegating to the shared driver here removes the second wrapper
-    // entirely: REPL and `--run`/`--link` now reach the identical
-    // clear→call→peek→drive→peek sequence, so every fatal-runtime-error-
-    // raising IO op (not just `select`) is observed identically in both
-    // modes.
+    // Run through the same C-ABI driver `--run` and `--link` use. A runtime
+    // panic ends the process inside the driver, so it returns only after a
+    // clean run (`design/int/io-integration.md` §1.2).
     //
     // SAFETY: `got_addr` is the finalized code pointer for the zero-arg
     // `__expr` wrapper, written by `compile_to_module`. The `Arc<Jit>` on the
@@ -185,30 +169,33 @@ pub fn execute_compiled_expr(
     let is_io = ty.is_io();
     // A failed stdout write is ignored, as for every REPL display line.
     let _ = write_io_execution_notice(is_io, &mut std::io::stdout());
-    let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, is_io);
+    let value = cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, is_io);
 
-    // The driver boundary: `IO a` is unwrapped exactly once here, and the clean
-    // arm's word crosses into the ONE program-result owner (`result_owner`). The
-    // owner stays armed across the `EvalResult::Val` boundary and is released
-    // by the REPL driver AFTER the turn's `StyledDoc` is complete (§4.2).
-    match program_outcome_to_result(outcome, ty)? {
-        DriverOutcome::Trap { message } => Ok(ExprOutcome::Trap { message }),
-        DriverOutcome::Value { value, ty } => {
-            let resolver = crate::result_owner::SessionGlueResolver::for_result_code(
-                code_owner.as_ref(),
-                &shared.fresh_jit_drop_glues,
-            );
-            Ok(ExprOutcome::Value(
-                crate::result_owner::OwnedProgramResult::new(
-                    value,
-                    ty,
-                    codegen_result_ty,
-                    current_module,
-                    symbol_tables,
-                    &resolver,
-                )?,
-            ))
-        }
+    // The word crosses into the one program-result owner here. The owner stays
+    // armed across the `EvalResult::Val` boundary and is released by the REPL
+    // driver after the turn's `StyledDoc` is complete (result-owner §4.2).
+    let resolver = crate::result_owner::SessionGlueResolver::for_result_code(
+        code_owner.as_ref(),
+        &shared.fresh_jit_drop_glues,
+    );
+    crate::result_owner::OwnedProgramResult::new(
+        value,
+        driver_result_type(ty),
+        codegen_result_ty,
+        current_module,
+        symbol_tables,
+        &resolver,
+    )
+}
+
+/// The type of the word `cranelisp_run_program` returns for a program of type
+/// `ty`: the driver forces an `IO a` and returns its `a`. This is the one
+/// `IO a` → `a` unwrap; the result owner refuses an `IO a` type.
+pub(crate) fn driver_result_type(ty: Type) -> Type {
+    if ty.is_io() {
+        ty.unwrap_io().clone()
+    } else {
+        ty
     }
 }
 
@@ -225,166 +212,9 @@ fn write_io_execution_notice(is_io: bool, out: &mut impl std::io::Write) -> std:
     out.flush()
 }
 
-/// The outcome of running a compiled `__expr`: a computed value or a
-/// **runtime trap** (a `(runtime_panic …)`-raised error — a broken symbol's
-/// trap stub, an exhaustiveness failure, an empty `(select [])`, …).
-///
-/// A trap is NOT a compiler error, so it is deliberately NOT a
-/// `CranelispError`: `CranelispError`'s Display wraps every variant in a
-/// category+span prefix (`codegen error at 0..0: …`), and the REPL/`--run`
-/// printers then add `Error: …` — the wrapper chain repl/spec.md §18.5
-/// forbids. The trap payload rides this dedicated int-side outcome instead;
-/// the printer renders it as the bare `runtime error: {payload}` §18.5 line
-/// (s102-defect-wave.md §7.2 — the recommended int-side cut, no
-/// `cranelisp-types` change). Genuine compiler/platform faults (the dispatch
-/// funnel) stay `Err(CranelispError)`.
-#[derive(Debug)]
-pub enum ExprOutcome {
-    /// A computed value, owned end-to-end
-    /// (`design/int/result-owner.md` §1) — observed by the REPL formatter,
-    /// then released exactly once. NOT a copyable `(value, ty)` tuple: the
-    /// owned word travels with its release target and that target's retention
-    /// guard, so no downstream carrier can hold a second copy.
-    Value(crate::result_owner::OwnedProgramResult),
-    /// A runtime trap. `message` is the §18.5 payload — the trap body with the
-    /// intrinsics-internal `runtime panic: ` slot prefix already normalized
-    /// away — WITHOUT the `runtime error: ` category prefix (the printer adds
-    /// that, matching §5.1's category+message model).
-    Trap { message: String },
-}
-
-/// The **driver boundary** outcome: what `cranelisp_run_program`'s
-/// `ProgramOutcome` means once the error slots are drained and `IO a` has been
-/// unwrapped to `a`.
-///
-/// Split from [`ExprOutcome`] (`design/int/result-owner.md` §2's state
-/// machine) so the translation stays a pure, unit-testable function while
-/// ownership of the clean word crosses into the result owner exactly once,
-/// immediately above it. The single `IO a` → `a` unwrap lives here — the owner
-/// constructor REFUSES an `IO a` type, so there is no second place it can
-/// happen.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum DriverOutcome {
-    /// A computed value with its (IO-unwrapped) type.
-    Value { value: i64, ty: Type },
-    /// A runtime trap; see [`ExprOutcome::Trap`].
-    Trap { message: String },
-}
-
-/// Translate a [`cranelisp_intrinsics::panic::ProgramOutcome`] into
-/// `execute_compiled_expr`'s [`DriverOutcome`] / `Result` contract. Split out
-/// so this translation is unit-testable without a live JIT/symbol table —
-/// this is the exact seam where the pre-fix REPL path (FIXME 0499) silently
-/// dropped a runtime error raised DURING the IO drive: the former code never
-/// inspected an outcome/slot at this point at all.
-fn program_outcome_to_result(
-    outcome: cranelisp_intrinsics::panic::ProgramOutcome,
-    ty: Type,
-) -> Result<DriverOutcome, CranelispError> {
-    match outcome.error_kind {
-        // 1 = runtime error: the runtime-error slot is SET (drain for text).
-        // Reached whether the panic occurred pre-IO (during the bare
-        // `__expr` call) or post-IO (during the trampoline/reactor drive,
-        // e.g. FIXME 0499's empty `(select [])`) — the driver collapses both
-        // cases into one outcome kind. This is a runtime TRAP, not a compiler
-        // error: return the dedicated `ExprOutcome::Trap` (repl/spec.md §18.5)
-        // — NOT a `CranelispError::CodegenError`, which would wrap the payload
-        // as `codegen error at 0..0: runtime error: runtime panic: …` and then
-        // gain an `Error: ` prefix at the printer. Normalize the
-        // intrinsics-internal `runtime panic: ` slot prefix away HERE (the
-        // single chokepoint reading the slot); the printer supplies the §18.5
-        // `runtime error: ` category prefix.
-        1 => {
-            let raw = cranelisp_intrinsics::panic::take_runtime_error()
-                .unwrap_or_else(|| "runtime panic".to_string());
-            let message = raw
-                .strip_prefix("runtime panic: ")
-                .map(str::to_string)
-                .unwrap_or(raw);
-            Ok(DriverOutcome::Trap { message })
-        }
-        // 2 = platform-dispatch fault (FIXME 0327, the dispatch funnel). This
-        // IS a genuine compiler/platform fault (a structured `PlatformError`),
-        // so it stays `Err(CranelispError)`.
-        2 => {
-            let fault = cranelisp_intrinsics::panic::take_dispatch_fault().unwrap_or_else(|| {
-                cranelisp_intrinsics::panic::DispatchFault {
-                    fn_name: "<unknown>".to_string(),
-                    cause: "platform dispatch fault".to_string(),
-                }
-            });
-            Err(compose_dispatch_error(fault))
-        }
-        // 0 = clean: `outcome.exit_code` is the trampolined inner IO value
-        // (or `__expr`'s own result for a non-IO expression). Unwrap the
-        // type the same way `unwrap_io_inline` used to.
-        _ => {
-            let result_ty = if ty.is_io() {
-                ty.unwrap_io().clone()
-            } else {
-                ty
-            };
-            Ok(DriverOutcome::Value {
-                value: outcome.exit_code,
-                ty: result_ty,
-            })
-        }
-    }
-}
-
-/// Compose a structured `PlatformError::DispatchError` from an intrinsics
-/// dispatch-fault carrier (FIXME 0327 — the dispatch funnel, int's compose
-/// half). The intrinsics guard captured `(fn_name, cause)` and is
-/// diagnostics-free by charter; int maps it to the typed error surfaced via
-/// `CranelispError::Platform`.
-fn compose_dispatch_error(fault: cranelisp_intrinsics::panic::DispatchFault) -> CranelispError {
-    CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
-        fn_name: cranelisp_types::Symbol::from(fault.fn_name),
-        cause: fault.cause,
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
-    })
-}
-
-// `unwrap_io_inline` — DELETED (FIXME 0499 fix). It hand-rolled a
-// REPL-only "drive the IO tree" step that duplicated a SLICE of
-// `cranelisp_run_program`'s clear→call→peek→drive→peek sequence without the
-// post-IO error-slot peek — the single-driver/dual-host-wrapper divergence
-// this fix removes. `execute_compiled_expr` now calls
-// `cranelisp_intrinsics::panic::cranelisp_run_program` directly (the same
-// driver `--run`/`--link` use), and `program_outcome_to_result` performs the
-// same type-unwrap this function used to. Its dedicated RC-balance unit
-// tests are superseded by `cranelisp-intrinsics`'s own
-// `decision24_run_io_pure_rc_balanced` (`crates/cranelisp-intrinsics/src/io/tests.rs`),
-// which already pins the Decision-24 consuming-convention invariant at the
-// driver's actual home.
-
-// `compile_and_execute_expr_with_trace` — DELETED S76 (W-Collapse + trace
-// ruling). The trace eval path no longer hand-rolls a JIT; trace codegen +
-// discovery are backend-internal and `(trace ...)` flows through the unified
-// `compile_to_module` path like any other form.
-
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-//
-// FIXME 0499: these pin `program_outcome_to_result`, the seam where the REPL
-// eval path (`execute_compiled_expr`) translates the shared
-// `cranelisp_run_program` driver's `ProgramOutcome` into the
-// `(value, Type)` / `Result` contract. The former `unwrap_io_inline`
-// unit tests (Sprint 57 Wave 6) covered only the clean-IO-unwrap slice of
-// this seam and were deleted with the function — the driver's own
-// Decision-24 RC-balance invariant is now pinned at its actual home
-// (`decision24_run_io_pure_rc_balanced`,
-// `crates/cranelisp-intrinsics/src/io/tests.rs`). These tests instead cover
-// all three `ProgramOutcome::error_kind` discriminants this fn dispatches on,
-// including the exact case FIXME 0499 fixed: a fatal runtime error raised
-// DURING the IO drive (kind 1, post-IO) must produce an `Err`, not a
-// synthesised value.
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cranelisp_intrinsics::panic::ProgramOutcome;
     use cranelisp_types::{FQTypeName, TypeName};
 
     fn io_int_type() -> Type {
@@ -394,147 +224,18 @@ mod tests {
         )
     }
 
-    // spec: design/arch/bounded-contexts.md §5 invariant 9 — int composes a
-    // structured `PlatformError::DispatchError` from the intrinsics-captured
-    // dispatch fault, mapping fn_name + cause and surfacing via
-    // `CranelispError::Platform` (FIXME 0327, the dispatch funnel, int's
-    // compose half).
+    // spec: design/int/result-owner.md §4.4 — a non-IO program's word has the
+    // program's own type.
     #[test]
-    fn compose_dispatch_error_maps_fn_name_and_cause() {
-        let fault = cranelisp_intrinsics::panic::DispatchFault {
-            fn_name: "stdio/read-line".to_string(),
-            cause: "device unavailable".to_string(),
-        };
-        let err = compose_dispatch_error(fault);
-        match err {
-            CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
-                fn_name,
-                cause,
-                ..
-            }) => {
-                assert_eq!(fn_name.as_ref(), "stdio/read-line");
-                assert_eq!(cause, "device unavailable");
-            }
-            other => panic!("expected Platform(DispatchError), got {other:?}"),
-        }
+    fn driver_result_type_keeps_a_non_io_type() {
+        assert_eq!(driver_result_type(Type::Int), Type::Int);
     }
 
-    /// error_kind 0 (clean), non-IO type: passthrough unchanged — the common
-    /// REPL case (a bare `Int`/`Bool`/etc result) pays nothing extra.
+    // spec: design/int/result-owner.md §4.4 — the driver forces `IO a`, so its
+    // word is the inner `a`; the owner never sees `IO a`.
     #[test]
-    fn program_outcome_to_result_clean_non_io_passthrough() {
-        let outcome = ProgramOutcome {
-            exit_code: 42,
-            error_kind: 0,
-        };
-        let got = program_outcome_to_result(outcome, Type::Int).unwrap();
-        assert_eq!(
-            got,
-            DriverOutcome::Value {
-                value: 42,
-                ty: Type::Int
-            }
-        );
-    }
-
-    /// error_kind 0 (clean), IO type: the exit_code is already the
-    /// trampolined inner value (the driver forced the IO tree internally),
-    /// so this just unwraps the type `IO a` -> `a` — the same unwrap
-    /// `unwrap_io_inline` used to perform after driving IO itself.
-    #[test]
-    fn program_outcome_to_result_clean_io_unwraps_type() {
-        let outcome = ProgramOutcome {
-            exit_code: 7,
-            error_kind: 0,
-        };
-        let got = program_outcome_to_result(outcome, io_int_type()).unwrap();
-        assert_eq!(
-            got,
-            DriverOutcome::Value {
-                value: 7,
-                ty: Type::Int
-            },
-            "IO a result must unwrap to a"
-        );
-    }
-
-    /// error_kind 1 (runtime error): a fatal runtime error (a broken symbol's
-    /// trap, an exhaustiveness failure, FIXME 0499's empty `(select [])`)
-    /// surfaces as `Ok(ExprOutcome::Trap)` — NOT a `CranelispError` (§18.5:
-    /// the printer renders `runtime error: {payload}` with no wrapper chain).
-    /// The intrinsics-internal `runtime panic: ` slot prefix is normalized
-    /// away at this chokepoint so the payload is the bare §18.5 message.
-    #[test]
-    fn program_outcome_to_result_runtime_error_is_trap_with_normalized_message() {
-        let _ = cranelisp_intrinsics::panic::take_runtime_error(); // clear any stale slot
-        cranelisp_intrinsics::panic::set_runtime_error(
-            "runtime panic: select over empty collection".to_string(),
-        );
-        let outcome = ProgramOutcome {
-            exit_code: 0,
-            error_kind: 1,
-        };
-        let got =
-            program_outcome_to_result(outcome, io_int_type()).expect("a trap is Ok(Trap), not Err");
-        assert_eq!(
-            got,
-            DriverOutcome::Trap {
-                // the `runtime panic: ` prefix is stripped — the printer adds
-                // the §18.5 `runtime error: ` category prefix.
-                message: "select over empty collection".to_string(),
-            },
-        );
-        // The slot was drained (take, not peek) — a second read is empty.
-        assert_eq!(cranelisp_intrinsics::panic::take_runtime_error(), None);
-    }
-
-    /// error_kind 1 with an empty slot (defensive: the driver contract says
-    /// the slot is SET on a non-zero kind, but the translation must not
-    /// panic/unwrap if it somehow isn't) falls back to a generic message.
-    #[test]
-    fn program_outcome_to_result_runtime_error_missing_slot_falls_back() {
-        let _ = cranelisp_intrinsics::panic::take_runtime_error(); // ensure empty
-        let outcome = ProgramOutcome {
-            exit_code: 0,
-            error_kind: 1,
-        };
-        let got = program_outcome_to_result(outcome, Type::Int).unwrap();
-        assert_eq!(
-            got,
-            DriverOutcome::Trap {
-                message: "runtime panic".to_string()
-            }
-        );
-    }
-
-    /// error_kind 2 (platform-dispatch fault, FIXME 0327): composed into a
-    /// structured `PlatformError::DispatchError` via `compose_dispatch_error`.
-    #[test]
-    fn program_outcome_to_result_dispatch_fault_is_err() {
-        let _ = cranelisp_intrinsics::panic::take_dispatch_fault(); // clear any stale slot
-        cranelisp_intrinsics::panic::set_dispatch_fault(
-            cranelisp_intrinsics::panic::DispatchFault {
-                fn_name: "stdio/read-line".to_string(),
-                cause: "device unavailable".to_string(),
-            },
-        );
-        let outcome = ProgramOutcome {
-            exit_code: 0,
-            error_kind: 2,
-        };
-        let err = program_outcome_to_result(outcome, Type::Int).unwrap_err();
-        match err {
-            CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
-                fn_name,
-                cause,
-                ..
-            }) => {
-                assert_eq!(fn_name.as_ref(), "stdio/read-line");
-                assert_eq!(cause, "device unavailable");
-            }
-            other => panic!("expected Platform(DispatchError), got {other:?}"),
-        }
-        assert_eq!(cranelisp_intrinsics::panic::take_dispatch_fault(), None);
+    fn driver_result_type_unwraps_io_once() {
+        assert_eq!(driver_result_type(io_int_type()), Type::Int);
     }
 
     /// Records whether a flush followed the last write, so a notice left in a

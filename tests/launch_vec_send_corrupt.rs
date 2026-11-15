@@ -55,6 +55,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn workspace_root() -> PathBuf {
+    // read-only on project_root — checked-in sources run with --no-cache.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -68,6 +69,7 @@ fn free_port() -> u16 {
 /// (or the normal end of test) never leaks the process nor holds the port.
 struct ServerGuard {
     child: Child,
+    _empty_lib: tempfile::TempDir,
 }
 
 impl Drop for ServerGuard {
@@ -99,20 +101,25 @@ fn spawn_server(port: u16) -> ServerGuard {
         main_cl.display()
     );
 
+    let empty_lib = tempfile::tempdir().expect("empty library directory");
     let child = Command::new(&binary)
         .current_dir(&fixture)
+        .arg("--no-cache")
         .arg("--run")
         .arg("main.cl")
         .env("CRANELISP_PORT", port.to_string())
         .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
-        .env("CRANELISP_LIB", root.join("stdlib"))
+        .env("CRANELISP_LIB", empty_lib.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn web_launch_vec_send_corrupt server");
 
-    let mut guard = ServerGuard { child };
+    let mut guard = ServerGuard {
+        child,
+        _empty_lib: empty_lib,
+    };
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

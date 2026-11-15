@@ -160,6 +160,7 @@ pub mod got_observer;
 pub mod heap;
 pub mod jit;
 pub mod primitives_inline;
+mod raise;
 /// N3 (S105, `design/backend/ownership-codegen.md` §13.2.2): the gated,
 /// backend-side per-site residual-atomic-RC dump (`[RC_SITE_STATS]`). Internal —
 /// no public surface (codegen-time measurement counter, zero-cost-off).
@@ -1496,21 +1497,16 @@ fn disasm_host(code_bytes: &[u8], addr: u64) -> Result<String, String> {
 ///
 /// A BROKEN symbol's GOT slot is patched (by the session, via
 /// `got().store_slot`) to point at this stub, so every existing unrecompiled
-/// caller that dispatches through the slot raises a clean runtime error with
-/// per-symbol provenance instead of executing stale code. The stub is ~5
-/// instructions over the EXISTING raise machinery — `iconst msg_ptr; iconst
-/// msg_len; call runtime/panic; return 0` — no new intrinsic (`runtime/panic`
-/// resolves through the ordinary intrinsics registration,
-/// `register_intrinsics` → `JITBuilder::symbol`).
+/// caller that dispatches through the slot raises a runtime panic with
+/// per-symbol provenance instead of executing stale code. The body is one
+/// raise of the baked message (`design/backend/backend.md` §7): `runtime/panic`
+/// reports it and ends the process, so the stub never returns.
 ///
 /// **Signature `() -> i64`, sound for any caller arity** under the uniform
 /// all-I64 value representation on both supported ABIs (SysV x86-64 /
 /// AAPCS64): the stub never reads its argument registers (caller-owned
-/// scratch), stack-passed args (arity > 8) are caller-cleaned in both
-/// conventions, and the `0` sentinel comes back in the single return register.
-/// The host surfaces the raised message via
-/// `cranelisp_intrinsics::panic::take_runtime_error()` after the invocation,
-/// in every mode.
+/// scratch), and stack-passed args (arity > 8) are caller-cleaned in both
+/// conventions.
 ///
 /// Returns `(code_ptr, Code)`: the code pointer is `*const u8` — exactly what
 /// `store_slot(slot, ptr)` consumes — and the `Code::Jit` handle is the
@@ -1527,11 +1523,6 @@ fn disasm_host(code_bytes: &[u8], addr: u64) -> Result<String, String> {
 /// (`design/int/session-transaction.md`; `/arch` S101 Phase-2 checklist (i)).
 /// The backend's obligation is only that the baked pointer is never read
 /// after the `Code` handle drops.
-///
-/// RC-mid-panic caveat (carried, documented): a caller has already emitted
-/// consuming incs for its heap args when the trap fires; the raise path
-/// releases none of them — one leaked reference per trap invocation, the same
-/// caveat class as every `runtime/panic` raise. Dev-session-bounded.
 pub fn compile_trap_stub(
     msg_ptr: *const u8,
     msg_len: usize,
@@ -1573,15 +1564,17 @@ pub fn compile_trap_stub(
         builder.switch_to_block(entry);
         builder.seal_block(entry);
 
-        // Bake the provenance string's address + length; call runtime/panic
-        // (stores the message in the thread-local slot and returns); return
-        // the 0 sentinel.
-        let ptr_val = builder.ins().iconst(types::I64, msg_ptr as i64);
-        let len_val = builder.ins().iconst(types::I64, msg_len as i64);
-        let panic_ref = module.declare_func_in_func(panic_id, builder.func);
-        builder.ins().call(panic_ref, &[ptr_val, len_val]);
-        let sentinel = builder.ins().iconst(types::I64, 0);
-        builder.ins().return_(&[sentinel]);
+        raise::emit_raise(
+            &mut builder,
+            module,
+            panic_id,
+            raise::RaiseMessage::Baked {
+                ptr: msg_ptr,
+                len: msg_len,
+            },
+            Span::SYNTHETIC,
+        )
+        .map_err(CompilationError::from)?;
         builder.seal_all_blocks();
         builder.finalize();
     }
@@ -1611,84 +1604,57 @@ pub fn compile_trap_stub(
     Ok((code_ptr, Code::jit(jit_arc)))
 }
 
-/// Unit tests for [`compile_trap_stub`] (the R3 machinery's per-symbol trap
-/// stub — backend §8.1/§8.3). Relocated from the flat crate-root `tests.rs`
-/// to sit beside the code they exercise (S102 CS-B3.0, FIXME 0495; Principle
-/// 23 — tests mirror module composition). Self-contained: they depend only on
-/// `compile_trap_stub` + the `cranelisp-intrinsics` panic slot.
+/// Unit tests for [`compile_trap_stub`] (backend §8.1/§8.3). A call to the
+/// stub ends the process, so each cell calls it in a child.
 #[cfg(test)]
 mod trap_stub_tests {
     use super::compile_trap_stub;
+    use crate::test_child;
 
-    // spec: design/backend/ownership-codegen.md §8.1 — the stub raises the baked
-    // provenance message through `runtime/panic` (thread-local slot + sentinel
-    // return); the host reads it via `take_runtime_error`.
+    const MESSAGE: &str = "g is broken by the redefinition of f: type error";
+
+    // Child body: compile the stub over `MESSAGE` and call it through an
+    // imported signature of arity `ARITY` (0 or 3).
     #[test]
-    fn trap_stub_raises_provenance_message_and_returns_sentinel() {
-        let msg = String::from("g is broken by the redefinition of f: type error");
-        let (ptr, code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+    fn child_calls_trap_stub() {
+        if !test_child::selected("child_calls_trap_stub") {
+            return;
+        }
+        let msg = String::from(MESSAGE);
+        let (ptr, _code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
         assert!(
             !ptr.is_null(),
             "trap stub must finalize to a non-null code ptr"
         );
+        if test_child::arg::<usize>("ARITY") == 0 {
+            let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+            stub();
+        } else {
+            let stub3: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+            stub3(1, 2, 3);
+        }
+        println!("{}", test_child::RESUMED);
+    }
 
-        let _ = cranelisp_intrinsics::panic::take_runtime_error();
-        let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-        assert_eq!(stub(), 0, "trap stub returns the 0 sentinel");
-        let raised = cranelisp_intrinsics::panic::take_runtime_error()
-            .expect("trap stub must raise through the runtime/panic slot");
-        assert!(
-            raised.contains("g is broken by the redefinition of f: type error"),
-            "raised message must carry the baked provenance; got: {raised}"
-        );
+    fn call_in_child(arity: usize) -> test_child::Ending {
+        let path = test_child::child_path(module_path!(), "child_calls_trap_stub");
+        test_child::run(&path, &[("ARITY", arity.to_string())])
+    }
 
-        // The provenance string + Code handle pair outlive the call — the
-        // caller-side lifetime contract (§8.1). Keep both live to here.
-        drop(code);
-        drop(msg);
+    // spec: design/backend/ownership-codegen.md §8.1 — the stub raises the baked
+    // provenance message through `runtime/panic`, which ends the process; the
+    // stub never returns to its caller.
+    #[test]
+    fn trap_stub_raises_provenance_message_and_ends_the_process() {
+        call_in_child(0).assert_panicked_with(MESSAGE, "trap stub at arity 0");
     }
 
     // spec: design/backend/ownership-codegen.md §8.1 — the `() -> i64` stub is
-    // signature-safe for ANY caller arity/type vector under the uniform all-I64
-    // convention: callers that imported an N-arg signature reach the same slot
-    // and the stub never reads its argument registers. Pin the cross-arity call.
+    // signature-safe for any caller arity under the uniform all-I64 convention:
+    // a caller that imported an N-arg signature raises the same message.
     #[test]
     fn trap_stub_is_callable_at_nonzero_arity() {
-        let msg = String::from("h is broken by the redefinition of k: arity change");
-        let (ptr, _code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
-
-        let _ = cranelisp_intrinsics::panic::take_runtime_error();
-        // Call as a 3-arg function (register-passed, caller-owned scratch).
-        let stub3: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-        assert_eq!(
-            stub3(1, 2, 3),
-            0,
-            "sentinel through a 3-arg import signature"
-        );
-        assert!(
-            cranelisp_intrinsics::panic::take_runtime_error().is_some(),
-            "raise fires regardless of the caller's imported arity"
-        );
-    }
-
-    // spec: design/backend/ownership-codegen.md §8.1 — the message address is
-    // baked and read at INVOCATION time, so the stub is re-raisable (every call
-    // through the patched slot raises afresh; the slot may be hit many times in
-    // a dev session).
-    #[test]
-    fn trap_stub_raises_on_every_invocation() {
-        let msg = String::from("m is broken by the redefinition of n: gone");
-        let (ptr, _code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
-        let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-
-        for i in 0..3 {
-            let _ = cranelisp_intrinsics::panic::take_runtime_error();
-            assert_eq!(stub(), 0);
-            assert!(
-                cranelisp_intrinsics::panic::take_runtime_error().is_some(),
-                "invocation {i} must raise"
-            );
-        }
+        call_in_child(3).assert_panicked_with(MESSAGE, "trap stub at arity 3");
     }
 }
 
@@ -1841,6 +1807,9 @@ mod clif_dump_tests;
 // Shared harness for the relocated crate-root tests (FIXME 0495 step 1).
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+pub(crate) mod test_child;
 
 // Relocated crate-root module-assembly + GOT-emission tests (FIXME 0495 step 1).
 #[cfg(test)]

@@ -75,9 +75,17 @@ solution   --solution-page---->  HTML page
 - Routes: `GET /` form, `POST /solve` solution or error page, `GET /slow`
   a page served after a fixed delay for the fan-out demonstration. Any other
   path gets 404, and any other method gets 405.
-- `handle` is pure (`Request → Response`). `safe-handle` wraps it in
-  `catch-runtime-error`, so a faulting request gets a 500 while the server
-  keeps running.
+- `handle` is pure (`Request → Response`) and must not panic on any request:
+  a runtime panic ends the server process
+  ([runtime panics](../spec/12-runtime.md#1272-runtime-panics)). It holds by
+  construction. `parse-form-body` bounds its only `get`s by `count` and always
+  yields 81 characters of `.` and `1`–`9`; `make-grid` turns anything else
+  into `None`, which renders an error page; the solver sees only 81-cell grids,
+  divides by constants and matches exhaustively.
+  `form/test-malformed-body` pins the parser on input a browser would not
+  send.
+- No route answers 500. No request outcome is a fault that a response value
+  could represent, so none is modelled.
 - **Concurrency is inferred, not written.** `serve-loop` binds the next
   connection and discards a per-connection sub-tree
   (`read-conn` → `sleep` → `send-conn`). That sub-tree's footprint is disjoint
@@ -87,7 +95,7 @@ solution   --solution-page---->  HTML page
 - **Keep every effect position a direct leaf.** A user function that returns
   IO in the handler sub-tree has an opaque footprint. Eligibility analysis must
   refuse it, so the server silently serialises. Pure helpers such as
-  `slow-ms` and `safe-handle` may compute leaf arguments only.
+  `slow-ms` and `handle` may compute leaf arguments only.
 - The `web` platform uses the mixed `declare_platform!` shape.
   `bind-listener` is `Sequential`. `accept-conn`, `read-conn` and `send-conn`
   are poll leaves. `web/Connection` is an opaque handle carrying only the

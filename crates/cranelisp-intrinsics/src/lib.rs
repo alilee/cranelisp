@@ -41,7 +41,9 @@
 //!      [`alloc::dealloc_count`], [`alloc::bytes_current`]), drives the IO
 //!      trampoline via [`io::run_io_trampoline`], registers the IO observer via
 //!      [`io_observer::register_io_observer`] / [`io_observer::trace_anchor`],
-//!      and polls [`panic::take_runtime_error`].
+//!      drives a program through [`panic::cranelisp_run_program`], and
+//!      classifies a test child's ending by [`panic::PANIC_REPORT_PREFIX`] and
+//!      [`panic::PANIC_EXIT_STATUS`].
 //!
 //!    Because `cranelisp-primitives` is a named Rust consumer, the heap-object
 //!    layout consts are intrinsics' **blessed, stable public ABI** — governed
@@ -168,9 +170,9 @@
 //! | [`heap_string`]      | `HeapString` layout-ABI + alloc/read helpers (opaque to backend, Decision 12) |
 //! | [`io`]               | `cranelisp_run_io` IO trampoline (Decision 29) |
 //! | [`io_observer`]      | IO observation extension point — registration + `IoEvent`/`IoEventTag` + `trace_anchor` (Decision 40) |
-//! | [`ivar`]             | IVar primitives for lenient evaluation (spec §12.4.3) + fork-join error-slot ferry |
+//! | [`ivar`]             | IVar primitives for lenient evaluation (spec §12.4.3) |
 //! | [`layout`]           | `cranelisp_check_layout_hash` — `--link` platform layout-hash gate (platform-interface.md §5.5.4) |
-//! | [`panic`](mod@panic) | `runtime/panic` sentinel + `catch-runtime-error` combinator + error-slot mechanism |
+//! | [`panic`](mod@panic) | `runtime/panic`, the process-ending terminator, the program driver |
 //! | [`rc`]               | RC trace + underflow check + `consume_shallow` (Decision 13/24) |
 //! | [`trace`]            | `(trace ...)` runtime — 12 `cranelisp_trace_*` bodies + `TRACE_STACK` + nested-trace guard + `DisplayDescriptor` (BC §4b inv 12) |
 //! | [`vec_runtime`]      | Vec layout-ABI + COW ops + drop + narrow Rust-path Vec-of-String ownership boundary |
@@ -228,6 +230,9 @@ pub(crate) mod strand;
 // consumer (verified: zero `reactor::`/`EffectPoll`/`Reactor`/`join_io_leaves`
 // path uses outside this crate).
 pub(crate) mod reactor;
+
+#[cfg(test)]
+mod test_child;
 
 // Root re-exports — only the names with a verified root-form Rust consumer.
 //

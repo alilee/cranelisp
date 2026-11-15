@@ -55,13 +55,12 @@ impl AbiHandle for Owned {
 }
 
 /// The one private adapter for a freshly produced, fully initialized runtime
-/// result (or its specifically approved nullary/error sentinel).
+/// result or canonical produced nullary value.
 ///
 /// # Safety
 ///
 /// `raw` must be a fresh RC=1 runtime value whose initial reference transfers
-/// to the caller, canonical produced `None`/`SNil`, or quote-sexp's existing
-/// raw-zero error sentinel after `runtime_panic` records the error.
+/// to the caller, or canonical produced `None`/`SNil`.
 pub(crate) unsafe fn adopt_produced_value(raw: i64) -> Owned {
     // SAFETY: the caller establishes one of the produced-value cases above.
     unsafe { Owned::from_abi(raw) }

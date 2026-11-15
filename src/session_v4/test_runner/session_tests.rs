@@ -1,12 +1,14 @@
-//! Live-session cells for the shared runner's REPL clients and batch
-//! bookkeeping (`design/int/test-runner.md` §10). Each builds a real session,
-//! compiles through the ordinary eval or registration path and observes the
-//! runner's output.
+//! Live-session cells for the test child's engine and batch bookkeeping
+//! (`design/int/test-runner.md` §10). Each builds a real session, compiles
+//! through the ordinary eval or registration path and reads the records the
+//! engine writes. The supervisor's process launch is the end-to-end cells'.
 
 use std::path::Path;
 
-use cranelisp_types::{CodegenBehaviour, ModuleFullPath};
+use cranelisp_types::{CodegenBehaviour, CranelispError, FQSymbol, ModuleFullPath};
 
+use super::child::{Record, read_records};
+use super::run::TestOutcome;
 use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
 
 fn session(root: &Path, run_mode: RunMode, lib_dirs: Vec<std::path::PathBuf>) -> CompilerSession {
@@ -36,30 +38,58 @@ fn repl_with(root: &Path, forms: &[&str]) -> CompilerSession {
     s
 }
 
-/// Result lines of a report: `  <fq> ..... <outcome>`, as `(fq, outcome)`.
-fn result_lines(report: &str) -> Vec<(String, String)> {
-    report
-        .lines()
-        .filter_map(|line| {
-            let (name, rest) = line.trim().split_once(' ')?;
-            name.contains("/test-").then(|| {
-                let outcome = rest.trim_start_matches(['.', ' ']);
-                (name.to_string(), outcome.to_string())
-            })
-        })
-        .collect()
+/// What one engine run recorded: its warnings and `(test, outcome)` pairs.
+#[derive(Debug, Default)]
+struct ChildRun {
+    warnings: Vec<String>,
+    outcomes: Vec<(String, TestOutcome)>,
+    ended: bool,
 }
 
-// spec: repl/spec/16-test-discovery.md §16.2 Running Tests — an empty run's
-// report is exactly `No tests found`, for `/run-tests`, `/run-tests <module>`
-// and `/run-all-tests` alike (design §10 run row 7).
+/// Run the child engine over `modules` (the REPL selection) or the entry
+/// chain, and read back what it recorded.
+fn run_child(
+    s: &CompilerSession,
+    modules: Option<&[ModuleFullPath]>,
+    resume_after: Option<&FQSymbol>,
+) -> Result<ChildRun, CranelispError> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("records");
+    s.run_tests(&path, modules, resume_after)?;
+    let mut run = ChildRun::default();
+    let mut open = None;
+    for record in read_records(&path).expect("the records decode") {
+        match record {
+            Record::Warning(message) => run.warnings.push(message),
+            Record::Start(id) => open = Some(id.to_string()),
+            Record::Outcome(outcome) => run.outcomes.push((open.take().unwrap(), outcome)),
+            Record::End => run.ended = true,
+        }
+    }
+    Ok(run)
+}
+
+fn user() -> Vec<ModuleFullPath> {
+    vec![ModuleFullPath::from("user")]
+}
+
+fn fail(reason: &str) -> TestOutcome {
+    TestOutcome::Fail {
+        reason: reason.to_string(),
+    }
+}
+
+// spec: repl/spec/16-test-discovery.md §16.2 Running Tests — an empty
+// selection runs nothing and completes, for a module selection and for the
+// `/run-all-tests` selection alike (design §10 run row 7).
 #[test]
-fn repl_clients_report_no_tests_found_for_an_empty_run() {
+fn an_empty_selection_records_no_test_and_completes() {
     let root = tempfile::tempdir().unwrap();
     let s = repl_with(root.path(), &["(defn helper [] 1)"]);
-    assert_eq!(s.handle_run_tests(""), "No tests found");
-    assert_eq!(s.handle_run_tests("user"), "No tests found");
-    assert_eq!(s.handle_run_all_tests(), "No tests found");
+    for modules in [user(), s.selection_inputs().non_library_modules()] {
+        let run = run_child(&s, Some(&modules), None).unwrap();
+        assert!(run.outcomes.is_empty() && run.ended, "{run:?}");
+    }
 }
 
 // spec: repl/spec/16-test-discovery.md §16.2 Running Tests — a failing test's
@@ -69,19 +99,15 @@ fn repl_clients_report_no_tests_found_for_an_empty_run() {
 fn run_tests_releases_a_failing_tests_value() {
     let root = tempfile::tempdir().unwrap();
     let s = repl_with(root.path(), &[ALLOCATING_TEST]);
-    let (report, allocated, released) = heap_traffic(|| s.handle_run_tests(""));
-    assert_eq!(
-        result_lines(&report),
-        [("user/test-b".to_string(), "FAILED: boom".to_string())],
-        "{report}"
-    );
+    let (run, allocated, released) = heap_traffic(|| run_child(&s, Some(&user()), None).unwrap());
+    assert_eq!(run.outcomes, [("user/test-b".to_string(), fail("boom"))]);
     assert!(
         allocated > 0,
         "the failing value is heap-allocated by the call"
     );
     assert_eq!(
         released, allocated,
-        "every allocation made by the test run is released: {report}"
+        "every allocation made by the test run is released"
     );
 }
 
@@ -98,18 +124,90 @@ fn run_tests_excludes_and_warns_a_mistyped_test() {
             "(defn test-ok [] (if true None (Some \"never\")))",
         ],
     );
-    let report = s.handle_run_tests("");
+    let run = run_child(&s, Some(&user()), None).unwrap();
     assert_eq!(
-        result_lines(&report),
-        [("user/test-ok".to_string(), "ok".to_string())],
-        "{report}"
+        run.outcomes,
+        [("user/test-ok".to_string(), TestOutcome::Pass)]
     );
     assert!(
-        report
-            .lines()
-            .any(|l| l.contains("; warning:") && l.contains("user/test-int")),
-        "the mistyped test is warned by its FQ name: {report}"
+        run.warnings.len() == 1 && run.warnings[0].contains("user/test-int"),
+        "the mistyped test is warned once by its FQ name: {run:?}"
     );
+}
+
+// spec: design/int/test-runner.md §10 test-child row 5 — a resume point runs
+// only the eligible tests that sort after it.
+#[test]
+fn a_resume_point_runs_only_the_tests_after_it() {
+    let root = tempfile::tempdir().unwrap();
+    let s = batch_with(
+        root.path(),
+        &[
+            "(defn test-a [] None)",
+            "(defn test-b [] None)",
+            "(defn test-c [] None)",
+        ],
+    );
+    let after = FQSymbol {
+        module: ModuleFullPath::from("user"),
+        symbol: cranelisp_types::Symbol::from("test-a"),
+    };
+    let run = run_child(&s, None, Some(&after)).unwrap();
+    let names: Vec<_> = run.outcomes.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["user/test-b", "user/test-c"]);
+    let all = run_child(&s, None, None).unwrap();
+    assert_eq!(
+        all.outcomes.len(),
+        3,
+        "control: no resume point runs every test"
+    );
+}
+
+// spec: design/int/test-runner.md §10 test-child row 8 — a REPL child, which
+// runs with a module selection and without the object cache, writes nothing
+// into the project: no cache directory and no backing file.
+#[test]
+fn a_repl_child_writes_no_project_file() {
+    let root = tempfile::tempdir().unwrap();
+    let s = batch_with(root.path(), &[ALLOCATING_TEST]);
+    let before = project_files(root.path());
+    let run = run_child(&s, Some(&user()), None).unwrap();
+    assert_eq!(run.outcomes.len(), 1);
+    s.wait_object_complete().unwrap();
+    assert_eq!(project_files(root.path()), before);
+    assert_eq!(before, ["user.cl"]);
+}
+
+fn project_files(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+// spec: design/int/test-runner.md §6.5 — the child loads a selected module that
+// the entry chain does not reach, then runs its tests.
+#[test]
+fn a_selected_module_outside_the_entry_chain_is_loaded() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("side.cl"),
+        "(import [primitives [*]])\n(defn test-side [] None)\n",
+    )
+    .unwrap();
+    let s = batch_with(root.path(), &[]);
+    let side = vec![ModuleFullPath::from("side")];
+    let run = run_child(&s, Some(&side), None).unwrap();
+    assert_eq!(
+        run.outcomes,
+        [("side/test-side".to_string(), TestOutcome::Pass)]
+    );
+
+    let missing = vec![ModuleFullPath::from("absent")];
+    let error = run_child(&s, Some(&missing), None).unwrap_err();
+    assert!(error.to_string().contains("absent"), "{error}");
 }
 
 // spec: repl/spec/16-test-discovery.md §16.2.2 `/run-all-tests` — a library
@@ -135,9 +233,10 @@ fn run_all_tests_excludes_a_library_module_inside_the_project() {
     let mut s = session(root.path(), RunMode::Repl, vec![lib]);
     s.eval("(import [lm [fl]])")
         .unwrap_or_else(|e| panic!("library import must compile: {e}"));
-    let report = s.handle_run_all_tests();
-    let names: Vec<String> = result_lines(&report).into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names, ["p/test-p"], "{report}");
+    let modules = s.selection_inputs().non_library_modules();
+    let run = run_child(&s, Some(&modules), None).unwrap();
+    let names: Vec<_> = run.outcomes.into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["p/test-p"]);
 }
 
 /// Allocations and deallocations made while `f` runs.
@@ -176,15 +275,18 @@ fn batch_with(root: &Path, forms: &[&str]) -> CompilerSession {
 fn unresolvable_release_target_fails_before_any_test_runs() {
     let root = tempfile::tempdir().unwrap();
     let s = batch_with(root.path(), &[ALLOCATING_TEST]);
-    let (control, allocated, _) = heap_traffic(|| s.run_tests());
+    let (control, allocated, _) = heap_traffic(|| run_child(&s, None, None));
     let control = control.unwrap_or_else(|e| panic!("the unplanted run succeeds: {e}"));
-    assert_eq!(control.exit_code(), 1, "{}", control.text());
+    assert_eq!(
+        control.outcomes,
+        [("user/test-b".to_string(), fail("boom"))]
+    );
     assert!(allocated > 0, "the control run executed the test body");
 
     s.shared
         .fresh_jit_drop_glues
         .retain(|(module, _), _| module.as_ref() != "user");
-    let (planted, allocated, _) = heap_traffic(|| s.run_tests());
+    let (planted, allocated, _) = heap_traffic(|| run_child(&s, None, None));
     let Err(error) = planted else {
         panic!("a missing release target must be refused before running");
     };
@@ -193,29 +295,25 @@ fn unresolvable_release_target_fails_before_any_test_runs() {
 }
 
 // spec: repl/spec/16-test-discovery.md §16.6 Availability by Invocation Mode —
-// `run_tests` refuses a program referencing `discover-tests` and runs no test
-// (design/int/test-runner.md §10 refusal row 3).
+// `run_tests` refuses a program referencing `discover-tests` and runs no test,
+// with a REPL selection too, because every test runs in a test child
+// (design/int/test-runner.md §10 refusal row 3, §6.5).
 #[test]
 fn run_tests_refuses_a_discover_tests_reference_before_running() {
     let forms = ["(defn helper [] (discover-tests []))", ALLOCATING_TEST];
     let root = tempfile::tempdir().unwrap();
     let s = batch_with(root.path(), &forms);
-    let (refused, allocated, _) = heap_traffic(|| s.run_tests());
-    let Err(error) = refused else {
-        panic!("a program referencing discover-tests must be refused");
-    };
-    let message = error.to_string();
-    for token in ["discover-tests", "user/helper", "REPL", "--test"] {
-        assert!(message.contains(token), "names `{token}`: {message}");
+    for modules in [None, Some(user())] {
+        let (refused, allocated, _) = heap_traffic(|| run_child(&s, modules.as_deref(), None));
+        let Err(error) = refused else {
+            panic!("a program referencing discover-tests must be refused");
+        };
+        let message = error.to_string();
+        for token in ["discover-tests", "user/helper", "REPL", "--test"] {
+            assert!(message.contains(token), "names `{token}`: {message}");
+        }
+        assert_eq!(allocated, 0, "no test body ran");
     }
-    assert_eq!(allocated, 0, "no test body ran");
-
-    let repl_root = tempfile::tempdir().unwrap();
-    let repl = repl_with(repl_root.path(), &forms);
-    assert!(
-        repl.handle_run_tests("").contains("FAILED: boom"),
-        "the REPL runner applies no refusal"
-    );
 }
 
 // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2 is about
@@ -225,11 +323,9 @@ fn run_tests_refuses_a_discover_tests_reference_before_running() {
 fn run_tests_reports_an_existing_entry_without_tests_as_an_empty_run() {
     let root = tempfile::tempdir().unwrap();
     let s = batch_with(root.path(), &[]);
-    let report = s
-        .run_tests()
+    let run = run_child(&s, None, None)
         .unwrap_or_else(|e| panic!("an entry without tests is an empty run: {e}"));
-    assert_eq!(report.text(), "No tests found");
-    assert_eq!(report.exit_code(), 0);
+    assert!(run.outcomes.is_empty() && run.ended, "{run:?}");
 }
 
 // spec: design/int/test-runner.md §4.1 — the fresh dependency prologue records

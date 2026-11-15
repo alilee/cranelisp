@@ -145,3 +145,26 @@ fn marginal_harness_cancels_the_ambient_prelude_residual_deterministically() {
         m.report()
     );
 }
+
+// spec: CLAUDE.md §Assurance — C-5: the linked marginal instrument still detects one block.
+#[test]
+fn linked_marginal_instrument_detects_one_block_and_identical_control_is_zero() {
+    let child = || mini_child().link_then_run();
+    let control = MarginalPair::new("linked identical children", child(), child()).measure();
+    assert_eq!(
+        (control.allocs(), control.deallocs()),
+        (0, 0),
+        "{}",
+        control.report()
+    );
+    let planted = MarginalPair::new(
+        "linked one-block plant",
+        child(),
+        child()
+            .env("CRANELISP_TEST_FAULTS", "s116-detection-proof-v1")
+            .env("CRANELISP_TEST_FAULT", "M3Leak"),
+    )
+    .measure();
+    assert_eq!(planted.residual(), 1, "{}", planted.report());
+    assert_eq!(planted.allocs(), 0, "{}", planted.report());
+}

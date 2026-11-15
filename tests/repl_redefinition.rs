@@ -1134,3 +1134,44 @@ fn live_redefinition_rejects_callable_and_macro_visibility_changes() {
         );
     }
 }
+
+// spec: repl/spec/18-redefinition.md §18.1 — P-18: a template-only caller blocks a type change.
+#[test]
+fn template_only_caller_refuses_language_type_change_keeps_prior_callable() {
+    let out =
+        repl_prims("(defn f [x] x)\n(defn g [x] (f x))\n(defn f [x] (add-i64 x 1))\n(f true)\n")
+            .assert_ok();
+    out.assert_stdout_contains("cannot redefine user/f")
+        .assert_stdout_contains("blocking dependents: user/g")
+        .assert_stdout_contains(":primitives/Bool true")
+        .assert_stdout_does_not_contain("runtime panic:");
+}
+
+// spec: repl/spec/18-redefinition.md §18.1 — P-18 control: no caller admits the change.
+#[test]
+fn caller_free_language_type_change_is_admitted_control() {
+    repl_prims("(defn f [x] x)\n(defn f [x] (add-i64 x 1))\n(f 9)\n")
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 10")
+        .assert_stdout_does_not_contain("cannot redefine");
+}
+
+// spec: repl/spec/18-redefinition.md §18.2 — P-18: generic body edit reaches compiled caller.
+#[test]
+fn generic_same_type_body_edit_reaches_compiled_caller() {
+    repl_prims("(defn f [x] 7)\n(defn g [] (f 0))\n(g)\n(defn f [x] 42)\n(g)\n")
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_contains(":primitives/Int 42")
+        .assert_stdout_does_not_contain("cannot redefine");
+}
+
+// spec: repl/spec/18-redefinition.md §18.2 — P-18's concrete twin.
+#[test]
+fn concrete_same_type_body_edit_reaches_compiled_caller_control() {
+    repl_prims("(defn f [:Int x] 7)\n(defn g [] (f 0))\n(g)\n(defn f [:Int x] 42)\n(g)\n")
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_contains(":primitives/Int 42")
+        .assert_stdout_does_not_contain("cannot redefine");
+}

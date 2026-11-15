@@ -340,12 +340,8 @@ fn quote_sexp_build(val: Borrowed<'_>) -> Owned {
             alloc_adt_2(TAG_SEXP_LIST, StoredField::Owned(items))
         }
         _ => {
-            // Unknown tag — panic at runtime.
             let msg = "unknown Sexp tag in quote-sexp";
-            cranelisp_intrinsics::panic::runtime_panic(msg.as_ptr(), msg.len());
-            // SAFETY: this is the existing no-reference error sentinel after
-            // `runtime_panic` has recorded the unknown-tag failure.
-            unsafe { adopt_produced_value(0) }
+            cranelisp_intrinsics::panic::runtime_panic(msg.as_ptr(), msg.len())
         }
     }
 }

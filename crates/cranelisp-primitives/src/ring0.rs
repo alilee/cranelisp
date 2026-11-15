@@ -30,12 +30,10 @@
 //!
 //! ## Division-by-zero
 //!
-//! `div-i64` panics on `b == 0` or on the `i64::MIN / -1` overflow case via
-//! `cranelisp_intrinsics::panic::runtime_panic`. The inline-substitution
-//! path emits a `runtime_panic` call directly (see `primitives_inline.rs`).
-//! The shim must produce the same observable behaviour — store a panic
-//! message on the thread-local error slot, return `0` as a dummy. The
-//! REPL/`--run` driver checks `take_runtime_error()` after JIT-call return.
+//! `div-i64` raises on `b == 0` or on the `i64::MIN / -1` overflow case via
+//! `cranelisp_intrinsics::panic::runtime_panic`, which does not return. The
+//! inline-substitution path emits the same call (see `primitives_inline.rs`),
+//! so both paths report identically.
 
 use cranelisp_intrinsics::panic::runtime_panic;
 
@@ -60,10 +58,7 @@ pub(crate) fn mul_i64(a: i64, b: i64) -> i64 {
 pub(crate) fn div_i64(a: i64, b: i64) -> i64 {
     if b == 0 {
         let msg = b"division by zero";
-        // runtime_panic is `pub extern "C"`; the call itself is safe — it
-        // copies into a thread-local error slot.
         runtime_panic(msg.as_ptr(), msg.len());
-        return 0;
     }
     if a == i64::MIN && b == -1 {
         // The inline path uses the same "division by zero" message for the
@@ -71,7 +66,6 @@ pub(crate) fn div_i64(a: i64, b: i64) -> i64 {
         // mappable-path and inline-path error strings are observable-equivalent.
         let msg = b"division by zero";
         runtime_panic(msg.as_ptr(), msg.len());
-        return 0;
     }
     a / b
 }

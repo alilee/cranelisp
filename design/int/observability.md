@@ -7,7 +7,9 @@ co-owner that no longer exists.
 canonical carrier for activator semantics, placement constraints and dump
 mechanics).
 **Owner surface:** int. Code homes: `src/observability.rs` (+ `src/observability/tests.rs`),
-`src/io_trace.rs`, `src/got_trace.rs`, `src/sched_dump.rs`.
+`src/io_trace.rs`, `src/got_trace.rs`, `src/trace_ring.rs` (+ `src/trace_ring/tests.rs`),
+`src/sched_dump.rs`. The S123 process-exit hook (§7.1) was built in W1 and
+checked against source on 2026-11-15.
 
 > **Section numbers are load-bearing.** `src/main.rs`, `src/worker.rs`,
 > `src/session_v4/nice_worker.rs`, `src/observability/tests.rs`,
@@ -160,9 +162,11 @@ skeleton:
 
 ## 7. Dump
 
-Recording is per-thread: a bounded `VecDeque` ring with FIFO overflow — at
-capacity the oldest event is dropped so a long run cannot grow unbounded.
-Capacities are `65_536` (scheduler), `65_536` (IO) and `16_384` (GOT).
+Recording is per-thread, in one ring type that all three sinks share
+(`src/trace_ring.rs`). The ring is a bounded `VecDeque` with FIFO overflow:
+at capacity the oldest event is dropped, so a long run cannot grow
+unbounded. Capacities are `65_536` (scheduler), `65_536` (IO) and `16_384`
+(GOT).
 
 All three **buffer and flush at teardown**; none streams. At flush the thread
 drains every published buffer plus its own live buffer, sorts by
@@ -180,12 +184,28 @@ thing to keep in step with the format. A flush with an empty merge writes
 nothing at all, so an unset activator produces byte-identical output to a build
 without the instrument.
 
-**Worker publication.** A thread's ring dies with the thread, so a thread that
-emits and then exits must publish its buffer into a process-wide registry first;
-the flushing thread merges the registry with its own live buffer. Without this a
-dump shows only main-thread events. The scheduler and GOT sinks publish from
-both worker pools. The IO sink exposes the same primitive with no caller — see
-§10.
+**Publication.** The flushing thread merges its sink's process-wide registry
+with its own live ring. Other threads' events must reach the registry first,
+or the dump shows only the flushing thread's events.
+
+- **A ring publishes itself when it is destroyed.** When its thread-local is
+  destroyed, it pushes its undrained events into its sink's registry. This
+  happens at thread exit, and at process exit for the exiting thread (§7.1).
+- **Use after destruction is a no-op.** A push or drain after destruction
+  does nothing. It does not panic, because a panic inside the `extern "C"`
+  exit hook would abort the process and replace its exit status.
+- **The explicit calls are now redundant.** The worker loops still call
+  `publish_thread_buffer` for the scheduler and GOT sinks before they exit.
+  Destruction would publish the same events, and a drained ring publishes
+  nothing, so no event appears twice. Retiring the explicit calls is
+  optional cleanup.
+- **Live threads are not reached.** A thread that is still running when the
+  dump happens publishes nothing. §10 covers the rayon case.
+
+*Grade: measured.*
+`src/trace_ring/tests.rs::destroyed_ring_publishes_its_remaining_events`
+checks that a destroyed ring's events reach the registry. Its negative leg
+checks that a drained ring publishes nothing.
 
 ### 7.1 Process-exit and panic wiring
 
@@ -198,36 +218,59 @@ both worker pools. The IO sink exposes the same primitive with no caller — see
    thread-local rings, so the drain must happen first. Idempotence is required
    because tests and defensive entry points install repeatedly.
 
+3. **A process-exit hook.** `main` registers it with libc `atexit` as its
+   first statement, and it calls `flush_traces()`.
+
 `main` also calls `install_if_enabled` for the two observer-backed sinks, which
 registers the observer with its owning crate only when the activator is on.
 
-`std::process::exit` bypasses `Drop`, so every exit site calls the explicit
-`flush_traces()` first.
-
 | Path | Mechanism |
 |---|---|
-| `main` returns normally (REPL, `--link`) | guard `Drop` |
+| `main` returns normally (REPL, `--link`, the test child) | guard `Drop` |
 | Panic reaches the top-level hook | chained panic hook |
-| `--run` exit-code escape (spec §12.6) | explicit `flush_traces()` before `process::exit` |
-| `run()` returned `Err(_)` → exit 1 | explicit `flush_traces()` before `process::exit` |
+| A runtime panic, which ends the process inside the runtime's funnel ([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)) | exit hook |
+| Every `process::exit`, including the `--run` exit code (spec §12.6), `run()` returning `Err(_)`, the `--test` supervisor's exit and the argument-parse exits | exit hook |
 
-**S123 target (designed 2026-11-15, not implemented).** A runtime panic ends
-the process inside the runtime's funnel, at a site int does not control
-([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)).
-`main` therefore registers one process-exit hook (libc `atexit`) at startup,
-after the environment supply, that calls `flush_traces()`. The hook covers the
-panic exit and every `process::exit` site, so the explicit per-site calls
-retire with it. Because draining empties the rings, the hook and the `Drop`
-guard together still print each event once. The hook neither exits nor
-changes the status. When a worker thread panics, other threads may still be
-appending while the hook drains. The dump is diagnostic, so a torn tail is an
-accepted residual.
+- **One mechanism for every exit.** The per-site `flush_traces()` calls
+  before `process::exit` were removed. Argument-parse exits also reach the
+  hook now, which costs nothing because no event exists by then.
+- **Each event prints once.** Draining empties the rings, so the hook and
+  the `Drop` guard together never print an event twice.
+- **The hook neither exits nor changes the status.** It cannot unwind,
+  because the sinks treat a destroyed thread-local as empty (§7).
 
-Deliberately **not** covered: argv-parse `process::exit` paths (they fire before
-any event can be emitted, so the flush would be a no-op and an unconditional
-`exit` reads more clearly); `std::process::abort()`; and SIGKILL/SIGABRT, which
-are kernel-terminated with no user-space flush possible. A subprocess that
-aborts before flush produces no dump — that is the failure mode §8 exists for.
+**The ordering fact.** glibc's `exit` destroys the calling thread's
+thread-locals and only then runs the `atexit` hooks. So when the hook runs,
+the exiting thread's ring is already gone. That is usually the panicking
+thread, and its events are the ones an investigation needs. A hook that only
+drained the live ring would print nothing for them.
+
+**The mechanism.** The ring publishes itself to its registry when it is
+destroyed (§7, Publication), and the hook drains the registry. The mechanism
+does not depend on the order. If a platform runs the hooks first, the hook
+finds the ring still live and drains it, and its later destruction publishes
+nothing. *Grade: measured.* The unit row in §7 checks the ring's
+publication. `tests/panic_streams.rs::panic_exit_flushes_pre_panic_trace_events_to_file`
+checks the whole path: the `--run` process panics on its main thread, and
+the trace lines recorded before the panic reach the stderr file.
+`dev`(src) reports that this cell failed against a planted fault, with
+publication on destruction removed. The planted run left no record in the
+tree. Re-arming that check is `qa`'s to allocate.
+
+**Accepted residuals.**
+
+- **When a thread other than the panicking one keeps running,** the hook
+  sees only its already-published events. Examples are the main thread
+  while a pool worker panics during macro execution, and the other pool
+  workers. That thread's own ring is still live and unpublished. This is
+  §10's reachability gap, and §10's second candidate shape would close both.
+- **Threads still appending while the hook drains can leave a torn tail.**
+  The dump is diagnostic, so this is accepted.
+
+Deliberately **not** covered: `std::process::abort()`, and SIGKILL/SIGABRT,
+which end the process in the kernel with no user-space flush possible. A
+subprocess that aborts before flush produces no dump. That is the failure
+mode §8 exists for.
 
 ## 8. SIGUSR1 scheduler-state snapshot
 
@@ -294,10 +337,12 @@ unset, which the mismatch does not touch.
 
 **IO events recorded on rayon workers never reach the dump.** The scheduler and
 GOT sinks publish from both int-owned worker loops at exit.
-`io_trace::publish_thread_buffer` exists with no caller and there is no
-int-owned loop to call it from: `Par` branches run on rayon's global pool — no
-`ThreadPoolBuilder` or exit handler is configured anywhere — whose threads live
-to process end. `ParSpark`, `ParSerialGroupEnter` and `ParJoin` are emitted on
+`io_trace::publish_thread_buffer` exists with no caller, and there is no
+int-owned loop to call it from. `Par` branches run on rayon's global pool,
+whose threads live to process end. No `ThreadPoolBuilder` or exit handler is
+configured anywhere. Publication on destruction (§7) does not help, because
+these threads are never destroyed before the dump: at process exit, `exit`
+destroys only the calling thread's thread-locals. `ParSpark`, `ParSerialGroupEnter` and `ParJoin` are emitted on
 the dispatching thread, before the `into_par_iter()` and after the join, and
 survive. What is lost is the branch's own work: the branch trampoline's
 `TrampolineEnter`/`TrampolineExit` bookends and every interior event it records

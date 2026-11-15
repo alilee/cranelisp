@@ -13,7 +13,7 @@
 //! | `CRANELISP_QUARANTINE_FREED` | M1 | withhold freed blocks from the system allocator (no reuse) |
 //! | `CRANELISP_QUARANTINE_MAX_BYTES=N` | M1 cap | FIFO-release the oldest withheld blocks once retained bytes exceed `N` |
 //! | `CRANELISP_SCRUB_FREED` | M2 | poison header+payload with `0xDEAD2FEE_DEAD2FEE` at the free seam |
-//! | `CRANELISP_ALLOC_PARITY` | M3 | atexit hard-check `ALLOC_COUNT == DEALLOC_COUNT` (+ empty live-set in debug); dump then abort on imbalance |
+//! | `CRANELISP_ALLOC_PARITY` | M3 | atexit hard-check `ALLOC_COUNT == DEALLOC_COUNT` (+ empty live-set in debug); dump then abort on imbalance; stands down after a fault termination |
 //! | `CRANELISP_ALLOC_PARITY_DUMP` | M3 dump | atexit print-and-continue ledger, no abort |
 //! | `CRANELISP_RC_DEC_CHECK` | A1–A4 | release-gate the RC/alloc seam checks (reuses the existing dec-check gate) |
 //!
@@ -808,15 +808,23 @@ fn balanced_ledger(allocs: usize, deallocs: usize, live_len: usize) -> String {
 /// The atexit handler registered by [`ensure_parity_registered`]. On imbalance
 /// under `CRANELISP_ALLOC_PARITY` it dumps and aborts non-zero; under
 /// `CRANELISP_ALLOC_PARITY_DUMP` alone it prints and continues (never aborts).
+///
+/// After a fault termination the hard check stands down: a panic leaks
+/// frame-owned values by permission (`spec/12-runtime.md` §12.7.8), so it prints
+/// one not-checked line and neither aborts nor changes the exit status. The
+/// dump face still prints its ledger.
 extern "C" fn check_alloc_parity_atexit() {
     let allocs = crate::alloc::alloc_count();
     let deallocs = crate::alloc::dealloc_count();
     let live = live_snapshot();
-    let hard = parity_hard_enabled();
     let dump = parity_dump_enabled();
+    let hard = parity_hard_enabled() && !crate::panic::termination_claimed();
+    if parity_hard_enabled() && !hard {
+        eprintln!("[ALLOC_PARITY] not checked: the process ended by a fault");
+    }
 
     match alloc_parity_report(allocs, deallocs, &live) {
-        Some(report) => {
+        Some(report) if hard || dump => {
             // §7.2: name the injected fault BEFORE the report, so a report says
             // *which* plant produced it. Absent unless a ledger plant fired.
             if let Some(line) = ledger_plant_report_line() {
@@ -830,6 +838,7 @@ extern "C" fn check_alloc_parity_atexit() {
             }
             // dump-only mode: print-and-continue (already printed).
         }
+        Some(_) => {}
         None => {
             if dump {
                 if let Some(line) = ledger_plant_report_line() {

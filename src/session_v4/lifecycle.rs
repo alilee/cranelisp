@@ -2588,83 +2588,34 @@ impl CompilerSession {
         let code_ptr = main.code_ptr;
         let result_type = main.result_type.clone();
 
-        // Run the program via the unified C-ABI driver (FIXME 0366). The driver
-        // owns the WHOLE clear→call→pre-IO-peek→trampoline→post-IO-peek sequence
-        // — the same body the `--link` startup stub drives — and returns a
-        // `ProgramOutcome` WITHOUT exiting (REPL-safe) and WITHOUT clearing the
-        // error slots (we drain them below to build the structured error). This
-        // is the single owner of the three former lockstep slot-check points;
-        // the host no longer transcribes them.
+        // Run the program through the C-ABI driver the linked startup stub
+        // also uses. A runtime panic or a platform dispatch fault ends the
+        // process inside it, so it returns only the clean result word
+        // (`design/int/io-integration.md` §1.2).
         //
         // SAFETY: `code_ptr` is non-null — returned from `lookup_main_code_ptr`
         // which errors on None. It points to finalized JIT code compiled by
         // Cranelift via `compile_and_register_defn`, with the
         // `extern "C" fn() -> i64` calling convention (zero-arg defn, i64
         // return) the driver transmutes to.
-        let outcome =
+        let value =
             cranelisp_intrinsics::panic::cranelisp_run_program(code_ptr, result_type.is_io());
 
-        // Translate the outcome → structured error / (value, Type) for
-        // `main.rs::run`. The host (NOT the driver) drains the SET slot to
-        // compose the message — `error.rs`'s `PlatformError::DispatchError`
-        // Display stays the host-side single source for the dispatch-fault text.
-        match outcome.error_kind {
-            // 1 = runtime error: the runtime-error slot is SET (drain for text).
-            1 => {
-                let err = cranelisp_intrinsics::panic::take_runtime_error()
-                    .unwrap_or_else(|| "runtime panic".to_string());
-                Err(CranelispError::CodegenError {
-                    message: format!("runtime panic: {}", err),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })
-            }
-            // 2 = dispatch fault: the dispatch-fault slot is SET. int composes
-            // the structured `PlatformError::DispatchError` from the
-            // intrinsics-captured `(fn_name, cause)` (BC §4b invariant 14 / §5
-            // invariant 9 — two-layer split).
-            2 => {
-                let fault =
-                    cranelisp_intrinsics::panic::take_dispatch_fault().unwrap_or_else(|| {
-                        cranelisp_intrinsics::panic::DispatchFault {
-                            fn_name: "<unknown>".to_string(),
-                            cause: "platform dispatch fault".to_string(),
-                        }
-                    });
-                Err(CranelispError::Platform(
-                    cranelisp_types::PlatformError::DispatchError {
-                        fn_name: cranelisp_types::Symbol::from(fault.fn_name),
-                        cause: fault.cause,
-                        location: ErrorLocation::from_span(Span::SYNTHETIC),
-                    },
-                ))
-            }
-            // 0 = clean: `outcome.exit_code` is the inner IO value (or main's own
-            // result for a non-IO main). Ownership of that word crosses HERE,
-            // into the ONE program-result owner (`result_owner`). `IO a` is
-            // unwrapped exactly once — at this driver boundary — so the owner
-            // selects glue for the inner `a`, never for `IO a` (§4.4). The host
-            // (`main.rs::run`) then observes the exit code and releases, in
-            // that order, before any teardown.
-            _ => {
-                let result_type = if result_type.is_io() {
-                    result_type.unwrap_io().clone()
-                } else {
-                    result_type
-                };
-                let resolver = crate::result_owner::SessionGlueResolver::for_result_code(
-                    main.code_owner.as_ref(),
-                    &self.shared.fresh_jit_drop_glues,
-                );
-                crate::result_owner::OwnedProgramResult::new(
-                    outcome.exit_code,
-                    result_type,
-                    main.codegen_result_ty,
-                    &ModuleFullPath::from(module_name),
-                    &self.shared.symbol_tables,
-                    &resolver,
-                )
-            }
-        }
+        // Ownership of the word crosses into the one program-result owner
+        // here. The host (`main.rs::run`) then observes the exit code and
+        // releases, in that order, before any teardown (result-owner §4.3).
+        let resolver = crate::result_owner::SessionGlueResolver::for_result_code(
+            main.code_owner.as_ref(),
+            &self.shared.fresh_jit_drop_glues,
+        );
+        crate::result_owner::OwnedProgramResult::new(
+            value,
+            crate::pipeline::driver_result_type(result_type),
+            main.codegen_result_ty,
+            &ModuleFullPath::from(module_name),
+            &self.shared.symbol_tables,
+            &resolver,
+        )
     }
 
     /// One read of the entry module's `main` entry, yielding everything the

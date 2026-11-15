@@ -50,7 +50,7 @@ body, so every exit shares one claim, one flush and one report path.
 | Language panic | `runtime/panic`: every emitted panic site, the nested-`trace` raise in `trace.rs`, `cranelisp-primitives`' out-of-line raisers, and platforms that resolve the symbol (for example `poll-pool`) | the panic prefix, then the message |
 | Empty `select` | the select arm (`reactor.md` §9) | `select over empty collection`, as a language panic |
 | Platform dispatch fault | the IO dispatch guard (`io_guard`) after a platform `Effect` thunk faults ([arch §1.6](../arch/s123-panics-and-environment.md#16-platform-dispatch-faults)) | the platform function name and the cause, without the panic prefix |
-| Runtime defect | the supervised-strand boundary's `catch_unwind` (`reactor.md` §2.12) | the Rust panic payload |
+| Runtime defect | the supervised-strand boundary's `catch_unwind` (`reactor.md` §2.12) | `error: runtime defect: `, then the Rust panic payload |
 | `OneShot` backstop expiry | the reactor drive (`reactor.md` §8.2) | the existing backstop diagnostic |
 | Switch-install misuse | the switch install entry (§2.1) | a located configuration message |
 
@@ -99,6 +99,20 @@ the report stream and the exit statuses:
   does not carry the panic prefix: a dispatch fault in a test child reads as a
   failed test naming its cause, not as `PANIC:`. If P11 is declined, the
   constants stay crate-private, and int keeps its own copy.
+
+**The runtime-defect report (S123 ruling).** It is
+`error: runtime defect: <payload>`, on one line.
+
+- The payload is the Rust panic payload when that payload is a `&str` or a
+  `String`. Any other payload is reported as one fixed placeholder.
+- The report must not begin with the panic prefix. A runtime defect is a
+  fault in the runtime, not a language panic. So, like a dispatch fault, it
+  reads as a failed test in a test child, not as `PANIC:`. The
+  `error: runtime defect: ` lead differs from the prefix at its second word,
+  and the test supervisor matches the whole prefix
+  ([test runner §6.5](../int/test-runner.md#65-the-test-child)).
+- The text is diagnostic, not normative. §12.7.5 governs panic reports only.
+  The defect template lives in the terminator's module beside the prefix.
 
 The dispatch-fault template is the only live copy of that text. The `--run`
 host no longer composes `PlatformError::DispatchError`, and packet row P9
@@ -227,6 +241,9 @@ seams they need:
   and the claim is a pure state transition, so both are unit-testable without
   exiting. `has_return: false` for `runtime/panic` comes from ACT-1033's
   derivation.
+- **The defect report:** a module test composes a runtime-defect fault and
+  asserts the whole report line. It also asserts that the line does not start
+  with `PANIC_REPORT_PREFIX`, which is the negative leg.
 - **Child process:** status, report, ordering, the two-raiser single report
   and the M3 stand-down use the harness shape in
   [`diagnostic-modes.md`](diagnostic-modes.md) §7.6. The detection proof is a

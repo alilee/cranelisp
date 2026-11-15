@@ -342,171 +342,59 @@ fn run_tests_empty_module_reports_no_tests() {
     .assert_stdout_contains("No tests found");
 }
 
-// spec: design/arch/test-discovery.md §4.3 — `discover-tests` and
-// `catch-runtime-error` are user-callable `primitives`; a user composes
-// their own test runner over the discovered name+callable pairs without the
-// `/run-tests` slash command. This is the load-bearing composability shape
-// (ruling 1): the runner folds over the `(Vec (Pair String (Fn [] (Option
-// String))))` discovery result, brackets each late-bound callable with
-// `catch-runtime-error`, and counts passes. The retired `run-test` /
-// `TestResult` (TestPass/TestFail) surface and the SList-of-names return are
-// gone (src/CLAUDE.md §"Test discovery"; test-discovery.md fourth
-// convergence) — this test asserts the current fn-value-pairs surface.
-//
-// Two properties this exercises beyond construction:
-//   - explicit `(Vec String)` module argument — the no-arg `(discover-tests)`
-//     form is STDLIB-MACRO sugar (test-discovery.md §2 "One extern taking (Vec String)"), and tests are
-//     stdlib-free (CLAUDE.md), so the bare extern is called with `["user"]`.
-//   - q-eligibility (test-discovery.md §2 "Eligibility"): a `test-*` fn is discovered only
-//     if its type is EXACTLY `(Fn [] (Option String))`. A bare `(defn test-x
-//     [] None)` is pinned by typecheck to that exact scheme
-//     (design/typecheck/monomorphisation.md §3.2) and is discovered;
-//     `(if true None (Some "..."))` is simply another exact-typed form.
+// spec: repl/spec/16-test-discovery.md §16.5 — T-7: direct callable iteration stops at panic.
 #[test]
-fn discover_tests_and_catch_runtime_error_user_composition() {
-    repl_prims(
-        // test-passing returns None typed (Option String) (the (Some ..) arm
-        // forces the element type); test-failing returns (Some msg). Only the
-        // passing one is counted → expect 1.
-        "(defn test-passing [] (if true None (Some \"never\")))\n\
-         (defn test-failing [] (Some \"boom\"))\n\
-         (defn count-passes [acc i pairs]\n\
-           (if (eq-i64 i (vec-len pairs))\n\
-               acc\n\
-               (match (vec-get pairs i)\n\
-                 [(Pair name run)\n\
-                  (match (catch-runtime-error run)\n\
-                    [(Ok inner)\n\
-                       (match inner\n\
-                         [None      (count-passes (add-i64 acc 1) (add-i64 i 1) pairs)\n\
-                          (Some why) (count-passes acc (add-i64 i 1) pairs)])\n\
-                     (Err msg)  (count-passes acc (add-i64 i 1) pairs)])])))\n\
-         (defn my-run-tests [] (count-passes 0 0 (discover-tests [\"user\"])))\n\
-         (my-run-tests)\n",
-    )
-    .assert_stdout_contains(":primitives/Int 1");
-}
-
-// =============================================================================
-// FIXME 0289 Half B — `catch-runtime-error` arm coverage across modes +
-// `discover-tests` eligibility-exclusion negative.
-//
-// The composition test above exercises the Ok/None pass-counting path in REPL.
-// Half B adds the two coverage gaps the design calls out:
-//   - `catch-runtime-error` over a *panicking* thunk → `(Err …)` and over a
-//     clean thunk → `(Ok …)`, demonstrated end-to-end in `--run` AND `--link`
-//     (the combinator is a self-contained intrinsic — appendix-A "works in all
-//     modes including --link"). The Err vs Ok arm selects the program's exit
-//     code, so the e2e observation is the exit code, not stdout.
-//   - `discover-tests` excludes a mis-typed `test-*` (negative) — discovery
-//     requires BOTH the `test-` prefix AND the exact signature
-//     `(Fn [] (Option String))`.
-//
-// `--run`/`--link` programs do not get the implicit primitives re-export the
-// REPL `repl_prims` helper provides, so each entry program imports the names it
-// uses from `primitives` explicitly. `main` returns `(IO _)` via `Pure`
-// (S80 main:IO enforcement); the inner Int becomes the process exit code.
-// =============================================================================
-
-// The `--run`/`--link` entry program: `catch-runtime-error` over a thunk that
-// divides by zero (a `runtime/panic` source per §12.7.2.1). The Err arm is
-// selected → `main` yields `(Pure 0)` → exit 0. The Ok arm (had the thunk not
-// panicked) would yield 1 — so exit 0 proves the Err arm fired.
-const CATCH_ERR_PROGRAM: &str = "(import [primitives [catch-runtime-error div-i64 Result Ok Err Pure]])\n\
-     (defn main []\n\
-       (Pure (match (catch-runtime-error (fn [] (div-i64 10 0)))\n\
-               [(Ok v)   1\n\
-                (Err m)  0])))\n";
-
-// Clean-thunk counterpart: the thunk computes 42 without panicking, so the Ok
-// arm fires and `main` yields `(Pure 42)` → exit 42.
-const CATCH_OK_PROGRAM: &str = "(import [primitives [catch-runtime-error add-i64 Result Ok Err Pure]])\n\
-     (defn main []\n\
-       (Pure (match (catch-runtime-error (fn [] (add-i64 40 2)))\n\
-               [(Ok v)   v\n\
-                (Err m)  -1])))\n";
-
-// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
-// `catch-runtime-error` returns `(Err message)` when the thunk raises a
-// language-level runtime error; self-contained intrinsic, works in `--run`.
-#[test]
-fn catch_runtime_error_err_arm_run() {
-    Cranelisp::new()
-        .file("user.cl", CATCH_ERR_PROGRAM)
-        .run("user.cl")
-        .output()
-        .assert_exit(0);
-}
-
-// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
-// `catch-runtime-error` "works in all modes including --link". The Err arm
-// must fire identically in a linked standalone binary.
-#[test]
-fn catch_runtime_error_err_arm_link() {
-    Cranelisp::new()
-        .file("user.cl", CATCH_ERR_PROGRAM)
-        .link_then_run("user.cl")
-        .output()
-        .assert_exit(0);
-}
-
-// spec: spec/12-runtime.md §12.3 — RC discipline: every heap allocation is freed
-// exactly once; a caught runtime error must not leak. DEFECT (surfaced S94 Wave 3
-// while authoring the dependent-spark RC guards in `concurrency_spark.rs`): each
-// `catch-runtime-error` that takes the `Err` arm LEAKS exactly one heap cell
-// (almost certainly the ferried error-message String / `Err` payload not freed
-// when its binding goes out of scope unused). The leak scales linearly with the
-// number of catches (N catches ⇒ N leaked cells), so a long-running program that
-// catches errors in a loop (a retry loop) leaks without bound.
-//
-// PRE-EXISTING and INDEPENDENT of sparking / lenient eval / limit #2: this minimal
-// repro has NO `let`, no sparkable bindings, no IVars — just a bare
-// `(catch-runtime-error (fn [] (div-i64 10 0)))` driven N times. Observed N=20 ⇒
-// 20-cell imbalance (e.g. 51 allocs / 31 frees). The dependent-spark guards in
-// `concurrency_spark.rs` use a RELATIVE-to-this-baseline assertion to isolate
-// limit #2's (zero) contribution, precisely because this baseline leak exists.
-//
-// OBSERVABILITY: a pure leak has no value/exit witness (the program computes the
-// right answer and exits cleanly), so the only signal is the `CRANELISP_RC_TRACE=1`
-// alloc/free balance (the DEF-3 precedent for allocation-imbalance defects).
-//
-// FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md`: asserts the
-// CORRECT behaviour (alloc == free), RED today, GREEN when the caught error cell is
-// freed. Owner: /dev (likely `cranelisp-intrinsics` error-ferry / the match-arm
-// drop of an unused `(Err m)` binding, or `cranelisp-backend` drop codegen).
-#[test]
-fn catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg() {
-    let src = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-               (defn step [:Int acc]\n\
-                 (match (catch-runtime-error (fn [] (div-i64 10 0)))\n\
-                   [(Ok v)  acc\n\
-                    (Err m) (add-i64 acc 1)]))\n\
-               (defn drive [:Int n :Int acc]\n\
-                 (if (le-i64 n 0) acc (drive (sub-i64 n 1) (step acc))))\n\
-               (defn main [] (Pure (drive 20 0)))\n";
-    let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::None)
-        .env("CRANELISP_RC_TRACE", "1")
-        .file("user.cl", src)
-        .run("user.cl")
-        .output();
-    // The program completes correctly even under the leak (the observability
-    // limitation): acc reaches 20, exit 20. The only witness is the imbalance.
-    assert_eq!(
-        out.status.code(),
-        Some(20),
-        "expected exit 20 (20 catches)\nstdout:\n{}\nstderr:\n{}",
+fn discover_tests_direct_run_stops_at_panicking_test() {
+    let out = repl_prims(
+        "(defn test-a [] None)\n\
+         (defn test-b [] (if (eq-i64 (div-i64 1 0) 0) None (Some \"never\")))\n\
+         (defn test-c [] (Some \"C-RAN\"))\n\
+         (defn invoke [name pairs i] (match (vec-get pairs i) [(Pair n run) (if (str-eq name n) (run) (invoke name pairs (add-i64 i 1)))]))\n\
+         (invoke \"user/test-a\" (discover-tests []) 0)\n\
+         (invoke \"user/test-b\" (discover-tests []) 0)\n\
+         (invoke \"user/test-c\" (discover-tests []) 0)\n\
+         (add-i64 800 13)\n",
+    );
+    let mut problems = helpers::e2e::panic_exit_problems(&out, "division by zero", Some(6), false);
+    if !out.stdout.contains("Option.None") {
+        problems.push("a's passing result missing".into());
+    }
+    if out.stdout.contains("(Option.Some \"C-RAN\")") {
+        problems.push("c ran after b panicked".into());
+    }
+    assert!(
+        problems.is_empty(),
+        "direct in-language runner: {problems:?}\nstatus:{:?}\nstdout:{}\nstderr:{}",
+        out.status,
         out.stdout,
         out.stderr
     );
-    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert_eq!(
-        allocs, frees,
-        "every caught runtime error must be alloc/free balanced — `catch-runtime-error` \
-         leaks one heap cell per caught error (§12.3 RC discipline); got {allocs} allocs / \
-         {frees} frees over 20 catches (≈20-cell leak).\nstderr:\n{}",
-        out.stderr
-    );
+}
+
+// spec: spec/12-runtime.md §12.7.2 — P-9: the removed capture function is unbound.
+#[test]
+fn removed_catch_runtime_error_is_unbound_in_every_mode() {
+    let mut failures = Vec::new();
+    for mode in ["repl", "run", "link"] {
+        let cr = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
+        let program = "(defn main [] (Pure (catch-runtime-error (fn [] 7))))\n";
+        let out = match mode {
+            "repl" => cr.stdin("(catch-runtime-error (fn [] 7))\n").output(),
+            "run" => cr.user(program).run("user.cl").output(),
+            _ => cr.user(program).link("user.cl").output(),
+        };
+        let text = format!("{}{}", out.stdout, out.stderr);
+        let unbound = text.contains("undefined variable")
+            || text.contains("unbound")
+            || text.contains("unknown symbol");
+        if !unbound
+            || !text.contains("catch-runtime-error")
+            || (mode != "repl" && (out.status.success() || out.tmp_exists("user")))
+        {
+            failures.push(format!("{mode}: reference must be an unbound-name compile error, with no executable\n{text}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // =============================================================================
@@ -746,18 +634,6 @@ fn runtime_panic_in_io_continuation_surfaces_link() {
 }
 
 // spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
-// `catch-runtime-error` returns `(Ok result)` when the thunk completes
-// cleanly; the inner value (42) propagates as the exit code in `--run`.
-#[test]
-fn catch_runtime_error_ok_arm_run() {
-    Cranelisp::new()
-        .file("user.cl", CATCH_OK_PROGRAM)
-        .run("user.cl")
-        .output()
-        .assert_exit(42);
-}
-
-// spec: spec/appendix-a-builtins.md §"Test discovery and error capture" —
 // `discover-tests` eligibility: a `test-*` fn is discovered only if its type is
 // EXACTLY `(Fn [] (Option String))`. NEGATIVE: a wrong-arity `test-*` and a
 // wrong-return-type `test-*` are both excluded — only the one well-typed test
@@ -873,8 +749,7 @@ fn integer_division_by_zero_panics_neg() {
         .output();
     let combined = format!("{}{}", out.stdout, out.stderr);
     // Per §12.7.3 the divisor-zero case MUST trigger a runtime panic with
-    // "division by zero" diagnostic. The REPL session MUST survive the panic
-    // (§12.7.4); we assert only that the diagnostic appears.
+    // "division by zero" diagnostic. Process exit is pinned by the P-3 cell.
     assert!(
         combined.contains("division by zero")
             || combined.contains("divide by zero")
@@ -1388,15 +1263,6 @@ fn tco_non_tail_recursion_unchanged() {
 }
 
 // =============================================================================
-// §12.7.3 Arithmetic policy (continued) — i64::MIN / -1 trap
-//
-// On x86_64 / aarch64 the `idiv` of `i64::MIN` by `-1` traps because the
-// mathematical result (`i64::MAX + 1`) does not fit in a signed 64-bit
-// register. The spec lists this alongside divide-by-zero as a panic
-// source. The legacy test grouped it with the divide-by-zero diagnostic.
-// =============================================================================
-
-// =============================================================================
 // Wave 5.6 file 6 e2e.rs chunk-1 GAP-COVER carry-forwards — `/run-tests`
 // aggregation angles (count multi, mixed pass+fail, non-test filter) per
 // repl/spec.md §3.1 (Command Inventory) + §16.2.1.
@@ -1741,28 +1607,23 @@ fn three_level_cascade_does_not_duplicate_error_output_neg() {
     );
 }
 
-// spec: spec/12-runtime.md §12.7.3 — `div-i64` of i64::MIN by -1 panics
-// (carry: legacy/ring0.rs::checked_div_min_neg1_panics)
+// spec: spec/12-runtime.md §12.7.3 — P-3: MIN / -1 panics, never wraps or traps.
 #[test]
 fn integer_div_min_by_neg_one_panics_neg() {
     let out = Cranelisp::new()
-        .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin("(div-i64 -9223372036854775808 -1)\n")
+        .user(
+            "(import [primitives [*]])\n(defn main [] (Pure (div-i64 -9223372036854775808 -1)))\n",
+        )
+        .run("user.cl")
         .output();
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    // §12.7.3: the i64::MIN / -1 case MUST trigger a runtime panic. The
-    // diagnostic vocabulary historically reuses the divide-by-zero
-    // wording (the legacy assertion checked exactly that). The REPL
-    // session MUST survive (§12.7.4); we only check for a diagnostic.
+    let report = regex::Regex::new(r"^error: runtime panic: (?:.+:[0-9]+: )?(.+)$").unwrap();
     assert!(
-        combined.contains("division by zero")
-            || combined.contains("divide by zero")
-            || combined.contains("overflow")
-            || combined.contains("Error")
-            || combined.contains("panic"),
-        "div-i64 of i64::MIN by -1 MUST produce a panic / error diagnostic \
-         per §12.7.3; got stdout={} stderr={}",
+        matches!(out.status.code(), Some(c) if c != 0)
+            && out.stderr.lines().count() == 1
+            && report.is_match(out.stderr.trim_end())
+            && out.stdout.trim().is_empty(),
+        "MIN / -1 must exit with one non-empty panic report and no quotient: status:{:?}\nstdout:{}\nstderr:{}",
+        out.status,
         out.stdout,
         out.stderr
     );
@@ -2624,112 +2485,90 @@ fn apply_arg_all_cheap_stays_serial() {
     assert_eq!(on, Some(42), "expected 20+22=42; got {on:?}");
 }
 
-// --- Ferry at the NEW apply entry point (4) — lenient-eval.md §5, §9 ----------
+const AA_PANIC_DEFS: &str = "(import [primitives [*]])
+(defn ping [n d] (if (le-i64 n 0) (div-i64 10 d) (pong (sub-i64 n 1) d)))
+(defn pong [n d] (if (le-i64 n 0) (div-i64 10 d) (ping (sub-i64 n 1) d)))
+(defn left [n i] (if (le-i64 n 0) (vec-get [7] i) (right (sub-i64 n 1) i)))
+(defn right [n i] (if (le-i64 n 0) (vec-get [7] i) (left (sub-i64 n 1) i)))
+";
 
-// Ferry programs use explicit `primitives` imports (the ferry combinator set)
-// and the naive imports needed; the default (None) prelude, matching the
-// existing CATCH_ERR_PROGRAM convention.
-const AA_FERRY_CAUGHT_PROGRAM: &str = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-     (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
-     (defn main []\n\
-       (Pure (match (catch-runtime-error (fn [] (add-i64 (div-i64 10 0) (work 100000 0))))\n\
-               [(Ok v)  1\n\
-                (Err m) 0])))\n";
-
-// spec: spec/12-runtime.md §12.4.3 — a div-by-zero in ONE of ≥2 sparked
-// apply-arguments is FERRIED to the joining thread (the barrier-force) and
-// surfaces into the enclosing `catch-runtime-error` → the `Err` arm fires (exit
-// 0 proves caught, not silently dropped), under `--run`. New ferry entry point.
-#[test]
-fn apply_arg_panic_ferried_caught_run() {
-    Cranelisp::new()
-        .file("user.cl", AA_FERRY_CAUGHT_PROGRAM)
-        .run("user.cl")
-        .output()
-        .assert_exit(0);
+fn spark_argument_program(tail: bool, divisor: i64, index: i64) -> String {
+    if tail {
+        format!(
+            "{AA_PANIC_DEFS}(defn f [d i] (add-i64 (ping 3 d) (left 3 i)))\n(defn main [] (Pure (f {divisor} {index})))\n"
+        )
+    } else {
+        format!(
+            "{AA_PANIC_DEFS}(defn main [] (Pure (add-i64 (ping 3 {divisor}) (left 3 {index}))))\n"
+        )
+    }
 }
 
-// spec: spec/12-runtime.md §12.4.3 — same sparked-apply-arg ferry under `--link`
-// (ferry sound across modes); the `Err` arm fires → exit 0.
+// spec: spec/12-runtime.md §12.4.3 — P-4: a sparked argument panic exits under --run.
 #[test]
-fn apply_arg_panic_ferried_caught_link() {
-    Cranelisp::new()
-        .file("user.cl", AA_FERRY_CAUGHT_PROGRAM)
-        .link_then_run("user.cl")
-        .output()
-        .assert_exit(0);
-}
-
-// spec: spec/12-runtime.md §12.4.3 — NEGATIVE: an UNCAUGHT div-by-zero in a
-// sparked apply-argument MUST NOT be silently discarded — it surfaces "division
-// by zero" on the joining thread. (A swallowed spark panic would let the program
-// complete with the sentinel value — the failure mode the ferry exists to prevent.)
-#[test]
-fn apply_arg_panic_not_swallowed_neg() {
-    let src = "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
-               (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
-               (defn main [] (Pure (add-i64 (div-i64 10 0) (work 100000 0))))\n";
+fn apply_arg_panic_exits_run() {
     let out = Cranelisp::new()
-        .file("user.cl", src)
+        .user(&spark_argument_program(false, 0, 0))
         .run("user.cl")
         .output();
+    helpers::e2e::assert_panic_exit(&out, "division by zero", None, false);
+}
+
+// spec: spec/12-runtime.md §12.4.3 — P-4: a sparked argument panic exits when linked.
+#[test]
+fn apply_arg_panic_exits_link() {
+    let out = Cranelisp::new()
+        .user(&spark_argument_program(false, 0, 0))
+        .link_then_run("user.cl")
+        .output();
+    helpers::e2e::assert_panic_exit(&out, "division by zero", None, true);
+}
+
+// spec: spec/12-runtime.md §12.7.2 — P-4: two panicking sparks produce one allowed report.
+#[test]
+fn apply_arg_dual_panic_exits_with_one_report() {
+    let out = Cranelisp::new()
+        .user(&spark_argument_program(false, 0, 9))
+        .run("user.cl")
+        .output();
+    let choices = ["division by zero", "vec-get: index out of bounds"];
     assert!(
-        out.stderr.contains("division by zero") || out.stdout.contains("division by zero"),
-        "uncaught sparked-arg div-by-zero MUST surface 'division by zero' (§12.4.3, not swallowed).\n\
-         stdout:\n{}\nstderr:\n{}",
+        choices
+            .iter()
+            .any(|m| helpers::e2e::panic_exit_problems(&out, m, None, false).is_empty()),
+        "two sparks must produce exactly one allowed panic report\nstatus: {:?}\nstdout:{}\nstderr:{}",
+        out.status,
         out.stdout,
         out.stderr
     );
-    assert_ne!(out.status.code(), Some(0), "uncaught panic must NOT exit 0");
 }
 
-// spec: spec/12-runtime.md §12.4.3 — first-error-wins: when BOTH sparked
-// apply-arguments would panic with DISTINCT messages, the LEFT (first
-// left-to-right) error wins — the barrier forces arguments in source order, so
-// `set_runtime_error` first-error-wins is deterministic regardless of worker
-// finish order, matching a sequential L-to-R evaluation. Left `(div-i64 10 0)`
-// ("division by zero") beats right `(vec-get [1 2 3] 9)` ("vec-get: index out of
-// bounds"). P+N: the division message appears; the out-of-bounds message does NOT.
+// spec: spec/12-runtime.md §12.4.3 — P-4: a tail-position sparked argument panic exits.
 #[test]
-fn apply_arg_dual_panic_first_error_wins() {
-    let src = "(import [primitives [div-i64 vec-get add-i64 Pure]])\n\
-               (defn main [] (Pure (add-i64 (div-i64 10 0) (vec-get [1 2 3] 9))))\n";
+fn apply_arg_tail_panic_exits() {
     let out = Cranelisp::new()
-        .file("user.cl", src)
+        .user(&spark_argument_program(true, 0, 0))
         .run("user.cl")
         .output();
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        combined.contains("division by zero"),
-        "first-error-wins: expected the LEFT 'division by zero' (§12.4.3).\n{combined}"
-    );
-    assert!(
-        !combined.contains("out of bounds"),
-        "first-error-wins NEGATIVE: the RIGHT 'index out of bounds' must NOT win (§12.4.3).\n{combined}"
-    );
+    helpers::e2e::assert_panic_exit(&out, "division by zero", None, false);
 }
 
-// --- Barrier / TCO-gating invariant (2) — §4.4 Phase 2, §2.5.3 ---------------
-
-// spec: spec/12-runtime.md §12.4.3 — a TAIL-position (non-self) sparking apply
-// `(add-i64 (div-i64 10 0) (work n 0))` as `f`'s whole body, wrapped in
-// `catch-runtime-error` → `Err` arm. Fails (panic dropped / wrong exit) if any
-// path reaches the call with an unforced argument IVar — pins barrier-before-call
-// in tail position.
+// spec: spec/12-runtime.md §12.4.3 — P-4: run/link non-panicking apply twins spawn both arguments.
 #[test]
-fn apply_arg_tail_panic_ferried() {
-    let src = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-               (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
-               (defn f [:Int n] (add-i64 (div-i64 10 0) (work n 0)))\n\
-               (defn main []\n\
-                 (Pure (match (catch-runtime-error (fn [] (f 100000)))\n\
-                         [(Ok v)  1\n\
-                          (Err m) 0])))\n";
-    Cranelisp::new()
-        .file("user.cl", src)
-        .run("user.cl")
-        .output()
-        .assert_exit(0);
+fn apply_arg_non_panicking_twins_spawn() {
+    for (tail, linked) in [(false, false), (false, true), (true, false)] {
+        let builder = Cranelisp::new()
+            .user(&spark_argument_program(tail, 1, 0))
+            .env("CRANELISP_SPARK_STATS", "1");
+        let out = if linked {
+            builder.link_then_run("user.cl")
+        } else {
+            builder.run("user.cl")
+        }
+        .output();
+        let out = out.assert_exit(17);
+        helpers::e2e::assert_spark_spawns(&out, 2);
+    }
 }
 
 // spec: spec/12-runtime.md §12.5 — a TAIL SELF-recursive call carrying ≥2
@@ -2952,54 +2791,45 @@ fn budget_knob_default_override_and_garbage() {
 // =============================================================================
 // §12.7.2.1 — Vec index bounds panic (ACT-1037)
 // =============================================================================
-//
-// `vec-get` and `vec-set` with an index < 0 or >= length MUST panic. Each REPL
-// cell is judged by one predicate, `bounds_panic_then_session_continues`: the
-// out-of-range form reports a runtime error naming the bounds failure and the
-// next form still evaluates. The `vec-get` cell proves the predicate detects a
-// panic; the in-range `vec-set` cell proves it stays silent without one. A
-// crash (glibc abort, SIGSEGV) fails the predicate and is reported with the
-// exit status, never as a harness error.
-//
-// The message is matched on "index out of bounds" only. The §12.7.2.1 table
-// gives `"vec-get: index out of bounds"` for both operations.
-
-const BOUNDS_NEXT_FORM: &str = "(add-i64 40 2)";
-const BOUNDS_NEXT_VALUE: &str = ":primitives/Int 42";
+const BOUNDS_NEXT_FORM: &str = "(add-i64 800 13)";
+const BOUNDS_NEXT_VALUE: &str = ":primitives/Int 813";
 
 /// Evaluate `form`, then `BOUNDS_NEXT_FORM`, in one REPL session. Returns
-/// whether the form panicked with `message` and the session went on to print
-/// `BOUNDS_NEXT_VALUE`, plus a diagnostic of what happened.
-fn panic_then_session_continues(form: &str, message: &str) -> (bool, String) {
+/// whether it exited on the panic without evaluating the marker, plus diagnostics.
+fn panic_then_process_exits(form: &str, message: &str) -> (bool, String) {
     let out = repl_prims(&format!("{form}\n{BOUNDS_NEXT_FORM}\n"));
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    let panicked = combined.contains("runtime error") && combined.contains(message);
-    let continued = out.status.success() && out.stdout.contains(BOUNDS_NEXT_VALUE);
+    let message = if message == "index out of bounds" {
+        "vec-get: index out of bounds"
+    } else {
+        message
+    };
+    let problems =
+        helpers::e2e::panic_exit_problems(&out, message, Some(form.lines().count()), false);
     let diag = format!(
-        "form: {form}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        "{problems:?}\nform: {form}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
         out.status, out.stdout, out.stderr
     );
-    (panicked && continued, diag)
+    (problems.is_empty(), diag)
 }
 
-fn bounds_panic_then_session_continues(form: &str) -> (bool, String) {
-    panic_then_session_continues(form, "index out of bounds")
+fn bounds_panic_then_process_exits(form: &str) -> (bool, String) {
+    panic_then_process_exits(form, "index out of bounds")
 }
 
 fn assert_vec_set_bounds_panic(form: &str) {
-    let (ok, diag) = bounds_panic_then_session_continues(form);
+    let (ok, diag) = bounds_panic_then_process_exits(form);
     assert!(
         ok,
         "an out-of-range `vec-set` index MUST raise the §12.7.2.1 bounds panic, and \
-         the session MUST evaluate the next form (§12.7.4)\n{diag}"
+         the process MUST exit before the next form (§12.7.4)\n{diag}"
     );
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 — `vec-get` past the end panics and the
-// session continues. Detection leg of the bounds predicate.
+// process ends. Detection leg of the bounds predicate.
 #[test]
-fn vec_get_index_past_length_panics_and_session_continues() {
-    let (ok, diag) = bounds_panic_then_session_continues("(vec-get [1 2 3] 9)");
+fn vec_get_index_past_length_panics_and_exits() {
+    let (ok, diag) = bounds_panic_then_process_exits("(vec-get [1 2 3] 9)");
     assert!(
         ok,
         "`(vec-get [1 2 3] 9)` MUST raise the bounds panic\n{diag}"
@@ -3010,7 +2840,7 @@ fn vec_get_index_past_length_panics_and_session_continues() {
 // source. Silent leg of the bounds predicate, with the written element shown.
 #[test]
 fn vec_set_in_range_index_writes_without_panic_neg() {
-    let (ok, diag) = bounds_panic_then_session_continues("(vec-set [1 2 3] 1 99)");
+    let (ok, diag) = bounds_panic_then_process_exits("(vec-set [1 2 3] 1 99)");
     assert!(!ok, "an in-range `vec-set` MUST NOT panic\n{diag}");
     assert!(
         diag.contains("[1 99 3]") && diag.contains(BOUNDS_NEXT_VALUE),
@@ -3063,12 +2893,7 @@ fn vec_set_index_past_length_on_heap_element_vec_panics() {
 /// `main` returns 77 when `(f index)` panics and `(f index)`'s value otherwise.
 /// `f` receives the index as a parameter, so no mode can fold the bounds test.
 fn vec_set_dynamic_index_program(index: i64) -> String {
-    format!(
-        "(import [primitives [Pure vec-set vec-len catch-runtime-error Result Ok Err]])\n\
-         (defn f [i] (vec-len (vec-set [1 2 3] i 99)))\n\
-         (defn probe [i] (match (catch-runtime-error (fn [] (f i))) [(Ok n) n (Err m) 77]))\n\
-         (defn main [] (Pure (probe {index})))\n"
-    )
+    format!("(defn f [i] (vec-len (vec-set [1 2 3] i 99)))\n(defn main [] (Pure (f {index})))\n")
 }
 
 /// `(main)`'s value in the REPL, `--run` and `--link`, each with its output.
@@ -3090,6 +2915,7 @@ fn main_value_in_every_mode(program: &str) -> Vec<(&'static str, Option<i32>, St
                 .next()
         })
         .and_then(|n| n.parse().ok());
+    let repl_value = repl.status.success().then_some(repl_value).flatten();
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .user(program)
@@ -3112,7 +2938,11 @@ fn assert_main_value_in_every_mode(program: &str, expected: i32, what: &str) {
     let modes = main_value_in_every_mode(program);
     let wrong: Vec<String> = modes
         .iter()
-        .filter(|(_, value, _)| *value != Some(expected))
+        .filter(|(_, value, diag)| {
+            *value != Some(expected)
+                || diag.contains("runtime panic:")
+                || diag.contains("runtime error:")
+        })
         .map(|(mode, value, diag)| format!("--- {mode}: observed {value:?}\n{diag}"))
         .collect();
     assert!(
@@ -3131,406 +2961,424 @@ fn vec_set_dynamic_in_range_index_completes_in_every_mode() {
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 — a compiled function's out-of-range
-// `vec-set` panics in every mode, observed as the `catch-runtime-error` Err
-// arm (77) rather than the length of an unchecked write (3).
+// `vec-set` panics in every mode before a caller can consume its result.
 // defect: class=missing-runtime-check locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_cow_core found=S122 owner=/dev fixed=S122/aed0fcb1
 #[test]
 fn vec_set_dynamic_out_of_range_index_panics_in_every_mode() {
-    assert_main_value_in_every_mode(
-        &vec_set_dynamic_index_program(9),
-        77,
-        "out-of-range `(f 9)`",
+    panic_in_every_mode(
+        "(defn f [i] (vec-len (vec-set [1 2 3] i 99)))",
+        "(f 9)",
+        "vec-get: index out of bounds",
     );
 }
 
-// =============================================================================
-// §12.7.8 — a panic in a callee stops its caller (ACT-1040)
-// =============================================================================
-//
-// A panic MUST end the computation it was raised in, not only the frame that
-// raised it. `h` panics inside its own frame and returns to its caller; when
-// the caller uses that result as a heap value (a String, a Vec) the process
-// must still report the panic and, in the REPL, continue. The controls change
-// one thing each: the consumer is a scalar (C2) or the index is in range (C3).
-// A crash (SIGSEGV) fails the predicate with its exit status in the diagnostic.
-
+// §12.7: callee panics terminate before a heap consumer can use a sentinel.
 const PANICKING_GET: &str = "(defn h [v i] (vec-get v i))";
 const PANICKING_DIV: &str = "(defn d [n] (if (eq-i64 (div-i64 10 n) 0) \"a\" \"bc\"))";
 const PANICKING_SET: &str = "(defn s [v i] (vec-set v i 9))";
 
-fn assert_callee_panic_reported(defs: &str, form: &str, message: &str) {
-    let (ok, diag) = panic_then_session_continues(&format!("{defs}\n{form}"), message);
+fn panic_in_every_mode(defs: &str, form: &str, message: &str) {
+    let mut failures = Vec::new();
+    for mode in ["repl", "run", "link"] {
+        let cr = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .timeout(std::time::Duration::from_secs(5));
+        let cr = if mode == "repl" {
+            cr.stdin(&format!(
+                "{defs}{}{form}\n(add-i64 800 13)\n",
+                if defs.is_empty() { "" } else { "\n" }
+            ))
+        } else {
+            let cr = cr.user(&format!("{defs}\n(defn main [] (Pure {form}))\n"));
+            if mode == "run" {
+                cr.run("user.cl")
+            } else {
+                cr.link_then_run("user.cl")
+            }
+        };
+        match cr.try_output() {
+            Err(error) => {
+                failures.push(format!("{mode}: expected panic exit within 5s; {error:?}"))
+            }
+            Ok(out) => {
+                let prompts =
+                    (mode == "repl").then_some(defs.lines().filter(|l| !l.is_empty()).count() + 1);
+                let problems =
+                    helpers::e2e::panic_exit_problems(&out, message, prompts, mode == "link");
+                if !problems.is_empty() {
+                    failures.push(format!(
+                        "{mode}: {problems:?}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+                        out.status, out.stdout, out.stderr
+                    ));
+                }
+            }
+        }
+    }
     assert!(
-        ok,
-        "a panic in a callee MUST be reported and the session MUST evaluate the next \
-         form, even when the caller uses the callee's result as a heap value (§12.7.8)\n{diag}"
+        failures.is_empty(),
+        "panic exit contract in every mode:\n{}",
+        failures.join("\n")
     );
 }
 
-// spec: spec/12-runtime.md §12.7.8 — a callee's bounds panic is reported when
-// the caller passes the String result to `str-len` (R1).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.8 — P-1 R1, heap String consumer, all modes.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn callee_bounds_panic_with_string_consumer_is_reported() {
-    assert_callee_panic_reported(
+    panic_in_every_mode(
         PANICKING_GET,
         "(str-len (h [\"a\" \"bc\"] 9))",
-        "index out of bounds",
+        "vec-get: index out of bounds",
     );
 }
 
-// spec: spec/12-runtime.md §12.7.8 — a callee's division-by-zero panic is
-// reported when the caller passes the String result to `str-len` (R2).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.8 — P-1 R2, division before String consumer.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn callee_division_panic_with_string_consumer_is_reported() {
-    assert_callee_panic_reported(PANICKING_DIV, "(str-len (d 0))", "division by zero");
+    panic_in_every_mode(PANICKING_DIV, "(str-len (d 0))", "division by zero");
 }
 
-// spec: spec/12-runtime.md §12.7.8 — a callee's bounds panic is reported when
-// the caller only binds and releases the String result (R3).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.8 — P-1 R3, released heap result.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn callee_bounds_panic_with_released_string_result_is_reported() {
-    assert_callee_panic_reported(
+    panic_in_every_mode(
         PANICKING_GET,
         "(let [s (h [\"a\" \"bc\"] 9)] 5)",
-        "index out of bounds",
+        "vec-get: index out of bounds",
     );
 }
 
-// spec: spec/12-runtime.md §12.7.8 — a callee's `vec-set` bounds panic is
-// reported when the caller passes the Vec result to `vec-len` (the ACT-1037
-// sibling).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.8 — P-1 R4, Vec consumer.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn callee_vec_set_bounds_panic_with_vec_consumer_is_reported() {
-    assert_callee_panic_reported(
+    panic_in_every_mode(
         PANICKING_SET,
         "(vec-len (s [1 2] 9))",
-        "index out of bounds",
+        "vec-get: index out of bounds",
     );
 }
 
-// spec: spec/12-runtime.md §12.7.8 — control (C2): a callee's bounds panic is
-// reported when the caller consumes the result as an Int.
+// spec: spec/12-runtime.md §12.7.8 — P-1 C2, scalar consumer also terminates.
 #[test]
 fn callee_bounds_panic_with_scalar_consumer_is_reported_control() {
-    assert_callee_panic_reported(
+    panic_in_every_mode(
         PANICKING_GET,
         "(add-i64 1 (h [1 2] 9))",
-        "index out of bounds",
+        "vec-get: index out of bounds",
     );
 }
 
-// spec: spec/12-runtime.md §12.7.8 — control (C3): the in-range call returns
-// its String to `str-len` without a panic.
+// spec: spec/12-runtime.md §12.7.8 — P-8/C3, in-range consumer in every mode.
 #[test]
 fn callee_in_range_get_with_string_consumer_does_not_panic_neg() {
-    let (ok, diag) = bounds_panic_then_session_continues(&format!(
-        "{PANICKING_GET}\n(str-len (h [\"a\" \"bc\"] 1))"
-    ));
-    assert!(!ok, "an in-range `h` MUST NOT panic\n{diag}");
-    assert!(
-        diag.contains(":primitives/Int 2\n") && diag.contains(BOUNDS_NEXT_VALUE),
-        "`(str-len (h [\"a\" \"bc\"] 1))` MUST be 2 and the session continue\n{diag}"
-    );
+    let program =
+        format!("{PANICKING_GET}\n(defn main [] (Pure (str-len (h [\"a\" \"bc\"] 1))))\n");
+    assert_main_value_in_every_mode(&program, 2, "in-range C3");
 }
 
-/// `main` returns 77 when `(str-len (h ["a" "bc"] index))` panics inside
-/// `catch-runtime-error`, and the length otherwise.
-fn caught_callee_panic_program(index: i64) -> String {
-    format!(
-        "(import [primitives [Pure vec-get str-len catch-runtime-error Result Ok Err]])\n\
-         {PANICKING_GET}\n\
-         (defn probe [i] (match (catch-runtime-error (fn [] (str-len (h [\"a\" \"bc\"] i)))) [(Ok n) n (Err m) 77]))\n\
-         (defn main [] (Pure (probe {index})))\n"
-    )
-}
-
-// spec: spec/12-runtime.md §12.7.8 — `catch-runtime-error` contains a
-// callee's panic whose String result the thunk passes on: every mode observes
-// the `Err` arm (77) (R5).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
-#[test]
-fn caught_callee_panic_with_string_consumer_takes_err_arm_in_every_mode() {
-    assert_main_value_in_every_mode(&caught_callee_panic_program(9), 77, "caught `(h … 9)`");
-}
-
-// spec: spec/12-runtime.md §12.7.8 — control: the in-range thunk takes the
-// `Ok` arm (2) in every mode.
-#[test]
-fn caught_in_range_callee_with_string_consumer_takes_ok_arm_in_every_mode_control() {
-    assert_main_value_in_every_mode(&caught_callee_panic_program(1), 2, "caught `(h … 1)`");
-}
-
-/// A batch program whose `main` passes a panicking callee's result to
-/// `consumer` (`str-len` or `add-i64 1`).
-fn uncaught_callee_panic_program(consumer: &str, vec: &str) -> String {
-    format!(
-        "(import [primitives [Pure vec-get str-len add-i64]])\n\
-         {PANICKING_GET}\n\
-         (defn main [] (Pure ({consumer} (h {vec} 9))))\n"
-    )
-}
-
-fn batch_output(program: &str, link: bool) -> helpers::e2e::CrOutput {
-    let cr = Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .user(program);
-    if link {
-        cr.link_then_run("user.cl").output()
-    } else {
-        cr.run("user.cl").output()
-    }
-}
-
-/// Why `out` is not the §12.7.4.2 report of an uncaught bounds panic: a
-/// non-zero exit (not a signal) with the message on stderr. Empty when it is.
-fn uncaught_bounds_panic_problems(out: &helpers::e2e::CrOutput, link: bool) -> Vec<String> {
-    let mut problems = Vec::new();
-    if link && out.linked_execution_elapsed.is_none() {
-        problems.push("the program did not link and run".to_string());
-    }
-    match out.status.code() {
-        None => problems.push(format!("killed by a signal: {:?}", out.status)),
-        Some(0) => problems.push("exit 0".to_string()),
-        Some(_) => {}
-    }
-    if !out.stderr.contains("index out of bounds") {
-        problems.push("stderr lacks the panic message".to_string());
-    }
-    problems
-}
-
-fn assert_uncaught_bounds_panic_reported(out: &helpers::e2e::CrOutput, link: bool, what: &str) {
-    let problems = uncaught_bounds_panic_problems(out, link);
-    assert!(
-        problems.is_empty(),
-        "{what}: an uncaught panic MUST exit non-zero with its message on stderr \
-         (§12.7.4.2, §12.7.8): {problems:?}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status,
-        out.stdout,
-        out.stderr
-    );
-}
-
-// spec: spec/12-runtime.md §12.7.8 — under `--run`, an uncaught callee panic
-// whose String result `main` uses exits non-zero with the message (R6).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.8 — P-1 R6, batch String consumer.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn uncaught_callee_panic_with_string_consumer_is_reported_run() {
-    let out = batch_output(
-        &uncaught_callee_panic_program("str-len", "[\"a\" \"bc\"]"),
-        false,
+    panic_in_every_mode(
+        PANICKING_GET,
+        "(str-len (h [\"a\" \"bc\"] 9))",
+        "vec-get: index out of bounds",
     );
-    assert_uncaught_bounds_panic_reported(&out, false, "--run, String consumer");
 }
 
-// spec: spec/12-runtime.md §12.7.8 — the same program as a linked binary (R6).
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.8 — P-1 R6, linked String consumer.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn uncaught_callee_panic_with_string_consumer_is_reported_link() {
-    let out = batch_output(
-        &uncaught_callee_panic_program("str-len", "[\"a\" \"bc\"]"),
-        true,
+    panic_in_every_mode(
+        PANICKING_GET,
+        "(str-len (h [\"a\" \"bc\"] 9))",
+        "vec-get: index out of bounds",
     );
-    assert_uncaught_bounds_panic_reported(&out, true, "--link, String consumer");
 }
 
-// spec: spec/12-runtime.md §12.7.8 — control: with an Int consumer the
-// uncaught callee panic is reported under `--run` and as a linked binary.
+// spec: spec/12-runtime.md §12.7.8 — C2 scalar consumer, batch guards.
 #[test]
 fn uncaught_callee_panic_with_scalar_consumer_is_reported_in_batch_modes_control() {
-    let program = uncaught_callee_panic_program("add-i64 1", "[1 2]");
-    assert_uncaught_bounds_panic_reported(
-        &batch_output(&program, false),
-        false,
-        "--run, Int consumer",
-    );
-    assert_uncaught_bounds_panic_reported(
-        &batch_output(&program, true),
-        true,
-        "--link, Int consumer",
+    panic_in_every_mode(
+        PANICKING_GET,
+        "(add-i64 1 (h [1 2] 9))",
+        "vec-get: index out of bounds",
     );
 }
-
-// =============================================================================
-// §12.7.2 — a callee's panic with a scalar result does not resume its caller
-// (ACT-1042)
-// =============================================================================
-//
-// The ACT-1040 protocol reached through an `Int` result, whose sentinel `0` is
-// an ordinary value. Q1: a loop driven by a panicking helper's result must stop
-// at the first panic, not spin on `0`. Q2: the caller's own later panic must
-// not replace the callee's message. Each face has a control that changes one
-// thing: every index in range (Q1), or the same panic raised in the consumer's
-// own frame (Q2).
 
 const LOOKUP: &str = "(defn lookup [v i] (vec-get v i))";
 const SCAN: &str = "(defn scan [v i] (if (lt-i64 (lookup v i) 100) (scan v (add-i64 i 1)) i))";
 
-/// The bound that separates a terminating `scan` session (well under a second
-/// idle) from one that never returns. A RED costs this on every run.
-const SCAN_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// `(scan <vec> 0)` then `BOUNDS_NEXT_FORM` in one bounded REPL session: the
-/// output, or a diagnostic of the harness error (a timeout reads as a hang).
-fn scan_session(vec: &str) -> Result<helpers::e2e::CrOutput, String> {
-    Cranelisp::new()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .repl()
-        .stdin(&format!(
-            "{LOOKUP}\n{SCAN}\n(scan {vec} 0)\n{BOUNDS_NEXT_FORM}\n"
-        ))
-        .timeout(SCAN_BOUND)
-        .try_output()
-        .map_err(|e| format!("the session did not complete: {e:?}"))
-}
-
-// spec: spec/12-runtime.md §12.7.2 — a panic cannot be resumed: `scan`, whose
-// loop test reads `lookup`'s `Int` result, stops at the first index panic; the
-// panic is reported and the session evaluates the next form within the bound
-// (§12.7.4.1). Q1.
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.2 — P-2 Q1: caller loop exits within a bound.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn callee_panic_with_scalar_result_stops_the_calling_loop() {
-    let result = scan_session("[1 2]");
-    let problem = match &result {
-        Err(diag) => Some(diag.clone()),
-        Ok(out) => {
-            let combined = format!("{}{}", out.stdout, out.stderr);
-            let reported =
-                combined.contains("runtime error") && combined.contains("index out of bounds");
-            let continued = out.status.success() && out.stdout.contains(BOUNDS_NEXT_VALUE);
-            (!(reported && continued)).then(|| {
-                format!(
-                    "reported: {reported}, continued: {continued}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-                    out.status, out.stdout, out.stderr
-                )
-            })
-        }
-    };
-    assert!(
-        problem.is_none(),
-        "`(scan [1 2] 0)` MUST stop at the index panic in `lookup`, report it, and the \
-         session MUST evaluate the next form (§12.7.2, §12.7.4.1)\n{}",
-        problem.unwrap_or_default()
+    panic_in_every_mode(
+        &format!("{LOOKUP}\n{SCAN}"),
+        "(scan [1 2] 0)",
+        "vec-get: index out of bounds",
     );
 }
 
-// spec: spec/12-runtime.md §12.7.2 — control for Q1: with every index the loop
-// reads in range, `(scan [1 2 300] 0)` terminates with 2 and the session
-// continues, within the same bound.
+// spec: spec/12-runtime.md §12.7.2 — Q1 control: in-range loop gives 2.
 #[test]
 fn callee_in_range_scalar_result_loop_terminates_control() {
-    let out = scan_session("[1 2 300]").unwrap_or_else(|diag| panic!("{diag}"));
-    assert!(
-        out.status.success()
-            && out.stdout.contains(":primitives/Int 2\n")
-            && out.stdout.contains(BOUNDS_NEXT_VALUE)
-            && !out.stdout.contains("runtime error"),
-        "`(scan [1 2 300] 0)` MUST give 2 without a panic, and the session continue\n\
-         status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status,
-        out.stdout,
-        out.stderr
-    );
+    let program = format!("{LOOKUP}\n{SCAN}\n(defn main [] (Pure (scan [1 2 300] 0)))\n");
+    assert_main_value_in_every_mode(&program, 2, "in-range scan");
 }
 
-/// `main` classifies the `catch-runtime-error` message of `(div-i64 10
-/// <divisor>)` against reference panics raised directly: 1 when it is the
-/// out-of-range `vec-get` message, 0 when it is the division-by-zero message,
-/// 3 when it is neither, and 2 when a reference did not panic. Comparing
-/// against references keeps the cell independent of the message wording.
-fn first_panic_message_program(divisor: &str) -> String {
-    format!(
-        "(import [primitives [Pure vec-get div-i64 str-eq catch-runtime-error Result Ok Err]])\n\
-         {LOOKUP}\n\
-         (defn message [r] (match r [(Ok n) \"no panic\" (Err m) m]))\n\
-         (defn index-message [] (message (catch-runtime-error (fn [] (vec-get [1 2] 9)))))\n\
-         (defn division-message [] (message (catch-runtime-error (fn [] (div-i64 10 0)))))\n\
-         (defn divided-message [] (message (catch-runtime-error (fn [] (div-i64 10 {divisor})))))\n\
-         (defn classify [m] (if (str-eq m (index-message)) 1 (if (str-eq m (division-message)) 0 3)))\n\
-         (defn probe [] (if (str-eq (index-message) \"no panic\") 2 (if (str-eq (division-message) \"no panic\") 2 (classify (divided-message)))))\n\
-         (defn main [] (Pure (probe)))\n"
-    )
-}
-
-// spec: spec/12-runtime.md §12.7.2 — with §12.7.4.1 item 1 and §12.7.8 item 5:
-// the panic reported is the first. `(div-i64 10 (lookup [1 2] 9))` panics in
-// `lookup`, so `catch-runtime-error` reports the index panic, not the division
-// by zero that a resumed caller would raise next: every mode observes 1. Q2.
-// defect: class=unpropagated-panic locus=design/backend/backend.md §7 panic shape found=S122 owner=/dev
+// spec: spec/12-runtime.md §12.7.2 — P-2 Q2: first message survives, all modes.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
 #[test]
 fn callee_panic_message_is_not_replaced_by_callers_later_panic_in_every_mode() {
-    assert_main_value_in_every_mode(
-        &first_panic_message_program("(lookup [1 2] 9)"),
-        1,
-        "callee panic before the caller's division",
+    panic_in_every_mode(
+        LOOKUP,
+        "(div-i64 10 (lookup [1 2] 9))",
+        "vec-get: index out of bounds",
     );
 }
 
-// spec: spec/12-runtime.md §12.7.2 — control for Q2: the same index panic
-// raised in the consumer's own frame, `(div-i64 10 (vec-get [1 2] 9))`, is
-// reported as the index panic in every mode (1).
+// spec: spec/12-runtime.md §12.7.2 — C4: an in-frame panic also exits.
 #[test]
 fn in_frame_panic_message_is_the_first_panic_in_every_mode_control() {
-    assert_main_value_in_every_mode(
-        &first_panic_message_program("(vec-get [1 2] 9)"),
-        1,
-        "in-frame panic before the division",
+    panic_in_every_mode(
+        "",
+        "(div-i64 10 (vec-get [1 2] 9))",
+        "vec-get: index out of bounds",
     );
 }
 
-// =============================================================================
-// §12.7.5 — an uncaught batch panic is reported as a runtime panic (ACT-1041)
-// =============================================================================
-//
-// A runtime panic is not a compile error: its report must not carry the
-// codegen category or the synthetic `0..0` span, and names its message once.
-// The prefix (§12.7.5 against REPL §10.3 R8) is unsettled and not asserted.
-
-/// Why `out`'s stderr is not a single runtime-panic report of the bounds
-/// message. Empty when it is.
-fn batch_panic_report_problems(out: &helpers::e2e::CrOutput, link: bool) -> Vec<String> {
-    let mut problems = uncaught_bounds_panic_problems(out, link);
-    let mentions = out.stderr.matches("vec-get: index out of bounds").count();
-    if mentions != 1 {
-        problems.push(format!("the message appears {mentions} times"));
-    }
-    for wrong in ["codegen error", "0..0"] {
-        if out.stderr.contains(wrong) {
-            problems.push(format!("stderr names `{wrong}`"));
-        }
-    }
-    problems
-}
-
-fn assert_batch_panic_report(link: bool, what: &str) {
-    let out = batch_output(&uncaught_callee_panic_program("add-i64 1", "[1 2]"), link);
-    let problems = batch_panic_report_problems(&out, link);
-    assert!(
-        problems.is_empty(),
-        "{what}: an uncaught runtime panic MUST be reported as a runtime panic, \
-         once, without a codegen category or span (§12.7.5): {problems:?}\n\
-         status: {:?}\nstderr:\n{}",
-        out.status,
-        out.stderr
-    );
-}
-
-// spec: spec/12-runtime.md §12.7.5 — under `--run`, an uncaught panic is
-// reported once, not as a codegen error at `0..0`.
+// spec: spec/12-runtime.md §12.7.5 — P-19: one panic report, no codegen/span.
 // defect: class=display-envelope-mirror locus=src/session_v4/lifecycle.rs::trampoline found=S122 owner=/dev
 #[test]
 fn uncaught_panic_report_is_not_a_codegen_error_run() {
-    assert_batch_panic_report(false, "--run");
+    panic_in_every_mode(
+        PANICKING_GET,
+        "(add-i64 1 (h [1 2] 9))",
+        "vec-get: index out of bounds",
+    );
 }
 
-// spec: spec/12-runtime.md §12.7.5 — control: the linked binary reports the
-// same panic once, with neither the codegen category nor a span.
+// spec: spec/12-runtime.md §12.7.5 — P-19 linked counterpart.
 #[test]
 fn uncaught_panic_report_is_not_a_codegen_error_link_control() {
-    assert_batch_panic_report(true, "--link");
+    panic_in_every_mode(
+        PANICKING_GET,
+        "(add-i64 1 (h [1 2] 9))",
+        "vec-get: index out of bounds",
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 — P-3's specified messages under --run.
+#[test]
+fn panic_sources_report_exact_messages_run() {
+    let sources = [
+        // A bind-built IO value reaches the match fallback through public operations.
+        (
+            "(defn make [] (bind (Pure 1) (fn [x] (Pure x))))",
+            "(match (make) [(Pure n) n (Effect e) 0])",
+            "match failed",
+        ),
+        ("", "(div-i64 1 0)", "division by zero"),
+        ("", "(vec-get [1 2] 9)", "vec-get: index out of bounds"),
+        ("", "(vec-set [1 2] 9 7)", "vec-get: index out of bounds"),
+    ];
+    let mut failures = Vec::new();
+    for (defs, form, message) in sources {
+        let out = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .user(&format!("{defs}\n(defn main [] (Pure {form}))\n"))
+            .run("user.cl")
+            .output();
+        let problems = helpers::e2e::panic_exit_problems(&out, message, None, false);
+        if !problems.is_empty() {
+            failures.push(format!(
+                "{form}: {problems:?}\nstdout:{}\nstderr:{}",
+                out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// spec: spec/12-runtime.md §12.7.4–§12.7.5 — detection proof for the shared panic checker.
+#[test]
+fn panic_exit_checker_rejects_wrong_reports_and_resumption() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut out = Cranelisp::new().output();
+    out.status = std::process::ExitStatus::from_raw(1 << 8);
+    let report = "error: runtime panic: division by zero\n";
+    out.stderr = report.into();
+    out.stdout = "0+0ms; user> ".into();
+    assert!(helpers::e2e::panic_exit_problems(&out, "division by zero", Some(1), false).is_empty());
+    out.stderr = "error: runtime panic: user.cl:4: division by zero\n".into();
+    assert!(helpers::e2e::panic_exit_problems(&out, "division by zero", Some(1), false).is_empty());
+    for wrong in [
+        "",
+        "runtime error: division by zero\n",
+        "error: codegen error at 0..0: runtime panic: division by zero\n",
+        "error: runtime panic: runtime panic: division by zero\n",
+        "error: runtime panic: match failed\n",
+        "error: runtime panic: division by zero\nerror: runtime panic: division by zero\n",
+    ] {
+        out.stderr = wrong.into();
+        assert!(
+            !helpers::e2e::panic_exit_problems(&out, "division by zero", Some(1), false).is_empty(),
+            "checker accepted {wrong:?}"
+        );
+    }
+    out.stderr = report.into();
+    for wrong in [
+        "0+0ms; user> division by zero\n",
+        "0+0ms; user> :primitives/Int 813\n",
+        "0+0ms; user> 1+0ms; user> ",
+    ] {
+        out.stdout = wrong.into();
+        assert!(
+            !helpers::e2e::panic_exit_problems(&out, "division by zero", Some(1), false).is_empty(),
+            "checker accepted resumed/stdout report {wrong:?}"
+        );
+    }
+    out.stdout = "0+0ms; user> ".into();
+    for wrong in [0, 11] {
+        out.status = std::process::ExitStatus::from_raw(wrong);
+        assert!(
+            !helpers::e2e::panic_exit_problems(&out, "division by zero", Some(1), false).is_empty()
+        );
+    }
+    out.status = std::process::ExitStatus::from_raw(1 << 8);
+    assert!(
+        !helpers::e2e::panic_exit_problems(&out, "division by zero", None, true).is_empty(),
+        "unrun linked executable cannot prove a runtime panic"
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.8 — P-1 R4: a second forwarding frame cannot resume.
+// defect: class=unpropagated-panic locus=design/backend/backend.md found=S122 owner=/dev
+#[test]
+fn callee_bounds_panic_through_forwarding_frame_is_reported() {
+    panic_in_every_mode(
+        &format!("{PANICKING_GET}\n(defn g [v] (h v 9))"),
+        "(str-len (g [\"a\" \"bc\"]))",
+        "vec-get: index out of bounds",
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.8 — P-1 C1: no heap consumer still exits.
+#[test]
+fn callee_bounds_panic_without_consumer_exits_control() {
+    panic_in_every_mode(
+        PANICKING_GET,
+        "(h [\"a\" \"bc\"] 9)",
+        "vec-get: index out of bounds",
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.8 — P-1 C4: panic in the consumer's own frame exits.
+#[test]
+fn in_frame_heap_consumer_panic_exits_control() {
+    panic_in_every_mode(
+        "",
+        "(str-len (vec-get [\"a\" \"bc\"] 9))",
+        "vec-get: index out of bounds",
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 — P-3's matched-IO control returns normally.
+#[test]
+fn matched_io_value_has_no_match_panic_control() {
+    assert_main_value_in_every_mode(
+        "(defn make [] (Pure 7))\n(defn main [] (Pure (match (make) [(Pure n) n (Effect e) 0])))\n",
+        7,
+        "matched IO control",
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: checked division returns None or a quotient truncated toward zero.
+#[test]
+fn checked_quot_returns_option_without_panicking_run() {
+    let cases = [
+        ("1", "0", "None", -99),
+        ("-9223372036854775808", "-1", "None", -99),
+        ("7", "-2", "Some", -3),
+        ("-7", "2", "Some", -3),
+    ];
+    let mut failures = Vec::new();
+    for (n, d, variant, value) in cases {
+        let out = Cranelisp::new().user(&format!("(import [primitives [*]])\n(defn main [] (Pure (match (checked-quot {n} {d}) [None {} (Some q) {}])))\n", if variant == "None" { "0" } else { "99" }, if variant == "Some" { format!("(if (eq-i64 q {value}) 0 98)") } else { "97".into() })).run("user.cl").output();
+        if !out.status.success() || out.stderr.contains("runtime panic:") {
+            failures.push(format!(
+                "{n}/{d} expected {variant} {value}: status:{:?}\nstdout:{}\nstderr:{}",
+                out.status, out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "checked-quot clauses: {failures:#?}");
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: REPL displays Option Int, including both negative truncations.
+#[test]
+fn checked_quot_repl_displays_option_int_without_panicking() {
+    let mut failures = Vec::new();
+    for (n, d, expected) in [
+        ("1", "0", "Option.None"),
+        ("-9223372036854775808", "-1", "Option.None"),
+        ("7", "-2", "(Option.Some -3)"),
+        ("-7", "2", "(Option.Some -3)"),
+    ] {
+        let out = Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .stdin(&format!("(checked-quot {n} {d})\n"))
+            .output();
+        if !out.status.success()
+            || !out
+                .stdout
+                .contains(&format!(":(primitives/Option primitives/Int) {expected}"))
+            || out.stderr.contains("runtime panic:")
+        {
+            failures.push(format!(
+                "{n}/{d} expected Option Int {expected}: status:{:?}\nstdout:{}\nstderr:{}",
+                out.status, out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "checked-quot display clauses: {failures:#?}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10 control: Option matching and REPL display observe None and Some independently of checked-quot.
+#[test]
+fn checked_quot_option_observation_control() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(parse-int \"invalid\")\n(parse-int \"-3\")\n")
+        .output()
+        .assert_ok();
+    out.assert_stdout_contains(":(primitives/Option primitives/Int) Option.None")
+        .assert_stdout_contains(":(primitives/Option primitives/Int) (Option.Some -3)");
+    Cranelisp::new().user("(import [primitives [*]])\n(defn main [] (Pure (add-i64 (match (parse-int \"invalid\") [None 0 (Some q) 97]) (match (parse-int \"-3\") [None 99 (Some q) (if (eq-i64 q -3) 0 98)]))))\n")
+        .run("user.cl").output().assert_ok();
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-3 control: MIN / 1 remains a non-panicking quotient.
+#[test]
+fn integer_div_min_by_one_does_not_panic_control() {
+    let out = Cranelisp::new()
+        .user("(import [primitives [*]])\n(defn main [] (Pure (div-i64 -9223372036854775808 1)))\n")
+        .run("user.cl")
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "stdout:{}\nstderr:{}",
+        out.stdout,
+        out.stderr
+    );
 }

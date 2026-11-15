@@ -8,7 +8,7 @@ intrinsics and Binary/int, and `qa` allocating evidence for them.
 requirements are `spec/12-runtime.md` §12.7 and `repl/spec/00-cli-invocation.md`
 §0.8. This contract states the boundaries and invariants that realise them.
 The current contracts it replaces, listed in the
-[fold table](#3-where-each-section-folds-on-landing), describe the as-built
+[fold list](#3-where-each-section-folds-on-landing), describe the as-built
 system until the Phase 5 change-sets land. At that point `arch` folds each section
 into its listed home and retires this file.
 
@@ -70,6 +70,7 @@ Each item is retired in the change-set that makes it unreachable; none is kept
 | The thread-local runtime-error slot and its Rust accessors | intrinsics | The terminator |
 | The fork-join error ferry: the IVar error field and the `Par` carry ([test discovery](test-discovery.md) §2) | intrinsics | Nothing; a worker panic ends the process from the worker |
 | The trampoline's pending-error peeks and the driver's runtime-error outcome | intrinsics | Nothing; the trampoline never resumes after a panic |
+| Primitive bodies' returns after a raise, including `quote-sexp`'s raw-zero error sentinel and its case in the produced-value adoption precondition | primitives | Nothing; a raising body ends at `runtime/panic`. The trusted base narrows by that site and that case |
 | `catch-runtime-error`, its catalog row and bootstrap registration | intrinsics, int | Checked operations returning `Option`, first the primitive `checked-quot` (`spec/12-runtime.md` §12.7.3) |
 | The trace guard's panic cleanup ([tracing](tracing.md) §6) | intrinsics | Nothing; no later form runs |
 | The detached-strand fault policy, "500 + log + drop" ([effect concurrency](effect-concurrency.md) §10) | intrinsics | Nothing; a detached strand's panic ends the process (`spec/12-runtime.md` §12.7.9) |
@@ -163,9 +164,11 @@ a panic ends the process running the test.
 - **`discover-tests` is refused inside a test child** (user ruling), through the
   batch refusal the child already applies (`repl/spec/16-test-discovery.md`
   §16.6).
-- **The reference standard library's runner** starts each test in its own
-  process (user ruling). That needs a process-launching capability, which is a
-  platform concern owned by `dev`(stdlib), not a `discover-tests` one. The
+- **The reference standard library's runner carries no panic isolation**
+  (user ruling). `stdlib/testing/runner.cl` runs every test in the calling
+  process, so a panicking test ends that process and the tests after it do
+  not run (`spec/12-runtime.md` §12.7.4). Isolation is the `--test`
+  supervisor's. The runner needs no process-launching capability, and the
   binary adds no host extern for it.
 
 ### 1.6 Platform dispatch faults
@@ -190,8 +193,9 @@ is removed (packet rows P3, P4 and P9).
   becomes a process-exit fixture (`qa`, `test`).
 - **Language-facing work:** the exemplar's per-request 500 handler and the
   stdlib test runner use `catch-runtime-error`. The handler is rebuilt on
-  checked operations such as `checked-quot`, and the stdlib runner on
-  per-test processes (user rulings).
+  checked operations such as `checked-quot`; the stdlib runner drops its
+  per-test catch and with it panic isolation ([§1.5](#15-the-compiler-test-runner))
+  (user rulings).
 
 ## 2. The environment supply
 
@@ -289,12 +293,12 @@ member set.
 
 ## 3. Where each section folds on landing
 
-| Section | Home after landing |
-|---|---|
-| §1.1, §1.3 | [Bounded contexts](bounded-contexts.md) §4b (runtime-error slot, invariant 13) and §6 (one program driver); [safety invariants](safety-invariants.md) (R13 replaced; `catch-runtime-error` leaves R11's roster and R22's host-promised list) |
-| §1.2 | [Test discovery](test-discovery.md), [tracing](tracing.md) §6, [effect concurrency](effect-concurrency.md) §10, [total concreteness](total-concreteness.md) §3.3 |
-| §1.4 | [Bounded contexts](bounded-contexts.md) §6 (macro execution; the redefinition guard), and, once P13 removes `Life::Broken`, the [symbol-table lifecycle](symbol-table-lifecycle.md) and safety register R22's entry-convention list |
-| §1.5 | [Test discovery](test-discovery.md) and [bounded contexts](bounded-contexts.md) §6 |
-| §1.6 Dispatch faults | [Bounded contexts](bounded-contexts.md) §4b |
-| §2.1 | [Bounded contexts](bounded-contexts.md) §6 |
-| §2.2 | [Bounded contexts](bounded-contexts.md) §4b and §6, and rustdoc on the switch source |
+Each section of this contract folds into the listed home:
+
+- §1.1 and §1.3: [bounded contexts](bounded-contexts.md) §4b (runtime-error slot, invariant 13) and §6 (one program driver); [safety invariants](safety-invariants.md) (R13 replaced; `catch-runtime-error` leaves R11's roster and R22's host-promised list).
+- §1.2: [test discovery](test-discovery.md), [tracing](tracing.md) §6, [effect concurrency](effect-concurrency.md) §10, [total concreteness](total-concreteness.md) §3.3.
+- §1.4: [bounded contexts](bounded-contexts.md) §6 (macro execution; the redefinition guard), and, once P13 removes `Life::Broken`, the [symbol-table lifecycle](symbol-table-lifecycle.md) and safety register R22's entry-convention list.
+- §1.5: [test discovery](test-discovery.md) and [bounded contexts](bounded-contexts.md) §6.
+- §1.6: [bounded contexts](bounded-contexts.md) §4b.
+- §2.1: [bounded contexts](bounded-contexts.md) §6.
+- §2.2: [bounded contexts](bounded-contexts.md) §4b and §6, and rustdoc on the switch source.

@@ -34,13 +34,13 @@ which is not a default platform search directory, so set
 ```bash
 export CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib
 cargo run -- --run exemplar/user.cl       # headline showcase, exit 0
-cargo run -- --run exemplar/tests.cl      # exit code 40 when all pass
-CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 40
+cargo run -- --run exemplar/tests.cl      # exit code 41 when all pass
+CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 41
 cargo run -- --run exemplar/main.cl       # serves HTTP until killed
 ```
 
-- A green `tests.cl` run exits 40 (15 grid, 7 solver, 10 html, 8 form).
-  Getting 40 under both the default parallel mode and
+- A green `tests.cl` run exits 41 (15 grid, 7 solver, 10 html, 9 form).
+  Getting 41 under both the default parallel mode and
   `CRANELISP_NO_LENIENT=1` is the parallel ≡ serial guard.
   `solver/test-solve-parallel-equiv` pins a puzzle that requires
   backtracking.
@@ -90,3 +90,8 @@ State only what these tests show:
   test to `tests.cl` and its expected count. In-language discovery is
   REPL-only, so the runner calls tests directly.
 - Every batch `main` returns `(IO _)`; the inner Int is the process exit code.
+- A runtime panic ends the process, the web server included, so request
+  handling has no fault recovery. Code that a request's input can reach must
+  not panic: use total or checked operations, bound every `get` and divisor,
+  and render bad input as a response value
+  ([web server](plan-exemplar.md#web-server)).

@@ -298,9 +298,31 @@ fn behavioural_ring0_int_arithmetic() {
     assert_eq!(call_i64_i64("add-i64", 2, 3), 5);
     assert_eq!(call_i64_i64("sub-i64", 7, 4), 3);
     assert_eq!(call_i64_i64("mul-i64", 6, 7), 42);
-    // div-i64: only the non-zero happy path here (div-by-zero panic path
-    // is e2e — couples to the intrinsics thread-local error slot).
+    // div-i64: only the non-zero happy path here; the zero-divisor path
+    // raises and ends the process, so it is e2e evidence.
     assert_eq!(call_i64_i64("div-i64", 6, 2), 3);
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: checked-quot's GOT slot reaches the generated wrapper.
+#[test]
+fn behavioural_checked_quot_through_got_slot() {
+    assert_eq!(
+        call_i64_i64("checked-quot", 1, 0),
+        0,
+        "zero divisor is None"
+    );
+    assert_eq!(
+        call_i64_i64("checked-quot", i64::MIN, -1),
+        0,
+        "MIN / -1 is None"
+    );
+    let some = call_i64_i64("checked-quot", 7, -2);
+    assert_ne!(some, 0, "7 / -2 is Some");
+    // SAFETY: a non-zero result is a fresh RC=1 Some node owned here.
+    let quotient =
+        unsafe { *((some as *const u8).add(cranelisp_types::HeapHeader::SIZE + 8) as *const i64) };
+    assert_eq!(quotient, -3);
+    cranelisp_intrinsics::rc::consume_shallow(crate::abi_facts::test_owned(some));
 }
 
 #[test]

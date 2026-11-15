@@ -1,3 +1,4 @@
+(import [prelude []])
 ;; web -- the connection-handle ADTs for the `web` HTTP platform DLL.
 ;;
 ;; S97 ABI v9 (ctx-vtable handle model; design/platform/poll-support.md §3.5,

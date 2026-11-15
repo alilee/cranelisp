@@ -635,6 +635,170 @@ No cell asserts the absence of `no 'main'` text, or of an executable under
 
 **Grade:** measured, by the module rows and the two end-to-end cells.
 
+#### 6.1.2 The entry is settled before the eval thread owns it
+
+Status: **designed 2026-11-15 (S123 W1); revised the same day to a
+structural form after `qa`'s grade ruling (M-2,
+[S123 evidence delta](../../tests/plan/s123-evidence-delta.md)); built by
+`dev`(src) in S123 W1 and checked against source by `design` (int) on
+2026-11-15, with independent review and the suite run still to come.** The residual that `dev` found beside
+[ACT-1025](../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md)
+was routed here by `qa`. Private to `src/`: no public item, carrier, schema
+or ABI change.
+
+**Rule.** Every path that hands the entry to the eval thread waits until the
+entry stands in a terminal pool. These paths are a successful registration, startup
+recovery's wait on a registered entry, and the empty restart. A terminal
+pool is `TypecheckDone`, `Complete` or `Failed`. This is what
+Invariant SW (`src/CLAUDE.md`; [§6.5](#65-entry-module-and-the-implicit-prelude))
+assumes: no pool worker is mid-pass on the entry, and nothing can claim it.
+
+**Why it does not hold today.** A worker publishes in-memory completion and
+`TypecheckDone` as two scheduler calls, each under its own acquisition of the
+scheduler lock (`src/worker.rs`, `notify_processed_ready`). Between them the
+module has in-memory completion and is still `TypecheckWorking`. So
+`register_module_with_source`'s whole-world in-memory wait
+(`src/session_v4/lifecycle.rs`) can return while a non-empty entry is
+mid-pass, and so can startup recovery's wait for the entry's in-memory
+outcome. Only `restart_entry_empty` also waits for the pass to settle. In
+that window a requeue of the entry is refused and silently lost,
+which is the ACT-1025 symptom and the S82 reload race. `qa` pinned the
+scheduler cause in
+`scheduler::tests::inmem_wait_returns_before_the_terminal_pool_so_a_requeue_waits_for_settling`.
+The fix makes that state impossible to build, so the fix removed the test
+(see the evidence condition below). Its replacement is
+`source_pass_ready_leaves_a_terminal_pool_so_a_requeue_is_accepted`. No
+product harm has been observed.
+
+**Shape: one scheduler transition publishes both facts.** The gap is removed
+in the scheduler, where it is made, rather than fenced at each session site
+that might observe it (Principle 18, enforce invariants structurally).
+
+1. A new scheduler method, `notify_source_pass_ready(module, names)`,
+   replaces the pair in `worker::notify_processed_ready`. Under one
+   acquisition of the lock it releases the pass's JIT reservations, sets
+   in-memory completion, moves the pool to `TypecheckDone` and sweeps the
+   typecheck waiters, in the order the pair runs them today. After releasing
+   the lock it wakes `completion` and both worker condition variables once.
+2. `notify_inmem_codegen_complete` loses its `no_remaining` argument. It
+   releases one reservation and never sets in-memory completion. Two
+   production paths remain:
+   - the macro checkpoint (`src/process_form/macro_clause.rs`), which
+     passed `false` before the change;
+   - `worker::notify_processed_codegen`, which the eval thread reaches
+     through `compile_and_publish_processed`. It does so from the REPL turn
+     in `src/eval.rs` and the redefinition turn in `src/redefine.rs`.
+     Before the change it set in-memory completion on the turn's last name,
+     or on a `__empty_module` sentinel for an empty turn. Neither happens
+     now, and the sentinel is gone.
+
+   The eval-thread turns lose nothing. The rule above hands the eval thread
+   only a settled module, so the flag is already set. The eval thread's own
+   waits are on dependencies, which a worker pass completes
+   (`register_dep_for_eval`). Nothing waits for an eval turn to set it.
+   These turns were also a second way to break the invariant: a turn that
+   overlapped a requeue could set the requeued module's flag while the
+   module was mid-pass.
+3. `ModuleState::inmem_done` loses `pub`. Only the scheduler and its child
+   test module read it.
+
+The result is an invariant: **in-memory completion implies a terminal
+pool.** After the change, three places set the field, and each leaves the
+module in `TypecheckDone`:
+
+- the fused transition, which sets `TypecheckDone` in the same critical
+  section;
+- a completed cached-object load (`notify_inmem_codegen_batch_complete`),
+  whose module was registered in `TypecheckDone`;
+- the `new_cached_no_object` constructor, which builds the module in
+  `TypecheckDone`.
+
+A requeue rebuilds the module's state with in-memory completion false. From
+`TypecheckDone` a module moves only to `Complete` or `Failed`. Every wait
+that returns on in-memory completion therefore returns on a terminal pool:
+the whole-world waits, the per-module wait and the non-blocking check.
+
+**The hand-off sites do not change.** Registration's whole-world wait still
+decides the outcome and stays the batch modes' failure report. Recovery's
+wait for the entry's outcome now returns on a settled pool, so
+`entry_compiled` is decided on one
+([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock), Startup). The
+empty restart keeps its two waits; the second is now satisfied on arrival.
+The reload paths keep `wait_module_typecheck_settled`, which also waits out
+`TypecheckBlocked`. Every run mode reaches the same scheduler transition, so
+`--run`, `--link`, `--test` and the REPL do not diverge (Principle 11, single
+pipeline).
+
+**Why this is safe.** The fused transition runs the pair's existing steps
+with no point between them at which another thread can take the lock.
+Today's code already runs that way whenever no thread takes the lock between
+the two calls, so the change adds no behaviour. It removes only the
+interleavings in which the gap is visible. Dependents still see in-memory
+completion before `TypecheckDone`, the order `notify_processed_ready` exists
+to keep.
+
+**Cost.** In the scheduler: one method, mostly moved from the two it fuses,
+plus the argument removal and the field's visibility. In the worker: the
+helper makes one call instead of N+1. Test fixtures in the scheduler, worker
+and session test modules that call `notify_inmem_codegen_complete(…, true)`
+to simulate a finished pass move to the fused call. `qa`'s pinning test stops
+compiling, because the state it builds can no longer be constructed; the
+scheduler row below replaces it. At run time a pass takes one lock
+acquisition and one wake instead of N+1.
+
+**Rejected.**
+
+- *A settle step at each hand-off site.* The first form of this section
+  defined one scheduler wait, the module's own outcome followed by
+  `wait_module_typecheck_settled`, and called it at the three sites. It is
+  correct at those sites, but the bare in-memory wait stays reachable from
+  every other session caller: the batch drivers in `main.rs`, the test
+  fixtures and any future hand-off. That form is measured at three sites
+  and only asserted elsewhere (`qa`, M-2).
+- *Settling inside registration on both outcomes.* On a batch failure it
+  waits for an entry the exit no longer needs. A wait for a queued entry
+  behind a failed dependency also risks a stall on a path that today exits
+  at once.
+
+**Evidence condition for `dev`.** Write the tests first. The fix and its tests
+land in one change-set.
+
+- **Scheduler unit row (replaces `qa`'s pinning test).** Without workers,
+  register a module, claim it into `TypecheckWorking`, and call the fused
+  transition. The whole-world wait returns `Ok`, the pool is
+  `TypecheckDone`, and a requeue is accepted. Negative legs: a claimed module
+  without the transition fails the non-blocking in-memory check and refuses
+  a requeue (`wait_inmem_complete_does_not_pass_on_claimed_but_unfinished_module`
+  covers the first half); `notify_inmem_codegen_complete` on a
+  `TypecheckWorking` module leaves it incomplete.
+- **Unconstructability observation.** With the change in place, the old
+  pinning test does not compile: no scheduler call sets in-memory completion
+  on a `TypecheckWorking` module. `dev` records that compile failure as the
+  detection evidence, then deletes the test in the same change-set.
+- **Session seam row (`lifecycle::entry_registration_tests`).** After
+  `register_module` returns `Ok` for a non-empty entry, the entry's pool is
+  terminal and an immediate `requeue_for_typecheck` of the entry is
+  accepted. This is a reachability check that registration passes through
+  the transition; it is not the guarantee.
+- **Recovery row (`persistence_tests`).** Start with a failing dependency and an entry
+  that compiles. After `recover_startup_failure`, the entry is terminal and
+  standing as compiled.
+- No e2e cell. The window is not observable end to end, and the existing
+  reload and REPL suites are the regression net.
+
+**Grade:** **structural** at every session hand-off, present and future.
+Session code cannot observe in-memory completion on a non-terminal pool: no
+scheduler call publishes one without the other, and module state is
+reachable only under the scheduler's private lock. This meets `qa`'s
+condition, because no session code can reach a bare in-memory wait: every
+in-memory wait is now a settled wait. **Residual, inside the scheduler:** a
+future scheduler edit that sets in-memory completion outside the three
+writers above. It is asserted with a falsifier: an `inmem_done = true` or
+`inmem_done: true` in `src/scheduler.rs` other than those three, or a
+requeue of the entry refused after a wait on in-memory completion returned
+`Ok`. `review` checks the writer census on any change-set that touches the
+field.
+
 ### 6.2 Cluster orchestration
 
 A **cluster** is the unit of typecheck atomicity: one non-`(begin)` REPL input, one
@@ -1344,7 +1508,7 @@ a pool cluster fails its module, and a rebuild fails and locks it.
   declarations are the attempt's own forms.
   - For an `import`, and for a declaration of a name the failed table lacks,
     the outcome does not change; the message and its location do (see
-    *Diagnostic as delivered*). Such an attempt already failed, at the
+    *Diagnostic*). Such an attempt already failed, at the
     signature barrier or on the unresolved name.
   - An `export` of a name the failed table still holds is newly refused. The
     barrier's members exclude export targets, and spec §8.10.3 compiles a
@@ -1363,14 +1527,40 @@ a pool cluster fails its module, and a rebuild fails and locks it.
   and one site that records a failure dependency. A failed module with no
   table takes the load path instead: its wait fails fast with the same error
   or, on the eval path, retries after the purge (review N2).
-- **Diagnostic as delivered.** The refusal carries the failed module's stored
-  error and span, without a file, as `block_for_typecheck` already does. So an
-  `import` that was located at its declaration is now located at a span of
-  the failed module, under the dependent's file. The reused builder also
-  repeats `module error at …` in the rendered text. The qualified fail-fast
-  already did both. QA filed them as
-  [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md),
-  which the user carried to S123.
+- **Diagnostic** ([ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md)).
+  The Pass-0 fail-fast, the qualified fail-fast and `block_for_typecheck`
+  share one builder, `refuse_failed_dependency_locked` in
+  `src/scheduler.rs`. The failed-module wait report
+  (`module_failed_error`) uses the same wrapped text, so the rules below
+  apply to all four.
+  - **Location: the failed module's own location, its file included.** It
+    points at the fault the user must fix. The reference site is used only
+    when the failed module has no stored error. As delivered at `aed0fcb1`,
+    `--run`, `--link` and the reload notice name the failed file
+    (`helper.cl:1:…`, `[errors: helper.cl]`). Guard:
+    `tests/spec_08_modules.rs::failed_import_location_belongs_to_named_file_neg`.
+  - **Prefix: one located category prefix** (REPL §5.5, which the user's
+    S123 Phase 2 → 3 ruling applies here). The wrapping error owns the one
+    location. Its text is `module '<m>' failed:` followed by the failed
+    module's own error without any span: a module error contributes its bare
+    message, as today. Any other located error contributes its category word
+    and bare message, for example `type error: type mismatch …`. A platform
+    error contributes its own text, which has no span. The category stays
+    because it tells the user what kind of fault to look for. The span goes
+    because the wrapper already locates it. Every wrap therefore adds no
+    second located prefix, whatever its nesting depth.
+  - **Not designed: an accessor in `cranelisp-types`.** `src/` derives the
+    category word from the public error variant. A new
+    `cranelisp-types` accessor would be an inter-crate API change, which
+    routes through `arch` and the user gate.
+  - **Open (prefix only).** Today the non-module branch of `wrapped_message`
+    in `src/scheduler.rs` renders the inner error in full, so every seam
+    prints `module error in …/helper.cl: at 11..38: module 'helper' failed:
+    type error at 11..38: …`. RED:
+    `tests/spec_08_modules.rs::failed_import_has_one_located_prefix_neg`
+    (K-3). `dev` adds a unit row at the shared builder. It asserts one located
+    prefix for a stored type error and for a stored module error, and the
+    failed module's file as the location.
 
 **Exactness.** When `M` is checked, every module outside the pass and every
 member rebuilt earlier in it holds its final generation. A cycle created in a
@@ -3147,6 +3337,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   - *ACT-1047, ACT-1048 and ACT-1020:* [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)
     (Absent is a recorded state; Deletion) and
     [§6](repl-lifecycle.md#6-project-root-resolution).
+  - *Entry settled at publication (W1):* [§6.1.2](#612-the-entry-is-settled-before-the-eval-thread-owns-it).
+  - *ACT-1017 prefix (W1):* [§6.11](#611-module-cycles-at-publication),
+    Diagnostic.
   - *ACT-1035:* [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition),
     with the mechanism confirmed by probe.
   - **Deltas at the user gate.** `arch` settled them as packet rows

@@ -310,189 +310,155 @@ fn platform_abi_version_mismatch_e2e() {
     );
 }
 
-// spec: spec/12-runtime.md §12.8 Platform ABI
-//
-// FIXME 0289 item 5 — the dispatch-error-with-fn-name e2e. The Option-A funnel
-// close (FIXMEs 0327/0337) fixed the ABORT half but exposed a RESIDUAL fn-name
-// gap — see THE RESIDUAL GAP below. IGNORED until the fn-name baking is wired on
-// the fault path.
-//
-// THE FIXTURE (S81 W-G, `/platform`): `platforms/boom` — a minimal scalar-only
-// platform whose single fn `crash :: (Fn [] (IO Int))` returns an IO Effect whose
-// FORCED thunk `panic!`s. The backend bakes the FQ fn-name `platform.boom/crash`
-// into the Effect node's field-3, so a fully-working funnel would surface
-// `PlatformError::DispatchError { fn_name: "platform.boom/crash", .. }`. Wired
-// into the canonical run via `tests/scripts/build-link-prereqs.sh`.
-//
-// spec: design/arch/bounded-contexts.md §5 invariant 9 — a platform-fn dispatch
-// fault surfaces a structured `PlatformError::DispatchError { fn_name, cause }`,
-// never a process abort or a silent wrong result.
-//
-// THE MECHANISM (Option A, landed). A platform `cdylib` statically links its OWN
-// copy of the Rust panic runtime, so a `panic!` raised inside the DLL cannot be
-// caught by the host's `catch_unwind` — it would unwind with the DLL's runtime
-// and, crossing the dlopen boundary, abort the process ("Rust cannot catch
-// foreign exceptions", exit 134). Option A moves the catch INSIDE the DLL:
-// `cranelisp_platform::CLIO::effect*` wraps the user thunk in a DLL-local
-// `catch_unwind`; a caught panic is converted to a `#[repr(C)] EffectOutcome`
-// fault signal (DLL-owned UTF-8 cause bytes) returned ACROSS the C-ABI by
-// `call_effect_thunk` — no abort. The host trampoline
-// (`force_effect_thunk_protected`) reads the `EffectOutcome` and composes the
-// fault; int composes `PlatformError::DispatchError` → `CranelispError::Platform`.
-// The `sigsetjmp` signal half is retained for genuine C-level hardware traps.
-//
-// THE FN-NAME. The offending fn's baked FQ name (`platform.boom/crash`) survives
-// the fault path because the backend stamps field-3 at the GOT-indirect dispatch
-// chokepoint, at node construction — BEFORE the force — so a faulting dispatch
-// still carries its baked name (`abe3553`). The host-side trampoline reads it from
-// the node and int folds it into `DispatchError { fn_name }`.
+const BOOM_PROGRAM: &str =
+    "(platform boom)\n(import [platform.boom [crash]])\n(defn main [] (crash))\n";
+const FAULT_DURING_IO_PROGRAM: &str = "(platform test-capture)\n(import [platform.test-capture [fault-now]])\n(defn main [] (fault-now))\n";
+
+fn assert_dispatch_fault_surfaced(
+    out: &helpers::e2e::CrOutput,
+    boom: bool,
+    repl: bool,
+    linked: bool,
+) {
+    let (name, cause) = if boom {
+        (
+            "platform.boom/crash",
+            "boom: deliberate dispatch-time fault in platform fn `crash`",
+        )
+    } else {
+        (
+            "platform.test-capture/fault-now",
+            "test-capture fault-now: deliberate dispatch fault",
+        )
+    };
+    let lines: Vec<_> = out
+        .stderr
+        .lines()
+        .filter(|l| !l.starts_with("; Linking:"))
+        .collect();
+    let mut problems = Vec::new();
+    if !matches!(out.status.code(), Some(c) if c != 0) {
+        problems.push("non-zero non-signal exit");
+    }
+    if lines.iter().filter(|line| line.contains(name)).count() != 1
+        || !lines
+            .iter()
+            .any(|line| line.contains(name) && line.contains(cause))
+    {
+        problems.push("exactly one stderr line naming function and carrying cause");
+    }
+    if lines
+        .iter()
+        .any(|line| line.starts_with("error: runtime panic: "))
+    {
+        problems.push("no stderr line starts with the language-panic prefix");
+    }
+    if out.stdout.contains(cause) {
+        problems.push("report must not appear on stdout");
+    }
+    if repl
+        && (out.stdout.contains(":primitives/Int 813") || out.stdout.matches("user> ").count() != 1)
+    {
+        problems.push("no later REPL evaluation or prompt");
+    }
+    if linked && out.linked_execution_elapsed.is_none() {
+        problems.push("linked executable must run");
+    }
+    assert!(
+        problems.is_empty(),
+        "dispatch fault contract: {problems:?}\nstatus:{:?}\nstdout:{}\nstderr:{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+fn dispatch_output(boom: bool, mode: &str, fault: bool) -> helpers::e2e::CrOutput {
+    let program = if boom {
+        BOOM_PROGRAM
+    } else {
+        FAULT_DURING_IO_PROGRAM
+    };
+    let program = if fault {
+        program.to_owned()
+    } else {
+        program
+            .replace(
+                "(defn main [] (crash))",
+                "(defn main [] (primitives/Pure 42))",
+            )
+            .replace(
+                "(defn main [] (fault-now))",
+                "(defn main [] (primitives/Pure 42))",
+            )
+    };
+    let builder = Cranelisp::new().use_workspace_platforms().user(&program);
+    match mode {
+        "run" => builder.run("user.cl").output(),
+        "link" => builder.link_then_run("user.cl").output(),
+        "repl" => builder
+            .repl()
+            .stdin("(main)\n(primitives/add-i64 800 13)\n")
+            .output(),
+        _ => unreachable!(),
+    }
+}
+
+// spec: spec/12-runtime.md §12.7.6 — P-7: boom reports its function and cause under --run.
 #[test]
 fn platform_dispatch_error_carries_fn_name() {
-    let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::None)
-        .use_workspace_platforms()
-        .file(
-            "user.cl",
-            "(platform boom)\n\
-             (import [platform.boom [crash]])\n\
-             (defn main [] (crash))\n",
-        )
-        .run("user.cl")
-        .output();
-    // A dispatch-time failure surfaces a clean structured error (non-zero exit),
-    // not a process abort, a silent wrong result, or an opaque crash.
-    assert!(
-        !out.status.success(),
-        "a dispatch-time platform-fn fault MUST surface a structured error \
-         (clean non-zero exit, NOT a process abort); status: {:?}\nstderr:\n{}",
-        out.status,
-        out.stderr
-    );
-    // The carrier surfaces the `DispatchError` shape.
-    assert!(
-        out.stderr.contains("dispatch"),
-        "dispatch fault MUST surface the `DispatchError` carrier \
-         (Display: `platform fn \\`<name>\\` dispatch failed: …`); got stderr:\n{}",
-        out.stderr
-    );
-    // The carrier NAMES the offending fn — the user must see the baked FQ name
-    // `platform.boom/crash` (NOT `<unknown>`).
-    assert!(
-        out.stderr.contains("platform.boom/crash"),
-        "`DispatchError` MUST name the offending platform fn by its baked FQ name \
-         `platform.boom/crash` (not `<unknown>`); got stderr:\n{}",
-        out.stderr
-    );
+    assert_dispatch_fault_surfaced(&dispatch_output(true, "run", true), true, false, false);
 }
 
-// =============================================================================
-// FIXME 0401 — dispatch-fault raised DURING the IO trampoline surfaces cleanly
-// in BOTH `--run` and `--link`.
-// =============================================================================
-//
-// The `boom`/`crash` test above (`platform_dispatch_error_carries_fn_name`)
-// exercises a dispatch fault under `--run`. THIS pair pins the *during-IO*
-// dispatch-fault path across BOTH modes — the load-bearing new guard is the
-// `--link` leg.
-//
-// FIXTURE (S85 W-Platform): `platforms/test-capture` provides `fault-now ::
-// (Fn [] (IO Int))` — its IO Effect body `panic!`s when forced. Returning the
-// `(IO Int)` Effect from `main` makes the trampoline FORCE it, so the panic is
-// raised DURING IO execution (not before, like `0399`'s pre-`run_io` slot, and
-// not as a bare `panic!` slot like `crash` returns a faulting non-IO path).
-//
-// The S81 DLL-local fault funnel converts the panic to a
-// `PlatformError::DispatchError { fn_name: "platform.test-capture/fault-now" }`;
-// int composes the structured carrier whose Display is
-// `platform fn `platform.test-capture/fault-now` dispatch failed: <cause>`
-// (`crates/cranelisp-types/src/error.rs:332`).
-//
-// `--run` reads the dispatch-fault slot *after* `run_io_trampoline`
-// (`src/session_v4.rs` ~:1858) so it has surfaced during-IO faults since S81.
-// `--link` previously drained ONLY the pre-`run_io` runtime-error slot
-// (0399), so a fault raised DURING the linked trampoline was not surfaced; the
-// post-`run_io` drain gate that landed this sprint (0401 resolution) is what
-// makes the `--link` leg below GREEN. That `--link` leg is the new guard.
-
-// The free-standing program both legs share: declare the test-capture platform,
-// import the faulting fn, and return its `(IO Int)` Effect from `main` so the
-// trampoline forces (and faults) it during IO execution. No prelude/stdlib —
-// `bind`/`Pure` are stdlib; returning the bare Effect is enough to force it.
-const FAULT_DURING_IO_PROGRAM: &str = "(platform test-capture)\n\
-     (import [platform.test-capture [fault-now]])\n\
-     (defn main [] (fault-now))\n";
-
-// Assert the structured dispatch-fault carrier surfaced cleanly: clean non-zero
-// exit (NOT a signal kill / SIGSEGV / abort), and the parity substrings `/dev`
-// reconciled across modes — the FQ fn-name and the `dispatch failed` shape.
-fn assert_dispatch_fault_surfaced(out: &helpers::e2e::CrOutput, mode: &str) {
-    // (1) Clean exit — not a signal kill. A signal-terminated process has no
-    //     exit code (`status.code()` is None on Unix); a clean structured error
-    //     exits with a code.
-    assert!(
-        out.status.code().is_some(),
-        "[{mode}] a during-IO dispatch fault MUST surface as a clean process \
-         exit, NOT a signal kill (SIGSEGV/SIGABRT); status: {:?}\nstderr:\n{}",
-        out.status,
-        out.stderr
-    );
-    // (2) Non-zero exit (1) — the fault is a failure, not success.
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "[{mode}] a during-IO dispatch fault MUST exit non-zero (1); \
-         status: {:?}\nstderr:\n{}",
-        out.status,
-        out.stderr
-    );
-    // (3) The structured carrier reaches stderr — robust substrings present in
-    //     BOTH modes (the parity `/dev` reconciled): the baked FQ fn-name and
-    //     the `dispatch failed` shape.
-    assert!(
-        out.stderr.contains("platform.test-capture/fault-now"),
-        "[{mode}] dispatch-fault carrier MUST name the offending fn by its baked \
-         FQ name `platform.test-capture/fault-now`; got stderr:\n{}",
-        out.stderr
-    );
-    assert!(
-        out.stderr.contains("dispatch failed"),
-        "[{mode}] dispatch-fault carrier MUST surface the `dispatch failed` shape \
-         (Display: `platform fn \\`<name>\\` dispatch failed: …`); got stderr:\n{}",
-        out.stderr
-    );
+// spec: spec/12-runtime.md §12.7.6 — P-7: boom reports its function and cause when linked.
+#[test]
+fn platform_dispatch_error_exits_link() {
+    assert_dispatch_fault_surfaced(&dispatch_output(true, "link", true), true, false, true);
 }
 
-// spec: spec/12-runtime.md §12.8 Platform ABI
-// FIXME 0401 — `--run` leg: a dispatch fault raised DURING the IO trampoline
-// (an `(IO Int)` Effect forced by the trampoline) surfaces the structured
-// `DispatchError` carrier with a clean non-zero exit. `--run` has drained the
-// post-`run_io` dispatch-fault slot since S81; this pins that behaviour.
+// spec: spec/12-runtime.md §12.7.6 — P-7: a platform fault ends the REPL without another prompt.
+#[test]
+fn platform_dispatch_fault_exits_repl() {
+    assert_dispatch_fault_surfaced(&dispatch_output(true, "repl", true), true, true, false);
+}
+
+// spec: spec/12-runtime.md §12.7.6 — P-7: fault-now also ends the REPL without another prompt.
+#[test]
+fn dispatch_fault_during_io_exits_repl() {
+    assert_dispatch_fault_surfaced(&dispatch_output(false, "repl", true), false, true, false);
+}
+
+// spec: spec/12-runtime.md §12.7.6 — P-7: fault-now's run report has no language-panic prefix.
 #[test]
 fn dispatch_fault_during_io_surfaces_run() {
-    let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::None)
-        .use_workspace_platforms()
-        .user(FAULT_DURING_IO_PROGRAM)
-        .run("user.cl")
-        .output();
-    assert_dispatch_fault_surfaced(&out, "--run");
+    assert_dispatch_fault_surfaced(&dispatch_output(false, "run", true), false, false, false);
 }
 
-// spec: spec/12-runtime.md §12.8 Platform ABI
-// FIXME 0401 — `--link` leg (the load-bearing new guard): the SAME during-IO
-// dispatch fault, raised inside the LINKED IO trampoline, must be drained by
-// the post-`run_io` gate that landed this sprint and surface the SAME carrier
-// + clean non-zero exit as `--run`. Before this sprint the linked stub drained
-// only the pre-`run_io` slot, so this fault escaped unsurfaced.
+// spec: spec/12-runtime.md §12.7.6 — P-7: fault-now's linked report has no language-panic prefix.
 #[test]
 fn dispatch_fault_during_io_surfaces_link() {
-    let out = Cranelisp::new()
-        .with_prelude(PreludeVariant::None)
-        .use_workspace_platforms()
-        .user(FAULT_DURING_IO_PROGRAM)
-        .link_then_run("user.cl")
-        .output();
-    assert_dispatch_fault_surfaced(&out, "--link");
+    assert_dispatch_fault_surfaced(&dispatch_output(false, "link", true), false, false, true);
+}
+
+// spec: spec/12-runtime.md §12.7.6 — P-7 control: the same platform modules without faults finish.
+#[test]
+fn platform_dispatch_non_faulting_controls_finish() {
+    for boom in [true, false] {
+        for mode in ["run", "link", "repl"] {
+            let out = dispatch_output(boom, mode, false);
+            let out = if mode == "repl" {
+                out.assert_ok()
+                    .assert_stdout_contains(":primitives/Int 813")
+            } else {
+                out.assert_exit(42)
+            };
+            assert!(
+                !out.stderr.contains("dispatch") && !out.stderr.contains("runtime panic:"),
+                "{}",
+                out.stderr
+            );
+        }
+    }
 }
 
 // =============================================================================
@@ -568,6 +534,67 @@ fn platform_dll_resolves_on_current_platform() {
         out.stdout.contains("load-ok"),
         "the loaded platform fn `print` MUST emit its argument once the DLL \
          resolves; got stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+fn platform_placement(module: Option<&str>) -> helpers::e2e::CrOutput {
+    let cr = Cranelisp::new()
+        .use_workspace_platforms()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--no-cache");
+    let cr = match module {
+        None => cr.user(
+            "(platform stdio) (import [platform.stdio [print]]) (defn main [] (print \"loaded\"))",
+        ),
+        Some(name) => cr
+            .file(
+                &format!("{}.cl", name.replace('.', "/")),
+                "(platform stdio) (defn value [] 0)",
+            )
+            .user(&format!("(defn main [] (Pure ({name}/value)))")),
+    };
+    cr.run("user.cl").output()
+}
+
+// spec: spec/10-io.md §10.9.1 — entry declaration loads platform; ACT-0973 control.
+#[test]
+fn platform_entry_placement_loads_control() {
+    platform_placement(None)
+        .assert_exit(0)
+        .assert_stdout_contains("loaded");
+}
+
+// spec: spec/10-io.md §10.9.1 — root-level non-entry platform declaration is an error.
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev
+// ACT-0973; control: platform_entry_placement_loads_control.
+#[test]
+fn platform_root_non_entry_declaration_rejected_neg() {
+    let out = platform_placement(Some("helper"));
+    assert!(
+        out.status.code() == Some(1)
+            && out.stderr.contains("platform")
+            && out.stderr.contains("entry"),
+        "non-entry platform declaration must be a compile-time error; exit {:?}; {}{}",
+        out.status.code(),
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/10-io.md §10.9.1 — nested non-entry platform declaration is an error.
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev
+// ACT-0973; control: platform_entry_placement_loads_control.
+#[test]
+fn platform_nested_non_entry_declaration_rejected_neg() {
+    let out = platform_placement(Some("nested.helper"));
+    assert!(
+        out.status.code() == Some(1)
+            && out.stderr.contains("platform")
+            && out.stderr.contains("entry"),
+        "nested non-entry platform declaration must be a compile-time error; exit {:?}; {}{}",
+        out.status.code(),
         out.stdout,
         out.stderr
     );

@@ -150,3 +150,71 @@ fn decision24_parse_int_none_path_still_consumes_heap_arg() {
         1
     );
 }
+
+/// Reads an `Option Int` produced by this module and releases it.
+fn take_option_int(result: Owned) -> Option<i64> {
+    let raw = result.raw_for_read();
+    let value = if raw == 0 {
+        None
+    } else {
+        // SAFETY: a non-zero `Option Int` from `option_int` is a live Some
+        // node owned by `result` until the release below.
+        unsafe {
+            assert_eq!(*((raw as *const u8).add(16) as *const i64), 1, "Some tag");
+            Some(*((raw as *const u8).add(24) as *const i64))
+        }
+    };
+    cranelisp_intrinsics::rc::consume_shallow(result);
+    value
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: checked-quot returns None for a zero divisor.
+#[test]
+fn checked_quot_zero_divisor_is_none() {
+    assert_eq!(take_option_int(checked_quot(1, 0)), None);
+    assert_eq!(take_option_int(checked_quot(0, 0)), None);
+    assert_eq!(take_option_int(checked_quot(i64::MIN, 0)), None);
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: Int.MIN / -1 is None, not a wrapped Some(Int.MIN).
+#[test]
+fn checked_quot_min_by_minus_one_is_none() {
+    assert_eq!(take_option_int(checked_quot(i64::MIN, -1)), None);
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: Some quotient truncated toward zero, not floored.
+#[test]
+fn checked_quot_truncates_toward_zero() {
+    assert_eq!(take_option_int(checked_quot(7, -2)), Some(-3));
+    assert_eq!(take_option_int(checked_quot(-7, 2)), Some(-3));
+    assert_eq!(take_option_int(checked_quot(-7, -2)), Some(3));
+    assert_eq!(take_option_int(checked_quot(10, 2)), Some(5));
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10 boundary: the neighbours of the overflow case are ordinary quotients.
+#[test]
+fn checked_quot_overflow_neighbours_are_some() {
+    assert_eq!(take_option_int(checked_quot(i64::MIN, 1)), Some(i64::MIN));
+    assert_eq!(
+        take_option_int(checked_quot(i64::MIN + 1, -1)),
+        Some(i64::MAX)
+    );
+    assert_eq!(take_option_int(checked_quot(i64::MAX, -1)), Some(-i64::MAX));
+}
+
+// spec: spec/12-runtime.md §12.7.3 — P-10: a Some result is one fresh node, freed by one release; None allocates nothing.
+#[test]
+fn checked_quot_allocation_balance() {
+    let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
+    let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
+    assert_eq!(take_option_int(checked_quot(9, 3)), Some(3));
+    assert_eq!(take_option_int(checked_quot(9, 0)), None);
+    assert_eq!(
+        cranelisp_intrinsics::alloc::alloc_count() - allocs_before,
+        1
+    );
+    assert_eq!(
+        cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before,
+        1
+    );
+}

@@ -17,8 +17,7 @@
 //! (unconditionally compiled, linkable into `--link` output) serves `--run`,
 //! REPL and `--link` from one placement. Int passes no construction
 //! parameters: [`block_on_reactor`] reads the drive mode, backstop and degree
-//! from `CRANELISP_*` environment variables and always uses
-//! `SupervisorPolicy::default()`.
+//! from `CRANELISP_*` environment variables.
 //!
 //! ## The pieces
 //!
@@ -1483,38 +1482,12 @@ impl Drop for AcquirePermit {
 //
 // A `FuturesUnordered` of supervised detached-strand futures, owned by the
 // reactor. The `IO_TAG_LAUNCH` arm (`io::launch_continue`) `spawn`s into it; the
-// executor `drive`s it each loop iteration. Every member future is wrapped so
-// EVERY termination is caught (`catch_unwind` + the reused `take_runtime_error`
-// capture) and the §10 policy applied INSIDE the future — so a panic never
-// unwinds into the executor and aborts the drive (§2.12). The set's item type is
-// `()`: the executor only has to drain it.
+// executor `drive`s it each loop iteration. A language panic in a strand ends
+// the process from the strand; a Rust panic in runtime code is caught at the
+// member future's boundary and ends the process as a runtime defect, so it never
+// unwinds into the executor (§2.12). The set's item type is `()`: the executor
+// only has to drain it.
 // ===========================================================================
-
-/// The per-effect-kind failure policy for a supervised detached strand (§2.12).
-/// A reactor-construction config (gate (b): a scheduler-declared default, so it
-/// stays out of the pure language). The minimal default is [`SupervisorPolicy::LogAndDrop`];
-/// the web "500-on-dropped-connection" mapping is the serve-loop's job, layered
-/// on top of the `StrandFailed` event this policy emits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum SupervisorPolicy {
-    /// Catch + record (`StrandFailed`) + drop the strand. Never re-raises (no
-    /// parent), never aborts the drive. The minimal default.
-    #[default]
-    LogAndDrop,
-}
-
-/// Apply the §10 supervisor policy at the intrinsics layer: **catch + record +
-/// drop**. Emits `StrandFailed` to the strand sink (the `/strand` dev surface +
-/// `/qa`'s panic-survival assertion read it). It NEVER re-raises and NEVER aborts
-/// the drive — the "500 to the client" is the application/platform mapping
-/// layered on top (§2.12).
-fn apply_policy(policy: SupervisorPolicy, strand: StrandId, message: String) {
-    match policy {
-        SupervisorPolicy::LogAndDrop => {
-            emit_strand_event(StrandEvent::StrandFailed { strand, message });
-        }
-    }
-}
 
 /// The supervisor: a single-threaded set of supervised detached-strand futures.
 /// `push` is `&self` (interior mutability via `RefCell`) so the `IO_TAG_LAUNCH`
@@ -1523,15 +1496,13 @@ fn apply_policy(policy: SupervisorPolicy, strand: StrandId, message: String) {
 /// alongside the [`Reactor`]/[`TokenPool`] and reached through [`ReactorEnv`].
 pub(crate) struct Supervisor<'h> {
     strands: RefCell<FuturesUnordered<Pin<Box<dyn Future<Output = ()> + 'h>>>>,
-    policy: SupervisorPolicy,
 }
 
 impl<'h> Supervisor<'h> {
-    /// A fresh empty supervisor with the given failure policy.
-    pub(crate) fn new(policy: SupervisorPolicy) -> Rc<Self> {
+    /// A fresh empty supervisor.
+    pub(crate) fn new() -> Rc<Self> {
         Rc::new(Supervisor {
             strands: RefCell::new(FuturesUnordered::new()),
-            policy,
         })
     }
 
@@ -1541,7 +1512,7 @@ impl<'h> Supervisor<'h> {
         self.strands.borrow().is_empty()
     }
 
-    /// Spawn a detached strand: wrap `sub_tree` in the [`supervised`] catch+policy
+    /// Spawn a detached strand: wrap `sub_tree` in the [`supervised`]
     /// wrapper (owning the launched sub-tree, the cloned [`ReactorEnv`], and the
     /// global-budget `permit` for its whole lifetime — RAII release on
     /// completion/drop), and push it into the set (§2.11 step 3 / §2.12).
@@ -1553,13 +1524,12 @@ impl<'h> Supervisor<'h> {
         strand: StrandId,
         permit: Permit,
     ) {
-        let policy = self.policy;
-        let fut = supervised(sub_tree, result_disposer, env, strand, permit, policy);
+        let fut = supervised(sub_tree, result_disposer, env, strand, permit);
         self.strands.borrow_mut().push(Box::pin(fut));
     }
 
     /// Drive every member strand once, removing each as it completes (a completed
-    /// strand has already run its policy + released its permit + freed its sub-tree
+    /// strand has already disposed its result + released its permit + freed its sub-tree
     /// inside its own body). Called by the executor each loop iteration (§2.12).
     ///
     /// The `RefCell` borrow is held only for the synchronous `poll_next` calls.
@@ -1587,43 +1557,42 @@ impl<'h> Supervisor<'h> {
     }
 }
 
-/// The supervised-strand wrapper (§2.12): run the launched sub-tree, catching
-/// EVERY termination — `catch_unwind` (a Rust panic → the server lives) + the
-/// reused S95 `take_runtime_error` capture at the completion boundary — then apply
-/// the §10 policy, free the detached sub-tree (`consume_io_tree` — the strand owns
-/// it, §2.11), and release the global-budget `permit` (RAII drop at scope end →
+/// The supervised-strand wrapper (§2.12): run the launched sub-tree, dispose its
+/// result, free the detached sub-tree (`consume_io_tree` — the strand owns it,
+/// §2.11), and release the global-budget `permit` (RAII drop at scope end →
 /// frees a global slot → wakes a parked launch, §2.13).
+///
+/// A Rust panic in the strand body is a runtime defect: it is caught here, so it
+/// cannot unwind into the executor, and ends the process
+/// (`process-lifecycle.md` §1.1).
 async fn supervised(
     sub_tree: i64,
     result_disposer: crate::io::ResultDisposer,
     env: ReactorEnv<'_>,
     strand: StrandId,
     global_permit: Permit,
-    policy: SupervisorPolicy,
 ) {
-    // catch_unwind around the strand body so a Rust-level panic (bad tag, RC
-    // mid-panic, a handler `(panic …)`) is caught, NOT propagated into the
-    // executor. The `take_runtime_error` capture is SYNCHRONOUS with the resolve
-    // (no `.await` between), so no other strand interposes on the shared slot.
-    let body = std::panic::AssertUnwindSafe(async {
-        let r =
-            crate::io::run_io_trampoline_inner_async(sub_tree, &env, strand, result_disposer).await;
-        let err = crate::panic::take_runtime_error();
-        (r, err)
-    });
-    let outcome = body.catch_unwind().await;
-
-    match outcome {
-        Ok((crate::io::TrampolineOutcome::Completed(result), None)) => {
+    let body = std::panic::AssertUnwindSafe(crate::io::run_io_trampoline_inner_async(
+        sub_tree,
+        &env,
+        strand,
+        result_disposer,
+    ));
+    match body.catch_unwind().await {
+        Ok(crate::io::TrampolineOutcome::Completed(result)) => {
             result_disposer.dispose(result);
-            emit_strand_event(StrandEvent::StrandCompleted { strand });
         }
-        Ok((crate::io::TrampolineOutcome::Stopped, None)) => {
-            emit_strand_event(StrandEvent::StrandCompleted { strand });
+        Ok(crate::io::TrampolineOutcome::Stopped) => {}
+        Err(payload) => {
+            let payload = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            crate::panic::terminate(crate::panic::Fault::RuntimeDefect(payload));
         }
-        Ok((_r, Some(msg))) => apply_policy(policy, strand, msg), // runtime error
-        Err(_panic) => apply_policy(policy, strand, "<panicked>".to_string()),
     }
+    emit_strand_event(StrandEvent::StrandCompleted { strand });
 
     // The strand owns its detached sub-tree (§2.11) — free it exactly once.
     // SAFETY: the supervised strand owns its detached subtree.
@@ -1998,11 +1967,6 @@ where
     )
 }
 
-/// Process exit code when the `OneShot` wall-clock backstop terminates a hung
-/// batch drive (FIXME 0479 / `reactor.md §8.3`). Distinct non-zero value so a
-/// hang-timeout is distinguishable from an ordinary program error at the shell.
-const BACKSTOP_EXIT_CODE: i32 = 70;
-
 /// How a fired `OneShot` backstop TERMINATES the drive ([`block_on_reactor_capped`]
 /// `Fire` arm). The production entry [`block_on_reactor`] uses [`ExitProcess`] (a
 /// clean, fast, non-core-dumping process exit — the backstop is a deliberate
@@ -2014,7 +1978,7 @@ const BACKSTOP_EXIT_CODE: i32 = 70;
 /// [`Panic`]: OnBackstop::Panic
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnBackstop {
-    /// Clean `std::process::exit(BACKSTOP_EXIT_CODE)` — production drive.
+    /// End the process through the terminator (status 70) — production drive.
     ExitProcess,
     /// `panic!` — the unit-test seam (catchable via `#[should_panic]`).
     /// Constructed only by the `#[cfg(test)]` liveness units.
@@ -2090,7 +2054,7 @@ where
     // The supervisor (§2.12) — declared AFTER `host_ctx` so it (and the detached
     // strands it owns, which borrow `host_ctx`/`pool` through
     // their cloned `ReactorEnv`) drops before those borrowed locals.
-    let supervisor = Supervisor::new(SupervisorPolicy::default());
+    let supervisor = Supervisor::new();
 
     let env = ReactorEnv {
         host: &host_ctx,
@@ -2192,8 +2156,7 @@ where
                     // hung program appear to linger past its own deadline (FIXME
                     // 0479 / `reactor.md §8.3`: "aborts the drive by ≈backstop").
                     OnBackstop::ExitProcess => {
-                        eprintln!("{msg}");
-                        std::process::exit(BACKSTOP_EXIT_CODE);
+                        crate::panic::terminate(crate::panic::Fault::BackstopExpired(&msg))
                     }
                     // Unit-test seam (`block_on_reactor_capped` called directly):
                     // panic so `#[should_panic]` can observe the trip within the

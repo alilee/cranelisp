@@ -119,19 +119,15 @@
 ;;
 ;; The EMPTY select is a boundary worth knowing. `(select [])` has no
 ;; branch that could win, and the runtime does NOT hang and does NOT
-;; synthesise a value: it raises a fatal runtime panic, "select over
-;; empty collection" (spec §10.12.8, §12.7.2). The spec is explicit that
-;; a guaranteed deadlock would be worse than a clean fault, so a hang
-;; here is non-conforming.
+;; synthesise a value: it reports "select over empty collection" and ends
+;; the process (spec §10.12.8, §12.7.2). Ensure the Vec has a branch before
+;; calling select; the runnable example below supplies three.
 ;;
-;; That panic is also NOT catchable. `catch-runtime-error`'s bracket is
-;; TEMPORAL: it observes only panics raised while the thunk is being
-;; evaluated, including the pure CONSTRUCTION of the IO value it returns.
-;; An empty select raises later, when the trampoline RUNS that IO value —
-;; outside the bracket. Wrapping a faulting effect in `(fn [] ...)` only
-;; defers the raise past the bracket; it never brings it inside. This is
-;; the general rule for every effect-run-time error, not a select
-;; special case (§12.7.2, "the bracket is temporal").
+;; A panic in any branch ends the whole process, including in the REPL.
+;; Cancellation does not contain a panic that occurs. For expected failure,
+;; use checked operations and handle their Option values, as checked-quot
+;; does in 11-destructuring.cl. Wrapping a computation in a thunk or an IO
+;; value does not make a panic recoverable.
 
 (defn check-select-first-wins []
   (bind (select [(slow-work) (fast-work) (slow-work)])

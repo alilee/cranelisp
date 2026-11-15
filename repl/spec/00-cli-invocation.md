@@ -135,6 +135,8 @@ every project module transitively reachable from it through that chain. [Tested+
 
 **Panic outcome (user ruling, 2026-11-15).** The runner executes tests in one child process, restarting it after a panic to continue with the remaining tests (§16.2). A panic ends the child executing that test; the parent preserves the report and exit-status rules below.
 
+**Internal child arguments (user ruling, 2026-11-15).** The arguments used to start and resume the test child are internal to the compiler runner and MUST remain undocumented in the user-facing CLI. Their spellings are not part of the public CLI contract. This records the accepted reading of [test-runner design §6.5](../../design/int/test-runner.md#65-the-test-child).
+
 **Report.** The runner's report (§16.2) MUST be written to stdout. [Tested tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests]
 
 **Exit status.** The process MUST exit with status 0 when no test failed or
@@ -362,5 +364,16 @@ Trace/diagnostic-dump variables (e.g. `CRANELISP_CODEGEN_TRACE`, `CRANELISP_IO_T
 Files admit keys starting with `CRANELISP_` plus `NO_COLOR`, `ANTHROPIC_API_KEY` and `OLLAMA_API_BASE_URL`; other keys are ignored. The rule includes internal instrumentation even though §0.7 does not document its individual switches. It does not make compile-time build variables runtime settings. **User ruling, 2026-11-15.** The project file is `.env` in the resolved project root. The user file is `~/.config/cranelisp/env`, relocated to `$XDG_CONFIG_HOME/cranelisp/env` when `XDG_CONFIG_HOME` is set. Both use dotenv syntax. A missing optional file is silent; a malformed or unreadable file is a startup error naming its location.
 
 Loader controls are read only from the process environment: `CRANELISP_ENV_FILE=<path>` overrides the project file, `CRANELISP_USER_ENV_FILE=<path>` overrides the user file, and `CRANELISP_NO_ENV=1` disables both files. A file cannot select its own loader controls.
+
+**Dotenv dialect (user ruling, 2026-11-15).** Both environment files MUST use the following syntax, accepted from [environment design §2.5](../../design/int/environment.md#25-syntax-unreadable-and-malformed-files):
+
+- Blank lines and lines whose first non-blank character is `#` are ignored.
+- An assignment is `KEY=VALUE`, optionally prefixed by `export `. Keys contain only ASCII letters, digits and `_`, and MUST NOT start with a digit. Whitespace around the key and `=` is ignored.
+- An unquoted value extends to the end of the line, with trailing whitespace removed; ` #` begins a comment.
+- Single-quoted values are literal.
+- Double-quoted values may span lines and recognize the escapes `\n`, `\"` and `\\`.
+- Values MUST NOT undergo interpolation: `${NAME}` remains literal text.
+
+A non-blank, non-comment line that is not an assignment, an invalid key, or an unterminated quote makes the file malformed. This applies to every line, including assignments to keys that the loader ignores.
 
 Link-time parameters are baked into the executable. Agent settings, including API keys, are REPL-only and MUST NOT be baked into linked programs. A linked program reads its environment only through a platform. **User ruling, 2026-11-15.** Every applicable non-agent `CRANELISP_*` switch effective at `--link` is fixed in the executable; runtime switches are not reread from its launch environment. Compile-only switches need no runtime payload. The linked executable’s worker pool uses the machine’s available core count, rather than `RAYON_NUM_THREADS` from the environment.

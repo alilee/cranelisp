@@ -34,6 +34,10 @@ use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
+use crate::raise::{self, PanicSource, RaiseMessage};
+
+const DIVISION_BY_ZERO: RaiseMessage = RaiseMessage::Source(PanicSource::DivisionByZero);
+
 /// Try to emit inline Cranelift IR for a Ring 0 primitive call.
 ///
 /// Returns:
@@ -288,10 +292,7 @@ fn emit_checked_div<M: Module>(
 ) -> Result<Value, CranelispError> {
     require_args(name, args, 2, span)?;
 
-    let panic_id = panic_func_id.ok_or_else(|| CranelispError::CodegenError {
-        message: "runtime/panic not declared".into(),
-        location: ErrorLocation::from_span(span),
-    })?;
+    let panic_id = raise::declared(panic_func_id, span)?;
 
     let lhs = args[0];
     let rhs = args[1];
@@ -307,10 +308,9 @@ fn emit_checked_div<M: Module>(
         .ins()
         .brif(is_zero, panic_divzero_block, &[], check_overflow_block, &[]);
 
-    // Panic path (division by zero): call runtime_panic.
     builder.switch_to_block(panic_divzero_block);
     builder.seal_block(panic_divzero_block);
-    emit_panic_return(builder, module, panic_id, b"division by zero", span)?;
+    raise::emit_raise(builder, module, panic_id, DIVISION_BY_ZERO, span)?;
 
     // Check 2: i64::MIN / -1 overflow
     builder.switch_to_block(check_overflow_block);
@@ -329,58 +329,15 @@ fn emit_checked_div<M: Module>(
         .ins()
         .brif(both, panic_overflow_block, &[], ok_block, &[]);
 
-    // Panic path (MIN / -1 overflow): call runtime_panic.
     builder.switch_to_block(panic_overflow_block);
     builder.seal_block(panic_overflow_block);
-    emit_panic_return(builder, module, panic_id, b"division by zero", span)?;
+    raise::emit_raise(builder, module, panic_id, DIVISION_BY_ZERO, span)?;
 
     // OK path: emit sdiv.
     builder.switch_to_block(ok_block);
     builder.seal_block(ok_block);
 
     Ok(builder.ins().sdiv(lhs, rhs))
-}
-
-/// Emit a panic call with a message and return a dummy 0 value.
-///
-/// Helper for checked division panic blocks. Declares an anonymous data
-/// section for the message string, calls runtime_panic, and returns 0.
-fn emit_panic_return<M: Module>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    panic_func_id: FuncId,
-    msg: &[u8],
-    span: Span,
-) -> Result<(), CranelispError> {
-    let data_id =
-        module
-            .declare_anonymous_data(false, false)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare panic data: {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-    let mut desc = cranelift_module::DataDescription::new();
-    desc.define(msg.to_vec().into_boxed_slice());
-    module
-        .define_data(data_id, &desc)
-        .map_err(|e| CranelispError::CodegenError {
-            message: format!("failed to define panic data: {e}"),
-            location: ErrorLocation::from_span(span),
-        })?;
-
-    let gv = module.declare_data_in_func(data_id, builder.func);
-    let msg_ptr = builder.ins().global_value(types::I64, gv);
-    let msg_len = builder.ins().iconst(types::I64, msg.len() as i64);
-
-    let panic_ref = module.declare_func_in_func(panic_func_id, builder.func);
-    builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
-
-    // runtime_panic sets a thread-local error flag and returns.
-    // Return a dummy 0 value — the caller checks take_runtime_error().
-    let dummy = builder.ins().iconst(types::I64, 0);
-    builder.ins().return_(&[dummy]);
-
-    Ok(())
 }
 
 // Per Decision 43 + FIXME 0185: backend has no trait knowledge. The

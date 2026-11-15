@@ -4330,6 +4330,12 @@ fn removal_session(
     let path = root.path().join("user.cl");
     std::fs::write(&path, source).unwrap();
     session.register_module("user").unwrap();
+    // The in-memory wait in `register_module` can return while `user`'s pass
+    // is still `TypecheckWorking` (ACT-1025); the tests assume its terminal pool.
+    session
+        .shared
+        .scheduler
+        .wait_module_typecheck_settled(&ModuleFullPath::from("user"));
     (root, session, path)
 }
 
@@ -4410,6 +4416,17 @@ fn dispatch_without_a_stored_continuation_retires_nothing() {
     let h_slot = user_slot(&session, "h");
     assert!(h_slot.is_some(), "precondition");
     let retired = user_retired_slots(&session);
+    let pool = session.shared.scheduler.module_pool(&user);
+    assert!(
+        matches!(
+            pool,
+            Some(
+                crate::scheduler::ModulePool::TypecheckDone
+                    | crate::scheduler::ModulePool::Complete
+            )
+        ),
+        "precondition: `user` is terminal before the requeue, found {pool:?}"
+    );
 
     assert!(session.shared.scheduler.requeue_without_continuation(&user));
     let _ = session

@@ -147,7 +147,7 @@ pub(super) fn compile_macro_checkpoint(
         for name in names {
             shared
                 .scheduler
-                .notify_inmem_codegen_complete(&published_module, &name, false);
+                .notify_inmem_codegen_complete(&published_module, &name);
         }
     }
     Ok(MacroCheckpoint::Published)

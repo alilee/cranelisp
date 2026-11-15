@@ -4,7 +4,7 @@
 //! The IO trampoline (`crate::io`) forces platform Effect thunks via
 //! `cranelisp_platform::call_effect_thunk`. A fault in foreign platform code —
 //! a Rust panic OR a hardware trap (SIGFPE/SIGILL/SIGBUS/SIGSEGV) — must NOT
-//! crash the host; it must surface as a structured `PlatformError::DispatchError`.
+//! die by a raw signal; it must end the process with a dispatch-fault report.
 //! This module provides the single guard primitive
 //! [`force_effect_thunk_protected`].
 //!
@@ -17,7 +17,7 @@
 //! `CLIO::effect*` thunk wrapper (`cranelisp-platform`), which converts a caught
 //! panic into an `EffectOutcome` value (`fault_cause` non-null) carried back
 //! across the C-ABI. This guard simply **reads** that signal: a non-null
-//! `fault_cause` ⇒ compose a `DispatchFault`. The host-side panic `catch_unwind`
+//! `fault_cause` ⇒ a dispatch fault. The host-side panic `catch_unwind`
 //! that step-3 used is GONE — there is nothing host-side to catch.
 //!
 //! **Hardware traps are still caught here.** A genuine SIGSEGV/FPE/ILL/BUS from
@@ -37,42 +37,20 @@
 //! call; this one guards the platform-Effect force). The machinery is
 //! `pub(crate)` — it is not a public-surface item.
 //!
-//! ## Two-layer construction (BC §4b invariant 14)
+//! ## Outcome
 //!
-//! On a fault the guard captures `(cause, fn_name)` — the fn-name read from the
-//! Effect node's backend-baked fourth field — into a
-//! [`crate::panic::DispatchFault`] carrier and signals int via the
-//! thread-local slot ([`crate::panic::set_dispatch_fault`]). It does NOT
-//! construct a `PlatformError` (intrinsics is diagnostics-free by charter).
-//! int reads the slot and composes `PlatformError::DispatchError`.
-//!
-//! ## Fork-join slot safety (BC §4b invariant 13)
-//!
-//! Platform Effects force on the trampoline's OWN joining thread (the
-//! trampoline walks the IO tree sequentially; Par branch dispatch joins before
-//! the trampoline steps past a Par node), so the own-thread-slot-reader property
-//! the error-slot ferry relies on holds — the dispatch-fault slot is set and
-//! read on the same thread that runs the trampoline, introducing no new race
-//! vs. the existing `take_runtime_error()` slot usage.
+//! A fault ends the process through the terminator with the platform fn name
+//! (read from the Effect node's backend-baked fourth field) and the cause
+//! (`design/intrinsics/process-lifecycle.md` §1.1). Nothing is returned to a
+//! host.
 
-use crate::panic::{DispatchFault, set_dispatch_fault, take_runtime_error};
-
-/// Outcome of forcing a platform Effect thunk under the fault guard.
-pub(crate) enum ForceOutcome {
-    /// The thunk forced cleanly; carries its result value.
-    Value(i64),
-    /// The thunk faulted (panic or hardware trap). The fault has already been
-    /// captured into the thread-local dispatch-fault slot
-    /// ([`crate::panic::set_dispatch_fault`]) for int to compose.
-    Faulted,
-}
+use crate::panic::{Fault, terminate};
 
 /// Force a platform Effect thunk under fault protection (FIXME 0327 Option A).
 ///
-/// Happy path forces the thunk via `cranelisp_platform::call_effect_thunk` and
-/// returns [`ForceOutcome::Value`] from the resulting [`EffectOutcome`]'s value.
-/// Two fault paths converge on [`ForceOutcome::Faulted`] + the dispatch-fault
-/// slot (paired with `fn_name`):
+/// Forces the thunk via `cranelisp_platform::call_effect_thunk` and returns the
+/// resulting [`EffectOutcome`]'s value. Two fault paths end the process as a
+/// dispatch fault naming `fn_name`:
 /// - a **Rust panic** in the platform fn, caught DLL-side and signalled by a
 ///   non-null `EffectOutcome::fault_cause` (this guard reads the cause string);
 /// - a **hardware trap** (SIGFPE/SIGILL/SIGBUS/SIGSEGV) from foreign C code,
@@ -88,12 +66,7 @@ pub(crate) enum ForceOutcome {
 /// `CLIO::effect*`, borrowed for this call while the caller holds a counted
 /// reference to that node — the contract `cranelisp_platform::call_effect_thunk`
 /// requires. The thunk is intact after the call, whatever its outcome.
-pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str) -> ForceOutcome {
-    // Clear any stale runtime error so a leftover slot value cannot be
-    // misattributed to this thunk (defensive — DLL-origin panics no longer set
-    // the host slot; they are caught DLL-side and travel back in EffectOutcome).
-    let _ = take_runtime_error();
-
+pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str) -> i64 {
     // The host-side panic `catch_unwind` is GONE (FIXME 0327 Option A). A panic
     // raised inside a platform DLL is caught by the DLL's OWN runtime in the
     // `CLIO::effect*` thunk wrapper and returned across the C-ABI as an
@@ -127,7 +100,7 @@ pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str)
         // Clean force OR DLL-caught panic — distinguished by fault_cause.
         Ok(eo) => {
             if eo.fault_cause.is_null() {
-                ForceOutcome::Value(eo.value)
+                eo.value
             } else {
                 // Faulted DLL-side: read the DLL-owned (session-leaked) UTF-8
                 // panic-cause bytes from the EffectOutcome C-string.
@@ -137,11 +110,10 @@ pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str)
                     let bytes = std::slice::from_raw_parts(eo.fault_cause, eo.fault_len);
                     String::from_utf8_lossy(bytes).into_owned()
                 };
-                set_dispatch_fault(DispatchFault {
-                    fn_name: fn_name.to_string(),
-                    cause,
-                });
-                ForceOutcome::Faulted
+                terminate(Fault::Dispatch {
+                    fn_name,
+                    cause: &cause,
+                })
             }
         }
         // Hardware trap recovered via the signal/sigsetjmp half.
@@ -153,11 +125,10 @@ pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str)
                 libc::SIGSEGV => "segmentation fault".to_string(),
                 _ => format!("signal {sig}"),
             };
-            set_dispatch_fault(DispatchFault {
-                fn_name: fn_name.to_string(),
-                cause,
-            });
-            ForceOutcome::Faulted
+            terminate(Fault::Dispatch {
+                fn_name,
+                cause: &cause,
+            })
         }
     }
 }

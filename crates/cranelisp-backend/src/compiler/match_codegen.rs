@@ -782,52 +782,17 @@ where
             .collect()
     }
 
-    /// Emit a runtime panic for non-exhaustive match.
-    ///
-    /// Calls `runtime_panic("match failed")` so that `catch_unwind` at the
-    /// REPL eval boundary can recover, then emits a trailing trap as an
-    /// unreachable terminator (Cranelift requires one).
+    /// Raise `"match failed"`: every arm's test failed.
     fn emit_match_panic(&mut self) -> Result<(), CranelispError> {
-        let panic_id = self
-            .ctx
-            .panic_func_id
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: "runtime/panic not declared".into(),
-                location: ErrorLocation::from_span(Span::new(0, 0)),
-            })?;
-
-        let msg = b"match failed";
-        let data_id = self
-            .module
-            .declare_anonymous_data(false, false)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare panic data: {e}"),
-                location: ErrorLocation::from_span(Span::new(0, 0)),
-            })?;
-        let mut desc = cranelift_module::DataDescription::new();
-        desc.define(msg.to_vec().into_boxed_slice());
-        self.module
-            .define_data(data_id, &desc)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to define panic data: {e}"),
-                location: ErrorLocation::from_span(Span::new(0, 0)),
-            })?;
-
-        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
-        let msg_ptr = self.builder.ins().global_value(types::I64, gv);
-        let msg_len = self.builder.ins().iconst(types::I64, msg.len() as i64);
-
-        let panic_ref = self
-            .module
-            .declare_func_in_func(panic_id, self.builder.func);
-        self.builder.ins().call(panic_ref, &[msg_ptr, msg_len]);
-
-        // runtime_panic sets a thread-local error flag and returns.
-        // Return a dummy 0 value — the caller checks take_runtime_error().
-        let dummy = self.builder.ins().iconst(types::I64, 0);
-        self.builder.ins().return_(&[dummy]);
-
-        Ok(())
+        let span = Span::new(0, 0);
+        let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+        crate::raise::emit_raise(
+            &mut self.builder,
+            self.module,
+            panic_id,
+            crate::raise::RaiseMessage::Source(crate::raise::PanicSource::MatchFailed),
+            span,
+        )
     }
 }
 

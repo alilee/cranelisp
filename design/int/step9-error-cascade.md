@@ -18,7 +18,9 @@ formatting is [int.md §9](int.md#9-error-formatting-decisions-39--42).
 ## 2. Surfacing a scheduler failure
 
 - `SchedulerError::ModuleFailed` carries the failed module, the failing
-  error's text and its span.
+  error's text and its span. That text, and the cascade text of §4.1, is
+  the wrapped text of [int §6.11](int.md#611-module-cycles-at-publication),
+  Diagnostic. It carries no span, so the wrap adds only one located prefix.
 - `impl From<SchedulerError> for CranelispError` wraps it as a `ModuleError`
   whose text is `module '<m>' failed: <text>`, located at the inner error's
   span.

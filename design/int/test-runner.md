@@ -1,9 +1,9 @@
 # `--test` and the shared test runner
 
 **Owner:** `design` (int). **Status:** implemented and verified in `src/`,
-except §6.5 (the test child), which is designed for S123 and not yet
-implemented. Until it lands, the runner executes tests in the client's own
-process, as §§6.2–6.3 and §7 describe.
+except §6.5 (the test child). `dev`(src) built §6.5 in S123 W1, and `design`
+(int) checked it against source on 2026-11-15. Independent review and the
+suite run are still to come. The child runs §§6.2–6.3 in its own process.
 Verification evidence and acceptance status are recorded in `sprints/archive/sprint-122.md`.
 A missing entry file is refused at entry registration, not by the runner
 ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
@@ -50,7 +50,7 @@ REPL displays it and continues.
 4. **Execute.** Each test runs on the calling thread with runtime errors
    captured. Its outcome is pass, fail or panic. A clean result is observed and
    then released exactly once through the program-result owner (§6.2).
-   Execution has no error return. S123 target: steps 1–4 run in a child
+   Execution has no error return. Under §6.5, steps 1–4 run in a child
    process that restarts after a panic, because a panic now ends its process;
    the client's process supervises it and reports (§6.5).
 5. **Report.** The outcomes, the warnings and the exit code form one
@@ -91,7 +91,7 @@ runner state (§6.3).
 | `--run`, `--link` and `--test` refuse any compiled reference to `discover-tests`; an import alone is allowed | §16.6; user, 2026-09-28, for `--test` | One gate at the three batch seams (§7.3) |
 | `discover-tests` is REPL-only; under `--test` the compiler's runner discovers and runs tests | §16.6 | No runner state (§6.3) |
 | `--run` output equals the linked executable's output, with the same capabilities | §0.2.1 | One §7.3 gate serves both; `--test` neither links nor calls `main` |
-| `--test` with `--run` or `--link` is a usage error; `-o` is rejected; a missing entry file exits 1; warnings go to stderr; agent, worker and `--no-cache` flags behave as for `--run` | §0.2.2 | Flag parsing, entry registration's batch refusal ([int §6.1.1](int.md#611-a-missing-entry-source-file)) and the `Action::Test` arm (§7.1) |
+| `--test` with `--run` or `--link` is a usage error; `-o` is rejected; a missing entry file exits 1; warnings go to stderr; agent, worker and `--no-cache` flags behave as for `--run` | §0.2.2 | Flag parsing, entry registration's batch refusal ([int §6.1.1](int.md#611-a-missing-entry-source-file)) and the `--test` arms (§7.1) |
 | An empty run reports `No tests found`; `--test` exits 0 | §16.2, §0.2.2 | The report (§6.4) |
 
 Two readings follow from the standing text:
@@ -114,7 +114,7 @@ responsibility, each with its own test module (Principle 23):
 | `discovery` | The shared definition predicate, the runner scan and its warnings (§5); `/tests-for` uses the predicate directly |
 | `selection` | The classifier and the chain walk (§4) |
 | `run` | Preparation, execution, the report and `TestRunReport`, plus the `impl CompilerSession` block holding `run_tests` |
-| `child` (S123 target) | The test-child protocol (§6.5): the record codec that `run_tests` writes and the supervisor reads, the child command line, the ending classifier and `supervise_tests`. The process launch is injected so its unit rows script child endings |
+| `child` | The test-child protocol (§6.5): the record codec that `run_tests` writes and the supervisor reads, the child command line, the ending classifier and `supervise_tests`. The process launch is injected so its unit rows script child endings |
 | parent `test_runner.rs` | `discover-tests`, `TestRunnerState` and the heap marshalling, REPL-only; the extern lists tests through the shared scan |
 
 The extern stays in the parent rather than a fourth submodule; the runner
@@ -271,9 +271,10 @@ recorded source file (§7.1), then a compiled reference to `discover-tests`
 
 ### 6.2 Execute
 
-For each prepared test, in FQ order (as built; under §6.5 this runs in the
-child, steps 1 and 3 retire because a panic ends the process and leaves no
-slot to read, and step 4 is followed by the test's outcome record):
+For each prepared test, in FQ order. Under §6.5 this runs in the child, and
+step 4 is followed by the test's outcome record. Steps 1 and 3 are the
+pre-S123 shape. S123 retired them: a panic ends the process, so no slot is
+left to read, and the runner has no error slot:
 
 1. Clear the calling thread's runtime-error slot.
 2. Call the captured pointer while holding the cloned code owner (Principle 22).
@@ -323,7 +324,11 @@ cannot be built (Principle 20).
 
 ### 6.5 The test child
 
-Status: designed in S123 Phase 3; not implemented. A runtime panic ends its
+Status: designed in S123 Phase 3. Built in S123 W1 and checked against
+source on 2026-11-15; the as-built departures are recorded under *Cache
+use* and *Child arguments* below. *The cause of a fail* was decided after
+that check. As built, the reason names only the exit status, and the change
+is for `dev`. A runtime panic ends its
 process ([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)).
 The user's ruling (2026-11-15) is one child process that restarts after a
 panic. The runner therefore splits into a **supervisor**, which never
@@ -385,7 +390,8 @@ streams one record per test.
 |---|---|
 | `end` | done; the run is complete |
 | an open `start <fq>`, the panic exit status, and a stderr line beginning with the panic report prefix | `<fq>` is **panic**: `PANIC: <message>`, where the message is the rest of the last such line. Restart after `<fq>` |
-| an open `start <fq>` and any other ending (another status, a signal) | `<fq>` is **fail**, naming the cause (the wording is `spec`'s). Restart after `<fq>` |
+| an open `start <fq>` and another exit status | `<fq>` is **fail**. The reason carries the status and the child's final stderr line, when it wrote one (*The cause of a fail*, below). Restart after `<fq>` |
+| an open `start <fq>` and a signal | `<fq>` is **fail**, naming the signal. Restart after `<fq>` |
 | no open `start` and no `end` (a compile error, the §7.3 refusal, a readiness failure, or a death between tests) | the run is `Err`. The child's diagnostic has already reached stderr. A restart would not progress, so none is made |
 
 - **Termination is structural.** Every restart follows a child that consumed
@@ -404,12 +410,61 @@ streams one record per test.
   stderr as it arrives. The parent keeps the last line that starts with the
   prefix. So a panic's own report appears on stderr when it happens, and its
   message appears again in the report's `PANIC:` line. Whether that repetition
-  is wanted is `spec`'s.
-- **Cache writes.** Children run one at a time. Under `--test` the child
-  writes the object cache as `--test` does today, so a later run is warm. A
-  REPL child, which is the child given a module selection, compiles in memory
-  only, because the REPL's own background workers write the same entries. A panic can end a child mid-write. Cache
-  writes are atomic (arch §1.7), so the next child or session only misses.
+  is wanted is `spec`'s. The parent also keeps the last line of any kind, for
+  the next bullet.
+- **The cause of a fail.** The user ruled that a test child shows a dispatch
+  fault as a failed test naming the cause (2026-11-15). The cause must be
+  in the test's `FAILED:` line. The relayed stderr is not enough:
+  - it is not attributed to any test, and it reaches a different stream from
+    the report, so a reader of the report under `--test`, or of the REPL's
+    report text, sees only an exit status;
+  - a panic's message already appears in its `PANIC:` line, and a fail
+    should name its cause the same way.
+
+  The supervisor therefore uses the child's final stderr line. That line is
+  the fault report whenever the runtime ended the process. The terminator is
+  the only fault exit. It flushes stdout, writes its one-line report in one
+  write and exits, and any later claimant parks without writing
+  ([process lifecycle §1.1](../intrinsics/process-lifecycle.md#11-one-terminator)).
+  A platform DLL's own panic hook writes the fault text before that report,
+  so the report is still last. The rule covers every non-panic fault the
+  terminator reports, so it needs no prefix for dispatch faults and no
+  shared wording constant. §12.7.6 leaves the wording unfixed.
+
+  A signal leaves no report, so a signalled fail names only the signal. A
+  status ending with no stderr line names only the status. The reason's
+  wording is `spec`'s (S123-Q13).
+  - *Residual.* Two writers can follow the report: the opt-in statistics
+    printers registered with `atexit` (`CRANELISP_RC_STATS`, for example),
+    and a host Rust panic, whose final line is the backtrace hint. In both
+    cases the reason names the wrong line, and the whole stderr has still
+    been relayed. *Grade: asserted, with a named falsifier:* a child ended by
+    the terminator, with no statistics variable set, whose final stderr line
+    is not the terminator's report.
+  - *Reachability.* An eligible test is `(Fn [] (Option String))` and cannot
+    force a platform effect, so no test can raise a dispatch fault today
+    ([evidence delta](../../tests/plan/s123-evidence-delta.md), P-7). The
+    same row reports any other non-panic fault the terminator ends a test
+    with, such as a runtime defect caught in a spark. The evidence is unit
+    grade (§10, test child row 9). Trigger for an end-to-end cell: an eligible
+    test that can force a platform effect.
+- **Cache use.** Children run one at a time.
+  - **Under `--test`**, the child reads and writes the object cache as
+    `--run` does, so a later run and a restarted child start warm.
+  - **The REPL child** is the child given a module selection. It must not
+    write the cache, because the REPL's own background workers write the
+    same entries. As built, it runs as if `--no-cache` were given
+    (`Action::forces_no_cache` in `src/main.rs`) and skips the object wait.
+    `--no-cache` turns off cache reads as well as writes, so the REPL child
+    compiles its selection from source, again after each panic.
+  - **Why reads are off too.** The process has no mode that reads the cache
+    without writing it. In-memory-only codegen would need a new
+    `cranelisp_types::CodegenBehaviour` variant. A read-only cache setting
+    would need a new `SessionSettings` field in the root crate. Each change
+    goes to the inter-crate public-API gate. The as-built child keeps the
+    one rule this design needs, that it never writes, without either change.
+  - **A panic can end a child mid-write.** Cache writes are atomic (arch
+    §1.7), so the next child or session only misses.
 - **`discover-tests` in a child is refused** (user ruling, 2026-11-15). The
   child is a `--test` process, so `run_tests`' existing gate refuses a compiled
   reference before preparation (§7.3). Under `/run-tests` this is now the
@@ -419,22 +474,47 @@ streams one record per test.
   under `--test` in 16.0–16.9 s, of which startup and compile were about
   0.8–1.7 s. Under this design a run costs one child startup plus one compile,
   usually from cache, for each panic. With no panic, `--test` costs what it
-  costs today plus one process start. A REPL `/run-tests` adds one compile
-  from cache that today's in-session run does not have. Falsifier for the
-  estimate: a measured restart whose startup differs from that non-test time
-  by more than a factor of two.
+  costs today plus one process start. A REPL `/run-tests` adds a compile
+  that the in-session run did not have. Because the REPL child reads no
+  cache, that compile is cold: one at the start, and one more for each panic.
+  The 0.8–1.7 s figure above is not split into warm and cold compiles, so the
+  cold-compile penalty has not been measured. *Grade: asserted, with a
+  named falsifier.* The cost matters if a cold child compile of the
+  exemplar selection takes as long as that selection's tests, which run for
+  about 15 s. The falsifier is one REPL `/run-tests` of that selection
+  with no panic, timed against `--test` with a warm cache. Trigger for the
+  read-only cache mode: that measurement, or a user report that `/run-tests`
+  is slow. Falsifier for the restart estimate: a measured restart whose
+  startup differs from that non-test time by more than a factor of two.
 - **Consequences to state (`spec`).** A REPL child compiles from the files on
   disk, so a definition held "in the session only" after a refused
   regeneration ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock))
-  is not what the child tests. The child arguments are a CLI surface; whether
-  §0.2.2 documents them or marks them internal, and their spelling, are
-  `spec`'s. The record format is private to the runner.
-- **The stdlib runner** starts each test as its own process (user ruling).
-  [Arch §1.5](../arch/s123-panics-and-environment.md#15-the-compiler-test-runner)
-  makes the launch capability a platform concern, not a `discover-tests` one;
-  its boundary and owner are open with `arch` (evidence delta G1). Int adds no
-  host extern for it, and whether that runner launches this child is its
-  design.
+  is not what the child tests. The record format is private to the runner.
+- **Child arguments.** §0.2.2 makes them internal and undocumented, and
+  leaves their spelling to the implementation (user ruling, 2026-11-15).
+  As built:
+
+  | Argument | Carries |
+  |---|---|
+  | `--test-child-records <path>` | The record file. Its presence makes a `--test` process the child |
+  | `--test-child-module <module>` | One selected module, repeated in selection order. Absent under `--test`, where the child walks the chain |
+  | `--test-child-resume <fq>` | The resume point |
+
+  - The usage text does not list them.
+  - Without `--test` they are a usage error. With `--test`, the module and
+    resume arguments require the record file.
+  - The spellings live in two places: the launcher constants in `child.rs`
+    and the parser constants in `main.rs`. They are not shared because
+    `main.rs` is the binary target, and sharing them would need a public
+    item in the root library. *Grade: measured.* If the copies drift, the
+    parser rejects the child's command line, and every `--test` cell in
+    `tests/test_runner.rs` fails.
+- **The stdlib runner carries no panic isolation** (user ruling, 2026-11-15,
+  [evidence delta §1.1](../../tests/plan/s123-evidence-delta.md#11-the-stdlib-runner-carries-no-panic-isolation)).
+  This supervisor is the isolation. A panicking test in a direct in-language
+  run ends that process like any other panic (`spec/12-runtime.md` §12.7.4):
+  later tests do not run and no tally prints. Int adds no host extern or
+  launch capability for that runner, and it does not launch this child.
 - **Potential extension.** A per-test timeout. Trigger: a hanging-test
   requirement.
 
@@ -442,9 +522,11 @@ streams one record per test.
 
 ### 7.1 `--test` (`main.rs`)
 
-- `Action::Test` is a new binary-private variant. It maps to
+- Each `--test` action is binary-private. It maps to
   `CodegenBehaviour::InMemoryAndObject` and to `RunMode::Run`, which is
-  Principle 11's one compile path.
+  Principle 11's one compile path. The steps below are the in-process run
+  that the S123 child keeps, with the changes listed at the end of this
+  section.
 - `parse_args` recognises `--test`, and one mode validation decides the action
   from the parsed flags:
   - at most one of `--run`, `--test` and `--link`; any combination is a usage
@@ -471,8 +553,9 @@ streams one record per test.
   6. `process::exit(report.exit_code())`.
 - The `RunMode::Run` rustdoc and the `src/lib.rs` consumer comment name
   `--test`.
-- **S123 target (§6.5).** Mode validation yields two binary-private actions
-  where it yields `Action::Test` today:
+- **The test child (§6.5).** Mode validation yields two binary-private
+  actions, `Action::TestSupervisor` and `Action::TestChild`, where it
+  yielded `Action::Test` before S123:
   - **The supervisor**, for `--test` without the child arguments. `run`
     dispatches it before `CompilerSession::new` and entry registration, so the
     supervising process compiles nothing. It calls `supervise_tests` with its
@@ -482,8 +565,9 @@ streams one record per test.
   - **The child**, for `--test` with the child arguments. It runs the arm
     above with step 2 calling `run_tests(records, modules, resume_after)` and
     steps 3 and 4 removed: warnings and outcomes go to the record file, and
-    the child writes no report. With a module selection it compiles in memory
-    only and skips the object wait. It exits 0 after `end` is recorded.
+    the child writes no report. With a module selection it runs without the
+    cache and skips the object wait (§6.5, *Cache use*). It exits 0 after
+    `end` is recorded.
   The child arguments without `--test` are a usage error.
 - **Execution environment** ([CLI §0.7](../../repl/spec/00-cli-invocation.md#07-execution-environment-variables-s93);
   user ruling of 2026-10-01). `CRANELISP_NO_LENIENT` and
@@ -571,9 +655,10 @@ pre-execution checks.
 | An admitted edge to a module with no table | `Err`, naming the module; no test runs |
 | A test's release target cannot be resolved | `Err` (result-owner §5); no test runs |
 | An eligible test has no code at preparation | That test is reported `FAILED: test function not found`; the run continues |
-| A test panics | `PANIC: <message>`; counted as failed; no release; the run continues. S123 target: the panic ends the child, the supervisor reports it and restarts the child after that test (§6.5) |
-| The child ends by signal or another status while a test is open (S123 target) | that test is reported failed with the cause; the child restarts after it (§6.5) |
-| The child ends with no open test and no completion (S123 target) | `Err`; the child's diagnostic is already on stderr; no restart (§6.5) |
+| A test panics | The panic ends the child. The supervisor reports `PANIC: <message>`, counts it as failed and restarts the child after that test (§6.5); nothing is released |
+| The child ends with another status while a test is open, including a dispatch fault | that test is reported failed. The reason carries the status and the child's final stderr line, which is the fault report. The child restarts after it (§6.5) |
+| The child ends by signal while a test is open | that test is reported failed, naming the signal; the child restarts after it (§6.5) |
+| The child ends with no open test and no completion | `Err`; the child's diagnostic is already on stderr; no restart (§6.5) |
 | A test returns `(Some reason)` | `FAILED: <reason>`; released once; the run continues |
 | A mistyped `test-` function | excluded, with one warning |
 | No eligible test | `No tests found`, exit 0; warnings are still reported |
@@ -664,14 +749,14 @@ RED against it; the others arrived green with the seam they test.
   3. `run_tests` on a session whose program references the extern returns
      `Err` and runs no test body; the REPL runner is unaffected.
 - **`main.rs`**:
-  1. `--test` parses to `Action::Test`, with `RunMode::Run` and
+  1. `--test` parses to a test action, with `RunMode::Run` and
      in-memory-and-object codegen.
   2. `--test` with `--run`, with `--link`, or with `-o` is a usage error.
   3. `--test` and `--run` parse the target, worker flags, `--no-cache` and
      agent and colour flags identically, in either target order.
-  4. S123 target: `--test` selects the supervisor and `--test` with the child
+  4. `--test` selects the supervisor and `--test` with the child
      arguments selects the child; the child arguments alone are a usage error.
-- **test child (§6.5, S123 target)**:
+- **test child (§6.5)**:
   1. The supervisor's classification maps each row of the §6.5 table. That
      includes a panic-status ending with no prefixed stderr line, which is a
      fail and not a panic, and an open `start` after a death by signal.
@@ -689,6 +774,18 @@ RED against it; the others arrived green with the seam they test.
   6. The record codec round-trips a reason spanning lines.
   7. Warnings in the report come from the first child only.
   8. A REPL child writes no object cache and no project file.
+  9. *The cause of a fail.* An open test, status 1, no prefixed line, and
+     stderr consisting of DLL panic-hook lines followed by
+     ``platform fn `p/f` dispatch failed: boom`` is a fail. Its reason carries
+     the status and that final line, and it is not a panic. Three negative
+     legs:
+     - with no stderr, the reason names only the status;
+     - with a signal, it names only the signal, though the stderr has lines;
+     - the panic row is unchanged when a later line follows the prefixed one.
+
+     The stderr relay keeps the final line and, separately, the last
+     prefixed line. The first leg fails against the as-built status-only
+     reason.
 
 QA allocates the end-to-end cells.
 

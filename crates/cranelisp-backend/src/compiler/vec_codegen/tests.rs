@@ -1317,10 +1317,22 @@ fn vec_set_copy_path_preserves_original() {
 }
 
 // spec: spec/12-runtime.md §12.7.2.1 — the static copy-only site (the source is
-//       read after the set) panics out of range instead of returning an
-//       unchanged copy (ACT-1037).
+//       read after the set) panics out of range, ending the process, instead of
+//       returning an unchanged copy (ACT-1037).
 #[test]
 fn vec_set_copy_path_panics_out_of_range() {
+    let child =
+        crate::test_child::child_path(module_path!(), "child_runs_copy_only_vec_set_out_of_range");
+    crate::test_child::run(&child, &[])
+        .assert_panicked_with("vec-get: index out of bounds", "copy-only vec-set");
+}
+
+// Child body for `vec_set_copy_path_panics_out_of_range`.
+#[test]
+fn child_runs_copy_only_vec_set_out_of_range() {
+    if !crate::test_child::selected("child_runs_copy_only_vec_set_out_of_range") {
+        return;
+    }
     use cranelisp_types::ResolvedCall;
     let mut res = HashMap::new();
     let set_span = Span::new(2010, 2030);
@@ -1393,15 +1405,8 @@ fn vec_set_copy_path_panics_out_of_range() {
         warnings: Vec::new(),
         display: None,
     };
-    let result = test_compile_and_run(&expr, &check, &empty_tables());
-    let message = match result {
-        Err(CranelispError::CodegenError { message, .. }) => message,
-        other => panic!("an out-of-range copy-only vec-set MUST panic; got {other:?}"),
-    };
-    assert!(
-        message.ends_with("runtime panic: vec-get: index out of bounds"),
-        "the §12.7.2.1 message; got {message:?}"
-    );
+    test_compile_and_run(&expr, &check, &empty_tables()).expect("compiles");
+    println!("{}", crate::test_child::RESUMED);
 }
 
 // spec: spec/12-runtime.md §12.3.3 — a vec-set preserves the values at

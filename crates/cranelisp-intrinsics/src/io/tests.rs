@@ -62,8 +62,6 @@ static FIRST_DISPOSED_VALUE: std::sync::atomic::AtomicI64 = std::sync::atomic::A
 static SECOND_DISPOSED_VALUE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static BLOCKING_EFFECT_ENTERED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-static LATER_SERIAL_EFFECT_RAN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn count_result_disposal(_value: i64) {
     RESULT_DISPOSALS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -884,10 +882,7 @@ fn make_ledgered_effect_node(ledger: &ThunkLedger, value: i64) -> i64 {
 }
 
 fn force_effect_value(node: i64) -> i64 {
-    match force_effect_node(node) {
-        EffectStep::Value(value) => value,
-        EffectStep::Aborted => panic!("a clean thunk must not fault"),
-    }
+    force_effect_node(node)
 }
 
 // spec: spec/10-io.md §10.8.1 — E-T1: a node that is never forced (a `Select`
@@ -1042,16 +1037,17 @@ fn call_continuation_dec_closure() {
     assert_eq!(crate::alloc::dealloc_count() - deallocs_b_before, 2);
 }
 
-/// Helper: allocate a continuation closure `(fn [x] (runtime_panic …) 0)`
-/// that sets the runtime-error slot and returns the panic-path sentinel `0`
-/// — modelling the inline div-by-zero codegen (`emit_panic_return`) inside an
-/// IO `bind` continuation: it sets the slot then `return_(&[0])` from the
-/// enclosing continuation lambda.
+use crate::test_child::{self, selected};
+
+fn child(name: &str) -> String {
+    test_child::child_path(module_path!(), name)
+}
+
+/// A continuation `(fn [_] (/ 1 0))` whose body raises a language panic.
 fn make_panicking_cont_closure() -> i64 {
     extern "C" fn panic_cont(_env_ptr: i64, _val: i64) -> i64 {
         let msg = "division by zero";
-        crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-        0 // panic-path sentinel — NOT a valid IO node pointer
+        crate::panic::runtime_panic(msg.as_ptr(), msg.len())
     }
     let base = alloc_with_rc(16); // code_ptr + drop_glue_ptr, no captures
     unsafe {
@@ -1061,45 +1057,23 @@ fn make_panicking_cont_closure() -> i64 {
     base as i64
 }
 
-// spec: spec/12-runtime.md §12.7.4.2 — a runtime panic raised inside an IO
-// `bind` continuation makes the continuation return the sentinel `0`. The
-// trampoline must PEEK the runtime-error slot, STOP the walk, and return `0`
-// WITHOUT dereferencing the sentinel (which would null-deref → SIGSEGV), and
-// must LEAVE the slot SET so the host surfaces it (FIXME 0401 — peek, not
-// take).
 #[test]
-fn trampoline_runtime_panic_in_continuation_stops_and_leaves_slot_set() {
-    let _ = crate::panic::take_runtime_error(); // clear
-    // bind (Pure 1) (fn [_] <panic; return sentinel 0>)
-    let inner = make_pure_node(1);
-    let cont = make_panicking_cont_closure();
-    let io = make_bind_node(inner, cont);
+fn child_panics_inside_a_bind_continuation() {
+    if !selected("child_panics_inside_a_bind_continuation") {
+        return;
+    }
+    let io = make_bind_node(make_pure_node(1), make_panicking_cont_closure());
+    let _ = run_io_trampoline(io);
+    eprintln!("RESUMED-AFTER-PANIC");
+}
 
-    // Drive the trampoline (NOT the extern wrapper). It must NOT SIGSEGV.
-    let result = run_io_trampoline(io);
-    assert_eq!(
-        result, 0,
-        "panicking continuation aborts the walk with the sentinel"
-    );
-
-    // The slot is left SET — the trampoline peeked, did not take. The host
-    // is the surfacing point; if the slot were cleared here the SIGSEGV would
-    // be traded for a silent swallow.
-    assert!(
-        crate::panic::has_runtime_error(),
-        "trampoline must leave the runtime-error slot SET for the host"
-    );
-    // Cleanup: take the slot so it does not pollute later tests on this
-    // thread, then release the caller's tree (consume_io_tree walks the
-    // Bind/Pure/closure spine the trampoline left untouched on the abort).
-    let drained = crate::panic::take_runtime_error();
-    assert!(
-        drained
-            .as_deref()
-            .is_some_and(|m| m.contains("division by zero")),
-        "the surfaced message must carry the panic cause (got {drained:?})"
-    );
-    crate::drop::consume_io_tree(crate::handle::test_owned(io));
+// spec: spec/12-runtime.md §12.7.4 — a panic inside an IO `bind` continuation
+// ends the process; the trampoline never resumes on the continuation's result.
+#[test]
+fn panic_in_a_bind_continuation_ends_the_process() {
+    let end = test_child::run(&child("child_panics_inside_a_bind_continuation"), &[]);
+    end.assert_panicked_with("division by zero");
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }
 
 // spec: 10-io §10.12 — read_resource_token returns 0 for non-Effect nodes
@@ -1126,124 +1100,113 @@ fn bake_fn_name(name: &str) -> i64 {
 
 // spec: design/arch/bounded-contexts.md §4b invariant 14 — the fault guard
 // is a strict no-op on the happy path: a clean thunk forces and returns its
-// value, leaving no dispatch fault.
+// value.
 #[test]
 fn force_effect_thunk_protected_happy_path_returns_value() {
-    let _ = crate::panic::take_dispatch_fault(); // clear
     let node = make_effect_node(1234);
-    let outcome = unsafe {
+    let value = unsafe {
         crate::io_guard::force_effect_thunk_protected(effect_thunk(node), "stdio/read-line")
     };
-    match outcome {
-        crate::io_guard::ForceOutcome::Value(v) => assert_eq!(v, 1234),
-        crate::io_guard::ForceOutcome::Faulted => panic!("clean thunk must not fault"),
+    assert_eq!(value, 1234);
+    release_io(node);
+}
+
+#[test]
+fn child_guard_forces_a_faulting_thunk() {
+    if !selected("child_guard_forces_a_faulting_thunk") {
+        return;
     }
-    assert!(
-        crate::panic::take_dispatch_fault().is_none(),
-        "no dispatch fault on the happy path"
-    );
-    release_io(node);
-}
-
-// spec: design/arch/bounded-contexts.md §4b invariant 14 — a faulted
-// EffectOutcome (FIXME 0327 Option A: the panic was caught DLL-side and a
-// non-null fault_cause returned) produces a Faulted outcome whose captured
-// dispatch fault carries the supplied fn-name and the cause string read from
-// the EffectOutcome C-string.
-#[test]
-fn force_effect_thunk_protected_faulted_outcome_captures_fn_name() {
-    let _ = crate::panic::take_dispatch_fault();
-    let _ = crate::panic::take_runtime_error();
     let node = faulting_effect_node("device unavailable");
-    let outcome = unsafe {
+    let _ = unsafe {
         crate::io_guard::force_effect_thunk_protected(effect_thunk(node), "stdio/read-line")
     };
-    assert!(
-        matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
-        "faulted EffectOutcome must fault"
-    );
-    let fault = crate::panic::take_dispatch_fault().expect("fault captured");
-    assert_eq!(fault.fn_name, "stdio/read-line");
-    assert!(
-        fault.cause.contains("device unavailable"),
-        "cause must carry the EffectOutcome message, got {:?}",
-        fault.cause
-    );
-    release_io(node);
+    eprintln!("RESUMED-AFTER-FAULT");
 }
 
-// spec: design/arch/bounded-contexts.md §4b invariant 14 — a Rust panic in
-// foreign platform code is caught DLL-side, returned as a non-null
-// fault_cause, and the guard composes a DispatchFault from it.
-#[test]
-fn force_effect_thunk_protected_dll_caught_panic_is_read() {
-    let _ = crate::panic::take_dispatch_fault();
-    let _ = crate::panic::take_runtime_error();
-    let node = faulting_effect_node("boom in platform fn");
-    let outcome =
-        unsafe { crate::io_guard::force_effect_thunk_protected(effect_thunk(node), "net/connect") };
-    assert!(
-        matches!(outcome, crate::io_guard::ForceOutcome::Faulted),
-        "DLL-caught panic must surface as a fault"
+/// Assert a child ended by one dispatch fault naming `fn_name` and `cause`.
+#[track_caller]
+fn assert_dispatch_fault(end: &test_child::Ending, fn_name: &str, cause: &str) {
+    assert_eq!(
+        end.code,
+        Some(crate::panic::PANIC_EXIT_STATUS),
+        "{}",
+        end.stderr
     );
-    let fault = crate::panic::take_dispatch_fault().expect("fault captured");
-    assert_eq!(fault.fn_name, "net/connect");
-    assert!(fault.cause.contains("boom in platform fn"));
-    release_io(node);
+    let line = format!("platform fn `{fn_name}` dispatch failed: {cause}");
+    assert_eq!(
+        end.stderr.lines().filter(|l| *l == line).count(),
+        1,
+        "one dispatch-fault report:\n{}",
+        end.stderr
+    );
+    assert!(
+        end.report_lines().is_empty(),
+        "no panic prefix:\n{}",
+        end.stderr
+    );
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
+    assert!(!end.stdout.contains(cause), "fault text on stdout");
 }
 
-// spec: design/arch/bounded-contexts.md §5 invariant 9 — the trampoline
-// reads the baked fn-name from the Effect node's field-3 (ABI v4) and the
-// captured fault carries it. The full-trampoline path exercises the
-// field-3 read alongside the force.
+// spec: spec/12-runtime.md §12.7.6 — a platform thunk whose panic was caught
+// DLL-side (a non-null `fault_cause`) ends the process with a dispatch-fault
+// report naming the platform fn and the cause.
 #[test]
-fn trampoline_effect_fault_reads_baked_fn_name() {
-    let _ = crate::panic::take_dispatch_fault();
-    let _ = crate::panic::take_runtime_error();
+fn guard_fault_ends_the_process_naming_the_function() {
+    let end = test_child::run(&child("child_guard_forces_a_faulting_thunk"), &[]);
+    assert_dispatch_fault(&end, "stdio/read-line", "device unavailable");
+}
+
+#[test]
+fn child_trampoline_forces_a_named_faulting_effect() {
+    if !selected("child_trampoline_forces_a_named_faulting_effect") {
+        return;
+    }
     let node = faulting_effect_node("clock read failed");
     // SAFETY: a fresh, unpublished `Effect` node; field 2 is the fn-name.
     unsafe { crate::heap_access::write_i64(node, FIELD_2_OFFSET, bake_fn_name("clock/now")) };
-    let result = run_io_trampoline(node);
-    assert_eq!(result, 0, "faulting trampoline returns the sentinel");
-    let fault = crate::panic::take_dispatch_fault().expect("fault captured");
-    assert_eq!(fault.fn_name, "clock/now", "field-3 fn-name read");
-    assert!(fault.cause.contains("clock read failed"));
-    release_io(node);
+    let _ = run_io_trampoline(node);
+    eprintln!("RESUMED-AFTER-FAULT");
+}
+
+// spec: design/arch/bounded-contexts.md §5 invariant 9 — the trampoline reads
+// the baked fn-name from the Effect node's field-3 (ABI v4) and the report
+// carries it.
+#[test]
+fn trampoline_effect_fault_reports_the_baked_fn_name() {
+    let end = test_child::run(
+        &child("child_trampoline_forces_a_named_faulting_effect"),
+        &[],
+    );
+    assert_dispatch_fault(&end, "clock/now", "clock read failed");
+}
+
+#[test]
+fn child_trampoline_forces_an_unnamed_faulting_effect() {
+    if !selected("child_trampoline_forces_an_unnamed_faulting_effect") {
+        return;
+    }
+    let _ = run_io_trampoline(faulting_effect_node("unstamped fault"));
+    eprintln!("RESUMED-AFTER-FAULT");
 }
 
 // spec: design/arch/bounded-contexts.md §5 invariant 9 — a node the backend
-// did NOT stamp (field-3 null) degrades the captured fn-name to
-// "<unknown>", never crashing.
+// did NOT stamp (field-3 null) reports the fn-name as "<unknown>".
 #[test]
-fn trampoline_effect_fault_null_fn_name_degrades_to_unknown() {
-    let _ = crate::panic::take_dispatch_fault();
-    let _ = crate::panic::take_runtime_error();
-    let node = faulting_effect_node("unstamped fault");
-    let result = run_io_trampoline(node);
-    assert_eq!(result, 0);
-    let fault = crate::panic::take_dispatch_fault().expect("fault captured");
-    assert_eq!(
-        fault.fn_name, "<unknown>",
-        "null field-3 degrades to <unknown>"
+fn trampoline_effect_fault_null_fn_name_reports_unknown() {
+    let end = test_child::run(
+        &child("child_trampoline_forces_an_unnamed_faulting_effect"),
+        &[],
     );
-    assert!(fault.cause.contains("unstamped fault"));
-    release_io(node);
+    assert_dispatch_fault(&end, "<unknown>", "unstamped fault");
 }
 
-// spec: design/arch/bounded-contexts.md §4b invariant 14 — the existing
-// clean Effect path through the trampoline still works (no fault) after the
-// guard is installed: the happy path is unaffected (read_effect_fn_name on a
-// clean node leaves no fault).
+// spec: design/arch/bounded-contexts.md §4b invariant 14 — the clean Effect
+// path through the trampoline is unaffected by the guard.
 #[test]
-fn trampoline_clean_effect_leaves_no_fault() {
-    let _ = crate::panic::take_dispatch_fault();
+fn trampoline_clean_effect_returns_its_value() {
     let io = make_effect_node_with_name(77, bake_fn_name("stdio/write"));
-    let result = run_io_trampoline(io);
-    assert_eq!(result, 77);
-    assert!(
-        crate::panic::take_dispatch_fault().is_none(),
-        "clean effect must leave no dispatch fault"
-    );
+    assert_eq!(run_io_trampoline(io), 77);
     release_io(io);
 }
 
@@ -1255,17 +1218,17 @@ fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
     effect_node_on(token, capacity, move || value)
 }
 
-fn make_observed_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
+fn make_capacity_panicking_effect(token: i64, capacity: i64, message: &'static str) -> i64 {
     effect_node_on(token, capacity, move || {
-        LATER_SERIAL_EFFECT_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
-        value
+        crate::panic::runtime_panic(message.as_ptr(), message.len())
     })
 }
 
-fn make_capacity_runtime_error_effect(token: i64, capacity: i64, message: &'static str) -> i64 {
+/// A capacity-`capacity` effect on `token` that reports on stderr if it runs.
+fn make_reporting_capacity_effect(token: i64, capacity: i64, value: i64) -> i64 {
     effect_node_on(token, capacity, move || {
-        crate::panic::set_runtime_error(message.to_string());
-        0
+        eprintln!("LATER-EFFECT-RAN");
+        value
     })
 }
 
@@ -1298,80 +1261,55 @@ fn blocking_par_sync_dispatcher_runs_without_semaphore_neg() {
     crate::drop::consume_io_tree(crate::handle::test_owned(par));
 }
 
-// spec: spec/12-runtime.md §12.4.3 + spec/10-io.md §10.12.4 — capacity-1
-// same-token effects execute sequentially in source order, and the first error
-// aborts the enclosing structured join. A later effect that has not started
-// must not be run merely because it shares the already-created Par node.
 #[test]
-fn serial_group_first_fault_prevents_later_owning_effect() {
-    let _ = crate::panic::take_runtime_error();
-    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
-    LATER_SERIAL_EFFECT_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
-
-    let fault = make_capacity_runtime_error_effect(5, 1, "serial-group fault");
-    let owning = make_observed_capacity_effect_node(5, 1, 77);
-    let par = make_par_node_with_disposers(&[
-        (fault, ResultDisposer::NONE),
-        (owning, ResultDisposer::from_fn(count_result_disposal)),
+fn child_serial_group_panics_first() {
+    if !selected("child_serial_group_panics_first") {
+        return;
+    }
+    let par = make_par_node(&[
+        make_capacity_panicking_effect(5, 1, "serial-group fault"),
+        make_reporting_capacity_effect(5, 1, 77),
     ]);
+    let _ = run_par_node(par, CancellationProbe::Never, crate::strand::StrandId::ROOT);
+    eprintln!("RESUMED-AFTER-PANIC");
+}
 
-    assert!(
-        run_par_node(par, CancellationProbe::Never, crate::strand::StrandId::ROOT).is_none(),
-        "the branch fault prevents Par from publishing a result buffer"
-    );
-    assert_eq!(
-        crate::panic::take_runtime_error().as_deref(),
-        Some("serial-group fault")
-    );
-    assert_eq!(
-        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "a value that was never produced has no disposal obligation"
-    );
-    assert!(
-        !LATER_SERIAL_EFFECT_RAN.load(std::sync::atomic::Ordering::SeqCst),
-        "the first error must abort before the later same-token effect starts"
-    );
+// spec: spec/12-runtime.md §12.4.3 + spec/10-io.md §10.12.4 — capacity-1
+// same-token effects execute sequentially in source order, and the first panic
+// ends the process before the later same-token effect starts.
+#[test]
+fn serial_group_first_panic_ends_before_the_later_effect() {
+    let end = test_child::run(&child("child_serial_group_panics_first"), &[]);
+    end.assert_panicked_with("serial-group fault");
+    assert!(!end.stderr.contains("LATER-EFFECT-RAN"), "{}", end.stderr);
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
+}
 
-    crate::drop::consume_io_tree(crate::handle::test_owned(par));
+#[test]
+fn child_async_capacity_one_panics_first() {
+    if !selected("child_async_capacity_one_panics_first") {
+        return;
+    }
+    let par = make_par_node(&[
+        make_capacity_panicking_effect(6, 1, "async token fault"),
+        make_reporting_capacity_effect(6, 1, 88),
+    ]);
+    let _ = crate::reactor::block_on_reactor(async |env| {
+        let _ = run_par_node_async(par, env).await;
+    });
+    eprintln!("RESUMED-AFTER-PANIC");
 }
 
 // spec: spec/12-runtime.md §12.4.3
 // spec: spec/10-io.md §10.12.4.1 item 4
-// The async capacity-1 pool preserves the same rule as SerialGroup: a later
-// branch that was parked behind the failing source-order predecessor must drop
-// its newly acquired permit without spawning its effect.
+// The async capacity-1 pool preserves the same rule as SerialGroup: the branch
+// parked behind the panicking source-order predecessor never starts.
 #[test]
-fn async_capacity_one_first_fault_prevents_parked_owning_effect() {
-    let _ = crate::panic::take_runtime_error();
-    RESULT_DISPOSALS.store(0, std::sync::atomic::Ordering::SeqCst);
-    LATER_SERIAL_EFFECT_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
-
-    let fault = make_capacity_runtime_error_effect(6, 1, "async token fault");
-    let parked = make_observed_capacity_effect_node(6, 1, 88);
-    let par = make_par_node_with_disposers(&[
-        (fault, ResultDisposer::NONE),
-        (parked, ResultDisposer::from_fn(count_result_disposal)),
-    ]);
-
-    let result = crate::reactor::block_on_reactor(async |env| run_par_node_async(par, env).await)
-        .expect("reactor completes");
-    assert!(result.is_none(), "the first fault aborts the Par result");
-    assert_eq!(
-        crate::panic::take_runtime_error().as_deref(),
-        Some("async token fault")
-    );
-    assert!(
-        !LATER_SERIAL_EFFECT_RAN.load(std::sync::atomic::Ordering::SeqCst),
-        "the parked later effect must not be spawned after the first fault"
-    );
-    assert_eq!(
-        RESULT_DISPOSALS.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "an effect that never starts produces no owning result"
-    );
-
-    crate::drop::consume_io_tree(crate::handle::test_owned(par));
+fn async_capacity_one_first_panic_ends_before_the_parked_effect() {
+    let end = test_child::run(&child("child_async_capacity_one_panics_first"), &[]);
+    end.assert_panicked_with("async token fault");
+    assert!(!end.stderr.contains("LATER-EFFECT-RAN"), "{}", end.stderr);
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }
 
 // ===========================================================================
@@ -2013,7 +1951,7 @@ mod poll_arm {
 
 // ===========================================================================
 // S96 Chunk B §2.11/§2.12 — the `IO_TAG_LAUNCH` launch-and-continue arm +
-// the supervisor (catch + StrandFailed + drive survives). These drive a real
+// the supervisor. These drive a real
 // `Bind(Launch(sub), cont)` tree through `cranelisp_run_io` (the ASYNC
 // trampoline — the launch arm exists only there; the sync stepper never sees an
 // `IO_TAG_LAUNCH` node), so the launch detaches the sub-tree into the supervisor
@@ -2050,14 +1988,9 @@ fn make_bogus_tag_node(tag: i64) -> i64 {
     base as i64
 }
 
-/// Build an `IO_TAG_EFFECT` node whose thunk raises a RUNTIME ERROR (sets the
-/// thread-local error slot, as `runtime_panic` does) then returns `0` — so the
-/// strand's completion-boundary `take_runtime_error` capture (§2.12) sees it.
-fn make_runtime_error_effect(msg: &'static str) -> i64 {
-    effect_node(move || {
-        crate::panic::set_runtime_error(msg.to_string());
-        0
-    })
+/// Build an `IO_TAG_EFFECT` node whose thunk raises a language panic.
+fn make_panicking_effect(msg: &'static str) -> i64 {
+    effect_node(move || crate::panic::runtime_panic(msg.as_ptr(), msg.len()))
 }
 
 // spec: spec/10-io.md §10.12.7 — launch-and-continue: a launched effect runs
@@ -2117,81 +2050,66 @@ fn launch_supervisor_disposes_unobserved_owning_result_once() {
     );
 }
 
-// spec: spec/12-runtime.md §12.7.9 — a launched (detached) strand that PANICS is
-// contained by the supervisor: caught (`catch_unwind`), recorded (`StrandFailed`,
-// not silently dropped), the drive SURVIVES (the launcher's continuation still
-// completes), and the panic is NEVER re-raised (the runtime-error slot stays
-// clear). A non-supervised detached panic would abort the whole drive.
-// design: design/intrinsics/reactor.md §2.12
 #[test]
-fn supervisor_catches_panicking_strand_records_failed_drive_survives() {
-    // Silence the EXPECTED panic's default hook output (nextest isolates this
-    // process, so the global hook swap is safe).
-    let prev = std::panic::take_hook();
+fn child_launches_a_defective_strand() {
+    if !selected("child_launches_a_defective_strand") {
+        return;
+    }
     std::panic::set_hook(Box::new(|_| {}));
-    start_strand_recording();
-
-    let bogus = make_bogus_tag_node(999); // the async trampoline panics on it
-    let launch = make_launch_node(bogus);
-    let cont = make_add_and_pure_closure(5); // (fn [x] (Pure (+ x 5)))
-    let bind = make_bind_node(launch, cont);
-
-    let result = cranelisp_run_io(bind);
-    std::panic::set_hook(prev);
-
-    assert_eq!(
-        result, 5,
-        "the drive SURVIVED the strand panic — the launcher's continuation \
-         completed (0+5), the server lives"
+    let bind = make_bind_node(
+        make_launch_node(make_bogus_tag_node(999)),
+        make_add_and_pure_closure(5),
     );
-    // Never re-raised: a caught panic is NOT ferried into the runtime-error slot.
-    assert!(
-        crate::panic::take_runtime_error().is_none(),
-        "the supervisor must catch + drop, never re-raise the panic into the slot"
-    );
-
-    let events = drain_strand_events();
-    assert!(
-        events.iter().any(
-            |e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "<panicked>")
-        ),
-        "a panicking strand must record StrandFailed (NOT a silent drop): {events:?}"
-    );
+    let _ = cranelisp_run_io(bind);
+    eprintln!("RESUMED-AFTER-DEFECT");
 }
 
-// spec: spec/12-runtime.md §12.7.9 — the supervisor catches the OTHER failure
-// kind too: a strand whose effect raises a RUNTIME ERROR is captured at the
-// completion boundary (`take_runtime_error`, reused from the S95 ferry) →
-// StrandFailed{message} with the ferried message, the drive survives, and the
-// error is captured (taken), not re-raised into the host slot.
-// design: design/intrinsics/reactor.md §2.12
+// spec: spec/12-runtime.md §12.7.9 — a Rust panic in runtime code driving a
+// detached strand is a runtime defect: the supervisor's boundary catches it
+// and ends the process with its payload, not a language-panic report.
+// design: design/intrinsics/process-lifecycle.md §1.1
 #[test]
-fn supervisor_catches_runtime_error_strand_records_failed_with_message() {
-    start_strand_recording();
-    let sub = make_runtime_error_effect("eff-boom"); // raises a runtime error mid-strand
-    let launch = make_launch_node(sub);
-    let cont = make_add_and_pure_closure(3);
-    let bind = make_bind_node(launch, cont);
-
-    let result = cranelisp_run_io(bind);
+fn supervisor_ends_the_process_on_a_runtime_defect() {
+    let end = test_child::run(&child("child_launches_a_defective_strand"), &[]);
     assert_eq!(
-        result, 3,
-        "the launcher's continuation completed (0+3); the drive survived"
+        end.code,
+        Some(crate::panic::PANIC_EXIT_STATUS),
+        "{}",
+        end.stderr
     );
+    assert_eq!(
+        end.stderr
+            .lines()
+            .filter(|l| *l == "error: runtime defect: cranelisp_run_io: unknown IO tag 999")
+            .count(),
+        1,
+        "{}",
+        end.stderr
+    );
+    assert!(end.report_lines().is_empty(), "{}", end.stderr);
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
+}
 
-    let events = drain_strand_events();
-    assert!(
-        events.iter().any(
-            |e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "eff-boom")
-        ),
-        "a runtime-error strand records StrandFailed with the ferried message: {events:?}"
+#[test]
+fn child_launches_a_panicking_strand() {
+    if !selected("child_launches_a_panicking_strand") {
+        return;
+    }
+    let bind = make_bind_node(
+        make_launch_node(make_panicking_effect("eff-boom")),
+        make_add_and_pure_closure(3),
     );
-    // The supervisor TOOK the error at the strand's completion boundary (captured,
-    // not left in the slot to re-raise into the host).
-    assert!(
-        crate::panic::take_runtime_error().is_none(),
-        "the runtime error was captured by the strand, not re-raised"
-    );
+    let _ = cranelisp_run_io(bind);
+    eprintln!("RESUMED-AFTER-PANIC");
+}
+
+// spec: spec/12-runtime.md §12.7.9 — a language panic in a detached strand
+// ends the process with its message; the launcher does not survive it.
+#[test]
+fn panic_in_a_detached_strand_ends_the_process() {
+    let end = test_child::run(&child("child_launches_a_panicking_strand"), &[]);
+    end.assert_panicked_with("eff-boom");
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }
 
 /// Build a degenerate empty `IO_TAG_SELECT` node — `[header | tag=6 | branch_vec]`
@@ -2264,67 +2182,31 @@ fn select_winner_transfers_common_disposer_to_top_level_caller() {
     );
 }
 
-// A witness the empty-select continuation was invoked (it MUST NOT be — the
-// sentinel `0` an empty select produces is never applied to the continuation).
-static EMPTY_SELECT_CONT_RAN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// A continuation `(fn [_] (Pure 99))` that RECORDS it was invoked. Used to prove
-/// the empty-select abort fires BEFORE the continuation runs (FIXME 0475).
-fn make_flag_setting_cont() -> i64 {
-    extern "C" fn flag_cont(_env_ptr: i64, _val: i64) -> i64 {
-        EMPTY_SELECT_CONT_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
+#[test]
+fn child_selects_over_nothing() {
+    if !selected("child_selects_over_nothing") {
+        return;
+    }
+    extern "C" fn reporting_cont(_env_ptr: i64, _val: i64) -> i64 {
+        eprintln!("CONTINUATION-RAN");
         make_pure_node_inline(99)
     }
-    let base = alloc_with_rc(16); // code_ptr + drop_glue_ptr = 16
+    let cont = alloc_with_rc(16);
     unsafe {
-        *((base as isize + 16) as *mut i64) = flag_cont as *const () as i64;
-        *((base as isize + 24) as *mut i64) = 0;
+        *((cont as isize + 16) as *mut i64) = reporting_cont as *const () as i64;
+        *((cont as isize + 24) as *mut i64) = 0;
     }
-    base as i64
+    let _ = cranelisp_run_io(make_bind_node(make_empty_select_node(), cont as i64));
+    eprintln!("RESUMED-AFTER-PANIC");
 }
 
-// spec: design/intrinsics/reactor.md §9 / spec/10-io.md §10.12.8 — a degenerate empty
-// `(select [])` MUST raise a recoverable runtime error ("select over empty
-// collection") through the standard runtime-error slot, NOT return a synthesised
-// Unit `0` and NOT hang. The trampoline aborts BEFORE feeding the sentinel to the
-// bind continuation (at a heap-typed `a` the `0` is an unsound null the
-// continuation would dereference), so the continuation MUST NOT run. FIXME 0475.
+// spec: design/intrinsics/reactor.md §9 / spec/10-io.md §10.12.8 — an empty
+// `(select [])` is a language panic: the process ends with "select over empty
+// collection" and the bind continuation never runs.
 #[test]
-fn empty_select_raises_runtime_error_and_does_not_feed_continuation() {
-    // Clear any stale slot + flag so we observe only this run.
-    let _ = crate::panic::take_runtime_error();
-    EMPTY_SELECT_CONT_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
-
-    let select = make_empty_select_node();
-    let cont = make_flag_setting_cont();
-    let bind = make_bind_node(select, cont);
-
-    let result = crate::reactor::block_on_reactor(async |env| {
-        run_io_trampoline_inner_async(bind, env, StrandId::ROOT, ResultDisposer::NONE).await
-    })
-    .expect("reactor");
-
-    // The sentinel is returned (the trampoline aborts to `0`; int reads the slot,
-    // not the return value).
-    assert_eq!(
-        result,
-        TrampolineOutcome::Stopped,
-        "an aborted empty-select drive produces no value"
-    );
-    // The runtime-error slot carries the message of record.
-    assert_eq!(
-        crate::panic::take_runtime_error().as_deref(),
-        Some("select over empty collection"),
-        "empty (select []) must raise the runtime error 'select over empty collection' \
-         via the standard slot (reactor.md §9 / spec/10-io.md §10.12.8)"
-    );
-    // The bind continuation MUST NOT have run — the sentinel `0` was never applied.
-    assert!(
-        !EMPTY_SELECT_CONT_RAN.load(std::sync::atomic::Ordering::SeqCst),
-        "the empty-select sentinel 0 MUST NOT be fed to the continuation (it is an \
-         unsound null at a heap-typed `a`); the trampoline must abort first"
-    );
-
-    crate::drop::consume_io_tree(crate::handle::test_owned(bind));
+fn empty_select_panics_without_feeding_the_continuation() {
+    let end = test_child::run(&child("child_selects_over_nothing"), &[]);
+    end.assert_panicked_with("select over empty collection");
+    assert!(!end.stderr.contains("CONTINUATION-RAN"), "{}", end.stderr);
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }

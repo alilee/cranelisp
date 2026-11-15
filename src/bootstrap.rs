@@ -23,20 +23,15 @@
 //! 4. `Option` ADT in `primitives`.
 //! 4b. `Pair` ADT in `primitives` (test-discovery.md ruling 1 — `discover-tests`
 //!    return shape).
-//! 4c. `Result` ADT in `primitives` (test-discovery.md ruling 2 —
-//!    `catch-runtime-error` return; tag order Ok=0 / Err=1).
+//! 4c. `Result` ADT in `primitives` (tag order Ok=0 / Err=1).
 //! 5. `IO` ADT (`Pure`/`Effect`/`Bind`) in `primitives`.
 //! 6. `bind` primitive in `primitives`.
 //! 7. `Trace` ADT (`TraceCall` + field accessors) in `primitives` (ADT data
 //!    declaration only — the 12 runtime bodies live in `cranelisp-intrinsics`,
 //!    codegen in backend; see `tracing.md` §2.2 + FIXME 0242 §S76-addendum (4)).
 //!    The `trace` *form* metadata is at root `""` (step 1), not here.
-//! 8. test-discovery primitives in `primitives`: `discover-tests`
-//!    (host-promised `RustPrimitive`, body promised by int at session init) +
-//!    `catch-runtime-error` (host-promised `RustPrimitive` post-S83-reshape —
-//!    ABI-name `Linkage::Import`, slot-less; body in
-//!    `cranelisp-intrinsics::panic`; FIXME 0360). `TestResult`/`run-test` RETIRED
-//!    (test-discovery.md, fourth convergence).
+//! 8. the test-discovery primitive `discover-tests` in `primitives`
+//!    (host-promised `RustPrimitive`, body promised by int at session init).
 //!
 //! ## Ordering invariants (legacy body, restated)
 //!
@@ -339,7 +334,7 @@ pub(crate) fn mount_synthetic_modules(
     register_bind_primitive(symbol_tables, next_id)?; // step 6
     register_combinators(symbol_tables, next_id)?; // step 6b (S96 Chunk C, slice 7)
     register_trace_type(symbol_tables)?; // step 7
-    register_test_infrastructure(symbol_tables, next_id)?; // step 8
+    register_test_infrastructure(symbol_tables)?; // step 8
     Ok(())
 }
 
@@ -793,11 +788,8 @@ fn register_pair_type(
 /// Seed `(Result a b)` with `Ok`/`Err` data constructors into the `primitives`
 /// module, modelled on [`register_option_type`].
 ///
-/// `catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))` returns
-/// a `Result` (test-discovery.md ruling 2). Tag order is **Ok=0 / Err=1**
-/// (declaration order) — the combinator's marshalling in
-/// `cranelisp-intrinsics::panic` assumes this. Both ctors carry one data field →
-/// heap-allocated (no nullary ctor).
+/// Tag order is **Ok=0 / Err=1** (declaration order). Both ctors carry one data
+/// field → heap-allocated (no nullary ctor).
 fn register_result_type(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
@@ -1204,15 +1196,11 @@ fn register_trace_type(
 
 // --- Step 8: test-discovery primitives (primitives) ---
 //
-// test-discovery.md (fourth convergence, SETTLED): `TestResult`/`run-test`
-// RETIRE; `discover-tests` becomes a host-promised `RustPrimitive` returning
-// fn-value pairs; `catch-runtime-error` is a standalone host-promised `RustPrimitive`
-// combinator (S83 reshape, FIXME 0360 — slot-less ABI-name dispatch) backed by
-// the `cranelisp-intrinsics::panic` C-ABI export.
+// `discover-tests` is a host-promised `RustPrimitive` returning fn-value pairs
+// (test-discovery.md).
 
 fn register_test_infrastructure(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-    next_id: &AtomicU32,
 ) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
     let mut primitives = symbol_tables.get_mut(&primitives_path).ok_or_else(|| {
@@ -1246,36 +1234,6 @@ fn register_test_infrastructure(
          returns (Vec (Pair name late-bound-callable)).",
     )?;
 
-    // catch-runtime-error :: forall a. (Fn [(Fn [] a)] (Result a String))
-    //
-    // A plain forall scheme with EMPTY constraints (modelled on
-    // `register_bind_primitive`) — one runtime body serves every `a` (uniform
-    // i64 ABI), so the constrained-fn monomorphisation machinery is NOT
-    // engaged. JIT name = ABI name = "catch-runtime-error" — resolved from the
-    // intrinsics archive (intrinsics_table() entry); no `define_symbol`.
-    let a = fresh_type_id(next_id);
-    let thunk_ty = Type::Fn(vec![], Box::new(Type::Var(a)));
-    let result_a_string = Type::ADT(primitives_fqtn("Result"), vec![Type::Var(a), Type::String]);
-    let cre_scheme = Scheme {
-        type_vars: vec![a],
-        constraints: HashMap::new(),
-        ty: Type::Fn(vec![thunk_ty], Box::new(result_a_string)),
-    };
-    // `catch-runtime-error`'s body is `cranelisp_intrinsics::panic`, resolved
-    // by ABI name (JIT symbol fallback / cache Linker register / `cc` archive
-    // link in `--link`) — slot-less, never GOT-indirect. Under the S83 reshape
-    // a slot-bearing `Primitive` lowered its call GOT-indirect through a slot
-    // that no mode populates (SIGSEGV, observed in `--run` AND `--link`);
-    // `PrimitiveExtern` restores the by-name `Linkage::Import` lowering in all
-    // modes (FIXME 0360).
-    insert_primitive(
-        &mut primitives,
-        "catch-runtime-error",
-        cre_scheme,
-        vec!["thunk"],
-        "Invoke a thunk under runtime-error protection: returns \
-         (Ok result) on success or (Err message) on a runtime panic.",
-    )?;
     Ok(())
 }
 
@@ -1772,36 +1730,19 @@ mod tests {
         }
     }
 
+    // spec: spec/12-runtime.md §12.7.3 — `catch-runtime-error` is removed: the
+    // bootstrap mounts no such primitive, so a reference is an unbound name
+    // (S123 packet row P1). `Result` itself stays a seeded type.
     #[test]
-    fn mounts_catch_runtime_error_primitive() {
+    fn bootstrap_mounts_no_catch_runtime_error() {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
-        match prims.get("catch-runtime-error") {
-            Some(
-                entry @ Binding {
-                    declaration: Decl::Callable(callable),
-                    ..
-                },
-            ) => {
-                // S83 Wave-1 reshape (FIXME 0360): `catch-runtime-error` is
-                // dispatched by ABI name as a `Linkage::Import` (body
-                // `cranelisp_intrinsics::panic`), never GOT-indirect. It is
-                // therefore a SLOT-LESS host-promised `RustPrimitive`, not a
-                // slot-bearing `DefKind::Primitive` (which post-reshape would
-                // lower the call through an unpopulated GOT slot → SIGSEGV).
-                assert!(matches!(callable.arm.life, Life::HostPromised));
-                assert!(
-                    entry.callable_got_slot().is_none(),
-                    "an ABI-name-dispatched extern carries no GOT slot"
-                );
-                // forall a. (Fn [(Fn [] a)] (Result a String)) — one quantified
-                // var, empty constraints (plain forall, not constrained-fn).
-                assert_eq!(callable.arm.scheme.type_vars.len(), 1);
-                assert!(callable.arm.scheme.constraints.is_empty());
-            }
-            other => panic!("catch-runtime-error should be a PrimitiveExtern Def, got {other:?}"),
-        }
+        assert!(prims.get("catch-runtime-error").is_none());
+        assert!(
+            prims.get("Result").is_some(),
+            "control: Result is still seeded"
+        );
     }
 
     // spec: design/arch/total-concreteness.md §3.3 — enumerate the
@@ -1840,7 +1781,6 @@ mod tests {
         }
         let expected = std::collections::BTreeSet::from([
             "primitives/bind: HostPromised".to_string(),
-            "primitives/catch-runtime-error: HostPromised".to_string(),
             "primitives/race: HostPromised".to_string(),
             "primitives/select: HostPromised".to_string(),
         ]);
@@ -1855,8 +1795,8 @@ mod tests {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         // SList(1) + Option(1) + Pair(2) + Result(2) + IO(1) + Bind(2)
-        // + bind(2) + race(1) + select(1) + catch-runtime-error(1) = 14 fresh vars.
+        // + bind(2) + race(1) + select(1) = 13 fresh vars.
         // (S96 Chunk C: `register_combinators` mints one var each for race + select.)
-        assert_eq!(next_id.load(Ordering::SeqCst), 14);
+        assert_eq!(next_id.load(Ordering::SeqCst), 13);
     }
 }

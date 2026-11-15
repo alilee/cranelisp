@@ -3,8 +3,7 @@
 //! spec/10-io.md §10.12.8) + 0479 (unarmed one-shot suspend trips the deadlock
 //! detector promptly). QA-first (Phase 5 Wave 1) failing-not-ignored e2e acceptance
 //! rows. The S97-era "recoverable" catchability row (4.2) retired S98 band-C — an
-//! empty select raises at effect-run time, outside the `catch-runtime-error`
-//! construction bracket (appendix-a §A.3), so it is uncatchable.
+//! empty select ends the process under §12.7.
 //!
 //! Plan: retired S97 QA plan §"Item 4" (0475) + §"Item 5" row 5.2 (0479)
 //! (`git show 7e56a81c:tests/plan/sprint-97.md`).
@@ -85,17 +84,6 @@ fn empty_select_heap_typed_fatal_runtime_error() {
     );
 }
 
-// RETIRED S98 band-C (/spec ruling, FIXME 0487 resolution (a); `/spec` handoff to /qa):
-// the former `empty_select_caught_by_catch_runtime_error` asserted `(select [])` is
-// RECOVERABLE at a `catch-runtime-error` boundary (exit 42). That premise is WRONG.
-// `/spec` ruled (spec/10-io.md §10.12.8 + appendix-a §A.3 catchability boundary): an
-// empty `(select [])` raise is at **effect-run time**, which is OUTSIDE the temporal
-// `catch-runtime-error` construction bracket — so it is a **fatal, non-catchable**
-// runtime error, not a recoverable one. The row is therefore retired rather than
-// green-flipped. The fatal-path invariants (does raise, non-zero exit, no unsound-null,
-// no hang) are already covered GREEN by the three sibling rows below
-// (`empty_select_heap_typed_fatal_runtime_error`, `_not_unit_zero_neg`, `_does_not_hang`).
-
 // spec: spec/10-io.md §10.12.8 — negative: the empty-select result MUST NOT be a
 // synthesised `0`/Unit/garbage flowing downstream (the unsound-null path is gone).
 // Distinct from 4.1's message assertion: this asserts the run is NOT signal-
@@ -172,53 +160,28 @@ const EMPTY_SELECT_REPL_INPUT: &str = "\
 (import [primitives [select Pure bind Int]])\n\
 (select :(primitives/Vec (primitives/IO primitives/Int)) [])\n";
 
-// spec: spec/10-io.md §10.12.8 — the REPL path for an uncaught empty
-// `(select [])` MUST abort the expression with the "select over empty
-// collection" runtime error, exactly like `--run` (§12.7.4: "expression-
-// aborting in the REPL"), and MUST NOT display a synthesised
-// `:primitives/Int 0` result line. FIXME 0499: pre-fix, `execute_compiled_expr`
-// (the REPL eval path, `src/pipeline.rs`) only checked the runtime-error slot
-// BEFORE driving IO, never after — so the count-zero guard's fatal error,
-// raised DURING the drive, fell through to a synthesised `0` displayed as
-// `:primitives/Int 0`. Post-fix both modes call the same
-// `cranelisp_intrinsics::panic::cranelisp_run_program` driver, so this and
-// `empty_select_heap_typed_fatal_runtime_error` must agree: both abort, both
-// surface the message, neither prints an unsound-null value.
+// spec: spec/10-io.md §10.12.8 — P-4/C-1: empty select exits both hosts.
 #[test]
 fn empty_select_repl_run_parity_no_unsound_null() {
-    let repl_out = Cranelisp::repl_capture(EMPTY_SELECT_REPL_INPUT);
-    let repl_combined = format!("{}{}", repl_out.stdout, repl_out.stderr);
-    assert!(
-        repl_combined.contains(EMPTY_SELECT_MSG),
-        "REPL: an uncaught empty (select []) MUST surface '{EMPTY_SELECT_MSG}' \
-         (spec/10-io.md §10.12.8 / §12.7.4 expression-aborting), like --run.\n\
-         combined:\n{repl_combined}"
-    );
-    assert!(
-        !repl_combined.contains(":primitives/Int 0"),
-        "REPL: an uncaught empty (select []) MUST NOT display the synthesised \
-         unsound-null `:primitives/Int 0` (FIXME 0499 regression) — the count-\
-         zero guard must abort the expression, not fall through to a value.\n\
-         combined:\n{repl_combined}"
-    );
-
-    let run_out = Cranelisp::new()
-        .file("user.cl", EMPTY_SELECT_HEAP_UNCAUGHT)
+    let repl = Cranelisp::repl_capture(&format!(
+        "{EMPTY_SELECT_REPL_INPUT}(primitives/add-i64 800 13)\n"
+    ));
+    let run = Cranelisp::new()
+        .user(EMPTY_SELECT_HEAP_UNCAUGHT)
         .run("user.cl")
         .timeout(Duration::from_secs(5))
         .output();
-    let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
-    assert_ne!(
-        run_out.status.code(),
-        Some(0),
-        "--run: an uncaught empty (select []) MUST be a non-zero-exit runtime \
-         error, matching the REPL's expression-abort.\ncombined:\n{run_combined}"
-    );
-    assert!(
-        run_combined.contains(EMPTY_SELECT_MSG),
-        "--run: an uncaught empty (select []) MUST surface '{EMPTY_SELECT_MSG}', \
-         matching the REPL.\ncombined:\n{run_combined}"
-    );
+    let mut failures = Vec::new();
+    for (host, out, prompts) in [("repl", &repl, Some(2)), ("run", &run, None)] {
+        let problems = helpers::e2e::panic_exit_problems(out, EMPTY_SELECT_MSG, prompts, false);
+        if !problems.is_empty() {
+            failures.push(format!(
+                "{host}: {problems:?}\nstdout:{}\nstderr:{}",
+                out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // =============================================================================

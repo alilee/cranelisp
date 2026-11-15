@@ -44,7 +44,7 @@ pub(crate) enum Role {
     /// R7 — the `module/` prefix on a bare fully-qualified symbol NAME (NOT
     /// inside a type annotation); dim.
     ModulePrefix,
-    /// R8 — the `Error:` / `runtime error:` keyword; bold red.
+    /// R8 — the `Error:` keyword; bold red.
     ErrorKeyword,
     /// R9 — the error message body; red.
     ErrorDetail,

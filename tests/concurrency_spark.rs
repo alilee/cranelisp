@@ -218,31 +218,13 @@ fn dep_clean_program() -> String {
     )
 }
 
-/// A dependent-spark `let` whose sparked DEPENDENCY `a (div-i64 10 0)` panics; the
-/// dependent binding `c (add-i64 a b)` references it. Wrapped in
-/// `catch-runtime-error` → the `Err` arm fires (exit 0 = caught, not swallowed).
-const DEP_PANIC_CAUGHT_PROGRAM: &str = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-     (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
-     (defn compute []\n\
-       (let [a (div-i64 10 0)\n\
-             b (work 5000 0)\n\
-             c (add-i64 a b)]\n\
-         c))\n\
-     (defn main []\n\
-       (Pure (match (catch-runtime-error (fn [] (compute)))\n\
-               [(Ok v)  1\n\
-                (Err m) 0])))\n";
-
-/// Same dependent shape, UNCAUGHT — the sparked dependency's div-by-zero must
-/// surface (not be silently dropped) on the joining thread.
-const DEP_PANIC_UNCAUGHT_PROGRAM: &str = "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
-     (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
-     (defn compute []\n\
-       (let [a (div-i64 10 0)\n\
-             b (work 5000 0)\n\
-             c (add-i64 a b)]\n\
-         c))\n\
-     (defn main [] (Pure (compute)))\n";
+// Mutual recursion admits the panicking call to the same spark path as its twin.
+const DEP_PANIC_UNCAUGHT_PROGRAM: &str = "(import [primitives [*]])
+(defn ping [n d] (if (le-i64 n 0) (div-i64 10 d) (pong (sub-i64 n 1) d)))
+(defn pong [n d] (if (le-i64 n 0) (div-i64 10 d) (ping (sub-i64 n 1) d)))
+(defn compute [d] (let [a (ping 3 d) c (ping a 1)] c))
+(defn main [] (Pure (compute 0)))
+";
 
 // =============================================================================
 // I1 — three-regime equivalence for the DEPENDENT shape (`/review` finding I1).
@@ -285,60 +267,45 @@ fn dependent_spark_three_regime_result_equivalence() {
 }
 
 // =============================================================================
-// I2 — dependent-panic ferry, first-error-wins (`/review` finding I2).
+// Dependent spark panic exit and its runtime-spawn control.
 // =============================================================================
 
-// spec: design/backend/lenient-eval.md §4.5.1 — a sparked DEPENDENCY (`a (div-i64
-// 10 0)`) panics; the dependent binding `c (add-i64 a b)` references it. The panic
-// is ferried (NOT swallowed) and surfaces at the source-order barrier — both
-// Phase-2's force of `a` and the dependent thunk's force of `ivar_a` observe the
-// ferried error. A `catch-runtime-error` enclosing the `let` catches it → the
-// `Err` arm fires (exit 0 = caught). The existing apply/`let` ferry tests do NOT
-// cover the dependent case. `--run`.
+// spec: spec/12-runtime.md §12.4.3 — a dependent spark's panic ends the process.
 #[test]
-fn dependent_spark_dependency_panic_ferried_caught_run() {
-    Cranelisp::new()
-        .file("user.cl", DEP_PANIC_CAUGHT_PROGRAM)
-        .run("user.cl")
-        .output()
-        .assert_exit(0);
-}
-
-// spec: design/backend/lenient-eval.md §4.5.1 — same dependent-panic ferry under
-// `--link` (ferry sound across modes); the `Err` arm fires → exit 0.
-#[test]
-fn dependent_spark_dependency_panic_ferried_caught_link() {
-    Cranelisp::new()
-        .file("user.cl", DEP_PANIC_CAUGHT_PROGRAM)
-        .link_then_run("user.cl")
-        .output()
-        .assert_exit(0);
-}
-
-// spec: design/backend/lenient-eval.md §4.5.1 — NEGATIVE / first-error-wins: an
-// UNCAUGHT panic in a sparked dependency MUST surface the DEPENDENCY's own error
-// ("division by zero") — the source-order-first error — and MUST NOT be silently
-// dropped (a swallowed spark panic would let the program complete with a sentinel
-// value, the exact failure the ferry exists to prevent).
-#[test]
-fn dependent_spark_dependency_panic_not_swallowed_neg() {
+fn dependent_spark_dependency_panic_exits_run() {
     let out = Cranelisp::new()
-        .file("user.cl", DEP_PANIC_UNCAUGHT_PROGRAM)
+        .user(DEP_PANIC_UNCAUGHT_PROGRAM)
         .run("user.cl")
         .output();
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        combined.contains("division by zero"),
-        "uncaught sparked-DEPENDENCY div-by-zero MUST surface 'division by zero' at the \
-         source-order barrier (§4.5.1, not swallowed).\nstdout:\n{}\nstderr:\n{}",
-        out.stdout,
-        out.stderr
-    );
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "an uncaught dependent-spark panic must NOT exit 0 (would mean the error was dropped)"
-    );
+    helpers::e2e::assert_panic_exit(&out, "division by zero", None, false);
+}
+
+// spec: spec/12-runtime.md §12.4.3 — a dependent spark's panic ends the process.
+#[test]
+fn dependent_spark_dependency_panic_exits_link() {
+    let out = Cranelisp::new()
+        .user(DEP_PANIC_UNCAUGHT_PROGRAM)
+        .link_then_run("user.cl")
+        .output();
+    helpers::e2e::assert_panic_exit(&out, "division by zero", None, true);
+}
+
+// spec: spec/12-runtime.md §12.4.3 — P-4: the non-panicking twin actually sparks.
+#[test]
+fn dependent_spark_non_panicking_twin_spawns() {
+    for linked in [false, true] {
+        let builder = Cranelisp::new()
+            .user(&DEP_PANIC_UNCAUGHT_PROGRAM.replace("(compute 0)", "(compute 1)"))
+            .env("CRANELISP_SPARK_STATS", "1");
+        let out = if linked {
+            builder.link_then_run("user.cl")
+        } else {
+            builder.run("user.cl")
+        }
+        .output();
+        let out = out.assert_exit(10);
+        helpers::e2e::assert_spark_spawns(&out, 1);
+    }
 }
 
 // =============================================================================
@@ -387,135 +354,6 @@ fn dependent_spark_rc_alloc_free_balanced() {
 
 /// `--run` `prog` under `CRANELISP_RC_TRACE=1`, asserting `expect_exit`, and
 /// return the heap-allocation imbalance (`allocs - frees`) — 0 means no net leak.
-fn rc_leak(prog: &str, expect_exit: i32) -> i64 {
-    let out = Cranelisp::new()
-        .env("CRANELISP_RC_TRACE", "1")
-        .file("user.cl", prog)
-        .run("user.cl")
-        .output();
-    assert_eq!(
-        out.status.code(),
-        Some(expect_exit),
-        "rc_leak: expected exit {expect_exit}\nstdout:\n{}\nstderr:\n{}",
-        out.stdout,
-        out.stderr
-    );
-    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
-    assert!(
-        allocs > 0,
-        "expected the RC trace to record allocations; got 0"
-    );
-    allocs as i64 - frees as i64
-}
-
-/// A `let` that catches a panicking sparked DEPENDENCY `N` times in one process:
-/// each iteration sparks `a (div-i64 10 0)` (panics) + `b (work …)` and a dependent
-/// `c (add-i64 a b)` referencing the sparked `a`; the panic is caught (`Err` arm).
-/// `acc` reaches `N`. Used to amplify any per-iteration captured-IVar leak.
-fn dep_panic_loop_program(n: i64) -> String {
-    format!(
-        "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-         {DEP_WORK_DEF}\
-         (defn step [:Int acc]\n\
-           (match (catch-runtime-error (fn []\n\
-                     (let [a (div-i64 10 0)\n\
-                           b (work 2000 0)\n\
-                           c (add-i64 a b)]\n\
-                       c)))\n\
-             [(Ok v)  acc\n\
-              (Err m) (add-i64 acc 1)]))\n\
-         (defn drive [:Int n :Int acc]\n\
-           (if (le-i64 n 0) acc (drive (sub-i64 n 1) (step acc))))\n\
-         (defn main [] (Pure (drive {n} 0)))\n"
-    )
-}
-
-/// The NO-SPARK baseline: the SAME catch-in-a-loop shape, but the caught thunk is a
-/// bare `(div-i64 10 0)` — no `let`, no sparkable bindings, no IVars. Its leak count
-/// is the floor contributed by `catch-runtime-error` itself (a SEPARATE, pre-existing
-/// per-caught-error heap-cell leak; see the dedicated repro in `spec_12_runtime.rs`).
-fn catch_loop_baseline_program(n: i64) -> String {
-    format!(
-        "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-         (defn step [:Int acc]\n\
-           (match (catch-runtime-error (fn [] (div-i64 10 0)))\n\
-             [(Ok v)  acc\n\
-              (Err m) (add-i64 acc 1)]))\n\
-         (defn drive [:Int n :Int acc]\n\
-           (if (le-i64 n 0) acc (drive (sub-i64 n 1) (step acc))))\n\
-         (defn main [] (Pure (drive {n} 0)))\n"
-    )
-}
-
-// spec: design/backend/lenient-eval.md §4.5 — the harder no-leak case: a dependent
-// spark whose DEPENDENCY thunk PANICS (and is caught), driven N times. The captured
-// IVar pointer's capture-inc MUST be balanced by the thunk's drop-glue dec, and the
-// dependency cell + ferried error String freed exactly once, EVEN on the unwind
-// path — so limit #2 must add ZERO net leak beyond what `catch-runtime-error`
-// itself leaks.
-//
-// RELATIVE assertion (not absolute alloc==free): the panic path is contaminated by
-// a SEPARATE, pre-existing per-caught-error heap-cell leak in `catch-runtime-error`
-// (reproduced independently — see `spec_12_runtime.rs::
-// catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg`; it fires even with
-// NO sparking). To isolate limit #2's contribution we compare the dependent-spark
-// loop's leak against the NO-SPARK catch-loop baseline at the same N: equal ⇒ the
-// dependent spark (incl. its panicking dependency) adds no captured-IVar leak. A
-// captured-IVar leak would push the dependent count strictly above the baseline.
-//
-// LIMIT: this is a whole-program balance differenced against a baseline; it proves
-// limit #2 adds no NET extra leak but cannot localise to a specific cell. The
-// absolute non-panic discipline is pinned by `dependent_spark_rc_alloc_free_balanced`
-// (clean path balances exactly); double-free by `dependent_spark_panic_sustained_no_abort`.
-#[test]
-fn dependent_spark_panic_adds_no_leak_over_catch_baseline() {
-    const N: i64 = 20;
-    let dependent = rc_leak(&dep_panic_loop_program(N), N as i32);
-    let baseline = rc_leak(&catch_loop_baseline_program(N), N as i32);
-    assert!(
-        dependent <= baseline,
-        "limit-#2 dependent spark with a caught panicking dependency must add NO leak \
-         beyond the catch-runtime-error baseline (§4.5 captured-IVar RC discipline): \
-         dependent-spark leak={dependent}, no-spark catch baseline={baseline} (both over \
-         N={N} catches). dependent > baseline ⇒ a leaked captured IVar cell on the panic path."
-    );
-}
-
-// spec: design/backend/lenient-eval.md §4.5 — sustained-load guard: drive the
-// caught-panicking dependent-spark path 200× IN ONE PROCESS (the sustained-load
-// convention floor, tests/CLAUDE.md). A DOUBLE-FREE of an IVar cell or ferried String would abort
-// the process (nonzero exit / crash); a permit/cell accumulation that grows
-// without bound would eventually OOM. The accumulator (`acc` reaches 200) confirms
-// EVERY iteration caught the dependency panic correctly under repetition.
-//
-// LIMIT: this catches double-free (abort) and gross/unbounded leaks (OOM) and
-// per-iteration correctness, but NOT a small bounded per-iteration cell leak —
-// 200 leaked small cells neither abort nor OOM, and IN_FLIGHT_SPARKS is a runtime
-// static not observable from an e2e subprocess. The bounded-cell-leak gap is
-// covered by `dependent_spark_panic_adds_no_leak_over_catch_baseline` above (the
-// relative RC balance) and by the `cranelisp-intrinsics` `IN_FLIGHT_SPARKS`-
-// returns-to-0 unit tests.
-#[test]
-fn dependent_spark_panic_sustained_no_abort() {
-    let src = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
-               (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
-               (defn step [:Int acc]\n\
-                 (match (catch-runtime-error (fn []\n\
-                           (let [a (div-i64 10 0)\n\
-                                 b (work 2000 0)\n\
-                                 c (add-i64 a b)]\n\
-                             c)))\n\
-                   [(Ok v)  acc\n\
-                    (Err m) (add-i64 acc 1)]))\n\
-               (defn drive [:Int n :Int acc]\n\
-                 (if (le-i64 n 0) acc (drive (sub-i64 n 1) (step acc))))\n\
-               (defn main [] (Pure (drive 200 0)))\n";
-    Cranelisp::new()
-        .file("user.cl", src)
-        .run("user.cl")
-        .output()
-        .assert_exit(200);
-}
 
 // =============================================================================
 // limit-#2 WIN — the §2.6.2/§9 partial-dependency value+timing witness.

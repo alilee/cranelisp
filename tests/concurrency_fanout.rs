@@ -153,61 +153,19 @@ fn web_server_no_user_spawn_primitive_neg() {
     }
 }
 
-// =============================================================================
-// §B2-syn — Supervisor: a detached fault does not abort the launch loop.
-// The synthetic core of "panic → drop, server lives" (spec/12-runtime.md §12.7.9
-// item 1 — the supervising context survives), with NO web/HTTP machinery: a loop
-// that LAUNCHES a faulting poll effect each iteration (result discarded, distinct
-// tokens ⇒ launch-and-continue per arch §4) still completes all iterations and
-// exits cleanly. A NON-supervised detached fault would abort the program (signal /
-// non-zero exit) — the abort this guards.
-// =============================================================================
-
-// spec: spec/12-runtime.md §12.7.9 — a launched (detached) faulting effect is
-// contained by the supervisor (catch + drop), so the launching strand survives and
-// the loop runs to completion. A tail-recursive launch LOOP (the §B4 model)
-// launches one faulting effect per dynamic frame (result discarded ⇒ the
-// `IO_TAG_LAUNCH` shape, NOT a joined `Par`; FIXME 0467); the continuation reaches
-// `(Pure 42)` ⇒ exit 42. A detached fault is captured by the supervisor, the slot
-// is CLEARED, `StrandFailed` is emitted, the strand dropped — so the launcher's
-// slot is clean at `cranelisp_run_program`'s completion check.
+// spec: spec/12-runtime.md §12.7.9 — P-11/P-4: a detached poll fault ends the process.
 #[test]
-fn detached_faulting_effect_does_not_abort_the_launch_loop() {
-    // A tail-recursive launch LOOP (the §B4 model): each iteration LAUNCHES one
-    // `poll-fault` on a DISTINCT token `n` (its result discarded — the unused bind
-    // binder, exactly what the `do` sequencing macro desugars to; tests are
-    // free-standing so we cannot use the prelude `do` macro) and recurses. The
-    // `(let [m (sub-i64 n 1)] …)` decouple hoists the loop control value OUT of the
-    // token operand so io free {n} and cont free {m} are disjoint — the unified
-    // single-step launch-arm E2 (FIXME 0478: same literal free-var disjointness the
-    // sub-tree arm uses) then permits the launch. A single
-    // result-discarded, token-disjoint bind step per dynamic frame lowers to
-    // `IO_TAG_LAUNCH` (the launch shape `/int`'s independence analysis recognises —
-    // a flat sibling chain would instead group into a joined `Par`, bypassing the
-    // supervisor; FIXME 0467). Each launched strand faults; under the supervisor
-    // each fault is caught + the slot CLEARED + `StrandFailed` emitted + the strand
-    // dropped, and the launching loop survives to reach `(Pure 42)` ⇒ exit 42.
+fn detached_faulting_effect_exits_the_process() {
     let prog = format!(
-        "(platform {plat})\n\
-         (import [platform.{plat} [{fault}]])\n\
-         (import [primitives [bind Pure sub-i64 eq-i64]])\n\
-         (defn fault-loop [n]\n\
-           (if (eq-i64 n 0)\n\
-               (Pure 42)\n\
-               (let [m (sub-i64 n 1)]\n\
-                 (bind ({fault} n 1 {d}) (fn [r]\n\
-                   (fault-loop m))))))\n\
-         (defn main [] (fault-loop 3))\n",
-        plat = POLL_PLATFORM,
-        fault = POLL_FAULT,
-        d = D_MS,
+        "(platform {POLL_PLATFORM})\n(import [platform.{POLL_PLATFORM} [{POLL_FAULT}]])\n(import [primitives [bind Pure sub-i64 eq-i64]])\n(defn fault-loop [n] (if (eq-i64 n 0) (Pure 42) (let [m (sub-i64 n 1)] (bind ({POLL_FAULT} n 1 {D_MS}) (fn [r] (fault-loop m))))))\n(defn main [] (fault-loop 3))\n"
     );
-    // Positive: the loop completed (exit 42). Negative: the run did NOT abort /
-    // signal (an unsupervised detached fault would crash the process before 42) and
-    // did NOT report the detached fault as the program error (exit 1 — the slot
-    // bleed). `assert_exit(42)` is all three — a clean coded exit excludes both
-    // signal termination and the runtime-error exit.
-    run_prog(&prog).assert_exit(42);
+    let out = run_prog(&prog);
+    helpers::e2e::assert_panic_exit(
+        &out,
+        "poll-fault: deliberate fault for the supervisor panic-survival e2e (FIXME 0468)",
+        None,
+        false,
+    );
 }
 
 // =============================================================================

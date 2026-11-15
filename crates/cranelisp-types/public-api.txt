@@ -628,10 +628,6 @@ pub cranelisp_types::PlatformError::AbiVersionMismatch::dll: std::path::PathBuf
 pub cranelisp_types::PlatformError::AbiVersionMismatch::expected: u32
 pub cranelisp_types::PlatformError::AbiVersionMismatch::found: u32
 pub cranelisp_types::PlatformError::AbiVersionMismatch::location: cranelisp_types::ErrorLocation
-pub cranelisp_types::PlatformError::DispatchError
-pub cranelisp_types::PlatformError::DispatchError::cause: alloc::string::String
-pub cranelisp_types::PlatformError::DispatchError::fn_name: cranelisp_types::Symbol
-pub cranelisp_types::PlatformError::DispatchError::location: cranelisp_types::ErrorLocation
 pub cranelisp_types::PlatformError::LayoutHashMismatch
 pub cranelisp_types::PlatformError::LayoutHashMismatch::dll: std::path::PathBuf
 pub cranelisp_types::PlatformError::LayoutHashMismatch::expected: alloc::string::String

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::{FQSymbol, FQTypeName, Span, Symbol};
+use crate::{FQSymbol, FQTypeName, Span};
 
 // ---------------------------------------------------------------------------
 // Error location — Decision 39 / Decision 42
@@ -132,7 +132,7 @@ pub enum CranelispError {
         message: String,
         location: ErrorLocation,
     },
-    /// Platform-origin failures — DLL load, manifest parse, ABI mismatch, dispatch.
+    /// Platform-origin failures — DLL load, manifest parse, ABI or schema mismatch.
     /// Per Decision 42; FIXME 0104 Phase 1.
     Platform(PlatformError),
 }
@@ -223,8 +223,8 @@ impl From<PlatformError> for CranelispError {
 // PlatformError — Decision 42 / FIXME 0104
 // ---------------------------------------------------------------------------
 
-/// Platform-origin failures — DLL load, manifest parse, ABI mismatch,
-/// dispatch. Per Decision 42 — coordinates as data; `int`'s
+/// Platform-origin failures — DLL load, manifest parse, ABI or schema
+/// layout mismatch. Per Decision 42 — coordinates as data; `int`'s
 /// `Sess::format_error` consumes via `CranelispError::Platform(PlatformError)`
 /// and selects display strategy via Decision 39's mode-conditional source
 /// resolution.
@@ -256,13 +256,6 @@ pub enum PlatformError {
         found: u32,
         location: ErrorLocation,
     },
-    /// A platform-fn dispatch failed at runtime (e.g., null fn ptr,
-    /// panic in callee).
-    DispatchError {
-        fn_name: Symbol,
-        cause: String,
-        location: ErrorLocation,
-    },
     /// The host-regenerated schema layout hash does not match the DLL's
     /// exported `__cranelisp_layout_hash_<name>` — the platform's embedded
     /// schema is stale relative to the live type modules. Refused in
@@ -288,7 +281,6 @@ impl PlatformError {
             PlatformError::LoadFailed { location, .. }
             | PlatformError::ManifestNotFound { location, .. }
             | PlatformError::AbiVersionMismatch { location, .. }
-            | PlatformError::DispatchError { location, .. }
             | PlatformError::LayoutHashMismatch { location, .. } => location,
         }
     }
@@ -300,7 +292,6 @@ impl PlatformError {
             PlatformError::LoadFailed { .. } => "platform DLL load failed",
             PlatformError::ManifestNotFound { .. } => "platform manifest not found",
             PlatformError::AbiVersionMismatch { .. } => "platform ABI version mismatch",
-            PlatformError::DispatchError { .. } => "platform fn dispatch failed",
             PlatformError::LayoutHashMismatch { .. } => "platform schema layout hash mismatch",
         }
     }
@@ -329,9 +320,6 @@ impl std::fmt::Display for PlatformError {
                 found,
                 expected
             ),
-            PlatformError::DispatchError { fn_name, cause, .. } => {
-                write!(f, "platform fn `{}` dispatch failed: {}", &**fn_name, cause)
-            }
             PlatformError::LayoutHashMismatch {
                 dll,
                 platform,

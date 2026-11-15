@@ -43,15 +43,28 @@
 ;; OPAQUE footprint the eligibility analysis (§4.1 E3) must refuse → the launch
 ;; is suppressed and the server silently serialises. So pure helpers compute the
 ;; leaves' ARGUMENTS only: `slow-ms : Request -> Int` (the delay) and
-;; `safe-handle : Request -> Response` (the 500-safe pure router) are values fed
-;; to the direct `sleep`/`send-conn` leaves — never themselves placed in an
-;; effect position.
+;; `handle : Request -> Response` (the pure router) are values fed to the
+;; direct `sleep`/`send-conn` leaves — never themselves placed in an effect
+;; position.
+;;
+;; ── A panic ends the server (S123) ──
+;;
+;; A runtime panic ends the process (spec/12-runtime.md §12.7.2), so there is
+;; no per-request recovery: `handle` must not panic on any request. It holds
+;; by construction — every value a request supplies reaches only total
+;; operations. The method and path are compared with `=`. The body reaches
+;; `parse-form-body`, whose only partial operation (`get` on the split
+;; `key=value` parts) sits under a `count` bound, and whose output is always an
+;; 81-character string of `.` and `1`–`9`. `make-grid` rejects anything else as
+;; `None`, so the solver only ever sees an 81-cell grid; its `/` divisors are
+;; constants and its matches are exhaustive. Bad input is a value — the error
+;; page — never a fault.
 
 (platform web)
 
 ;; Idiomatic surface (S86 de-leak): trait operators bare via prelude; the
-;; IO + timer + catch primitives imported by name.
-(import [primitives [bind sleep catch-runtime-error Result Ok Err]])
+;; IO + timer primitives imported by name.
+(import [primitives [bind sleep]])
 
 ;; The web platform connection lifecycle. `listen`/`accept` stay behind the
 ;; serve.cl convenience wrappers; under v9 (ctx-vtable handle model) those
@@ -124,17 +137,6 @@
     [(Request method path body)
        (if (= path "/slow") 100 0)]))
 
-;; safe-handle : (Fn [Request] Response) — PURE. The 500-safe router
-;; (reactor.md §2.12 — the application-layer 500). Run the pure router under
-;; `catch-runtime-error`: a fault → a 500 page for THAT request, so a single bad
-;; request never wedges the connection / kills the serve loop. The result is a
-;; plain `Response` VALUE fed to the `send-conn` leaf — pure, so it does not
-;; suppress the inferred launch.
-(defn safe-handle [req]
-  (match (catch-runtime-error (fn [] (handle req)))
-    [(Ok resp)  resp
-     (Err msg)  (Response 500 "text/html" (error-page "Internal server error"))]))
-
 ;; ── The serve loop (CONCURRENT fan-out, inferred — NO `spawn`) ─────────────
 ;;
 ;; accept one connection, then LAUNCH-AND-CONTINUE: the per-connection handler
@@ -156,12 +158,12 @@
         ;; opaque `conn` handle is threaded directly into the DIRECT leaves
         ;; read-conn/send-conn (Consume polls — the platform projects the token from
         ;; the handle's fd + acquires via the ctx vtable) + `sleep` (the resource-free
-        ;; timer leaf). The pure `slow-ms`/`safe-handle` only compute leaf arguments.
+        ;; timer leaf). The pure `slow-ms`/`handle` only compute leaf arguments.
         ;; So the whole read→sleep→send handler launches as ONE supervised strand.
         (bind (read-conn conn)
           (fn [req]
             (bind (sleep (slow-ms req))
-              (fn [_] (send-conn conn (safe-handle req))))))
+              (fn [_] (send-conn conn (handle req))))))
         ;; the continuation: accept the next connection (a fresh opaque handle)
         (serve-loop listener)))))
 

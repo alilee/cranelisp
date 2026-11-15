@@ -160,34 +160,10 @@ pub mod cranelisp_intrinsics::ivar
 pub mod cranelisp_intrinsics::layout
 #[export_name = "cranelisp_check_layout_hash"] pub c fn cranelisp_intrinsics::layout::cranelisp_check_layout_hash(*const u8, *const u8, *const u8)
 pub mod cranelisp_intrinsics::panic
-pub struct cranelisp_intrinsics::panic::DispatchFault
-pub cranelisp_intrinsics::panic::DispatchFault::cause: alloc::string::String
-pub cranelisp_intrinsics::panic::DispatchFault::fn_name: alloc::string::String
-impl core::marker::Freeze for cranelisp_intrinsics::panic::DispatchFault
-impl core::marker::Send for cranelisp_intrinsics::panic::DispatchFault
-impl core::marker::Sync for cranelisp_intrinsics::panic::DispatchFault
-impl core::marker::Unpin for cranelisp_intrinsics::panic::DispatchFault
-impl core::marker::UnsafeUnpin for cranelisp_intrinsics::panic::DispatchFault
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::panic::DispatchFault
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::panic::DispatchFault
-#[repr(C)] pub struct cranelisp_intrinsics::panic::ProgramOutcome
-pub cranelisp_intrinsics::panic::ProgramOutcome::error_kind: i32
-pub cranelisp_intrinsics::panic::ProgramOutcome::exit_code: i64
-impl core::marker::Freeze for cranelisp_intrinsics::panic::ProgramOutcome
-impl core::marker::Send for cranelisp_intrinsics::panic::ProgramOutcome
-impl core::marker::Sync for cranelisp_intrinsics::panic::ProgramOutcome
-impl core::marker::Unpin for cranelisp_intrinsics::panic::ProgramOutcome
-impl core::marker::UnsafeUnpin for cranelisp_intrinsics::panic::ProgramOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::panic::ProgramOutcome
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::panic::ProgramOutcome
-#[export_name = "catch-runtime-error"] pub c fn cranelisp_intrinsics::panic::catch_runtime_error(i64) -> i64
-#[export_name = "cranelisp_check_runtime_error"] pub c fn cranelisp_intrinsics::panic::cranelisp_check_runtime_error()
-#[export_name = "cranelisp_run_program"] pub c fn cranelisp_intrinsics::panic::cranelisp_run_program(*const u8, bool) -> cranelisp_intrinsics::panic::ProgramOutcome
-#[export_name = "runtime/panic"] pub c fn cranelisp_intrinsics::panic::runtime_panic(*const u8, usize)
-pub fn cranelisp_intrinsics::panic::set_dispatch_fault(cranelisp_intrinsics::panic::DispatchFault)
-pub fn cranelisp_intrinsics::panic::set_runtime_error(alloc::string::String)
-pub fn cranelisp_intrinsics::panic::take_dispatch_fault() -> core::option::Option<cranelisp_intrinsics::panic::DispatchFault>
-pub fn cranelisp_intrinsics::panic::take_runtime_error() -> core::option::Option<alloc::string::String>
+pub const cranelisp_intrinsics::panic::PANIC_EXIT_STATUS: i32
+pub const cranelisp_intrinsics::panic::PANIC_REPORT_PREFIX: &str
+#[export_name = "cranelisp_run_program"] pub c fn cranelisp_intrinsics::panic::cranelisp_run_program(*const u8, bool) -> i64
+#[export_name = "runtime/panic"] pub c fn cranelisp_intrinsics::panic::runtime_panic(*const u8, usize) -> never
 pub mod cranelisp_intrinsics::rc
 pub fn cranelisp_intrinsics::rc::consume_shallow(cranelisp_intrinsics::handle::Owned)
 pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool

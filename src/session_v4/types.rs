@@ -101,7 +101,7 @@ pub enum CommandResult {
 /// Result of evaluating one input via `CompilerSession::eval()`.
 ///
 /// Either an ordered batch of published definitions, a display-only candidate
-/// listing, or a computed/trapped value. Every variant carries zero or more
+/// listing, or a computed value. Every variant carries zero or more
 /// warnings.
 pub enum EvalResult {
     /// A genuine definition turn. Every symbol introduced by the entered
@@ -144,18 +144,6 @@ pub enum EvalResult {
     DisplayValue {
         ty: Type,
         form: Sexp,
-        warnings: Vec<Warning>,
-    },
-    /// An expression TRAPPED at runtime — a `(runtime_panic …)`-raised error
-    /// (a broken symbol's trap stub, an exhaustiveness failure, an empty
-    /// `(select [])`, …). Distinct from a compiler error (`Err(CranelispError)`)
-    /// so the printer can render it as the bare `runtime error: {message}`
-    /// §18.5 line — no `Error: ` / `codegen error at 0..0:` wrapper chain
-    /// (`repl/spec.md` §18.5; `pipeline::ExprOutcome::Trap` is the source).
-    /// `message` is the §18.5 payload WITHOUT the `runtime error: ` category
-    /// prefix (`format_eval_result_body` adds it).
-    RuntimeError {
-        message: String,
         warnings: Vec<Warning>,
     },
 }
@@ -255,7 +243,6 @@ impl EvalResult {
             EvalResult::Candidates { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
             EvalResult::DisplayValue { warnings, .. } => warnings,
-            EvalResult::RuntimeError { warnings, .. } => warnings,
         }
     }
 
@@ -265,12 +252,11 @@ impl EvalResult {
             EvalResult::Candidates { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
             EvalResult::DisplayValue { warnings, .. } => warnings,
-            EvalResult::RuntimeError { warnings, .. } => warnings,
         }
     }
 
     /// The raw i64 value, borrowed from the result owner for observation.
-    /// Returns 0 for definition, display-only, and trapped results. Reading
+    /// Returns 0 for definition and display-only results. Reading
     /// this is a READ, never a transfer — only
     /// [`Self::release_program_result`] finalizes the word.
     pub fn value(&self) -> i64 {
@@ -278,8 +264,7 @@ impl EvalResult {
             EvalResult::Val { result, .. } => result.observed_value(),
             EvalResult::Definitions { .. }
             | EvalResult::Candidates { .. }
-            | EvalResult::DisplayValue { .. }
-            | EvalResult::RuntimeError { .. } => 0,
+            | EvalResult::DisplayValue { .. } => 0,
         }
     }
 
@@ -296,15 +281,12 @@ impl EvalResult {
 
     /// The inferred type of a result that has exactly one value/display
     /// subject. A definition batch and a candidate listing have no single
-    /// truthful type, and a runtime trap produced no value, so all three
-    /// return `None`.
+    /// truthful type, so both return `None`.
     pub fn ty(&self) -> Option<&Type> {
         match self {
             EvalResult::Val { result, .. } => Some(result.ty()),
             EvalResult::DisplayValue { ty, .. } => Some(ty),
-            EvalResult::Definitions { .. }
-            | EvalResult::Candidates { .. }
-            | EvalResult::RuntimeError { .. } => None,
+            EvalResult::Definitions { .. } | EvalResult::Candidates { .. } => None,
         }
     }
 
@@ -493,8 +475,8 @@ mod eval_result_tests {
     }
 
     // spec: design/int/result-owner.md §6 (REPL row negatives) — a bare-symbol
-    // candidate listing, a display-only polymorphic value, and a runtime trap
-    // fabricate no ownership and release nothing.
+    // candidate listing and a display-only polymorphic value fabricate no
+    // ownership and release nothing.
     #[test]
     fn non_runtime_turns_release_nothing() {
         let _ = take_events();
@@ -506,19 +488,13 @@ mod eval_result_tests {
             warnings: Vec::new(),
         };
         display_only.release_program_result();
-        let mut trap = EvalResult::RuntimeError {
-            message: "boom".to_string(),
-            warnings: Vec::new(),
-        };
         let mut display_value = EvalResult::DisplayValue {
             ty: Type::Var(0),
             form: Sexp::Bracket(Vec::new(), cranelisp_types::Span::SYNTHETIC),
             warnings: Vec::new(),
         };
-        trap.release_program_result();
         display_value.release_program_result();
         assert_eq!(display_only.value(), 0, "a lookup turn carries no value");
-        assert_eq!(trap.value(), 0, "a trapped turn produced no value");
         assert_eq!(
             display_value.value(),
             0,

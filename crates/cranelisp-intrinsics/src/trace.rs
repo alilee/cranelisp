@@ -306,9 +306,6 @@ enum SwapDecision {
     /// Another thread owns the role (or won the claim race) — a sentinel frame
     /// was pushed; the caller returns `SENTINEL_SAVED_GOT` without swapping.
     Skip,
-    /// A re-entrant `(trace (trace …))` was detected — a runtime error has
-    /// already been raised; the caller returns `SENTINEL_SAVED_GOT`.
-    NestedError,
 }
 
 /// Arbitrate the trace role for one `swap_got` call (the nested-trace guard,
@@ -316,8 +313,8 @@ enum SwapDecision {
 ///
 /// On a successful first claim, pushes the synthetic root frame and records
 /// `got_base`; on a legitimate same-thread multi-module swap, records the new
-/// base; on contention or re-entrancy, pushes the appropriate sentinel / raises
-/// the runtime error. Returns the [`SwapDecision`] the caller acts on.
+/// base; on contention, pushes the sentinel; on re-entrancy, raises the
+/// nested-trace panic, which ends the process. Returns the [`SwapDecision`] the caller acts on.
 fn arbitrate_trace_role(got_base: i64) -> SwapDecision {
     let my_tid = current_thread_id();
     let current_owner = TRACE_THREAD_ID.load(Ordering::Relaxed);
@@ -369,7 +366,6 @@ fn arbitrate_trace_role(got_base: i64) -> SwapDecision {
             let msg = "nested trace is not supported: (trace ...) may not appear \
                        inside an actively-tracing (trace ...)";
             crate::panic::runtime_panic(msg.as_ptr(), msg.len());
-            return SwapDecision::NestedError;
         }
         // Legitimate multi-module swap: record this group's base too.
         SWAPPED_GOT_BASES.with(|s| s.borrow_mut().push(got_base));
@@ -457,8 +453,8 @@ unsafe fn install_wrapper_got(
 /// **Nested-trace guard (`tracing.md` §6).** When the calling thread already
 /// owns the trace role (`current_owner == my_tid`) AND a trace body is running
 /// (`TRACE_BODY_RUNNING` is `true`), this is a re-entrant
-/// `(trace (trace ...))` and is reported as a runtime error via
-/// `crate::panic::runtime_panic`. A same-thread swap with the body NOT yet
+/// `(trace (trace ...))` and raises a language panic via
+/// `crate::panic::runtime_panic`, which ends the process. A same-thread swap with the body NOT yet
 /// running is a legitimate multi-module swap and proceeds.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_swap_got(
@@ -467,12 +463,12 @@ pub extern "C" fn cranelisp_trace_swap_got(
     slots_ptr: i64,
     wrappers_ptr: i64,
 ) -> i64 {
-    // Arbitrate the trace role + nested-trace guard (`tracing.md` §6). On Skip /
-    // NestedError the sentinel frame is pushed (or the runtime error raised)
-    // inside the helper, and we return without touching the GOT.
+    // Arbitrate the trace role + nested-trace guard (`tracing.md` §6). On Skip
+    // the sentinel frame is pushed inside the helper, and we return without
+    // touching the GOT.
     match arbitrate_trace_role(got_base) {
         SwapDecision::Proceed => {}
-        SwapDecision::Skip | SwapDecision::NestedError => return SENTINEL_SAVED_GOT,
+        SwapDecision::Skip => return SENTINEL_SAVED_GOT,
     }
 
     // SAFETY: `got_base` is the module's GOT table; `slots_ptr`/`wrappers_ptr`
@@ -670,33 +666,6 @@ pub extern "C" fn cranelisp_collect_trace() -> i64 {
             &[name_heap, empty_slist, empty_str, empty_slist, 0i64],
         )
     }
-}
-
-/// Panic-unwind trace-guard cleanup (`design/arch/test-discovery.md` §5 scope
-/// item 5; 0258 NOTE-2).
-///
-/// When a runtime panic crosses an actively-tracing `(trace …)` bracket, the
-/// backend may not reach `cranelisp_collect_trace` (the normal guard-clear +
-/// role-release site), leaving `TRACE_BODY_RUNNING` set and the trace role held
-/// by this thread. The next same-thread `(trace …)` would then spuriously raise
-/// "nested trace". This clears the boundary flag and releases the role (only if
-/// this thread owns it) so a subsequent trace starts clean.
-///
-/// Called by [`crate::panic::catch_runtime_error`] when it observes a captured
-/// error (a panic crossed the bracket) — both are intrinsics-owned thread-locals,
-/// so the cleanup is wholly in-crate. Idempotent and safe to call when no trace
-/// is active (the role CAS no-ops and the flag is already false).
-pub(crate) fn clear_trace_guard_on_panic() {
-    let my_tid = current_thread_id();
-    // Release the role only if we own it (pre-existing stuck-owner class — the
-    // role CAS had the same hole; repaired here alongside the flag).
-    TRACE_THREAD_ID
-        .compare_exchange(my_tid, 0, Ordering::SeqCst, Ordering::Relaxed)
-        .ok();
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
-    // Also drain the swapped-base set so a post-panic trace form starts clean
-    // (FIXME 0283 — parallel to the boundary-flag reset above).
-    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
 }
 
 // ── Field accessor extern API ─────────────────────────────────────────────────

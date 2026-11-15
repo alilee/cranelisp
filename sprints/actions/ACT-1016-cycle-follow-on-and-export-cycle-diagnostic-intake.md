@@ -28,6 +28,27 @@ refers_to:
   requirements and int §6.11's explicitly unimplemented failed-dependency
   refusal. The final ACT-1014 QA report states these faces were not corrected
   or re-probed at `f0d1006f…`; no new execution or resolution is claimed.
+- **Remeasured (qa, 2026-11-15, S123 W0).** Binary built from `b35bfb87`,
+  whose compiler source equals the S122 close `aed0fcb1`. Opened
+  `src/process_form/dependency.rs::handle_export` and
+  [int §6.11](../../design/int/int.md#611-module-cycles-at-publication).
+  - Face 1 reproduces unchanged:
+    `tests/repl_persist.rs::reload_failed_reexport_dependency_matches_restart_neg`
+    is RED, and its `g2` twin control passes.
+  - Face 2 at fresh load reproduces unchanged:
+    `tests/spec_08_modules.rs::export_closed_cycle_run_reports_cycle_neg` and
+    `export_closed_cycle_startup_reports_cycle_neg` are RED on
+    `'g' not found in module 'b'`. Their acyclic re-export control passes.
+  - Face 2's reload leg no longer reproduces: on this record's fixture the
+    session reports the `a`/`b` circular dependency.
+    `tests/repl_persist.rs::reload_export_closed_cycle_reports_cycle_neg`
+    passes and is a regression guard, not RED-before-fix evidence. The face
+    was last observed RED at `d056842f`, before `88bbbd12`, and was fixed by
+    `aed0fcb1`. Attribution to ACT-1014's publication-time cycle check is
+    provisional: no build between those points was run. A build of
+    `e4062202` that passes this cell would refute it.
+  - Completion item 3's reload leg is met by that guard. The startup and
+    `--run` legs remain open.
 
 ## Request
 

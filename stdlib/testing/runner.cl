@@ -1,65 +1,31 @@
 ;; testing/runner.cl — In-language test runner over discovered test pairs
 ;;
-;; Realises design/arch/test-discovery.md §4.3/§5/§6 (FIXME 0273): an ORDINARY
-;; map/filter runner over the fn-value pairs `discover-tests` returns. No macro
-;; runner — the freshness lives in the late-bound callables, so plain `vec-map`
-;; over a fresh `(discover-tests)` call always sees the current test set
-;; (ruling 1, the composability decision).
+;; An ordinary map/filter runner over the fn-value pairs `discover-tests`
+;; returns (design/arch/test-discovery.md §4.3/§5/§6). The callables are
+;; late-bound, so `vec-map` over a fresh `(discover-tests)` call always sees
+;; the current test set.
 ;;
-;; The two language constructs this composes:
-;;   discover-tests       :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String)))))
-;;   catch-runtime-error  :: forall a. (Fn [(Fn [] a)] (Result a String))
+;;   discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String)))))
 ;;
-;; A test is an ordinary zero-arg fn whose name begins `test-` and whose type is
-;; exactly `(Fn [] (Option String))` — None = pass, (Some why) = assertion fail.
-;; `discover-tests` returns only the eligible (correctly-typed) `test-*` fns.
+;; A test is a zero-arg fn named `test-*` of type `(Fn [] (Option String))`:
+;; None is a pass, (Some why) an assertion failure.
 ;;
-;; Per-test three-way fold (the payoff of the two rulings composing):
-;;   (catch-runtime-error run) :: (Result (Option String) String)
-;;     (Err msg)        — the test PANICKED (match non-exhaustion, /0, oob, …)
-;;     (Ok None)        — the test PASSED
-;;     (Ok (Some why))  — the test ran and reported an assertion FAIL
+;; NO PANIC ISOLATION. Every test runs in the calling process, so a panicking
+;; test ends that process and the tests after it do not run
+;; (spec/12-runtime.md §12.7.4). Isolation is the `cranelisp --test`
+;; supervisor's, which restarts its child after a panic
+;; (design/arch/s123-panics-and-environment.md §1.5).
 ;;
-;; match-shape NOTES (informed by this sprint's verification on the prebuilt
-;; binary — see the sprint report):
-;;   * match arms are a SINGLE bracket of alternating `pattern body` pairs
-;;     (spec §6.1 — `'[' match_arm+ ']'`); separate per-arm brackets do NOT parse.
-;;   * constructor patterns bind SYMBOLS only (spec §6.2.1 — `'(' symbol symbol* ')'`);
-;;     a NESTED ctor pattern like `(Ok (Some why))` is NOT grammar. The three-way
-;;     fold is therefore a NESTED match (outer Result, inner Option).
-;;   * `vec-reduce` is currently mis-inferred (over-unified to (Vec a) everywhere),
-;;     so the tally/report folds use explicit tail-recursive loops over vec-len /
-;;     vec-get instead. `vec-map` / `vec-filter` infer correctly and are used.
-;;
-;; RUNTIME SCOPE. `discover-tests` is a host-promised extern (DefKind::PrimitiveExtern)
-;; resolved only in a LIVE REPL session — so `run-all` / `run-matching` (and any code
-;; that references `discover-tests`) run in the REPL, but NOT when this module is
-;; compiled as a `--run`/cache dependency object (the object linker has no host symbol;
-;; test-discovery.md §4.5 dev-session-only framing). The pure helpers below
-;; (run-one / present-one / tally / report / passed?) work in every mode.
-;;
-;; SELF-TESTS now ship as a `(mod- test …)` submodule again (S82 Phase 6). Two
-;; defects that S81 had to route around are FIXED: a parent→child `super` import
-;; resolves the parent's symbols (0342, int load-ordering), and loading a module
-;; whose source carries a `(mod test …)` body no longer clobbers the backing
-;; `.cl` on source-regen (0343, entry-module role-gate). The submodule imports
-;; the runner's parent helpers via `super` and asserts with `assert-true`/
-;; `assert-false` AND `assert-eq`.
-;;
-;; S83 Phase 6 (0355): `assert-eq` is RESTORED here. A cross-module call of a
-;; stacked-trait-bound fn (`assert-eq`'s `[:Eq :Display a :Eq :Display b]`,
-;; imported from `testing.assertions` and called from this `test` submodule)
-;; now monomorphises in the defining module's scope and RUNS to completion —
-;; where it previously SIGSEGV'd (the resolved FIXME 0354/0355). These
-;; assert-eq self-tests are the durable stdlib-side regression guard for that
-;; cross-module constrained-call path.
+;; `discover-tests` resolves only in a live REPL session, so `run-all` and
+;; `run-matching` run only there (REPL spec §16.6). The pure helpers (run-one,
+;; present-one, tally, report, passed?) work in every mode.
 ;;
 ;; Spec: design/arch/test-discovery.md §4.3/§5/§6, plan-stdlib.md §3.3
 
 (import [prelude []])
 
-(import [primitives [discover-tests catch-runtime-error
-                     Int Bool String Pair Option Some None Result Ok Err
+(import [primitives [discover-tests
+                     Int Bool String Pair Option Some None
                      str-concat int-to-string add-i64 eq-i64 ge-i64
                      vec-len vec-get]])
 (import [collections.vec [vec-map vec-filter]])
@@ -81,23 +47,17 @@
 
 (deftype Outcome
   (Passed [:String passed-name])
-  (Failed [:String failed-name :String why])
-  (Panicked [:String panicked-name :String msg]))
+  (Failed [:String failed-name :String why]))
 
 ;; ── Running a single discovered test ─────────────────────────────────
-;; (Pair name thunk) -> Outcome, thunk bracketed by catch-runtime-error so a
-;; panicking test becomes a value rather than aborting the whole run.
 
-(defn run-one "Run one discovered (Pair name thunk), folding panic/pass/fail."
+(defn run-one "Run one discovered (Pair name thunk) in this process, folding pass/fail."
   [pair] :Outcome
   (match pair
     [(Pair name run)
-       (match (catch-runtime-error run)
-         [(Err msg) (Panicked name msg)
-          (Ok inner)
-            (match inner
-              [None       (Passed name)
-               (Some why) (Failed name why)])])]))
+       (match (run)
+         [None       (Passed name)
+          (Some why) (Failed name why)])]))
 
 ;; ── Discovery sugar (FIXME 0273 §2) — no-arg / module-name normalise to Vec ──
 ;; The canonical extern takes a (Vec String). `discover-here` normalises the
@@ -130,8 +90,7 @@
   [:Outcome o] :String
   (match o
     [(Passed name)       (str-concat name " ... ok")
-     (Failed name why)   (str-concat name (str-concat " ... FAIL: " why))
-     (Panicked name msg) (str-concat name (str-concat " ... PANIC: " msg))]))
+     (Failed name why)   (str-concat name (str-concat " ... FAIL: " why))]))
 
 (defn report "Render a Vec of Outcomes as a multi-line report string."
   [outcomes] :String
@@ -143,47 +102,39 @@
       (str-concat acc (str-concat (present-one (vec-get outcomes i)) "\n")))))
 
 ;; ── Tallying outcomes ────────────────────────────────────────────────
-;; A tally as a triple of counts (passes/fails/panics).
 
-(deftype Tally [:Int passed :Int failed :Int panicked])
+(deftype Tally [:Int passed :Int failed])
 
 (defn- bump "Add one Outcome into a running Tally."
   [:Tally t :Outcome o] :Tally
   (match t
-    [(Tally p f x)
+    [(Tally p f)
        (match o
-         [(Passed _)     (Tally (add-i64 p 1) f x)
-          (Failed _ _)   (Tally p (add-i64 f 1) x)
-          (Panicked _ _) (Tally p f (add-i64 x 1))])]))
+         [(Passed _)   (Tally (add-i64 p 1) f)
+          (Failed _ _) (Tally p (add-i64 f 1))])]))
 
-(defn tally "Aggregate a Vec of Outcomes into pass/fail/panic counts."
+(defn tally "Aggregate a Vec of Outcomes into pass/fail counts."
   [outcomes] :Tally
-  (tally-loop outcomes (vec-len outcomes) 0 (Tally 0 0 0)))
+  (tally-loop outcomes (vec-len outcomes) 0 (Tally 0 0)))
 
 (defn- tally-loop [outcomes :Int len :Int i :Tally acc] :Tally
   (if (ge-i64 i len) acc
     (tally-loop outcomes len (add-i64 i 1) (bump acc (vec-get outcomes i)))))
 
-(defn tally-line "Render a Tally as \"P passed, F failed, X panicked\"."
+(defn tally-line "Render a Tally as \"P passed, F failed\"."
   [:Tally t] :String
   (match t
-    [(Tally p f x)
+    [(Tally p f)
        (str-concat (int-to-string p)
          (str-concat " passed, "
-           (str-concat (int-to-string f)
-             (str-concat " failed, "
-               (str-concat (int-to-string x) " panicked")))))]))
+           (str-concat (int-to-string f) " failed")))]))
 
-(defn passed? "True iff a Tally has no failures and no panics."
+(defn passed? "True iff a Tally has no failures."
   [:Tally t] :Bool
   (match t
-    [(Tally _ f x) (if (eq-i64 f 0) (eq-i64 x 0) false)]))
+    [(Tally _ f) (eq-i64 f 0)]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; The `(mod- test)` body lives in the SEPARATE backing file
-;; `testing/runner/test.cl` (module testing.runner.test) — authored as a file
-;; rather than an inline body so the compiler's one-time inline-submodule
-;; EXTRACTION (spec §8.2.5) cannot strip it. It super-imports the runner's
-;; pure helpers and asserts with the in-language harness.
+;; Backing file `testing/runner/test.cl` (module testing.runner.test).
 
 (mod- test)

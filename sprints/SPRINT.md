@@ -1,6 +1,6 @@
 # Sprint 123: One ownership answer, contained panics, agent on by default
 
-**Status**: PHASE 4 WAVE ORG
+**Status**: PHASE 5 LANGUAGE — W1
 
 **Goal**: Decide the ownership stratum's shape on a measured number and fix
 the observed memory-unsafe faults under it; make a callee's runtime panic a
@@ -30,7 +30,8 @@ tree):
 | Phase 1 → Phase 2 | Phase 1 scope, carries, size and the Phase 2 `arch` proposal | 2026-11-15, conversation: "yes. A" | approved |
 | Phase 2 → Phase 3 | Architecture review, carry triage, both option-2 pre-checks, and the Phase 3 proposal | 2026-11-15, conversation: "accept the panics / accept the scope changes. approved to move to phase 3" | approved |
 | Phase 3 → Phase 4 | Designs, API packet P11–P13, QA readiness with one gap, decisions 1–10 and the Phase 4 proposal | 2026-11-15, conversation: "approved" | approved |
-| Phase 4 → Phase 5 | — | — | pending |
+| Phase 4 → Phase 5 | Wave plan W0–W5, audit choice, and the checkpoint commit | 2026-11-15, conversation: "yes"; checkpoint commit `b35bfb87` | approved |
+| Phase 5 → Phase 6a | — | — | pending |
 
 ## Scope
 
@@ -236,6 +237,42 @@ separate approval.
 | 3 | `qa` | readiness check and S123 evidence delta | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; ready with one blocking gap (stdlib runner process launch) |
 | 3 | `design` | intrinsics: retire question refs, P11, align to evidence delta | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; dispatch-fault report unprefixed; checker exit 0 |
 | 3 | `design` | int: P12 names, receipt retirement, align to evidence delta | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; checker exit 0; one `qa` citation slip and one P12 reading for `arch` |
+| 5 W0 | `test` | M-1, K-1 to K-5, `tests/CLAUDE.md` link | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `db4fe4ea`; 9 REDs, controls pass; evidence `.local/s123-w0/test-evidence.md` |
+| 5 W0 | `qa` | accept W0 test evidence; classify green faces | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; returned C1–C4 (`.local/s123-w0/qa-return.md`); ACT-1016 and ACT-1017 remeasured |
+| 5 W0 | `test` | corrections C1–C4 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `d8335a43`; 3 REDs, 6 passes; `.local/s123-w0/test-evidence-2.md` |
+| 5 W0 | `qa` | accept corrected cells C1–C4 | claude-opus-5-5 | medium | primary (Claude Code subagent, resumed) | delivered 2026-11-15; all accepted; 4 REDs trace to ACT-0997 and ACT-1017 |
+| 5 W0 | `dev` | `src/`: ACT-1025 (M-2) | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; fixture wait plus scheduler seam test; 154 worker and scheduler tests pass |
+| 5 W0 | `review` | W0 diff under `tests/` and `src/` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `669db68f`; one required finding predating W0 (stdlib supplied to four test files) |
+| 5 W0 | `qa` | close-out: ACT-1025, startup residual, review finding | claude-opus-5-5 | medium | primary (Claude Code subagent, resumed) | delivered 2026-11-15; ACT-1025 resolved; residual to `design`(int); finding becomes M-7 in W1 |
+| 5 W1 | `test` | M-7; P-1 to P-12, P-18, P-19, T-1 to T-5, T-7; C-1, C-2, C-3, C-5, C-9 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `218eb67a`; 110 cases, 64 pass, 46 RED; stopped on P-3, P-7, P-10 |
+| 5 W1 | `qa` | accept W1 test evidence; rule P-3, P-7, P-10 and the startup row | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; most accepted; returned P-4 sparks, P-7, P-3, P-10, renames (`.local/s123-w1/qa-return.md`) |
+| 5 W1 | `test` | W1 corrections 1–5 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `1537f6f7`; 9 pass, 17 RED, 2 unbuilt; P-4 twins spawn 2 |
+| 5 W1 | `qa` | accept corrections; P-7 `--test` leg; grammar citation; re-rule M-2 | claude-opus-5-5 | medium | primary (Claude Code subagent, resumed) | delivered 2026-11-15; accepted except P-7 stderr rule; `--test` leg narrowed; M-2 restated |
+| 5 W1 | `test` | P-7 stderr rule; evidence-record fix | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `0524b973`; batch cells pass, two REPL REDs, as `qa` pre-accepted |
+| 5 W1 | `dev` | intrinsics: terminator, catalog derivation, P1–P7, P11 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 364 crate tests pass; `public-api.txt` +4/−28 equals packet; root crate does not compile until `src/` step |
+| 5 W1 | `design` | intrinsics: `sleep_pollfn` catalog row; runtime-defect report wording | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; poll-leaf constructor for the row; defect wording confirmed; `public-api.txt` +0 |
+| 5 W1 | `dev` | backend: single raise helper; removable sentinel code | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 637 backend tests pass; `public-api.txt` +0; census graded measured |
+| 5 W1 | `dev` | intrinsics follow-up: poll-leaf constructor, defect-report test | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 369 tests pass; `public-api.txt` +0; reported intermittent ivar heap corruption |
+| 5 W1 | `qa` | attribute ivar test heap corruption | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; pre-existing test race (baseline 24/20,000 aborts, W1 16/22,000); product correct |
+| 5 W1 | `dev` | intrinsics: ivar test frees only after the worker releases | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 0 aborts in 25,000 isolated runs; 369 crate tests pass |
+| 5 W1 | `dev` | types: P9 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 292 crate tests pass; `public-api.txt` −4 as P9 states |
+| 5 W1 | `dev` | `src/`: hosts, ACT-1041, test supervisor (P12), ACT-1017 prefix, startup settle | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; root compiles; 1,056 root tests pass; W1 e2e cells green except named waits |
+| 5 W1 | `dev` | primitives: `checked-quot`; dead sentinel returns | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; 108 tests pass; `checked_quot_*` e2e green; `public-api.txt` +0; trusted-base census 19/20 → 18/19 |
+| 5 W1 | `arch` | ruling: primitives trusted-base census change | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-15; within P6 and the `checked-quot` approval; no user gate; report at the Phase 5 checkpoint |
+| 5 W1 | `dev` | platform: retire or re-point the `DispatchError` test; stale rustdoc | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; test retired (no error value remains); 87 tests pass; `public-api.txt` +0 |
+| 5 W1 | `dev` | stdlib: runner without isolation (T-8); `catch-runtime-error` users | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; conformance 17/17; T-8 7/7; `testing.runner` public surface changed |
+| 5 W1 | `dev` | exemplar: panic-free request paths | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; `safe-handle` and the 500 page removed; one guarded `get`; `tests.cl` now exits 41; exemplar tests pass |
+| 5 W1 | `dev` | `src/`: `--test` fail reason carries the last stderr line | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; row 9 failing then passing; 16 test-runner e2e cells green |
+| 5 W1 | `training` | `examples/` without `catch-runtime-error` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `2744c58e`; example 11 teaches `checked-quot` (exit 69 → 71); 32 and 38 updated |
+| 5 W1 | `design` | int: as-built updates (trace ring, §6.1.2 census, §6.5 cache, child arguments) | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; no findings in `design/int/` |
+| 5 W1 | `design` | int: dispatch-fault cause in the `--test` outcome line | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; the fail reason carries the child's last stderr line (test-runner design, "The cause of a fail" and test-child row 9) |
+| 5 W1 | `spec` | dispatch-fault report form; open-test result wording | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `4936b313`; dispatch-fault form recorded in `spec/12-runtime.md` §12.7.6; S123-Q13 opened |
+| 5 W1 | `design` | int: startup-settle assurance grade (`design/int/int.md` §6.1.2) | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; revised to a structural scheduler transition |
+| 5 W1 | `design` | int: startup typecheck-settled wait; `int.md` §6.11 | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; `int.md` §6.1.2 and §6.11; no cross-crate change |
+| 5 W0 | `spec` | record the accepted design readings | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `bf7ab0fe`; S123-Q12 (recreate-question sentence) open, needed by W4 |
+| 5 W0 | `qa` | evidence-delta citation repair; G1 updated to the runner ruling | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; readiness now has no blocking gap; T-7, T-8 added |
+| 5 W0 | `design` | int: runner-isolation wording in `test-runner.md` §6.5 | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; checker exit 0 |
+| 5 W0 | `arch` | runner-isolation wording in `s123-panics-and-environment.md` §1.5; packet approval status | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-15; P11–P13 marked approved; checker exit 0 |
 | 3 | `spec` | panic, CLI, environment and linking requirements; five questions; R9 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `b4a26384`; 11 questions in Appendix D |
 
 ## Phase 2 outcome — awaiting the Phase 2 → 3 checkpoint
@@ -421,11 +458,17 @@ Rules for every wave:
 
 | Order | Role | Surface | Work |
 |---|---|---|---|
-| 1 | `test` | `tests/` | P-1 to P-12, P-18, P-19, T-1 to T-5 and the C-1, C-2, C-3, C-5, C-9 re-points |
+| 0 | `design` | int | converge both startup paths on the typecheck-settled wait (W0 residual, Invariant SW); correct `int.md` §6.11 with the ACT-1017 prefix |
+| 1 | `test` | `tests/` | M-7 stdlib-free fixtures (before P1); P-1 to P-12, P-18, P-19, T-1 to T-5, T-7 and the C-1, C-2, C-3, C-5, C-9 re-points |
 | 2 | `dev` | intrinsics | the terminator, ACT-1033 catalog derivation (first compile first), P1–P7, P9, P11 |
 | 3 | `dev` | backend | the single raise helper; removable sentinel and leak-caveat code |
-| 4 | `dev` | `src/` | host boundaries, ACT-1041, the test supervisor and child (P12) |
-| 5 | `dev` | `stdlib/`, `exemplar/` | the in-language runner without isolation; the web server with checked operations; `checked-quot` users |
+| 3b | `dev` | intrinsics | `design`(intrinsics) follow-up: poll-leaf catalog constructor for `runtime/sleep_pollfn`; defect-report module test (`process-lifecycle.md` §1.1, §1.7, §2.2) |
+| 3c | `dev` | types | P9: remove `PlatformError::DispatchError` |
+| 4 | `dev` | `src/` | host boundaries, ACT-1041, the test supervisor and child (P12); the ACT-1017 single prefix (`int.md` §6.11); the fused scheduler transition so in-memory completion implies a terminal pool (`int.md` §6.1.2) |
+| 4b | `dev` | primitives | `checked-quot` (P-10 unit rows first); `Int.MIN / -1` per the user's pending ruling |
+| 4c | `dev` | platform | retire or re-point `platform_error_dispatch_error_carries_fn_name`; stale dispatch-error rustdoc in `lib.rs` |
+| 5 | `dev` | `stdlib/`, `exemplar/` | the in-language runner without isolation (T-8); the web server with checked operations; `checked-quot` users |
+| 5b | `dev` | `src/` | the `--test` fail reason carries the child's last stderr line (`test-runner.md` §6.5, row 9) |
 | 6 | `training` | `examples/` | `examples/32-concurrency-combinators.cl` without `catch-runtime-error` |
 | 7 | `review` | per surface | intrinsics, backend, `src/` |
 
@@ -476,3 +519,96 @@ judges adequacy for the Phase 5 → 6a checkpoint.
 - 6b: the modules and macros guides, `user/cli-reference.md`, the runnable
   `user/` sample harness (M-3, with the root `CLAUDE.md` exception), the
   session-lock demo (M-4, M-5), and transcript re-baselines for the banner.
+
+### Phase 5 notes
+
+- W0, 2026-11-15: `qa` remeasured two carried filings. ACT-1017's location
+  face was fixed by `aed0fcb1`; its prefix face is open at every seam.
+  ACT-1016's export-cycle reload leg is fixed; face 1 and the fresh-load legs
+  stay RED. Handoff to W1: `design`(int) corrects `int.md` §6.11's "Diagnostic
+  as delivered" text with the ACT-1017 prefix correction.
+- W0, 2026-11-15: `dev`(src) found a possible residual beside ACT-1025. On
+  normal startup a non-empty entry can return from registration still
+  `TypecheckWorking`; only the empty-entry path waits for typecheck to settle.
+  Invariant SW in `src/CLAUDE.md` holds only once the worker reaches
+  `notify_typecheck_done`. No observed harm. Routed to `qa` for a ruling, with
+  `design`(int) if a source change is wanted.
+- W0 closed 2026-11-15. `arch` repairs the ACT-1025 link in FIXME 0694 when
+  convenient; `qa` then deletes the resolved action.
+- W1, 2026-11-15, `dev`(intrinsics) handoffs to carry: P9
+  (`PlatformError::DispatchError` in `cranelisp-types`) is still to do with the
+  `src/` step; `dev`(primitives) has three unreachable-code warnings after
+  raisers; `test` updates `platforms/poll-pool`'s survival-policy description
+  (P-11); `qa` grades the two-raiser detection as probabilistic; ACT-1042 and
+  ACT-1033 name removed symbols, so `qa` disposes them at W1 close.
+- W1, 2026-11-15: `design`(intrinsics) suggests, not blocking, that backend
+  `compile_sleep` take `runtime/sleep_pollfn`'s `FuncId` from the catalog
+  declarations; carried to `design`(backend) with the W2 cutover.
+- W1, 2026-11-15, `dev`(backend) handoffs: 13 golden-CLIF fixtures to
+  re-baseline once the root crate compiles (`test`); `design`(backend) updates
+  `backend.md` §7 status and removes the trap-stub leak caveat in
+  `ownership-codegen.md` §8.1; making the single-emitter property structural
+  needs a wrapper for `CompileContext::panic_func_id`, an API change, and is
+  noted for `arch`, not scheduled; `context.rs:383` cites a cell C-2 may have
+  deleted.
+- W1, 2026-11-15: `dev`(intrinsics) observed an intermittent heap corruption
+  in `ivar::tests::hier_decline_worker_spark_runs_at_parent_plus_one_depth`
+  (`malloc(): unsorted double linked list corrupted`). `ivar.rs` changed in
+  W1, so W1 `dev` work is paused until `qa` attributes it.
+- W1, 2026-11-15: `qa` attributed the ivar abort: pre-existing, in the test
+  only. The test freed the cell on `RESOLVED` while the spark worker still held
+  an RC; the worker's late decrement corrupted glibc's free list. Controls:
+  quarantine removes it (0/40,000); the RC word shows the late decrement
+  (1,978/2,000); a sibling waiting for RC 1 never aborts (0/20,000). Fix routed
+  to `dev`(intrinsics) inside W1. W1 `dev` work resumes.
+- W1, 2026-11-15: `dev`(intrinsics) noted a second ordering in the same test,
+  unobserved: `IN_FLIGHT_SPARKS` is restored before the worker's guard drops.
+  Harmless under nextest's process-per-test; for `qa` to judge at W1 close.
+- W1, 2026-11-15, after P9: stale "dispatch error" prose remains in backend
+  comments (`apply.rs`, `dispatch_tests.rs`), `platforms/boom`,
+  `platforms/test-capture` (`qa`'s) and `tests/platform_errors.rs` (`test`'s);
+  swept at W1 close by their owners.
+- W1, 2026-11-15, `dev`(src): the exit hook could not read the exiting
+  thread's trace ring, because glibc destroys thread-locals before exit hooks;
+  `dev` added a shared publishing ring (`src/trace_ring.rs`) with a
+  planted-fault check. Four `test` cells assert the retired stdout display and
+  need re-pointing: `lenient_binding_panic_not_swallowed_neg`,
+  `lenient_binding_panic_surfaces_with_no_lenient_control`,
+  `trace_nested_dynamic_raises_runtime_error`,
+  `trace_nested_lexical_raises_runtime_error`.
+- W1, 2026-11-15, `spec`: the user ruled that under `--test` a dispatch fault
+  shows as a failed test naming the cause; as built, the outcome line gives only
+  the exit status and the cause appears on the relayed stderr. Routed to
+  `design`(int) and `qa` to reconcile. S123-Q13 (exact wording of the two
+  open-test messages) goes to the user.
+- W1, 2026-11-15, `arch` ruling: the primitives trusted base narrows from 19
+  functions / 20 sites to 18 / 19, within P6 and the `checked-quot` approval;
+  no user gate, reported at the Phase 5 checkpoint. Rule recorded: a helper
+  that never receives a raw word from callers is not a new site; one that
+  adopts a caller's raw word is. Stale records to repair: `design/runtime/s119-typed-consume-funnel.md`
+  §3 and `design/primitives/primitives.md` §2.4 (`design`(primitives));
+  `design/backend/s122-closure.md` §10.2 (`design`(backend)).
+- W1, 2026-11-15, `dev`(stdlib): `testing.runner`'s public surface changed:
+  `Outcome` loses `Panicked`, `Tally` has two counts, and `tally-line` prints
+  "P passed, F failed". Handoffs: `docs` for `user/guide/testing.md`
+  (lines 107–113 still present `catch-runtime-error`); `arch` for
+  `design/arch/test-discovery.md`, which is titled after and describes
+  `catch-runtime-error`; `qa` for traceability.
+- W1, 2026-11-15, `design`(int): under `--test`, a child that ends with a
+  non-zero status and no result is reported with its last stderr line (the
+  fault report) as the cause; a signal death names the signal. Unit-grade
+  only: no eligible test can force a platform effect. S123-Q13's proposed
+  wording needs revising by `spec` to carry that line; `qa` allocates row 9
+  under T-6.
+- W1, 2026-11-15, `dev`(exemplar): `exemplar/tests.cl` now exits 41 (a new
+  malformed-body form test), replacing 40 in evidence lines. A comment in
+  `exemplar/platforms/web/src/lib.rs` claims a 400 for unparseable requests;
+  the router sends 405. Left for a later `dev`(exemplar) pass.
+- 2026-11-15: the user adopted the three `--test` fail-reason messages as
+  normative (S123-Q13): `test process exited with status N without a result`,
+  with `: <final stderr line>` appended when the child wrote one, and
+  `test process was killed by signal N`. `spec` records them.
+- 2026-11-15: the user authorized committing ("commit"). Checkpoint commit of
+  W0 (complete) and W1 (implementation done; review, re-points, golden
+  re-baselines and `qa` adequacy still open). `.agents`, the local `design`
+  adapter and the root allocation sentence stay out until close.

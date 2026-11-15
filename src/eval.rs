@@ -112,7 +112,7 @@ impl CompilerSession {
     /// failed load's record). A code turn discards the reset modules; `/mod`
     /// records them.
     pub(crate) fn register_dep_for_eval(
-        &mut self,
+        &self,
         dep_module: &ModuleFullPath,
         held: &BTreeSet<ModuleFullPath>,
     ) -> Result<(), FailedLoad> {
@@ -616,28 +616,18 @@ impl CompilerSession {
             // deleted.) The `Arc<Jit>` retention lives on the `__expr` entry's
             // `Code::Jit`, so the code stays mapped for the duration of the
             // call + the IO trampoline below.
-            // A runtime TRAP (broken-symbol stub, exhaustiveness failure, empty
-            // `(select [])`, …) is NOT a compiler error — it surfaces as
-            // `ExprOutcome::Trap` and becomes an `EvalResult::RuntimeError` the
-            // printer renders per repl/spec.md §18.5 (`runtime error: {payload}`,
-            // no wrapper chain). Genuine compiler/platform faults still `?`.
             // A failed cached load refuses the turn (`design/int/int.md` §7.1).
             let ready = self.shared.scheduler.wait_cached_loads_settled()?;
-            match crate::pipeline::execute_compiled_expr(
+            let result = crate::pipeline::execute_compiled_expr(
                 check.display.as_ref(),
                 &self.shared,
                 module,
                 ready,
-            )? {
-                crate::pipeline::ExprOutcome::Value(result) => Ok(EvalResult::Val {
-                    result,
-                    warnings: check.warnings.clone(),
-                }),
-                crate::pipeline::ExprOutcome::Trap { message } => Ok(EvalResult::RuntimeError {
-                    message,
-                    warnings: check.warnings.clone(),
-                }),
-            }
+            )?;
+            Ok(EvalResult::Val {
+                result,
+                warnings: check.warnings.clone(),
+            })
         } else {
             if definition_symbols.is_empty() {
                 return Err(CranelispError::CodegenError {

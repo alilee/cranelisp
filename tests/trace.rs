@@ -95,42 +95,13 @@ fn trace_nested_lexical_raises_runtime_error() {
     .assert_stdout_contains("nested trace is not supported");
 }
 
-// spec: spec/04-expressions.md §4.12.5 — (same anchor) NOTE-2 panic-unwind
-// stuck guard. The gate review (0258 NOTE-2) flagged a worry: if a JIT body
-// panics mid-trace while TRACE_BODY_RUNNING is set (after an instrumented inner
-// call has raised the flag), the thread-local flag + trace role could stay
-// stuck with no RAII cleanup, so a later same-thread `(trace (ok-fn))` would
-// spuriously raise "nested trace".
-//
-// VERDICT (S76 W3 /qa probe): the worry does NOT reproduce at the e2e level in
-// REPL mode. Probed BOTH the simple shape (`(trace (boom))` where boom panics
-// directly) AND the precise NOTE-2 shape (`g` calls an instrumented `inner`,
-// raising the flag, then panics mid-trace): in every case the subsequent
-// `(trace (ok 1))` runs cleanly and produces a Trace value — the REPL's
-// per-form panic recovery resets the thread-local state. This test therefore
-// PASSES and is a positive regression guard that the flag/role do not stick
-// across a panicking trace. (If a future change reintroduces the stuck guard
-// it will fail here, naming /dev intrinsics + FIXME 0270.)
+// spec: spec/12-runtime.md §12.7.4.1 — C-1: panic during tracing ends the process.
 #[test]
 fn trace_panic_unwind_does_not_stick_guard() {
-    // Precise NOTE-2 shape: g calls an instrumented inner fn (raising
-    // TRACE_BODY_RUNNING) and THEN panics mid-trace.
     let out = repl_prims(
-        "(defn inner [x] (add-i64 x 1))\n\
-         (defn g [x] (let [a (inner x)] (div-i64 a 0)))\n\
-         (defn ok [x] x)\n\
-         (trace (g 1))\n\
-         (trace (ok 1))\n",
+        "(defn inner [x] (add-i64 x 1))\n(defn g [x] (let [a (inner x)] (div-i64 a 0)))\n(trace (g 1))\n(add-i64 800 13)\n",
     );
-    // The second trace must run cleanly: a Trace value, not a nested-trace
-    // error left over from the panicked first trace.
-    assert!(
-        out.stdout.contains(":primitives/Trace")
-            && !out.stdout.contains("nested trace is not supported"),
-        "second trace after a panicking trace should run cleanly; \
-         stdout=\n{}",
-        out.stdout
-    );
+    helpers::e2e::assert_panic_exit(&out, "division by zero", Some(3), false);
 }
 
 // =============================================================================

@@ -70,92 +70,74 @@ fn nested_guard_multi_module_swap_allowed() {
     // Cleanup: release role + flag.
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
     TRACE_BODY_RUNNING.with(|f| f.set(false));
-    let _ = crate::panic::take_runtime_error();
 }
 
-#[test]
-fn nested_guard_reentrant_raises() {
-    // Simulate role-acquired + body running (a wrapper has fired), then an
-    // inner swap by the SAME thread. This is (trace (trace ...)) and must
-    // raise via runtime_panic (returning the sentinel).
-    let my_tid = current_thread_id();
-    TRACE_THREAD_ID.store(my_tid, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(true));
-    let _ = crate::panic::take_runtime_error(); // clear any prior
+use crate::test_child::{self, selected};
 
+fn child(name: &str) -> String {
+    test_child::child_path(module_path!(), name)
+}
+
+const NESTED_TRACE_MESSAGE: &str = "nested trace is not supported: (trace ...) may not appear inside an actively-tracing (trace ...)";
+
+#[test]
+fn child_swaps_while_the_body_runs() {
+    if !selected("child_swaps_while_the_body_runs") {
+        return;
+    }
+    // Role held + body running (a wrapper has fired), then an inner swap by the
+    // SAME thread: `(trace (trace ...))`.
+    TRACE_THREAD_ID.store(current_thread_id(), Ordering::SeqCst);
+    TRACE_BODY_RUNNING.with(|f| f.set(true));
     let mut got = vec![0i64; GOT_TABLE_SIZE];
     let slots: Vec<u32> = vec![0];
     let wrappers: Vec<i64> = vec![0xbeef];
-    let saved = cranelisp_trace_swap_got(
+    let _ = cranelisp_trace_swap_got(
         got.as_mut_ptr() as i64,
         1,
         slots.as_ptr() as i64,
         wrappers.as_ptr() as i64,
     );
-    assert_eq!(
-        saved, SENTINEL_SAVED_GOT,
-        "re-entrant swap must not proceed"
-    );
-    let err = crate::panic::take_runtime_error();
-    assert!(err.is_some(), "re-entrant swap must raise a runtime error");
-    assert!(
-        err.unwrap().contains("nested trace is not supported"),
-        "guard message must name nested trace"
-    );
-
-    // Cleanup.
-    TRACE_THREAD_ID.store(0, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
+    eprintln!("RESUMED-AFTER-PANIC");
 }
 
-// spec: spec/04-expressions.md §4.12.5 — LEXICAL nested trace
-// `(trace (trace e))` must raise even though no wrapper has fired (so
-// TRACE_BODY_RUNNING is still false). FIXME 0283. The inner form re-swaps a
-// GOT base the outer form already swapped; the already-swapped-base check
-// catches it where the boundary flag misses it.
+// spec: spec/04-expressions.md §4.12.5 — a re-entrant swap while the trace body
+// runs raises the nested-trace panic, which ends the process.
 #[test]
-fn nested_guard_lexical_reentrant_raises() {
-    // Start clean on this thread.
-    TRACE_THREAD_ID.store(0, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
-    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
-    let _ = crate::panic::take_runtime_error();
+fn nested_guard_reentrant_raises() {
+    let end = test_child::run(&child("child_swaps_while_the_body_runs"), &[]);
+    end.assert_panicked_with(NESTED_TRACE_MESSAGE);
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
+}
 
+#[test]
+fn child_reswaps_the_same_base() {
+    if !selected("child_reswaps_the_same_base") {
+        return;
+    }
     let mut got = vec![0i64; GOT_TABLE_SIZE];
     let base = got.as_mut_ptr() as i64;
     let slots: Vec<u32> = vec![0];
     let wrappers: Vec<i64> = vec![0xfeed];
 
     // Outer form's swap: claims the role, records `base`.
-    let outer_saved =
-        cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
-    assert_ne!(outer_saved, SENTINEL_SAVED_GOT, "outer swap must proceed");
-    // CRITICAL: no wrapper has fired, so the boundary flag is still false —
-    // this is exactly the lexical-nesting condition the old guard missed.
-    assert!(
-        !TRACE_BODY_RUNNING.with(Cell::get),
-        "precondition: lexical case has body_running == false"
-    );
+    let outer = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
+    assert_ne!(outer, SENTINEL_SAVED_GOT, "outer swap must proceed");
+    // No wrapper has fired, so the boundary flag is still false — the lexical
+    // nesting condition the boundary flag alone misses.
+    assert!(!TRACE_BODY_RUNNING.with(Cell::get));
+    let _ = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
+    eprintln!("RESUMED-AFTER-PANIC");
+}
 
-    // Inner form's swap of the SAME base while the role is held: re-entrant.
-    let inner_saved =
-        cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
-    assert_eq!(
-        inner_saved, SENTINEL_SAVED_GOT,
-        "lexical re-entrant swap must NOT proceed"
-    );
-    let err = crate::panic::take_runtime_error();
-    assert!(
-        err.as_deref()
-            .is_some_and(|m| m.contains("nested trace is not supported")),
-        "lexical nested trace must raise the nested-trace error; got {err:?}"
-    );
-
-    // Cleanup: restore the outer swap + release role/flag/set.
-    cranelisp_trace_restore_got(base, outer_saved);
-    TRACE_THREAD_ID.store(0, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
-    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
+// spec: spec/04-expressions.md §4.12.5 — LEXICAL nested trace
+// `(trace (trace e))` raises even though no wrapper has fired (FIXME 0283):
+// the inner form re-swaps a GOT base the outer form already swapped.
+#[test]
+fn nested_guard_lexical_reentrant_raises() {
+    let end = test_child::run(&child("child_reswaps_the_same_base"), &[]);
+    end.assert_panicked_with(NESTED_TRACE_MESSAGE);
+    assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }
 
 // A legitimate two-MODULE swap of ONE form uses two DISTINCT got bases and
@@ -166,7 +148,6 @@ fn nested_guard_two_distinct_bases_allowed() {
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
     TRACE_BODY_RUNNING.with(|f| f.set(false));
     SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
-    let _ = crate::panic::take_runtime_error();
 
     let mut got_a = vec![0i64; GOT_TABLE_SIZE];
     let mut got_b = vec![0i64; GOT_TABLE_SIZE];
@@ -186,10 +167,6 @@ fn nested_guard_two_distinct_bases_allowed() {
     assert_ne!(
         saved_b, SENTINEL_SAVED_GOT,
         "second module swap must proceed"
-    );
-    assert!(
-        crate::panic::take_runtime_error().is_none(),
-        "distinct-base multi-module swap must NOT raise"
     );
 
     cranelisp_trace_restore_got(base_b, saved_b);
@@ -262,7 +239,6 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
     // Clean start.
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
     TRACE_BODY_RUNNING.with(|f| f.set(false));
-    let _ = crate::panic::take_runtime_error();
 
     // Claim the role + push the synthetic root frame exactly as the first
     // `cranelisp_trace_swap_got` does for a GOT-slotted module.
@@ -383,49 +359,6 @@ fn empty_trace_yields_faithful_placeholder_not_a_defect() {
     );
 
     consume_trace_call(crate::handle::test_owned(root));
-}
-
-// spec: spec/04-expressions.md §4.12.5 — panic-unwind trace-guard cleanup
-// (0258 NOTE-2 / test-discovery.md §5 "Trace-guard cleanup"). Simulate a panic crossing an
-// actively-tracing body: role held + TRACE_BODY_RUNNING set. The cleanup
-// must clear the flag AND release the role so the next trace starts clean.
-#[test]
-fn panic_clears_stuck_trace_guard() {
-    let my_tid = current_thread_id();
-    TRACE_THREAD_ID.store(my_tid, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(true));
-
-    clear_trace_guard_on_panic();
-
-    assert!(
-        !TRACE_BODY_RUNNING.with(Cell::get),
-        "cleanup must clear TRACE_BODY_RUNNING after a mid-trace panic"
-    );
-    assert_eq!(
-        TRACE_THREAD_ID.load(Ordering::Relaxed),
-        0,
-        "cleanup must release the trace role after a mid-trace panic"
-    );
-}
-
-// The cleanup must NOT steal a role owned by another thread: if this thread
-// does not own the role, the CAS no-ops and the foreign owner is preserved.
-#[test]
-fn panic_cleanup_does_not_steal_foreign_role() {
-    // A foreign owner id distinct from this thread's id.
-    let foreign = current_thread_id() + 100_000;
-    TRACE_THREAD_ID.store(foreign, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
-
-    clear_trace_guard_on_panic();
-
-    assert_eq!(
-        TRACE_THREAD_ID.load(Ordering::Relaxed),
-        foreign,
-        "cleanup must not release a role owned by another thread"
-    );
-    // Restore for other tests.
-    TRACE_THREAD_ID.store(0, Ordering::SeqCst);
 }
 
 // ── 0130 harvest: Trace ADT field-accessor offset + RC fidelity ───────────
@@ -684,7 +617,6 @@ fn concurrent_foreign_owner_skips_with_sentinel() {
     TRACE_THREAD_ID.store(foreign, Ordering::SeqCst);
     TRACE_BODY_RUNNING.with(|f| f.set(false));
     let stack_depth_before = lock_trace_stack().len();
-    let _ = crate::panic::take_runtime_error();
 
     let mut got = vec![0i64; GOT_TABLE_SIZE];
     let base = got.as_mut_ptr() as i64;
@@ -701,10 +633,6 @@ fn concurrent_foreign_owner_skips_with_sentinel() {
     assert_eq!(
         got[0], 0,
         "skipped swap must NOT install a wrapper into the GOT"
-    );
-    assert!(
-        crate::panic::take_runtime_error().is_none(),
-        "concurrent skip is NOT an error (distinct from same-thread nesting)"
     );
 
     // A `::skipped::` sentinel frame was pushed.
@@ -740,7 +668,6 @@ fn first_swap_pushes_trace_root_frame() {
     TRACE_BODY_RUNNING.with(|f| f.set(false));
     SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
     lock_trace_stack().clear();
-    let _ = crate::panic::take_runtime_error();
 
     let mut got = vec![0i64; GOT_TABLE_SIZE];
     let base = got.as_mut_ptr() as i64;

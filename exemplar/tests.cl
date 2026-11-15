@@ -9,7 +9,7 @@
 ;;
 ;; Each `test-*` returns `(Option String)`: `None` = pass, `(Some why)` =
 ;; fail (repl/spec.md §16.1). `score` maps None→1, Some→0; the run is green
-;; when the exit code equals the total test count (40).
+;; when the exit code equals the total test count (41).
 ;;
 ;; EXCLUDED: `solver/test-hard-puzzle`. It is correct (it solves), but the
 ;; genuinely-hard backtracking search copies the whole 81-cell Vec on every
@@ -22,13 +22,13 @@
 ;; Run it:
 ;;   CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib \
 ;;     cargo run -- --run exemplar/tests.cl
-;;   echo $?   # => 40  (all green)
+;;   echo $?   # => 41  (all green)
 ;;
 ;; The suite now includes `solver/test-solve-parallel-equiv` (S92, FIXME 0408):
 ;; a backtracking-requiring puzzle solved through the parallel divide-and-conquer
 ;; search, pinned to its unique solution. Running the suite under both default
 ;; (parallel) and `CRANELISP_NO_LENIENT=1` (serial) and getting the same green
-;; 40 is the parallel ≡ serial equivalence guard for the reshape. That one test
+;; 41 is the parallel ≡ serial equivalence guard for the reshape. That one test
 ;; adds ~8-9s to the run (the carried copy-per-guess cost — FIXME 0408 perf
 ;; half); `test-hard-puzzle` stays excluded (it would run for minutes).
 
@@ -51,7 +51,7 @@
 (import [form [test-parse-simple test-empty-values-produce-dots
                test-result-length test-url-decode test-field-index-valid
                test-field-index-invalid test-last-position
-               test-multiple-digits]])
+               test-multiple-digits test-malformed-body]])
 
 ;; Map a test outcome to a pass count: None (pass) => 1, (Some _) (fail) => 0.
 (defn score [outcome]
@@ -100,4 +100,5 @@
     (+ (score (test-field-index-valid))
     (+ (score (test-field-index-invalid))
     (+ (score (test-last-position))
-       (score (test-multiple-digits)))))))))))))))))))))))))))))))))))))))))))
+    (+ (score (test-multiple-digits))
+       (score (test-malformed-body))))))))))))))))))))))))))))))))))))))))))))

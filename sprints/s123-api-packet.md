@@ -2,12 +2,13 @@
 
 **Owner:** `arch`. **Reader:** the user, at the inter-crate public-API gate
 (root `CLAUDE.md` §Roles). **Status:** rows P1–P10 are approved
-([user rulings on the Phase 3 decisions, 2026-11-15](SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15)).
-Rows P11–P13 are proposals awaiting the gate; each needs the user's explicit
-approval before implementation starts. A mismatch between an approved row and
-the generated diff returns here. **Checkpoint:** HEAD `f747990f` plus the
-uncommitted S123 coordination, spec and design edits, 2026-11-15. Line counts
-are read from the committed `public-api.txt` files at that checkpoint.
+([user rulings on the Phase 3 decisions, 2026-11-15](SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15)),
+and rows P11–P13 are approved
+([user rulings at the Phase 3 → 4 checkpoint, 2026-11-15](SPRINT.md#user-rulings-at-the-phase-3--4-checkpoint-2026-11-15)).
+R10-9 is not yet a listed delta (Part C). A mismatch between an approved row
+and the generated diff returns here. **Checkpoint:** planning commit
+`b35bfb87`, 2026-11-15. Line counts are read from the committed
+`public-api.txt` files at that commit.
 
 Part A is what S123 implements. Part B is scheduled outside the Phase 5
 functional change-sets. The withdrawn option-A row (`runtime/panic_pending`) of
@@ -24,7 +25,7 @@ auto-trait rows the current format prints.
 |---|---|
 | P1–P9 | Approved 2026-11-15. P6 as proposed: `runtime/panic` stays and never returns. P3, P4 and P9 because platform dispatch faults end the process |
 | P10 | Approved 2026-11-15 with U′; it lands only in U′'s change-set |
-| **P11, P12, P13** | **Awaiting the user's gate** (§A5) |
+| P11–P13 | Approved 2026-11-15 (§A5). P13 lands at S123 close if the superseded redefinition residue is deleted in Phase 5, otherwise in S124 |
 | B1 | Scheduled for S124 |
 | B2, B3 | Scheduled for S123 close, with the baseline regeneration |
 
@@ -86,21 +87,21 @@ a later packet; nothing is proposed for S123.
 | ACT-1033's catalog derivation | Crate-private | `IntrinsicEntry` unchanged |
 | Any other root-crate item | No change beyond P12 (`design/int/int.md` §16.0, delta 6) | — |
 
-### A5. New deltas from `design`(int) — awaiting the gate
+### A5. New deltas from `design`(int) — approved 2026-11-15
 
-Source: `design/int/int.md` §16.0, S123 bullet, deltas 2, 4 and 5. The names
-are `arch`'s proposal following `design`(int)'s stated shape; a different name
-or parameter list returns to this gate.
+Source: `design/int/int.md` §16.0, S123 bullet, deltas 2, 4 and 5. The user
+approved the rows with `arch`'s names, which follow `design`(int)'s stated
+shape; a different name or parameter list returns to this gate.
 
 | Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
 |---|---|---|---|---|
-| P11 | In `cranelisp-intrinsics`, add `pub const panic::PANIC_REPORT_PREFIX: &str = "error: runtime panic: "` and `pub const panic::PANIC_EXIT_STATUS: i32 = 1`. The terminator uses both, so they are the only copies. Rustdoc states the promise: every language-panic report is one stderr line that begins with the prefix, and the process then exits with the status; the status is shared with other failures, so a consumer must not classify by status alone | Root: the test supervisor in `src/session_v4/test_runner/` ([test runner §6.5](../design/int/test-runner.md#65-the-test-child)). New consumer edge root → these two items | Additive. No crate edge is new. No schema or ABI effect: the values are the spec's (`spec/12-runtime.md` §12.7.5) and today's batch status. **Recommendation: approve.** It single-sources a spec-fixed value between its producer and its one consumer (Principle 07) with a two-item facade (Principle 02). Declining it leaves a private copy in int, guarded only by the end-to-end panic cell | intrinsics +2 |
+| P11 | In `cranelisp-intrinsics`, add `pub const panic::PANIC_REPORT_PREFIX: &str = "error: runtime panic: "` and `pub const panic::PANIC_EXIT_STATUS: i32 = 1`. The terminator uses both, so they are the only copies. Rustdoc states the promise: every language-panic report is one stderr line that begins with the prefix, and the process then exits with the status; the status is shared with other failures, so a consumer must not classify by status alone | Root: the test supervisor in `src/session_v4/test_runner/` ([test runner §6.5](../design/int/test-runner.md#65-the-test-child)). New consumer edge root → these two items | Additive. No crate edge is new. No schema or ABI effect: the values are the spec's (`spec/12-runtime.md` §12.7.5) and today's batch status. It single-sources a spec-fixed value between its producer and its one consumer (Principle 07) with a two-item facade (Principle 02). Declining it leaves a private copy in int, guarded only by the end-to-end panic cell | intrinsics +2 |
 | P12 | Root crate (no baseline). Change `pub fn CompilerSession::run_tests(&self) -> Result<TestRunReport, CranelispError>` to `pub fn CompilerSession::run_tests(&self, records: &std::path::Path, modules: Option<&[cranelisp_types::ModuleFullPath]>, resume_after: Option<&cranelisp_types::FQSymbol>) -> Result<(), CranelispError>`: the child's engine, which runs the selected tests in this process, appends one record per test to `records`, and runs only tests after `resume_after`. `modules` is the REPL's selection; `None` walks the entry chain as `--test` does today. `Err` keeps its meaning: the run could not start. Add `pub fn session_v4::supervise_tests(child_args: &[std::ffi::OsString], modules: Option<&[cranelisp_types::ModuleFullPath]>) -> Result<TestRunReport, CranelispError>`, re-exported beside `TestRunReport`: it needs no session, starts and restarts the child with the compile-affecting `child_args`, and returns the unchanged `TestRunReport` | `src/main.rs` (the binary target): `--test` calls `supervise_tests`, and the child mode calls `run_tests`. The REPL's `handle_run_tests` calls `supervise_tests`. No integration test calls either; `tests/` drive the binary | Breaking for `run_tests`' one caller, `main.rs`. No schema or ABI effect. The child's arguments are a CLI surface that `spec` states (`design/int/test-runner.md` §6.5); the record format is private to the runner | Root has no baseline. The gate applies to the item change and the bin → lib consumer edges |
 | P13 | Remove the broken-symbol state. In `cranelisp-types`: the variant `Life::Broken { slot: CallableSlot, error: BrokenProvenance }`, `#[non_exhaustive] pub struct BrokenProvenance` (fields `broken_by`, `message`; `BrokenProvenance::new`), `#[non_exhaustive] pub struct BrokenTransition<C: CodeStore>` (fields `displaced_owner`, `slot`) and `pub fn SymbolTable::mark_broken(&mut self, &Symbol, BrokenProvenance) -> Result<BrokenTransition<C>, LifecycleError>`. In `cranelisp-backend`: `pub fn compile_trap_stub(*const u8, usize) -> Result<(*const u8, Code), CompilationError>`. Depends on the deletion of the superseded redefinition residue ([session transaction §5.2](../design/int/session-transaction.md#52-no-symbol-is-left-broken)), which removes every production caller | After that deletion: crate-private match arms only, in types (`lifecycle.rs`, `module.rs`), typecheck (`adt.rs`), backend (`lib.rs`, the `compiler/entry_convention.rs` `Broken` arm) and root (`src/worker.rs`), plus tests (types `module/tests.rs` and `crates/cranelisp-types/tests/lifecycle_facade.rs`, backend `entry_convention/tests.rs` and `lib.rs`, root `info_source_tests.rs`). The backend's `compile_trap_stub` tests also read P2's slot, so they are reworked or deleted in S123 regardless | Breaking only for exhaustive matches on `Life`, which are inside the workspace. **No `CACHE_SCHEMA_VERSION` bump.** `Life` is persisted as `serde_json`, which tags variants by name, so the remaining variants encode identically. No sidecar holds `Broken`: a module with a broken entry is never written ([session transaction §8.3](../design/int/session-transaction.md#83-broken-modules-are-not-persisted)). A sidecar that did would fail to decode, and the cache loader maps a decode failure to `CacheStale::Deserialise`, a fresh build, not an error. Falsifier: a cache hit that panics or errors on decode rather than missing. No ABI effect. With P13 the state is unrepresentable in the types crate (Principle 20) | types −26 (`Life::Broken` 3; `BrokenProvenance` 12; `BrokenTransition` 10; `mark_broken` 1). Backend −1. Typecheck +0 |
 
-**Scheduling P13.** Recommended: with the B3 batch at S123 close, under the
-same baseline regeneration, if the residue deletion has landed in Phase 5;
-otherwise with B1 in S124. Until P13 lands, the one remaining hole is a new
+**Scheduling P13 (approved).** P13 lands with the B3 batch at S123 close,
+under the same baseline regeneration, if the residue deletion lands in Phase 5;
+otherwise it lands with B1 in S124. Until P13 lands, the one remaining hole is a new
 call to the public `SymbolTable::mark_broken`.
 
 ## Part B — scheduled outside the Phase 5 functional change-sets
@@ -145,7 +146,4 @@ consumers.
 
 | | Decision | Recommendation |
 |---|---|---|
-| G4 | Approve P11, the panic report prefix and exit status as intrinsics constants | Approve |
-| G5 | Approve P12, the test runner's child engine and supervisor entry in the root crate | Approve |
-| G6 | Approve P13, the removal of the broken-symbol state, and its scheduling | Approve, with B3 at S123 close if the residue deletion lands in Phase 5; otherwise S124 |
 | G7 | R10-9, once its constants are listed | Decide when listed |

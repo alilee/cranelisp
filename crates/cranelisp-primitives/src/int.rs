@@ -28,44 +28,40 @@ pub(crate) fn int_to_string(n: i64) -> Owned {
     unsafe { adopt_produced_value(heap_string::alloc_string(s.as_bytes()) as i64) }
 }
 
-/// Parse an integer from a string. Returns an Option Int as a heap ADT.
-///
-/// Returns:
-/// - `None`: bare i64 tag 0
-/// - `Some(n)`: heap-allocated `[alloc_size | rc | tag=1 | n]`
-///
-/// Depends on Chunk B (Option type). The runtime constructs the ADT layout
-/// directly — it does not need the type system.
-/// Parse an integer from a string. Returns an Option Int as a heap ADT.
-///
-/// Decision 24 (Sprint 56 Step 2c): consuming convention — dec the heap arg.
-pub(crate) fn parse_int(s: Owned) -> Owned {
-    // SAFETY: s is a valid HeapString base pointer.
-    let str_val = unsafe { heap_string::read_string_as_str(s.raw_for_read()) };
-
-    let result = match str_val.trim().parse::<i64>() {
-        Ok(n) => {
-            // Some(n): allocate [tag=1 | n] as payload (16 bytes)
-            let base = alloc::alloc_with_rc(16); // tag + 1 field
-            // SAFETY: base is valid, has 16 bytes of payload.
+/// Build an `Option Int` value: `None` is the bare nullary tag 0; `Some(n)` is
+/// a fresh RC=1 node `[header | tag=1 | n]`.
+fn option_int(value: Option<i64>) -> Owned {
+    match value {
+        Some(n) => {
+            let base = alloc::alloc_with_rc(16);
+            // SAFETY: `base` is a fresh allocation with 16 payload bytes after
+            // the header: the tag word, then the single field.
             unsafe {
-                // tag at HeapHeader::SIZE (offset 16)
                 *(base.add(cranelisp_types::HeapHeader::SIZE) as *mut i64) = 1;
-                // value at HeapHeader::SIZE + 8 (offset 24)
                 *(base.add(cranelisp_types::HeapHeader::SIZE + 8) as *mut i64) = n;
             }
             // SAFETY: `base` is now a fully initialized fresh RC=1 Some node.
             unsafe { adopt_produced_value(base as i64) }
         }
-        Err(_) => {
-            // None: bare tag 0
-            // SAFETY: zero is the canonical produced `None` nullary tag.
-            unsafe { adopt_produced_value(0) }
-        }
-    };
-    // Consume the input string reference (Decision 24).
+        // SAFETY: zero is the canonical produced `None` nullary tag.
+        None => unsafe { adopt_produced_value(0) },
+    }
+}
+
+/// Parse a decimal integer, ignoring surrounding whitespace; `None` on failure.
+/// Consumes its String argument (Decision 24).
+pub(crate) fn parse_int(s: Owned) -> Owned {
+    // SAFETY: s is a valid HeapString base pointer.
+    let str_val = unsafe { heap_string::read_string_as_str(s.raw_for_read()) };
+    let result = option_int(str_val.trim().parse::<i64>().ok());
     rc::consume_shallow(s);
     result
+}
+
+/// `checked-quot` (spec §12.7.3): the quotient truncated toward zero, or
+/// `None` for a zero divisor and for `i64::MIN / -1`. Never panics.
+pub(crate) fn checked_quot(a: i64, b: i64) -> Owned {
+    option_int(a.checked_div(b))
 }
 
 #[cfg(test)]

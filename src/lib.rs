@@ -11,6 +11,7 @@
 // - `observability`   — `src/main.rs:12` (panic-hook install, flush)
 // - `session_v4`      — `src/main.rs` (`CommandResult`, `CompilerSession`, `RunMode`,
 //                       `SessionSettings`; `--test` reads a `TestRunReport` from
+//                       `supervise_tests`, and the test child runs
 //                       `CompilerSession::run_tests`)
 // - `got_trace`       — `src/main.rs:14`
 // - `io_trace`        — `src/main.rs:14`
@@ -21,6 +22,8 @@ pub mod observability;
 pub mod session_v4;
 pub mod style;
 pub(crate) mod styled;
+// trace_ring — the exit-safe per-thread ring the three trace sinks share.
+pub(crate) mod trace_ring;
 
 // cluster — the cluster-atomic typecheck orchestration hot path (src/CLAUDE.md
 // §Cluster-atomic orchestration). `process_cluster` is the SOLE crate-crossing

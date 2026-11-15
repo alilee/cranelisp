@@ -78,21 +78,20 @@
 ;; Process a single key=value pair and update the puzzle string.
 ;; If the value is a digit (1-9), place it at the correct position.
 ;; If the value is empty or not a digit, leave the dot.
+;; The pair comes from the request body, so it may hold anything: the one
+;; `count` guard bounds both `get`s, which is what keeps a malformed body from
+;; panicking the server (a panic ends the process).
 (defn process-pair [puzzle pair]
   (let [parts (split pair "=")]
-    (if (< (count parts) 1) puzzle
-      (let [key (get parts 0)
-            idx (parse-field-index key)]
+    (if (< (count parts) 2) puzzle
+      (let [idx (parse-field-index (get parts 0))
+            val (get parts 1)]
         (if (< idx 0) puzzle
-          (if (< (count parts) 2) puzzle
-            (let [val (get parts 1)]
-              (if (= (str-len val) 0) puzzle
-                ;; Value is non-empty: check if it's a valid digit 1-9
-                (let [ch (char-at val 0)]
-                  (let [d (parse-digit-char ch)]
-                    (if (< d 1) puzzle
-                      (if (> d 9) puzzle
-                        (set-char-at puzzle idx ch)))))))))))))
+          (if (= (str-len val) 0) puzzle
+            (let [ch (char-at val 0)
+                  d (parse-digit-char ch)]
+              (if (< d 1) puzzle
+                (set-char-at puzzle idx ch)))))))))
 
 ;; Process all key=value pairs from the split body.
 (defn process-pairs-helper [puzzle pairs i]
@@ -186,3 +185,14 @@
           (Some "idx 9 should be '6'"))
         (Some "idx 1 should be '3'"))
       (Some "idx 0 should be '5'"))))
+
+;; A body a browser would never send must still parse without a panic: a bare
+;; key, an empty pair, extra `=`, a field name out of range or too short, a
+;; non-digit value, a multi-byte value. Only `c11=4=x` places a digit.
+(defn test-malformed-body []
+  (let [body "c00&=&==&c0=5&c99=1&c11=4=x&c22=x&c33=é&&c44"
+        result (parse-form-body body)]
+    (if (= result (str-concat (substring (make-dots) 0 10)
+                    (str-concat "4" (substring (make-dots) 0 70))))
+      None
+      (Some "a malformed body should place only the well-formed digit"))))

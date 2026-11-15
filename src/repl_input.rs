@@ -6,8 +6,10 @@
 //!
 //! - **TTY** ([`ReplInput::Tty`]) — a `rustyline` editor: up/down history recall,
 //!   inline editing (default Emacs bindings), and per-project history persistence
-//!   to `<project_root>/.cranelisp_history` (loaded at start, saved on exit,
-//!   bounded at [`HISTORY_CAP`]). Graceful-degrade: an unreadable/unwritable
+//!   to `<project_root>/.cranelisp_history` (loaded at start, each accepted line
+//!   appended before its turn runs, bounded at [`HISTORY_CAP`]). Appending per
+//!   line keeps a line whose turn ends the process, such as a runtime panic
+//!   (`design/int/io-integration.md` §1.2). Graceful-degrade: an unreadable/unwritable
 //!   history file is a non-fatal warning, and a failed editor construction falls
 //!   back to the non-TTY reader (no line editing, but the REPL still runs).
 //!
@@ -150,6 +152,8 @@ fn read_raw_line() -> Option<String> {
 pub struct TtyInput {
     editor: rustyline::DefaultEditor,
     history_path: Option<PathBuf>,
+    /// A failed history write is reported once, not on every line.
+    history_write_warned: bool,
 }
 
 impl TtyInput {
@@ -177,6 +181,7 @@ impl TtyInput {
         Some(TtyInput {
             editor,
             history_path: Some(history_path),
+            history_write_warned: false,
         })
     }
 
@@ -206,10 +211,13 @@ impl TtyInput {
         self.editor.readline("").ok()
     }
 
-    fn save_history(&mut self, stdout: &mut impl Write) {
+    /// Append the lines accepted since the last append to the history file.
+    fn append_history(&mut self, stdout: &mut impl Write) {
         if let Some(path) = &self.history_path
-            && let Err(e) = self.editor.save_history(path)
+            && let Err(e) = self.editor.append_history(path)
+            && !self.history_write_warned
         {
+            self.history_write_warned = true;
             let _ = writeln!(stdout, "[history: could not save {}: {e}]", path.display());
         }
     }
@@ -240,7 +248,11 @@ impl ReplInput {
     /// then a line is read from fd 0; on the TTY branch the editor owns the prompt.
     pub fn read_line(&mut self, prompt: &str, stdout: &mut impl Write) -> ReadOutcome {
         match self {
-            ReplInput::Tty(t) => t.readline(prompt),
+            ReplInput::Tty(t) => {
+                let outcome = t.readline(prompt);
+                t.append_history(stdout);
+                outcome
+            }
             ReplInput::Piped => {
                 let _ = write!(stdout, "{prompt}");
                 let _ = stdout.flush();
@@ -274,19 +286,30 @@ impl ReplInput {
     pub fn is_interactive(&self) -> bool {
         matches!(self, ReplInput::Tty(_))
     }
-
-    /// Persist history on session end (TTY only; non-fatal on failure). Covers
-    /// both `/quit` and Ctrl-D since both exit the read loop.
-    pub fn save_history(&mut self, stdout: &mut impl Write) {
-        if let ReplInput::Tty(t) = self {
-            t.save_history(stdout);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec: design/int/io-integration.md §1.2 (REPL history) — an accepted line
+    // is in the history file as soon as it is appended, before its turn runs,
+    // so a turn that ends the process keeps it; a second append adds nothing.
+    #[test]
+    fn accepted_line_reaches_the_history_file_before_the_next_read() {
+        let root = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        let mut tty = TtyInput::new(root.path(), &mut out).expect("editor without a terminal");
+        let _ = tty.editor.add_history_entry("(vec-get [1] 5)");
+        tty.append_history(&mut out);
+        let path = root.path().join(HISTORY_FILE);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches("(vec-get [1] 5)").count(), 1, "{saved}");
+        tty.append_history(&mut out);
+        let again = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(again.matches("(vec-get [1] 5)").count(), 1, "{again}");
+        assert!(out.is_empty(), "no warning on success");
+    }
 
     fn pipe() -> (i32, i32) {
         let mut fds = [0i32; 2];

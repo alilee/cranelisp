@@ -1,6 +1,7 @@
 //! Prepare, execute and report (`design/int/test-runner.md` §6): the one run
-//! that `--test`, `/run-tests` and `/run-all-tests` share. Everything fallible
-//! happens in preparation, before any test runs; execution cannot fail.
+//! that `--test`, `/run-tests` and `/run-all-tests` share, executed in the
+//! test child (§6.5). Everything fallible except writing a record happens in
+//! preparation, before any test runs.
 
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use cranelisp_types::{
     Warning,
 };
 
+use super::child::{Record, RecordSink};
 use super::discovery::{self, Discovery};
 use super::selection::SelectionInputs;
 use crate::result_owner::{OwnedProgramResult, ReleasePlan, SessionGlueResolver};
@@ -49,7 +51,7 @@ impl TestRunReport {
         self.exit_code
     }
 
-    fn new(
+    pub(super) fn new(
         outcomes: Vec<(FQSymbol, TestOutcome)>,
         warnings: Vec<Warning>,
         elapsed: Duration,
@@ -98,8 +100,10 @@ const REPORT_NAME_WIDTH: usize = 40;
 /// The reason reported for an eligible test with no callable code.
 const UNAVAILABLE_REASON: &str = "test function not found";
 
-#[derive(Debug, PartialEq, Eq)]
-enum TestOutcome {
+/// One test's outcome. The child records `Pass` and `Fail`; only the
+/// supervisor, which sees a child end at a panic, produces `Panic`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TestOutcome {
     Pass,
     Fail { reason: String },
     Panic { reason: String },
@@ -122,46 +126,80 @@ struct PreparedCall {
 }
 
 impl CompilerSession {
-    /// Discover, run and report the tests of the entry module's import chain
-    /// (`repl/spec/00-cli-invocation.md` §0.2.2), as `--test` does.
+    /// The test child's engine (`design/int/test-runner.md` §6.5): run the
+    /// selected tests in this process and append one record per test to
+    /// `records`. The supervisor, `supervise_tests`, reads them and builds
+    /// the report; a runtime panic ends this process with the test open.
     ///
     /// **Precondition:** the entry module has compiled and is loaded in
     /// memory: `register_module` and `wait_inmem_complete` both returned `Ok`.
     ///
-    /// **Selection:** the entry module plus every project module reachable
-    /// from it through `import` and `export` entries with a non-empty names
-    /// list, `(mod …)`/`(mod- …)` children and the implicit prelude. Library
-    /// modules and their submodules are excluded and end the chain. Selection
-    /// reads the published tables and never searches the file system.
+    /// **Selection:** `modules` is the REPL's selection; each selected module
+    /// that is not yet loaded is loaded first. `None` selects the entry
+    /// module plus every project module reachable from it through `import`
+    /// and `export` entries with a non-empty names list, `(mod …)`/`(mod- …)`
+    /// children and the implicit prelude, as `--test` does
+    /// (`repl/spec/00-cli-invocation.md` §0.2.2). Library modules end the
+    /// chain.
     ///
-    /// **Execution:** every test that passes §16.1 eligibility runs on the
-    /// calling thread with runtime errors captured. A failure or panic does not
-    /// stop the run. `main` is never called.
+    /// **Execution:** every eligible test (§16.1) that sorts after
+    /// `resume_after` runs on the calling thread in FQ order. A failing test
+    /// does not stop the run. `main` is never called.
     ///
-    /// **Errors:** `Err` means the run could not start — a program that
-    /// references `discover-tests` (§16.6), a readiness or load failure, or an
-    /// unresolvable result-release target — and no test has run. A failing or
-    /// panicking test is never `Err`.
-    pub fn run_tests(&self) -> Result<TestRunReport, CranelispError> {
+    /// **Errors:** `Err` before any test has run means the run could not
+    /// start: a program that references `discover-tests` (§16.6), a load or
+    /// readiness failure, an unresolvable result-release target, or a record
+    /// file that cannot be created. After a test has started, `Err` means
+    /// only that a record could not be written. A failing test is never
+    /// `Err`.
+    pub fn run_tests(
+        &self,
+        records: &std::path::Path,
+        modules: Option<&[ModuleFullPath]>,
+        resume_after: Option<&FQSymbol>,
+    ) -> Result<(), CranelispError> {
+        let modules = match modules {
+            Some(selected) => {
+                for module in selected {
+                    self.load_test_module(module)?;
+                }
+                selected.to_vec()
+            }
+            None => self.selection_inputs().chain_modules()?,
+        };
         crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
         let ready = self.shared.scheduler.wait_cached_loads_settled()?;
-        let modules = self.selection_inputs().chain_modules()?;
-        self.run_test_modules(&modules, ready)
+        let Discovery { tests, warnings } =
+            discovery::scan_modules(&self.shared.symbol_tables, &modules);
+        let tests = tests
+            .into_iter()
+            .filter(|id| resume_after.is_none_or(|after| id > after))
+            .collect();
+        let prepared = prepare(&self.shared, tests, &ready)?;
+        let mut sink = RecordSink::create(records)?;
+        for warning in warnings {
+            sink.write(&Record::Warning(warning.message))?;
+        }
+        execute(prepared, &mut sink)?;
+        sink.write(&Record::End)
     }
 
-    /// The shared run: scan `modules`, prepare every eligible test, then run
-    /// them in FQ-name order and report.
-    pub(crate) fn run_test_modules(
-        &self,
-        modules: &[ModuleFullPath],
-        ready: ExecutionReadiness,
-    ) -> Result<TestRunReport, CranelispError> {
-        let Discovery { tests, warnings } =
-            discovery::scan_modules(&self.shared.symbol_tables, modules);
-        let prepared = prepare(&self.shared, tests, &ready)?;
-        let start = std::time::Instant::now();
-        let outcomes = execute(prepared);
-        Ok(TestRunReport::new(outcomes, warnings, start.elapsed()))
+    /// Load a selected module that this child has not loaded through the
+    /// entry chain, by the same load-on-reference `/mod` uses.
+    fn load_test_module(&self, module: &ModuleFullPath) -> Result<(), CranelispError> {
+        if self.shared.symbol_tables.contains_key(module) {
+            return Ok(());
+        }
+        if !self.has_module_file(module) {
+            return Err(CranelispError::ModuleError {
+                message: format!("module '{module}' selected for testing has no source file"),
+                location: cranelisp_types::ErrorLocation::from_span(
+                    cranelisp_types::Span::SYNTHETIC,
+                ),
+            });
+        }
+        self.load_module_by_reference(module)
+            .map_err(CranelispError::from)
     }
 
     pub(crate) fn selection_inputs(&self) -> SelectionInputs<'_> {
@@ -253,28 +291,30 @@ fn prepare_call(
     }))
 }
 
-fn execute(prepared: Vec<PreparedTest>) -> Vec<(FQSymbol, TestOutcome)> {
-    prepared
-        .into_iter()
-        .map(|test| {
-            let outcome = match test.call {
-                Some(call) => run_one(call),
-                None => TestOutcome::Fail {
-                    reason: UNAVAILABLE_REASON.to_string(),
-                },
-            };
-            (test.id, outcome)
-        })
-        .collect()
+/// Run each prepared test in order, recording `start` before the call and
+/// its outcome after its result is released.
+fn execute(prepared: Vec<PreparedTest>, sink: &mut RecordSink) -> Result<(), CranelispError> {
+    for test in prepared {
+        sink.write(&Record::Start(test.id))?;
+        let outcome = match test.call {
+            Some(call) => run_one(call),
+            None => TestOutcome::Fail {
+                reason: UNAVAILABLE_REASON.to_string(),
+            },
+        };
+        sink.write(&Record::Outcome(outcome))?;
+    }
+    Ok(())
 }
 
+/// Call one test. A runtime panic ends the process inside the call, so a
+/// return always carries a result to observe and release.
 fn run_one(call: PreparedCall) -> TestOutcome {
     let PreparedCall {
         code,
         code_owner,
         release,
     } = call;
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
     // SAFETY: `code` is the non-null GOT slot value of a concrete zero-argument
     // callable whose scheme is exactly `(Fn [] (Option String))`, so it has the
     // `extern "C" fn() -> i64` convention. `code_owner` keeps its code mapped
@@ -283,10 +323,6 @@ fn run_one(call: PreparedCall) -> TestOutcome {
         let test: extern "C" fn() -> i64 = std::mem::transmute(code);
         test()
     };
-    if let Some(reason) = cranelisp_intrinsics::panic::take_runtime_error() {
-        // A trap produces no result, so there is nothing to own or release.
-        return TestOutcome::Panic { reason };
-    }
     let result = release.own(value);
     let outcome = observe(&result);
     result.release();

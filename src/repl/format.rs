@@ -386,18 +386,6 @@ impl CompilerSession {
             EvalResult::DisplayValue { ty, form, .. } => {
                 self.format_display_only_value_doc(ty, form)
             }
-            // A runtime TRAP renders as the bare §18.5 line: the `runtime error: `
-            // category prefix (§5.1) directly followed by the trap payload — no
-            // `Error: ` prefix, no `codegen error at 0..0:` wrapper, no
-            // `runtime panic: ` slot prefix (normalized away in `pipeline`).
-            // §10.3: `runtime error:` is the R8 error keyword; the payload is R9.
-            EvalResult::RuntimeError { message, .. } => {
-                let mut doc = StyledDoc::new();
-                doc.push(Role::ErrorKeyword, "runtime error:");
-                doc.plain(" ");
-                doc.push(Role::ErrorDetail, message.clone());
-                doc
-            }
         }
     }
 
@@ -639,7 +627,7 @@ impl CompilerSession {
                 // Both got-slotted primitives (`DefKind::Primitive`, e.g.
                 // `add-i64`) and slot-less host-promised externs
                 // (`DefKind::PrimitiveExtern`, e.g. the S96 `race`/`select`/
-                // `sleep` builtins + `bind`/`discover-tests`/`catch-runtime-error`)
+                // `sleep` builtins + `bind`/`discover-tests`)
                 // are `primitives`-module builtins and MUST classify as
                 // `; primitive` per `repl/spec.md §1.1` — a `PrimitiveExtern`
                 // dispatches by-name via `Linkage::Import` but is no less a
@@ -809,39 +797,6 @@ mod prelude_group_layout_tests {
             prelude_body, cat_body,
             "the prelude group and a normal category MUST share the layout body",
         );
-    }
-}
-
-#[cfg(test)]
-mod fq_arg_format_tests {
-    use crate::repl::test_support::*;
-
-    // §18.5 (trap presentation): an `EvalResult::RuntimeError` renders as the
-    // bare `runtime error: {payload}` line — the §5.1 category prefix directly
-    // followed by the trap message, with NONE of the wrapper chain the pre-fix
-    // path emitted (`Error: codegen error at 0..0: runtime error: runtime
-    // panic: …`). spec: repl/spec.md §18.5
-    #[test]
-    fn runtime_error_renders_bare_normative_format() {
-        let s = session();
-        let payload = "user/g is broken by the redefinition of user/f: \
-                       type error at 24..34: type mismatch: expected \
-                       primitives/String, got primitives/Int";
-        let out = s.format_eval_result(&super::EvalResult::RuntimeError {
-            message: payload.to_string(),
-            warnings: Vec::new(),
-        });
-        assert_eq!(out, format!("runtime error: {payload}"));
-        assert!(!out.contains("Error:"), "no Error: prefix; got: {out}");
-        assert!(
-            !out.contains("codegen error"),
-            "no codegen wrapper; got: {out}"
-        );
-        assert!(
-            !out.contains("runtime panic:"),
-            "no slot prefix; got: {out}"
-        );
-        assert!(!out.contains("0..0"), "no synthetic span; got: {out}");
     }
 }
 
