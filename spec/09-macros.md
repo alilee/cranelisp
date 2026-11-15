@@ -972,6 +972,8 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 
 ## 9.12 Bootstrapping Order [Tested+Neg tests/spec_09_macros::macro_persists_across_evals, tests/s76_macro_availability::macro_generates_defmacro_available_to_later_use, tests/s76_macro_availability::generated_macro_checkpoint_is_not_replayed_after_later_dependency_gap_neg]
 
+**User ruling, 2026-11-15.** A runtime panic while executing a macro expansion ends the compiler process under [§12.7](12-runtime.md#127-error-model), including in the REPL and during embedded-agent validation. It is not converted into a recoverable expansion error.
+
 A module is compiled in **three passes**:
 
 1. **Pass 1 — Process macros and expansion in source order.** A macro call

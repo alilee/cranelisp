@@ -117,7 +117,7 @@ Result(A, B)
 | `Ok`  | `val` (a) | Success carrying a value of type `a`. |
 | `Err` | `err` (b) | Failure carrying a value of type `b`. |
 
-`Result` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported into user scope: user code must import it explicitly (e.g., `(import [primitives [Result Ok Err]])`) or use qualified names (e.g., `primitives/Ok`). It is the return type of the `catch-runtime-error` combinator (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): `(Ok result)` when a protected thunk completes, `(Err message)` when it raised a runtime error. Both constructors carry data, so both are heap-allocated.
+`Result` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported into user scope: user code must import it explicitly (e.g., `(import [primitives [Result Ok Err]])`) or use qualified names (e.g., `primitives/Ok`). `catch-runtime-error` is removed (user ruling, 2026-11-15; §12.7); `Result` remains an ordinary error-value type. Both constructors carry data, so both are heap-allocated.
 
 ### 3.2.6 Pair Type [Tested tests/spec_03_types::vec_as_function_return_type]
 
@@ -138,7 +138,7 @@ Pair(A, B)
 
 `Pair` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported: user code must import it explicitly (e.g., `(import [primitives [Pair]])`) or use qualified names (e.g., `primitives/Pair`). It is the element type of the `discover-tests` result `(Vec (Pair String (Fn [] (Option String))))` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)) — each pair carries a test's fully-qualified name and its late-bound callable.
 
-A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. The REPL's test commands and `--test` discover and run tests with the compiler's own runner; in the REPL, a program can also compose discovery and execution from ordinary code over `discover-tests` and `catch-runtime-error` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec/16-test-discovery.md §16](../repl/spec/16-test-discovery.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
+A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. The REPL's test commands and `--test` discover and run tests with the compiler's own runner; in the REPL, a program can also compose discovery and execution from ordinary code over `discover-tests` (a panic ends the process; user ruling, 2026-11-15) (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec/16-test-discovery.md §16](../repl/spec/16-test-discovery.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
 
 ### 3.2.7 Vec Type [Tested crates/cranelisp-typecheck/src/resolve/tests.rs::test_resolve_applied_builtin_vec_one_arg, crates/cranelisp-typecheck/src/resolve/tests.rs::test_resolve_applied_builtin_vec_wrong_arity]
 

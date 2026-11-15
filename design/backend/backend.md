@@ -83,10 +83,18 @@ could degrade trace descriptors or field-type substitution, but legitimate
 inputs do not construct the missing-entry state. The former direct drop-glue
 consequence is superseded: glue reads constructor fields through its own
 hard-failing path (`transitive-drop-glue.md`). The second sits behind that earlier hard check in
-the same arm, so it is a dead defensive arm rather than a fallback. Both are
-recorded because their types could make the miss unrepresentable — pass the
-already-fetched constructor entry in, or return a `Result` — at `dev`'s next
-touch of either function.
+the same arm, so it is a dead defensive arm rather than a fallback.
+
+**Proposed disposition, awaiting the user (ACT-0964 item 1).** Harden both
+arms rather than keep the release-build skip. Pass the already-fetched
+constructor entry into `concrete_field_types`, so its miss cannot be
+constructed, and make `constructor_metas` return a located `CodegenError` on a
+both-probes miss in every profile, with one unit test per arm. The skip saves
+nothing on legitimate inputs, and a hard miss is this section's rule
+everywhere else. Accepting the skip instead keeps a leak-grade degradation
+whose only detector is a debug assertion that release builds do not run, and
+`dotted-ctor-canonical-keys.md` §10.5 (`arch`) would then remain the
+governing text. Either answer is recorded here.
 
 ## 3. Internal shape
 
@@ -108,6 +116,20 @@ count**. Moving methods between files never addressed it, and it is the kind of
 structural question that belongs to `arch` rather than to a file split. No
 filing carries it. It is recorded here so that the next reader of this crate
 does not rediscover it as if it were new.
+
+**Most of the weight is ownership arithmetic.** The deciders that
+[uniform counting](uniform-counting.md) §5 retires live mainly in these two
+files, so that change is also this condition's largest reduction.
+
+**Drop-glue builders stay separate (ACT-0964 item 2).** ADT glue
+(`DropGlueRegistry`), the two capture-envelope glues (one shared envelope,
+`emit_capture_dec_glue`) and Vec release (`emit_vec_rc_dec_with_drop` over
+`runtime/vec_drop`) keep their own builders. What must agree among them is
+already single-sourced: glue identity, the nullary guard, field discharge only
+on the last reference, and release by type through `emit_typed_rc_dec`. What
+differs is real: capture glue builds in its own context before the enclosing
+builder can reach the registry, and Vec release is a runtime teardown behind
+an rc gate. A shared skeleton would carry a mode for each.
 
 **Cost of the condition.** Review cost in these files is dominated by
 re-establishing the invariants of the surrounding thousands of lines, not by
@@ -211,27 +233,52 @@ interior facts worth stating once here:
 
 ## 7. Runtime failure
 
-A runtime error must stay reportable, and in the REPL the process must survive
-it (`spec/12-runtime.md` §12.7.2). A hardware fault cannot provide that: a bare
-Cranelift `trap` (SIGILL) or an unguarded `sdiv` (SIGFPE) kills the process. So
-**no codegen path emits a bare hardware trap**; every site that can fail at
-runtime lowers to `runtime/panic`.
+**A runtime panic reports its message and ends the process, in every mode,
+the REPL included; nothing propagates or recovers** (user ruling, 2026-11-15;
+the normative text is `spec`'s, `spec/12-runtime.md` §12.7). The architecture
+is [process-ending panics](../arch/s123-panics-and-environment.md) §1: one
+terminal funnel in intrinsics, no slot, no sentinel and no ferry. The backend's
+part is its §1.3 emitted half: a raise is never followed by reachable code.
+
+**Status: adopted design, not built.** As built, `runtime/panic` returns and
+the faulting frame returns the sentinel `0`. Frames above it continue with
+that sentinel, which is
+[ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)'s
+SIGSEGV and
+[ACT-1042](../../sprints/actions/ACT-1042-callee-panic-with-scalar-result-resumes-caller-intake.md)'s
+resumed caller. Both close when this design lands.
 
 - **Shape.** Place the message bytes in an anonymous data object, call
-  `runtime/panic(msg_ptr, msg_len)`, then return the sentinel `0` from the
-  current function. `runtime/panic` records the message in the thread-local
-  error slot and returns; it does not unwind, because JIT frames carry no unwind
-  tables. The host, or `catch-runtime-error`, reads the slot after the
-  invocation returns
-  ([the `catch-runtime-error` construct](../arch/test-discovery.md#5-the-language-constructs)).
-- **A missing `runtime/panic` declaration** is a located codegen error, never a
-  fall-through to a trap.
+  `runtime/panic(msg_ptr, msg_len)`, and terminate the block with an
+  unreachable terminator. There is no sentinel and no return.
+  - The terminator never executes, because `runtime/panic` never returns
+    (below). If that contract were broken, the process would stop at the
+    terminator instead of resuming a caller with a fabricated value. That is
+    the safer failure.
+  - No other site emits a trap. An unguarded `sdiv` stays excluded, because a
+    hardware fault would bypass the message.
+- **One emission helper.** The shape is spelled three times today
+  (`primitives_inline::emit_panic_return`, its copy in `vec_codegen.rs`, and
+  `match_codegen::emit_match_panic`), plus the trap stub's body in `lib.rs`.
+  All converge on one helper that emits the message, the call and the
+  terminator together, so a raise without a terminator cannot be written
+  (Principle 07). That makes the emitted half of the architecture's §1.3
+  invariant structural. Until the convergence lands, it is asserted with the
+  architecture's falsifier: an emitted `runtime/panic` call followed by
+  reachable code.
+- **What the backend relies on, in intrinsics' terms.** `runtime/panic` never
+  returns, on any thread, and its catalog entry declares no result (ACT-1033's
+  derived pair). The import is declared from that entry. The exit path, the
+  message's rendering, a spark worker's panic and the order among concurrent
+  panics (open question S123-Q7) are `design`(intrinsics)'s and `spec`'s.
+- **A missing `runtime/panic` declaration** is a located codegen error.
 - **Sites.** Non-exhaustive match (`"match failed"`), division by zero and
   `i64::MIN / -1` (both `"division by zero"`), and Vec bounds. The messages are
   the spec's §12.7.2.1 table and are observable. The redefinition
   [trap stub](ownership-codegen.md#81-the-trap-stub) raises through the same
-  slot with its own provenance message. A new trapping operation, such
-  as a remainder primitive, adopts the same shape.
+  call with its own provenance message, so under the ruling a call to a
+  cascade-broken symbol also ends the REPL (open question, below). A new
+  trapping operation, such as a remainder primitive, adopts the same shape.
 - **One Vec index guard.** Load the length and raise the panic shape when the
   index is negative or not below it. The `vec-get` and `vec-set` emission cores
   each open with this one guard, before any element load, RC operation,
@@ -253,11 +300,9 @@ runtime lowers to `runtime/panic`.
     itself: its result is a Vec that the emitted code consumes before
     returning. So the check lives only in emission.
   - "Before any RC operation" holds inside the core, not across the whole
-    static site. The site raises the new element's consuming count before the
-    core. With ownership analysis off, it also raises a separately owned
-    source's count before the core. The panic path undoes neither. They leak,
-    which §12.7.8 item 4 permits and `vec-get`'s panic path already does. The
-    structure test checks only the core.
+    static site. Counts raised before the core are never undone, which is
+    moot once the process ends at the raise. The structure test checks only
+    the core.
 - **`MIN / -1` reports `"division by zero"`** because the spec table gives one
   message for the division family. A distinct message is a `spec` question. The
   out-of-line `div-i64` primitive applies the same two guards, so inline and
@@ -265,42 +310,49 @@ runtime lowers to `runtime/panic`.
 - **`+`, `-` and `*` wrap unguarded** (spec §12.7.3). Only an operation that would
   fault in hardware earns a guard; checked arithmetic would be stricter than the
   language requires.
-- **What the shape does not do.** It stops only the faulting function. Frames
-  above it are not unwound by codegen and continue with the sentinel until the
-  invocation returns. That this is safe for every consumer of the sentinel was
-  asserted, and it is **falsified**. On 2026-09-30, with the debug binary built
-  after `88bbbd12` and the primitives-only prelude:
-  - After `(defn h [v i] (vec-get v i))`, the form
-    `(str-len (h ["a" "bc"] 9))` kills the REPL with SIGSEGV.
-  - The controls `(h ["a" "bc"] 9)` and `(add-i64 1 (h [1 2] 9))` report the
-    panic and the session continues. `(str-len (h ["a" "bc"] 1))` returns 2.
-  - `qa` reproduced it through the division and match-failure sites, on a
-    plain release of the sentinel, inside `catch-runtime-error` and in batch
-    mode, and filed it as
-    [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md).
-    The Vec index guard does not close it.
-  - A scalar sentinel is memory-safe, but its caller still resumes, which can
-    hang or replace the message
-    ([s122-closure.md §10.1](s122-closure.md#101-mechanism-read-at-source)).
-  - Propagation options are costed, not adopted, in
-    [s122-closure.md §10](s122-closure.md#10-act-1040--panic-propagation-proposal).
+- **What the ruling removes from this crate.**
+  - The sentinel return after every raise, and with it every question of what a
+    caller does with a panicking callee's result. The propagation options
+    costed in [s122-closure.md §10](s122-closure.md#10-act-1040--panic-propagation-proposal)
+    are withdrawn, including option A's `runtime/panic_pending` delta.
+  - The leak caveats on the raise paths (here, and the trap stub's in
+    [ownership-codegen.md](ownership-codegen.md) §8.1).
+  - The in-process unit tests that run a panicking JIT body and read the error
+    slot afterwards (`test_support`'s `take_runtime_error` readers and the
+    executing cells of `vec_codegen/index_guard_tests.rs`). A raise now ends
+    the test process. Their module evidence becomes structural, reading the
+    CLIF: the guard dominates the core, and the raise is followed by the
+    terminator. Their executing evidence moves to e2e.
+  - No backend site lowers `catch-runtime-error`, so its removal has no
+    emission counterpart here.
+- **Messages (ACT-1041, ACT-1036).** The backend supplies only the message
+  bytes at each site. The doubled `runtime panic:` prefix and the codegen
+  category in `--run` come from the binary's two slot readers (ACT-1041), and
+  the `0..0` location of the `main`-return refusal is raised in `src/exe.rs`
+  (ACT-1036); neither is a backend site. The backend's own `0..0` codegen
+  spans are FIXME 0915, which carries.
+- **Open, for the user through `spec`.** Whether a call to a cascade-broken
+  symbol is a runtime panic under the ruling, and so ends the REPL. The
+  alternative is a refusal the session raises before the call, which is
+  `design`(int)'s. The backend stub works under either answer.
 
 ## 8. Subordinate designs
 
 | Subject | Document | Standing |
 |---|---|---|
-| Current selected delivery | `s122-closure.md` | The delivered result-root consumer, shared Vec guard, typed closure fixture, macro alias and IO-combinator corrections, and the pointers to the ACT-0974, ACT-1021 and ACT-1024 corrections. Solution-golden evidence and the Q5 paired measurement are complete; K4 is complete and `qa` judged it adequate; user acceptance and phase approval remain open. The Phase-6b ACT-1037 `vec-set` index guard is built and reviewed there (§9), and `qa` has closed ACT-1037; §9 states the `--link` evidence limit. The ACT-1040 panic-propagation options are a proposal there (§10), awaiting the user's decision. |
+| Uniform reference counting | `uniform-counting.md` | **Adopted target, not built (S123).** Reading U′: every binder owns, last-use move and in-place update at count 1 are the only retained rules, one ownership plan per body. Supersedes the counting rules in the RC discipline, ownership codegen, drop-glue TCO, binder tail-transfer and binding-indirection documents when it lands. |
+| S122 delivery record | `s122-closure.md` | Retained evidence for the S122 corrections, which landed at the S122 close (2026-10-02): result-root consumer, shared Vec guard, typed closure fixture, macro alias, IO-combinator freshness and the ACT-1037 `vec-set` index guard (§9, with its `--link` evidence limit). Its §10 panic-propagation options are withdrawn by the 2026-11-15 ruling (§7). |
 | Compilation entry shape | `compile-to-module.md` | The one entry's contract and phase order, constructor codegen, GOT emission, finalisation and publication, and its error contract. |
 | JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
-| RC discipline | `ring2-rc.md` | The conservative lowering: the uniform consuming convention, extern and platform consumption, the IO extern's balance, scope cleanup and the binders that never transfer by last use, the opt-in spark-capture borrow and its open default-on condition. |
-| Ownership codegen | `ownership-codegen.md` | The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
+| RC discipline | `ring2-rc.md` | As built, until `uniform-counting.md` lands. The conservative lowering: the uniform consuming convention, extern and platform consumption, the IO extern's balance, scope cleanup and the binders that never transfer by last use, the opt-in spark-capture borrow and its open default-on condition. |
+| Ownership codegen | `ownership-codegen.md` | As built; its counting sections (borrow elision, the uniqueness proof, the wrapper and COW contracts) are superseded by `uniform-counting.md` when it lands. The mechanisms that consume the ownership analysis — borrow elision, stack placement, confined non-atomic RC, uniqueness and reuse, value flattening, redefinition machinery — with their built/open state. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; per-arm match release; the TCO slot predicate; no depth cutoff, no shallow fallback. |
 | Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, the one entry-convention derivation for every call and wrapper, and the open structural close (lifecycle disposition, refusal frame, census). |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
-| Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract. |
+| Binding-indirection consume | `binding-indirection-consume.md` | The consume-position × operand-provenance contract, as built; retired wholesale when `uniform-counting.md` lands. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
 | Failed-member attribution | `s117-failed-member-attribution.md` | The attribution seam and its negative design list. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |

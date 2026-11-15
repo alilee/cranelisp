@@ -1,15 +1,14 @@
 # The pre-COW binding-indirection consume contract (0668)
 
-**Status:** DESIGN (S114 Phase 3, `/design`(backend) narrow). The S113-named
-design-iteration anchor for FIXME 0668 (filed by `/review` S113) — ONE contract
-for the consume-position × operand-provenance matrix, converting to serial per-site
-`/dev` change-sets. Supersedes the per-site instance-patch bound `/review` REJECTED.
+**Status:** as built, and **superseded on landing** by
+[uniform counting](uniform-counting.md), in which every position consumes and
+no rule reads operand provenance; this document is then deleted. It was the
+S114 contract for FIXME 0668's consume-position × operand-provenance matrix.
 
 **Governing authority:** `design/arch/safety-invariants.md` §3 ("close by
-mechanism") + §4 R14 row; `design/backend/ownership-codegen.md` §13 (the RC-emission
-machinery this contract extends — read the §13.7 SUPERSEDED banner FIRST: this
-contract is the *separate, orthogonal* family the R14 producer ruling explicitly
-does NOT cover). Consumes the `/qa` re-attribution comment in
+mechanism") + §4 R14 row; `design/backend/ownership-codegen.md` §13 (the
+RC-emission machinery this contract extends; this contract is the separate
+family the R14 producer ruling does not cover). Consumes the `/qa` re-attribution comment in
 `tests/false_fresh_provenance_residual.rs` (FIXME 0669: I-1 capture) and the
 acceptance cells in `tests/binding_indirection_consume.rs`. Subordinate to `design/backend/backend.md` (§8 indexes this doc).
 

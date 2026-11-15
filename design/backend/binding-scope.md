@@ -45,6 +45,10 @@ type-directed release has no per-binding glue identifier to retain.
 
 ## Tail transfer
 
+> Superseded on landing by [uniform counting](uniform-counting.md) §3, which
+> resolves binder identity once in the ownership plan and has no tail-jump
+> releases. The slot store and frames above stay.
+
 A bare, top-level variable argument to a direct tail self-call moves the exact
 binding it denotes into the next iteration. The tail cleanup must skip that
 binding alone; it must release every displaced same-name binding.

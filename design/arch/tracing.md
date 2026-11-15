@@ -318,7 +318,9 @@ Either signal raises through the `runtime/panic` intrinsic with the message
 `nested trace is not supported: (trace ...) may not appear inside an
 actively-tracing (trace ...)`. A panic that crosses the bracket without
 reaching `collect` is cleaned by `clear_trace_guard_on_panic` from
-`catch-runtime-error`, so the next form starts clean.
+`catch-runtime-error`, so the next form starts clean. The approved S123 target
+removes that cleanup: a panic ends the process, so no later form runs
+([process-ending panics](s123-panics-and-environment.md) §1.2).
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
 and emits `cranelisp_collect_trace` exactly once per form, last (§3.3).

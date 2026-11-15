@@ -1,20 +1,17 @@
 # S122 selected backend closure
 
-Owner: `/design` (backend). Status: **Selected backend runtime-consumer and Q4
-alias corrections delivered and independently reviewed; solution-golden
-evidence and the Q5 paired measurement complete; the §8 IOR-5 correction is
-implemented; the ACT-0974 extern entry convention (co-landed with its
-primitives half), the ACT-1021 branch-forward rule, its consuming-COW amendment
-and the amendment's last-use alias correction, and the ACT-1024 COW retention
-correction with the match-seam retirement it requires, are implemented in the
-working tree, uncommitted and not accepted; `test`'s V2 passed and
-`review`(backend) found no blocking finding; K4 is complete and `qa` judged
-Phase 5's evidence adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)); user acceptance and phase
-approval pending**. The Phase-6b ACT-1037 `vec-set` index guard (§9) is
-built and independently reviewed, and `qa` closed ACT-1037 on 2026-10-01
-([closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed)); its `--link` GREEN rests on `test`'s W3 run, which
-W4's full suite re-observes. The ACT-1040 panic-propagation options (§10) are
-costed as a proposal awaiting the user's decision. The
+Owner: `/design` (backend). Status: **retained delivery record. Every
+correction below landed at the S122 close (2026-10-02, Phase-5 corrections
+checkpointed at `88bbbd12`)**: the runtime-consumer and Q4 alias corrections,
+the §8 IOR-5 correction, the ACT-0974 extern entry convention, the ACT-1021
+branch-forward rule with its consuming-COW amendment and alias correction, the
+ACT-1024 COW retention correction with its match-seam retirement, and the §9
+ACT-1037 `vec-set` index guard (`qa` closed ACT-1037 on 2026-10-01,
+[closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed);
+its `--link` GREEN rests on `test`'s W3 run). The counting corrections are
+superseded by [uniform counting](uniform-counting.md) when it lands. The §10
+panic-propagation options are **withdrawn**: the user ruled on 2026-11-15 that a
+panic ends the process ([backend.md §7](backend.md#7-runtime-failure)). The
 Phase-3 scope and existing contracts were authorized 2026-09-09 against
 compiler checkpoint `dc78ddbe` and package checkpoint `98436c9`; this design
 has completed independent runtime review with no material findings. This
@@ -36,8 +33,9 @@ slice neither changes nor re-dispositions them.
 The selected source and module-test work is delivered and independently
 reviewed, except where a row below states otherwise, and its solution-golden
 evidence is complete (§3). The Q5 paired
-measurement is complete (§6). Final API confirmation and integrated acceptance
-remain open:
+measurement is complete (§6). Every row landed and was accepted at the S122
+close; a row's "working tree" or "acceptance pending" wording records its state
+on 2026-09-30, before that close:
 
 | Obligation | Backend path | Dependency |
 |---|---|---|
@@ -499,9 +497,11 @@ Module cells, observed RED on the pre-fix tree in the same change-set:
 
 ## 10. ACT-1040 — panic propagation (proposal)
 
-**Status: proposal, not adopted.** The user decides between a correction in
-S122 and a carry to S123. [backend.md §7](backend.md#7-runtime-failure) stays the
-standing rule until then, with its falsification recorded there. The
+**Status: withdrawn.** On 2026-11-15 the user ruled that a runtime panic ends
+the process in every mode, with no propagation; none of the options below is
+built. [backend.md §7](backend.md#7-runtime-failure) is the standing design.
+The mechanism record (§10.1, §10.2) is retained as the evidence for ACT-1040
+and ACT-1042 until they close. The
 requirements are `spec/12-runtime.md` §12.7.2, §12.7.4 and §12.7.8 items 1, 2, 4
 and 5. [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)
 holds `qa`'s cells, attribution and allocation.

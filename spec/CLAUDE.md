@@ -78,7 +78,8 @@ reference documentation for the reference implementation's stdlib.
 
 The collection is `index.md` (front matter, version, design philosophy), the
 twelve `NN-topic.md` sections (01 lexical → 12 runtime) and
-`appendix-{a,b,c}-*.md` (a builtins, b examples, c NFRs).
+`appendix-{a,b,c,d}-*.md` (a builtins, b examples, c NFRs, d open
+requirement questions; proposals in d are non-normative).
 
 ## Cross-role changes
 

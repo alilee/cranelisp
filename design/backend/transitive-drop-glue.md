@@ -247,12 +247,12 @@ Rules that keep the plan sound:
     whenever the producer retained. On the copy paths that release freed the
     value the arm forwarded (ACT-1027; D2-C and D2-R in
     [QA's V1 record](../../tests/plan/s122-evidence-delta.md#act-1024--v1-record-and-the-w-m-ruling-2026-09-30)).
-  - **Status (2026-09-30).** Implemented in the working tree with ACT-1024,
-    uncommitted and not accepted: the arm plan reads only ownership and arm
-    shape. `dev`'s U-R3a/U-R3b cells went RED first and are GREEN, and the
-    ACT-1027 e2e faces are GREEN at `test`'s V2. K4 is complete and `qa` judged Phase 5's evidence
-    adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
-    User acceptance and phase approval are pending.
+  - **Status.** Landed with ACT-1024 at the S122 close (2026-10-02): the arm
+    plan reads only ownership and arm shape. `dev`'s U-R3a/U-R3b cells went
+    RED first and are GREEN, and the ACT-1027 e2e faces are GREEN
+    ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
+    [Uniform counting](uniform-counting.md) §4 replaces the per-arm plan when
+    it lands.
 - **Category before ownership.** A release is owed only when the scrutinee is a
   heap category as well as owned.
 - **No spelling is ownership authority.** An inline versus let-bound scrutinee

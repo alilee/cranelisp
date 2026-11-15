@@ -101,7 +101,8 @@ expansion:
 - staged symbol-table entries and their staged slots;
 - the exact codegen enrollment derived from the turn's finalised program;
 - turn-local typecheck-product and introspection updates;
-- redefinition outcomes, which remain pending until codegen succeeds.
+- redefinition outcomes, which remain pending until codegen succeeds (as
+  built; they retire with the superseded residue, §1.1.3).
 
 An error before ordinary publication drops these products. Earlier live
 definitions and every successful macro checkpoint remain unchanged. The next
@@ -133,7 +134,8 @@ fresh indices arithmetically from that snapshot, and proves the complete plan
 fits `GOT_TABLE_SIZE`. It does **not** call `allocate_got_slot`, advance
 `next_got_slot`, push retention owners, patch a GOT cell, or install an entry.
 It also runs `check_terminal_closure`, computes slot-less displacement
-retention, derives the dependent-redefinition outcomes, and checks that every
+retention, derives the dependent-redefinition outcomes (as built; retiring,
+§1.1.3), and checks that every
 batch member has a callable prepared entry. The final types-owned publication
 still revalidates the submitted staging and owner set against the live table;
 its refusal is an expected internal error path, not an unreachable state.
@@ -335,50 +337,26 @@ invocation, reserved unpublished slots, and cross-module rollback. It changes
 no public crate interface, cache schema, platform contract, backend contract,
 or trait-implementation behavior.
 
-#### 1.1.3 Post-publication outcomes are stack-owned receipts
+#### 1.1.3 Post-publication outcomes (retired)
 
-A successful publication returns one int-private, move-only
-`PublicationReceipt` containing its already-committed
-`RedefinitionOutcome`s. It contains no staging table, `CheckState`, generated
-program, code owner, GOT reservation, or resume position. `ProcessedCluster`
-does not own or copy these outcomes.
+Retired in S123 Phase 3, never built. The approved S121 rule moved a
+publication's committed `RedefinitionOutcome`s into a stack-owned, move-only
+receipt, so that a later `Err` in the same turn could not discard the §18
+dependent work they drove. The REPL redefinition rules
+(`repl/spec/18-redefinition.md`) now require no such work, and the outcomes
+are deleted with the superseded redefinition residue
+([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken);
+[arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
 
-`process_cluster_once` is an outer `ProcessAttempt` wrapper around a fallible
-core. The wrapper owns the receipt while the core receives a mutable sink. A
-successful macro or ordinary publication moves its outcomes into that sink;
-Rust `?` may leave the core, but the wrapper still returns both the terminal
-`Result` and the receipt. Thus a later error cannot discard a successful
-checkpoint's §18 work.
-
-```text
-process attempt
-  core publishes -> append committed outcomes to route receipt
-  core then returns Done, Gap, or Err
-  wrapper returns { terminal result, receipt }
-  cadence consumes receipt once before handling the terminal result
-```
-
-The route owner settles the receipt as follows:
-
-- REPL eval applies §18 after `Done`, before waiting on `Gap`, and before
-  returning a later `Err`;
-- dependent recheck retains one receipt across source retries and settles it
-  before interpreting either terminal success or failure; and
-- a pool worker consumes the receipt on its own stack on `Done`, `Gap`, and
-  `Err`. Pool work uses a complete `Replace` generation: success has recompiled
-  the module and watcher/T1 orchestration already owns dependent reload;
-  failure is handled by the existing module error block. Its decision does not
-  depend on the individual outcome rows; and
-- the retained `New`-only batch compatibility route consumes an empty receipt
-  and treats an effectful one as an internal contract failure.
-
-No receipt is stored in `SharedState`, `ModuleState`, the scheduler, a parking
-map, or a source continuation. In particular, a scheduler receipt mailbox is
-rejected: it would duplicate an already-settled fact, add reset/drain ordering,
-and buy no observable behavior. Retry continues to store only the uncommitted
-source/emitted suffix, the generation-started bit and the macro-head lookup
-dependencies recognised while emitting that suffix
-([lookup dependencies](int.md#762-lookup-dependencies)).
+- Nothing post-publication survives a later `Err`. A successful macro
+  checkpoint stays published (§1.1.2); that is its own state, not a receipt.
+- Retry still stores only the uncommitted source or emitted suffix, the
+  generation-started bit and the macro-head lookup dependencies
+  ([lookup dependencies](int.md#762-lookup-dependencies)).
+- **Potential extension.** A requirement that post-publication work must
+  survive a later `Err` reinstates a stack-owned receipt. Its earlier shape is
+  in Git. Scheduler or session storage of such outcomes stays rejected: it
+  duplicates a settled fact and adds reset and drain ordering.
 
 ### 1.2 Recovery scenario matrix
 
@@ -865,13 +843,6 @@ The strategy-bearing seams live with focused unit scenarios:
 - **retry continuation:** gaps before/during a macro retry that macro, while a
   gap after it resumes the uncommitted suffix with the checkpoint present and
   without a duplicate-definition path; include an expansion-produced macro;
-- **receipt settlement:** direct and expansion-produced redefinitions followed
-  by `Done`, `Gap` then success, `Gap` then dependency failure, and a later
-  internal error each apply every already-committed outcome exactly once;
-  dependent recheck covers success and failure, while initial-load and
-  watcher/reload workers acknowledge receipts on every terminal path without
-  scheduler or session receipt state; the `New`-only batch route proves its
-  receipt inert;
 - **multi-clause atomicity:** a failure in any clause exposes neither parent nor
   siblings; success exposes the parent metadata and every active owner in one
   module publication;
@@ -993,7 +964,8 @@ typecheck of a nullary macro, selected presentation subject, or parallel
 presentation store. The REPL reads each published binding's ordinary
 `ModuleEntry` classification.
 
-The result carrier is instead an ordered publication receipt:
+The result carrier is instead an ordered record of the turn's published
+definitions, unrelated to the retired §1.1.3 receipt:
 
 ```rust
 EvalResult::Definitions {

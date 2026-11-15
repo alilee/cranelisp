@@ -14,7 +14,8 @@ semantics, §11 observability, Appendix B the delivered status);
 especially invariant 15 (argument lifetime across suspension is runtime-owned);
 `design/arch/platform-interface.md` §6.8 (the async-leaf ABI);
 `spec/10-io.md` §10.12.7–§10.12.10 and `spec/12-runtime.md` §12.4.4 and
-§12.7.9 (the observable contract).
+§12.7.9 (the observable contract). Panic termination and the runtime switch
+source are [`process-lifecycle.md`](process-lifecycle.md).
 
 Out of scope: the emitted node layouts and their drop glue
 (`design/backend/io-trampoline.md` §12, §15, §16, §17); poll-leaf authoring
@@ -163,9 +164,11 @@ synchronously between awaits.
    root `Effect` node, acquires a permit on the reactor thread, starts a bridge
    lease (§2.21) and `rayon::spawn`s the synchronous stepper. Completion
    returns through a `oneshot` woken via the executor waker. The permit is held
-   across the bridge. If a runtime error or dispatch fault is already set when a
-   parked branch is admitted, the branch returns without spawning; this
-   preserves left-to-right semantics for a failed capacity-1 sibling.
+   across the bridge. As built, if a runtime error or dispatch fault is
+   already set when a parked branch is admitted, the branch returns without
+   spawning. Under the S123 terminator a failed sibling has already ended the
+   process ([`process-lifecycle.md`](process-lifecycle.md) §1), so this check
+   retires.
 4. **Reactor partition.** Each branch runs the async trampoline under a fresh
    child strand; poll leaves inside it acquire through the `ctx` vtable (§7).
 5. Join both partitions concurrently on the reactor thread and merge the
@@ -175,13 +178,11 @@ synchronously between awaits.
 - **Never block the reactor on rayon.** `block_on(rayon_join)` on the reactor
   thread starves every poll leaf; the wakeable bridge is the only rayon→reactor
   handoff.
-- **The worker→join error ferry.** A worker's runtime error is taken from the
-  worker's slot and re-raised on the reactor thread. The first branch to
-  complete wins, not the first in source order, except for same-token
-  capacity-1 branches, which run serially in order.
-- **Two sites implement the ferry:** `run_blocking_branch` (async) and the
-  synchronous `dispatch_par_branches_with_trace`. A change to ferry semantics
-  touches both. Extract a shared helper only when a third caller appears.
+- **A branch panic ends the process where it is raised** (S123,
+  [`process-lifecycle.md`](process-lifecycle.md) §1.2). As built, a
+  worker-to-join error ferry carries it back instead, at two sites:
+  `run_blocking_branch` (async) and the synchronous
+  `dispatch_par_branches_with_trace`. Both ferry sites retire together.
 - **Nested `Par` on a worker** uses the synchronous dispatcher, which still
   groups branches by token and runs each non-zero-token group serially.
 - **Blocking I/O is uncapped by design.** A slow but completing blocking branch
@@ -243,7 +244,8 @@ and poll-leaf overlap; the pool's sizing, parking, FIFO and first-writer-wins
 behaviour; the degree throttle; release on `Ready` and on drop, with no double
 release; stale-waiter removal and permit forwarding on a cancelled parked
 acquire; reactor-interest deregistration on drop; the `sleep` deadline;
-supervisor panic and runtime-error capture; the trampoline-frame guard; the
+supervisor panic capture (runtime-error capture retires in S123); the
+trampoline-frame guard; the
 keep-alive; the bridge-join ordering observer and its planted early-release
 detection proof; and the liveness predicates
 `reactor_is_armed` and `oneshot_backstop_action`.
@@ -271,7 +273,7 @@ that nothing joins. The backend's independence analysis bakes the node
 |---|---|---|
 | Join | all branches before the continuation | none |
 | Result | merged by binding index | discarded; the node yields `Unit` |
-| Runtime error | re-raised into the parent | handled by the supervisor (§2.12) |
+| Panic (S123) | ends the process | ends the process; no supervisor policy (§2.12) |
 | Lifetime | the expression's | as built, the supervisor's; the spec requires its cancellation context's (§2.19) |
 | Bound | per-token permits | the global budget |
 
@@ -285,19 +287,19 @@ Each supervised strand:
 
 - runs the sub-tree under `catch_unwind`, so a Rust panic never unwinds into
   the executor;
-- takes the runtime-error slot **synchronously at its completion boundary**,
-  with no await between completion and capture;
 - on success disposes the result through its disposer and emits
-  `StrandCompleted`; on a runtime error or panic applies the policy;
+  `StrandCompleted`;
 - consumes its detached sub-tree exactly once, then drops its global permit.
 
-**Policy.** The only policy is `LogAndDrop`: emit `StrandFailed { strand,
-message }` and drop the strand. It never re-raises and never aborts the drive.
-Mapping a failure to a client response is the application's job.
+**No failure policy (S123; `spec/12-runtime.md` §12.7.9).** A language panic
+in a strand ends the process where it is raised. A Rust panic caught by the
+strand's `catch_unwind` is a runtime defect, and goes to the same terminator
+([`process-lifecycle.md`](process-lifecycle.md) §1.1). As built, the strand
+instead takes the runtime-error slot at its completion boundary and applies
+`LogAndDrop`, emitting `StrandFailed`; both retire.
 
-Supervision decides where a fault goes. It does not decide when a strand is
-cancelled; that is its cancellation context's (§2.19), and a cancelled strand is
-not routed to the policy.
+The supervisor does not decide when a strand is cancelled; that is its
+cancellation context's (§2.19).
 
 **Drive.** The supervisor's set is borrowed only for each synchronous
 `poll_next`. A non-empty supervisor counts as armed for the deadlock detector,
@@ -309,7 +311,9 @@ Both are parameterisations of the §2.8 pool, not new machinery.
 
 - **Degree** is the program's in-flight throttle. It clamps every token slot to
   `min(capacity, degree)`. It is read from `CRANELISP_DEGREE` at drive
-  construction; unset, unparsable or zero means no throttle.
+  construction through the runtime switch source
+  ([`process-lifecycle.md`](process-lifecycle.md) §2), which a linked program
+  bakes; unset, unparsable or zero means no throttle.
 - **Global budget.** The reserved token `u64::MAX` is sized to the degree. Every
   launch acquires one global permit before spawning, and the strand holds it for
   its lifetime. Its events are `GlobalBudgetParked`/`Acquired`/`Released`.
@@ -318,8 +322,8 @@ Both are parameterisations of the §2.8 pool, not new machinery.
 
 ### 2.14 Strand drop releases its resources
 
-A supervised strand ends by completion, caught failure or a `clear()` of the
-supervisor. Each path drops the strand future, and with it any in-flight
+A supervised strand ends by completion or a `clear()` of the supervisor (a
+fault ends the process instead, §2.12). Each path drops the strand future, and with it any in-flight
 `EffectPoll` (permits, interest, keep-alive), any parked `AcquirePermit`
 (§2.17), the trampoline frame (§2.15.1) and the global permit. No release path
 is specific to supervision.
@@ -511,7 +515,7 @@ While not recording, `emit_strand_event` costs one lock and an `is_none` check.
 | `TokenAcquired` / `TokenParked` / `TokenReleased` / `TokenCapacityMismatch` | the `AcquirePermit`/`Permit` path only — rayon-partition branches (§2.8) |
 | `GlobalBudgetParked` / `GlobalBudgetAcquired` / `GlobalBudgetReleased` | the global budget (§2.13) |
 | `StrandLaunched` | the launch arm (§2.11) |
-| `StrandCompleted` / `StrandFailed` | supervised strands (§2.12) |
+| `StrandCompleted` (`StrandFailed` retires with the S123 failure policy) | supervised strands (§2.12) |
 | `StrandCancelled { RaceLost }` | `select` losers (§2.15) |
 
 As built:
@@ -534,8 +538,11 @@ process-per-test isolation.
 | `Launch` | detached (§2.11) | not interpreted |
 | `Select` | raced (§2.15) | not interpreted |
 
-After each arm, the async trampoline checks the runtime-error and
-dispatch-fault slots and stops before feeding a continuation. **The synchronous
+As built, after each arm the async trampoline checks the runtime-error and
+dispatch-fault slots and stops before feeding a continuation. Under the S123
+terminator no arm returns after a fault, so these checks retire and the
+trampoline stops only for cancellation
+([`process-lifecycle.md`](process-lifecycle.md) §1.3). **The synchronous
 stepper panics on an unknown tag**, so a poll, launch or select node reached
 inside a rayon-partition branch — a `Bind`-rooted branch whose chain later
 produces one — is not handled (§5).
@@ -551,17 +558,11 @@ produces one — is not handled (§5).
   rayon-routed branch cannot interpret poll, launch or select nodes (§4).
   *Trigger:* lowering that produces such a branch; `qa` intake decides whether
   it is reachable today.
-- **Per-strand runtime-error attribution.** Detached strands share the reactor
-  thread's error slot. Capture at each strand's completion boundary covers the
-  common case, but an error ferried from a sibling's blocking branch could be
-  attributed to the strand that completes first. *Trigger:* an observed
-  misattribution; the fix is a per-strand error channel.
-- **Supervisor policy per effect kind.** Only `LogAndDrop` exists, and nothing
-  configures it. *Trigger:* a platform needing a different failure mapping.
 - **Drive-mode selection.** `Server` mode is chosen only by
-  `CRANELISP_DRIVE_MODE=server`; no run-context signal selects it (§8.2).
-  *Trigger:* a server entry point that must not depend on the environment
-  variable.
+  `CRANELISP_DRIVE_MODE=server`, through the switch source. A linked program
+  takes it from the value baked at `--link`. No run-context signal selects it
+  (§8.2). *Trigger:* a server entry point that must not depend on a
+  link-time switch.
 - **Lazy reactor construction.** Construct no `mio::Poll` until the first
   `Pending`. Every `Pending` source must force construction before it parks:
   fd and timer registration, the `Par` blocking bridge, and the capacity park,
@@ -697,7 +698,10 @@ no-progress wall-clock backstop that catches an armed leaf that never readies:
   backstop fires on time.
 - A fired backstop clears the supervisor, prints the diagnostic and **exits
   with status 70** (`EX_SOFTWARE`), not a panic. A panic would cross the
-  `cannot_unwind` program boundary and core-dump. The unit-test seam
+  `cannot_unwind` program boundary and core-dump. From S123 the exit goes
+  through the one terminator, with its claim-once and flush
+  ([`process-lifecycle.md`](process-lifecycle.md) §1.1); the status and
+  diagnostic are unchanged. The unit-test seam
   (`block_on_reactor_capped`) panics instead, so tests can observe the trip.
 
 **`Server`** (`CRANELISP_DRIVE_MODE=server`) has no wall-clock cap. An
@@ -721,12 +725,11 @@ propose the flag to `arch`.
 
 ## 9. Empty `select`
 
-`(select [])` raises the recoverable runtime error
-`select over empty collection` through the standard runtime-error slot
-(`spec/10-io.md` §10.12.8; `spec/12-runtime.md` §12.4.4 and §12.7.2). The arm
-returns before constructing the race; the trampoline's post-arm slot check
-stops before any continuation sees a value. A `catch-runtime-error` boundary
-recovers it; otherwise it is fatal to the evaluation.
+`(select [])` raises the panic `select over empty collection`
+(`spec/10-io.md` §10.12.8; `spec/12-runtime.md` §12.7.2) before constructing the
+race. From S123 the arm calls the terminator, which ends the process
+([`process-lifecycle.md`](process-lifecycle.md) §1.1). As built, it sets the
+runtime-error slot and the trampoline's post-arm check stops the walk.
 
 ## 10. Cross-references
 

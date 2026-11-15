@@ -6,6 +6,10 @@ the fork-join error-slot ferry landed S76 (BC §4b invariant 13) and its
 Par-boundary witness S85. The compiler test runner and the batch refusal of
 `discover-tests` (§2, "Explicit test harness") were user-approved and
 implemented in S122 (`src/session_v4/test_runner/`).
+The approved S123 target removes `catch-runtime-error`, the error-slot ferry
+and the runner's per-test slot bracket; this document describes the as-built
+system until that lands ([process-ending panics](s123-panics-and-environment.md)
+§1.2 and §1.5).
 Companion: [execution tracing](tracing.md) (shares the runtime shape). Interior
 of the runner: [`--test` and the shared test runner](../int/test-runner.md).
 Normative surface: `spec/appendix-a-builtins.md` §A.3, `spec/03-types.md`

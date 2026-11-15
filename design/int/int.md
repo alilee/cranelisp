@@ -16,11 +16,10 @@ intrinsics consume funnels, `instantiate_demands`); int consumes them and
 decides nothing they own. `design/int/int.md` §12.1 states the standing review rejects that keep it
 so, and `design/int/int.md` §16.0 the obligations still open against it.
 
-**S121 correction, approved 2026-09-04.** Committed publication outcomes leave
-processing in one stack-owned, move-only receipt and are settled once by eval,
-dependent recheck, or the pool route before that route handles `Done`, `Gap`,
-or `Err`; neither scheduler/session state nor source continuation stores them.
-Source does not realise this receipt; §16.0 records the gap. Public exposure is guarded only at `NameCandidate` routes—the obsolete
+**S121 correction, approved 2026-09-04.** Its publication-receipt rule retires
+unbuilt with the redefinition outcomes it carried
+([S117 recovery §1.1.3](s117-conformance-recovery.md#113-post-publication-outcomes-retired)).
+Public exposure is guarded only at `NameCandidate` routes—the obsolete
 binding-shaped no-op closure gate deletes. Synthetic tables are constructed
 off-map through fallible lifecycle operations, so the public constructor is
 `pub fn CompilerSession::new(settings: SessionSettings, project_root: PathBuf,
@@ -128,7 +127,7 @@ Three structural notes about the surface worth naming:
    re-export is retained only when it remains present in the current checked
    public surface; the root library has a small consumer audience.
 3. **`Code` is re-exported, not defined, here.** `Code` lives in `cranelisp-backend`; `src/code.rs` re-exports it and instantiates the session table (§5.1). Backend fills GOT slots inside `compile_to_module`; int attaches the `Code` owner afterwards (§7.2). `cranelisp-types` never depends on backend (Principle 3).
-4. **The test harness has one public entry.** `CompilerSession::run_tests` returns a `TestRunReport` whose accessors are its text, its warnings and its exit code; the user approved this delta on 2026-09-28. It is the only public item the `--test` harness adds. Selection, the eligibility scan and the run-and-report core that it shares with `/run-tests` and `/run-all-tests` stay crate-private ([test runner](test-runner.md)).
+4. **The test harness has one public entry.** `CompilerSession::run_tests` returns a `TestRunReport` whose accessors are its text, its warnings and its exit code; the user approved this delta on 2026-09-28. It is the only public item the `--test` harness adds. S123 target, packet row P12: `run_tests` becomes the test child's engine and `session_v4::supervise_tests` returns the report ([test runner §6.5](test-runner.md#65-the-test-child)). Selection, the eligibility scan and the run-and-report core that it shares with `/run-tests` and `/run-all-tests` stay crate-private ([test runner](test-runner.md)).
 
 ---
 
@@ -158,7 +157,7 @@ The two structural facts that dominate the tree today:
 | Test discovery and running | `session_v4/test_runner.rs` (the `discover-tests` extern and its runner state) + `test_runner/{discovery,selection,run}.rs` (the one eligibility scan, test-module selection and the run-and-report core shared by `--test`, `/run-tests` and `/run-all-tests`) ([test runner](test-runner.md)) |
 | Scheduling + workers | `scheduler.rs` (+ `scheduler/tests.rs`) — the single coordination authority; `worker.rs` (+ `worker/tests.rs`) priority/nice loops + codegen/cache subsystem; `worker_pool.rs`; `thread_util.rs` |
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
-| Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records, the committed `RedefinitionOutcome`s and the boxed `PreparedCommit`, which lives in `worker.rs`). The approved move-only publication receipt is not realised; see §16.0. |
+| Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records and the boxed `PreparedCommit`, which lives in `worker.rs`; as built it also carries the committed `RedefinitionOutcome`s, which are deleted with the superseded residue ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken))). |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
 | REPL command/display surface | `src/repl/` — five files; §3.3 states the structure and `src/CLAUDE.md` §"Session/REPL module map" lists the members |
 | Live redefinition | `redefine.rs` — the guarded-redefinition gate, blocking-dependent scan, instance-rematerialization policy, `RedefKind` slot classification and the retention pool (`session-transaction.md`); it still carries the superseded dependent-recompilation machinery recorded in `design/int/int.md` §16.0 |
@@ -3060,20 +3059,17 @@ carries the rule; this list is the review checklist.
     invocation, reserved unpublished slot or cross-module rollback; or a retry
     that re-expands an already-committed macro (`s117-conformance-recovery.md`
     §1.1.2).
-14. **Persistent publication receipts** — committed outcomes in a scheduler
-    mailbox, `SharedState`/`ModuleState`, parking record, cache field or source
-    continuation (`s117-conformance-recovery.md` §1.1.3).
-15. **A binding-shaped closure gate** — any exposure predicate over `Binding`
+14. **A binding-shaped closure gate** — any exposure predicate over `Binding`
     beside the [candidate-shaped export-closure gate](#67-public-candidate-exposure--the-export-closure-gate).
-16. **A bootstrap lifecycle panic** — `unwrap`, `expect` or `unreachable!`
+15. **A bootstrap lifecycle panic** — `unwrap`, `expect` or `unreachable!`
     asserting a fallible lifecycle transition during session construction.
-17. **Dependent recompilation on an ordinary redefinition** — re-typechecking,
+16. **Dependent recompilation on an ordinary redefinition** — re-typechecking,
     recompiling, breaking or trap-patching a dependent where §18 requires
     rejection (`session-transaction.md` §0).
-18. **A second program-result releaser or an unguarded release target** — a
+17. **A second program-result releaser or an unguarded release target** — a
     release key re-derived from the observed type, a raw glue address without
     its `Code` owner, or an `IO` branch in a formatter (`result-owner.md` §7).
-19. **A second bare-module-name rule** — deciding what a bare `import` or
+18. **A second bare-module-name rule** — deciding what a bare `import` or
     `export` module name refers to from symbol-table registration, a file probe
     or form order. Reading a persisted spelling as an absolute module outside
     the one resolver is also rejected
@@ -3130,6 +3126,109 @@ dispositions never executed, and on files since deleted.
 
 The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
+
+- **S123 (designed 2026-11-15, Phase 3; not implemented).** Designed to the
+  user's Phase 3 rulings (`sprints/SPRINT.md`) and arch's
+  [panic and environment contract](../arch/s123-panics-and-environment.md).
+  Each item's design lives in the section named here.
+  - *Agent on by default:* [agent §6.3–§6.4](agent.md#63-provider-selection).
+    The default feature set gains `agent`, the provider fallback is removed,
+    and the banner reports the activation answer.
+  - *Environment files and baked switches:* [environment](environment.md).
+  - *Panics end the process (host side):*
+    [io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side),
+    [observability §7.1](observability.md#71-process-exit-and-panic-wiring)
+    and [test runner §6.5](test-runner.md#65-the-test-child). This deletes
+    ACT-1041's host locus. Macro-expansion panics and platform dispatch faults
+    end the process too.
+  - *Broken symbols:* [session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken).
+    The redefinition guard is the compile-time refusal, and the superseded
+    residue is deleted.
+  - *ACT-1047, ACT-1048 and ACT-1020:* [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)
+    (Absent is a recorded state; Deletion) and
+    [§6](repl-lifecycle.md#6-project-root-resolution).
+  - *ACT-1035:* [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition),
+    with the mechanism confirmed by probe.
+  - **Deltas at the user gate.** `arch` settled them as packet rows
+    (`sprints/s123-api-packet.md`); the user's gate decides each:
+    1. Packet row P8, consumed as stated: `src/exe.rs` calls
+       `capture_runtime_switches` at `--link`, the startup stub imports
+       `cranelisp_install_runtime_switches`, and `cranelisp-exe-bundle` adds
+       its `pub use`. Int names no switch.
+    2. Packet row P11: intrinsics publishes `panic::PANIC_REPORT_PREFIX`
+       and `panic::PANIC_EXIT_STATUS` for the test supervisor
+       (`src/session_v4/test_runner/`), a new root → intrinsics consumer edge
+       to two items; intrinsics `public-api.txt` +2. If the user declines it,
+       int keeps a private copy guarded by the end-to-end panic cell
+       ([test runner §6.5](test-runner.md#65-the-test-child)).
+    3. Rows P1–P5 and P9 remove items the binary consumes today. Int deletes
+       those consumers in the same change-sets: the REPL's trap arm and
+       `runtime error:` display, `trampoline`'s slot read, the expander's
+       slot read, the runner's per-test bracket, `compose_dispatch_error`, and
+       the stub's error block and drain call.
+    4. Packet row P12, root crate (no baseline): `CompilerSession::run_tests`
+       becomes the child's engine, and `session_v4::supervise_tests` returns
+       the unchanged `TestRunReport`. The signatures are the packet's;
+       [test runner §6.5](test-runner.md#65-the-test-child) adopts them.
+    5. Packet row P13, after the residue deletion: remove
+       `cranelisp_backend::compile_trap_stub`, `cranelisp_types::Life::Broken`
+       with `SymbolTable::mark_broken`, `BrokenProvenance` and
+       `BrokenTransition`, and the match arms on `Broken`. `arch` finds no
+       cache-schema bump: a broken entry is never written
+       ([session transaction §8.3](session-transaction.md#83-broken-modules-are-not-persisted)).
+       Scheduling, with packet B3 at S123 close or in S124, is the user's.
+    6. No other root-crate item changes. `pub mod agent` already exists under
+       the feature gate, and the `env_files` module is binary-private.
+  - **Evidence conditions for `qa`**, proposed here and allocated in
+    [the S123 evidence delta](../../tests/plan/s123-evidence-delta.md):
+    - *Agent:* a plain `cargo build` REPL prints the banner line.
+      `--no-agent` reports off. An unset provider is dormant and names the
+      variable even with `ANTHROPIC_API_KEY` present, and transmits nothing.
+      An unrecognised value is dormant and names that value. The agent-free
+      build's banner says the agent is not built in, and that build keeps the
+      `--agent` and `--yes` errors.
+    - *Environment:* the §4 unit rows of [environment](environment.md).
+      End to end: a project `.env` supplies a `CRANELISP_*` switch;
+      precedence is process over `.env` over user file; `XDG_CONFIG_HOME`
+      relocates the user file; a foreign key such as `PATH` is ignored;
+      `CRANELISP_ENV_FILE` and `CRANELISP_USER_ENV_FILE` redirect and
+      `CRANELISP_NO_ENV` disables both; a malformed line, on a foreign key
+      too, and an unreadable file are located startup errors without a
+      value. The suite's repository-level declaration must not depend on a
+      developer's files.
+    - *Baked switches:* a runtime switch set at `--link` takes effect in the
+      executable without being in its environment; set only at run time, it
+      has no effect; agent variables are absent from the executable's bytes.
+    - *Panics, host side:* the ACT-1041 `--run` cell (the message once, no
+      `codegen error`, no `0..0`, exit non-zero), then the
+      `error: runtime panic:` prefix, plain on stderr, in every mode. A REPL
+      panic ends the process after the output already written. TTY history
+      keeps the panicking line. Trace sinks flush on a panic exit. A macro
+      clause that panics ends `--run` and the REPL with its message. A
+      platform dispatch fault ends the process with its message.
+    - *Test runner:* a panicking test is `PANIC: <message>` and the run
+      continues, in `--test` and `/run-tests`; a test after it still runs. A
+      child dying by signal while a test is open is one failed test. A
+      `/run-tests` whose test references `discover-tests` fails with the
+      §16.6 diagnostic and runs no test. A REPL child writes no cache file.
+      Negative leg: a passing run's report is unchanged from today's.
+    - *Broken symbols:* a language-type change with only a template caller is
+      refused, naming it. After the residue's deletion the §18 cells stay
+      green, together with `qa`'s S122 generic-edit probe shape.
+    - *ACT-1047:* FC-1 with its control, plus the load leg (`(k)` gives 9 and
+      the file holds `k` and `h`).
+    - *ACT-1048:* deleting a loaded `user.cl` prints the notice and keeps its
+      definitions callable. The next definition asks. A decline leaves the
+      file absent after later definitions, and a yes recreates it. Negative
+      leg: an editor's write-then-rename save gives no notice. A file restored
+      after deletion is reloaded.
+    - *ACT-1020:* `cranelisp core.str` loads `core/str.cl` in `--run` and the
+      REPL, and a REPL empty start with that target writes `core/str.cl`.
+      Control: an undotted target.
+    - *ACT-1035:* the REPL cell and both controls. The `begin … keep` and
+      `begin` without `keep` pair from
+      [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition)
+      discriminates the mechanism.
 
 - **`--test` and the shared test runner (S122, ACT-0988).** Implemented as
   [test runner](test-runner.md) describes, and QA judged it adequate
@@ -3311,7 +3410,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
 - **Superseded dependent-recompilation machinery.** `src/redefine.rs` still
   contains the S101–S103 transaction (`run_transaction`, `mark_broken` and trap
   stubs, the T1 end-of-turn reload, `TransactionReport` sections). It serves
-  no current requirement and should delete (`session-transaction.md` §0).
+  no current requirement. S123 designs its deletion
+  ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken)).
   Until then its T1 and T2 reloads run through the one reload executor and
   lock on failure; T1's repairable error block retires with the whole-file
   rebuild (`session-transaction.md` §10). Reachability differs by leg. The per-symbol
@@ -3331,17 +3431,14 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   this remains a suspected defect, not a confirmed one. The discriminating
   observation is at the seam: whether `drive_t1_full_cure` reaches
   `reload_module` on that input.
-- **Unrealised publication receipt.** The approved 2026-09-04 rule (the S121
-  correction above; `s117-conformance-recovery.md` §1.1.3) moves committed
-  outcomes in a move-only `PublicationReceipt` owned by a `ProcessAttempt`
-  wrapper. Neither type exists in `src/`. Committed `RedefinitionOutcome`s
-  ride `ProcessedCluster` inside `ClusterOutcome::Done`, and eval settles them
-  through `apply_redefinition_outcomes` only on paths that reach it; an error
-  returned from `codegen_and_execute` skips settlement. Standing reject 14
-  holds: nothing stores the outcomes in scheduler or session state. Today the
-  only consumers of those outcomes are the superseded machinery above, so
-  whether the rule is still owed or retires with that machinery is an
-  authority question for `arch` and the user, not a wording fix.
+- **Redefinition outcomes retire with the residue** (`arch`, 2026-11-15;
+  [arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
+  The residue deletion above also deletes `RedefinitionOutcome`, its
+  `ProcessedCluster` field and `apply_redefinition_outcomes`, and the approved
+  S121 publication receipt retires unbuilt
+  ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken);
+  [S117 recovery §1.1.3](s117-conformance-recovery.md#113-post-publication-outcomes-retired)).
+  Binary-private; no API gate.
 
 ---
 

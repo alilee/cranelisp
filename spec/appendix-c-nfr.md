@@ -10,6 +10,8 @@ Non-functional requirements (NFRs) differ from functional specification (Section
 
 A conforming implementation MUST deallocate heap values deterministically — at a point in the program that is statically predictable from the source code, not deferred to a later collection phase. This rules out tracing garbage collectors as the primary strategy (though a tracing collector MAY supplement a deterministic allocator for cycle detection if the language later introduces mutable references).
 
+**User ruling, 2026-11-15.** A binder’s ownership is released where the binder dies, rather than retained until the enclosing scope ends. Other live owners continue to keep the value alive.
+
 **Rationale**: Deterministic deallocation enables copy-on-write optimization (§C.1.2), predictable latency for interactive and real-time use, and resource cleanup patterns where deallocation triggers side effects (e.g., closing file handles in drop glue).
 
 **Design constraint**: The implementation must track ownership or reference counts — not rely on periodic tracing. Reference counting is the expected strategy given that Cranelisp's immutable values cannot form reference cycles.

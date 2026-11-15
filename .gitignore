@@ -46,3 +46,5 @@ __pycache__/
 /fn/
 /num/
 /text/
+# Local environment (agent provider, keys) — never commit.
+.env

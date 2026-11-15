@@ -2,7 +2,7 @@
 
 ## 17. Embedded Agent Experience [S88]
 
-This section is **additive and behaviorally feature-gated.** It specifies the user-visible experience of the optional embedded LLM agent — a development partner that lives inside the live REPL session ([design/arch/repl-embedded-agent.md](../../design/arch/repl-embedded-agent.md)). **None of §1–§16 changes.** When the agent feature is compiled out, or built-in but dormant (§17.4), the REPL is byte-identical to the deterministic REPL §1–§16 describes — every requirement below that references the agent is gated on it being **both compiled-in and runtime-enabled**.
+This section is **additive and behaviorally feature-gated.** It specifies the user-visible experience of the optional embedded LLM agent — a development partner that lives inside the live REPL session ([design/arch/repl-embedded-agent.md](../../design/arch/repl-embedded-agent.md)). **None of §1–§16 changes.** Apart from the startup state banner (§0.6.1), when the agent is compiled out, disabled or dormant (§17.4), the REPL follows the deterministic behavior of §1–§16 — every requirement below that references the agent is gated on it being **both compiled-in and runtime-enabled**.
 
 The agent extends the self-documentation principle (§4) into a conversational partner, but it does **not** replace, alter, or contend with the deterministic surface. Three invariants hold unconditionally:
 
@@ -38,10 +38,10 @@ A line is routed as follows (the first matching rule wins):
 
 **Feature-off and dormant behavior:**
 
-- The agent arm is **entirely feature-gated.** When the agent is **compiled out** or **dormant** (built-in but no runtime key, §17.4) the classifier's `Agent` arm does not exist:
+- The agent arm is **entirely feature-gated.** When the agent is **compiled out** or **dormant** (built-in but lacking provider configuration, §17.4) the classifier's `Agent` arm does not exist:
   - A **single form** routes exactly as today — a bare unbound symbol → the §4.1.10 unbound display; a single known symbol → §4 introspection; a single compound form → evaluation (§1). Byte-identical to the deterministic REPL. [S108]
   - **More than one form** → **evaluate sequentially and abandon on the first error, surfacing it** (§5.1) — e.g. `foo bar` surfaces `undefined variable: foo` rather than swallowing it into a silent `:Int 0` (the E7 fix). A **genuine parse error** → today's parse-error display (§5.1). [S108]
-  - `/ask <text>` MUST print a single, clear notice and re-prompt — `agent not built in` when compiled out, or `agent not enabled (no key configured)` when built-in but dormant — and MUST NOT crash, evaluate, or alter session state. [S88]
+  - `/ask <text>` MUST print a single, clear notice and re-prompt — `agent not built in` when compiled out, or a dormant notice naming `CRANELISP_AGENT_PROVIDER` when no provider is selected, or the missing configuration for the selected provider (§17.10.3) when built-in but dormant — and MUST NOT crash, evaluate, or alter session state. [S88]
 
 This fallback keeps the feature-off REPL deterministic: single forms and slash commands route exactly as §1–§16 specify; the only new live-agent behavior is the `Agent` arm for multi-form / unparseable input, and the only corrected deterministic behavior is that a multi-form line now surfaces its first per-form error instead of swallowing it (E7). [S108]
 
@@ -130,14 +130,13 @@ In the S88 read-only MVP, when the agent answers a request that warrants code, i
 
 This satisfies the Stage C acceptance shape: `/ask "how do I define a constrained function over Num?"` → a spec-grounded, session-aware answer with a proposed `(defn …)` **shown, not submitted.** [S88]
 
-### 17.4 Opt-In-Twice and Dormancy [S88]
+### 17.4 Default Enablement and Dormancy [S123]
 
-The agent requires **two** independent opt-ins to be live, and is **dormant** unless both hold (`design/arch/repl-embedded-agent.md` §7.3/§7.4):
+**User rulings, 2026-11-15.** The default build includes the agent; an agent-free build remains supported. In the REPL the agent is enabled unless `--no-agent` is given. Activation requires an explicit `CRANELISP_AGENT_PROVIDER` plus the selected provider's configuration (§17.10). An ambient `ANTHROPIC_API_KEY` alone MUST NOT activate it.
 
-1. **Compiled in** — the binary was built with the agent feature. A default build has no LLM client in it at all; `--agent` is a no-op (§0.6.1).
-2. **Runtime-enabled with a key** — the session was started with the agent on (§0.6.1) AND a backend key/config is present.
+With no explicit provider the agent remains dormant and `/ask` MUST name `CRANELISP_AGENT_PROVIDER` in its dormant notice. An absent, disabled or dormant agent MUST NOT transmit anything. Prose routing follows §17.1. Startup reports the state on one line, including provider and model when active (§0.6.1).
 
-Absent either, the agent is dormant: `/ask` reports the dormant case (§17.1) and prose falls back to the parse-error display. This is the user-facing expression of "off by default; the REPL works fully without it." A dormant or absent agent MUST never transmit anything anywhere. [S88]
+The effective configuration may come from either environment file (§0.8), including a project `.env` provider combined with a process-environment key. The user accepted this privacy interaction on 2026-11-15; the existing first-use disclosure (§17.8.1) remains unchanged.
 
 ### 17.5 `/doc <module>` and the Module-Preamble Edit UX [S88]
 
@@ -230,7 +229,7 @@ The agent has **no direct shell tool.** When the agent would run a shell command
 
 ### 17.8 Privacy and First-Use Disclosure [S88]
 
-The agent's view is bounded by the introspection surface and the embedded spec — **not** the host filesystem (no raw file-read tool; §17.6's scans are over in-memory session structures, not files). When the agent is enabled and a turn would transmit data to the backend, the REPL MUST satisfy the **opt-in-twice** discipline (§17.4) and the **first-use disclosure** below.
+The agent's view is bounded by the introspection surface and the embedded spec — **not** the host filesystem (no raw file-read tool; §17.6's scans are over in-memory session structures, not files). When the agent is enabled and a turn would transmit data to the backend, the REPL MUST satisfy the **explicit-provider activation** rule (§17.4; user ruling, 2026-11-15) and the **first-use disclosure** below.
 
 #### 17.8.1 First-Use Disclosure — Normative Wording [S88]
 
@@ -251,7 +250,7 @@ Illustrative wording (an implementation MAY reword, but MUST cover every element
 ▌ their type signatures), and module documentation.
 ▌ To where: <configured-endpoint>.
 ▌ (The agent is dev-session only and never runs in --run or --link.
-▌  To keep the agent off, restart without --agent, or start with --no-agent.)
+▌  To keep the agent off, start with --no-agent.)
 ```
 
 The disclosure MUST appear in the agent prose frame (§17.2) so it is unmistakably the agent's own notice. It is shown **once per session** before the first transmission; subsequent turns do not repeat it. An implementation MAY additionally require an explicit per-session acknowledgement before the first transmission; if it does, declining MUST keep the agent dormant for the session with no transmission. [S88]
@@ -269,32 +268,27 @@ This section is the **complete** set of additive agent requirements on the REPL 
 
 The **S90** additions (§17.17–§17.21 — the fluency pillars) introduce **no new style role**. Two of the four are **non-agent, default-build** surfaces (the command rows above) and two stay *inside* the agent surface: `/syntax` (§17.17) is an LLM-free static-asset command that also serves as an agent pull-tool; the signature-grain harvest (§17.18) is ambient agent context with **no command and nothing extra in the REPL**; `/search` (§17.19) is a **non-agent-gated default-build session facility** (re-pinned 2026-06-23 — its background index is built by the nice workers, which run regardless of the `agent` feature; the agent merely reaches it through the ordinary pull) and is **design-pinned-now / implemented-later** (gated on the FIXME-0432 fix + the nice-worker `catch_unwind` floor per §11.3); and the silent agent log (§17.20) is an env-opt-in (`CRANELISP_AGENT_LOG`), feature-gated, off-by-default file sink that produces **nothing extra in the REPL**. Its **companion**, the persistent full-content trace (§17.21, `CRANELISP_AGENT_TRACE=<path>` — re-purposed from S89's ephemeral stderr trace, whose stderr sink is **removed**), is a sibling env-opt-in, feature-gated, off-by-default file sink with the **identical silent/graceful contract**; the two are joined by a shared `turn` key. The **byte-identical-feature-OFF** invariant therefore scopes to the agent-gated surfaces (the harvest, the log, and the trace all require the agent); `/syntax` and `/search` are present and functional in the default build. [S90 re-pin]
 
-The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is, like `--agent`, a no-op on default builds and when no agent is active. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
+The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is inert when no agent is active; on an agent-free build, `--yes` and `--agent` are errors (§0.6). None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so, apart from the startup state banner (§0.6.1), §1–§16 stay byte-identical. [S89]
 
-Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The form-count dispatch classifier (§17.1) — which routes a **single form** to the deterministic REPL and **multi-form / unparseable prose** to the agent — is itself **entirely feature-gated**: feature-off, a single unbound bare symbol still lands on today's §4.1.10 unbound display, a genuine parse error on the §5 display, and a multi-form line evaluates sequentially and surfaces its first error (§5), so §1–§16 stay deterministic. [S88]
+Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags follow §0.6, including its feature-off errors. The form-count dispatch classifier (§17.1) — which routes a **single form** to the deterministic REPL and **multi-form / unparseable prose** to the agent — is itself **entirely feature-gated**: feature-off, a single unbound bare symbol still lands on today's §4.1.10 unbound display, a genuine parse error on the §5 display, and a multi-form line evaluates sequentially and surfaces its first error (§5), so §1–§16 stay deterministic. [S88]
 
 ### 17.10 Enabling & Configuring the Agent [S88]
 
-This subsection is **normative** on how a user turns the agent on and points it at a backend. It pins the as-built scheme: the agent is a **compile-time feature** plus **environment-based runtime configuration** — and it is **explicitly NOT configured via `Cranelisp.toml`** (see the rationale below).
+This subsection specifies agent configuration. Environment variables and the file supply in §0.8 are the configuration channel; `Cranelisp.toml` does not supply provider, model or key.
 
-#### 17.10.1 Enabling — the `agent` Cargo feature [S88]
+#### 17.10.1 Enabling — the `agent` Cargo feature [S123]
 
-The embedded agent is compiled **only** when the binary is built with the `agent` Cargo feature, which is **off by default**:
+**User ruling, 2026-11-15.** The `agent` Cargo feature is included in default builds. An agent-free build remains supported. In that build `/ask` reports `agent not built in`, and flag handling follows §0.6.
 
-- A **default build** (`cargo build`, `cargo nextest run`) contains no LLM client at all — the entire `src/agent/` module is absent. `/ask` reports `agent not built in` (§17.1) and `--agent` is an accepted no-op (§0.6.1). This is the first of the two opt-ins (§17.4).
-- An **agent build** (`cargo build --features agent`) compiles the agent in. Whether it is *live* in a given session still depends on the runtime configuration below — being compiled in is necessary but not sufficient (opt-in-twice, §17.4). [S88]
+#### 17.10.2 Configuring — environment and environment files [S123]
 
-#### 17.10.2 Configuring — the environment, NOT `Cranelisp.toml` [S88]
+Agent configuration is read once at session construction, after the §0.8 file supply. Files and process environment use the same key meanings and precedence defined there (user ruling, 2026-11-15).
 
-The agent is configured **entirely through environment variables**, read once at session construction. The agent **MUST NOT** read `Cranelisp.toml` (the project config file) for provider, model, or key. [S88]
-
-**Rationale (normative intent).** The provider, model-id, and API key are **per-developer secrets and preferences**, not version-controlled project configuration. `Cranelisp.toml` is checked into the project and shared across every developer and CI run; an API key there would be a leaked secret, and a hard-coded provider/model there would impose one developer's backend choice on the whole team. Keeping agent configuration in the environment keeps secrets out of source control and lets each developer (and each shell session) choose their own backend independently. The agent therefore **never** consults `Cranelisp.toml`. [S88]
-
-The environment surface (matching the as-built `src/agent/provider.rs`):
+The configuration keys are:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `CRANELISP_AGENT_PROVIDER` | Selects the backend: `anthropic`, `ollama`, or `stub`. | `anthropic` [S88] |
+| `CRANELISP_AGENT_PROVIDER` | Selects the backend: `anthropic`, `ollama`, or `stub`. | unset: dormant (user ruling, 2026-11-15) |
 | `CRANELISP_AGENT_MODEL` | The model-id (provider-specific). **Required** for any live provider — a live provider with no model-id stays dormant. | — [S88] |
 | `ANTHROPIC_API_KEY` *or* `CRANELISP_AGENT_KEY` | The Anthropic API key. Its **presence** (non-empty) is the reachability gate for the Anthropic provider; either variable supplies it. | — [S88] |
 | `OLLAMA_API_BASE_URL` | The Ollama endpoint. Ollama needs **no key** — it is the local / offline escape hatch (the U6 privacy path, §17.8). | `http://localhost:11434` [S88] |
@@ -302,11 +296,13 @@ The environment surface (matching the as-built `src/agent/provider.rs`):
 
 #### 17.10.3 Dormancy — the reachability gate [S88]
 
-With the feature compiled in (§17.10.1) but **no provider configured or reachable**, the agent is **dormant** (§17.4) — it never transmits anything (§17.8). This is the **second** opt-in: the agent is live only when it is *both* compiled in *and* backed by a configured, reachable provider. [S88]
+With the feature compiled in (§17.10.1) but **no provider configured or reachable**, the agent is **dormant** (§17.4) — it never transmits anything (§17.8). Activation requires an explicit provider and its configuration (§17.4; user ruling, 2026-11-15). [S88]
 
 When the agent is dormant for want of configuration, `/ask` MUST report what to set, naming the missing variables for the selected provider — for example:
 
-- Anthropic (the default provider) with no key or no model-id → a notice to set `ANTHROPIC_API_KEY` (or `CRANELISP_AGENT_KEY`) **and** `CRANELISP_AGENT_MODEL`. [S88]
+- No explicit provider → a notice to set `CRANELISP_AGENT_PROVIDER` (user ruling, 2026-11-15).
+- An unrecognised `CRANELISP_AGENT_PROVIDER` value → the agent stays dormant and the dormant notice names the unrecognised value (user ruling, 2026-11-15).
+- Explicit Anthropic with no key or no model-id → a notice to set `ANTHROPIC_API_KEY` (or `CRANELISP_AGENT_KEY`) **and** `CRANELISP_AGENT_MODEL`. [S88]
 - Ollama with no model-id → a notice to set `CRANELISP_AGENT_MODEL` (no key is needed for Ollama). [S88]
 
 The reachability gates are, per provider: **Anthropic** — a non-empty key *and* a non-empty model-id; **Ollama** — a non-empty model-id (the endpoint defaults to localhost, no key); **stub** — a loadable fixture from `CRANELISP_AGENT_STUB_SCRIPT`. Absent its gate, each provider yields a dormant agent rather than an error, and `/ask` renders the dormant notice (§17.1) naming what to set. [S88]
@@ -373,7 +369,7 @@ submit this definition? [y/N] y
 
 The `agent>` line is agent-issued input; the `:(Fn …)` line beneath it is the deterministic REPL's normal definition result (§1.3); the `▌` lines are the agent's prose. Three visually-distinct origins, each honestly marked. Any probe the agent ran before proposing appears nowhere in the session (§17.2.1). [S89]
 
-**Feature-off / dormant.** The agent-input prompt exists only when the agent is live (it only ever prefixes agent-issued lines, which only exist when the agent takes a turn). Feature-off or dormant, no agent line is ever issued, so the prompt never appears — the deterministic REPL is byte-identical (§17.1, §17.9). [S89]
+**Feature-off / dormant.** The agent-input prompt exists only when the agent is live (it only ever prefixes agent-issued lines, which only exist when the agent takes a turn). Feature-off or dormant, no agent line is ever issued, so the prompt never appears — apart from the startup state banner, the deterministic REPL is byte-identical (§17.1, §17.9). [S89]
 
 ### 17.13 Markdown Rendering Within the Agent-Prose Frame [S89]
 

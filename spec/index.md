@@ -83,6 +83,8 @@ This specification uses terminology from RFC 2119:
 - [B: Examples](appendix-b-examples.md) — Extended example programs
 - [C: Non-Functional Requirements](appendix-c-nfr.md) — Memory management, data structures, evaluation, concurrency, compilation, performance, target portability (normative)
 
+[D: Open requirement questions](appendix-d-open-questions.md) — register of unresolved normative decisions; proposals are non-normative.
+
 ## Compilation Pipeline [Tested]
 
 A conforming implementation MUST process source code through the following logical phases (though phases may be combined or reordered as an optimization):

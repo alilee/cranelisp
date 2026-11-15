@@ -811,6 +811,13 @@ unchanged: a dependent binding is forced at the barrier like any other spark.
 
 ## 5. IVar disposal and the error ferry
 
+> **The ferry is superseded on landing.** Under the 2026-11-15 ruling a panic
+> ends the process from the thread that raises it, and the ferry, the
+> `catch-runtime-error` observations below and §8's first-error-wins bullet
+> retire with it ([process-ending panics](../arch/s123-panics-and-environment.md)
+> §1.2; not built). Which of several concurrent panics is reported is open
+> question S123-Q7. The disposal rule in the next paragraph stays.
+
 **No IVar drop glue is needed.** Under the barrier, every IVar is forced before
 its scope exits. Then the consumer's release and the spark task's release, plus
 any dependent-capture releases, bring it to zero, and whichever release is last

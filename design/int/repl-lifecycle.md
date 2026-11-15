@@ -46,7 +46,9 @@ that save by atomic rename would lose a per-file watch.
   lands during the turn; the write chokepoint covers those
   ([§1.3.1](#131-session-lock), Write chokepoint).
 - **Filter.** The watcher keeps only create and modify events on `.cl` files,
-  excluding `.cl.tmp`, with canonical paths.
+  excluding `.cl.tmp`, with canonical paths. S123 target (ACT-1048): it also
+  keeps remove events, and stamps each kept event with its arrival time
+  (§1.2, Deletion).
 - **Content hash: one record of what the session last saw** (review N2;
   Principle 7). `SharedState.recorded_sources` maps each source file the
   session has loaded or written to its state: its source hash, or
@@ -69,6 +71,22 @@ that save by atomic rename would lose a per-file watch.
     file with no recorded state was never loaded and is not a change (§14.1:
     a new file does nothing until it is referenced). `sync_watcher` adds
     directory watches and records no file state.
+  - **Absent is a recorded state** (S123 design for ACT-1047, 2026-11-15;
+    not implemented; `14-file-watching.md` §14.9). Registering a module whose backing file does not exist,
+    which today is only the REPL's empty entry module (`00-cli-invocation.md` §0.5.5 rule 2), records
+    **absent** for that path. The module is referenced from the start, so a
+    file created later at that path is not a new, unreferenced file. Its state
+    on disk differs from the record, so it is an unseen save like any other:
+    the next poll reloads the module from it, and the chokepoint refuses to
+    regenerate over it until then (§1.3.1, Write chokepoint). The user's
+    definition is loaded. If a definition turn is admitted before the poll
+    sees the file, that turn's definition gives way to the file, as for any
+    unseen save. Regeneration's first write replaces absent with the state it
+    wrote. The record is keyed by the same path that
+    `backing_file_path_for` resolves for a module with no recorded file. The
+    watcher's map from that path to the entry module must therefore exist
+    from registration. `dev` verifies this at the watcher seam, because an
+    entry registered with no file may have no recorded `file_path`.
   - **First sight is a check** (as built 2026-10-02). A save that lands
     before a file's directory is watched queues no OS event. So a file the
     watcher sees for the first time is a candidate at the next poll, and is
@@ -94,11 +112,41 @@ that save by atomic rename would lose a per-file watch.
     uncompilable, with the user's 2026-10-01 ruling that an uncompilable file
     change locks). A repeated unreadable event matches the record and does
     nothing.
-  - **A missing file is not a change.** A candidate that no longer exists is
-    skipped, as before: a delete, or the moment between an editor's write and
-    rename. The module keeps its generation. Spec §14 names no behaviour for
-    deleting a loaded file; that question is routed to `spec` through
-    `sprint` and this rule stands until it is answered.
+  - **A missing file is not a change** (as built). A candidate that no
+    longer exists is skipped: a delete, or the moment between an editor's
+    write and rename. The module keeps its generation.
+  - **Deletion** (S123 design for ACT-1048, 2026-11-15; not implemented;
+    `14-file-watching.md` §14.9). A file with a recorded hash or unreadable
+    state that is missing at a poll is a deletion candidate.
+    - *Confirmation after the settle window.* If the latest event for that
+      path arrived less than the settle window ago, the poll waits out the
+      remainder and looks again; otherwise it looks once. The window is one
+      constant in `watch`, proposed at 200 ms, which covers an editor's
+      write-then-rename. A file present again is an ordinary candidate,
+      compared with its record as usual. A file still missing is a
+      **confirmed deletion**. The wait is paid only when a recorded file is
+      missing.
+    - *Effect.* The record becomes **deleted**. The module keeps its
+      generation, so its definitions stay live, and dependents are untouched.
+      The poll prints one deletion notice at its notification point (§1.4).
+      The session does not lock: a deletion is not a failure.
+    - *Recreation needs consent.* The write chokepoint never writes a file
+      whose record is deleted or declined (§1.3.1). The consent question is
+      asked by the REPL turn driver, the only site with the terminal. Before
+      the first regeneration that would write that file, it asks through the
+      REPL's existing `[y/N]` prompt. A yes sets the record to absent, so the
+      ordinary missing-file write recreates it. A no, end of input, or
+      non-interactive input sets the record to **declined**. A declined file
+      is not asked about again and is never written, including after later
+      definitions. Agent paths that regenerate reach the chokepoint, which
+      writes nothing; they do not ask. `--yes` does not answer this question,
+      because it is not an agent write gate.
+    - *Reappearance.* A file that appears again while its record is deleted
+      or declined differs from the record, so it is an unseen save: the next
+      poll reloads the module from it (the same rule as ACT-1047's).
+    - *The wording* of the notice, the question and any reminder after a
+      decline is `spec`'s. The design asks nothing and prints nothing after a
+      decline.
 - **Reload edges.** One private predicate answers "module A depends on module
   B" for selection, ordering and the order check (Principle 7). A's edges are:
   - each `import` target that loads and each `export` target, resolved
@@ -758,9 +806,23 @@ record and one admission site serve every trigger.
     event was not yet delivered when the turn was admitted, and one that
     lands during the turn's compile, evaluation or IO. Both reach the write
     with a recorded state that predates them.
-  - **A missing file is written.** A backing file that does not exist is
-    regenerated as before, so a first session creates it; deletion is the
-    open `spec` question of §1.2.
+  - **A missing file is written** when its record is absent, so a first
+    session creates it. S123 target: a file whose record is deleted or
+    declined is not written (§1.2, Deletion).
+  - **A file created after registration is kept** (ACT-1047; S123 design,
+    not implemented). The record is absent (§1.2, Absent is a recorded
+    state) while the file exists, so the states differ and the unseen-save
+    rule above applies unchanged. No special case is needed. Today the
+    comparison returns "unchanged" when there is no record
+    (`CompilerSession::backing_file_changed_unseen`), so regeneration
+    overwrites the created file. With absent recorded, every module has a
+    record from registration, and the no-record branch becomes unreachable.
+    `dev` replaces it with a located invariant error.
+  - **The outcome.** The user ruled "load" (2026-11-15; §14.9). The
+    existing rules already give it: the user's bytes win, and an unseen save
+    is reloaded. So the file is loaded, and the next definition is written
+    together with it. A failing load locks the session and keeps the file's
+    bytes (§14.5).
   - **The recorded state.** It is `recorded_sources`, the one record the
     watcher also compares against (§1.2, Content hash). It exists whether or
     not the OS watcher started, so the check holds without a watcher.
@@ -922,7 +984,9 @@ module, and scheduler rows with `src/scheduler/tests.rs`.
 | Newly loaded failure (review finding 3) | A reload of `user` whose new import loads `n`, failing in its own source, leaves `n` standing failed with `n.cl` and `user` waiting. A later save of `user` dropping the import rebuilds `user` and leaves `n` standing failed, so the session stays locked naming `n.cl`; `n`'s compiling save releases it. The scheduler holds no `Failed` module outside the failed set at any step |
 | Record order | A failed load's record over the same reset modules in two orders, one module refused through a module whose chain is broken, gives the same failed set |
 | Pre-registration failure (PF-1) | For a dependency whose file does not parse, loaded through each `register_dep` caller (`import`, qualified reference, `mod` child, prelude injection): the scheduler holds it `Failed` with its parse error located in its file, and the loader's attempt is refused with it as refusing dependency. Type twin: the dependency registers and fails in its own pass, with the same classification. A read failure takes the same path |
-| Watcher state (R1, R3) | Against `recorded_sources`: a file recorded unreadable at its load, then written readable, is a change, also when `sync_watcher` runs before the poll. A recorded file rewritten unreadable is a change, and once the rebuild records unreadable a second unreadable event is not. A deleted file is not a change. A same-content rewrite is no change |
+| Watcher state (R1, R3) | Against `recorded_sources`: a file recorded unreadable at its load, then written readable, is a change, also when `sync_watcher` runs before the poll. A recorded file rewritten unreadable is a change, and once the rebuild records unreadable a second unreadable event is not. A deleted file is not a change (as built; superseded by the deletion row). A same-content rewrite is no change |
+| Deletion (ACT-1048, S123 target) | With an injected clock and file view: a recorded file missing past the settle window is confirmed deleted and keeps its generation; missing within the window and present at the look again is no deletion; a rename-over save is no deletion. The chokepoint writes nothing for a deleted or declined record. Consent yes recreates the file; no, end of input and non-interactive input decline, and a later definition neither asks nor writes. A file reappearing over a deleted record is reloaded. Detection proof: a planted chokepoint that ignores the deleted record turns the decline row red |
+| Appearance (ACT-1047, S123 target) | An entry registered with no file records absent. A file created at that path is reloaded at the next poll, and a definition admitted before that poll leaves its bytes unchanged. Control: a first session with no file creates it |
 | Unreadable save (R3) | A reload of a module whose saved file is not valid UTF-8 leaves it standing failed with a read error located in its file at an empty span, and a refused definition leaves the bytes unchanged. Its readable compiling save releases it |
 | Recurrence stop | A recurring set whose re-attempted deferred member last failed on a cycle reports that cycle; the helper-end row names `x -> prelude -> x`. A recurring set whose member's last failure was a refusal by a since-rebuilt module on a non-cycle error reports "did not settle". The cycle record is set at each cycle site, copied through a refusal, and cleared at registration |
 | Newly failed report (A2) | A module newly loaded by a reload that fails to typecheck reports `[errors: n.cl]` with its own error at its own span in `n.cl`, not at `0..0` |
@@ -940,7 +1004,9 @@ makes the exit status structural.
 
 Each rebuilt or failed module prints one dim metadata line: `[updated:
 <file>]`, or `[errors: <file>]` followed by the module's own indented error
-(§1.3 Outcome). A waiting module prints nothing (§1.2). The startup report
+(§1.3 Outcome). A waiting module prints nothing (§1.2). A confirmed deletion
+prints one line in the same form (S123 target; §1.2, Deletion), proposed
+`[deleted: <file>]`; its wording is `spec`'s. The startup report
 and the session-lock refusal use the same file form (§1.3.1). `<file>` is the
 file's bare name (§7, gap 1).
 
@@ -1047,6 +1113,16 @@ from the working directory and the CLI target (`00-cli-invocation.md`
 | An existing directory with no `<target>.cl` beside it | that directory | `user` |
 | Otherwise | the working directory | the target |
 
+- **The entry file follows the module mapping** (S123 design for ACT-1020;
+  not implemented; `00-cli-invocation.md` §0.5.6). A dotted entry module names
+  its file through `pipeline::project_root_candidate`, so `core.str` is
+  `{root}/core/str.cl` in every mode. Today batch registration uses that
+  mapping, while the REPL's empty-start path, `backing_file_path_for`'s default
+  and `main.rs`'s error-path file name spell `{module}.cl`. Each converges on
+  the one helper, as does the third case's file check below
+  (Principle 07). The watcher's absent record (§1.2) is keyed by the same
+  path, so ACT-1047's rule holds for a dotted entry too. Unit evidence: each
+  site maps `core.str` to `core/str.cl`, with `user` as the undotted control.
 - Only the third case triggers `Cranelisp.toml` scaffolding
   (`cranelisp-toml.md` §4).
 - The cache directory is `{project_root}/.cranelisp-cache`, created eagerly.

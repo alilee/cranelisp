@@ -4,7 +4,9 @@
 default-build commands that grew out of it, meets the rest of the compiler.
 
 **Status.** Ratified by the user (U1–U6, §10) and delivered, except the targets
-listed in §9. Open questions are §12. This document states the boundary, the
+listed in §9. Open questions are §12. The S123 rulings of 2026-11-15 replace U6
+with U7 (§10). U7 is approved and not yet built: until its change-set lands, the
+as-built default build still omits the agent. This document states the boundary, the
 invariants that hold it, and the rationale a contributor needs to avoid undoing
 them. It does not describe mechanism or experience:
 
@@ -42,14 +44,15 @@ architecture advice to typed, compilable code.
 - **G-legible.** Every conclusion and every state-changing action is visible in
   the session; a write shows the exact text it commits. The agent's read probes
   are private and recorded in the log and trace (§4.4).
-- **G-light.** Feature-gated and off by default; the REPL is complete without
-  it (§7.2).
+- **G-light.** Feature-gated and in the default build; the REPL is complete
+  without it, and an agent-free build stays supported (§7.2).
 
 ### 1.3 Non-goals
 
 - **NG1** Not a replacement for the deterministic REPL. The agent is additive;
   single forms and slash commands route as they always have (§5.3).
-- **NG2** Not required for the language. An LLM-free build is the default.
+- **NG2** Not required for the language. An LLM-free build stays a supported
+  configuration.
 - **NG3** Not a silent autopilot. Writes are gated (§2, §7.4).
 - **NG4** Not part of any shipped artifact. The agent, its log and its trace
   are dev-session facilities, like introspection
@@ -276,20 +279,39 @@ error recovery and backing-file regeneration, and has no second eval entry.
 
 ### 7.2 Feature gating
 
-The `agent` Cargo feature is in no default set and no dev-dependency enables
-it. Default builds and the default suite never compile the LLM client; agent
-tests run in their own feature lane. All cuts sit at seams (classifier arm,
-`/ask` body, allowlist rows, the module), so **feature-off is structurally the
-original REPL**. `/ask`, `/context` and `--yes` keep their parser entries and
-answer "not built in" or no-op.
+The `agent` Cargo feature is in the default set (U7). The feature stays: all
+cuts sit at seams (classifier arm, `/ask` body, allowlist rows, the module), so
+**feature-off is structurally the original REPL** at no ongoing source cost.
+
+- **The agent-free build is supported only while a lane builds and runs it.**
+  A configuration nothing exercises is graded by inspection. `qa` chooses the
+  one test configuration that keeps it honest (user ruling), including the
+  feature-off rules for `--agent` and `--yes`.
+- **The default suite compiles the agent and its tests.** The cost is
+  unmeasured; the falsifier is the first default-suite run after the change,
+  against the root `CLAUDE.md` baseline.
+- **The default build gains a Linux prerequisite.** `native-tls` needs
+  `pkg-config` and the OpenSSL development headers (user-accepted, S123).
+- **Shipped artifacts stay agent-free by construction.**
+  `crates/cranelisp-exe-bundle` does not depend on the root crate, so no agent
+  code reaches a `--link` output (NG4).
+
+As built before U7 lands, the feature is in no default set and the agent tests
+run in their own feature lane.
 
 ### 7.3 Backend
 
 Providers sit behind the int-private `AgentModel` membrane
 (`design/int/agent.md` §6.0), so a provider change never reaches the turn loop.
-**Opt-in twice:** compiled in, and enabled at run time with a reachable
-provider. A local, key-free provider keeps zero-transmission operation
-available. The artifact carries an HTTP client, not a toolchain.
+**One opt-in to transmission (U7).** A REPL session enables the agent unless
+`--no-agent` is given, and the agent activates only when
+`CRANELISP_AGENT_PROVIDER` is set explicitly. An ambient `ANTHROPIC_API_KEY`
+alone leaves it dormant, so the provider fallback to Anthropic goes. Provider
+settings come only from the environment and the environment files
+([environment supply](s123-panics-and-environment.md) §2.1); agent keys are
+never baked into a linked executable. A local, key-free provider keeps
+zero-transmission operation available. The artifact carries an HTTP client,
+not a toolchain.
 
 ### 7.4 Safety
 
@@ -299,10 +321,12 @@ available. The artifact carries an HTTP client, not a toolchain.
   definitions render as ordinary deterministic echoes; probes do not render.
 - **Read-only is the floor.** A write is reachable only past its gate. The read
   allowlist excludes writes, and a read that would reach eval fails closed.
-- **Privacy.** Opt-in twice, plus a one-time first-use disclosure that names
-  source excerpts and the endpoint (U6;
-  `repl/spec/17-embedded-agent.md` §17.8.1). The agent's view is bounded by the
-  introspection surface; it has no file-read tool.
+- **Privacy.** An explicit provider is the one opt-in, plus a one-time
+  first-use disclosure that names source excerpts and the endpoint (U7;
+  `repl/spec/17-embedded-agent.md` §17.8.1). Startup states the agent's state
+  on one line. A project `.env` that selects a provider, combined with an
+  ambient key, is an accepted residual (user, 2026-11-15). The agent's view is
+  bounded by the introspection surface; it has no file-read tool.
 - **Shell.** There is no shell tool. A shell command can only be proposed for
   the user to run (`repl/spec/17-embedded-agent.md` §17.7).
 
@@ -355,7 +379,7 @@ The track neither gates nor is gated by Phase H (NG4).
 | Further reverse queries (`/callers`, `/uses`) | `design/arch/repl-embedded-agent.md` §4.4 (corollary) | Added when a need appears. |
 | Complete semantic `/search` index, including macros | `design/arch/repl-embedded-agent.md` §11.1 | `sprints/actions/ACT-0952-complete-semantic-search-indexing.md`. |
 | Subsumption-style scheme queries with holes and ranking | `design/arch/repl-embedded-agent.md` §11.4 | Typecheck-owned upgrade; a hole token is a `spec` question first. |
-| Project-level agent configuration and further providers | `design/arch/repl-embedded-agent.md` §7.3 | `sprints/actions/ACT-0960-agent-configuration-and-model-comparison.md`. |
+| Project-level agent configuration and further providers | `design/arch/repl-embedded-agent.md` §7.3 | `sprints/actions/ACT-0960-agent-configuration-and-model-comparison.md`. Extends the environment keys and files, not a TOML channel ([environment supply](s123-panics-and-environment.md) §2.1). |
 
 ---
 
@@ -368,7 +392,8 @@ The track neither gates nor is gated by Phase H (NG4).
 | U3 | Memory line: named thing → on the thing; homeless intent → small sidecar | `design/arch/repl-embedded-agent.md` §3.1, `design/arch/repl-embedded-agent.md` §3.2 |
 | U4 | Push is ambient; a prunable header comes later | §4.7 |
 | U5 | Validator silently repairs anything | §6.4 |
-| U6 | Opt-in twice, with a first-use disclosure naming source excerpts and the endpoint | §7.3, §7.4 |
+| U6 | Opt-in twice, with a first-use disclosure naming source excerpts and the endpoint. Replaced by U7 | — |
+| U7 | (user, 2026-11-15) Compiled into the default build and enabled per session unless `--no-agent`; an explicit provider is the single opt-in to transmission; the first-use disclosure stays; an agent-free build stays supported | §7.2, §7.3, §7.4 |
 
 ---
 

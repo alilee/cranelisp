@@ -133,6 +133,8 @@ every project module transitively reachable from it through that chain. [Tested+
 - Being compiled for the program does not make a module a test module. Test
   modules MUST NOT be found by searching the file system.
 
+**Panic outcome (user ruling, 2026-11-15).** The runner executes tests in one child process, restarting it after a panic to continue with the remaining tests (§16.2). A panic ends the child executing that test; the parent preserves the report and exit-status rules below.
+
 **Report.** The runner's report (§16.2) MUST be written to stdout. [Tested tests/test_runner.rs::test_mode_runs_every_test_reports_fq_lines_and_matches_run_tests]
 
 **Exit status.** The process MUST exit with status 0 when no test failed or
@@ -225,7 +227,7 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 #### 0.5.5 Error Handling [R4 S52]
 
 1. If the target contains a directory component and the directory does not exist, the binary MUST print an error to stderr naming the missing directory and exit with status code 1.
-2. If the resolved entry module source file (`{project_root}/{entry_module}.cl`) does not exist:
+2. If the resolved entry module source file (using the module-to-file mapping of language §8.1 beneath `{project_root}`) does not exist:
    - In REPL mode: the binary MUST start with an empty entry module and proceed (§15.2); the backing file is first written when a definition regenerates it (§15.1). This supports the common workflow of starting a new project from an empty directory. [Tested tests/cli_missing_entry.rs::repl_missing_entry_starts_an_empty_module — the empty entry module accepts a definition and evaluates, and the backing file exists after it; the start without a file is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::repl_mode_registers_a_missing_entry_as_empty. No cell observes that a session with no definition leaves no file]
    - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested tests/cli_missing_entry.rs::run_missing_entry_file_is_named_on_stderr — exit 1 and the file named in the message body; the refusal before registration is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::run_mode_refuses_a_missing_entry_before_registration]
    - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1. [Tested tests/cli_missing_entry.rs::link_missing_entry_file_is_named_on_stderr — exit 1 and the file named in the message body; the refusal before registration is unit-pinned at src/session_v4/lifecycle.rs::entry_registration_tests::link_mode_refuses_a_missing_entry_before_registration]
@@ -235,14 +237,7 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 
 #### 0.5.6 Dotted Module Paths [R4 S52]
 
-The positional target supports only file-system paths (`/`-separated), not Cranelisp dotted module paths. To start the REPL in a submodule, use the file-system path:
-
-| Intent | Correct | Incorrect |
-|---|---|---|
-| Module `app` in `myproject/` | `cranelisp myproject/app` | `cranelisp myproject.app` |
-| Submodule `core.str` | `cranelisp core/str` | `cranelisp core.str` |
-
-Dotted names (e.g. `core.str`) MUST be treated as a single module name, not as a path separator. If a user passes `core.str`, the binary resolves it as entry module `core.str` in cwd — which will fail if no file `core.str.cl` exists.
+**User ruling, 2026-11-15.** A dotted entry-module target uses the same module-to-file mapping as imports (language §8.1), in every invocation mode. `cranelisp core.str` selects entry module `core.str` in the resolved project root and loads `core/str.cl`. File-system paths such as `cranelisp core/str` remain supported.
 
 #### 0.5.7 Project-Root `Cranelisp.toml` Scaffold [S91]
 
@@ -303,15 +298,15 @@ These flags modify behaviour but do not select a mode. They may appear in any mo
 | `--no-cache` | none | Bypass the on-disk module cache (recompile from source). **MUST error if combined with `--link`** (link mode relies on the object cache) — usage hint to stderr, exit code 1. | cache on |
 | `--priority-workers` | `N` (numeric) | Number of priority compilation workers. A non-numeric `N` is an error (usage hint to stderr, exit code 1). | `1` |
 | `--nice-workers` | `N` (numeric) | Number of background ("nice") compilation workers. A non-numeric `N` is an error. | `1` |
-| `--agent` | none | Enable the embedded LLM agent for this session (REPL only). Requires the binary to be **built** with the agent feature AND a backend key present at runtime; otherwise the agent stays dormant (see §17.4). **MUST error on a binary built without the agent feature** (usage hint to stderr, exit code 1 — same style as `--no-cache` + `--link`) — the flag names a capability the binary does not have. | agent off |
-| `--no-agent` | none | Force the embedded agent off for this session even when built-in and a key is present. **Always accepted** (a no-op on a non-agent build — asking for the agent off is trivially satisfied). | — |
+| `--agent` | none | Enable the embedded LLM agent for this session (REPL only; enabled by default). Activation requires an explicit `CRANELISP_AGENT_PROVIDER` and its provider configuration (§17.4). **MUST error on a binary built without the agent feature** (usage hint to stderr, exit code 1 — same style as `--no-cache` + `--link`) — the flag names a capability the binary does not have. | agent enabled (user ruling, 2026-11-15) |
+| `--no-agent` | none | Force the embedded agent off for this session even when built-in and a provider is configured. **Always accepted** (a no-op on a non-agent build — asking for the agent off is trivially satisfied). | — |
 | `--yes` (`-y`) | none | Autonomous-submit: auto-accept the agent's write-consent gates (Build form-submit, §17.14; Document preamble/docstring edit, §17.15) so the agent acts without the per-action `[y/N]` prompt. REPL only; meaningful only with an active agent. **MUST error on a binary built without the agent feature** (usage hint to stderr, exit code 1); a no-op when no agent is active on an agent-**capable** build. Auto-accepts **consent only**; the pre-flight validator (§17.14.3) still gates correctness. | off |
 
 This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
 
 #### 0.6.1 `--agent` / `--no-agent` — Embedded Agent Toggle [S88]
 
-The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-in-twice** discipline (§17.4). The embedded agent is a **dev-session capability only** — it is never part of `--run`, `--test` or `--link`, and never ships in a release artifact. Accordingly:
+**User ruling, 2026-11-15.** The default build includes the agent and a REPL session enables it unless `--no-agent` is given (§17.4). The embedded agent is a **dev-session capability only** — it is never part of `--run`, `--test` or `--link`, and never ships in a release artifact. Accordingly:
 
 - `--agent` / `--no-agent` are meaningful **only in REPL mode**. In `--run`, `--test` or `--link` mode they MUST be accepted (not an error) and have **no effect** — the agent does not participate in batch compilation, test runs or linking. (This mode clause applies only on an agent-**capable** build; on a non-agent build `--agent` errors regardless of mode per the next bullet.) [S122]
 - **`--agent` on a binary built WITHOUT the agent feature MUST be a hard error** (user ruling, 2026-07-09, S106). It MUST print a usage hint to stderr and exit with status code 1 — the **same error style** as `--no-cache` combined with `--link` (§0.6 table; §0.3): a short message naming the flag and the reason it is unsupported, e.g.
@@ -320,17 +315,17 @@ The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-i
   ```
   followed by the standard usage hint. This **reverses** the earlier accepted-no-op posture: the script-portability rationale (a script written for an agent-enabled build not breaking on a default build) does **not** apply — `--agent` names a capability the binary does not have, and silently ignoring it hides the mismatch. The binary MUST NOT print `unknown flag` (this is a *recognised* flag rejected for a *specific* reason, not an unknown token). [S106]
 - **`--no-agent` on a binary built WITHOUT the agent feature stays an accepted no-op** — asking for the agent to be *off* is trivially true when the feature is compiled out, so it MUST NOT error and MUST NOT print `unknown flag`. With the feature compiled out, the agent is unconditionally absent; `--no-agent` is redundant-but-harmless. [S106]
-- A binary **built with** the agent feature treats `--agent` as a request to enable the agent for the session and `--no-agent` as a request to keep it off. Even with `--agent`, the agent is **dormant** unless a backend key/config is also present at runtime (§17.4) — opt-in-twice. If `--agent` is given but no key is configured, the REPL SHOULD note at startup that the agent is built-in but dormant (no key), and `/ask` behaves per the dormant case (§17.1).
-- When both `--agent` and `--no-agent` are present, `--no-agent` wins (the safe default — off).
-
-The default with no flag is **agent off**, even on an agent-built binary with a key present: the user opts in explicitly per session. (An implementation MAY additionally honour a config-file or environment default; if it does, `--no-agent` MUST still override it to off.)
+- On an agent-capable build, the agent is enabled by default; `--agent` explicitly requests the same state. `--no-agent` disables it and wins if both flags are present.
+- Enabling is distinct from activation: an explicit `CRANELISP_AGENT_PROVIDER` and the selected provider's configuration are required (§17.10). An ambient `ANTHROPIC_API_KEY` alone leaves the agent dormant.
+- REPL startup prints one line stating **active**, **dormant** or **off**; an active banner includes provider and model. On an agent-free build the banner states that the agent is not built in (user ruling, 2026-11-15). The banner does not name configuration sources or list files loaded.
 
 #### 0.6.2 `--yes` / `-y` — Autonomous-Submit Toggle [S89]
 
 `--yes` (short form `-y`) is a **policy knob** that auto-answers the agent's write-consent gates. Per the `/arch` ruling (`design/arch/repl-embedded-agent.md §7.4`), it auto-*accepts* the consent question; it does **not** relocate, widen, or remove the gate, and it does **not** touch the pre-flight validator (§17.14.3) — it changes who answers the `[y/N]`, not whether code is validated. It is **off by default**: the human answers each write gate unless `--yes` is given. The flag is **blanket** — one `--yes` covers **both** agent write classes (Build form-submit, §17.14, *and* Document preamble/docstring edits, §17.15), following the universal `-y` convention. Accordingly:
 
-- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (built `--features agent`, enabled per §0.6.1, and backed by a reachable provider — §17.4). **On a binary built WITHOUT the agent feature, `--yes`/`-y` MUST be a hard error** (user ruling, 2026-07-09, S106) — usage hint to stderr, exit code 1, the same `--no-cache` + `--link` error style as `--agent` (§0.6.1) — because there is no write-consent gate for it to auto-answer and the flag names an agent-only policy the binary cannot honour. It MUST NOT print `unknown flag`. **On an agent-capable build**, however, `--yes` remains an **accepted no-op** whenever no agent is *active* — in `--run`/`--test`/`--link` mode, or when the agent is dormant (no provider key) or disabled (`--no-agent`): the feature is present, so the flag is valid; there is simply no active gate to auto-answer. The reversal is scoped to the **feature-not-compiled-in** case only. [S106]
-- **Precedence / interaction with `--agent`.** `--yes` presupposes the agent is in play but **does not itself enable the agent.** It is **not** an implicit `--agent`, and it does **not** bypass the opt-in-twice posture (§17.4): with no agent feature, no enabling flag, or no provider key, `--yes` stays a no-op — there is no write gate to auto-answer, so there is nothing to escalate. To act autonomously a user opts in explicitly: enable the agent (`--agent`, §0.6.1) **and** pass `--yes`. (`--no-agent` keeps the agent off, so `--yes` is likewise inert.)
+- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (compiled in, enabled per §0.6.1, and backed by a reachable provider — §17.4). **On a binary built WITHOUT the agent feature, `--yes`/`-y` MUST be a hard error** (user ruling, 2026-07-09, S106) — usage hint to stderr, exit code 1, the same `--no-cache` + `--link` error style as `--agent` (§0.6.1) — because there is no write-consent gate for it to auto-answer and the flag names an agent-only policy the binary cannot honour. It MUST NOT print `unknown flag`. **On an agent-capable build**, however, `--yes` remains an **accepted no-op** whenever no agent is *active* — in `--run`/`--test`/`--link` mode, or when the agent is dormant (no provider key) or disabled (`--no-agent`): the feature is present, so the flag is valid; there is simply no active gate to auto-answer. The reversal is scoped to the **feature-not-compiled-in** case only. [S106]
+- **Interaction with activation (user ruling, 2026-11-15).** `--yes` does not select a provider or override `--no-agent`. It is inert when the agent is dormant or off; on an agent-free build it remains a hard error as specified above.
+
 - `--yes` auto-answers **consent, never validation.** The pre-flight validator (§17.14.3) runs on every submission regardless of `--yes`; only code that at least parses and type-checks ever reaches the session. `--yes` removes the question, not the correctness floor (§17.14.6).
 
 When `--yes` is active and the agent first wants to write, the REPL MUST present a one-time first-use notice (§17.16) — the autonomy-escalation disclosure, sibling to the §17.8.1 transmit disclosure.
@@ -339,7 +334,7 @@ When `--yes` is active and the agent first wants to write, the REPL MUST present
 
 The `cranelisp` binary reads a small set of **environment variables** that tune execution outside the flag set. This subsection is the **normative home** for the *execution* knobs — the ones that affect how a program is scheduled and run in every invocation mode. They are part of the CLI contract on equal footing with the flags of §0.6, and `user/cli-reference.md` cross-links this table rather than originating the contract.
 
-The execution knobs govern the runtime layer (the backend), so — unlike the REPL-only flags of §0.6 — they apply identically in **REPL, `--run`, `--link` and `--test`** modes. Each is read **once per process** (no per-evaluation re-read; an in-session `setenv` has no effect on an already-running binary). Both are **semantically invisible**: per `spec/12-runtime.md §12.4.3` (lenient evaluation / observational equivalence), neither changes what a program *computes* — only how the computation is scheduled. [S93]
+The execution knobs govern the runtime layer (the backend), so — unlike the REPL-only flags of §0.6 — they apply in **REPL, `--run`, `--link` and `--test`** modes, subject to the linked-executable binding rule in §0.8 (user ruling, 2026-11-15). Each is read **once per process** (no per-evaluation re-read; an in-session `setenv` has no effect on an already-running binary). Both are **semantically invisible**: per `spec/12-runtime.md §12.4.3` (lenient evaluation / observational equivalence), neither changes what a program *computes* — only how the computation is scheduled. [S93]
 
 | Variable | Effect | Default | Scope |
 |---|---|---|---|
@@ -359,3 +354,13 @@ Both knobs ultimately produce the same user-visible effect — serial execution 
 | `CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH` | Library / platform-DLL search paths. | `spec/08-modules.md §8.11` (+ `user/cli-reference.md` consolidated user-facing home) |
 
 Trace/diagnostic-dump variables (e.g. `CRANELISP_CODEGEN_TRACE`, `CRANELISP_IO_TRACE`, `CRANELISP_SCHEDULER_TRACE`, `CRANELISP_RC_TRACE`, `CRANELISP_GOT_TRACE`, `CRANELISP_MODULE_TRACE`) are **internal developer instrumentation**, not part of the user-facing CLI contract, and are intentionally out of scope here. [S93]
+
+### 0.8 Environment Files and Linked Parameters [S123]
+
+**User rulings, 2026-11-15.** Every environment setting the compiler reads at runtime, including agent settings and diagnostic/runtime switches, can also be supplied by a project `.env` and a user configuration file under `~/.config/cranelisp/`. The precedence is **process environment > project `.env` > user file**. This supply applies consistently across compiler invocation modes and before a setting is used.
+
+Files admit keys starting with `CRANELISP_` plus `NO_COLOR`, `ANTHROPIC_API_KEY` and `OLLAMA_API_BASE_URL`; other keys are ignored. The rule includes internal instrumentation even though §0.7 does not document its individual switches. It does not make compile-time build variables runtime settings. **User ruling, 2026-11-15.** The project file is `.env` in the resolved project root. The user file is `~/.config/cranelisp/env`, relocated to `$XDG_CONFIG_HOME/cranelisp/env` when `XDG_CONFIG_HOME` is set. Both use dotenv syntax. A missing optional file is silent; a malformed or unreadable file is a startup error naming its location.
+
+Loader controls are read only from the process environment: `CRANELISP_ENV_FILE=<path>` overrides the project file, `CRANELISP_USER_ENV_FILE=<path>` overrides the user file, and `CRANELISP_NO_ENV=1` disables both files. A file cannot select its own loader controls.
+
+Link-time parameters are baked into the executable. Agent settings, including API keys, are REPL-only and MUST NOT be baked into linked programs. A linked program reads its environment only through a platform. **User ruling, 2026-11-15.** Every applicable non-agent `CRANELISP_*` switch effective at `--link` is fixed in the executable; runtime switches are not reread from its launch environment. Compile-only switches need no runtime payload. The linked executable’s worker pool uses the machine’s available core count, rather than `RAYON_NUM_THREADS` from the environment.

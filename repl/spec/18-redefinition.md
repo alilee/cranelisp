@@ -16,6 +16,10 @@ symbol, installs a trap in a dependent, or retains an alternative callable
 world. A rejected redefinition leaves the complete prior definition live and
 leaves its backing source unchanged.
 
+**User ruling, 2026-11-15.** If a symbol has nevertheless been left broken by
+a redefinition, a call to it is refused at compile time under language
+[§12.7.1](../../spec/12-runtime.md#1271-compile-time-errors).
+
 For a callable unit or whole-pair impl, **turn/publication atomicity** means that
 the complete candidate MUST be validated and compiled before any part is
 published. Failure leaves the complete prior unit live. Resolution and

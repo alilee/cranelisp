@@ -343,7 +343,7 @@ REPL evaluation and entry `main` obey one rule.
 | clean scalar/value result | observe; release is a typed no-op; no keyed lookup |
 | clean owning result | observe completely; call the target once; disarm |
 | display or exit conversion fails | release through the same target before propagating, or through the armed backstop on unwind |
-| driver runtime trap or dispatch fault | no owner; no glue call |
+| driver runtime trap or dispatch fault | no owner; no glue call. S123 target: a runtime panic ends the process inside the runtime, so no driver outcome reaches an owner ([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)) |
 | no release key: no codegen view **and** the observed type does not narrow | hard located invariant error naming the type and the absent view; never shallow release or silent leak. A non-concrete observed type alone is not this row (§1.1.1) |
 | owning type absent from `fresh_jit_drop_glues` | hard integration error; no scan, no late compilation |
 | `jit_address: None` on a fresh-JIT owning result | hard integration error (object-mode polarity in a JIT path) |

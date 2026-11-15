@@ -43,8 +43,9 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [Test discovery and error capture](test-discovery.md) | Language test discovery, invocation and runtime capture. |
 | [Uniform executable identity](s122-overload-reorder-publication.md) | Approved signature identity and implemented types key API. |
 | [Shared document checker](s122-shared-document-checker.md) | Shared-tool boundary and project integration contract. |
+| [Process-ending panics and the environment supply](s123-panics-and-environment.md) | Approved S123 target, unbuilt: the terminal panic funnel, environment files and baked link-time switches. |
 | [Byte-backed text exploration](byte-backed-text.md) | Non-normative options; no language or implementation authority. |
-| [Ownership-stratum options](ownership-stratum-options.md) | Structural option paper; retained choices are not approval. |
+| [Ownership-stratum options](ownership-stratum-options.md) | Structural option paper; option 2's target reading and decision rule for S123. Retained choices are not approval. |
 | [Release-backend proposal](release-llvm-backend.md) | Unratified future proposal; no LLVM work authorized in S122. |
 | [Performance backlog](backlog/performance.md) | User-approved suspended scope and future re-entry decisions. |
 

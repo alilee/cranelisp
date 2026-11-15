@@ -34,8 +34,8 @@ roadmap.
 
 ### Next sprint — S123
 
-S122 closed on 2026-10-02 ([record](archive/sprint-122.md)). No sprint is active.
-S123 Phase 1 opens with the backend audit disposition
+S122 closed on 2026-10-02 ([record](archive/sprint-122.md)). S123 is in
+Phase 1 scope drafting ([active sprint](SPRINT.md)). Phase 1 opens with the backend audit disposition
 ([cranelisp-backend S122 audit](../audits/cranelisp-backend-s122.md), R1–R12):
 the S119 option-2 measurement and decision come before
 [ACT-1031](actions/ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md)

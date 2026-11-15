@@ -481,8 +481,8 @@ residue cells observe and cannot reopen it.
 
 ## 7. Open backend work
 
-Each item below is designed and not yet implemented, except §7.6, which is
-implemented in the working tree and not accepted. Verified against source on
+Each item below is designed and not yet implemented, except §7.6, which landed
+at the S122 close (2026-10-02). Verified against source on
 2026-09-21 (§7.6 on 2026-09-30). None is accepted as residual. Order and
 dependencies are §7.7.
 
@@ -619,8 +619,9 @@ FIXME 0913 must not be closed by pinning annotations in tests or docs.
 
 ### 7.6 The entry convention is derived once, from realization (open, ACT-0974)
 
-**Status (2026-09-30): implemented in the working tree, co-landed with the
-primitives half, uncommitted and not accepted.** The derivation and all four
+**Status: landed at the S122 close (2026-10-02), co-landed with the primitives
+half.** Its borrow arm retires under [uniform counting](uniform-counting.md)
+§5 when that lands. The derivation and all four
 consumers below are in source, and the §9 rows are delivered beside them. The
 SI cells went RED first; `string_primitive_value_discharge` is 10/10 at `test`'s
 V2. Neither the primitives nor the backend review found a blocking issue.

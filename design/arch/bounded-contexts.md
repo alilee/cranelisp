@@ -541,7 +541,10 @@ entries take no counted heap argument.
     joining thread's slot, first error wins, so the combinator stays a plain
     own-thread reader. Both parallelism forms are structured, so every spark
     joins inside the combinator's dynamic extent
-    ([test discovery](test-discovery.md)).
+    ([test discovery](test-discovery.md)). The approved S123 target retires
+    this invariant: `runtime/panic` becomes a terminal funnel that ends the
+    process, and the slot, the ferry and the combinator go
+    ([process-ending panics](s123-panics-and-environment.md) §1).
 14. **Intrinsics captures a platform fault; the binary composes the
     diagnostic.** The guard at the single effect force site keeps the signal
     half host-side, reads the DLL-returned effect outcome and the effect name
@@ -800,7 +803,11 @@ and primitives (§4b, §4a); the platform ABI (§5).
   runtime through intrinsics' `cranelisp_run_program`, which returns an outcome
   and neither exits nor clears the error slots. The host translates the outcome
   into an error or a value; the linked stub branches on it. Error-slot checks
-  therefore exist at one site and cannot diverge across modes.
+  therefore exist at one site and cannot diverge across modes. Under the
+  approved S123 target a runtime panic never returns to the driver, and the
+  binary supplies environment files before any reader while linked
+  executables read baked runtime switches
+  ([process-ending panics and the environment supply](s123-panics-and-environment.md)).
 - **Mutual imports are a cycle error, not a deadlock.** All signatures of a
   module's import closure register, in topological order, before any body
   checks; a cyclic closure has no order and is diagnosed at the import.

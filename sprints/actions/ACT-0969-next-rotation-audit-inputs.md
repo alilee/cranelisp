@@ -29,7 +29,6 @@ reference, and strikes them as each audit lands.
 | Context | Predecessor (Git) | Observation to re-judge, not to act on |
 |---|---|---|
 | frontend | [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/frontend-s113.md) | `ast_builder.rs` is 2,396 lines and unsplit (S87 F1, never recommended at S113). S87 F6 — the justified `unreachable!`/`expect` sites — was suggestion grade and never re-derived. |
-| backend | [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-backend-s110.md) | After the R5 funnel split, `compile_apply` is ~240 lines; `apply.rs` is 3,014 and `fn_compiler.rs` 5,202 lines, both larger than at S110. |
 | intrinsics | [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-intrinsics-s115.md) | `io.rs` has grown to 1,847 lines with the reactor work; the 2026-06-14 monolith finding was resolved as filed, so this is a new fact. |
 | primitives | [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-primitives-s116.md) | S87 LOW-2: `marshal.rs` reads and writes cells through offset-indexed `read_i64`/`write_i64` free functions rather than a typed accessor. Suggestion grade; unchanged; never disposed. |
 | platform | [historical assessment](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-platform-s117.md) | Every "ABI v9" statement in that assessment is dated: `ABI_VERSION` is now 11. Read it as history, not as the current contract. |

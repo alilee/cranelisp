@@ -192,6 +192,8 @@ types at a concrete instantiation for category and glue purposes.
   - `catch-runtime-error` gains per-instantiation concrete instances named by the canonical
     mangler, each realised today as an alias onto the one body. The instance name is where
     the type closes; a layout change then alters realization per instance with no tree change.
+    Superseded by the approved S123 target, which removes the entry and so shrinks the
+    roster to three ([process-ending panics](s123-panics-and-environment.md) §1.2).
   - No filing carries this work. `sprint` schedules it or records an owned deferral.
 - The `TemplateBody::UniformRust` and `Realization::FacadeOf` carriers exist for that end
   state; their presence is not evidence of a production roster.

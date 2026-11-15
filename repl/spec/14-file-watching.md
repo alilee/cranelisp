@@ -12,7 +12,7 @@ The file watcher MUST monitor directories that contain source files actually loa
 
 The watcher SHOULD use OS-level filesystem notification (e.g., `FSEvents` on macOS, `inotify` on Linux) rather than polling. This provides near-instant detection without CPU overhead.
 
-New files in watched directories SHOULD be detected, but they do not trigger any action until they are referenced by an import or module load.
+New files in watched directories SHOULD be detected, but they do not trigger any action until they are referenced by an import or module load, except for an entry backing file that appears mid-session (§14.9).
 
 The watcher MUST NOT watch directories that contain no source file loaded during the current session. Stdlib directories are watched only if the session loaded a module from them. [Uncovered S122 — no cell: an unloaded directory's changes produce no notification whether or not it is watched, so the rule is not observable end to end, and no unit cell observes the watched-directory set]
 
@@ -97,6 +97,7 @@ Cannot evaluate: math.cl has errors. Fix it and save.
 A module fails to recompile when §14.2 step 3 does not complete, including
 when its file does not parse or typecheck and when §14.8 refuses the reload,
 and when it fails as a dependent recompiled under §14.2 step 4.
+A confirmed deletion follows §14.9 instead of this failed-reload rule (user ruling, 2026-11-15).
 When a module fails to recompile:
 
 1. The old module state has already been cleared (§14.2 step 2).
@@ -179,3 +180,17 @@ docstrings or positional sum-payload labels, does not fail under this section. [
 
 A restart compiles the saved source with no prior live declaration (§15.2), so
 saved source that otherwise compiles establishes the changed type. [Tested tests/repl_persist::persist_structural_reload_failure_keeps_saved_edit_until_restart — restart establishes the edit]
+
+### 14.9 Backing File Appearance and Deletion [S123]
+
+**User rulings, 2026-11-15.** If `user.cl` was absent at startup and appears
+mid-session, the REPL MUST load it before a later definition can regenerate
+that file. A failing load follows the session-lock rule (§14.5); its bytes
+must not be overwritten.
+
+When a loaded backing file is confirmed deleted, the REPL MUST retain its
+live definitions, notify the user of the deletion, and ask for explicit consent
+before recreating the file. Without consent it MUST NOT recreate the file,
+including after a later definition. Transient absence during an editor's
+write-then-rename save is not a confirmed deletion; detection is assessed after
+the save-coalescing window.

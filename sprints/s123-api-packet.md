@@ -1,0 +1,151 @@
+# S123 public-API approval packet
+
+**Owner:** `arch`. **Reader:** the user, at the inter-crate public-API gate
+(root `CLAUDE.md` §Roles). **Status:** rows P1–P10 are approved
+([user rulings on the Phase 3 decisions, 2026-11-15](SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15)).
+Rows P11–P13 are proposals awaiting the gate; each needs the user's explicit
+approval before implementation starts. A mismatch between an approved row and
+the generated diff returns here. **Checkpoint:** HEAD `f747990f` plus the
+uncommitted S123 coordination, spec and design edits, 2026-11-15. Line counts
+are read from the committed `public-api.txt` files at that checkpoint.
+
+Part A is what S123 implements. Part B is scheduled outside the Phase 5
+functional change-sets. The withdrawn option-A row (`runtime/panic_pending`) of
+the [architecture review](s123-architecture-review.md) §5 is not proposed.
+
+Each row gives the exact items, their producer and consumers, compatibility,
+cache-schema and ABI impact, and the expected `public-api.txt` effect. "Lines"
+counts every baseline line naming the item, including the generated
+auto-trait rows the current format prints.
+
+## Gate status
+
+| Rows | Status |
+|---|---|
+| P1–P9 | Approved 2026-11-15. P6 as proposed: `runtime/panic` stays and never returns. P3, P4 and P9 because platform dispatch faults end the process |
+| P10 | Approved 2026-11-15 with U′; it lands only in U′'s change-set |
+| **P11, P12, P13** | **Awaiting the user's gate** (§A5) |
+| B1 | Scheduled for S124 |
+| B2, B3 | Scheduled for S123 close, with the baseline regeneration |
+
+## Part A — deltas S123 needs
+
+### A1. `cranelisp-intrinsics`: panics end the process
+
+Governing contract: [process-ending panics](../design/arch/s123-panics-and-environment.md)
+§1. Interior: `design/intrinsics/process-lifecycle.md` §1 and §3.
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P1 | Remove `#[export_name = "catch-runtime-error"] pub extern "C" fn panic::catch_runtime_error(i64) -> i64`, its catalog row and its `primitives` bootstrap registration | Root: `src/bootstrap.rs` registration and roster pin, `src/exe.rs`, `src/worker.rs`, `src/repl/format.rs`. Language: `stdlib/fn/result.cl`, `stdlib/testing/runner.cl`, `exemplar/main.cl`, `examples/32-concurrency-combinators.cl`, `user/guide/testing.md`, test fixtures | Removes a language primitive (user ruling). No serde shape change; `BUILD_ID` invalidates cached objects that import it. Emitted-call ABI: one import fewer | intrinsics −1 |
+| P2 | Remove `pub fn panic::take_runtime_error() -> Option<String>` and `pub fn panic::set_runtime_error(String)` | Root production: `src/expander.rs`, `src/pipeline.rs`, `src/session_v4/lifecycle.rs`, `src/session_v4/test_runner/run.rs`. Tests only: backend `lib.rs`, `test_support.rs`; root `pipeline.rs` and runner tests. Removes the consumer edge root → these two items | Breaking for those callers, which lose their purpose. No schema or ABI effect | intrinsics −2 |
+| P3 | Remove `pub struct panic::DispatchFault` (fields `fn_name`, `cause`), `pub fn panic::set_dispatch_fault(DispatchFault)` and `pub fn panic::take_dispatch_fault() -> Option<DispatchFault>` | Root: `src/pipeline.rs`, `src/session_v4/lifecycle.rs` | Breaking for those callers. No schema or ABI effect | intrinsics −12 |
+| P4 | Remove `#[repr(C)] pub struct panic::ProgramOutcome` (fields `exit_code`, `error_kind`) and `#[export_name = "cranelisp_check_runtime_error"] pub extern "C" fn panic::cranelisp_check_runtime_error()`. Depends on P3 | Root: `src/pipeline.rs`, `src/session_v4/lifecycle.rs`; the generated startup stub (`src/exe.rs`), which stops calling the drain | Runtime/stub ABI only: both ship in one build, so no platform `ABI_VERSION` change | intrinsics −11 (10 for the struct, 1 for the export) |
+| P5 | Change `pub extern "C" fn panic::cranelisp_run_program(*const u8, bool) -> ProgramOutcome` to `-> i64`, the program's reduced result word. Depends on P4 | Root: `src/pipeline.rs`, `src/session_v4/lifecycle.rs`, the startup stub (one return register instead of a two-word struct) | Same as P4 | intrinsics: 1 line changed |
+| P6 | Change `#[export_name = "runtime/panic"] pub extern "C" fn panic::runtime_panic(*const u8, usize)` to `-> !` (never returns) | `cranelisp-primitives` Rust raisers (`ring0.rs`, `marshal.rs`): behaviour unchanged, their sentinel returns become unreachable. Backend: imports by name through the catalog. `platforms/poll-pool` resolves the symbol at load: its survival fixture becomes a process-exit fixture | C ABI unchanged (same parameters, no result). Semantic change: no caller resumes. `runtime/panic` is not part of the declared platform host vtable, so no `ABI_VERSION` change | intrinsics: 1 line changed |
+| P7 | Catalog data: the `runtime/panic` row declares `has_return: false`, derived from the function type by ACT-1033's crate-private derivation | Backend import declaration (`jit.rs` via `intrinsics_table()`) | Corrects a wrong row; `IntrinsicEntry`'s public fields are unchanged | intrinsics +0 |
+
+The binary deletes its consumers of P1–P5 and P9 in the same change-sets: the
+REPL's trap arm and `runtime error:` display, `trampoline`'s slot read, the
+expander's slot read, the runner's per-test bracket, `compose_dispatch_error`,
+and the stub's error block and drain call (`design/int/int.md` §16.0, S123
+bullet, delta 3). That is consumer removal under approved rows, not a new
+delta.
+
+### A2. `cranelisp-intrinsics`: baked runtime switches
+
+Governing contract: [environment supply](../design/arch/s123-panics-and-environment.md)
+§2.2. Interior: `design/intrinsics/process-lifecycle.md` §2.
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P8 | Add `pub mod runtime_switches` with `pub fn runtime_switches::capture_runtime_switches() -> Vec<u8>` (an opaque, versioned capture of the current switch values) and `#[export_name = "cranelisp_install_runtime_switches"] pub extern "C" fn runtime_switches::cranelisp_install_runtime_switches(*const u8, usize)` (installs a capture as the runtime's only switch source; ends the process with a located fault if a switch was already read or the capture is malformed) | Root: `src/exe.rs` calls the capture at `--link` and embeds the bytes in the startup object; the stub imports the install entry as its first call. New consumer edge: root → `runtime_switches`. `cranelisp-exe-bundle` adds `pub use cranelisp_intrinsics::runtime_switches;` to force-link the export (source change in a crate with no baseline). `design`(int) consumes it as stated and names no switch (`design/int/int.md` §16.0, delta 1) | Additive. No crate edge is new: root and exe-bundle already depend on intrinsics. The capture format is private to intrinsics, carries a format byte, and never reaches a cache: the startup object is per link. No `CACHE_SCHEMA_VERSION` change | intrinsics +3 (module, function, export) |
+
+### A3. `cranelisp-types`
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P9 | Remove the variant `PlatformError::DispatchError { fn_name, cause, location }`. With P3 it has no producer | Root: `src/pipeline.rs` (producer and tests) | `PlatformError` is `#[non_exhaustive]` and not serialized; no schema effect | types −4 |
+| P10 | No signature change. Semantic contract of `cranelisp_types::ownership_analysis_off` widens from "analysis off" to "moves off", the uniform reference of U′'s rule U1 (`design/backend/uniform-counting.md` §7). Rustdoc changes only | Backend emission; the cache manifest's ownership key is unchanged | The baseline cannot show it, so it is listed for approval here | types +0 |
+
+Under U′ the backend stops reading borrow modes from `ModeSummary`, and those
+typecheck outputs lose their emission consumer. Retiring or narrowing them is
+a later packet; nothing is proposed for S123.
+
+### A4. Confirmed without a delta
+
+| Surface | Expected effect | Evidence owed |
+|---|---|---|
+| Backend: uniform counting (U′), the terminating `runtime/panic` call | +0 (`design/backend/uniform-counting.md` §7) | Unchanged baseline, recorded at the Phase 5 checkpoint |
+| Frontend, typecheck, platform | +0 | Unchanged baselines |
+| Primitives: the `checked-quot` primitive (`spec/12-runtime.md` §12.7.3) | +0. A primitive is a declaration row in `PRIMITIVES_TABLE` and a `pub(crate)` body, as `parse-int` is; no public item changes. A design that needs a public item returns here | Unchanged baseline |
+| Macro-expansion panics end the process (user ruling) | +0: no containment entry is added | — |
+| The REPL panic report: `error: runtime panic:`, plain on stderr (user ruling) | +0: no host formatter registration | — |
+| Agent in the default build | No item, signature or edge changes; only the configuration that compiles `cranelisp::agent` (review §1.1) | — |
+| Environment-file supply | A binary-private module (`design/int/environment.md` §1) | — |
+| ACT-1033's catalog derivation | Crate-private | `IntrinsicEntry` unchanged |
+| Any other root-crate item | No change beyond P12 (`design/int/int.md` §16.0, delta 6) | — |
+
+### A5. New deltas from `design`(int) — awaiting the gate
+
+Source: `design/int/int.md` §16.0, S123 bullet, deltas 2, 4 and 5. The names
+are `arch`'s proposal following `design`(int)'s stated shape; a different name
+or parameter list returns to this gate.
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P11 | In `cranelisp-intrinsics`, add `pub const panic::PANIC_REPORT_PREFIX: &str = "error: runtime panic: "` and `pub const panic::PANIC_EXIT_STATUS: i32 = 1`. The terminator uses both, so they are the only copies. Rustdoc states the promise: every language-panic report is one stderr line that begins with the prefix, and the process then exits with the status; the status is shared with other failures, so a consumer must not classify by status alone | Root: the test supervisor in `src/session_v4/test_runner/` ([test runner §6.5](../design/int/test-runner.md#65-the-test-child)). New consumer edge root → these two items | Additive. No crate edge is new. No schema or ABI effect: the values are the spec's (`spec/12-runtime.md` §12.7.5) and today's batch status. **Recommendation: approve.** It single-sources a spec-fixed value between its producer and its one consumer (Principle 07) with a two-item facade (Principle 02). Declining it leaves a private copy in int, guarded only by the end-to-end panic cell | intrinsics +2 |
+| P12 | Root crate (no baseline). Change `pub fn CompilerSession::run_tests(&self) -> Result<TestRunReport, CranelispError>` to `pub fn CompilerSession::run_tests(&self, records: &std::path::Path, modules: Option<&[cranelisp_types::ModuleFullPath]>, resume_after: Option<&cranelisp_types::FQSymbol>) -> Result<(), CranelispError>`: the child's engine, which runs the selected tests in this process, appends one record per test to `records`, and runs only tests after `resume_after`. `modules` is the REPL's selection; `None` walks the entry chain as `--test` does today. `Err` keeps its meaning: the run could not start. Add `pub fn session_v4::supervise_tests(child_args: &[std::ffi::OsString], modules: Option<&[cranelisp_types::ModuleFullPath]>) -> Result<TestRunReport, CranelispError>`, re-exported beside `TestRunReport`: it needs no session, starts and restarts the child with the compile-affecting `child_args`, and returns the unchanged `TestRunReport` | `src/main.rs` (the binary target): `--test` calls `supervise_tests`, and the child mode calls `run_tests`. The REPL's `handle_run_tests` calls `supervise_tests`. No integration test calls either; `tests/` drive the binary | Breaking for `run_tests`' one caller, `main.rs`. No schema or ABI effect. The child's arguments are a CLI surface that `spec` states (`design/int/test-runner.md` §6.5); the record format is private to the runner | Root has no baseline. The gate applies to the item change and the bin → lib consumer edges |
+| P13 | Remove the broken-symbol state. In `cranelisp-types`: the variant `Life::Broken { slot: CallableSlot, error: BrokenProvenance }`, `#[non_exhaustive] pub struct BrokenProvenance` (fields `broken_by`, `message`; `BrokenProvenance::new`), `#[non_exhaustive] pub struct BrokenTransition<C: CodeStore>` (fields `displaced_owner`, `slot`) and `pub fn SymbolTable::mark_broken(&mut self, &Symbol, BrokenProvenance) -> Result<BrokenTransition<C>, LifecycleError>`. In `cranelisp-backend`: `pub fn compile_trap_stub(*const u8, usize) -> Result<(*const u8, Code), CompilationError>`. Depends on the deletion of the superseded redefinition residue ([session transaction §5.2](../design/int/session-transaction.md#52-no-symbol-is-left-broken)), which removes every production caller | After that deletion: crate-private match arms only, in types (`lifecycle.rs`, `module.rs`), typecheck (`adt.rs`), backend (`lib.rs`, the `compiler/entry_convention.rs` `Broken` arm) and root (`src/worker.rs`), plus tests (types `module/tests.rs` and `crates/cranelisp-types/tests/lifecycle_facade.rs`, backend `entry_convention/tests.rs` and `lib.rs`, root `info_source_tests.rs`). The backend's `compile_trap_stub` tests also read P2's slot, so they are reworked or deleted in S123 regardless | Breaking only for exhaustive matches on `Life`, which are inside the workspace. **No `CACHE_SCHEMA_VERSION` bump.** `Life` is persisted as `serde_json`, which tags variants by name, so the remaining variants encode identically. No sidecar holds `Broken`: a module with a broken entry is never written ([session transaction §8.3](../design/int/session-transaction.md#83-broken-modules-are-not-persisted)). A sidecar that did would fail to decode, and the cache loader maps a decode failure to `CacheStale::Deserialise`, a fresh build, not an error. Falsifier: a cache hit that panics or errors on decode rather than missing. No ABI effect. With P13 the state is unrepresentable in the types crate (Principle 20) | types −26 (`Life::Broken` 3; `BrokenProvenance` 12; `BrokenTransition` 10; `mark_broken` 1). Backend −1. Typecheck +0 |
+
+**Scheduling P13.** Recommended: with the B3 batch at S123 close, under the
+same baseline regeneration, if the residue deletion has landed in Phase 5;
+otherwise with B1 in S124. Until P13 lands, the one remaining hole is a new
+call to the public `SymbolTable::mark_broken`.
+
+## Part B — scheduled outside the Phase 5 functional change-sets
+
+### B1. K5 N1: renamed import and export entries (ACT-0997) — S124
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| N1 | In `cranelisp-types`: add `#[non_exhaustive] pub struct ImportName { pub source: Symbol, pub local: Symbol }` with `pub fn ImportName::new(source: Symbol, local: Symbol) -> ImportName`; change `ImportNames::Specific(Vec<Symbol>)` to `ImportNames::Specific(Vec<ImportName>)`. An unrenamed entry has `source == local`. `ExportSpec` shares `ImportNames`, so §8.4 export renames use the same shape | Producer: frontend `module_extract.rs` parses `(source local)` entries. Root: `src/imports.rs` binds `local` to `source`; `src/save.rs` regenerates the written form and merges lists; `src/session_v4/test_runner/selection.rs`, `src/process_form/{cache_restore,dependency}.rs`, `src/cluster.rs`, `src/session_v4/{index_worker,lifecycle}.rs` pass through or match | Breaking for every match on `Specific`'s payload. **`CACHE_SCHEMA_VERSION` bump**: `SymbolTable.imports` and `exports` are persisted. No ABI effect. The correction must carry ACT-0997's impl-identity evidence (an impl written through a renamed type import and a renamed trait import, each persisted with a later definition, plus a cold restart) | types: +12 (struct, 2 fields, `impl` header, constructor, 7 auto-trait rows), 1 changed (`Specific`). Frontend +0 |
+
+`ImportNames` itself lacks the `#[non_exhaustive]` the types policy requires.
+That is a separate one-line hygiene change, not included.
+
+### B2. K11: the baseline batch — S123 close
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| K11-a (ACT-0955) | Add `--omit auto-trait-impls` to the canonical command (`design/arch/CLAUDE.md` §Baseline-diff discipline, `tests/CLAUDE.md`) and to `tests/public_api_relocations.rs`; regenerate all seven baselines in one mechanical change-set. Before it, add a direct compile fence for any auto-trait property that is a cross-crate promise with no in-workspace consumer to enforce it. Candidates are the `cranelisp-platform` types out-of-tree platform authors hold; in-workspace cross-thread uses already fail to compile if a property is lost. Coupled: remove `unsafe impl Send for CacheWritePacket`, which R10-3 makes moot | The guard and the two documents | No product, schema or ABI change. Explicit `unsafe impl Send`/`Sync` rows remain (13 in source) | Approximate contraction by pattern at the checkpoint: types −978, frontend −14, typecheck −68, backend −210, intrinsics −91, platform −194, primitives 0. Part A and P13 change these figures; the regenerated diff is the exact figure and needs one user confirmation, separate from functional rows |
+| K11-b (ACT-0963) | Remove the field `pub is_runtime: bool` from `catalog::IntrinsicEntry` (also printed at the root re-export path), with its derivation test | None outside the crate; mentioned in prose in intrinsics `lib.rs` and backend `jit.rs` | Breaking only for struct-literal construction, which happens only in the crate. No schema or ABI effect | intrinsics −2 |
+| K11-c (ACT-0971, T1) | Narrow `SymbolTable::settle_template` and `SymbolTable::settle_concrete` to `pub(crate)` | None outside `cranelisp-types`; production uses the `settle_checked_*` pair. The callers are the crate's own module tests | No schema or ABI effect | types −2 |
+| K11-d (ACT-0971, T2) | Narrow `MonoExpr::lenient_from_expr` to `pub(crate)`; re-export it from `cranelisp_types::test_support` under the existing `test-support` feature | Production: none outside types (`synthetic_local_from_expr` delegates internally). Tests: 14 call sites in root test modules and backend `test_support.rs` move to the test-support path; root and backend dev-dependencies enable `test-support`. Its planned end state is deletion ([concrete boundary](../design/arch/concrete-boundary-type.md) §3.1.1) | No schema or ABI effect. The default baseline is generated without `test-support` | types −1 |
+
+### B3. Audit R10: public items with no consumer (backend audit F11) — S123 close
+
+Census at the checkpoint: each item's external references were searched in
+`src/`, `crates/`, `tests/` and `platforms/`; comment-only mentions are not
+consumers.
+
+| Row | Exact delta | External consumers found | Compatibility, schema, ABI | `cranelisp-backend` `public-api.txt` |
+|---|---|---|---|---|
+| R10-1 | Remove `pub fn load_object` (crate root) | None. `Linker::load_object` calls are a different method | — | −1 |
+| R10-2 | Make `mod artefact`, `LinkerArtefact`, `ObjectArtefact` and their root re-exports `pub(crate)` | None | — | −42 |
+| R10-3 | Delete the dormant root module `src/cache_writer.rs` and make `CacheWritePacket`, `ObjectCompileInput`, `ProcessedPacket`, `build_cache_packet` and `process_cache_packet` `pub(crate)` or delete them; `build_isa` and the `cache::object` module path stay | Only `src/cache_writer.rs`, which nothing in the root calls. Removes the edge root → `cache::object` packet family | — | −41 |
+| R10-4 | Make `pub mod compiler` and `compiler::CompileContext` (struct, 10 fields, `lookup_type_def`, `Clone`) `pub(crate)` | None; no other public signature names it. The typecheck and types hits are `cranelisp_types::CompileContext`, a different type | — | −23 (including the module line) |
+| R10-5 | Make `pub mod primitives_inline` `pub(crate)` | None; it exports nothing | — | −1 |
+| R10-6 | Make `heap::HeapClosure` and its five associated items `pub(crate)` | None; intrinsics' mentions are comments | — | −17 |
+| R10-7 | Make `heap::NULLARY_THRESHOLD_I64`, `jit::jit_free_memory_call_count`, `got_observer::emit`, `cache::serialize::{serialise_meta, deserialise_meta}` and `cache::CACHE_FORMAT_VERSION` `pub(crate)` (`jit_free_memory_call_count` under `#[cfg(test)]`) | None (`tests/cache.rs` and `src/got_trace.rs` mention them in comments only) | — | −6 |
+| R10-8 | In `cranelisp-types`: remove the field `borrowed_sibling: Option<CallableSlot>` from `Realization::ExternShim`, which no producer populates since ACT-0974 | Backend cache validation arm (`cache/serialize.rs`) and tests; types `lifecycle.rs`, `module.rs`; typecheck tests; `tests/ownership_fences.rs` | **`CACHE_SCHEMA_VERSION` bump**: `Realization` is persisted | types −1, 1 changed (the variant) |
+| R10-9 | Layout dual source: closure, ADT and Vec offsets are defined in both backend `heap.rs` and intrinsics. Position: intrinsics owns them, as bounded contexts §4b invariant 2 states, and the backend reads its blessed constants as primitives already does for strings and vectors | Backend emission | No layout change | **Pending**: the exact constants are for `design`(intrinsics) and `design`(backend) to list; expect additions to intrinsics and removals from backend. A listed row returns here before implementation |
+
+## Part C — decisions outstanding
+
+| | Decision | Recommendation |
+|---|---|---|
+| G4 | Approve P11, the panic report prefix and exit status as intrinsics constants | Approve |
+| G5 | Approve P12, the test runner's child engine and supervisor entry in the root crate | Approve |
+| G6 | Approve P13, the removal of the broken-symbol state, and its scheduling | Approve, with B3 at S123 close if the residue deletion lands in Phase 5; otherwise S124 |
+| G7 | R10-9, once its constants are listed | Decide when listed |

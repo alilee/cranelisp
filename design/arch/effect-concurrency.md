@@ -1452,6 +1452,11 @@ ABI, schema or language change; no mechanism is selected here.
 
 ## 10. Supervisor semantics — co-requisite of launch-and-continue
 
+**Approved S123 target, not yet built:** a detached strand's panic ends the
+process, and the fault policy below retires with the error ferry
+([process-ending panics](s123-panics-and-environment.md) §1.2;
+`spec/12-runtime.md` §12.7.9). This section describes the as-built system.
+
 Launch-and-continue creates an un-joined effect: a fire-and-forget handler that panics
 has **no join point** for its error to ferry to. Supervisor semantics is the policy for
 where that error goes — and it must land **with** launch-and-continue, not after it.

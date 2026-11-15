@@ -263,8 +263,10 @@ the fine-grained forward/back trace; this plan does not duplicate every name.
 
 ## Active allocation and unresolved evidence
 
-[S122 evidence](s122-evidence-delta.md) owns the current per-stream allocation,
-executing checkpoints, bounded closures and remaining gates; its
+[S123 evidence](s123-evidence-delta.md) owns the current sprint's allocation,
+including the evidence the S123 panic, agent and environment rulings
+re-point. [S122 evidence](s122-evidence-delta.md) owns the prior per-stream
+allocation, executing checkpoints, bounded closures and remaining gates; its
 [acceptance reconciliation](s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)
 is the current gate disposition. The [active sprint](../../sprints/SPRINT.md)
 owns sequencing and user decisions. Neither a historical RED nor deletion of
@@ -322,20 +324,10 @@ active allocation cites them; they are not fresh source censuses.
   a fold-bodied imported generic (0488c), and definition-over-import shadow
   order (0484, a rejected-program case whose capture suitability needs review).
   Provenance: `git show a07823d8:tests/fixtures/clif_baseline/EXCLUSIONS.md`.
-- Option-2 (uniform emission) dev-tier cost remains unmeasured. The
-  [ownership-stratum options](../../design/arch/ownership-stratum-options.md)
-  paper defers option-2 adoption until that cost is measured, and no sprint
-  schedules the measurement. The S119 method (§7 at the revision above) is the
-  starting point:
-  - subject: the all-Owned lowering toggle; control: current emission; same
-    binary and tree, with only the per-child environment differing;
-  - the toggle leaves structural elisions in place, so the result is a lower
-    bound on uniform emission's cost unless `design`(backend) enumerates the
-    gap;
-  - measure the exemplar warm solve's wall time and RC op counts, the
-    contention benchmark, and the full suite's wall time and failures by name.
-
-  Nothing is allocated until the option is scheduled.
+- Option 2 is decided: the user adopted reading U′ in S123. Its cost is
+  measured against the last pre-U′ binary under
+  [S123 condition U-8](s123-evidence-delta.md#31-ownership-under-u-memory-safety),
+  which supersedes the earlier toggle-based method.
 - Historical unfiled limits remain explicitly unclassified. Each keeps its
   exact provenance so its substance is recoverable without re-derivation:
   - the S108 all-green multi-form display note — the

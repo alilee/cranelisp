@@ -9,6 +9,12 @@
 > the opt-in spark-capture borrow. Every refinement is defined against this
 > lowering ([Principle 25](../arch/principles/25-narrowing-carries-its-check.md)).
 >
+> **Superseded on landing**: the adopted [uniform counting](uniform-counting.md)
+> design (S123, not built) replaces this lowering's caller-side increment of
+> every variable argument (§3.1), the uncounted aliases and borrowed binders
+> (§5.5), scope-exit release (§5), the capture-return increment (§5.6) and the
+> opt-in spark-capture borrow (§5.5.2). §2, §3.3 and §3.5 stay.
+>
 > **Section numbers are citation anchors.** Source comments and tests cite them,
 > so they are stable; a missing number is a retired section whose content now
 > lives in one of the homes below.
@@ -98,8 +104,7 @@ For each heap parameter an extern author decides exactly one of:
   `crates/cranelisp-primitives/src/declarations.rs`: its shim signature takes
   each heap argument owned, and its ownership summary carries the analysis
   fact. There is no separate audit table to keep in step. `string-identity`
-  moves its argument into its result (ACT-0974, in the working tree,
-  uncommitted and awaiting user acceptance).
+  moves its argument into its result (ACT-0974, landed at the S122 close).
 - The backend derives every extern call's convention from the realization, not
   from the declared fact
   ([non-concrete-release-contract.md](non-concrete-release-contract.md) §7.6).

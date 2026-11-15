@@ -211,6 +211,18 @@ registers the observer with its owning crate only when the activator is on.
 | `--run` exit-code escape (spec §12.6) | explicit `flush_traces()` before `process::exit` |
 | `run()` returned `Err(_)` → exit 1 | explicit `flush_traces()` before `process::exit` |
 
+**S123 target (designed 2026-11-15, not implemented).** A runtime panic ends
+the process inside the runtime's funnel, at a site int does not control
+([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)).
+`main` therefore registers one process-exit hook (libc `atexit`) at startup,
+after the environment supply, that calls `flush_traces()`. The hook covers the
+panic exit and every `process::exit` site, so the explicit per-site calls
+retire with it. Because draining empties the rings, the hook and the `Drop`
+guard together still print each event once. The hook neither exits nor
+changes the status. When a worker thread panics, other threads may still be
+appending while the hook drains. The dump is diagnostic, so a torn tail is an
+accepted residual.
+
 Deliberately **not** covered: argv-parse `process::exit` paths (they fire before
 any event can be emitted, so the flush would be a no-op and an unconditional
 `exit` reads more clearly); `std::process::abort()`; and SIGKILL/SIGABRT, which

@@ -70,8 +70,10 @@ binding under the same name:
 | `AbiChanging` | Prior exists with a different language type | fresh mint; old slot frozen |
 
 The gate runs at the commit because the slot decision must precede codegen that
-embeds slot indices. Each classification rides the processed cluster back to
-eval as a `RedefinitionOutcome` (§13).
+embeds slot indices. The slot policy and the rematerialization check read
+`classify_redefinition` directly. As built, each classification also rides the
+processed cluster back to eval as a `RedefinitionOutcome`; only the superseded
+residue consumes it, and it is deleted with that residue (§5.2).
 
 ### 2.2 The comparand
 
@@ -119,7 +121,55 @@ admission or commit path (Principles 7 and 11).
   from explicit to default, the synthesised default body never appears in the
   form, and the stale override would keep dispatching (`spec/07-traits.md`
   §7.1.5). Recompiling a sibling implementation of the same trait costs a
-  compile and changes nothing observable.
+  compile and changes nothing observable, provided that publication owns
+  every body it compiled (next bullet).
+- **Every compiled target has a publication owner** (ACT-1035; S123 design,
+  2026-11-15, not implemented). Codegen writes each compiled body's address
+  into its GOT slot. Publication, however, attaches the batch's code owner
+  only to the staged concrete bodies (`publish_prepared_generation_with`'s
+  owners come from `prepared.staging.codegen_targets()`). A live sibling
+  enrolled by the trait-wide predicate above is compiled and patched without
+  an owner. If the turn stages no concrete body, as with a parametric impl,
+  whose methods are templates, nothing holds the new code. The JIT is freed
+  when the turn ends, and the sibling's slot points into freed memory
+  (Principle 22).
+  - **Confirmed by probe** (2026-11-15, debug binary at `f747990f`,
+    primitives-only prelude, fresh directories). ACT-1035's five-line
+    program dies with SIGSEGV. Wrapping the parametric impl as
+    `(begin (impl Size (Opt a) …) (defn keep [] 0))` prints
+    `:primitives/Int 5`: one staged concrete body gives the JIT an owner.
+    The same `begin` without `keep` dies. `CRANELISP_CODEGEN_DUMP` shows
+    `Size.size$primitives/Int` compiled at the parametric impl's turn as
+    well as its own.
+  - **Rule: the batch is the staged body set.** Publication can own only
+    staged bodies: `SymbolTable::publish_compiled_staged` requires the owner
+    keys to equal the staged `Concrete`/`Body` key set (its rustdoc). So
+    codegen must compile only what staging holds, and everything staging
+    holds. The trait-wide predicate above therefore selects from the staging
+    table's codegen targets, not from the candidate table that merges live
+    and staged state (`worker::plan_staging_commit_inner`'s `tables`). The validity check after
+    `derive_codegen_batch` tightens from "is a live concrete callable" to
+    "is a staged concrete body". It is a located hard error before codegen,
+    so an unowned compile cannot be written again
+    ([Principle 07](../arch/principles/07-single-source-of-truth.md),
+    [Principle 22](../arch/principles/22-published-pointers-have-retention-owners.md)).
+  - **What the omitted-default case needs.** A method whose source changes
+    from explicit to default must still be compiled. Its synthesised default
+    body is re-staged by the turn, so selecting from staging keeps it.
+    `dev` confirms this first with the existing cell
+    `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`,
+    re-run against a staging-only selection. If the default body turns out
+    not to be staged, the defect is in staging and is fixed there. The
+    fallback is to let publication own an unstaged recompiled sibling and
+    retain its displaced `Code`. That changes `publish_compiled_staged`'s
+    public contract, so it goes to `arch` and the user gate, and is not
+    designed here.
+  - **Unit evidence (`dev`, at the `worker` seam).** A live concrete
+    `Size.size$Int` plus a staged parametric `Size` impl: the batch does not
+    contain `Size.size$Int`. RED today, because the trait-wide predicate
+    enrols it. A planted unstaged target in the batch is refused by the
+    tightened check, which is the detection proof. The omitted-default row
+    still passes. QA's REPL cell is the end-to-end evidence.
 - The discriminating unit cell is
   `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`; an
   explicit-method cell passes under either derivation. End-to-end behaviour
@@ -270,6 +320,8 @@ workers.
 
 ## §5. BROKEN state (superseded residue)
 
+§5.1 describes the residue. §5.2 is the S123 design that retires it.
+
 ### 5.1 Marking
 
 `redefine::mark_broken` transitions a slotted entry through the types-owned
@@ -278,6 +330,79 @@ pool, and patches the slot in place. A slot-less entry is left unchanged.
 `broken_status_line` renders a `Life::Broken` entry's provenance at `/sig`,
 `/info` and bare lookup. REPL §18 forbids creating broken symbols on ordinary
 redefinition; reload and restart never restore broken state (§18.8).
+
+### 5.2 No symbol is left broken
+
+Status: S123 design (2026-11-15); not implemented. The user ruled that a call
+to a symbol a redefinition left broken is refused at compile time. A trap
+stub raises through `runtime/panic`, which now ends the process, so a
+reachable trap would end the REPL.
+
+- **The refusal is the redefinition's.** A language-type change is admitted
+  only when the target has no blocking dependent (REPL §18.1). The scan (§3.3)
+  reads every binding's recorded `callees`, and those are recorded for
+  template and concrete bodies and for macro clauses alike
+  (`callee_edges::binding_callees`, read 2026-11-15). So every symbol that a
+  type change could break is a blocker, and the change is refused before
+  publication with the §18.1 diagnostic. A same-type replacement patches in
+  place and breaks no caller. A whole-file reload recompiles or locks its
+  dependents (§7.3), and a locked session runs no code. No path leaves a
+  callable symbol broken, so no compiled call can reach a trap.
+- **Making it structural: the residue is deleted.** The only constructor of
+  `Life::Broken` in `src/` is `mark_broken`, and its only caller is the
+  superseded transaction, whose closure the guard keeps empty (§4). `dev`
+  deletes, in one change-set:
+  - `run_transaction` and the closure machinery of §4. `ReverseIndex` and
+    `base_fq_from_tables` stay, because `/refs` uses them;
+  - `mark_broken`, the trap-stub construction and `RetainedCode`'s trap
+    message (§5.1, §6.1);
+  - `drive_t1_full_cure` and the module-grain fallback (§10);
+  - `TransactionReport`, `pending_cascade_reports` and the stale report (§9.1);
+  - `broken_status_line` and its readers in `src/repl/commands.rs` and
+    `src/repl/format.rs` (§9.2), `outcome_clears_broken`, and the broken-module
+    check in `nice_worker` (§8.3).
+
+  - the redefinition outcomes: `RedefinitionOutcome`, its `ProcessedCluster`
+    field and `PreparedCommit` carrier, their construction in `worker`, and
+    `apply_redefinition_outcomes` with its three call sites in `src/eval.rs`.
+    Their fields feed only the deleted transaction, the T1 reload and the
+    broken-record clearing (read 2026-11-15), so nothing is left to settle.
+
+  The approved S121 publication receipt
+  ([S117 recovery §1.1.3](s117-conformance-recovery.md#113-post-publication-outcomes-retired))
+  retires with its subject: the REPL redefinition rules require no
+  post-publication work for a later `Err` to discard
+  ([arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
+  It was never built, so no source changes for it.
+- **Grade.** Until the deletion lands: asserted, with two falsifiers — a turn
+  that reaches `mark_broken` outside a test, or a type change admitted while
+  some binding's `callees` name its target. After it: no `src/` code can
+  construct the state. The remaining hole is a new call to the public
+  `SymbolTable::mark_broken`, which packet row P13 closes
+  (`sprints/s123-api-packet.md`).
+- **Cost.** Deletion only, with no new path: on the order of a thousand
+  production lines of `src/redefine.rs` (3,165 lines in all), their unit tests,
+  and the readers listed above. It is one `dev` pass. The risk is the T1 reload, which today runs for a
+  slot-less redefinition that has compiled callers. §18.1's eager
+  rematerialization is the required behaviour for that case
+  (`design/int/s122-closure.md` §2), so the T1 reload is not needed.
+  Deleting it must leave the REPL redefinition cells in
+  `tests/repl_redefinition.rs` green, together with `qa`'s S122 probe shape:
+  a generic `f`, a compiled caller `g`, a same-type body edit, and a concrete
+  twin as the control.
+- **Unit evidence (`dev`, at the guard).** A language-type change of `f` is
+  refused, naming the caller, when the caller is a concrete body, a template
+  with no realisation, or a macro clause. With no caller it is admitted, which
+  is the control. The detection proof is a planted scan that skips template
+  callees: it turns the template row red.
+- **Backend, coordinated and not edited here.** `cranelisp_backend::compile_trap_stub`
+  loses its only consumer. The open question in `backend.md` §7 and the stub in
+  `ownership-codegen.md` §8.1 close under this design: no call to a broken
+  symbol is ever compiled, so the stub's raise shape is moot. Removing the stub,
+  `cranelisp_types::Life::Broken` with `SymbolTable::mark_broken`,
+  `BrokenProvenance`, `BrokenTransition` and the match arms on `Broken` is
+  packet row P13, which follows this deletion and needs no cache-schema bump
+  (§8.3).
 
 ---
 
@@ -680,7 +805,7 @@ diagnostic and definition confirmation are the user-visible record.
 | Guard invocation, type re-establishment pass (§2.6) and prepared candidate | `src/worker.rs` (`prepare_cluster_commit`, `validate_guarded_staging_except`); the refusal record on `scheduler::ModuleState` |
 | Classification, slot policy and pooling | `redefine::classify_redefinition`; `worker::commit_staging_to_live`; the prepared compiled publication |
 | Whole-file rebuild (§7.3) | prologue and reference hold: `session_v4::lifecycle::reload_module`; whole-source provenance and the reference it carries: `scheduler::SourceContinuation`, read by `process_form::process_cluster_once` and handed to the prepare step by `process_form::finalize_cluster`; plan, order check and executor: `session_v4::lifecycle` ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)) |
-| Outcomes to eval | `RedefinitionOutcome` on the processed cluster (`src/cluster.rs`), consumed after codegen in `src/eval.rs` |
+| Outcomes to eval (superseded residue, §5.2) | `RedefinitionOutcome` on the processed cluster (`src/cluster.rs`), consumed after codegen in `src/eval.rs` |
 | Retention pool | `redefine::RetainedCode`, `RetentionPool`; `SharedState.retained_code` |
 | Persistence | `session_v4::lifecycle::regenerate_backing_file`, `reload_module`; `session_v4::nice_worker::compile_module_object` |
-| Superseded residue | `run_transaction`, `mark_broken`, `ReverseIndex`, `stale_callers`, `TransactionReport`, `apply_redefinition_outcomes`, `drive_t1_full_cure` |
+| Superseded residue | `run_transaction`, `mark_broken`, `stale_callers`, `TransactionReport`, `RedefinitionOutcome`, `apply_redefinition_outcomes`, `drive_t1_full_cure`; `ReverseIndex` stays for `/refs` (§5.2) |

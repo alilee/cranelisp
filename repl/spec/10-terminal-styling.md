@@ -40,7 +40,7 @@ This subsection is the **single normative authority** for the element → style-
 | R5 | SourceComment | A `;` **source-code comment** in pretty-printed code — a comment the *user wrote in their own source*, surfaced by `/sexp`/`/source`/agent ```lisp blocks. | italic | `3` |
 | R6 | ReplMetadata | A **REPL structured-metadata `;` line or suffix** — the classification comment (`; defn`, `; deftype`, `; deftrait`, `; special form`, `; primitive`, `; impl`), the related-symbol drawer headers and their name bodies (`; match:`, `; defn:`, `; impl:`, and the names beneath), `; doc:` excerpts, the `; warning:` prefix, and lifecycle notes (`; indexing N module(s)…`, `; search index complete.`). These are **not comments in the source-code sense** — they are REPL-emitted structure. | dim | `2` |
 | R7 | ModulePrefix | The **`module/` prefix on a bare fully-qualified symbol NAME** — `collections.vec/` in a `collections.vec/count` name, the module column of a `/search` row. Applies to FQ **names**; it does **NOT** apply inside a type annotation (a `module/` within `:module/Type` is R4 cyan). | dim | `2` |
-| R8 | ErrorKeyword | The `Error:` keyword and equivalents (`runtime error:`). | bold red | `1;31` |
+| R8 | ErrorKeyword | The `Error:` keyword and equivalents. Fatal runtime panic reports are plain text on stderr under language §12.7.5 (user ruling, 2026-11-15), outside this styling role. | bold red | `1;31` |
 | R9 | ErrorDetail | The error message body. | red | `31` |
 | R10 | WarnKeyword | The `Warning:` keyword. | bold yellow | `1;33` |
 | R11 | WarnDetail | The warning message body. | yellow | `33` |

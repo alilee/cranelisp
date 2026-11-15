@@ -30,7 +30,69 @@ contract is `design/arch/platform-interface.md`.
   [REPL display §1.2.1](../../repl/spec/01-display-format.md#121-io-expression-results)
   requires. The driver unwraps `IO a` once and
   [result-owner.md](result-owner.md) owns the payload. A definition turn
-  executes nothing. A runtime trap renders as `runtime error: …`.
+  executes nothing. A runtime panic ends the process (§1.2).
+
+### 1.2 A runtime panic ends the process: the host side
+
+Status: designed in S123 Phase 3 (2026-11-15); not implemented. The position
+is arch's [panic contract](../arch/s123-panics-and-environment.md) §1, and the
+requirement is `spec/12-runtime.md` §12.7.2. The runtime's terminal funnel
+reports the message, chooses the exit status and ends the process. The host
+never sees a panic, chooses no panic status and formats no panic text.
+
+- **Every driver returns only after a clean run.** Without a runtime-error
+  outcome, each host arm that read the slot is deleted in the change-set that
+  makes it unreachable:
+  - the REPL's trap arm in `pipeline::program_outcome_to_result` and its
+    `runtime error:` display;
+  - `CompilerSession::trampoline`'s slot read, which is the ACT-1041 locus;
+  - the expander's slot read (macro expansion, below);
+  - the test runner's per-test bracket ([test runner §6.2](test-runner.md#62-execute)).
+  With these gone, no int path can format a panic, so `--run` cannot report
+  one as `codegen error at 0..0` or double its prefix (ACT-1041). The funnel
+  prints the ruled prefix `error: runtime panic:` once, as plain text on
+  stderr, in every mode. Of concurrent panics, the first to reach the exit
+  path is reported. Both are intrinsics' (`design/intrinsics/process-lifecycle.md` §1).
+- **Dispatch faults end the process** through the same funnel (user ruling,
+  2026-11-15). `compose_dispatch_error`, the driver's outcome kinds, and the
+  linked stub's error block and `cranelisp_check_runtime_error` call retire.
+  `cranelisp_run_program` returns the program's result word. The stub's
+  sequence is `install → init → run → exit`, where the install is
+  [environment §3.1](environment.md#31-mechanism).
+- **What the process owes before it ends.** The funnel exits through the
+  process's normal exit path, which runs registered exit hooks.
+  - *Program and REPL output.* Platform output is unbuffered `write(2)`. The
+    REPL's own text and the `Executing IO…` notice are written and flushed
+    before the driver runs (§1.1). Arch §1.1 makes the funnel deliver
+    buffered output before the message.
+  - *Traces.* `main` registers one process-exit hook at startup that drains
+    the observability sinks ([observability §7.1](observability.md#71-process-exit-and-panic-wiring)).
+    It neither exits nor changes the status.
+  - *REPL history (TTY).* Each accepted input line is appended to the
+    per-project history before its turn is dispatched, so the line that
+    panicked can be recalled after a restart. This replaces the save at
+    session end. The cost is one small append per line.
+  - *Definitions* are already on disk: a turn that regenerates the backing
+    file executes nothing, and loading a backing file runs no top-level
+    expression (probed 2026-11-15 on the debug binary at `f747990f`: a
+    `user.cl` holding `(vec-get [1] 5)` starts the REPL without running it).
+    The final cache persist and pending object writes are lost. The next
+    session misses the cache for those modules, just as after `SIGKILL`.
+    Cache writes replace files atomically by temp-and-rename (arch §1.7).
+- **Macro expansion ends the process on a panic** (user ruling, 2026-11-15).
+  The expander keeps its signal recovery, because signals are not panics, and
+  loses only its slot read. Accepted consequences: a panicking macro in a
+  backing file ends REPL startup each time until the file is edited, and a
+  model proposal that expands a panicking macro ends the REPL during silent
+  validation ([agent §16.1](agent.md#161-the-dry-run)).
+- **A call to a broken symbol never runs.** The user ruled that such a call is
+  refused at compile time. Int meets it before any call exists: the
+  redefinition that would break a caller is the refusal
+  ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken)),
+  so no trap stub is ever reached.
+- **No mode branch.** The REPL, `--run`, `--test` and the linked stub delete
+  the same arms. The REPL keeps no panic arm
+  ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
 
 ### 1.1 REPL IO execution notice
 

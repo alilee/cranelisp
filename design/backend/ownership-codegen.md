@@ -11,6 +11,13 @@ numbers are cited from source and tests and are kept stable; the increment
 ladders, as-built narratives and falsified analyses that used to fill this
 document are in Git history.
 
+**Superseded on landing.** The adopted [uniform counting](uniform-counting.md)
+design (S123, not built) replaces the counting mechanisms here: borrow elision
+(§3), the static uniqueness proof (§6.4), and the wrapper, tail and COW
+counting contracts of §13.3 and §13.7. Those sections describe the code as it
+stands until that change lands and are deleted with it. Stack placement (§4),
+`Confined` RC (§5), flattening (§7) and the redefinition machinery (§8) stay.
+
 **Governing authority:** [the ownership spine](../arch/ownership-inference.md)
 (arch). Where this design and the spine disagree, the spine governs. The
 producer of every fact consumed here is
@@ -40,7 +47,7 @@ producer of every fact consumed here is
 | Redefinition machinery (backend half) | §8 | Built |
 | Dual-symbol extern convention | §9 | **Carrier only**: `Realization::ExternShim { borrowed_sibling }` exists and is cache-validated, but no sibling is registered and no emission gate selects one |
 | Vec-query trio in value position | §12.7 | Built |
-| Supporting contracts (golden oracle, counters, wrapper and COW contracts, spark density, unit scenarios, producer pins) | §13 | Current; the ACT-1021 and ACT-1024 COW corrections (§13.3, §13.7) are in the working tree, uncommitted; K4 is complete and `qa` judged it adequate; user acceptance is pending |
+| Supporting contracts (golden oracle, counters, wrapper and COW contracts, spark density, unit scenarios, producer pins) | §13 | Current; the ACT-1021 and ACT-1024 COW corrections (§13.3, §13.7) landed at the S122 close |
 | RC/alloc seam assertion density | §15 | Rows 5–6 built; row 2 retired; rows 1, 3 and 4 open |
 
 ---
@@ -479,9 +486,10 @@ one bare pointer and no side channel says which symbol was hit.
   `(ptr, len)`. It must live exactly as long as the returned `Code` handle; a
   broken symbol later recovered with a new ABI leaves its old slot on the stub
   for the session's life.
-- **Known leak:** the caller's consuming incs on heap arguments are not released
-  when the stub raises — one reference per trap invocation, the same caveat as
-  every runtime panic ([backend.md](backend.md#7-runtime-failure)).
+- **Raise shape:** the stub's `call runtime/panic; return 0` becomes the one
+  raise helper's call and terminator, with the signature unchanged
+  ([backend.md](backend.md#7-runtime-failure); not built). The leak of the
+  caller's consuming increments is moot once the raise ends the process.
 
 ### 8.2 Fresh slots and frozen slots
 
@@ -795,20 +803,18 @@ absorbed that reference by accident. With the increment it leaked one
 reference per iteration (`Consumed` flow). With `IntoResult` flow the retain
 verdict withdrew the exemption, and the forward was freed before this rule.
 
-**Status (2026-09-30): the branch-forward rule, the consuming-COW fact and the
-fact's alias correction (below) are implemented in the working tree,
-uncommitted, and not accepted.** `test`'s after-fix run (V1 part 1) passed.
-The §13.7 change-set has since landed on top of them. `test`'s V2 kept the
-tail family and A-T/A-V GREEN, and `review`(backend) found no blocking
-finding. K4 is complete and `qa` judged Phase 5's evidence
-adequate ([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
-User acceptance and phase approval are pending.
+**Status: the branch-forward rule, the consuming-COW fact and the fact's alias
+correction (below) landed at the S122 close (2026-10-02).** `test`'s V2 kept
+the tail family and A-T/A-V GREEN, and `qa` judged the evidence adequate at K4
+([K4 record](../../tests/plan/s122-evidence-delta.md#final-test-visit-k4--record-and-phase-5-adequacy-2026-09-30)).
+The leads below are covered by construction under
+[uniform counting](uniform-counting.md) §6, which is not built.
 
 - QA's D1/D2 and C-PT/C-LT gates confirmed the ACT-1021 mechanism
   ([retained record](../../tests/plan/s122-evidence-delta.md#retained-records-of-the-deleted-filings))
   and the slot-ownership key.
-- `dev` implemented the branch-forward rule and the one ownership fact in the
-  working tree, uncommitted. D1, C-PT, C-C1, C-C2′ and the committed subject
+- `dev` implemented the branch-forward rule and the one ownership fact. D1,
+  C-PT, C-C1, C-C2′ and the committed subject
   flipped GREEN. C-C2 (`Consumed`) regressed to a leak of one reference per
   iteration, which falsified this section's earlier claim that the COW-first
   leak was the exemption's accepted residual.
@@ -1148,8 +1154,8 @@ Three ways to keep a COW rule at the match seam were rejected:
 - **Retaining on the copy branch too, so the arm's release balances.** The
   result's count would then depend on its consumer, which is the mirror family.
 
-**Status (2026-09-30): implemented in the working tree for ACT-1024,
-uncommitted, and not accepted.** The user approved the fix, the match
+**Status: landed for ACT-1024 at the S122 close (2026-10-02).** The user
+approved the fix, the match
 exception's retirement with it (which fixes ACT-1027), and carrying ACT-1026
 and ACT-1028.
 

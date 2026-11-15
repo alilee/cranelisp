@@ -40,6 +40,52 @@ at this surface, and the value-passing C-ABI is uniformly `i64`-in /
 signature. A richer typed signature would add a cross-crate dependency at the
 surface for zero codegen gain.
 
+### 2.1 The pair is derived from the function's type (ACT-1033)
+
+**Status: S123 design; implementation pending (`dev`(intrinsics)).** Today each
+row hand-copies the pair. Three copies disagree with their functions:
+`runtime/panic`, `runtime/rc_underflow_check` and `runtime/string_read`.
+
+- **Each row is written once.** It gives the name, the function path and the
+  function's `extern "C"` pointer type. A crate-private row constructor casts
+  the function to that type and derives both fields from the type. Casting a
+  function item to a pointer type with any other signature does not compile.
+  So the type cannot disagree with the function, and the pair cannot disagree
+  with the type.
+- **The derivation is a crate-private trait over `extern "C"` function-pointer
+  types**, implemented once per arity up to the largest in the catalog. Two
+  rules belong to the trait:
+  - **A parameter is admitted only if it is a 64-bit word**: `i64`, `usize`,
+    or a raw pointer, on the supported 64-bit targets. A `bool`, `i32` or
+    narrower parameter would be declared as `i64` by
+    `declare_intrinsics_generic` and misread, so it must not compile.
+  - **A return is `i64` (`has_return: true`), or `()` or `!`
+    (`has_return: false`).**
+- **`IntrinsicEntry`'s public fields are unchanged**, so consumers and
+  `public-api.txt` see no delta. Only the construction is private.
+- **The table stays a promoted `'static` slice.** The derived fields are
+  associated constants of concrete types, and the pointer is the same
+  function-to-pointer cast the rows use today.
+- **The arity test changes.** `arity_matches_historical_signature` pins
+  copies, not functions. It retires in favour of the compile-time agreement.
+  A module test still pins the three corrected rows' derived values:
+  `runtime/panic` has no return, `rc_underflow_check` takes 2 parameters and
+  `string_read` takes 3 and returns nothing.
+- **Asserted, with a named falsifier.** The shape was not compiled inside the
+  design window: no scratch directory was available. Its first compile is
+  `dev`'s first act. The falsifier is a stable-toolchain refusal of either the
+  promoted associated constants or a trait implementation for a `-> !`
+  pointer type. On the second, `runtime_panic` keeps its `()` return (the
+  derivation still gives `has_return: false`) and the divergence becomes a
+  convention instead of a type.
+- **Detection proof**, in the same change-set: deliberately mismatched rows,
+  run as compile-fail cells for arity, return and narrow-word parameters, must
+  each be refused. The matched control must compile.
+
+Retiring the entries that have no emitter (`rc_underflow_check`,
+`string_read`) is a separate public-API decision and is not part of this
+derivation.
+
 ## 3. Contents
 
 The entries are this crate's backend-emitted-call targets, each naming an
@@ -70,7 +116,7 @@ Three resolution points, none of them at codegen:
 From this crate's side the contract is: the table is iterable, every `name` is
 the exact emitted-call ABI string, every `ptr` is a valid function address for
 the process lifetime, and `param_count`/`has_return` exactly describe the
-extern's `i64` ABI.
+extern's `i64` ABI — by construction once §2.1 lands.
 
 ## 5. The ABI name agreement
 
@@ -93,7 +139,7 @@ recurring error:
 | Half | What it holds | Home | Closure |
 |---|---|---|---|
 | **Runtime targets** | this catalog's `name → (arity, ptr)` rows, emitted as `Linkage::Import` | `cranelisp-intrinsics` | **measured**: the §3 closed-set guard fails on a silent addition |
-| **Slot-less generic user callables** | `bind`, `race`, `select`, `catch-runtime-error` — host-promised, mounted in the synthetic `primitives` module by `src/bootstrap.rs`, backend-intercepted by name | `src/` | **measured**: `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed` fails on an added or reclassified member |
+| **Slot-less generic user callables** | `bind`, `race`, `select` — and `catch-runtime-error` until its S123 removal ([`process-lifecycle.md`](process-lifecycle.md) §1.3) — host-promised, mounted in the synthetic `primitives` module by `src/bootstrap.rs`, backend-intercepted by name | `src/` | **measured**: `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed` fails on an added or reclassified member |
 
 Each catalog row also carries **declared representation dependencies**: facts
 about the layouts it reads (the uniform `i64` value word, the IO node tag

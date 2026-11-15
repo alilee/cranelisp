@@ -8,12 +8,16 @@ and composition. The user dispositioned it at S119 Phase 1
 
 - option 1 tranches A and B (int marshal boundary) became the S119 commitment
   ([typed consume funnel](../runtime/s119-typed-consume-funnel.md));
-- option 2 adoption was deferred until its dev-tier cost is measured;
+- option 2 adoption was deferred until its cost is measured;
 - the option-4 emission-audit spike and option-1 tranches C and D were
   deferred to S120.
 
-No later sprint has scheduled the deferred options. Retire this paper when each
-is adopted into its own manifestation site or explicitly declined by the user.
+S123 scheduled option 2's measurement and decision. The user chose reading U′
+(§3.1) as the target on 2026-11-15 (`sprints/SPRINT.md`, User rulings); adoption
+still waits on the measurement and the decision rule of
+[§3.6](#36-measurement-and-decision-rule). Options 1C, 1D
+and 4 remain unscheduled. Retire this paper when each option is adopted into
+its own manifestation site or explicitly declined by the user.
 
 **Commission.** After three sprints (S116–S118) in which nearly every execution
 failure concentrated in one stratum, the user asked whether tooling,
@@ -305,25 +309,44 @@ generated-code impact. Public-API delta confined to the pair's
 
 ## 3. Option 2 — uniform-but-redundant RC emission
 
-### 3.1 Mechanism
+### 3.1 Mechanism — three readings
 
-Collapse the generated-code special cases — move/COW exemptions, borrowed
-aliases, TCO carry-forward, match release gates, control-flow protection —
-into **always-inc/dec** emission in the dev/JIT tier: every binding
-occurrence incs, every scope exit decs, every replacement releases the old
-owner, uniformly, with no per-construct arithmetic. Elision becomes an
-optimization the `--release` tier performs under a verification guard.
+Option 2 collapses the generated-code special cases (move/COW exemptions,
+borrowed aliases, TCO carry-forward, match release gates, control-flow
+protection) into uniform counting. The phrase has three readings, and only
+one is the target:
 
-The architecture already names this lowering: it is the **conservative
-all-Owned lowering** that [ownership inference](ownership-inference.md) §2.1/R7 keeps permanently
-reachable as the differential oracle, and that Principle 25 defines as **the
-reference semantics** ("the conservative all-Owned lowering IS the definition
-of correct behavior for the memory model; an elision is correct iff
-equivalent to it" — `safety-invariants.md` §3 (d)). Option 2 promotes the
-reference semantics from oracle to **default dev-tier emission**: the thing
-you run is the thing that defines correctness; the optimizer tier must prove
-equivalence to it (R9's standing lane is exactly that gate, already landed
-and PROVEN with a live catch).
+- **Reading R — the reference lowering.** Promote the conservative all-Owned
+  lowering, the analysis-off toggle `CRANELISP_NO_OWNERSHIP`
+  (`crates/cranelisp-types/src/ownership.rs::ownership_analysis_off`), to the
+  default. [Ownership inference](ownership-inference.md) §2.1/R7 keeps that
+  lowering reachable as the differential oracle, and Principle 25 defines it
+  as the reference semantics (`safety-invariants.md` §3 (d)). The toggle
+  leaves every structural rule in place: tail-argument protection, branch
+  forwarding, the flushes and `value_provenance` run in both polarities
+  (backend audit F3).
+- **Reading U — fully uniform emission.** Every binding occurrence increments,
+  every scope exit decrements and every replacement releases the old owner,
+  with no per-construct arithmetic at all.
+- **Reading U′ — uniform except a closed list (the user's target).** Uniform
+  counting except a closed, named list of complexity- or placement-preserving
+  rules. Each retained rule names the uniform rule it departs from and carries
+  its check under Principle 25 (narrowing carries its check). `design`(backend)
+  classifies every structural decider (audit F4's thirteen plus the rules the
+  toggle retains) as *count arithmetic*, replaced by the uniform rule, or
+  *semantics-bearing*, kept on the list.
+
+  The classification is [uniform counting](../backend/uniform-counting.md)
+  §2 and §5. Its list has two rules: **U1**, the last-use move with drops at
+  each binder's death point, checked against "moves off" (every use
+  duplicates); and **U2**, the in-place update at count 1, checked by its own
+  runtime probe against "always copy". Every other decider retires, including
+  the static uniqueness proof and borrow elision. Stack placement, `Confined`
+  non-atomic counting and value flattening are placement decisions outside
+  the list and stay, pending the user's question in that design's §9.
+
+R and U are named so the measurement can be read correctly; neither is
+proposed for adoption.
 
 ### 3.2 What it would have prevented — mapped to the record
 
@@ -335,8 +358,9 @@ Each special case is a place to be wrong, and each has been:
 - **0782 / the located `STALE RC DEC (JIT inline)`** — the var-pattern release
   gate double-releasing an owned temporary; there is no gate to get wrong.
 - **0688-family TCO** — carry-forward is an elision (skip the release because
-  the owner moves forward); uniform emission releases and re-incs, trivially
-  correct, and the optimization moves to the tier with the guard.
+  the owner moves forward); under U′ every reference is consumed before the
+  jump, so the jump releases nothing and needs no rule of its own
+  ([uniform counting](../backend/uniform-counting.md) §2).
 - **The masking phenomenon itself (§1.2).** Redundant-but-correct counts mean
   a leak is a leak and a double-free is a double-free — the W2b experience of
   one defect's surplus references hiding another's premature free is a
@@ -345,26 +369,59 @@ Each special case is a place to be wrong, and each has been:
 What it does **not** address: the hand-written pair (option 1's territory),
 and identity/keying defects (0633/0640 — R4's territory).
 
-### 3.3 The performance question — the honest numbers
+### 3.3 What the S123 pre-checks measured
 
-The cost is atomic-RMW traffic in the dev tier. The record gives both
-directions:
+Two discriminators ran before the measurement, `--run` only, at `f747990f`
+([carry triage](../../tests/plan/s123-carry-triage.md) §7 and §8).
 
-- The W2b fix showed redundant traffic is not noise: removing one redundant
-  deep inc cut per-embed traffic **`2|ys|+2 → 2`**. Uniform emission spends in
-  the opposite direction at every binding.
-- S94's floor-scope ruling (`effect-concurrency.md` §3.1): allocation-/RC-heavy
-  **parallel** workloads violated the "never dramatically slower" floor by up
-  to ~10× from atomic-RC contention — with today's *partially* elided
-  emission. Uniform emission increases the term that ruling already flagged.
+- **The defect class survives reading R.** With the toggle set, the ACT-1030
+  use-after-free, the ACT-1026 join leaks and the ACT-1028 leaks all still
+  fail, armed and unarmed, and their one-difference controls balance in both
+  polarities. ACT-1030's missing increment on a `let`-wrapped tail argument is
+  observed at the CLIF seam in both polarities; ACT-1026's CLIF is
+  byte-identical in both. These faults live in structural rules both
+  polarities share, so reading R does not remove them. Whether U′ removes
+  them depends on which rules it retains; that was not measured.
+- **Copy-on-write in place rests on one shape.** A `vec-set` or `vec-push`
+  takes the in-place arm only when its source is provably unique, and today
+  that happens only when the update is written directly in a self-tail loop
+  (1,000 of 1,000 in place). Wrapping the update in any function, including
+  the stdlib's `conj` and `assoc`, makes every update copy. The exemplar's warm
+  solve reaches every Vec through those wrappers and takes the in-place arm
+  zero times in 11,593 updates.
+- **The toggle already pays the quadratic cost on direct loops.** With the
+  toggle set, the direct loop also copies 1,000 of 1,000. Reading R's number
+  therefore includes a cliff on direct update loops, not only a constant
+  factor.
+- **Exemplar wall time is unchanged by the toggle** (single runs, stats off:
+  0.82 s against 0.77 s serial), because the exemplar never takes the
+  in-place arm. The exemplar alone cannot price the uniqueness rule.
+- **The toggle leaks more on the exemplar.** The warm solve retains 51
+  allocations under current emission and 556 under the toggle. The reference
+  lowering is therefore not shown to balance on a real workload, which is the
+  premise of Principle 25's clause 1. This observation is unfiled.
 
-For the dev tier's actual workloads — REPL turns, `--run` of tests/examples,
-macro expansion — the traffic is sequential and bounced-line contention is
-absent; the honest expectation is a measurable constant-factor cost, not a
-cliff, but **no measurement exists yet**. If the user takes this option, the
-first act is a measurement gate: the marginal harness's twin-control shape
-over uniform-vs-current emission on the exemplar and the suite, before any
-commitment to ship.
+Consequences for U′:
+
+- **A uniqueness-preserving rule is semantics-bearing.** Without a last-use
+  move into a COW operation, every direct update loop becomes quadratic. The
+  stdlib's own loops (for example `vec-map-loop` and `vec-concat-loop`) have
+  that shape, so the rule's workload is the stdlib, not the exemplar. It is the
+  first expected entry on U′'s list.
+- **Wrappers already defeat it.** `design`(backend) read the mechanism at
+  source: the consuming argument list increments every heap variable
+  argument, at its last use too, so the wrapper's update sees count 2. Under
+  U1 the last use moves, and the design predicts every wrapper loop of triage
+  §8 updates in place (asserted, falsified by any copy in those loops). That
+  prediction is the main expected gain, and it reaches the exemplar's
+  `conj`/`assoc` path.
+- **Copies are under-counted.** `reuse_miss` counts only dynamic copy arms; a
+  statically shared source copies with no tally. Every copy count below is a
+  lower bound until a static-copy tally exists (triage §8.3).
+
+The cost term the record already names still applies: atomic-RMW traffic, and
+under parallel RC-heavy work the contention that S94's floor-scope ruling
+flagged (`effect-concurrency.md` §3.1). Uniform counting raises that term.
 
 ### 3.4 Interaction with W3 (binding)
 
@@ -376,19 +433,54 @@ They compose: uniform emission wants exactly one glue to call, which is what
 W3 delivers. Sequencing if adopted: option 2 lands **after** W3, as a second
 emission change over the collapsed mechanism — never interleaved with it.
 
-### 3.5 The release-tier elision path
+### 3.5 One emission tier
 
-Adopting option 2 re-stages `ownership-inference.md`: increments I/II (borrow
-inference, uniqueness/reuse) stop targeting the dev tier and become the
-`--release` optimizer's input, verified by the R9 differential lane plus
-(if option 4 matures) the emission-side audit. Monotone soundness is
-unchanged — the analysis was always allowed to be wrong only toward Owned;
-now the dev tier simply *is* the all-Owned point. This is the main reason the
-option is a **user decision**: it re-sequences a ratified subsystem design
-and trades dev-tier performance for the permanent removal of the emission
-special-case defect class. It is reversible in principle (the special cases
-could be re-introduced tier-by-tier under P25 checks) but expensive to
-reverse in practice.
+There is no `--release` tier: the [release proposal](release-llvm-backend.md)
+is unratified and LLVM is excluded. The mechanisms live in the one shared
+Cranelift lowering ([ownership inference](ownership-inference.md) §3.4).
+Adopting U′ therefore changes emission for the REPL, `--run` and shipped
+`--link` executables alike.
+
+- **No mode-split emission.** Keeping tuned emission only for `--link` would
+  split emission by mode, against Principle 11 (single pipeline, mode
+  parameters) and the root rule that a REPL/`--run`/`--link` divergence is a
+  defect.
+- **The ownership analysis loses most emission consumers.** Outside U′'s list
+  its output would feed nothing, which is "landed with zero consumers". If the
+  user adopts U′, `arch` frames retiring or narrowing it (`cranelisp-types`
+  `Mode`, `ModeSummary` and related items, and typecheck) as a separate
+  public-API packet. No such delta is proposed in S123.
+- **Assurance.** Outside the list the emitted code is the uniform rule, so
+  Principle 25's equivalence becomes structural there and the R9 differential
+  lane checks only the listed rules.
+- **Reversibility.** Elisions can return later one at a time, each under a
+  Principle 25 check; that is a future tier's design, not S123's.
+
+### 3.6 Measurement and decision rule
+
+- **The user fixes the threshold before the number exists**, for example "the
+  stdlib direct-loop workloads keep their complexity; the exemplar warm solve
+  and the suite no worse than N×". A ruling not tested by measurement does not
+  bind (root `CLAUDE.md` §Assurance), and a threshold set after the number is
+  anchored by it.
+- **Measure reading R exactly** with the toggle, by the method in
+  [PLAN.md](../../tests/plan/PLAN.md): exemplar warm solve wall time and RC
+  counts, the contention benchmark against `effect-concurrency.md` §3's floor,
+  and the full suite's wall time and failures by name. Add a stdlib
+  direct-loop workload, since [§3.3](#33-what-the-s123-pre-checks-measured) shows the exemplar cannot see the
+  uniqueness rule.
+- **U′ cannot be estimated from R.** U1 changes counts at every last-use
+  argument and every bound pattern field, so R's number does not bound it in
+  either direction ([uniform counting](../backend/uniform-counting.md) §8,
+  "expected cost direction"). U′ is measured on its own build. That build
+  lands as one cut-over change-set (that design's §7), so the measurement is
+  taken on the candidate change before it is accepted; a build kept only for
+  measurement is a throwaway spike that is never merged (Principle 08, no
+  interim implementations).
+- **Measure every mode, `--link` included**, since §3.5 has one tier.
+- **Decide with the number**: adopt U′ with its list, or reject. Reading R and
+  reading U are not options for adoption: R leaves the observed faults in
+  place (§3.3) and U makes direct loops quadratic.
 
 ---
 
@@ -484,8 +576,8 @@ the honest target is a **conservative linter for the locally-decidable
 subset**, hard-failing in debug on the shapes it can prove wrong. Notably:
 **if option 2 is adopted, the undecidable cases largely vanish** — uniform
 emission makes pairing local by construction, and the audit's job collapses
-to verifying the release tier's elisions (where it becomes the static
-companion of the R9 differential lane).
+to verifying U′'s listed rules (where it becomes the static companion of the
+R9 differential lane).
 
 ### 5.3 What S117 W4b already provides, and the spike's scope
 
@@ -575,15 +667,13 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
 
 ## 7. The user-decision list (stated neutrally)
 
-1. **Option 2 — adopt, reject, or defer-pending-measurement?** Adopting makes
-   the conservative lowering the dev-tier default and moves all elision to
-   `--release` under the existing differential guard; it removes the emission
-   special-case defect class and re-stages [ownership inference](ownership-inference.md); it costs
-   dev-tier performance by an amount not yet measured (§3.3's gate would
-   produce the number first). Rejecting keeps tuned dev-tier emission and its
-   special cases, with W3's mechanism collapse and options 3/4 as the
-   mitigation. Deferring keeps the question open at zero cost until the
-   measurement exists.
+1. **Option 2 — adopt U′ or reject, on the §3.6 rule.** The user chose U′ as
+   the target in S123. Still open: the threshold, fixed before the number
+   exists, and then adoption with the number. Adopting changes emission in
+   every mode, shipped executables included (§3.5), and re-stages
+   [ownership inference](ownership-inference.md). Rejecting keeps tuned
+   emission with options 3 and 4 as the mitigation and the §3.3 faults as
+   instance repairs.
 2. **The S119 core — approve option 1 (tranches A+B) + option 3
    generalization as scoped in §6.2?** This is scope approval; the
    per-tranche contracts go through the normal Phase-3 design gates.

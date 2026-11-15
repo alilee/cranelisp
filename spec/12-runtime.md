@@ -8,7 +8,7 @@ This section defines the abstract runtime semantics of Cranelisp. It specifies o
 
 ### 12.1.1 — 12.1.5: Current reference representation (descriptive, not prescriptive) [Tested crates/cranelisp-primitives/src/bool.rs::test_bool_to_string_nonzero_is_true]
 
-The layout tables and diagrams in §12.1.1–§12.1.5 below document the **current reference representation** chosen by the present backend: a uniform machine-word (64-bit) encoding in which the interpretation of each word depends on its statically-known type. They are **descriptive of the current backend choice, not a normative uniform-word mandate.** A conforming implementation is free to deviate from any of them for any concrete type, subject only to preserving the observable semantics of §12.3 and §12.4. Where other sections of this specification reference these layouts (e.g. the i64 element/field/capture descriptions), read them as describing the current reference representation, not as imposing a uniform-word requirement.
+The layout tables and diagrams in §12.1.1–§12.1.5 below document the **current reference representation** chosen by the present backend: a machine-word (64-bit) encoding for materialised values in which the interpretation of each word depends on its statically-known type. They are **descriptive of the current backend choice, not a normative uniform-word mandate.** A conforming implementation is free to deviate from any of them for any concrete type, subject only to preserving the observable semantics of §12.3 and §12.4. Where other sections of this specification reference these layouts (e.g. the i64 element/field/capture descriptions), read them as describing the current reference representation, not as imposing a uniform-word requirement.
 
 ### 12.1.1 Scalar Types [Tested crates/cranelisp-primitives/src/bool.rs::test_bool_to_string_nonzero_is_true]
 
@@ -20,31 +20,29 @@ The layout tables and diagrams in §12.1.1–§12.1.5 below document the **curre
 
 Scalar values are NOT heap-allocated. They require no memory management.
 
+The heap diagrams include the 16-byte `HeapHeader`: `alloc_size` at offset 0 and `rc` at offset 8. Offsets are measured from the allocation base returned as the value pointer. These diagrams describe materialised objects; the backend can also flatten values or place non-escaping values on the stack rather than allocate the depicted heap object. (Descriptive correction approved by the user, 2026-11-15; audit F9.)
+
 ### 12.1.2 String [Tested crates/cranelisp-intrinsics/src/heap_string/tests.rs::test_alloc_string_empty]
 
-Strings are heap-allocated, immutable, UTF-8 byte sequences. The layout from the returned pointer is:
+Materialised heap strings are immutable UTF-8 byte sequences:
 
 ```
-ptr -> [length: i64 | bytes: u8...]
-       offset 0      offset 8
+ptr -> [alloc_size: i64 | rc: i64 | length: i64 | bytes: u8...]
+       offset 0          offset 8  offset 16     offset 24
 ```
 
-- `length` (offset 0): The number of bytes in the string (not characters)
-- `bytes` (offset 8): The raw UTF-8 byte data, NOT null-terminated
+`length` counts bytes, not characters. The bytes are not null-terminated.
 
 ### 12.1.3 Function Values (Closures) [Tested tests/spec_12_runtime::closure_multiple_captures]
 
-All function values at runtime are closures — a code pointer paired with zero or more captured values:
+Materialised function values pair a code pointer with zero or more captures:
 
 ```
-ptr -> [code_ptr: i64 | cap_0: i64 | cap_1: i64 | ... | cap_n: i64]
-       offset 0         offset 8     offset 16          offset (n+1)*8
+ptr -> [alloc_size: i64 | rc: i64 | code_ptr: i64 | drop_glue_ptr: i64 | captures...]
+       offset 0          offset 8  offset 16       offset 24            offset 32
 ```
 
-- `code_ptr` (offset 0): Pointer to executable code
-- `cap_0..cap_n`: Captured variable values, each stored as an i64
-
-Non-capturing functions (including top-level named functions used as values) still use this representation with zero captures: `[code_ptr]`.
+Captures occupy successive 64-bit slots starting at offset 32. The drop-glue pointer describes capture disposal. Non-capturing function values have the same prefix and no captures.
 
 ### 12.1.4 Algebraic Data Types [Tested tests/spec_12_runtime::adt_sum_some_alloc_and_match]
 
@@ -62,24 +60,24 @@ Tags are assigned sequentially starting from 0 in definition order.
 **Data constructors** (constructors with fields) are heap-allocated:
 
 ```
-ptr -> [tag: i64 | field_0: i64 | field_1: i64 | ... | field_n: i64]
-       offset 0    offset 8       offset 16           offset (n+1)*8
+ptr -> [alloc_size: i64 | rc: i64 | tag: i64 | field_0: i64 | field_1: i64 | ...]
+       offset 0          offset 8  offset 16  offset 24       offset 32
 ```
 
-- `tag` (offset 0): Integer tag identifying the constructor variant
+- `tag` (offset 16): Integer tag identifying the constructor variant
 - `field_0..field_n`: Field values, each stored as an i64
 
 For sum types mixing nullary and data constructors, tags are assigned to ALL constructors (nullary and data) in definition order.
 
-Example: `(deftype (Option a) None (Some [:a val]))` assigns tag 0 to `None` and tag 1 to `Some`. At runtime, `None` is the bare integer `0`, and `(Some 42)` is a heap pointer to `[1, 42]`.
+Example: `(deftype (Option a) None (Some [:a val]))` assigns tag 0 to `None` and tag 1 to `Some`. At runtime, `None` is the bare integer `0`, and `(Some 42)` is a heap pointer to `[alloc_size, rc, 1, 42]`.
 
 ### 12.1.5 Vec [Tested tests/spec_12_runtime::vec_of_strings_alloc_drop]
 
 Vec is a built-in resizable array type. Its layout is:
 
 ```
-ptr -> [length: i64 | capacity: i64 | data_ptr: i64]
-       offset 0      offset 8        offset 16
+ptr -> [alloc_size: i64 | rc: i64 | length: i64 | capacity: i64 | data_ptr: i64]
+       offset 0          offset 8  offset 16     offset 24        offset 32
 ```
 
 - `length`: Number of elements currently in the Vec
@@ -148,13 +146,13 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 - Both branches of `if` exist but only the selected branch is evaluated.
 - `match` arms are tested top-to-bottom; only the first matching arm's body is evaluated.
 
-The left-to-right ordering of `let` bindings and function arguments is the **observable** evaluation order: it is the order that constrains effect sequencing and first-error selection, and a conforming implementation MUST *behave as if* it holds. Because cranelisp arguments and binding values are pure — effects are sequenced through `IO`/`bind!` (see [§10.12](10-io.md#1012-automatic-io-scheduling)), never through raw argument or binding evaluation — the order in which *independent* pure sub-expressions are actually evaluated is unobservable. An implementation MAY therefore evaluate them concurrently or out of order under the lenient permission of [§12.4.3](#1243-lenient-evaluation) without weakening this left-to-right guarantee. [S92]
+The left-to-right ordering of `let` bindings and function arguments is the **observable** evaluation order: it is the order that constrains effect sequencing, and a conforming implementation MUST *behave as if* it holds. Because cranelisp arguments and binding values are pure — effects are sequenced through `IO`/`bind!` (see [§10.12](10-io.md#1012-automatic-io-scheduling)), never through raw argument or binding evaluation — the order in which *independent* pure sub-expressions are actually evaluated is unobservable. An implementation MAY therefore evaluate them concurrently or out of order under the lenient permission of [§12.4.3](#1243-lenient-evaluation) without weakening this left-to-right guarantee. Concurrent panic reporting follows §12.4.3 (user ruling, 2026-11-15). [S92]
 
 ### 12.4.2 Lazy Sequences [Tested tests/spec_12_runtime::lazy_stream_take_from_infinite_terminates_with_demanded_element, tests/spec_12_runtime::lazy_stream_construction_does_not_force_tail]
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation [Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity]
+### 12.4.3 Lenient Evaluation [Uncovered S123 — was Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial, and MAY likewise evaluate independent arguments of a function application in parallel under the same heuristic. This is called **lenient evaluation**. Because all binding expressions in a `let` and all argument expressions in an application are pure (effects are sequenced through `IO`/`bind!`, never through raw binding or argument evaluation — see [§10.12](10-io.md#1012-automatic-io-scheduling)), evaluating independent sub-expressions concurrently produces the same result as sequential left-to-right evaluation — the non-determinism in evaluation order is not observable. The permission is granted precisely *because* it is unobservable: a conforming implementation that evaluates everything sequentially left-to-right also conforms. [S92]
 
@@ -162,9 +160,9 @@ A `let` binding is independent if its free variables do not include any name bou
 
 Lenient evaluation is semantically transparent — programs MUST NOT depend on whether any particular binding or argument is parallelized. An implementation MAY provide an opt-out mechanism (e.g., an environment variable) for debugging purposes.
 
-A runtime error (§12.7) raised while evaluating any binding or argument — whether evaluated sequentially or in parallel — MUST propagate as if the sub-expressions were evaluated sequentially left-to-right: the first such error aborts the whole enclosing expression (the `let`, or the application). An implementation that evaluates sub-expressions on separate threads MUST therefore convey a worker-thread error back to the joining thread; a parallelised binding's or argument's panic MUST NOT be silently discarded. This is what makes the observational-equivalence promise above hold for panics, and it is what lets a `catch-runtime-error` bracket (§12.7.2) enclosing a lenient `let` or a lenient application observe a panic raised in any of its parallelised sub-expressions. Because apply-argument sparking is the same structured fork-join (all sparked arguments forced at a barrier before the call) over the same machinery as the `let` case, the first-error-wins rule carries over by construction. The same propagation rule applies to the structured fork-join of automatic `IO` scheduling (§10.12).
+**Panic rule (user ruling, 2026-11-15).** A panic in any binding, argument, worker, structured IO branch or detached strand ends the process under §12.7. It is neither propagated to a join nor recovered. If concurrent computations panic, only the first panic to reach the exit path is reported; which concurrent panic reaches it first is unspecified (user ruling, 2026-11-15).
 
-This propagation rule, and the sequential-equivalence guarantee it preserves, govern **structured joins only** — computations the enclosing expression awaits. A **detached strand** (a launched-and-not-joined effect, [§10.12.7](10-io.md#10127-launch-and-continue-detached-effects)) is deliberately outside both: it has no join point, so its fault does not ferry anywhere and the first-error-wins rule does not reach it, and it is not part of the sequential-equivalence guarantee (its result is discarded, so the value the program computes is unchanged, but its timing overlaps the continuation and its fault is contained by the supervisor rather than aborting the program — see §10.12.7 and §12.7.9). A **cancelled effect** (a `race`/`select` loser, a `timeout`'d effect — §12.4.4) is likewise outside both: it is abandoned before completion, so it produces no value to join and no completion side-effect, and it is not part of the sequential-equivalence guarantee. The first-error-wins propagation, the detached-strand carve-out, and the cancellation carve-out are the three boundaries of the structured-join guarantee. [S77 — defect repro S76; S92 — apply-arg extension; S96 — detached-strand + cancellation carve-outs]
+Detached execution and cancellation retain their timing and value semantics (§10.12.7–§10.12.9). Cancellation itself is not a panic; a panic that actually occurs is governed by §12.7.
 
 ### 12.4.4 Structured Control Combinators and Cancellation [Uncovered S122]
 
@@ -181,17 +179,17 @@ timeout : forall a.   Int -> IO a -> IO (Option a)
 
 `race`/`select` are homogeneous: the competing branches share one result type `a`, and the combinator returns that `a` (the winner's value). A program that must distinguish *which* branch won encodes the discriminant in `a` (§10.12.8 item 3). `timeout` wraps the result in `Option` to carry the timer-fired outcome (`None`).
 
-**Collection and duration units.** `select` takes a `Vec (IO a)` — the `[..]` literal of §10.12.8 is a `Vec`, not the `Nil`/`Cons` `List` ADT. Durations are plain `Int` **milliseconds**: `sleep : Int -> IO Int` parks for the given number of milliseconds and resumes with `0`, and `timeout`'s deadline is likewise an `Int` count of milliseconds (§10.12.8 "Duration unit"). The language has no dedicated `Duration` type. An **empty** `select` (`(select [])`) has no branch that can win; the runtime MUST raise a runtime panic (§12.7.2) — "select over empty collection" — rather than return a synthesised value, which at a heap-typed `a` would be an unsound null (§10.12.8 "Empty `select`"). Because that raise happens at **effect-run time** (when the trampoline interprets the node), it is **fatal and non-catchable** — outside any `catch-runtime-error` construction bracket (§12.7.2 "the bracket is temporal"; §10.12.8 "Empty `select`").
+**Collection and duration units.** `select` takes a `Vec (IO a)` — the `[..]` literal of §10.12.8 is a `Vec`, not the `Nil`/`Cons` `List` ADT. Durations are plain `Int` **milliseconds**: `sleep : Int -> IO Int` parks for the given number of milliseconds and resumes with `0`, and `timeout`'s deadline is likewise an `Int` count of milliseconds (§10.12.8 "Duration unit"). The language has no dedicated `Duration` type. An **empty** `select` (`(select [])`) has no branch that can win; the runtime MUST raise a runtime panic (§12.7.2) — "select over empty collection" — rather than return a synthesised value, which at a heap-typed `a` would be an unsound null (§10.12.8 "Empty `select`"). The panic ends the process in every mode (§12.7; user ruling, 2026-11-15).
 
 **Construction is pure; the composed effect runs at the trampoline.** Applying a combinator builds an IO node and runs nothing — consistent with the laziness of `IO` everywhere (§10.3). The concurrent composition executes only when the resulting `IO` is sequenced into the program's effect (via `bind!` / `do`) and reaches the trampoline, which interprets the node by running the branches concurrently on the same execution substrate as `Par` (§10.12.5, §10.12.6) and resolving to the winner. The mechanism is implementation-internal and not prescribed (§10.12.5): a conforming implementation maps `race`/`select` onto its substrate's first-completion primitive and `timeout` onto a timer raced against the effect.
 
-**Cancellation follows the program's effect structure — it is not a user primitive.** There is no `cancel` function and no user-installable cancellation handler (consistent with §12.7's "no user-exposed panic/try-catch mechanism"). An in-flight effect is cancelled exactly when the cancellation context it executes in is cancelled ([§10.12.9](10-io.md#10129-structured-cancellation)): because its `race`/`select` branch loses, because its `timeout` timer fires first, or because an enclosing context is cancelled. This includes every detached strand launched within that context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), independent of whether the runtime ran a given eligible effect detached, inline or on a worker. Function return and normal completion cancel nothing. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
+**Cancellation follows the program's effect structure — it is not a user primitive.** There is no `cancel` function and no user-installable cancellation handler. An in-flight effect is cancelled exactly when the cancellation context it executes in is cancelled ([§10.12.9](10-io.md#10129-structured-cancellation)): because its `race`/`select` branch loses, because its `timeout` timer fires first, or because an enclosing context is cancelled. This includes every detached strand launched within that context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), independent of whether the runtime ran a given eligible effect detached, inline or on a worker. Function return and normal completion cancel nothing. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
 
 1. **Resource release on drop.** Dropping a cancelled effect's future MUST release every resource it held: an acquired resource-capacity **permit** (§10.12.4.1) returns to its token pool, and any registered reactor interest (an fd-readiness wait, a timer) is deregistered. This is the runtime obligation underneath §10.12.9 item 1 — a permit freed by cancellation MUST become claimable by an effect parked on that token, and a cancelled effect parked *awaiting* a permit MUST be removed from the pool's wait queue so it cannot strand a later release. Cancellation under volume (a long-running server cancelling per-request work) MUST NOT leak permits or reactor registrations.
-2. **No completion side-effect; no fault.** A dropped effect does not run to its completion side-effect (§10.12.9 item 2) and raises no runtime panic into the cancelling context (it is not routed through the §12.4.3 fork-join ferry, nor to the supervisor of §12.7.9 — §10.12.9 item 3). Side-effects already performed before the drop point are **not** rolled back.
-3. **Drop glue runs.** The cancelled computation's live heap values are released through ordinary drop glue (§12.7) as its future is dropped; reference counts are decremented exactly as on normal completion (§10.12.9 item 4). A value that was mid-construction when cancelled is in the same indeterminate-but-not-leaked state as one abandoned by a panic (§12.7.2).
+2. **No completion side-effect; no fault.** A dropped effect does not run to its completion side-effect (§10.12.9 item 2) and does not itself raise a runtime panic (§10.12.9 item 3). Side-effects already performed before the drop point are **not** rolled back.
+3. **Drop glue runs.** The cancelled computation's live heap values are released through ordinary drop glue (§12.7) as its future is dropped; reference counts are decremented exactly as on normal completion (§10.12.9 item 4).
 
-**Interaction with the sequential-equivalence guarantee.** Cancellation is the **explicit-control** half of the concurrency model, the peer of the detached strand (§10.12.7). It is deliberately **outside** the §12.4.3 structured-join guarantee: a cancelled branch produces no value to join and no completion side-effect, so the set of effects a `race`/`timeout` performs is not the same as running every branch to completion sequentially. This is the program's explicit choice (the whole point of the combinator) and does not weaken the inferred half — the auto-IO scheduling of §10.12.1–§10.12.5 remains observationally identical to sequential execution. The three structured-join carve-outs are: detached strands (§10.12.7), simultaneously-panicking-branch first-error non-determinism (§12.4.3), and cancellation (this subsection).
+**Interaction with the sequential-equivalence guarantee.** Cancellation is the **explicit-control** half of the concurrency model, the peer of the detached strand (§10.12.7). It is deliberately **outside** the §12.4.3 structured-join guarantee: a cancelled branch produces no value to join and no completion side-effect, so the set of effects a `race`/`timeout` performs is not the same as running every branch to completion sequentially. This is the program's explicit choice (the whole point of the combinator) and does not weaken the inferred half — the auto-IO scheduling of §10.12.1–§10.12.5 remains observationally identical to sequential execution. Panic termination is governed separately by §12.7 (user ruling, 2026-11-15).
 
 ## 12.5 Tail Call Optimization [Tested+Neg tests/spec_12_runtime.rs::tco_deep_countdown, tests/spec_12_runtime.rs::tco_match_tail_position, tests/spec_12_runtime.rs::tco_accumulator, tests/spec_12_runtime.rs::tco_let_body_tail_position, tests/spec_12_runtime.rs::tco_non_tail_recursion_unchanged]
 
@@ -224,7 +222,7 @@ This rule does not apply under `--test`, which neither requires nor calls `main`
 
 ## 12.7 Error Model [S122 — partial; see the subsections]
 
-Cranelisp distinguishes two error categories: **compile-time errors** (detected before execution) and **runtime panics** (detected during execution). There is no exception mechanism, no user-exposed `try`/`catch`, and no `Result`-based error propagation for runtime faults. Runtime panics are **fatal to the current evaluation** but the execution environment (REPL session) survives.
+Cranelisp distinguishes two error categories: **compile-time errors** (detected before execution) and **runtime panics** (detected during execution). There is no exception mechanism, no user-exposed `try`/`catch`, and no `Result`-based error propagation for runtime faults. Runtime panics **end the process in every mode**, including the REPL (user ruling, 2026-11-15).
 
 ### 12.7.1 Compile-Time Errors [Tested]
 
@@ -236,11 +234,13 @@ The following are compile-time errors:
 - Ambiguous name resolution [Tested tests/spec_06_pattern_matching::contested_bare_pattern_indeterminate_scrutinee_poisoned_neg]
 - Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/spec_09_macros::macro_body_non_sexp_int_rejected_neg, tests/spec_09_macros::neg_macro_expansion_depth_limit_exceeded]
 
-### 12.7.2 Runtime Panics [S122 — defective: a panic in a callee does not stop its caller. A heap-typed result kills the process, `catch-runtime-error` included (ACT-1040); a scalar result lets the evaluation resume with `0` (ACT-1042). §12.7.2.1 is partial]
+**User ruling, 2026-11-15.** A call to a symbol left broken by a redefinition MUST be refused at compile time, before the call executes. This does not authorize creating broken symbols where the guarded-publication rules of REPL §18 prohibit them.
 
-A **runtime panic** terminates the current evaluation. It does NOT terminate the process in REPL mode (see §12.7.4). The panicked evaluation itself cannot resume — it is unconditionally fatal to the expression being evaluated, and any heap values it had partially produced are in an indeterminate state (their drop glue did not run). User code MAY, however, **observe** a runtime panic as a value rather than letting it abort the enclosing computation, by bracketing the risky work in the `catch-runtime-error` combinator (`(Fn [(Fn [] a)] (Result a String))`, see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): the combinator invokes a thunk and returns `(Err message)` if it panicked or `(Ok result)` otherwise. This recovers the panic *message*, not a consistent heap from the aborted thunk — an `(Err …)` result means the bracketed evaluation is void. Only language-level panics (the §12.7.2.1 sources, lowered to a `runtime/panic` call) are observable this way; hardware signals are not (see §12.7.2.1).
+### 12.7.2 Runtime Panics [S123]
 
-**The bracket is temporal, not just categorical.** `catch-runtime-error` observes a panic only if it is raised **synchronously while the thunk is being evaluated** — the thunk body plus the pure construction of any `IO` value it returns (§10.3). It does **not** reach a panic raised **later, when the trampoline runs that `IO` value**: at a `(Fn [] (IO x))` thunk the bracket ends when construction returns the `IO` node, and the node's effects execute afterward, outside it (Appendix A.3 catchability boundary). Such **effect-run-time** panics are therefore **fatal, non-catchable** runtime errors — process-terminating in batch mode, expression-aborting in the REPL (§12.7.4) — regardless of any enclosing `catch-runtime-error`. The canonical case is an **empty `select`** (`(select [])`, §10.12.8): the raise happens when the trampoline interprets the select node, never during construction, so no IO-wrapping brings it inside a bracket. This is the general rule for all run-time effect errors, not a select special case; wrapping a faulting effect in `(fn [] …)` only defers the raise past the bracket, it does not make the fault catchable. [S77 — tested-by /qa]
+**User ruling, 2026-11-15.** A runtime panic MUST report its message and terminate the process. This applies in the REPL, `--run`, `--test` and linked executables, including panics in callees, workers, IO execution, detached strands and macro expansion. The `runtime/panic` intrinsic never returns. No caller resumes with a placeholder value; there is no panic propagation or recovery. `catch-runtime-error` is removed.
+
+Programs avoid panics through checked operations returning `Option`; checked integer division is specified in §12.7.3.
 
 #### 12.7.2.1 Panic Sources [S122 — partial: the stack-overflow row is untested; see the rows]
 
@@ -248,9 +248,9 @@ The following conditions cause a runtime panic:
 
 | Condition | Message | Notes |
 |---|---|---|
-| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg] |
-| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run] |
-| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [Tested+Neg tests/spec_12_runtime::vec_get_index_past_length_panics_and_session_continues, tests/spec_12_runtime::vec_set_negative_index_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_equal_to_length_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics, tests/spec_12_runtime::vec_set_dynamic_out_of_range_index_panics_in_every_mode, tests/spec_12_runtime::vec_set_in_range_index_writes_without_panic_neg] |
+| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Uncovered S123 — was Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg] |
+| Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [Uncovered S123 — was Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run] |
+| Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [Uncovered S123 — was Tested+Neg tests/spec_12_runtime::vec_get_index_past_length_panics_and_session_continues, tests/spec_12_runtime::vec_set_negative_index_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_equal_to_length_on_unique_vec_panics, tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics, tests/spec_12_runtime::vec_set_dynamic_out_of_range_index_panics_in_every_mode, tests/spec_12_runtime::vec_set_in_range_index_writes_without_panic_neg] |
 | Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [S18] |
 
 #### 12.7.2.2 Conditions That Are NOT Panics
@@ -262,54 +262,35 @@ The following conditions cause a runtime panic:
 | `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/spec_appendix_a_builtins::primitive_parse_int_valid] |
 | IO operation failure | Platform-defined `IO` result | See §12.7.6. |
 
-### 12.7.3 Arithmetic Policy [Tested tests/spec_12_runtime::integer_division_by_zero_panics_neg]
+### 12.7.3 Arithmetic Policy [Uncovered S123 — was Tested tests/spec_12_runtime::integer_division_by_zero_panics_neg]
 
-Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer division**:
+Cranelisp uses **wrapping integer arithmetic** and **panicking integer division**; checked operations returning `Option` are the panic-avoidance surface (§12.7.2):
 
 - **Integer addition, subtraction, multiplication**: Use two's complement wrapping. No overflow detection. This matches the `Int` type definition (signed 64-bit two's complement, §12.1.1). Programs that need overflow detection MUST implement it in user code (e.g., checking operand signs and comparing with the result).
 
 - **Integer division** (`div-i64`): A divisor of zero causes a runtime panic. Division of `Int.MIN` by `-1` (which would overflow) also causes a runtime panic. All other integer divisions truncate toward zero.
 
+- **Checked integer quotient (user ruling, 2026-11-15).** The compiler primitive `primitives/checked-quot` has type `(Fn [Int Int] (Option Int))`. It returns `None` for a zero divisor or `Int.MIN` divided by `-1`, and `Some` of the quotient truncated toward zero otherwise. These failure cases do not panic.
+
 - **Float arithmetic**: Follows IEEE 754 semantics throughout. Division by zero produces `Inf`, `-Inf`, or `NaN` depending on the operands. Float operations NEVER panic.
 
 - **Modulo/remainder**: If provided, follows the same policy as integer division — zero divisor causes a runtime panic.
 
-### 12.7.4 REPL vs Batch Error Behavior [S122 — partial: see §12.7.4.1; batch mode Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run]
+### 12.7.4 REPL vs Batch Error Behavior [S123]
 
-The execution environment determines what happens after a runtime panic:
+**User ruling, 2026-11-15.** All execution modes obey §12.7.2.
 
-#### 12.7.4.1 REPL Mode [S122 — defective: a callee's panic kills the session when the caller uses a heap-typed result (ACT-1040), and can hang it or report a later panic's message when the result is a scalar (ACT-1042)]
+#### 12.7.4.1 REPL Mode [S123]
 
-In REPL mode, a runtime panic terminates the current expression evaluation but MUST NOT terminate the REPL session. The REPL MUST:
+A runtime panic ends the REPL process after reporting the panic message. The REPL MUST NOT re-prompt or evaluate later input after the panic.
 
-1. Display the panic message to the user (see §12.7.5).
-2. Preserve all session state: previously defined functions, types, imports, and module context remain available.
-3. Return to the input prompt, ready for the next expression.
+#### 12.7.4.2 Batch Mode [S123]
 
-```
-user> (match 42 [(Some x) x])
-error: runtime panic: match failed
-user> (+ 1 2)
-3 :: Int
-```
+In batch and linked execution, a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
 
-Heap allocations from the panicking evaluation MAY be leaked. This is acceptable because the REPL session continues and leaked memory is bounded by the size of the single failed evaluation.
+### 12.7.5 Error Message Format [S123 — defective: `--run` renders a codegen error at 0..0 with a doubled prefix, RED tests/spec_12_runtime::uncaught_panic_report_is_not_a_codegen_error_run (ACT-1041); the prefix in the other modes is not asserted]
 
-#### 12.7.4.2 Batch Mode [Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run]
-
-In batch mode (`cranelisp --run file.cl`), a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
-
-### 12.7.5 Error Message Format [S122 — defective: `--run` renders a codegen error at 0..0 with a doubled prefix, RED tests/spec_12_runtime::uncaught_panic_report_is_not_a_codegen_error_run; the prefix disagrees with REPL §10.3 R8 and is not asserted (ACT-1041)]
-
-Runtime panic messages MUST be displayed with a consistent prefix that distinguishes them from normal output:
-
-**REPL mode**:
-
-```
-error: runtime panic: <message>
-```
-
-**Batch mode** (to stderr):
+**User ruling, 2026-11-15.** In every mode, including the REPL and macro expansion, a runtime panic MUST be reported once as plain text on stderr, with this prefix:
 
 ```
 error: runtime panic: <message>
@@ -320,14 +301,16 @@ The `<message>` is the panic source's descriptive string (e.g., `"match failed"`
 Implementations SHOULD include source location information (file and line) when available. The format for source-located panics is:
 
 ```
-error: runtime panic at <file>:<line>: <message>
+error: runtime panic: <file>:<line>: <message>
 ```
 
 ### 12.7.6 Interaction with IO Model [S18]
 
 Runtime panics and the IO model (§10) interact as follows:
 
-**Panics during IO trampoline execution**: When a runtime panic occurs inside an `Effect` thunk (i.e., during execution of a platform operation's closure), the panic propagates up through the trampoline and terminates the current IO evaluation. The trampoline does NOT catch panics from individual effects — a panic in any effect aborts the entire IO tree evaluation.
+**Panics during IO trampoline execution**: When a runtime panic occurs inside an `Effect` thunk (i.e., during execution of a platform operation's closure), the process ends under §12.7.2 (user ruling, 2026-11-15).
+
+**Platform dispatch faults (user ruling, 2026-11-15).** A fault during dispatch of a platform operation MUST end the process; it is not returned to a runner for recovery.
 
 **Platform operation failures**: Platform operations (e.g., file I/O, network) that encounter recoverable errors (file not found, connection refused) SHOULD return an error-indicating value within the IO type rather than panicking. The recommended pattern is to return `IO (Option a)` or a platform-specific error ADT:
 
@@ -344,7 +327,7 @@ Runtime panics and the IO model (§10) interact as follows:
 
 Platform operations MUST NOT panic for expected failure modes (file not found, permission denied, network timeout). Panics from platform code are reserved for **contract violations** (null pointers, corrupted state) that indicate programming errors rather than environmental conditions.
 
-**Panics during `Par` execution** (§10.12): If any branch of a `Par` node panics during concurrent execution, the panic propagates to the parent trampoline. Other concurrently executing branches MAY or MAY NOT complete before the panic is observed. The implementation is NOT required to cancel in-flight branches.
+**Panics during `Par` execution** (§10.12): A panic in any branch ends the process under §12.7.2 (user ruling, 2026-11-15).
 
 ### 12.7.7 No User-Exposed Panic Mechanism [S18]
 
@@ -353,10 +336,6 @@ There is no `panic`, `error`, `throw`, or `raise` special form or function avail
 Programs that need to signal error conditions MUST use the type system:
 
 ```clojure
-;; Use Option for "might not have a value"
-(defn safe-div [:Int x :Int y]
-  (if (= y 0) None (Some (/ x y))))
-
 ;; Use a custom error ADT for richer error information
 (deftype (Result a e) (Ok [:a val]) (Err [:e err]))
 
@@ -366,33 +345,15 @@ Programs that need to signal error conditions MUST use the type system:
     [None (Err "not a number")]))
 ```
 
-This design keeps the runtime simple (no unwinding machinery beyond the panic boundary) and encourages programs to make error conditions visible in their types.
+Expected failures are represented in values; a runtime panic ends the process (§12.7.2).
 
-### 12.7.8 Implementation Requirements [S122 — defective; see the items]
+### 12.7.8 Implementation Requirements [S123]
 
-A conforming implementation MUST satisfy:
+**User ruling, 2026-11-15.** A panic MUST terminate the process after reporting its message, without resuming user code, fabricating a return value, or causing undefined behavior. This applies during heap allocation, closure invocation and IO execution as well as direct calls. The process-exit rule replaces the former JIT recovery boundary and REPL-survival requirements.
 
-1. **Panic boundary**: The implementation MUST catch runtime panics at the boundary between the runtime and JIT-compiled code. Panics MUST NOT propagate as uncaught signals or cause undefined behavior. [S122 — defective: ACT-1040]
-2. **REPL survival**: The REPL MUST continue operating after a runtime panic, with all prior session state intact. [S122 — defective: ACT-1040 (the session dies), ACT-1042 (the session can hang)]
-3. **Batch exit**: In batch mode, a runtime panic MUST cause a non-zero process exit code and a message on stderr. [S122 — partial. Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run; defective when a callee's panic reaches a heap consumer (ACT-1040)]
-4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [S122 — defective: ACT-1040 (null-sentinel dereference). The out-of-range vec-set face is Tested tests/spec_12_runtime::vec_set_index_past_length_on_heap_element_vec_panics]
-5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [S122 — defective: a callee's panic becomes the value `0` in its caller (ACT-1040, ACT-1042). The shared vec-set face is Tested tests/spec_12_runtime::vec_set_index_past_length_on_shared_vec_panics]
+### 12.7.9 Supervised Detached Strands [S123]
 
-### 12.7.9 Supervised Detached Strands [S96]
-
-A **detached strand** ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects)) — a launched-and-not-joined effect — has **no join point**. There is no enclosing expression waiting on it, so the structured fork-join error propagation of §12.4.3 (which re-raises a worker fault at the join) has nowhere to deliver a fault. A runtime panic (§12.7.2) raised in a detached strand is instead contained by a **supervisor**.
-
-The supervisor is a **scheduler-/platform-declared policy**, not a pure-language construct: pure code neither installs it nor observes it directly (there is no `try` / `catch`, §12.7), so it stays out of the pure language. It is, however, an **observable runtime behavior**, which this section pins.
-
-**Observable contract.** When a detached strand faults:
-
-1. **The supervising context survives.** The panic MUST NOT abort the launching strand or terminate the program. In the reference server workload, the server keeps accepting and serving subsequent requests — the "server lives" semantics. [S96]
-2. **The fault is handled by a declared policy, not silently discarded.** The reference workload's default policy for a request handler is **respond 500 + log + drop that request**: the faulting request receives its error response (the 500), and the failure is recorded — a supervised drop does NOT vanish, it surfaces through the dev-facing strand/log sink of the observability stream (see [§10.12.6](10-io.md#10126-execution-substrate-and-slice-delivery-informative) and [§4.12](04-expressions.md#412-trace-expression)). Only that one request is abandoned. [S96]
-3. **Both extremes are non-conforming.** The supervisor MUST NOT abort the whole program on a detached fault (the structured-join behavior — wrong for fire-and-forget), and it MUST NOT swallow the failure without trace (which would make supervised drops unobservable by construction). [S96]
-
-This contract is **observational and mechanism-neutral**: it constrains what a program and its operator observe — that the server lives, that the faulting request gets an error response, and that the drop is recorded — not how the runtime owns, polls, or schedules the detached strand. Supervision governs faults only: when a detached strand is cancelled is fixed by its cancellation context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), not by the supervisor, and a cancelled strand is not a fault (§10.12.9 item 3).
-
-**Honest caveat (carried from §12.4.3).** The structured fork-join's first-error-wins ordering does **not** apply across detached strands. Each supervised strand fails and is handled independently; there is no defined ordering relating faults in distinct detached strands.
+**User ruling, 2026-11-15.** A panic in a detached strand ends the whole process under §12.7.2. There is no supervisor recovery policy that keeps a server alive after a panic. A request handler that must keep the server running uses checked operations and handles their returned values. Cancellation remains distinct from a panic (§10.12.9).
 
 ## 12.8 Platform ABI [Tested tests/platform_errors::platform_manifest_not_found_carries_dll_path]
 

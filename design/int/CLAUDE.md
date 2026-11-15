@@ -69,6 +69,7 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `step9-error-cascade.md` | Module failure: scheduler cascade, the user-visible error chain and REPL recovery. Spec-traced tests cite §4.1 and §4.2. |
 | `observability.md` | The trace and event sinks. |
 | `cranelisp-toml.md` | `Cranelisp.toml`, library and platform directory assembly, and the scaffold writer. |
+| `environment.md` | The startup supply of environment variables from a project `.env` and a user file, and the runtime parameters baked into linked executables. Designed in S123; not implemented. |
 | `repl-lifecycle.md` | The file watcher and reload executor, the session lock and REPL exit, `/reset`, `/sh`, REPL cache use, `--link` wiring and project-root resolution. |
 | `agent.md` | The embedded agent (dispatch, turn loop, harvest, write gates, rendering, log and trace), `/refs`, `/tests-for`, `/syntax` and the interim `/search` index. Section numbers are pinned by live source. |
 | `terminal-styling.md` | The layered styling interior below the `styled::render` role-span seam, and the pretty-printer layout. |
@@ -84,7 +85,7 @@ obligations are listed in `int.md` §16.0 and the standing review rejects in
 | `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
 | `multi-sig-introspection.md` | Multi-signature introspection: one line per arm, each with its own constraints (§2.4). |
 | `private-submodule-import.md` | Private submodule import refusal, with its open unloaded-parent case. |
-| `test-runner.md` | `--test` and the crate-private runner it shares with `/run-tests` and `/run-all-tests`: selection, the one eligibility scan, prepare/execute/report, test-result release and the batch refusal of `discover-tests`. Implemented and verified. |
+| `test-runner.md` | `--test` and the crate-private runner it shares with `/run-tests` and `/run-all-tests`: selection, the one eligibility scan, prepare/execute/report, test-result release and the batch refusal of `discover-tests`. Implemented and verified, except the S123 test child that restarts after a panic (§6.5), designed and not implemented. |
 
 ### Reference lineage
 

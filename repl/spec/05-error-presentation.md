@@ -4,22 +4,24 @@
 
 ### 5.1 Error Format [S122 — partial. The items are Tested; a REPL crash that displays no error is defective, RED tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl (ACT-1035)]
 
-All errors MUST display:
+**User ruling, 2026-11-15.** Runtime panics end the process under [language §12.7](../../spec/12-runtime.md#127-error-model). The continuation requirements in §5.1–§5.2 apply to compiler and command errors, not runtime panics.
 
-1. The error category (parse error, type error, etc.) [Tested tests/repl_negative::type_error_arg_mismatch]
-2. The source location (file/line/column or character span) [Tested tests/repl_negative::type_error_arg_mismatch]
-3. A human-readable message [Tested tests/repl_negative::type_error_arg_mismatch]
+Compiler and command errors MUST display:
 
-Errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error. [Tested+Neg tests/repl_negative::type_error_arg_mismatch, tests/repl_negative::type_error_neg_stderr_empty_and_session_survives]
+1. The error category (parse error, type error, etc.) [Uncovered S123 — was Tested tests/repl_negative::type_error_arg_mismatch]
+2. The source location (file/line/column or character span) [Uncovered S123 — was Tested tests/repl_negative::type_error_arg_mismatch]
+3. A human-readable message [Uncovered S123 — was Tested tests/repl_negative::type_error_arg_mismatch]
 
-### 5.2 Error Recovery [Tested]
+Compiler and command errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Compiler and command errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after those errors. Runtime panics report their message and end the process (§12.7). [Uncovered S123 — was Tested+Neg tests/repl_negative::type_error_arg_mismatch, tests/repl_negative::type_error_neg_stderr_empty_and_session_survives]
 
-After any error (parse, type, runtime), the REPL MUST:
-- Display the error [Tested tests/repl_introspection::sig_unknown_name_graceful]
+### 5.2 Error Recovery [Uncovered S123 — was Tested]
+
+After a compiler or command error (including parse and type errors), the REPL MUST:
+- Display the error [Uncovered S123 — was Tested tests/repl_introspection::sig_unknown_name_graceful]
 - Reset input state (clear any partial multi-line input)
 - Present the prompt for new input
 
-The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression. [Tested+Neg tests/repl_introspection::sig_unknown_name_graceful]
+The session state (defined functions, types, modules) MUST NOT be corrupted by a compiler or command error in a subsequent expression. [Uncovered S123 — was Tested+Neg tests/repl_introspection::sig_unknown_name_graceful]
 
 ### 5.3 Type Error Quality [Tested]
 

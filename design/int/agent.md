@@ -34,12 +34,14 @@ Project-level agent configuration and further providers are open under
 - **No cross-crate edge.** The agent lives entirely in the binary crate.
   `rig-core`, `tokio`, `serde_json` and `futures` are optional int-private
   dependencies behind the `agent` Cargo feature (§6.4); no other crate's
-  `public-api.txt` depends on them.
+  `public-api.txt` depends on them. `crates/cranelisp-exe-bundle` does not
+  depend on the root crate, so no linked executable can contain the agent.
 - **Feature-off is structural.** All of `src/agent/` is
   `#[cfg(feature = "agent")]`. Without the feature the module, the classifier
   arm, `AgentState` and every recording call do not exist; the read loop is the
   ordinary REPL. `/ask` and `/context` keep their parser entries and answer
-  "agent not built in" (§2.3).
+  "agent not built in" (§2.3). The feature is in the default set (§6.4), so
+  this is the supported agent-free build rather than the default one.
 - **Unconditional companions.** `/refs`, `/tests-for` (§9), `/syntax` (§22) and
   `/search` (§25) are LLM-free default-build commands. The agent reaches them
   through the ordinary pull allowlist (§4.2); only that allowlist row is gated.
@@ -83,11 +85,13 @@ normative.
   "agent not built in"; feature-on calls `agent_turn`.
 - `/ask` is a slash command and never passes through the classifier; the two
   are independent entries to `agent_turn`.
-- **Opt-in twice.** The agent acts only when compiled in and enabled with a
-  reachable provider (§6.4). Otherwise `agent_turn` renders the dormant notice
-  in the prose frame, naming the endpoint and that harvested source excerpts
-  would be transmitted. The disclosure wording is
-  `repl/spec/17-embedded-agent.md` §17.8.
+- **Activation.** The agent acts only when it is compiled in, enabled (the
+  default unless `--no-agent`) and given an explicit provider whose
+  configuration is complete (§6.3). Otherwise `agent_turn` renders the dormant
+  notice in the prose frame: with no provider it names
+  `CRANELISP_AGENT_PROVIDER`, and with an incomplete provider it names what is
+  missing (`repl/spec/17-embedded-agent.md` §17.4, §17.10.3). The disclosure
+  wording is §17.8.
 
 ## 3. `src/agent/` module and `agent_turn`
 
@@ -296,30 +300,59 @@ without it. This output budget is distinct from the harvest input budget
 
 `src/agent/provider.rs` builds the configured provider at session start from
 environment configuration (`CRANELISP_AGENT_PROVIDER`, `CRANELISP_AGENT_MODEL`,
-endpoint and key; `repl/spec/17-embedded-agent.md` §17.10):
+endpoint and key; `repl/spec/17-embedded-agent.md` §17.10). The environment
+already includes the file supply by then
+([environment §2](environment.md#2-the-supply)).
 
-- Anthropic is the default and requires a key; the model id is configuration,
+- **No default provider.** Selection matches `CRANELISP_AGENT_PROVIDER`
+  exactly. Unset or empty is dormant, and the notice names the variable
+  (user ruling, 2026-11-15). An unrecognised value is also dormant, and the
+  notice names that value (user ruling, 2026-11-15). No value falls back to a
+  transmitting provider. Today both cases fall back to Anthropic
+  (`build_agent_state_with`'s `unwrap_or_else` and its `_` arm), and both
+  fallbacks are removed.
+- `anthropic` requires a key and a model id. The model id is configuration,
   never a compiled-in constant.
-- Ollama is the local, key-free provider, so zero-transmission operation is
+- `ollama` is the local, key-free provider, so zero-transmission operation is
   available.
-- A deterministic stub serves tests.
+- `stub` is the deterministic test provider.
+- **State and banner.** `AgentState` records the activation answer once:
+  active (with provider and model), dormant (with its reason) or off
+  (`--no-agent`). One line builder renders the startup banner line from that
+  answer, after the existing banner (`repl/spec/00-cli-invocation.md`
+  §0.6.1). The agent-free build renders its line from a constant
+  not-built-in answer, which says the agent is not built in (user ruling,
+  2026-11-15), so `repl_prologue` has no `#[cfg]` arm. The exact text is
+  `spec`'s. The line never names a configuration source.
 
 A further rig provider is one construction arm in `provider.rs`, not an
 `agent_turn` change.
 
-### 6.4 Dependency discipline and opt-in twice
+### 6.4 Dependency discipline and activation
 
 - `rig-core`, `tokio`, `serde_json` and `futures` are optional and enabled only
-  by the `agent` feature, which is in no default set. Ordinary builds and the
-  default suite never compile rig; agent tests run in their own feature lane.
+  by the `agent` feature, which is in the default feature set (user ruling,
+  2026-11-15). A plain `cargo build` and the default suite compile rig. The
+  feature-gated tests join the default suite. The agent-free build
+  (`--no-default-features`) stays supported. `qa` selects the one
+  configuration that keeps it honest, including the feature-off errors for
+  `--agent` and `--yes`.
+- The accepted cost (user ruling, 2026-11-15) is OpenSSL development headers
+  and `pkg-config` on Linux build hosts, about 112 → 211 packages, and a debug
+  binary of about 170 → 257 MB.
 - `rig-core` drops its default features and enables `reqwest` plus
   `native-tls`; rustls pulls a heavy C TLS backend and is rejected. rig
   providers are not individually feature-gated.
 - `tokio` supplies a current-thread runtime only; each model step is one
   `block_on`.
-- **Opt-in twice:** compiled in, and enabled with a reachable provider (an
-  Anthropic key, or a reachable local Ollama). A published binary may include
-  the feature and stays dormant until configured.
+- **Activation:** compiled in, enabled (on unless `--no-agent`), and an
+  explicit provider with complete configuration (§6.3). An ambient
+  `ANTHROPIC_API_KEY` alone leaves the agent dormant, so a default build
+  transmits nothing until the user makes a Cranelisp-specific choice.
+- **Enablement in `main.rs`.** On an agent-capable build the resolved state
+  is enabled unless `--no-agent` is given. `--agent` is accepted and
+  redundant. `--no-agent` wins over it. The feature-off errors for `--agent`
+  and `--yes` are unchanged (`repl/spec/00-cli-invocation.md` §0.6.1–§0.6.2).
 
 ### 6.5 Coupling cost (accepted)
 

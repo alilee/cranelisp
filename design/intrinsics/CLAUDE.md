@@ -30,7 +30,7 @@ This memory establishes one collection:
 
 | Collection | Purpose | Boundary |
 |---|---|---|
-| `intrinsics-current-designs` | Current intrinsics interior designs for runtime heap ownership, node disposal, IO execution, intrinsic registration and diagnostics. | The four named current Markdown products directly under `design/intrinsics/`. |
+| `intrinsics-current-designs` | Current intrinsics interior designs for runtime heap ownership, node disposal, IO execution, intrinsic registration and diagnostics. | The five named current Markdown products directly under `design/intrinsics/`. |
 
 `intrinsics-current-designs` is established and retains live reference checking.
 
@@ -40,6 +40,7 @@ This memory establishes one collection:
 | [`reactor.md`](reactor.md) | The reactor, async trampoline and executor; the `ctx` vtable and permit pool; `Par`, launch, supervisor and `race`/`select`; cancellation release paths; liveness |
 | [`intrinsics-table.md`](intrinsics-table.md) | The published `intrinsics_table()` import catalog and its consumer contract |
 | [`diagnostic-modes.md`](diagnostic-modes.md) | The M1/M2/M3 allocator modes, the A1–A4 seam checks and their precheck ordering, and the test-only fault-plant protocol with its arming discipline |
+| [`process-lifecycle.md`](process-lifecycle.md) | The runtime switch source and its link-time baking; the one terminator that ends the process on a panic, and what it retires |
 
 Section numbers in `reactor.md` and `diagnostic-modes.md` are cited from
 source comments; keep them stable when editing.

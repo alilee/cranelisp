@@ -124,6 +124,12 @@ argument reference.
   discarded result word is not released; neither quantity is bounded here.
 - Zero-residue claims extend to neither path, and an instrument must not
   attribute either residue to a regression of this protocol.
+- **S123 target (designed 2026-11-15, not implemented).** A runtime panic ends
+  the process in the runtime's funnel, so the clause-reported path above and
+  its Rule 4 slot check retire. A panic during expansion ends the process
+  (user ruling, 2026-11-15), so nothing replaces them
+  ([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)).
+  The signal-trap forfeit stays.
 
 ### Rule 4 — the result tree is owned by int and discharged exactly once
 

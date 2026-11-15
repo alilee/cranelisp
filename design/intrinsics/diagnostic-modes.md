@@ -63,9 +63,11 @@ Nothing new is tracked.
 
 ## 3. The three diagnostic modes
 
-All three are off by default, read their environment once per process through a
+All three are off by default, read their switch once per process through a
 cached `LazyLock`, and live in Rust bodies, so every execution mode behaves the
-same.
+same. From S123 the value comes from the runtime switch source: the process
+environment in the compiler, and the value baked at `--link` in a linked
+program ([`process-lifecycle.md`](process-lifecycle.md) §2).
 
 ### M1 — no-reuse quarantine
 
@@ -103,6 +105,11 @@ same.
   located hard failure, never a `Result`.
 - `CRANELISP_ALLOC_PARITY_DUMP` prints the ledger at exit and continues.
   `CRANELISP_RC_STATS` only prints counts.
+- **After a fault termination the hard check stands down** (S123,
+  [`process-lifecycle.md`](process-lifecycle.md) §1.4). A panic leaks
+  frame-owned values by permission, so when the terminator's claim is held the
+  check prints one not-checked line and neither aborts nor changes the exit
+  status.
 
 ## 4. Environment contract and composition
 
