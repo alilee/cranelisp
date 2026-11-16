@@ -344,7 +344,7 @@ dependent work they drove. The REPL redefinition rules
 (`repl/spec/18-redefinition.md`) now require no such work, and the outcomes
 were deleted with the superseded redefinition residue in S123
 ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken);
-[arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
+[arch §6](../arch/bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle)).
 
 - Nothing post-publication survives a later `Err`. A successful macro
   checkpoint stays published (§1.1.2); that is its own state, not a receipt.

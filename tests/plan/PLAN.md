@@ -289,9 +289,10 @@ active allocation cites them; they are not fresh source censuses.
   returns as a plan row of that sprint. Nothing is allocated now; the
   [S118 conditional cell](s118-test-plan.md#35-0859-projectionof-witness--conditional-cell-ruling-2)
   is a dated record of the retired experiment, not a live observer plan.
-- Other open compiler findings retain their own records in the
-  [sprint inventory](../../sprints/s122-candidate-inventory.md) and active
-  allocation. This rewrite closes none of them.
+- Other open compiler findings retain their own records in
+  [open actions](../../sprints/actions/) and
+  [legacy filings](../../design/arch/fixmes/). This rewrite closes none of
+  them.
 - Annotation in macro-argument position (0708, resolved in S122): the user's
   Reading A-structural ruling is scribed. The acceptance evidence is
   `annotation_fold_macro_arg_0708::annotation_folds_in_macro_argument_position`

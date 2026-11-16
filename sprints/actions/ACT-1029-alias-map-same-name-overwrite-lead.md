@@ -107,6 +107,6 @@ liveness is per binder identity.
   with the deleted alias-map seam as its locus (evidence delta U-14). At the W2 commit it
   stamps `fixed=`.
 - Delete this action at the W2 commit, once `design/backend/uniform-counting.md`,
-  `design/arch/safety-invariants.md`, `sprints/SPRINT.md`,
+  `design/arch/safety-invariants.md`, `sprints/archive/sprint-123.md`,
   `tests/plan/s123-evidence-delta.md`, ACT-1030 and ACT-1031 no longer link
   it.

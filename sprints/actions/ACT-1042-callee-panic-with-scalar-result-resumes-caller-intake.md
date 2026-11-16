@@ -29,5 +29,5 @@ only one reported.
   2026-11-15, with their in-range and in-frame controls passing.
 - **Owed.** `test` stamps `fixed=S123/<W1 commit>` on both cells when W1 is
   committed.
-- Delete this action once `design/backend/backend.md`, `sprints/SPRINT.md`,
+- Delete this action once `design/backend/backend.md`, `sprints/archive/sprint-123.md`,
   `tests/plan/s122-evidence-delta.md` and ACT-1040 no longer link it.

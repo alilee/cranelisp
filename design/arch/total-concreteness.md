@@ -175,25 +175,18 @@ types at a concrete instantiation for category and glue purposes.
   is kept behind a uniform value ABI that it declares, or split per layout class when that ABI
   stops being uniform.
 - The roster is the closed set of generic, slot-less, host-promised bodies:
-  `primitives/bind`, `primitives/race`, `primitives/select` and
-  `primitives/catch-runtime-error`. It is a backend-interior realization contract, not an
-  exception to any typecheck invariant. A new or reclassified member fails the pin until it is
+  `primitives/bind`, `primitives/race` and `primitives/select`. It is a backend-interior
+  realization contract, not an exception to any typecheck invariant. A new or reclassified member fails the pin until it is
   declared with its representation dependencies (uniform value word; IO-node tag discipline;
   closure `DROP_GLUE_PTR`; `Result` Ok/Err tag order). Pin:
   `src/bootstrap.rs::bootstrap_generic_uniform_body_roster_is_closed`.
 - `bind`, `race` and `select` have no body anywhere: the backend intercepts them by name and
-  lowers IO-node construction inline at the concrete call site. `catch-runtime-error` has one
-  C-ABI body in `cranelisp-intrinsics`.
-- **Open — I-EMIT is not yet delivered for these four.** Each is still a polymorphic entry
+  lowers IO-node construction inline at the concrete call site.
+- **Open — I-EMIT is not yet delivered for these three.** Each is still a polymorphic entry
   that the emitted tree references by name. The ratified dispositions are:
   - `bind`, `race`, `select` re-kind to the inline-primitive model. Precondition MEASURE-RK:
     a census of their value-position uses; any hit needs its wrapper-body arm before the
     re-kind, landed dormant as the `vec-len` arm was.
-  - `catch-runtime-error` gains per-instantiation concrete instances named by the canonical
-    mangler, each realised today as an alias onto the one body. The instance name is where
-    the type closes; a layout change then alters realization per instance with no tree change.
-    Superseded by the approved S123 target, which removes the entry and so shrinks the
-    roster to three ([process-ending panics](s123-panics-and-environment.md) §1.2).
   - No filing carries this work. `sprint` schedules it or records an owned deferral.
 - The `TemplateBody::UniformRust` and `Realization::FacadeOf` carriers exist for that end
   state; their presence is not evidence of a production roster.
@@ -331,11 +324,6 @@ none is cured by the rules above:
   contained DLL-side; that containment across a real cdylib boundary is
   asserted, and `design`(platform) and `qa` own its falsifier and
   classification.
-- **Abort-path leak** (pre-existing; read at source, unmeasured; `qa` intake). A
-  runtime error or dispatch fault returns without releasing the fresh current
-  node and un-popped continuations. Retention changes only magnitude — a leaked
-  forced node now leaks its payload or thunk with it. Direction: leak, never a
-  second owner.
 
 The separate backend scope-result retain defect (IOR-5) is corrected in the
 working tree ([backend design §8](../backend/s122-closure.md)). The extra retain

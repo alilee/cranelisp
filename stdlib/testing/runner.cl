@@ -14,7 +14,7 @@
 ;; test ends that process and the tests after it do not run
 ;; (spec/12-runtime.md §12.7.4). Isolation is the `cranelisp --test`
 ;; supervisor's, which restarts its child after a panic
-;; (design/arch/s123-panics-and-environment.md §1.5).
+;; (design/arch/test-discovery.md).
 ;;
 ;; REPL ONLY, WHOLE MODULE. `run-all` and `run-matching` reference
 ;; `discover-tests`, and importing any name from this module (or from

@@ -121,7 +121,7 @@ nothing.
   these cells.
 - Delete this action at the W2 commit, once
   `design/backend/uniform-counting.md`, `design/arch/safety-invariants.md`,
-  `design/arch/ownership-stratum-options.md`, `sprints/SPRINT.md`,
+  `design/arch/ownership-stratum-options.md`, `sprints/archive/sprint-123.md`,
   `sprints/s123-architecture-review.md`, `tests/plan/s123-evidence-delta.md`,
   `tests/plan/s123-carry-triage.md`, ACT-1029 and ACT-1031 no longer link
   it.

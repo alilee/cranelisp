@@ -81,5 +81,5 @@ tree in QA's targeted run of 2026-11-16.
 - **Owed.** At the W2 commit, `test` stamps `fixed=` on the lead cells.
   `design`(backend) updates the "none yet measured" sentence in
   [uniform counting §6](../../design/backend/uniform-counting.md#6-coverage-of-the-filed-faults).
-- Delete this action at the W2 commit, once `sprints/SPRINT.md`,
+- Delete this action at the W2 commit, once `sprints/archive/sprint-123.md`,
   `sprints/ROADMAP.md`, ACT-1029 and ACT-1030 no longer link it.

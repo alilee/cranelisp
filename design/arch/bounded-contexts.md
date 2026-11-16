@@ -414,6 +414,8 @@ produces no handoff to any other cadence.
   `HostCtx`/waker vtable ([reactor design](../intrinsics/reactor.md)).
 - The program driver `cranelisp_run_program` and the process-ending fault
   terminator (invariant 13).
+- The runtime-switch source, its link-time capture and its install entry
+  (invariant 18).
 - The `(trace …)` runtime family and its display-descriptor layout.
 - The fault guard at the platform-effect force site.
 - The IO-observer registration point; observer state is the binary's.
@@ -434,9 +436,10 @@ and diagnostics composition (binary); platform DLL loading (binary).
   API redesign is separate future work
   ([ACT-0959](../../sprints/actions/ACT-0959-public-allocation-api-redesign.md)).
 - Primitives' private adoption, borrowed-projection and storage-transfer sites
-  are a bounded, named trusted base; the approved site set and its evidence
-  obligations are in
-  [the allocation proposal](../../sprints/s122-primitives-allocation-proposal.md).
+  are a bounded, named trusted base, approved by the user on 2026-09-10 (the
+  S122 primitives allocation proposal, Git history). The exact site sets and
+  their guards are in the
+  [shared trusted base](../runtime/s119-typed-consume-funnel.md#3-the-trusted-base-counted).
 
 **Heap-argument conventions of the named intrinsics** (invariant 6). Two
 populations, each with one source of its call convention:
@@ -538,13 +541,41 @@ entries take no counted heap argument.
 13. **A runtime panic ends the process.** `runtime/panic` and every other
     fault kind enter one crate-private terminator, which claims termination
     once per process, flushes buffered standard output, writes one report to
-    stderr and exits. Nothing runs on the raising thread afterwards, and a
-    panic on a worker or detached strand ends the process from that thread;
-    there is no error slot, no fork-join ferry and no protected call
-    ([process-ending panics](s123-panics-and-environment.md) §1;
-    [safety invariants](safety-invariants.md) R13). The compiler test runner
-    isolates a panicking test by process, not by catching it
-    ([test discovery](test-discovery.md)).
+    stderr and exits (`spec/12-runtime.md` §12.7). Nothing runs on the raising
+    thread afterwards, and a panic on a worker or detached strand ends the
+    process from that thread; there is no error slot, no fork-join ferry and
+    no protected call ([safety invariants](safety-invariants.md) R13). The
+    interior is `design/intrinsics/process-lifecycle.md` §1.
+    - **Every panic source routes through it:** emitted checks, intrinsic
+      bodies, primitive bodies and platform code that calls `runtime/panic`.
+      The raiser diverges (`-> !`) and every emitted call ends its block, so no
+      caller resumes with a placeholder; a raising primitive body returns no
+      sentinel.
+    - **No mode distinction.** The terminator reads no mode or host state; the
+      REPL, `--run`, `--test` and linked executables end identically, and the
+      REPL host does not intercept a panic
+      ([Principle 11](principles/11-single-pipeline-mode-parameters.md)).
+    - **One report under concurrency.** The first entrant reports and exits;
+      later entrants wait for the process to end. Which concurrent panic is
+      reported is unspecified (`spec/12-runtime.md` §12.4.3): a
+      sequentially-first report would need the join-side ferry this rule
+      removes.
+    - **The report is the panic's.** Output buffered before the panic is
+      flushed before the report. A diagnostic exit hook must not replace the
+      panic's message or status; the allocation-parity check does not abort
+      on the leak a panic exit legitimately leaves (§12.7.8).
+    - **Other endings share the claim.** A Rust panic inside runtime code is
+      an internal defect and still terminates: the detached-strand
+      `catch_unwind` is a terminating arm, and elsewhere an unwind cannot leave
+      an `extern "C"` entry. Dispatch faults (invariant 14) and the reactor's
+      `OneShot` backstop end through the same terminator, so one report is
+      ever written.
+    - **The report prefix and exit status are published constants**
+      (`PANIC_REPORT_PREFIX`, `PANIC_EXIT_STATUS`) so the compiler test
+      runner's supervisor classifies an ending from the producer's own copy;
+      it isolates a panicking test by process, not by catching it
+      ([test discovery](test-discovery.md)). A checked operation returning
+      `Option`, such as `checked-quot`, is how a program avoids a panic.
 14. **A platform fault ends the process through the terminator.** The guard
     at the single effect force site keeps the signal half host-side, reads the
     DLL-returned effect outcome and the effect name carried on the node, and
@@ -578,6 +609,34 @@ entries take no counted heap argument.
     publish, the bounds checked before a slice is formed, and a non-escaping
     non-owning read — are stated in their rustdoc. String semantics stay in
     primitives.
+18. **Runtime switches have one source, baked into linked executables.**
+    Intrinsics reads its `CRANELISP_*` runtime switches only through
+    `runtime_switches`, a closed member set. In the compiler process it reads
+    the process environment after the binary's supply (§6). At `--link` the
+    binary embeds the opaque bytes of `capture_runtime_switches`; the startup
+    stub passes them to `cranelisp_install_runtime_switches` as its first call,
+    and the source then answers only from that capture, so a linked runtime
+    never reads its own environment. Intrinsics owns the names and the
+    encoding; the binary never names a switch or parses the format
+    ([Principle 07](principles/07-single-source-of-truth.md),
+    [Principle 02](principles/02-narrow-interfaces.md)). Installing after the
+    source has answered a read, after the worker pool exists, or from a
+    malformed capture ends the process.
+    - **A table, not environment mutation.** Setting baked values into the
+      executable's environment would leave the runtime reading its
+      environment, show platforms compiler values in place of the caller's and
+      leak them to child processes. A linked program sees its launch
+      environment only through a platform.
+    - **The worker pool is sized at install** from the machine's available
+      cores, so `rayon` reads no `RAYON_NUM_THREADS`; no pool size is baked
+      (`repl/spec/00-cli-invocation.md` §0.8).
+    - **Census.** Members are the `std::env` reads of the intrinsics `alloc`,
+      `diagnostics`, `ivar`, `rc` and `reactor` modules
+      (`design/intrinsics/process-lifecycle.md` §2). A reader in another crate
+      linked into the executable joins this source.
+      `cranelisp_types::ownership_analysis_off` stays outside because it is
+      read only at analysis time; falsifier: a linked-runtime path that calls
+      it.
 
 ---
 
@@ -750,7 +809,12 @@ and watcher state cannot cross-contaminate.
   selects annotation spans for the frontend (§1 invariant 9). A committed
   checkpoint's redefinition effects are carried on the orchestrating stack and
   settled exactly once; they never enter a scheduler mailbox or shared map and
-  are not retry state.
+  are not retry state. A macro clause is user code, so a panic during
+  expansion ends the process like any other (§4b invariant 13;
+  `spec/12-runtime.md` §12.7.2); no entry contains it, and a macro that
+  panics on its input ends the REPL, including under the embedded agent's
+  pre-flight validation. A hardware signal in a clause is not a panic and
+  keeps the expander's signal recovery.
   Contracts: [macro availability](macro-availability-model.md),
   [macro expansion ownership](macro-expansion-ownership.md),
   [quote shield](../int/int.md#66-pass-1-quote-shield).
@@ -770,6 +834,40 @@ and watcher state cannot cross-contaminate.
   reports each in emitted order from a stack-local receipt of exact identities,
   without scanning the table. Each binding renders through its ordinary
   declaration classification, so a macro stays a macro in its echo.
+- **No callable is left broken.** The redefinition guard refuses at compile
+  time a language-type change whose target has a blocking dependent
+  (`repl/spec/18-redefinition.md` §18.1), so no publication leaves a callable
+  broken and no compiled call reaches a trap. The broken state has no
+  representation ([Principle 20](principles/20-model-invariants-by-representation.md);
+  [symbol-table lifecycle](symbol-table-lifecycle.md);
+  [session transaction §5.2](../int/session-transaction.md#52-no-symbol-is-left-broken)).
+- **The compiler test runner**: a supervisor in the client's process and a
+  test child of the same binary, restarted after a panicking test
+  ([test discovery](test-discovery.md)).
+- **The environment supply.** At startup, before any thread starts and before
+  the earliest reader, the binary reads the project `.env` and the user file
+  under `~/.config/cranelisp/` and sets each admitted key that the process
+  environment does not define. Precedence is process environment, then
+  `.env`, then the user file. Admitted keys are the `CRANELISP_` prefix plus
+  `NO_COLOR`, `ANTHROPIC_API_KEY` and `OLLAMA_API_BASE_URL`; injected keys are
+  inherited by child processes, including the system linker. Interior:
+  [environment](../int/environment.md).
+  - The process environment stays the single source every library crate
+    reads; no library crate reads a configuration file
+    ([Principle 07](principles/07-single-source-of-truth.md)). After the
+    supply the environment does not change, so a crate may memoise a read; a
+    read does not become a parameter.
+  - `std::env::set_var` is `unsafe` on edition 2024 and sound only while no
+    other thread touches the environment, which the startup placement gives.
+  - File locations and one disable switch are set only from the process
+    environment, never from a file, so the suite's repository-level
+    declaration keeps a developer's files from changing test results or
+    reaching a live agent endpoint.
+  - The environment and its files are the only channel for agent provider,
+    model and key settings (`repl/spec/17-embedded-agent.md` §17.10);
+    `Cranelisp.toml` stays the project's directory configuration, and
+    project-level agent configuration extends these keys rather than adding a
+    second channel.
 - **Synthetic-module bootstrap**: mounting the primitives table, seeding the
   `Option`, `Pair` and `Result` types, and publishing the host-promised
   `discover-tests` extern whose body reads live session state
@@ -804,10 +902,19 @@ and primitives (§4b, §4a); the platform ABI (§5).
   runtime through intrinsics' `cranelisp_run_program`, which returns the
   program's result word. A fault during the run ends the process through the
   terminator (§4b invariant 13), so a return is always a completed run and no
-  mode carries an error branch of its own. Under the approved S123 target the
-  binary also supplies environment files before any reader, and linked
-  executables read baked runtime switches
-  ([process-ending panics and the environment supply](s123-panics-and-environment.md) §2).
+  mode carries an error branch of its own.
+- **Linked executables carry the parameters effective at `--link`**
+  (`repl/spec/00-cli-invocation.md` §0.8). Compile-time switches, such as the
+  ownership toggle or a codegen dump, are fixed by compilation; runtime
+  switches are fixed by the capture intrinsics produces
+  ([§4b](#4b-intrinsics-cratescranelisp-intrinsics) invariant 18).
+  Agent settings are read only in the binary's agent module, never by the
+  runtime's switch source, so they are never baked, and the exe-bundle does
+  not depend on the root crate.
+- **Every file the compiler writes is replaced atomically.** A panic on one
+  thread can end the process while another writes, such as a background
+  cache write, as `SIGKILL` already can. Named falsifier: a truncated or
+  partial artifact readable after an exit mid-write.
 - **Mutual imports are a cycle error, not a deadlock.** All signatures of a
   module's import closure register, in topological order, before any body
   checks; a cyclic closure has no order and is diagnosed at the import.

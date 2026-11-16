@@ -2,7 +2,7 @@
 
 Date: 2026-11-15. Reviewer: `arch` (Claude Code subagent, claude-opus-5-5).
 Checkpoint: HEAD `f747990f` plus the uncommitted coordination edits, with
-`sprints/SPRINT.md` new and untracked. The review was read-only: no source,
+`sprints/archive/sprint-123.md` new and untracked. The review was read-only: no source,
 test, specification or design edits, no test runs, no commits and no network
 calls. One measurement build ran in an isolated directory under `target/`,
 which was then deleted (§8). This report is a proposal for the user. It
@@ -23,11 +23,11 @@ kept only as the record of what was proposed.
   draws the consequences. The user chose reading U′.
 - **§1.3 is decided:** the privacy interaction is accepted as it stands.
 - **§2.3 is superseded:** link-time parameters are baked into the executable
-  ([environment supply](../design/arch/s123-panics-and-environment.md) §2.2).
+  ([environment supply](../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) §4b invariant 18).
 - **§3.5's last bullet, §4, §5 rows A and A′, and §7 items 3–4 are
   withdrawn:** panics end the process, so option A, its
   `runtime/panic_pending` delta and the empty-slot invariant leave the scope
-  ([process-ending panics](../design/arch/s123-panics-and-environment.md) §1).
+  ([process-ending panics](../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) §4b invariant 13).
   ACT-1033's derivation stays in scope on its own merit, without a gate.
 - **§5 is replaced** by the [S123 API packet](s123-api-packet.md).
 

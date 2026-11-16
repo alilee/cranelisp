@@ -284,7 +284,7 @@ established_by = "tests/CLAUDE.md"
 
 [[document_class]]
 name = "sprint-delivery-documents"
-patterns = ["sprints/SPRINT.md", "sprints/SPRINT_TEMPLATE.md", "sprints/METHOD.md", "sprints/ROADMAP.md", "sprints/s122-*.md", "sprints/s123-*.md"]
+patterns = ["sprints/SPRINT.md", "sprints/SPRINT_TEMPLATE.md", "sprints/METHOD.md", "sprints/ROADMAP.md", "sprints/s123-*.md"]
 owner = "sprint"
 purpose = "Current sprint coordination, delivery method and roadmap documents under `sprints/`."
 established_by = "CLAUDE.md"
@@ -369,7 +369,7 @@ disposition = "established"
 
 [[document_class]]
 name = "architecture-contracts"
-patterns = ["design/arch/s123-panics-and-environment.md", "design/arch/annotated-sexp-node.md", "design/arch/backend-keyed-consumer.md", "design/arch/bounded-contexts.md", "design/arch/byte-backed-text.md", "design/arch/concrete-boundary-type.md", "design/arch/d1-introspection-repl-only.md", "design/arch/display-protocol.md", "design/arch/dotted-ctor-canonical-keys.md", "design/arch/effect-concurrency.md", "design/arch/interfaces.md", "design/arch/macro-availability-model.md", "design/arch/macro-expansion-ownership.md", "design/arch/module-alias-scoped-lookup.md", "design/arch/overview.md", "design/arch/ownership-inference.md", "design/arch/ownership-stratum-options.md", "design/arch/platform-interface.md", "design/arch/prelude-import-convergence.md", "design/arch/principles.md", "design/arch/repl-embedded-agent.md", "design/arch/repl-styling-seam.md", "design/arch/resolve-home-enumeration.md", "design/arch/s122-overload-reorder-publication.md", "design/arch/s122-shared-document-checker.md", "design/arch/safety-invariants.md", "design/arch/symbol-table-lifecycle.md", "design/arch/test-discovery.md", "design/arch/total-concreteness.md", "design/arch/tracing.md", "design/arch/trait-impl-cache-carrier.md"]
+patterns = ["design/arch/annotated-sexp-node.md", "design/arch/backend-keyed-consumer.md", "design/arch/bounded-contexts.md", "design/arch/byte-backed-text.md", "design/arch/concrete-boundary-type.md", "design/arch/d1-introspection-repl-only.md", "design/arch/display-protocol.md", "design/arch/dotted-ctor-canonical-keys.md", "design/arch/effect-concurrency.md", "design/arch/interfaces.md", "design/arch/macro-availability-model.md", "design/arch/macro-expansion-ownership.md", "design/arch/module-alias-scoped-lookup.md", "design/arch/overview.md", "design/arch/ownership-inference.md", "design/arch/ownership-stratum-options.md", "design/arch/platform-interface.md", "design/arch/prelude-import-convergence.md", "design/arch/principles.md", "design/arch/repl-embedded-agent.md", "design/arch/repl-styling-seam.md", "design/arch/resolve-home-enumeration.md", "design/arch/s122-overload-reorder-publication.md", "design/arch/s122-shared-document-checker.md", "design/arch/safety-invariants.md", "design/arch/symbol-table-lifecycle.md", "design/arch/test-discovery.md", "design/arch/total-concreteness.md", "design/arch/tracing.md", "design/arch/trait-impl-cache-carrier.md"]
 owner = "arch"
 purpose = "Current architecture contracts and explicitly retained design proposals."
 established_by = "design/arch/CLAUDE.md"
@@ -533,46 +533,46 @@ purpose = "Examples-local library rules, exclusions, mechanics and current conte
 established_by = "examples/CLAUDE.md"
 
 # The active sprint plan exists only while a sprint is open. These exceptions
-# cover the gap between sprints; they are commented out while S123 is open,
-# because a present SPRINT.md makes them stale. Restore them at sprint close.
-# [[reference_exception]]
-# source = "CLAUDE.md"
-# target = "sprints/SPRINT.md"
-# rule = "source-path"
-# reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
-#
-# [[reference_exception]]
-# source = "CLAUDE.md"
-# target = "sprints/SPRINT.md"
-# rule = "document-reference"
-# reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
-#
-# [[reference_exception]]
-# source = "sprints/METHOD.md"
-# target = "sprints/SPRINT.md"
-# rule = "source-path"
-# reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
-#
-# [[reference_exception]]
-# source = "sprints/METHOD.md"
-# target = "sprints/SPRINT.md"
-# rule = "document-reference"
-# reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
-#
-# [[reference_exception]]
-# source = "sprints/ROADMAP.md"
-# target = "sprints/SPRINT.md"
-# rule = "document-reference"
-# reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
-#
-# [[reference_exception]]
-# source = "tests/plan/PLAN.md"
-# target = "sprints/SPRINT.md"
-# rule = "document-reference"
-# reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
-#
-# [[reference_exception]]
-# source = "standing-documents.toml"
-# target = "sprints/SPRINT.md"
-# rule = "source-path"
-# reason = "The sprint-delivery document class pattern names the active sprint plan, which is absent between sprints by design."
+# cover the gap between sprints; comment them out while a sprint is open,
+# because a present SPRINT.md makes them stale.
+[[reference_exception]]
+source = "CLAUDE.md"
+target = "sprints/SPRINT.md"
+rule = "source-path"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "CLAUDE.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "sprints/METHOD.md"
+target = "sprints/SPRINT.md"
+rule = "source-path"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "sprints/METHOD.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "sprints/ROADMAP.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "tests/plan/PLAN.md"
+target = "sprints/SPRINT.md"
+rule = "document-reference"
+reason = "Generic pointer to the active sprint plan, which is absent between sprints by design."
+
+[[reference_exception]]
+source = "standing-documents.toml"
+target = "sprints/SPRINT.md"
+rule = "source-path"
+reason = "The sprint-delivery document class pattern names the active sprint plan, which is absent between sprints by design."

@@ -2,9 +2,9 @@
 
 **Owner:** `arch`. **Reader:** the user, at the inter-crate public-API gate
 (root `CLAUDE.md` §Roles). **Status:** rows P1–P10 are approved
-([user rulings on the Phase 3 decisions, 2026-11-15](SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15)),
+([user rulings on the Phase 3 decisions, 2026-11-15](archive/sprint-123.md#user-rulings-on-the-phase-3-decisions-2026-11-15)),
 and rows P11–P13 are approved
-([user rulings at the Phase 3 → 4 checkpoint, 2026-11-15](SPRINT.md#user-rulings-at-the-phase-3--4-checkpoint-2026-11-15)).
+([user rulings at the Phase 3 → 4 checkpoint, 2026-11-15](archive/sprint-123.md#user-rulings-at-the-phase-3--4-checkpoint-2026-11-15)).
 Row P14 is approved (user, 2026-11-16). Rows P15 and P16 are approved (user, 2026-11-16)
 (§A6). R10-9 is not yet a listed delta (Part C).
 A mismatch between an approved row
@@ -37,7 +37,7 @@ auto-trait rows the current format prints.
 
 ### A1. `cranelisp-intrinsics`: panics end the process
 
-Governing contract: [process-ending panics](../design/arch/s123-panics-and-environment.md)
+Governing contract: [process-ending panics](../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (§4b invariant 13)
 §1. Interior: `design/intrinsics/process-lifecycle.md` §1 and §3.
 
 | Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
@@ -59,7 +59,7 @@ delta.
 
 ### A2. `cranelisp-intrinsics`: baked runtime switches
 
-Governing contract: [environment supply](../design/arch/s123-panics-and-environment.md)
+Governing contract: [environment supply](../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (§4b invariant 18)
 §2.2. Interior: `design/intrinsics/process-lifecycle.md` §2.
 
 | Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |

@@ -10,8 +10,8 @@ anything reads it, and how a `--link` executable carries its runtime switches.
 
 - Requirements: [CLI §0.8](../../repl/spec/00-cli-invocation.md#08-environment-files-and-linked-parameters)
   and [§0.7](../../repl/spec/00-cli-invocation.md#07-execution-environment-variables-s93).
-  The decision source is the S123 Phase 3 user rulings in `sprints/SPRINT.md`.
-- Architecture: [process-ending panics and the environment supply](../arch/s123-panics-and-environment.md)
+  The decision source is the S123 Phase 3 user rulings in `sprints/archive/sprint-123.md`.
+- Architecture: [process-ending panics and the environment supply](../arch/bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) (bounded contexts §6; baked switches: [§4b invariant 18](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics))
   §2, the contract this interior realises. The runtime's switch source, its
   capture format and its install entry are intrinsics'
   ([process lifecycle §2](../intrinsics/process-lifecycle.md#2-runtime-switches)).

@@ -15,7 +15,7 @@ owns technical contracts, and the [test plan](../tests/plan/PLAN.md) owns assura
 | E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | COMPLETE |
 | F | Ring 3 — Meta: macros, derive, standard library | COMPLETE |
 | G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | COMPLETE (S80 closeout; pre-H mainline cleared through S83; **full IO auto-parallelism wired + witnessed S85** — FIXME 0367 resolved, the deferral closed) |
-| H | Release compiler: reliability, ownership/memory-model and release-performance work. | Active; S122 closed 2026-10-02, S123 next. Future performance work follows its measured re-entry conditions below. |
+| H | Release compiler: reliability, ownership/memory-model and release-performance work. | Active; S123 closed 2026-11-16, S124 next. Dev-tier optimisation follows Principle 27; future performance work follows its measured re-entry conditions below. |
 
 ## Sprints
 
@@ -32,31 +32,39 @@ roadmap.
 
 ## Forward Plan
 
-### Next sprint — S123
+### Next sprint — S124
 
-S122 closed on 2026-10-02 ([record](archive/sprint-122.md)). S123 is in
-Phase 1 scope drafting ([active sprint](SPRINT.md)). Phase 1 opens with the backend audit disposition
-([cranelisp-backend S122 audit](../audits/cranelisp-backend-s122.md), R1–R12):
-the S119 option-2 measurement and decision come before
-[ACT-1031](actions/ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md)
-resumes instance fixes. The fundamental panic-propagation fix
-([ACT-1040](actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md))
-belongs with that disposition. The S122 record lists the other carries. LLVM
-stays excluded by user direction.
+S123 closed on 2026-11-16 ([record](archive/sprint-123.md)); its close summary
+lists every carry. By user ruling, S124 leads with type concreteness at
+codegen: run the armed category census, then typecheck's producer
+obligations (trait-method instances, synthetic accessors and the lenient
+view are monomorphised; `design/typecheck/non-concrete-producer-obligations.md`),
+then the backend structural close
+([FIXME 0903](../design/arch/fixmes/0903-s4-1-frame-key-excludes-two-measured-escapee-families.md)),
+with [ACT-1050](actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md)
+grouped in. Also scheduled for S124:
+[ACT-1052](actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md)
+(a crash with a committed RED); the raise-helper hardening (an `arch` packet
+row); the Principle 27 retirements (stack placement, value flattening, spark
+density, the borrow-elision carrier, and the mode-ABI redefinition gate with
+[ACT-0953](actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md));
+the frontend audit's R1–R5 ([report](../audits/cranelisp-frontend-s123.md))
+with ACT-1055 to ACT-1057. The primitive checked/unchecked direction
+([ACT-1054](actions/ACT-1054-primitive-arithmetic-checked-unchecked-pairs-and-ub.md))
+is deferred. LLVM stays excluded by user direction.
 
 ### Next increment — coverage assurance and shared standard
 
 [ACT-0962](actions/ACT-0962-coverage-assurance-and-shared-standard.md) carries
 trustworthy requirement-gap reporting and convergence through se-agentic across
-Cranelisp, feedback-dev and magic. S122 continues document cleanup; the action
+Cranelisp, feedback-dev and magic. The action
 owns the next increment's coverage scope and completion evidence.
 
 ### Future agent configuration and eval comparisons
 
 [ACT-0960](actions/ACT-0960-agent-configuration-and-model-comparison.md) carries
 project-TOML agent configuration, GPT/OpenAI integration and combined multi-model
-eval reports. These are deferred to future sprints; S122 proceeds with the
-existing runner and a Haiku baseline.
+eval reports. These are deferred to future sprints.
 
 ## Delivery history and retained direction
 
@@ -208,6 +216,11 @@ Delivered scope, evidence, accepted limitations and carries are retained in
 
 Delivered scope, evidence, accepted limitations and carries are retained in
 [the Sprint 122 record](archive/sprint-122.md).
+
+### Ownership answer, contained panics and agent on by default — S123 CLOSED 2026-11-16
+
+Delivered scope, evidence, rulings and carries are retained in
+[the Sprint 123 record](archive/sprint-123.md).
 
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 

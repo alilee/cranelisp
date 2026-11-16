@@ -223,7 +223,7 @@ inside the DLL's own panic runtime (below) and the cause crosses as a value the
 host can attribute. The host does not resume: intrinsics' force guard hands a
 faulted outcome — or a hardware trap its signal guard intercepts — to the
 process terminator, which reports the fault against the effect's name and
-ends the process (`design/arch/s123-panics-and-environment.md` §1.6;
+ends the process (`design/arch/bounded-contexts.md` §4b (invariant 14);
 `spec/12-runtime.md` §12.7.6). No later force of a faulted node is part of
 the contract, and the closure's survival of the catch is a property of the
 wrapper, not a retry path. Clean forces repeat freely, as the table states.
@@ -421,7 +421,7 @@ a reader of this crate:
     force site is reported against the fully qualified function and then ends
     the process; it is never returned for recovery, and it is never an
     unattributed abort (`spec/12-runtime.md` §12.7.6;
-    `design/arch/s123-panics-and-environment.md` §1.6). Three coordinates: the
+    `design/arch/bounded-contexts.md` §4b (invariant 14)). Three coordinates: the
     fn-name travels *with* the Effect node (a thread-local cannot work — the
     node is forced far from where it was produced); the panic catch is
     DLL-local and transports the cause as an `EffectOutcome` value (§4.2);

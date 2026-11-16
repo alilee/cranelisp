@@ -8,7 +8,7 @@
 > nothing; the user decides every disposition.
 
 The set is the "Excluded and carried to S124" list in
-[SPRINT.md](../../sprints/SPRINT.md). The S122 package table is in
+[SPRINT.md](../../sprints/archive/sprint-123.md). The S122 package table is in
 [S122 evidence](s122-evidence-delta.md#final-disposition-proposal-2026-09-30).
 The [Phase-5 checkpoint carries](s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)
 are in the same record.

@@ -6,8 +6,8 @@ title: The dev tier optimises only against asymptotic blow-up
 # Principle 27 — The dev tier optimises only against asymptotic blow-up
 
 > User-directed on 2026-11-16 (S123 W3 rulings "Dev-path optimisation" and
-> "Principle 27 questions") and authored at S123 W4. Ratification is at S123
-> Phase-7 close, as for Principle 26. The user's words: "simplify the dev
+> "Principle 27 questions") and authored at S123 W4. **Ratified at S123
+> Phase-7 close (user-approved 2026-11-16).** The user's words: "simplify the dev
 > path. we just need enough optimisations to avoid exponential time.
 > otherwise we'll defer to release build. however, we should be retaining the
 > type annotations that release optimisations might rely on, even if dev does

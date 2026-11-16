@@ -212,7 +212,7 @@ fn production_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-// spec: design/arch/s123-panics-and-environment.md §1.3 — the emitted half's
+// spec: design/arch/safety-invariants.md R13 — the emitted half's
 // falsifier is an emitted `runtime/panic` call followed by reachable code. No
 // production source outside the raise helper's home makes a `FuncRef` for
 // `runtime/panic`, so every call goes through the helper, which terminates.
@@ -241,7 +241,7 @@ fn raise_helper_is_the_only_panic_call_emitter() {
     );
 }
 
-// spec: design/arch/s123-panics-and-environment.md §1.3 — detection proof for
+// spec: design/arch/safety-invariants.md R13 — detection proof for
 // the census: it finds a planted emitter in both spellings the crate uses, and
 // does not count a FuncRef for another intrinsic.
 #[test]

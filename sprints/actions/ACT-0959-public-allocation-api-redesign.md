@@ -12,7 +12,6 @@ refers_to:
   - crates/cranelisp-intrinsics/src/heap_string.rs
   - crates/cranelisp-intrinsics/src/vec_runtime.rs
   - design/runtime/s119-typed-consume-funnel.md
-  - sprints/s122-primitives-allocation-proposal.md
 ---
 
 ## Request

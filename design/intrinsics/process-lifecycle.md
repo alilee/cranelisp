@@ -9,7 +9,7 @@ lands, the crate's modules read the process environment directly, as the §2.1
 census records.
 
 The boundary contract is `arch`'s
-[process-ending panics and the environment supply](../arch/s123-panics-and-environment.md).
+[process-ending panics and the environment supply](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (bounded contexts §4b invariants 13 and 18).
 This document is the intrinsics interior that realises its §1 and §2.2: the
 terminator's shape, the switch-source census its §2.2 asks of this surface, and
 the evidence seams.
@@ -28,7 +28,7 @@ Governing requirements:
   settings are never baked, a linked program reads its environment only
   through a platform, and the linked worker pool uses the core count.
 - The S123 user rulings in
-  [`sprints/SPRINT.md`](../../sprints/SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15).
+  [`sprints/SPRINT.md`](../../sprints/archive/sprint-123.md#user-rulings-on-the-phase-3-decisions-2026-11-15).
 
 The environment-file supply that precedes every reader in the compiler process
 is `design/int/`'s ([environment](../int/environment.md)).
@@ -48,7 +48,7 @@ body, so every exit shares one claim, one flush and one report path.
 |---|---|---|
 | Language panic | `runtime/panic`: every emitted panic site, the nested-`trace` raise in `trace.rs`, `cranelisp-primitives`' out-of-line raisers, and platforms that resolve the symbol (for example `poll-pool`) | the panic prefix, then the message |
 | Empty `select` | the select arm (`reactor.md` §9) | `select over empty collection`, as a language panic |
-| Platform dispatch fault | the IO dispatch guard (`io_guard`) after a platform `Effect` thunk faults ([arch §1.6](../arch/s123-panics-and-environment.md#16-platform-dispatch-faults)) | the platform function name and the cause, without the panic prefix |
+| Platform dispatch fault | the IO dispatch guard (`io_guard`) after a platform `Effect` thunk faults ([arch §4b invariant 14](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)) | the platform function name and the cause, without the panic prefix |
 | Runtime defect | the supervised-strand boundary's `catch_unwind` (`reactor.md` §2.12) | `error: runtime defect: `, then the Rust panic payload |
 | `OneShot` backstop expiry | the reactor drive (`reactor.md` §8.2) | the existing backstop diagnostic |
 | Switch-install misuse | the switch install entry (§2.1) | a located configuration message |
@@ -57,7 +57,7 @@ The backend's broken-symbol trap stub is not a row. It still calls
 `runtime/panic` until packet row P13 removes it, at S123 close or in S124. The
 redefinition guard refuses the change that would leave a symbol broken, so no
 compiled call is meant to reach a stub
-([arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
+([arch §6](../arch/bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle)).
 
 The terminator, in order:
 
@@ -252,7 +252,7 @@ contract's §1.4–§1.6.
   [`intrinsics-table.md`](intrinsics-table.md)), so code after the call is
   unreachable and the `0` sentinel has no reader. The backend converges every
   emission onto one helper that also ends the block
-  ([arch §1.3](../arch/s123-panics-and-environment.md#13-invariant-no-continuation-past-a-panic)). Backend unit
+  ([safety invariant R13](../arch/safety-invariants.md)). Backend unit
   tests observe a raise in a child process, because no slot remains to read.
 - **`dev`(primitives).** The ring-0 and marshal raisers call a function that
   does not return, so code after the call is unreachable.

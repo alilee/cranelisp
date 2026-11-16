@@ -2,13 +2,13 @@
 
 > **Owner:** `qa`. **Readers:** `test` and `dev`, dispatched against it;
 > `sprint`, sequencing it; `review`, checking delivered evidence against it.
-> **Authority:** the [S123 sprint plan](../../sprints/SPRINT.md) scope and user
+> **Authority:** the [S123 sprint plan](../../sprints/archive/sprint-123.md) scope and user
 > rulings; `spec/12-runtime.md` §12.4.3 and §12.7; `spec/10-io.md` §10.12.7–
 > §10.12.8; `spec/appendix-a-builtins.md` (`checked-quot`); `repl/spec/00-cli-invocation.md`
 > §0.5.6, §0.6 and §0.8; `repl/spec/14-file-watching.md` §14.9;
 > `repl/spec/16-test-discovery.md` §16.2 and §16.6; `repl/spec/17-embedded-agent.md`
 > §17.4 and §17.10; `repl/spec/18-redefinition.md`. Designs:
-> [panics and environment](../../design/arch/s123-panics-and-environment.md),
+> [panics and environment](../../design/arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics),
 > [uniform counting](../../design/backend/uniform-counting.md),
 > [backend §7](../../design/backend/backend.md#7-runtime-failure),
 > [process lifecycle](../../design/intrinsics/process-lifecycle.md),
@@ -37,7 +37,7 @@ or named observation seam, and no ambiguity blocks evidence.
 
 ### 1.1 The stdlib runner carries no panic isolation
 
-- **Ruling** ([S123 sprint plan](../../sprints/SPRINT.md), user rulings at the
+- **Ruling** ([S123 sprint plan](../../sprints/archive/sprint-123.md), user rulings at the
   Phase 3 → 4 checkpoint): the in-language runner `stdlib/testing/runner.cl`
   drops panic isolation. `cranelisp --test`'s supervisor, which restarts its
   child after a panic, is the isolation (T-1 to T-6). The P1 change-set is

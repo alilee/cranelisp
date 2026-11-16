@@ -1,6 +1,80 @@
-# Sprint 123: One ownership answer, contained panics, agent on by default
+# Sprint 123: One ownership answer, contained panics, agent on by default — CLOSED 2026-11-16
 
-**Status**: PHASE 6b USER-FACING DELIVERY
+## Close summary
+
+**Outcome.** The sprint settled the ownership stratum and its faults, made
+panics end the process, shipped the REPL agent on by default with
+file-supplied environment, and refreshed the user-facing outputs.
+
+- **Ownership: U′ uniform counting (W2).** About 10k backend lines removed.
+  ACT-1030, 1026, 1028, 1029 and 1031 are fixed, along with the `vec-set`
+  old-element leak, the synthetic accessor leak and the `race` tail self-call.
+  The exemplar ×64 run went from 2.78 s to 1.53 s, and the exemplar residue
+  from 51 blocks to 2.
+- **Panics (W1).** A panic ends the process with one report; `checked-quot` is
+  the avoidance surface; `catch-runtime-error` is removed; `Int.MIN / -1`
+  wraps; the `--test` supervisor isolates panicking tests.
+- **Environment and agent (W3).** `.env` and the user env file supply every
+  variable; link-time switches are baked into executables, agent settings
+  never; the agent is in the default build and on per session, activated only
+  by an explicit provider, with a startup banner.
+- **REPL carries and cleanup (W4).** ACT-1047, ACT-1020 and ACT-1035 fixed;
+  the superseded redefinition residue and the broken-symbol state deleted
+  (P13); the cached-restart GOT slot leak fixed (P15); dotted entries share
+  one mapping (P16); the confined non-atomic classifier retired.
+- **User-facing (6a, 6b).** Modules and macros guides; seven `user/` page
+  repairs; all 158 `user/` code blocks classified and executed by a new
+  sample harness; `11-live-reload.demo`; the demo player fails on an early
+  REPL exit; `examples/` corrected; the `cranelisp-frontend` audit.
+
+**User rulings that shape S124 and later.**
+- Principle 27 (ratified at this close): the dev tier keeps an optimisation
+  only when removing it changes a growth rate; parallelism stays.
+- Deleted backing files are recreated without consent.
+- A stdlib's `Num` overflow behaviour is the stdlib's choice, not the
+  language's (§7.7).
+- Primitive arithmetic direction, deferred (ACT-1054): checked primitives
+  return `Result`; `unchecked-` twins have undefined behaviour.
+
+**Evidence (final tree, fresh build).** The full suite ran 7,024: 6,980
+passed and 1 was skipped. All 44 failures are filed defect guards, identical
+to the classified 6b set. Also: agent lanes 91/91 and 23 pass with 10 skipped;
+the banner's three states; the `user/` harness 83 groups; demos 40/40;
+exemplar `user.cl` 0 and `tests.cl` 41; document checker 0; spec link and
+coverage checks clean; public API +0/−0 since the W5 gate. Phase deltas
+(intrinsics +7/−28, types +1/−30, backend −1) were confirmed by the user
+against approved rows P1–P16.
+
+**Carries to S124.**
+- **Priority:** FIXME 0903 type concreteness (trait-method instances,
+  synthetic accessors and the lenient view exempt from monomorphisation),
+  census first, then typecheck's producer obligations, then the backend
+  structural close; ACT-1050 grouped with it.
+- **Crash-class:** ACT-1052 (an importer's cached object calls a moved slot
+  after a reverted ABI-changing edit; K-6 RED).
+- **Hardening:** P-15, making a raise-helper bypass uncompilable (`arch`
+  packet row).
+- **Principle 27 retirements:** stack placement (resolving ACT-1049), value
+  flattening, the spark-density axis, the borrow-elision carrier, and the
+  mode-ABI redefinition gate (ACT-0953, with its spec ruling).
+- **New defects with REDs:** ACT-1055, ACT-1056 (with ACT-0997 at the `arch`
+  gate) and ACT-1057.
+- **Standing REDs:** ACT-1018 (first a minimal per-`print` repro), ACT-1038,
+  ACT-1039, ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034,
+  ACT-1036.
+- **Other:** the frontend audit R1–R5 (S124 Phase 1); FIXME 0907's two
+  remaining legs (`core.io` self-tests, `/info Bind`); the `io-trampoline.md`
+  rewrite; the §17.4 combination cell; ACT-1054; stale status prose left by
+  the panics-contract fold in `design/backend/lenient-eval.md` and
+  `design/int/io-integration.md`, and the `strand.rs` rustdoc's "supervisor
+  drops".
+
+**Not done at close.** The shared-package change moving `design` to Claude
+(`.agents`, root `CLAUDE.md`, `.claude/agents/design.md`) remains
+uncommitted pending the user's approval to commit and push it. Nothing was
+pushed.
+
+**Status**: CLOSED 2026-11-16
 
 **Goal**: Decide the ownership stratum's shape on a measured number and fix
 the observed memory-unsafe faults under it; make a callee's runtime panic a
@@ -33,6 +107,7 @@ tree):
 | Phase 4 → Phase 5 | Wave plan W0–W5, audit choice, and the checkpoint commit | 2026-11-15, conversation: "yes"; checkpoint commit `b35bfb87` | approved |
 | Phase 5 → Phase 6a | W5 gate, Phase 5 adequacy, residuals and carries item by item, public-API phase diff (intrinsics +7/−28, types +1/−30, backend −1, others +0) | 2026-11-16, conversation: "confirming public api, and approved to move to 6a" | approved |
 | Phase 6a → Phase 6b | 6a assessments (`docs`, `training`, `audit`, `test`), the proposed 6b scope, and the two older traits-guide inaccuracies | 2026-11-16, conversation: "all approved" (traits fixes included) | approved |
+| Phase 6b → Phase 7 | 6b delivered artifacts and adequacy; ACT-1055, ACT-1056, ACT-1057 fix decision; close operations (acceptance run, ratify Principle 27, restore `standing-documents.toml` exceptions, archive S122 working files and this plan, ROADMAP with S124 carries; no push) | 2026-11-16, conversation: "carry all three, accept 6b and approve close" | approved |
 
 ## Scope
 
@@ -342,6 +417,10 @@ separate approval.
 | 5 W4 | `dev` | `src/`: P15 safety comment | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; rustdoc states P15's safety grounds with the falsifier; comments only |
 | 5 W4 | `qa` | W4 adequacy, full suite, traceability | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate; suite 6,969 pass / 31 fail (30 filed guards; `role_wiring` principle count from Principle 27); seven guards green; ACT-1047, ACT-1020, ACT-1035 closable after stamps; ACT-1052 carries; spec band regraded; coordinator repaired the Appendix D anchor mechanically |
 | 5 W4 | `test` | stamp seven green guards `fixed=S123/91acf712`; four behaviour renames | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `14d0a119`; 7/7 pass; coordinator applied the four renames to spec, plan and design citations mechanically (both citation checkers clean) |
+| 7 | `sprint` | acceptance run on a fresh build of `d3db8dc8` | — | — | primary | 2026-11-16; suite 6,980/7,024 with the 44 classified REDs; agent lanes 91/91 and 23+10 skip; banner three states; harness 83 groups; demos 40/40; exemplar 0/41; checks clean; public API +0/−0 since W5 (`.local/s123-close/acceptance.md`) |
+| 7 | `arch` | ratify Principle 27; S122 working-file extraction check and citations | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; Principle 27 ratified; nothing left to extract; `bounded-contexts.md` and ACT-0959 repaired |
+| 7 | `arch` | fold the S123 panics-and-environment contract | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; folded into the bounded-contexts record (intrinsics invariants 13 and 18, the binary context), the tracing and concurrency designs; file retired; coordinator repointed 16 external citations to `arch`'s named targets mechanically; stale status prose in `lenient-eval.md` and `io-integration.md` and the `strand.rs` rustdoc carry to S124 |
+| 7 | `qa` | S122 working-file citations in the plan, FIXME 0907, ACT-0959 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; citations repaired, one fact moved into FIXME 0907; both evidence deltas stay live |
 | 6b | `qa` | 6b adequacy, full suite | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate with named limits; suite 6,980/7,024 (44 filed REDs, no green guard); harness 83 groups, 158 fences; demos 40/40 by value; FIXME 0907 open on two S124 legs; band updated (§8.3.11, §8.4, §9.2, §9.9) |
 | 6b | `test` | M-3 harness and metadata format; live-reload demo; demo narration; `qa` returns | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `8d775c2d`; harness with both planted-fault proofs; `11-live-reload.demo`; 40/40 demos complete; metadata in `tests/CLAUDE.md` §"User documentation sample harness" (`.local/s123-6b/test-report.md`) |
 | 6b | `docs` | fence classification; harness green | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `83b6e62b`; 158 fences (67 REPL, 57 definition, 34 illustrative); harness 83 groups pass |
@@ -395,7 +474,7 @@ separate approval.
 | 5 W0 | `spec` | record the accepted design readings | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `bf7ab0fe`; S123-Q12 (recreate-question sentence) open, needed by W4 |
 | 5 W0 | `qa` | evidence-delta citation repair; G1 updated to the runner ruling | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-15; readiness now has no blocking gap; T-7, T-8 added |
 | 5 W0 | `design` | int: runner-isolation wording in `test-runner.md` §6.5 | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-15; checker exit 0 |
-| 5 W0 | `arch` | runner-isolation wording in `s123-panics-and-environment.md` §1.5; packet approval status | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-15; P11–P13 marked approved; checker exit 0 |
+| 5 W0 | `arch` | runner-isolation wording in the S123 panics-and-environment contract (folded at close); packet approval status | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-15; P11–P13 marked approved; checker exit 0 |
 | 3 | `spec` | panic, CLI, environment and linking requirements; five questions; R9 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-15; session `b4a26384`; 11 questions in Appendix D |
 
 ## Phase 2 outcome — awaiting the Phase 2 → 3 checkpoint
@@ -987,3 +1066,6 @@ judges adequacy for the Phase 5 → 6a checkpoint.
 - Phase 6a assessments delivered 2026-11-16 (`docs`, `training`, `audit`, `test`); 6a → 6b checkpoint put to the user.
 - Phase 6b delivered 2026-11-16: guides, page repairs, 158 fences classified with the harness green, examples, live-reload demo, demo maintenance; ACT-1055, ACT-1056, ACT-1057 filed with REDs. `qa` 6b adequacy next.
 - Phase 6b adequacy recorded; 6b → 7 checkpoint put to the user.
+- 2026-11-16, user: ACT-1055, ACT-1056 and ACT-1057 carry to S124 with their REDs; 6b accepted; close approved without push.
+- Close: the four S122 working files retired to Git history (2026-11-16).
+- S123 closed 2026-11-16: plan archived to `sprints/archive/sprint-123.md`; ROADMAP updated; standing-document exceptions restored. Not pushed.

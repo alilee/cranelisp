@@ -285,7 +285,7 @@ workers.
   publication receipt
   ([S117 recovery §1.1.3](s117-conformance-recovery.md#113-post-publication-outcomes-retired))
   retired unbuilt with its subject
-  ([arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
+  ([arch §6](../arch/bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle)).
 
 ### 5.2 No symbol is left broken
 

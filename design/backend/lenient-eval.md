@@ -808,7 +808,7 @@ unchanged: a dependent binding is forced at the barrier like any other spark.
 > **The ferry is superseded on landing.** Under the 2026-11-15 ruling a panic
 > ends the process from the thread that raises it, and the ferry, the
 > `catch-runtime-error` observations below and §8's first-error-wins bullet
-> retire with it ([process-ending panics](../arch/s123-panics-and-environment.md)
+> retire with it ([process-ending panics](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)
 > §1.2; not built). Which of several concurrent panics is reported is open
 > question S123-Q7. The disposal rule in the next paragraph stays.
 

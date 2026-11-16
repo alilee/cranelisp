@@ -13,7 +13,7 @@ and composition. The user dispositioned it at S119 Phase 1
   deferred to S120.
 
 S123 scheduled option 2's measurement and decision. The user chose reading U′
-(§3.1) as the target on 2026-11-15 (`sprints/SPRINT.md`, User rulings); adoption
+(§3.1) as the target on 2026-11-15 (`sprints/archive/sprint-123.md`, User rulings); adoption
 still waits on the measurement and the decision rule of
 [§3.6](#36-measurement-and-decision-rule). Options 1C, 1D
 and 4 remain unscheduled. Retire this paper when each option is adopted into

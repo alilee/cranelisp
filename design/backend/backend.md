@@ -215,7 +215,7 @@ interior facts worth stating once here:
 **A runtime panic reports its message and ends the process, in every mode,
 the REPL included; nothing propagates or recovers** (user ruling, 2026-11-15;
 the normative text is `spec`'s, `spec/12-runtime.md` §12.7). The architecture
-is [process-ending panics](../arch/s123-panics-and-environment.md) §1: one
+is [process-ending panics](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (§4b invariant 13): one
 terminal funnel in intrinsics, no slot, no sentinel and no ferry. The backend's
 part is its §1.3 emitted half: a raise is never followed by reachable code.
 

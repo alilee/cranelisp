@@ -268,9 +268,8 @@ module does not reference it, so relocating it created no coupling.
 
 The binary contributes no trace body, no registration, no formatter and no
 discovery. Its residual touches are ordinary: it loads `core.trace` as stdlib,
-and `/run-tests` consumes the value (§2.3). `discover-tests` and
-`catch-runtime-error` are not part of this family; their placement is
-[test discovery](test-discovery.md).
+and `/run-tests` consumes the value (§2.3). `discover-tests` is not part of this
+family; its placement is [test discovery](test-discovery.md).
 
 ## 5. Discovery — swap every symbol table
 
@@ -316,11 +315,9 @@ intrinsics-owned signals do so; backend emits nothing for the guard:
 
 Either signal raises through the `runtime/panic` intrinsic with the message
 `nested trace is not supported: (trace ...) may not appear inside an
-actively-tracing (trace ...)`. A panic that crosses the bracket without
-reaching `collect` is cleaned by `clear_trace_guard_on_panic` from
-`catch-runtime-error`, so the next form starts clean. The approved S123 target
-removes that cleanup: a panic ends the process, so no later form runs
-([process-ending panics](s123-panics-and-environment.md) §1.2).
+actively-tracing (trace ...)`. A panic inside the bracket ends the process
+([bounded contexts](bounded-contexts.md) §4b invariant 13), so no later form
+runs and the guard needs no panic cleanup.
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
 and emits `cranelisp_collect_trace` exactly once per form, last (§3.3).

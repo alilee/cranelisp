@@ -66,9 +66,11 @@ Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md
   `every_example_runs_with_documented_exit` (examples 21 and 23) and
   `stdlib_all_public_modules_compile_and_run` (`core.io`, `core`) — are not
   among the six non-environmental REDs of the S122 opening stocktake
-  (run `b5d19d16-6bf5-4265-bc02-18fb1f773fde`,
-  [candidate inventory](../../../sprints/s122-candidate-inventory.md)). Not
-  rerun here.
+  (run `b5d19d16-6bf5-4265-bc02-18fb1f773fde`, recorded in the S122
+  candidate inventory, Git history). Those six were the three
+  generic-redefinition and two failed-turn witnesses in `spec_11_stdlib` and
+  `stdlib_core_io_public_scalar_driver_across_modes` in `stdlib_conformance`.
+  Not rerun here.
 - Several consumers still describe the pre-delivery refusal as current.
 
 ## Remaining obligation

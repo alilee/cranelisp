@@ -3322,8 +3322,8 @@ The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
 
 - **S123 (designed 2026-11-15, Phase 3).** Designed to the
-  user's Phase 3 rulings (`sprints/SPRINT.md`) and arch's
-  [panic and environment contract](../arch/s123-panics-and-environment.md).
+  user's Phase 3 rulings (`sprints/archive/sprint-123.md`) and arch's
+  [panic and environment contract](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (bounded contexts §4b invariants 13 and 18, and §6).
   Each item's design, and its build status, lives in the section named here.
   - *Agent on by default:* [agent §6.3–§6.4](agent.md#63-provider-selection).
     The default feature set gains `agent`, the provider fallback is removed,

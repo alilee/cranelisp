@@ -308,7 +308,7 @@ Providers sit behind the int-private `AgentModel` membrane
 `CRANELISP_AGENT_PROVIDER` is set explicitly. An ambient `ANTHROPIC_API_KEY`
 alone leaves it dormant, so the provider fallback to Anthropic goes. Provider
 settings come only from the environment and the environment files
-([environment supply](s123-panics-and-environment.md) §2.1); agent keys are
+([environment supply](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle)); agent keys are
 never baked into a linked executable. A local, key-free provider keeps
 zero-transmission operation available. The artifact carries an HTTP client,
 not a toolchain.
@@ -379,7 +379,7 @@ The track neither gates nor is gated by Phase H (NG4).
 | Further reverse queries (`/callers`, `/uses`) | `design/arch/repl-embedded-agent.md` §4.4 (corollary) | Added when a need appears. |
 | Complete semantic `/search` index, including macros | `design/arch/repl-embedded-agent.md` §11.1 | `sprints/actions/ACT-0952-complete-semantic-search-indexing.md`. |
 | Subsumption-style scheme queries with holes and ranking | `design/arch/repl-embedded-agent.md` §11.4 | Typecheck-owned upgrade; a hole token is a `spec` question first. |
-| Project-level agent configuration and further providers | `design/arch/repl-embedded-agent.md` §7.3 | `sprints/actions/ACT-0960-agent-configuration-and-model-comparison.md`. Extends the environment keys and files, not a TOML channel ([environment supply](s123-panics-and-environment.md) §2.1). |
+| Project-level agent configuration and further providers | `design/arch/repl-embedded-agent.md` §7.3 | `sprints/actions/ACT-0960-agent-configuration-and-model-comparison.md`. Extends the environment keys and files, not a TOML channel ([environment supply](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle)). |
 
 ---
 

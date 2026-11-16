@@ -33,5 +33,5 @@ makes every runtime panic end the process (`spec/12-runtime.md` §12.7.2,
 - **Owed.** `test` stamps `fixed=S123/<W1 commit>` on the cells' `// defect:`
   lines when W1 is committed.
 - Delete this action once `design/backend/backend.md`,
-  `design/backend/s122-closure.md`, `sprints/SPRINT.md`, `sprints/ROADMAP.md`
+  `design/backend/s122-closure.md`, `sprints/archive/sprint-123.md`, `sprints/ROADMAP.md`
   and `tests/CLAUDE.md` no longer link it. Git holds the intake record.

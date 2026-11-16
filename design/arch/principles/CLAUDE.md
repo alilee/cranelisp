@@ -18,7 +18,7 @@ This replaced the retired `@` import blocks — one in the `arch` command file a
 
 Assurance grade: measured for repository reachability. The standing
 `scripts/verify-role-wiring.py` gate reconciles Principle files against the
-index (W5) and checks that every obliged host adapter names the first-read (W6).
+index (W4) and checks that every obliged host adapter names the first-read (W5).
 `tests/role_wiring.rs` proves both conditions detect planted faults and clears
 an unmodified copy. Whether a dispatched role actually applied a governing
 Principle remains review evidence: its falsifier is a `review` finding naming a

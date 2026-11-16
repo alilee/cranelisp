@@ -870,8 +870,7 @@ errors safely.** Rationale:
 - **The OS is the capability checkpoint.** fds are OS capabilities; a fabricated fd is
   just an integer. The platform's `syscall(fd, NONBLOCK)` on a bad/unowned fd returns
   `EBADF` (or operates on whatever fd is actually open at that number) — the platform
-  surfaces that as an ordinary `IO` error, recoverable at `catch-runtime-error`. There is
-  no UB, no crash, no hang.
+  surfaces that as the effect's ordinary error outcome. There is no UB and no hang.
 - **There is no intra-program privilege boundary to violate.** A single Cranelisp program
   is not a sandbox; code that already holds the program's fds (and could call a raw-fd
   leaf or FFI directly) gains *nothing* from fabricating a handle that it could not
@@ -1118,7 +1117,7 @@ The combinators and the inferred dispatch map directly onto host-runtime primiti
 | token-capacity pool | `Semaphore(capacity)` keyed by token |
 | backpressure | bounded channel / `Semaphore` |
 | blocking/CPU split | reactor (I/O effects) + rayon (CPU sparks) |
-| supervisor | `JoinSet` + catch the spawned handler's outcome |
+| supervisor | `JoinSet`; a handler's panic ends the process (§10) |
 
 So the work is not "build a fiber runtime"; it is **use the async runtime, provide the
 inference (§4), and map the descriptors (§5) onto runtime primitives.**
@@ -1403,9 +1402,9 @@ commits to these consequences of it:
   that returns `Some`, leaves the strands it launched running in the enclosing
   context. When the top-level effect completes normally the drive returns only after
   every outstanding strand has finished (§10.12.7 item 6). No drain deadline exists.
-- **Fault supervision is a separate concern.** The supervisor (§10) decides where a
-  detached strand's fault goes. It does not decide when a strand is cancelled, and a
-  cancellation is not a fault (`spec/12-runtime.md` §12.7.9).
+- **Faults are a separate concern.** A detached strand's panic ends the process (§10).
+  The supervisor does not decide when a strand is cancelled, and a cancellation is not a
+  fault (`spec/12-runtime.md` §12.7.9).
 - **No cancellation primitive is needed.** Every pattern in `spec/10-io.md` §10.12.10 is a `race` or
   `timeout` composition, so the rule adds no `cancel` function, handle, task group,
   global-cancel node or shutdown-specific runtime trigger.
@@ -1452,40 +1451,30 @@ has not yet allocated evidence for it. The realization of per-context ownership 
 intrinsics interior question for `design`, inside this rule and with no public-API,
 ABI, schema or language change; no mechanism is selected here.
 
-## 10. Supervisor semantics — co-requisite of launch-and-continue
-
-**Approved S123 target, not yet built:** a detached strand's panic ends the
-process, and the fault policy below retires with the error ferry
-([process-ending panics](s123-panics-and-environment.md) §1.2;
-`spec/12-runtime.md` §12.7.9). This section describes the as-built system.
+## 10. Supervisor semantics — a detached strand's panic ends the process
 
 Launch-and-continue creates an un-joined effect: a fire-and-forget handler that panics
-has **no join point** for its error to ferry to. Supervisor semantics is the policy for
-where that error goes — and it must land **with** launch-and-continue, not after it.
+has no join point to report to. The supervisor owns the launched strands of a drive; it
+has no fault policy. A detached strand's panic ends the process from the strand's thread,
+like any other panic (`spec/12-runtime.md` §12.7.9;
+[bounded contexts](bounded-contexts.md) §4b invariant 13). A Rust panic escaping a
+strand body is a runtime defect, and the supervisor's `catch_unwind` arm terminates
+rather than recovers.
 
-**The ferry substrate already exists** (Appendix B): the fork-join error-slot ferry is
-implemented (`ivar.rs` / `io.rs`: worker-side `take_runtime_error()` → IVar error-field
-stash → join-side `set_runtime_error()` re-raise). That is the *substrate* — how a
-captured error is carried.
-
-**Supervisor semantics is the *policy*** — where a captured error GOES when a
-fire-and-forget effect has no join point. The per-effect-kind default: **500 + log +
-drop-that-request** — NOT a silent strand, NOT a whole-server abort. It maps to
-`JoinSet` + catching the spawned handler's outcome. It is a scheduler-/platform-declared
-default, so it stays out of the pure language.
-
-Supervision governs faults only. A strand's cancellation is decided by its cancellation
-context (§9), not by the supervisor, and a cancelled strand is not routed to the policy.
-
-**One honest caveat.** The `Par` path's "first error" among simultaneously-panicking
-branches is **non-deterministic** (HashMap grouping order), not strict source-order; the
-IVar path *is* source-ordered. This asymmetry is named, not papered over.
+- **No per-request containment.** A server that must survive one bad request avoids the
+  panic with checked operations returning `Option`, such as `checked-quot`; nothing
+  catches it. Reintroducing containment needs unwind tables for JIT frames and reopens
+  the user's S123 panic ruling.
+- **Cancellation is not a fault.** A strand's cancellation is decided by its cancellation
+  context (§9), not by the supervisor (`spec/10-io.md` §10.12.9).
+- **One report.** Concurrent panics across `Par` branches, workers and strands produce
+  one report; which panic it names is unspecified (`spec/12-runtime.md` §12.4.3).
 
 ## 11. Observability — instrumenting concurrency written by nobody
 
 Observability is a **ratified, first-class commitment of this track**, not an optional
 add-on. For *this* model it is load-bearing in a way it is not for an explicit-concurrency
-system, for three independent reasons:
+system, for two independent reasons:
 
 1. **The concurrency is invisible in the source.** The thesis is *concurrency written by
    nobody* (§1) — there is no `spawn`, no explicit task graph, nothing in the user's code
@@ -1496,12 +1485,7 @@ system, for three independent reasons:
    effects/sparks/suspends/resumes/token-acquires/cancels flow through — the only place
    this is observable — so it must emit a structured event stream **by design**.
    Retrofitting cannot recover events that were never recorded.
-2. **Supervisor drops vanish without it.** Launch-and-continue + the supervisor policy
-   (§10: 500 + log + drop-the-request) *intentionally* swallows a failed strand so one
-   bad request does not kill the server. Without an observability sink those failures
-   leave **no trace at all.** Supervisor semantics and the observability sink are
-   coupled — designing one without the other makes errors disappear by construction.
-3. **You cannot measure against the performance standard without it.** Core saturation,
+2. **You cannot measure against the performance standard without it.** Core saturation,
    pool starvation, and backpressure stalls (§3, §7) are runtime-scheduler phenomena
    invisible in source; measuring them against the §3 per-workload acceptance benchmarks
    *is* observability.
@@ -1519,7 +1503,7 @@ observability machinery rather than starting fresh:
 The single **indispensable primitive is strand identity**: a correlation id (the `turn`
 id is the precedent) threaded through every suspension, spawn, and cancellation, so a
 debugging user can reconstruct *"this request fanned out into these effects; this one was
-cancelled by a race; that one panicked and the supervisor dropped it."* Strand-id
+cancelled by a race."* Strand-id
 plumbing threads through the continuation/spawn machinery and is **expensive to
 retrofit** — so it is **groundwork**: it lands *with* the async substrate, not after.
 
@@ -1531,7 +1515,6 @@ retrofit** — so it is **groundwork**: it lands *with* the async substrate, not
 - token **acquired** / **released** (pool contention);
 - backpressure **admission park**;
 - launch-and-continue **strand spawned** (with strand id);
-- supervisor **action** (strand panicked → 500 + log + drop);
 - **cancellation** (race loser / timeout fired → what was cancelled).
 
 **Scope guard — do not gold-plate.** Build the *plumbing* (trampoline event hooks +
@@ -1626,7 +1609,7 @@ trampoline (host-side) resumes the continuation. Three grounds:
 
 1. **Thin, stateless platforms.** Poll-in/wake-out keeps every platform a C-ABI leaf that
    owns only its domain protocol and holds no cranelisp state. Admitting a host-mediated
-   closure-call would push concurrency / state / RC / error-slot-ferry complexity into
+   closure-call would push concurrency / state / RC / fault-propagation complexity into
    *every* platform — the Roc "cranelisp is a DSL on a platform written in a real language"
    platform-owned-loop degeneration this architecture rejects (§2, Appendix A). The reactor
    already rejects "Model B" (a platform owning its event loop and calling pure handlers)
@@ -1739,8 +1722,8 @@ The dependency order the architecture implies:
 slice**, because the strand-id plumbing
 is expensive to retrofit and must thread through the continuation/spawn machinery from the
 start. Each subsequent slice above then **emits its new event types** into the existing
-stream (token acquire/release with the pool slice, supervisor action with slice #4,
-cancellation with the combinator slice). It is not its own dependency-order entry — it is
+stream (token acquire/release with the pool slice, strand spawn and completion with
+slice #4, cancellation with the combinator slice). It is not its own dependency-order entry — it is
 the substrate the entries instrument.
 
 This is the **dependency order** the architecture implies. Appendix B states what is
@@ -1892,7 +1875,7 @@ list states only what exists.
 | Launch-and-continue with the supervisor (§10) | `reactor.rs`; `spec/10-io.md` §10.12.7 |
 | The `race`/`select`/`timeout` combinators and cancellation of a branch's own inline and worker effects; launched strands are the limit below ([cancellation policy](effect-concurrency.md#9-the-control-half-the-combinators)) | `spec/10-io.md` §10.12.8–§10.12.9; `tests/concurrency_v9_select.rs` |
 | Strand identity and the strand event stream ([strand identity](effect-concurrency.md#11-observability-instrumenting-concurrency-written-by-nobody)) | `cranelisp-intrinsics` `strand.rs` |
-| Fork-join error-slot ferry — a worker's runtime error is stashed on the IVar or `Par` join and re-raised join-side, first error wins; the substrate of the supervisor policy (§10) | `cranelisp-intrinsics` `ivar.rs`, `io.rs`, `panic.rs` |
+| Process-ending panics — a panic on a worker, `Par` branch or detached strand ends the process from that thread (§10) | `cranelisp-intrinsics` `panic.rs`; [bounded contexts](bounded-contexts.md) §4b invariant 13 |
 | Scheduling state on the trampoline-owned `ctx` vtable, never on values (§4.1.1) | `platform-interface.md` §6.8.0b |
 | Platform-effect boundary closed at poll-in / wake-out ([platform-effect boundary](effect-concurrency.md#121-the-boundary-is-complete-poll-in-wake-out-only-no-closure-callback-into-cranelisp-s98-ruling)) | `bounded-contexts.md` §5 invariant 3 |
 

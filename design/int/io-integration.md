@@ -35,7 +35,7 @@ contract is `design/arch/platform-interface.md`.
 ### 1.2 A runtime panic ends the process: the host side
 
 Status: designed in S123 Phase 3 (2026-11-15); not implemented. The position
-is arch's [panic contract](../arch/s123-panics-and-environment.md) §1, and the
+is arch's [panic contract](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (§4b invariant 13), and the
 requirement is `spec/12-runtime.md` §12.7.2. The runtime's terminal funnel
 reports the message, chooses the exit status and ends the process. The host
 never sees a panic, chooses no panic status and formats no panic text.
