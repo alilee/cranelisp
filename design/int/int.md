@@ -524,10 +524,14 @@ When the resolver finds no file:
   entry. This is the refusal `--test` reported before K1, moved rather than
   copied, so `--test`'s text and outcome do not change.
   - For a dotted entry the candidate maps dots to directories (`core.str`
-    names `{project_root}/core/str.cl`). Whether CLI §0.5.5–§0.5.6 intend that
-    mapping is [ACT-1020](../../sprints/actions/ACT-1020-dotted-entry-target-file-mapping-intake.md),
-    which predates K1. The refusal names the file the resolver probed, so it
-    follows whatever mapping that settles.
+    names `{project_root}/core/str.cl`), the module-to-file mapping that
+    [CLI §0.5.6](../../repl/spec/00-cli-invocation.md#056-dotted-module-paths-tested)
+    rules for every invocation mode. The candidate is
+    `pipeline::project_root_candidate`, so the refusal names the file the
+    resolver probed. The binary reaches the same helper through the
+    `cranelisp::project_root_candidate` re-export (S123 W4, packet P16) for
+    the error formatter's fallback file and the CLI's third-case file check
+    ([REPL lifecycle §6](repl-lifecycle.md#6-project-root-resolution)).
 
 **Why this reaches every batch outcome.** The batch arms of `main.rs`'s `run`
 already propagate the registration result (`startup?`) before any wait,

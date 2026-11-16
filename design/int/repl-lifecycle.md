@@ -1112,10 +1112,10 @@ from the working directory and the CLI target (`00-cli-invocation.md`
     `backing_file_path_for`'s default use the helper. The watcher's absent
     record (§1.2) is keyed by the same path, so ACT-1047's rule holds for a
     dotted entry.
-  - *Open.* Two `main.rs` sites still spell `{module}.cl`: the error path's
-    entry file name and the third case's file check below. The helper is
-    crate-private to the library, so reaching it from the binary target is
-    `arch`'s ruling.
+  - *As built S123 W4 (packet P16).* The library re-exports the helper as
+    `cranelisp::project_root_candidate`. The binary's two sites use it: the
+    error formatter's fallback file (`main.rs::entry_file`) and the third
+    case's file check. Neither spells `{module}.cl` any more.
   - *Unit evidence.* Each site maps `core.str` to `core/str.cl`, with `user`
     as the undotted control.
 - Only the third case triggers `Cranelisp.toml` scaffolding

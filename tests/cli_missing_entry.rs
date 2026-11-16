@@ -433,9 +433,9 @@ fn assert_w4_empty_entry(target: &str) {
 }
 
 // spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 an absent dotted REPL entry regenerates at core/str.cl.
-// defect: class=mode-divergence locus=src/session_v4/lifecycle.rs::register_entry_module found=S123 owner=/dev — ACT-1020; control: w4_path_empty_entry_persists_control.
+// defect: class=mode-divergence locus=src/session_v4/lifecycle.rs::register_entry_module found=S123 owner=/dev fixed=S123/91acf712 — ACT-1020: an absent dotted entry was registered at the wrong backing path; control: w4_path_empty_entry_persists_control.
 #[test]
-fn w4_dotted_empty_entry_persists_at_mapped_path() {
+fn dotted_empty_entry_persists_at_mapped_path() {
     assert_w4_empty_entry("core.str");
 }
 // spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 empty path target control.

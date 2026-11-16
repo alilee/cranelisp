@@ -58,8 +58,9 @@ committed; K4's full run re-verifies.
   - The unreadable-entry lead is
     ACT-1019, closed 2026-10-02
     ([record](../../tests/plan/s122-evidence-delta.md#act-1019--unreadable-entry-file-closed)).
-  - Review A3, the dotted-target file mapping, is
-    [ACT-1020](ACT-1020-dotted-entry-target-file-mapping-intake.md).
+  - Review A3, the dotted-target file mapping, is ACT-1020, closed
+    2026-11-16
+    ([record](../../tests/plan/s123-evidence-delta.md#36-repl-carries)).
 
 ## Request
 

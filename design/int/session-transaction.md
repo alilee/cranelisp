@@ -139,7 +139,7 @@ admission or commit path (Principles 7 and 11).
   `unstaged_codegen_target_is_refused_before_codegen` (a planted unstaged
   member is refused, and the staged set passes). End to end:
   `tests/impl_redefinition_dispatch.rs`, and in `tests/spec_07_traits.rs`
-  `w4_impl_begin_without_keep_survives` with its control
+  `repl_concrete_impl_call_survives_parametric_impl_only_begin` with its control
   `w4_impl_begin_with_keep_retains_code_control`.
 
 ### 2.6 Type re-establishment (REPL §18.5, §14.8)

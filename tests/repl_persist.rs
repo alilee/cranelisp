@@ -6195,10 +6195,10 @@ fn watch_save_after_first_prompt_is_loaded_and_later_definitions_reach_the_file_
 // §15.1 — a backing file created after a session started without one (ACT-1047)
 // =============================================================================
 //
-// The user rules whether the created file is loaded or only protected, so each
-// cell asserts only the leg both outcomes share: the saved bytes survive the
-// next definition's regeneration. The save is written while the REPL is idle at
-// a prompt and precedes the definition turn.
+// §15.1 and §14.9 require loading the created file before regeneration. These
+// cells pin preservation of the saved definition; the appearance cells below
+// also observe loading and the session lock on failure. The save is written
+// while the REPL is idle at a prompt and precedes the definition turn.
 
 const CREATED_SAVE: &[u8] = b"(defn k [] 9)\n";
 
@@ -6245,7 +6245,7 @@ fn assert_created_save_survives(backing: BackingFile) {
 // Pre-fix (QA probe `.local/qa-s122-6b-final/n3_probe.py` on `e332dc6b…`):
 // the definition was accepted without a warning, `(k)` was an undefined
 // variable, and the file became `(defn h [] 2)\n`.
-// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev fixed=S123/91acf712
 #[test]
 fn persist_save_creating_backing_file_survives_definition() {
     assert_created_save_survives(BackingFile::Absent);
@@ -6430,9 +6430,9 @@ fn assert_w4_appearance_loaded(out: &e2e::CrOutput) {
 }
 
 // spec: repl/spec/14-file-watching.md §14.9 — R-1 loads a newly appearing backing file before regeneration.
-// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev — ACT-1047; control: w4_appearance_recorded_file_loads_control.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev fixed=S123/91acf712 — ACT-1047: a newly appearing backing file was overwritten before it was loaded; control: w4_appearance_recorded_file_loads_control.
 #[test]
-fn w4_appearance_loads_before_definition() {
+fn persist_appearing_backing_file_loads_before_definition() {
     assert_w4_appearance_loaded(&w4_appearance(BackingFile::Absent, CREATED_SAVE));
 }
 
@@ -6465,9 +6465,9 @@ fn assert_w4_appearance_locks(out: &e2e::CrOutput) {
 }
 
 // spec: repl/spec/14-file-watching.md §14.9 — R-1 failing appearance locks and preserves source bytes.
-// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev — ACT-1047; control: w4_appearance_recorded_bad_file_locks_control.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev fixed=S123/91acf712 — ACT-1047: a newly appearing invalid backing file was overwritten instead of locking the session; control: w4_appearance_recorded_bad_file_locks_control.
 #[test]
-fn w4_appearance_bad_file_locks_without_overwrite() {
+fn persist_appearing_bad_backing_file_locks_without_overwrite() {
     assert_w4_appearance_locks(&w4_appearance(BackingFile::Absent, W4_BAD_SAVE));
 }
 

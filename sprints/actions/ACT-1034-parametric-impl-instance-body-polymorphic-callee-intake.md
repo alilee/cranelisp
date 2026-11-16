@@ -42,8 +42,7 @@ directory. The lead came from `training`'s Phase-6a assessment.
 - The fault is also present in a release binary built on 2026-09-29 at 09:31,
   before `e4062202`.
 - In the table below, the impl is declared before `impl Size Int` so that
-  [ACT-1035](ACT-1035-repl-concrete-impl-crashes-after-later-parametric-impl-intake.md)
-  cannot fire.
+  ACT-1035 (a REPL crash, closed S123 at `91acf712`) could not fire.
 
 | Cell | Inner call from the impl-method instance | REPL | `--run` | `--link` |
 |---|---|---|---|---|
@@ -60,9 +59,8 @@ directory. The lead came from `training`'s Phase-6a assessment.
     `no impl of trait user/Size for type primitives/Int`. In batch this is
     the wrong-reject recorded on
     [ACT-0985](ACT-0985-typecheck-forward-reference-and-hkt-intake.md).
-  - With `impl Size Int` first, the REPL crashes (ACT-1035).
-  - So C1 has no REPL leg until ACT-1035 is fixed. The earlier REPL entry of
-    42 did not reproduce.
+  - With `impl Size Int` first, the REPL crashed (ACT-1035, fixed S123), so
+    C1 had no REPL leg. The earlier REPL entry of 42 did not reproduce.
 - **Controls.**
   - The fault does not need the constraint: A3 is unconstrained.
   - It does not need self-recursion: A2 calls another impl.
@@ -107,8 +105,9 @@ directory. The lead came from `training`'s Phase-6a assessment.
   - Use a provisional `class=carrier-loss`.
   - Run every mode, with C1 (batch only) and C2 as passing controls.
     Committed as `parametric_impl_instance_calls_monomorphic_target_batch_control`
-    and `monomorphic_impl_same_body_all_modes_control`. C1 gains its REPL leg
-    with ACT-1035's correction.
+    and `monomorphic_impl_same_body_all_modes_control`.
+  - **Now constructible (S123):** add the REPL leg to C1, with `impl Size Int`
+    first. If it fails, `qa` attributes it before it joins this filing.
   - Declare the parametric impl before `impl Size Int`.
   - Assert the value in each mode, and assert that no `undefined function`
     text appears.

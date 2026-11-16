@@ -29,13 +29,16 @@ use helpers::e2e::Cranelisp;
 
 // spec: design/int/session-transaction.md §7.5, §8.2 — restarting an unchanged
 // cached entry consumes no GOT capacity; repl/spec/00-cli-invocation.md §0.6.
-// defect: class=wrong-reject locus=src/session_v4/lifecycle.rs::retire_bodies_the_recompile_restages found=S123 owner=/dev
+// defect: class=wrong-reject locus=src/session_v4/lifecycle.rs::retire_bodies_the_recompile_restages found=S123 owner=/dev fixed=S123/91acf712
+// Repeated cached launches retired the same generic instances and exhausted GOT slots.
+// The locus seam was deleted; read src/session_v4/lifecycle.rs::release_bodies_the_recompile_restages today.
 #[test]
 fn cached_restarts_keep_generic_instance_slot_capacity_across_modes() {
     // Depends on GOT_TABLE_SIZE = 1,024: k = 300 lies in 256..=340, so
     // 2(k + 1) slots fit, but retiring k identities + Pure on every launch
-    // exhausts capacity by the third cache-enabled launch. Smaller per-launch leaks
-    // belong to the allocated lifecycle unit row, not this e2e sizing bound.
+    // exhausted capacity by the third cache-enabled launch before the fix.
+    // Smaller per-launch leaks belong to the allocated lifecycle unit row,
+    // not this e2e sizing bound.
     let mut source = String::from("(import [primitives [Pure add-i64]])\n");
     for i in 0..300 {
         source.push_str(&format!(

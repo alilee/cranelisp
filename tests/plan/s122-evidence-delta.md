@@ -207,7 +207,7 @@ follow the rule above: "unknown" means no count was recorded.
 | Exemplar warm solve retains 51 | D, ordinary leak | K7 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The ordinary-leak rule's use is confirmed. The RED stays committed and un-ignored; `test` reduces it to a stranded type and site | First |
 | Match-arm branch push reads +2 | L, ordinary leak | K7 | [ACT-1022](../../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) | `test` commits the `MarginalPair` the filing names; QA attributes | First |
 | Unreadable entry file | L | — | [ACT-1019](#act-1019--unreadable-entry-file-closed) | `spec` locates or asks for the requirement; `test` then reduces | First |
-| Dotted CLI entry target file mapping | L (requirements disagree) | — | [ACT-1020](../../sprints/actions/ACT-1020-dotted-entry-target-file-mapping-intake.md) | `spec` returns the user's answer; `test` then reduces | First |
+| Dotted CLI entry target file mapping | L (requirements disagree) | — | ACT-1020, closed S123 | `spec` returns the user's answer; `test` then reduces | First |
 | Tail-argument ownership and alias shadowing, with leads L2–L7, L9 and L10 (`design/backend/ownership-codegen.md` §13.3) | ACT-1030 D, memory-unsafe (use-after-free); ACT-1029 and the leads L | — | [ACT-1031](../../sprints/actions/ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md), over [ACT-1029](../../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md) and [ACT-1030](../../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md) | The [L6 and R1 cells](#act-1029-r1-probe--t0-control-fault-and-redesigned-delta-2026-09-30), halves observed separately; then the remaining leads against their falsifiers | First |
 | Test-cache directory isolation | E, maintenance | — | [ACT-1032](../../sprints/actions/ACT-1032-test-cache-directory-isolation.md) | `test` identifies every in-place writer and moves each to a fresh directory or `--no-cache` | First |
 
@@ -269,7 +269,7 @@ with no source edits since. Every probe ran in a fresh scratch directory under
   - The fault predates `e4062202`. The attribution is provisional
     (`carrier-loss` hypothesis, producer unobserved).
 - **F1 by-product: confirmed defect, filed as
-  [ACT-1035](../../sprints/actions/ACT-1035-repl-concrete-impl-crashes-after-later-parametric-impl-intake.md).**
+  ACT-1035, closed S123.**
   - In the REPL, a parametric impl defined after a concrete impl of the same
     trait makes calls to the concrete method crash the session with SIGSEGV,
     in 10 of 10 sessions. `--run` is correct.
@@ -517,7 +517,7 @@ Review dispositions:
   structural or drop them.
 - **A3** (QA): the dotted-target file mapping is a requirement conflict that
   predates K1:
-  [ACT-1020](../../sprints/actions/ACT-1020-dotted-entry-target-file-mapping-intake.md).
+  ACT-1020, closed S123.
 - **O1:** the 0604 handoff below.
 
 - **Basis.** `e4062202` plus `fefd41e8…`, re-hashed. QA ran no Cargo; the
@@ -12114,7 +12114,7 @@ there. QA ran no Cargo.
 
 - **Classification.** Defect, required: silent loss of user-authored source.
   Filed as
-  [ACT-1047](../../sprints/actions/ACT-1047-never-recorded-backing-file-overwritten-intake.md),
+  ACT-1047, closed S123,
   class `lost-update`. It predates S122.
 - **Mechanism: confirmed by sibling and source.** The siblings differ only in
   whether a record exists. `backing_file_changed_unseen` returns `false`

@@ -740,13 +740,13 @@ and the P15 comment fix. The full suite (`.local/s123-w4/qa-full-suite.log`,
   `repl_persist::persist_save_creating_backing_file_survives_definition`
   (ACT-1047) and `spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl`
   (ACT-1035). Five W4 REDs also turned green:
-  `w4_appearance_loads_before_definition`,
-  `w4_appearance_bad_file_locks_without_overwrite`,
-  `cli_missing_entry::w4_dotted_empty_entry_persists_at_mapped_path`,
-  `spec_07_traits::w4_impl_begin_without_keep_survives` and
+  `persist_appearing_backing_file_loads_before_definition`,
+  `persist_appearing_bad_backing_file_locks_without_overwrite`,
+  `cli_missing_entry::dotted_empty_entry_persists_at_mapped_path`,
+  `spec_07_traits::repl_concrete_impl_call_survives_parametric_impl_only_begin` and
   `cache::cached_restarts_keep_generic_instance_slot_capacity_across_modes`.
-  `test` stamps all seven `fixed=S123/<sha>` and puts their comments in the
-  past tense.
+  `test` stamped all seven `fixed=S123/91acf712`, with their comments in
+  the past tense.
 - *Not a W4 finding.* `tests/plan/spec_link_check.py` reports twelve
   `// spec:` anchors that do not resolve. Eleven are in
   `tests/projection_elision_guard.rs`, which cites sections 3.3 and 3.4 of
@@ -761,6 +761,19 @@ and the P15 comment fix. The full suite (`.local/s123-w4/qa-full-suite.log`,
   first act is a `qa` probe of the action's candidate on the final binary.
   If the probe reproduces it, `test` commits the RED, and `qa` attributes
   the owner from a control.
+- *Closed, 2026-11-16: ACT-1047, ACT-1020 and ACT-1035.* Each central claim
+  was re-read against source on the W4 tree, and each stamped guard passes
+  (`.local/s123-w4/stamps2-guards.log`, 7 of 7).
+  - ACT-1047: `CompilerSession::backing_file_changed_unseen` keeps a file
+    with no record, and `register_entry_module` records an absent REPL
+    entry. The load ruling is in REPL §15.1 and §14.9, and in REPL
+    lifecycle §1.2.
+  - ACT-1020: the absent REPL entry and the batch refusal both use
+    `pipeline::project_root_candidate`, which applies §8.1's mapping. The
+    ruling is in CLI §0.5.6.
+  - ACT-1035: `worker::derive_codegen_batch` selects only staged bodies.
+  - ACT-1035's last obligation, C1's REPL leg, moves to ACT-1034, whose
+    control it is.
 
 ### 3.7 Committed REDs for carried defects
 
@@ -1194,10 +1207,10 @@ There are no regressions. 20 REDs are filed guards:
 | ACT-1016 | `spec_08_modules` export-cycle run and startup; `repl_persist::reload_failed_reexport_dependency_matches_restart_neg` |
 | ACT-1018 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing`, now at 2 |
 | ACT-1034 | four `spec_07_traits` parametric-impl instance cells |
-| ACT-1035 | `spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl` |
+| ACT-1035 (fixed in W4) | `spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl` |
 | ACT-1036 | `spec_10_io::batch_main_non_io_return_refusal_is_located_at_main` |
 | ACT-1038, ACT-1039 | three `trace` cells |
-| ACT-1047 | `repl_persist::persist_save_creating_backing_file_survives_definition` (W4) |
+| ACT-1047 (fixed in W4) | `repl_persist::persist_save_creating_backing_file_survives_definition` |
 
 The other three are W2 consequences that `test` owes:
 

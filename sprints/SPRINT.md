@@ -79,9 +79,9 @@ Dependency order, each step gating the next:
 
 ### Included: two high-harm REPL carries
 
-- [ACT-1047](actions/ACT-1047-never-recorded-backing-file-overwritten-intake.md):
+- ACT-1047 (closed in W4):
   a `user.cl` created after the session started is overwritten (data loss).
-- [ACT-1035](actions/ACT-1035-repl-concrete-impl-crashes-after-later-parametric-impl-intake.md):
+- ACT-1035 (closed in W4):
   the REPL crashes calling a concrete impl after a later parametric impl.
 
 ### Included: backend audit housekeeping
@@ -340,6 +340,10 @@ separate approval.
 | 5 W4 | `review` | `src/`: R1 re-review, P15 caller, P16 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `ad702ed1`; R1 closed in every mode; P16 matches; one advisory: safety comment at `lifecycle.rs:4456` repeats the rejected no-cross-module claim |
 | 5 W4 | `dev` | `src/`: P15 safety comment | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; rustdoc states P15's safety grounds with the falsifier; comments only |
 | 5 W4 | `qa` | W4 adequacy, full suite, traceability | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate; suite 6,969 pass / 31 fail (30 filed guards; `role_wiring` principle count from Principle 27); seven guards green; ACT-1047, ACT-1020, ACT-1035 closable after stamps; ACT-1052 carries; spec band regraded; coordinator repaired the Appendix D anchor mechanically |
+| 5 W4 | `test` | stamp seven green guards `fixed=S123/91acf712`; four behaviour renames | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `14d0a119`; 7/7 pass; coordinator applied the four renames to spec, plan and design citations mechanically (both citation checkers clean) |
+| 5 W4 | `qa` | close ACT-1047, ACT-1020, ACT-1035 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; all three verified at source and deleted; ACT-1035's C1 REPL leg moved to ACT-1034 |
+| 5 W4 | `design` | int: `int.md` ACT-1020 prose | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; passage as-built, dead link removed |
+| 5 W4 | `test` | `tests/CLAUDE.md` ACT-1047 link; `repl_persist` section comment; ACT-1034 C1 REPL leg | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `f2582766`; C1 REPL and batch controls pass; `qa` accepts C1 at W5; 11 stale anchors in `tests/projection_elision_guard.rs` carried to W5 |
 | 5 W4 | `test` | `role_wiring` principle count; stamp seven green guards | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `9026ed10`; count updated (34/34); one spec anchor split; stamps follow the W4 commit |
 | 5 W4 | `design` | int: P15 built; rename citations | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; P15 and P13 recorded as built; citations renamed |
 | 5 W4 | `design` | backend: as-built records and probe claims | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; four files; probe coverage stated as a reach table; §5.3 fence corrected |
@@ -928,3 +932,5 @@ judges adequacy for the Phase 5 → 6a checkpoint.
   packet A4 with no external consumer; resolved by making them crate-private,
   not by an API gate.
 - W3 closed 2026-11-16 and committed as `efd09d29`. Open for the user: confined non-atomic counting (`uniform-counting.md` §9.1) and `spec/07-traits.md` §7.7.1 wrapping with `Unchecked` removed. Carried: ACT-1051 (idle-save lock test race, `test`).
+- W4 build committed 2026-11-16 as `91acf712`; guard stamps and action closure follow in a close-out commit.
+- W4 closed 2026-11-16: build `91acf712`, close-out (guard stamps, three actions closed, citation repairs) in the following commit.

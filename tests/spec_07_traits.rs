@@ -2555,23 +2555,36 @@ fn generic_fn_instance_calls_parametric_impl_all_modes() {
     assert_main_value_in_modes("C3 `(twice (Yep 3))`", &src, 8, &[REPL, RUN, LINK]);
 }
 
-// spec: spec/07-traits.md §7.3.3 — control: the `(Opt a)` method instance calls
-// `size` at `Int`, a monomorphic target, so no callee instance depends on `a`.
-// 42 under `--run` and `--link`. The body's `(size 42)` needs `impl Size Int`
-// declared first, and that order crashes the REPL (ACT-1035), so the REPL leg
-// is left to that filing's cells.
-#[test]
-fn parametric_impl_instance_calls_monomorphic_target_batch_control() {
-    let src = format!(
+fn parametric_impl_with_monomorphic_target_program() -> String {
+    format!(
         "{OPT_SIZE_HEADER}{SIZE_INT_IMPL}\
          (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size 42)])))\n\
          (defn main [] (Pure (size (Yep 3))))\n"
-    );
+    )
+}
+
+// spec: spec/07-traits.md §7.3.3 — C1 control: the `(Opt a)` method instance
+// calls `size` at `Int`, a monomorphic target, so no callee instance depends
+// on `a`. The body's `(size 42)` needs `impl Size Int` declared first.
+#[test]
+fn parametric_impl_instance_calls_monomorphic_target_batch_control() {
     assert_main_value_in_modes(
         "C1 `(size (Yep 3))` through `(size 42)`",
-        &src,
+        &parametric_impl_with_monomorphic_target_program(),
         42,
         &[RUN, LINK],
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — C1's REPL leg: with `impl Size Int` first,
+// the parametric impl's monomorphic call yields 42 without `undefined function`.
+#[test]
+fn parametric_impl_instance_calls_monomorphic_target_repl_control() {
+    assert_main_value_in_modes(
+        "C1 `(size (Yep 3))` through `(size 42)`",
+        &parametric_impl_with_monomorphic_target_program(),
+        42,
+        &[REPL],
     );
 }
 
@@ -2597,7 +2610,7 @@ const CONCRETE_THEN_PARAMETRIC: &str = "(deftype (Opt a) Nope (Yep [:a v]))\n\
 // call to a concrete impl's method after a parametric impl of the same trait
 // is entered: `(size 5)` echoes `:primitives/Int 5` and the session exits
 // normally at end of input.
-// defect: class=mode-divergence locus=src REPL impl registration found=S122 owner=/dev — provisional: seam unobserved; hypothesis: registering the later parametric impl leaves the concrete instance's dispatch slot invalid (ACT-1035)
+// defect: class=mode-divergence locus=src REPL impl registration found=S122 owner=/dev fixed=S123/91acf712 — ACT-1035: registering the later parametric impl recompiled an unstaged concrete sibling whose code was then released.
 #[test]
 fn repl_concrete_impl_call_survives_later_parametric_impl() {
     let out = repl_prims(&format!("{CONCRETE_THEN_PARAMETRIC}(size 5)\n"));
@@ -3073,9 +3086,9 @@ fn w4_impl_begin(keep: &str) -> helpers::e2e::CrOutput {
 }
 
 // spec: repl/spec/05-error-presentation.md §5.1 — R-4 survives a begin containing only the later parametric impl.
-// defect: class=mode-divergence locus=src/worker.rs::derive_codegen_batch found=S123 owner=/dev — ACT-1035; paired with w4_impl_begin_with_keep_retains_code_control (design/int/session-transaction.md §2.5).
+// defect: class=mode-divergence locus=src/worker.rs::derive_codegen_batch found=S123 owner=/dev fixed=S123/91acf712 — ACT-1035: a begin containing only the later parametric impl recompiled an unstaged concrete sibling whose code was then released; control: w4_impl_begin_with_keep_retains_code_control (design/int/session-transaction.md §2.5).
 #[test]
-fn w4_impl_begin_without_keep_survives() {
+fn repl_concrete_impl_call_survives_parametric_impl_only_begin() {
     w4_impl_begin("")
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 5");

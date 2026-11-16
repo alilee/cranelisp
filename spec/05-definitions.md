@@ -567,7 +567,7 @@ remains a compile-time error.
 
 This implements Display for `(Option Int)` specifically. The `(show x)` call in the `Some` arm dispatches to the `Int` implementation.
 
-### 5.4.3 Polymorphic Implementation [S122 — partial. Registration and constant-body dispatch are Tested+Neg: tests/spec_07_traits::conventional_impl_poly_applied_target_accepts_and_dispatches, tests/spec_07_traits::constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg. The monomorphised method calling its constraint (`(show x)`) is defective: ACT-1034 (RED tests/spec_07_traits::parametric_impl_instance_calls_same_impl_at_nested_type_all_modes and three sibling cells), ACT-1035 (RED tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl)]
+### 5.4.3 Polymorphic Implementation [S122 — partial. Registration and constant-body dispatch are Tested+Neg: tests/spec_07_traits::conventional_impl_poly_applied_target_accepts_and_dispatches, tests/spec_07_traits::constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg. The monomorphised method calling its constraint (`(show x)`) is defective: ACT-1034 (RED tests/spec_07_traits::parametric_impl_instance_calls_same_impl_at_nested_type_all_modes and three sibling cells)]
 
 ```clojure
 (impl Display (Option :Display a)
