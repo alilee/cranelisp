@@ -4645,3 +4645,207 @@ fn agent_probe_conclusions_and_definition_still_shown() {
         out.stdout
     );
 }
+
+mod s123_defaults {
+    use super::helpers::e2e::{CrOutput, Cranelisp};
+
+    fn base() -> Cranelisp {
+        let c = Cranelisp::new()
+            .without_agent_provider()
+            .env("CRANELISP_NO_ENV", "1")
+            .env("CRANELISP_AGENT_PROVIDER", "")
+            .file("stub.txt", "done: S123_STUB_REPLY\n");
+        let path = c.tmpdir_path().join("stub.txt");
+        c.env("CRANELISP_AGENT_STUB_SCRIPT", path.to_str().unwrap())
+    }
+    fn state<'a>(out: &'a CrOutput, expected: &str) -> &'a str {
+        let prologue = out.stdout.split("user>").next().unwrap();
+        let lines: Vec<_> = prologue.lines().collect();
+        let index = lines
+            .iter()
+            .position(|line| line.contains("cranelisp REPL"))
+            .expect("existing banner");
+        let line = lines.get(index + 1).expect("line after banner");
+        assert!(
+            line.contains(expected),
+            "A-1/A-5 state immediately after banner must be {expected:?}: stdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        let state_word = regex::Regex::new(r"\b(active|dormant|off|not built in)\b").unwrap();
+        assert_eq!(
+            state_word.find_iter(prologue).count(),
+            1,
+            "exactly one agent state word before first prompt: {}",
+            out.stdout
+        );
+        line
+    }
+    fn no_request(out: &CrOutput) {
+        if out.tmp_exists("trace.jsonl") {
+            let trace = out.read_tmp("trace.jsonl");
+            assert!(
+                !trace.lines().any(|l| l.contains("→request")
+                    || l.contains("\"request\"")
+                    || l.contains("\"http_request\"")),
+                "A-2/A-3 no provider request: {trace}"
+            );
+        }
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — A-1/A-6 default feature membership.
+    #[test]
+    fn default_build_includes_agent() {
+        assert!(
+            cfg!(feature = "agent"),
+            "A-6 default feature build must include feature-on agent cells"
+        );
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — A-1 dormant default.
+    #[test]
+    fn default_repl_has_dormant_state() {
+        state(&base().output().assert_ok(), "dormant");
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — A-1 configured stub state and model.
+    #[test]
+    fn default_repl_has_active_stub_and_model() {
+        let out = base()
+            .env("CRANELISP_AGENT_PROVIDER", "stub")
+            .env("CRANELISP_AGENT_MODEL", "s123-model-42")
+            .output()
+            .assert_ok();
+        let line = state(&out, "active");
+        assert!(
+            line.contains("stub") && line.contains("s123-model-42"),
+            "A-1 active state names provider and model: {line}"
+        );
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — A-1 off overrides a configured provider.
+    #[test]
+    fn no_agent_has_off_state() {
+        state(
+            &base()
+                .env("CRANELISP_AGENT_PROVIDER", "stub")
+                .cli_flag("--no-agent")
+                .output()
+                .assert_ok(),
+            "off",
+        );
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — A-1 batch modes have no agent state.
+    #[test]
+    fn batch_modes_have_no_agent_state_neg() {
+        let repl = base().output().assert_ok();
+        let expected = if cfg!(feature = "agent") {
+            "dormant"
+        } else {
+            "not built in"
+        };
+        let state_line = state(&repl, expected).trim();
+        for mode in ["run", "test", "link"] {
+            let c = base().file(
+                "user.cl",
+                "(import [primitives [*]])\n(defn main [] (Pure 0))\n(defn test-ok [] None)\n",
+            );
+            let c = match mode {
+                "run" => c.run("user.cl"),
+                "test" => c.test("user.cl"),
+                _ => c.link("user.cl"),
+            };
+            let out = c.output().assert_ok();
+            for (stream, text) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+                assert!(
+                    !text.contains(state_line),
+                    "A-1 no batch state ({mode}, {stream}): {text}"
+                );
+            }
+        }
+    }
+    // spec: repl/spec/17-embedded-agent.md §17.4 and §17.10 — A-2 key alone is inert.
+    #[test]
+    fn ambient_key_alone_is_dormant_and_sends_no_request() {
+        // Check startup before sending /ask: a wrong active state must never
+        // turn this credential-selection test into a request to a live provider.
+        let startup = base()
+            .env_remove("CRANELISP_AGENT_PROVIDER")
+            .env("ANTHROPIC_API_KEY", "S123_SYNTHETIC_KEY")
+            .env("CRANELISP_AGENT_TRACE", "trace.jsonl")
+            .output()
+            .assert_ok();
+        let dormant = startup.stdout.lines().any(|line| line.contains("dormant"));
+        if cfg!(feature = "agent") && !dormant {
+            panic!(
+                "A-2 ambient-key startup must be dormant before any /ask: {}",
+                startup.stdout
+            );
+        }
+        no_request(&startup);
+        let out = base()
+            .env_remove("CRANELISP_AGENT_PROVIDER")
+            .env("ANTHROPIC_API_KEY", "S123_SYNTHETIC_KEY")
+            .env("CRANELISP_AGENT_TRACE", "trace.jsonl")
+            .stdin("/ask explain this\nwhy does this happen\n(primitives/add-i64 7 8)\n")
+            .output()
+            .assert_ok();
+        let provider_notice = out.stdout.contains("CRANELISP_AGENT_PROVIDER");
+        let transcript = format!("{}{}", out.stdout, out.stderr);
+        let deterministic = (transcript.contains("unbound") || transcript.contains("undefined"))
+            && transcript.contains("why")
+            && out.stdout.contains(":primitives/Int 15");
+        no_request(&out);
+        assert!(
+            dormant && provider_notice && deterministic,
+            "A-2 ambient key: dormant={dormant}, /ask names provider={provider_notice}, deterministic prose and next form={deterministic}; stdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        no_request(&out);
+    }
+    // spec: repl/spec/17-embedded-agent.md §17.10 — A-3 unknown provider stays dormant.
+    #[test]
+    fn unknown_provider_is_dormant_and_names_value() {
+        let out = base()
+            .env("CRANELISP_AGENT_PROVIDER", "s123-unknown-provider")
+            .env("CRANELISP_AGENT_TRACE", "trace.jsonl")
+            .stdin("/ask explain this\n")
+            .output()
+            .assert_ok();
+        state(&out, "dormant");
+        let notice = out.stdout.split_once("user>").expect("first REPL prompt").1;
+        assert!(
+            notice.contains("s123-unknown-provider"),
+            "A-3 dormant notice names unknown provider: {}",
+            out.stdout
+        );
+        no_request(&out);
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6 — A-4 --agent accepted on default build.
+    #[test]
+    fn agent_flag_is_accepted_by_default() {
+        base().cli_flag("--agent").output().assert_ok();
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6 — A-4 --no-agent wins in either order.
+    #[test]
+    fn no_agent_wins_over_agent_in_both_orders() {
+        for flags in [["--agent", "--no-agent"], ["--no-agent", "--agent"]] {
+            let out = base()
+                .env("CRANELISP_AGENT_PROVIDER", "stub")
+                .cli_flag(flags[0])
+                .cli_flag(flags[1])
+                .output()
+                .assert_ok();
+            state(&out, "off");
+        }
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6.2 — A-4 inactive --yes is a no-op.
+    #[test]
+    fn inactive_yes_is_accepted_by_default() {
+        base().cli_flag("--yes").output().assert_ok();
+    }
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — A-5 agent-free startup state.
+    #[cfg(not(feature = "agent"))]
+    #[test]
+    fn agent_free_banner_names_not_built_in() {
+        state(&base().output().assert_ok(), "not built in");
+    }
+}

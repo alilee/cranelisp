@@ -1,4 +1,5 @@
 cranelisp REPL — type /help for help
+(?m)^[^\n]*\bdormant\b[^\n]*$
 \d+\+\d+ms; \w+> :primitives/Int 3
 \d+\+\d+ms; \w+> :(Fn [a] a) user/id ; defn
 \d+\+\d+ms; \w+> Fns:

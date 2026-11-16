@@ -72,6 +72,7 @@ use cranelisp_platform::{
     Acquire as CAcquire, HostCtx, Poll as CPoll, PollFn, Waker as CWaker, WakerVTable,
 };
 
+use crate::runtime_switches::{self, Switch};
 use crate::strand::{StrandEvent, StrandId, emit_strand_event};
 
 /// The reserved mio `Token` for the reactor's cross-thread wakeup
@@ -1921,7 +1922,7 @@ fn oneshot_backstop_action(
 /// [`DriveMode::Server`]; anything else (incl. unset / `oneshot`) ⇒
 /// [`DriveMode::OneShot`] (the default — no batch program loses its hang guard).
 fn read_drive_mode_env() -> DriveMode {
-    match std::env::var("CRANELISP_DRIVE_MODE").ok().as_deref() {
+    match runtime_switches::value(Switch::DriveMode) {
         Some(s) if s.trim().eq_ignore_ascii_case("server") => DriveMode::Server,
         _ => DriveMode::OneShot,
     }
@@ -1932,8 +1933,7 @@ fn read_drive_mode_env() -> DriveMode {
 /// (30s default). The /qa suite sets a low value so the OneShot-backstop witness
 /// fits the suite-time budget instead of waiting the real 30s.
 fn read_backstop_env() -> Duration {
-    std::env::var("CRANELISP_REACTOR_BACKSTOP_MS")
-        .ok()
+    runtime_switches::value(Switch::ReactorBackstopMs)
         .and_then(|s| s.trim().parse::<u64>().ok())
         .filter(|&ms| ms > 0)
         .map(Duration::from_millis)
@@ -2211,8 +2211,7 @@ where
 /// reactor-construction surface. Unset / unparsable / zero ⇒ `u32::MAX` (no
 /// throttle). See [`block_on_reactor_capped`] for why this lives here for now.
 fn read_degree_env() -> u32 {
-    std::env::var("CRANELISP_DEGREE")
-        .ok()
+    runtime_switches::value(Switch::Degree)
         .and_then(|s| s.trim().parse::<u32>().ok())
         .filter(|&d| d > 0)
         .unwrap_or(u32::MAX)

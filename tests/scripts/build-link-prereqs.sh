@@ -51,3 +51,8 @@ cargo build \
   -p cranelisp-web \
   -p cranelisp-async-demo \
   -p cranelisp-poll-pool
+
+# File isolation and provider isolation are independent suite fences.
+if [[ -n "${NEXTEST_ENV:-}" ]]; then
+  printf '%s\n' 'CRANELISP_NO_ENV=1' 'CRANELISP_AGENT_PROVIDER=' >> "$NEXTEST_ENV"
+fi

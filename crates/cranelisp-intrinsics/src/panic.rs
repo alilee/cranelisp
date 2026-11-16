@@ -47,6 +47,8 @@ pub(crate) enum Fault<'a> {
     RuntimeDefect(&'a str),
     /// The `OneShot` backstop expired; carries the backstop diagnostic.
     BackstopExpired(&'a str),
+    /// The runtime's configuration was supplied wrongly, at `site`.
+    Configuration { site: &'a str, detail: &'a str },
 }
 
 impl Fault<'_> {
@@ -63,12 +65,20 @@ impl Fault<'_> {
                 format!("error: runtime defect: {}\n", OneLine(payload))
             }
             Fault::BackstopExpired(diagnostic) => format!("{}\n", OneLine(diagnostic)),
+            Fault::Configuration { site, detail } => format!(
+                "error: runtime configuration: {}: {}\n",
+                OneLine(site),
+                OneLine(detail)
+            ),
         }
     }
 
     pub(crate) fn exit_status(&self) -> i32 {
         match self {
-            Fault::Panic(_) | Fault::Dispatch { .. } | Fault::RuntimeDefect(_) => PANIC_EXIT_STATUS,
+            Fault::Panic(_)
+            | Fault::Dispatch { .. }
+            | Fault::RuntimeDefect(_)
+            | Fault::Configuration { .. } => PANIC_EXIT_STATUS,
             Fault::BackstopExpired(_) => BACKSTOP_EXIT_STATUS,
         }
     }

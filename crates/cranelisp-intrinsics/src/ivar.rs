@@ -32,6 +32,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
 use crate::alloc::{alloc_with_rc, dealloc};
+use crate::runtime_switches::{self, Switch};
 
 // ── Spark-stats profiling instrumentation (CRANELISP_SPARK_STATS=1) ──────────
 // Counts spark instances + ivar_force outcomes + the utilization-model signals
@@ -62,7 +63,7 @@ static SPARK_STATS_ATEXIT: std::sync::Once = std::sync::Once::new();
 
 fn spark_stats_enabled() -> bool {
     static E: LazyLock<bool> = LazyLock::new(|| {
-        let on = std::env::var_os("CRANELISP_SPARK_STATS").is_some();
+        let on = runtime_switches::is_set(Switch::SparkStats);
         if on {
             SPARK_STATS_ATEXIT.call_once(|| unsafe {
                 libc::atexit(print_spark_stats);
@@ -149,7 +150,7 @@ const RESOLVED: i64 = 2;
 /// byte-for-byte identical on either path; only the *wait*
 /// changes. Read once per process via `LazyLock`.
 static IVAR_SPIN: LazyLock<bool> =
-    LazyLock::new(|| std::env::var("CRANELISP_IVAR_SPIN").is_ok_and(|v| v == "1"));
+    LazyLock::new(|| runtime_switches::value(Switch::IvarSpin) == Some("1"));
 
 /// Backoff schedule for [`ivar_force`]'s EVALUATING-wait arm ([`IVAR_SPIN`]).
 /// The first `WAIT_SPIN_BURST` wait iterations busy-spin (fast-resolve latency);
@@ -201,7 +202,7 @@ static IN_FLIGHT_SPARKS: AtomicIsize = AtomicIsize::new(0);
 /// only — both arms produce byte-identical values — so correctness holds on and
 /// off by construction. Read once per process via `LazyLock`.
 static SATURATION_GATE: LazyLock<bool> =
-    LazyLock::new(|| std::env::var("CRANELISP_SATURATION_GATE").is_ok_and(|v| v == "1"));
+    LazyLock::new(|| runtime_switches::value(Switch::SaturationGate) == Some("1"));
 
 /// **The spark-cap multiplier `k`** (`CRANELISP_SPARK_CORE_MULT`;
 /// `design/backend/lenient-eval.md` §3.6.1). The default in-flight-spark cap is
@@ -225,8 +226,7 @@ static SATURATION_GATE: LazyLock<bool> =
 /// `LazyLock`. Lower precedence than an explicit `CRANELISP_SPARK_BUDGET=N` and
 /// than [`SATURATION_GATE`] (see [`effective_spark_cap`]).
 static SPARK_CORE_MULT: LazyLock<usize> = LazyLock::new(|| {
-    std::env::var("CRANELISP_SPARK_CORE_MULT")
-        .ok()
+    runtime_switches::value(Switch::SparkCoreMult)
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(2)
 });
@@ -247,9 +247,8 @@ static SPARK_CORE_MULT: LazyLock<usize> = LazyLock::new(|| {
 /// [`effective_spark_cap`], [`SATURATION_GATE`], and [`SPARK_CORE_MULT`]. Read
 /// once per process via `LazyLock`.
 static SPARK_BUDGET: LazyLock<usize> = LazyLock::new(|| {
-    let explicit = std::env::var("CRANELISP_SPARK_BUDGET")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok());
+    let explicit =
+        runtime_switches::value(Switch::SparkBudget).and_then(|v| v.parse::<usize>().ok());
     effective_spark_cap(
         explicit,
         *SATURATION_GATE,
@@ -420,8 +419,7 @@ fn default_spark_max_depth(num_threads: usize) -> u32 {
 /// [`HIER_DECLINE_ON`] (`CRANELISP_HIER_DECLINE=0` disables the depth check
 /// entirely).
 static SPARK_MAX_DEPTH: LazyLock<u32> = LazyLock::new(|| {
-    std::env::var("CRANELISP_SPARK_MAX_DEPTH")
-        .ok()
+    runtime_switches::value(Switch::SparkMaxDepth)
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or_else(|| default_spark_max_depth(rayon::current_num_threads()))
 });
@@ -435,8 +433,8 @@ static SPARK_MAX_DEPTH: LazyLock<u32> = LazyLock::new(|| {
 /// process via `LazyLock`.
 static HIER_DECLINE_ON: LazyLock<bool> = LazyLock::new(|| {
     !matches!(
-        std::env::var("CRANELISP_HIER_DECLINE").as_deref(),
-        Ok("0") | Ok("off")
+        runtime_switches::value(Switch::HierDecline),
+        Some("0" | "off")
     )
 });
 

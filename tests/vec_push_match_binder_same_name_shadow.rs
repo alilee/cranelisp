@@ -7,11 +7,10 @@
 //! only in the inner binder `X`: `b` (control) or `alias` (subject). Under value
 //! semantics both compute 3: each step makes `p` = [9 1] and keeps `q` = [9].
 //!
-//! The pair is not marginal for the alias-shadowing lead (ACT-1029): both
-//! halves carry the `let`-wrapped tail argument, and the control stops armed
-//! with `USE-AFTER-FREE` before the subject runs. The cell stays the failing
-//! guard for that observed fault (ACT-1030) until the L6 cell replaces it
-//! (ACT-1031).
+//! Both halves carried the `let`-wrapped tail argument, and the control stopped
+//! armed with `USE-AFTER-FREE` before the subject ran (ACT-1030). U′ removed
+//! the fault; both halves then returned 3 and balanced. The L6 cell separately
+//! isolated the let-wrapped forwarding face (ACT-1031).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -35,7 +34,7 @@ fn shadowed_alias_loop(inner_binder: &str) -> Child {
 
 // spec: spec/12-runtime.md §12.3.1 — every reference is released exactly once
 // when a self-tail argument forwards a `match`-binder alias through a `let`.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/design — provisional: the observed use-after-free is ACT-1030's; its mechanism is a source-read hypothesis until the L6 cell confirms it
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn push_under_a_same_name_shadowed_match_binder_balances() {
     let pair = MarginalPair::new(

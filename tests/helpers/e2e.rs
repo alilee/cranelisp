@@ -139,6 +139,8 @@ pub struct Cranelisp {
     /// the L-B2(i) suite-polarity lane runs the whole suite under
     /// `CRANELISP_NO_OWNERSHIP=1`, and polarity-META tests must not inherit it.
     env_remove: Vec<String>,
+    linked_environment: Option<Vec<(String, String)>>,
+    linked_directory: Option<PathBuf>,
     /// Opt-in: tolerate `EPIPE` on the piped-stdin write because the child is
     /// EXPECTED to exit before reading it. See
     /// [`Cranelisp::expects_exit_without_reading_stdin`]. Default `false` — a
@@ -166,6 +168,8 @@ impl Cranelisp {
             stdin: String::new(),
             env: Vec::new(),
             env_remove: Vec::new(),
+            linked_environment: None,
+            linked_directory: None,
             stdin_unread_ok: false,
             cli_flags: Vec::new(),
             lib_dirs: Vec::new(),
@@ -340,6 +344,25 @@ impl Cranelisp {
     /// Append a `(key, val)` to the child's env. Last write wins.
     pub fn env(mut self, key: &str, val: &str) -> Self {
         self.env.push((key.to_string(), val.to_string()));
+        self
+    }
+
+    /// Run the linked executable with only these values, independently of link-time settings.
+    pub fn linked_environment(mut self, values: &[(&str, &str)]) -> Self {
+        self.linked_environment = Some(
+            values
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        self
+    }
+
+    /// Run the linked executable in an owned subdirectory of this case's tempdir.
+    pub fn linked_directory(mut self, relative: &str) -> Self {
+        let directory = self.tmpdir.path().join(relative);
+        std::fs::create_dir_all(&directory).expect("linked directory");
+        self.linked_directory = Some(directory);
         self
     }
 
@@ -527,6 +550,8 @@ impl Cranelisp {
             timeout: self.timeout,
             tmpdir: self.tmpdir,
             link_then_run: mode_post,
+            linked_environment: self.linked_environment,
+            linked_directory: self.linked_directory,
         }
     }
 }
@@ -604,6 +629,8 @@ struct CrInvocationOwned {
     cwd: PathBuf,
     env: Vec<(String, String)>,
     env_remove: Vec<String>,
+    linked_environment: Option<Vec<(String, String)>>,
+    linked_directory: Option<PathBuf>,
     stdin: String,
     /// See [`Cranelisp::expects_exit_without_reading_stdin`].
     stdin_unread_ok: bool,
@@ -740,6 +767,7 @@ impl CrInvocationOwned {
             stderr: collect(stderr),
             elapsed,
             linked_execution_elapsed: None,
+            linked_stderr: None,
             tmpdir: tmpdir_path,
             _td: Some(self.tmpdir),
         })
@@ -798,6 +826,7 @@ impl CrInvocationOwned {
         // `elapsed` intentionally remains the compiler-child lifecycle interval;
         // this optional interval is only for the separately spawned executable.
         let mut linked_execution_elapsed = None;
+        let mut linked_stderr_capture = None;
         if let Some((produced, _)) = &self.link_then_run {
             if status.success() {
                 if !produced.exists() {
@@ -809,11 +838,18 @@ impl CrInvocationOwned {
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
-                for k in &self.env_remove {
-                    cmd2.env_remove(k);
+                if let Some(values) = &self.linked_environment {
+                    cmd2.env_clear().envs(values.iter().map(|(k, v)| (k, v)));
+                } else {
+                    for k in &self.env_remove {
+                        cmd2.env_remove(k);
+                    }
+                    for (k, v) in &self.env {
+                        cmd2.env(k, v);
+                    }
                 }
-                for (k, v) in &self.env {
-                    cmd2.env(k, v);
+                if let Some(directory) = &self.linked_directory {
+                    cmd2.current_dir(directory);
                 }
                 let mut linked_child = cmd2.spawn().map_err(CrError::SpawnFailed)?;
                 let drain = |mut pipe: Box<dyn Read + Send>| {
@@ -850,7 +886,8 @@ impl CrInvocationOwned {
                         .map_err(CrError::SpawnFailed)?,
                 };
                 stdout.push_str(&String::from_utf8_lossy(&out2.stdout));
-                stderr.push_str(&String::from_utf8_lossy(&out2.stderr));
+                linked_stderr_capture = Some(String::from_utf8_lossy(&out2.stderr).into_owned());
+                stderr.push_str(linked_stderr_capture.as_ref().unwrap());
                 status = out2.status;
                 linked_execution_elapsed = Some(started2.elapsed());
             }
@@ -863,6 +900,7 @@ impl CrInvocationOwned {
             stderr,
             elapsed,
             linked_execution_elapsed,
+            linked_stderr: linked_stderr_capture,
             tmpdir: tmpdir_path,
             _td: Some(self.tmpdir),
         })
@@ -884,6 +922,8 @@ pub struct CrOutput {
     /// Duration of only the executable spawned by [`Cranelisp::link_then_run`].
     /// `None` when no produced executable was run (including failed linking).
     pub linked_execution_elapsed: Option<Duration>,
+    /// Stderr of only the produced executable, excluding link-time diagnostics.
+    pub linked_stderr: Option<String>,
     pub tmpdir: PathBuf,
     /// Held internally so cleanup runs on drop.
     _td: Option<tempfile::TempDir>,
@@ -1161,6 +1201,8 @@ impl CrOutput {
             stdin: String::new(),
             env: Vec::new(),
             env_remove: Vec::new(),
+            linked_environment: None,
+            linked_directory: None,
             stdin_unread_ok: false,
             cli_flags: Vec::new(),
             lib_dirs: Vec::new(),
@@ -1644,9 +1686,17 @@ pub fn repl_output_lines(stdout: &str) -> Vec<String> {
 /// program's `print` output.
 fn strip_repl_chrome(stdout: &str) -> String {
     let mut out = String::new();
+    let state_word = Regex::new(r"\b(active|dormant|off|not built in)\b").unwrap();
+    let mut after_banner = false;
     for line in repl_output_lines(stdout) {
+        // Only the line immediately after the startup banner is state chrome;
+        // a program may print these same words later.
+        if std::mem::take(&mut after_banner) && state_word.is_match(&line) {
+            continue;
+        }
         // Drop the startup banner.
         if line.starts_with("cranelisp REPL") {
+            after_banner = true;
             continue;
         }
         // The notice is REPL presentation, not program output (§1.2.1). Exact

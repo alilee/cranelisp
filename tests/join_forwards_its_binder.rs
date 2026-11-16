@@ -57,7 +57,8 @@ fn measure(label: &str, control: (Child, i32), subject: (Child, i32)) -> Margina
 //
 // D1-M. The control returns the `match` from `f` and `main` takes its length;
 // both compute 2.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// Before U′, consuming the forwarded binder in its frame leaked one block.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn match_yielding_its_binder_consumed_in_frame_releases_the_value() {
     measure(
@@ -78,7 +79,8 @@ fn match_yielding_its_binder_consumed_in_frame_releases_the_value() {
 // consumed in the same frame, releases the bound vector exactly once.
 //
 // D1-L. The control returns the `let` from `f`; both compute 2.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// Before U′, consuming the forwarded binder in its frame leaked one block.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn let_yielding_its_binder_consumed_in_frame_releases_the_value() {
     measure(

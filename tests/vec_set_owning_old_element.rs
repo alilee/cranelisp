@@ -1,4 +1,5 @@
 //! S123 U-11: replacement must release the old element's entire owned graph.
+//! In-place replacement previously released owning old elements only shallowly.
 #[path = "helpers/mod.rs"]
 mod helpers;
 use helpers::marginal::{Child, Marginal, MarginalPair};
@@ -31,7 +32,7 @@ fn measure(label: &str, control: &str, subject: &str, expected: i32, linked: boo
 }
 
 // spec: spec/12-runtime.md §12.3.1 and §12.3.3 — U-11 Vec element, run.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn replacing_the_last_reference_to_a_vec_element_releases_its_contents_run() {
     measure(
@@ -45,7 +46,7 @@ fn replacing_the_last_reference_to_a_vec_element_releases_its_contents_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 and §12.3.3 — U-11 ADT element, run.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn replacing_the_last_reference_to_an_adt_element_releases_its_field_run() {
     measure(
@@ -59,7 +60,7 @@ fn replacing_the_last_reference_to_an_adt_element_releases_its_field_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 and §12.3.3 — U-11 value-position wrapper.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn vec_set_as_a_value_releases_the_old_elements_contents_run() {
     measure(
@@ -73,7 +74,7 @@ fn vec_set_as_a_value_releases_the_old_elements_contents_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 and §12.3.3 — U-11 Vec element, link.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn replacing_the_last_reference_to_a_vec_element_releases_its_contents_link() {
     measure(
@@ -118,7 +119,7 @@ fn replacing_a_shared_adt_element_keeps_its_field_live() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 and §12.3.3 — U-17 moves-off Vec replacement.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::emit_vec_set_in_place found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn replacing_the_last_reference_to_a_vec_element_releases_its_contents_moves_off() {
     let m = MarginalPair::new(

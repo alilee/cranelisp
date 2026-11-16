@@ -759,7 +759,7 @@ mod recent_turns_tests {
     /// reads it. The dormant path needs no API key (like `/context`).
     fn session_with_agent() -> crate::session_v4::CompilerSession {
         let mut s = repl_session();
-        s.agent = Some(crate::agent::provider::build_agent_state(false));
+        s.agent = Some(crate::agent::provider::build_agent_state_with(false, false));
         s
     }
 

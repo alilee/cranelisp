@@ -1,4 +1,5 @@
 cranelisp REPL — type /help for help
+agent: active (stub)
 0+0ms; user> :(Fn [a] a) user/redefinition-no-import ; defn
 9+0ms; user> :primitives/Int 700000000001
 8+0ms; user> :primitives/Int 7

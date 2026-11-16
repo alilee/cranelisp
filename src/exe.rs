@@ -55,6 +55,10 @@ use cranelisp_types::{
 ///   calls `cranelisp_check_layout_hash(linked, expected, name)` before `main`
 ///   — a stale platform builds but aborts at process start with rebuild
 ///   guidance. Empty = no checks (the as-built no-platform path).
+/// * `runtime_switches` — the opaque capture from
+///   `cranelisp_intrinsics::runtime_switches::capture_runtime_switches`, baked
+///   as read-only data and installed by the stub's first call
+///   (`design/int/environment.md` §3.1). Never parsed here.
 pub fn generate_startup_object(
     platform_manifest_names: &[String],
     main_returns_io: bool,
@@ -62,6 +66,7 @@ pub fn generate_startup_object(
     stub_entry_symbol: &str,
     platform_layout_checks: &[cranelisp_backend::exe::PlatformLayoutCheck],
     result_exit: &crate::result_owner::StartupResultExit,
+    runtime_switches: &[u8],
 ) -> Result<Vec<u8>, CranelispError> {
     use cranelisp_backend::cranelift_module::{Module, default_libcall_names};
     use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
@@ -81,6 +86,7 @@ pub fn generate_startup_object(
         &mut obj_module,
         entry_fn_name,
         result_exit.release_symbol.as_ref(),
+        runtime_switches,
     )?;
     let layout_check_ids = declare_layout_checks(&mut obj_module, platform_layout_checks)?;
     let platform_inits = declare_platform_inits(&mut obj_module, platform_manifest_names)?;
@@ -111,6 +117,11 @@ pub fn generate_startup_object(
     })
 }
 
+/// The runtime's switch-install entry the stub calls first.
+const INSTALL_SWITCHES_SYMBOL: &str = "cranelisp_install_runtime_switches";
+/// The stub-local read-only data holding the link-time switch capture.
+const SWITCHES_DATA_SYMBOL: &str = "__cranelisp_runtime_switches";
+
 // Bake a NUL-terminated rodata string and return its DataId (for the
 // expected-hash + platform-name constants the layout-hash gate reads).
 fn define_cstr_data(
@@ -138,10 +149,14 @@ fn define_cstr_data(
     Ok(id)
 }
 
-/// The four always-present imported runtime functions the startup stub calls:
-/// user `main`, the program driver (`cranelisp_run_program`), libc `exit`, and
-/// the primitives-GOT initialiser.
+/// The always-present imported runtime functions the startup stub calls: the
+/// runtime-switch install, user `main`, the program driver
+/// (`cranelisp_run_program`), libc `exit`, and the primitives-GOT initialiser;
+/// plus the baked switch capture the install reads.
 struct RuntimeImports {
+    install_switches: cranelisp_backend::cranelift_module::FuncId,
+    switches: cranelisp_backend::cranelift_module::DataId,
+    switches_len: usize,
     main: cranelisp_backend::cranelift_module::FuncId,
     run_program: cranelisp_backend::cranelift_module::FuncId,
     exit: cranelisp_backend::cranelift_module::FuncId,
@@ -176,14 +191,41 @@ struct PlatformInits {
     manifests: Vec<cranelisp_backend::cranelift_module::FuncId>,
 }
 
-/// Declare the four always-present imported runtime functions.
+/// Declare the always-present imported runtime functions and bake the switch
+/// capture.
 fn declare_runtime_imports(
     obj_module: &mut cranelisp_backend::cranelift_object::ObjectModule,
     entry_fn_name: &str,
     release_symbol: Option<&cranelisp_types::LinkerSymbol>,
+    runtime_switches: &[u8],
 ) -> Result<RuntimeImports, CranelispError> {
     use cranelift::prelude::*;
-    use cranelisp_backend::cranelift_module::{Linkage, Module};
+    use cranelisp_backend::cranelift_module::{DataDescription, Linkage, Module};
+
+    // `cranelisp_install_runtime_switches(ptr, len)` and its read-only capture.
+    let mut install_sig = obj_module.make_signature();
+    install_sig.params.push(AbiParam::new(types::I64)); // capture ptr
+    install_sig.params.push(AbiParam::new(types::I64)); // capture len
+    let install_switches = obj_module
+        .declare_function(INSTALL_SWITCHES_SYMBOL, Linkage::Import, &install_sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare {INSTALL_SWITCHES_SYMBOL}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let switches = obj_module
+        .declare_data(SWITCHES_DATA_SYMBOL, Linkage::Local, false, false)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare {SWITCHES_DATA_SYMBOL}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+    let mut desc = DataDescription::new();
+    desc.define(runtime_switches.to_vec().into_boxed_slice());
+    obj_module
+        .define_data(switches, &desc)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to define {SWITCHES_DATA_SYMBOL}: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
 
     // Declare entry function as imported (user's main function, returns i64).
     let mut main_sig = obj_module.make_signature();
@@ -263,6 +305,9 @@ fn declare_runtime_imports(
     };
 
     Ok(RuntimeImports {
+        install_switches,
+        switches,
+        switches_len: runtime_switches.len(),
         main,
         run_program,
         exit,
@@ -410,7 +455,18 @@ fn build_startup_func(
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
-        // 0. Populate the primitives GOT slab before anything else (FIXME 0280).
+        // Install the baked runtime switches before anything else: an
+        // allocation already reads a switch, and an install after a read ends
+        // the process (`design/int/environment.md` §3.1).
+        let switches_gv = obj_module.declare_data_in_func(rt.switches, builder.func);
+        let switches_ptr = builder.ins().global_value(types::I64, switches_gv);
+        let switches_len = builder.ins().iconst(types::I64, rt.switches_len as i64);
+        let install_ref = obj_module.declare_func_in_func(rt.install_switches, builder.func);
+        builder
+            .ins()
+            .call(install_ref, &[switches_ptr, switches_len]);
+
+        // 0. Populate the primitives GOT slab (FIXME 0280).
         let init_primitives_ref = obj_module.declare_func_in_func(rt.init_primitives, builder.func);
         builder.ins().call(init_primitives_ref, &[]);
 
@@ -1287,7 +1343,7 @@ mod tests {
     fn startup_bytes_for(
         result_exit: &crate::result_owner::StartupResultExit,
     ) -> Result<Vec<u8>, CranelispError> {
-        generate_startup_object(&[], true, "main", "start", &[], result_exit)
+        generate_startup_object(&[], true, "main", "start", &[], result_exit, &[1])
     }
 
     fn scalar_exit() -> crate::result_owner::StartupResultExit {
@@ -1310,6 +1366,88 @@ mod tests {
         assert!(
             !text.contains("__cranelisp_drop_"),
             "a scalar result must import no drop glue"
+        );
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.8 — the stub bakes the capture it
+    // is given, unparsed, and imports the install entry.
+    #[test]
+    fn startup_stub_bakes_the_switch_capture_verbatim() {
+        let capture = b"\x01S123-OPAQUE-CAPTURE-BYTES";
+        let bytes =
+            generate_startup_object(&[], true, "main", "start", &[], &scalar_exit(), capture)
+                .expect("emit stub");
+        assert!(
+            bytes.windows(capture.len()).any(|w| w == capture),
+            "the capture is embedded byte for byte"
+        );
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(
+            text.contains(INSTALL_SWITCHES_SYMBOL),
+            "the install entry is imported"
+        );
+        let other = generate_startup_object(&[], true, "main", "start", &[], &scalar_exit(), &[1])
+            .expect("emit stub");
+        assert!(
+            !other.windows(capture.len()).any(|w| w == capture),
+            "control: another capture is not present"
+        );
+    }
+
+    // spec: design/int/environment.md §3.1 — the stub's first call is the
+    // switch install, before `cranelisp_init_primitives`, with the baked length.
+    #[test]
+    fn startup_stub_installs_switches_before_anything_else() {
+        use cranelift::codegen::ir::{ExternalName, InstructionData};
+        use cranelisp_backend::cranelift_module::default_libcall_names;
+        use cranelisp_backend::cranelift_object::{ObjectBuilder, ObjectModule};
+
+        let isa = cranelisp_backend::build_isa(true).unwrap();
+        let builder = ObjectBuilder::new(isa, "t", default_libcall_names()).unwrap();
+        let mut module = ObjectModule::new(builder);
+        let capture = [1u8, 2, 3, 4, 5];
+        let rt = declare_runtime_imports(&mut module, "main", None, &capture).unwrap();
+        let start = declare_start_export(&mut module, "start").unwrap();
+        let func = build_startup_func(
+            &mut module,
+            &rt,
+            &None,
+            &PlatformInits {
+                init: None,
+                manifests: Vec::new(),
+            },
+            start,
+            true,
+            &scalar_exit(),
+        )
+        .unwrap();
+
+        let callees: Vec<u32> = func
+            .layout
+            .blocks()
+            .flat_map(|b| func.layout.block_insts(b))
+            .filter_map(|inst| match func.dfg.insts[inst] {
+                InstructionData::Call { func_ref, .. } => match func.dfg.ext_funcs[func_ref].name {
+                    ExternalName::User(r) => Some(func.params.user_named_funcs()[r].index),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            callees.first().copied(),
+            Some(rt.install_switches.as_u32()),
+            "the install is the first call: {callees:?}"
+        );
+        assert_eq!(
+            callees.get(1).copied(),
+            Some(rt.init_primitives.as_u32()),
+            "primitives initialise second: {callees:?}"
+        );
+        assert_eq!(rt.switches_len, capture.len());
+        assert!(
+            func.display().to_string().contains("iconst.i64 5"),
+            "the baked length is passed"
         );
     }
 

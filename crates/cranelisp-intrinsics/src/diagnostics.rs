@@ -32,6 +32,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+use crate::runtime_switches::{self, Switch};
+
 use cranelisp_types::HeapHeader;
 
 // ---------------------------------------------------------------------------
@@ -43,8 +45,7 @@ use cranelisp_types::HeapHeader;
 /// deterministically). Off ⇒ the quarantine list is never constructed.
 #[inline]
 pub(crate) fn quarantine_enabled() -> bool {
-    static E: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_QUARANTINE_FREED").is_some());
+    static E: LazyLock<bool> = LazyLock::new(|| runtime_switches::is_set(Switch::QuarantineFreed));
     *E
 }
 
@@ -54,8 +55,7 @@ pub(crate) fn quarantine_enabled() -> bool {
 #[inline]
 fn quarantine_max_bytes() -> Option<usize> {
     static E: LazyLock<Option<usize>> = LazyLock::new(|| {
-        std::env::var("CRANELISP_QUARANTINE_MAX_BYTES")
-            .ok()
+        runtime_switches::value(Switch::QuarantineMaxBytes)
             .and_then(|v| v.trim().parse::<usize>().ok())
     });
     *E
@@ -64,24 +64,21 @@ fn quarantine_max_bytes() -> Option<usize> {
 /// M2 — poison the whole allocation (header + payload) at the free seam.
 #[inline]
 pub(crate) fn scrub_enabled() -> bool {
-    static E: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_SCRUB_FREED").is_some());
+    static E: LazyLock<bool> = LazyLock::new(|| runtime_switches::is_set(Switch::ScrubFreed));
     *E
 }
 
 /// M3 — the located hard-check face (abort on imbalance at exit).
 #[inline]
 fn parity_hard_enabled() -> bool {
-    static E: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_ALLOC_PARITY").is_some());
+    static E: LazyLock<bool> = LazyLock::new(|| runtime_switches::is_set(Switch::AllocParity));
     *E
 }
 
 /// M3 — the print-and-continue dump face (no abort).
 #[inline]
 fn parity_dump_enabled() -> bool {
-    static E: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_ALLOC_PARITY_DUMP").is_some());
+    static E: LazyLock<bool> = LazyLock::new(|| runtime_switches::is_set(Switch::AllocParityDump));
     *E
 }
 
@@ -91,8 +88,7 @@ fn parity_dump_enabled() -> bool {
 /// are unaffected — they are always-on in debug).
 #[inline]
 pub(crate) fn rc_check_release_enabled() -> bool {
-    static E: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_RC_DEC_CHECK").is_some());
+    static E: LazyLock<bool> = LazyLock::new(|| runtime_switches::is_set(Switch::RcDecCheck));
     *E
 }
 
@@ -497,9 +493,9 @@ fn plant_config_error(msg: &str) -> ! {
 /// the parse earlier would mean a fourth hook call on the allocation hot path
 /// for no additional guarantee.
 static PLANT: LazyLock<Option<PlantState>> = LazyLock::new(|| {
-    let arm = std::env::var("CRANELISP_TEST_FAULTS").ok();
-    let spelling = std::env::var("CRANELISP_TEST_FAULT").ok();
-    match parse_plant_spec(arm.as_deref(), spelling.as_deref()) {
+    let arm = runtime_switches::value(Switch::TestFaults);
+    let spelling = runtime_switches::value(Switch::TestFault);
+    match parse_plant_spec(arm, spelling) {
         PlantSpec::Off => None,
         PlantSpec::Armed(p) => Some(PlantState::new(p)),
         // Before any plant is constructed and before any action is applied —

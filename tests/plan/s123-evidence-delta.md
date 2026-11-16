@@ -21,7 +21,7 @@
 > **Checkpoint:** HEAD `b35bfb87`, 2026-11-15; design citations verified
 > against the designs committed there. §3.2, §3.3 and M-2 were re-verified
 > against the W1 tree on 2026-11-15; §3.9 against the W2 U′ tree on
-> 2026-11-16.
+> 2026-11-16; §3.4 E-0 against nextest 0.9.140 on 2026-11-16.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
@@ -362,21 +362,58 @@ T-2 to T-5 and T-7 are acceptance and `test`'s.
   *Harm:* REPL source sent to a live endpoint; results changed by a local
   file. *Declaration:* the nextest setup stage exports
   `CRANELISP_NO_ENV=1` and an empty `CRANELISP_AGENT_PROVIDER` to every test
-  through `$NEXTEST_ENV` (probed 2026-11-15 on nextest 0.9.140: the export
-  reaches tests and their children and overrides a shell value). It lands in
-  the loader's change-set. `tests/helpers/marginal.rs` already clears the
-  environment. *Detection proof:* a child given a user file (via `HOME`) and
-  a project `.env` that select `stub` shows the dormant banner; the same
-  child with `CRANELISP_NO_ENV` removed shows `active`. *Class:* safety
-  fence. *Owner:* `test`.
+  through `$NEXTEST_ENV`. On nextest 0.9.140 the exports reach tests and
+  their children, and an empty value arrives set and empty, overriding a
+  shell value (probed 2026-11-15; the empty value re-probed 2026-11-16). It
+  lands in the loader's change-set. `tests/helpers/marginal.rs` already
+  clears the environment.
+  - *Two exports, two leak paths.* `CRANELISP_NO_ENV` stops a developer's
+    files. The empty provider stops a provider exported in the developer's
+    shell, which no loader control governs, and under E-2's precedence it
+    also outranks a file-supplied provider. A provider observable therefore
+    cannot show the file leak while the empty export stands, so each export
+    is proven against its own path.
+  - *Declaration cell:* the test process sees `CRANELISP_NO_ENV` as `1` and
+    `CRANELISP_AGENT_PROVIDER` as set and empty.
+  - *Isolation cell:* a child that inherits the suite environment, with
+    `XDG_CONFIG_HOME` and `HOME` pointing at fresh directories holding a
+    user file, and a project `.env` in its own directory. Both files set
+    `CRANELISP_RC_STATS=1` and select `stub` with a loadable script. `--run`
+    prints no `[RC_STATS]`, and the REPL banner is dormant.
+  - *Detection proof, plant 1:* remove only the `CRANELISP_NO_ENV` export.
+    The declaration cell fails, and the isolation cell's `--run` prints
+    `[RC_STATS]`. Its banner stays dormant, as E-2 requires of the empty
+    process value; the proof records that reading, and an `active` banner
+    under this plant is a precedence defect, not a detection.
+  - *Detection proof, plant 2:* remove only the empty provider export, and
+    launch nextest from a shell exporting `CRANELISP_AGENT_PROVIDER=stub`
+    and `CRANELISP_AGENT_STUB_SCRIPT`. The declaration cell fails, and the
+    isolation cell's banner is `active`. Its `--run` still prints no
+    `[RC_STATS]`, because the files stay unread.
+  - *Controls:* with both exports, the same shell leaves both cells green,
+    which shows the export overrides the shell value on the delivered tree.
+    With no plant and no shell values, both cells are green.
+  - The file legs observe the loader and the banner, so the plants run
+    against `dev`'s `src/` change-set before `review`. Before the loader
+    exists the isolation cell cannot fail, and only the declaration cell's
+    plants are observable.
+  - Cells that need a file read or an unset provider remove the inherited
+    export in their own child, as environment §2.4 requires of loader tests.
+  - *Limit:* other switches exported in the developer's shell still reach
+    the suite. They are process values, not files.
+  - *Class:* safety fence. *Owner:* `test`.
 - **E-1 — a project `.env` supplies a switch.** `CRANELISP_RC_STATS=1` in
   `.env` prints `[RC_STATS]` in `--run`, `--test` and the REPL; control: no
   `.env`. *Class:* acceptance. *Owner:* `test`.
-- **E-2 — precedence.** Observed through the banner, with
-  `CRANELISP_AGENT_PROVIDER` as process `stub`, `.env` `bogus1`, user file
-  `bogus2`: active `stub`; without the process value, dormant naming
-  `bogus1`; without both, `bogus2`. An empty process value wins: dormant
-  naming the variable. *Wrong:* files over the environment; user over project;
+- **E-2 — precedence.** With `CRANELISP_AGENT_PROVIDER` as process `stub`,
+  `.env` `bogus1` and user file `bogus2`, the banner is active naming `stub`.
+  Without the process value it is dormant, and `/ask`'s dormant notice names
+  `bogus1`; without both, `bogus2`. An empty process value wins: dormant, and
+  the notice names the variable. The banner carries the state word and an
+  active provider; a dormant reason is observed in the notice (§1.2,
+  unstated wordings). "Without the process value" removes the suite's
+  inherited empty export, and every leg removes `CRANELISP_NO_ENV` (E-0).
+  *Wrong:* files over the environment; user over project;
   an empty value treated as unset. *Class:* acceptance. *Owner:* `test`.
 - **E-3 — user file location.** `XDG_CONFIG_HOME/cranelisp/env` is used and
   `HOME/.config/cranelisp/env` ignored when `XDG_CONFIG_HOME` is set; `HOME`'s
@@ -386,7 +423,8 @@ T-2 to T-5 and T-7 are acceptance and `test`'s.
 - **E-5 — loader controls.** `CRANELISP_ENV_FILE` and
   `CRANELISP_USER_ENV_FILE` each redirect only their file;
   `CRANELISP_NO_ENV=1` reads neither; a file line setting a control is
-  ignored.
+  ignored. Every leg except the disable leg removes the inherited
+  `CRANELISP_NO_ENV`; the disable leg sets it explicitly.
 - **E-6 — refusals.** An unterminated quote on a foreign-key line, and a
   directory at the `.env` path, are startup errors exiting 1 that name the
   file (and the line when malformed). A sentinel value on another line of
@@ -447,6 +485,96 @@ E-3 to E-6 are acceptance and `test`'s.
   provider and no network (C-8).
 
 A-3 and A-4 are acceptance and `test`'s.
+
+**Acceptance of `test`'s W3 cells, 2026-11-16.** The source is
+`.local/s123-w3/test-evidence.md` (§W3 resumed). Every observed RED failed on
+a clause assertion; none failed on setup.
+
+- *Accepted:* E-0's declaration cell and its two detected plants, and its
+  isolation cells (file leg vacuous until the loader lands, as §3.4 says);
+  E-1; E-2's process leg; E-3's XDG leg; E-4; E-5; E-6; B-1 to B-4 with the
+  spark capability control; A-1's dormant, active and off legs after the
+  return below; A-2; A-4; A-5's lane; A-6's membership cell. The `stub`
+  active leg requires the banner to name the configured
+  `CRANELISP_AGENT_MODEL`, which is §0.6.1's "provider and model" for `stub`.
+- *Returned to `test`; each fails a conforming build:*
+  - `environment_supply::home_file_supplies_without_xdg`: the harness
+    applies every `env_remove` before every `env`, so `base()`'s
+    `XDG_CONFIG_HOME` survives the removal. The child reads an empty XDG
+    tree and never reaches `HOME`. The leg must start without
+    `XDG_CONFIG_HOME`.
+  - `agent::s123_defaults::state` and `batch_modes_have_no_agent_state_neg`
+    require the word `agent` on the state line, which §1.2 does not fix. A
+    line without it fails the REPL cells and passes the batch negative
+    vacuously. Count state lines in the REPL prologue, before the first
+    prompt, by state word only. The batch negative compares against the
+    state line the same environment prints in the REPL, on both streams.
+    A-3's `/ask` notice would otherwise count as a second state line.
+  - `unknown_provider_is_dormant_and_names_value`, and E-2's `bogus1`,
+    `bogus2` and empty legs, read the dormant reason from the banner. Read
+    it from `/ask`'s notice (E-2 above); the banner asserts the state word.
+- *Owed, in `dev`'s order:* nothing is observable at the intrinsics step
+  beyond B-5's `dev` rows. After the `src/` loader lands, rerun E-1 to E-6
+  and B-1 to B-4 green, including the masked clauses (E-5's companion-file
+  counter, E-6's file and line, A-1's model and count, A-3's notice and
+  trace, A-4's off order), and return any masked clause that does not
+  discriminate. After the agent default and banner land, and before
+  `review`, run E-0's isolation plants (§3.4). After the Cargo default
+  changes, run all of `tests/agent.rs` in the default build with the stub
+  and no network (A-6) and the agent-free lane (A-5). C-6's transcript
+  re-baseline follows A-1 green in the same change-set.
+
+**W3 adequacy, 2026-11-16: adequate with named residuals.** The tree is
+`3bdf398e` plus the uncommitted W3 work, after review R1–R4 and P14. The full
+suite (`.local/s123-w3/qa-full-suite.log`) ran 6,993 tests: 6,960 passed,
+33 failed, 1 skipped.
+
+- *Met.* E-0's plants each fail their own export's legs, and the controls are
+  green: the `NO_ENV` plant leaks `[RC_STATS]` with the banner dormant, and
+  the provider plant makes the banner `active` with the files unread
+  (`.local/s123-w3/post-e0-*.log`). In the default build the suite passes
+  E-1 to E-6, B-1 to B-4 and the R1 and R2 cells (`environment_supply`
+  32/32), and A-1 to A-4 and A-6 (`agent` 91/91). The agent-free lane passes
+  A-5 (`p14-lane-agent-free.log`, 23 passed). The golden transcripts pass on
+  the new banner, which is C-6. E-7 and B-5 have their module rows.
+- *The three §0.8 readings of 2026-11-16.* The implementation conforms to all
+  three, and each clause now has a discriminating `dev`(src) module row in
+  `src/env_files/tests.rs` (`.local/s123-w3/gaps-unit.log`, 27 passed;
+  `gaps-e2e.log`, `environment_supply` 32/32):
+  - **Exactly `1`.** `no_env_values_other_than_exactly_one_leave_loading_enabled`
+    keeps loading enabled for `true`, the empty string, ` 1`, `1 `, `01` and
+    `0`, which rejects a truthy, trimming or numeric reading.
+  - **After a closing quote.** `a_comment_may_follow_a_closing_quote_without_whitespace`
+    accepts `'v'#c` and `"v"#c`, which rejects a reading that needs
+    whitespace before `#`. `text_after_a_closing_quote_is_a_located_error`
+    refuses text after a double-quoted value, single- and multi-line, on a
+    foreign key and on `ANTHROPIC_API_KEY`, with the line and no value.
+  - **The NUL error names the key.** `the_nul_refusal_message_names_the_key_without_its_value`
+    asserts the rendered message carries the file, line and
+    `ANTHROPIC_API_KEY`, and none of the value, its suffix or the NUL.
+- *REDs.* 32 are filed guards, the same set as at W2's close: the twenty
+  listed in §3.10 and ACT-1050's twelve `bind_unused_heap_argument` cells.
+  None turned green. The 33rd,
+  `repl_persist::watch_idle_unreadable_save_locks_before_the_next_definition_overwrites_it`,
+  passed five isolated reruns. In the failing run the definition was admitted,
+  with the write chokepoint's warning, the bytes were kept, and the lock
+  reported one turn late. That is the late-event limit
+  [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload)
+  names. The `Stage::Write` stage sends the next line without waiting for the
+  watcher, so the fixture lacks the idle interval the cell's §14.2 clause
+  assumes. W3 changed neither the poll nor the stage, so this is not a W3
+  regression. It is an ordering race between event delivery and the next
+  line, with two candidate owners. *Provisional attribution:* `test`, if the
+  stage must wait for delivery so the cell observes an idle save. The
+  alternative is `design`(int), if §14.2 requires the reload regardless of
+  delivery latency, which the accepted limit does not meet; `spec` then
+  frames that for the user. *Refuted if* the cell fails in isolation, or a
+  stage that waits for delivery still admits the definition. *Owner:* `qa`
+  intake, an action routed to `test` first.
+- *§4.* `repl/spec/00-cli-invocation.md` §0.8's rows are restored, and its
+  heading is `[Tested]`, the grade of its dialect rows. One clause has no
+  cell: that a compile-time build variable in a file is not a runtime
+  setting.
 
 ### 3.6 REPL carries
 
@@ -978,6 +1106,25 @@ environment, which is the wrong implementation B-2 rejects and W3 removes.
   [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md).
   The cells are `tests/bind_unused_heap_argument.rs`: twelve subjects, one
   per mode, polarity and payload depth, and six control tests.
+
+**Acceptance of the W2 `fixed=` stamps, 2026-11-16.** The source is
+`.local/s123-w3/test-evidence.md`. The tree diff over `tests/` changes
+comments and `// defect:` metadata only.
+
+- *`fixed=S123/3bdf398e`, 38 lines.* 36 lines are W2 guards and 2 are U-18's.
+  Each was recorded failing on its clause before W2 in `.local/s123-w2/` logs,
+  except two pinned-residual fences. Those two are U-13's W-M cell (pinned at
+  1) and C-10c's return-copy fence (pinned at 200), and §3.9 records each
+  leak measured on the control and gone on U′. The shadowed-binder guard's
+  `owner=` moves from `/design` to `/dev`, the role that delivered its fix.
+- *`fixed=S121/992cb595`, the three 0916 lines.* Its parent `18bca20d`
+  (S120 close, no compiler-source change) lists 0916 among the open
+  failures. The S121 close run's four failures exclude it, and the S122
+  checkpoint suite passes all three cells. No run of the parent tree was
+  made; the attribution rests on those records.
+- *Not stamped, correctly.* These are the previously green S122 COW
+  use-after-free guards in `cow_result_consumed_in_frame.rs` and
+  `join_forwards_its_binder.rs`, and ACT-1050's twelve open lines.
 
 ## 4. Traceability band
 

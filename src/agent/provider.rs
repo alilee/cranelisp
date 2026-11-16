@@ -3,15 +3,14 @@
 //
 // Builds an `AgentModel` (the object-safe internal boundary, `types.rs`) for the
 // runtime-configured provider, and reports dormancy. Selection is RUNTIME config
-// (env vars), not a compile choice — Anthropic (default) / Ollama (local) / stub
-// (tests). NO owned LLM-protocol code: rig owns the wire. This file is the one
+// (env vars), not a compile choice — Anthropic / Ollama (local) / stub (tests),
+// with no default provider. NO owned LLM-protocol code: rig owns the wire. This file is the one
 // place that holds a concrete rig `CompletionModel`; everything above the
 // `AgentModel` boundary is rig-free.
 //
-// Opt-in-twice (U6, §6.4): compiled-in (the `agent` feature) AND a runtime
-// provider configured *and reachable*. Absent any provider the agent is DORMANT
-// (`AgentState.model == None`) and `/ask` says so, naming the endpoint + that
-// source excerpts are transmitted (the U6 disclosure — §2.3).
+// Activation (§6.4): compiled in, enabled (unless `--no-agent`), and an explicit
+// provider with complete configuration. Otherwise the agent is DORMANT
+// (no model handle) and `/ask` names what to set (§2.3).
 //
 // Async bridge: rig's `completion()` is async; `agent_turn` is synchronous to
 // the user's Enter. The rig-backed `AgentModel::complete` `block_on`s a
@@ -23,20 +22,20 @@ use rig_core::client::CompletionClient;
 use rig_core::completion::CompletionModel;
 
 use crate::agent::request as agent_request;
-use crate::agent::types::{AgentModel, AgentRequest, AgentState, ModelResponse, Turn};
+use crate::agent::types::{AgentLink, AgentModel, AgentRequest, AgentState, ModelResponse, Turn};
+use crate::agent_activation::{DormantReason, PROVIDER_VAR};
 
-/// Environment surface for provider selection (§6.4 opt-in-twice). All read at
+/// Environment surface for provider selection (§6.3). All read at
 /// session construction; none baked from memory (the model-id is config, per the
 /// `claude-api` discipline).
 ///
 /// | Var | Effect |
 /// |---|---|
-/// | `CRANELISP_AGENT_PROVIDER` | `anthropic` (default) / `ollama` / `stub` |
+/// | `CRANELISP_AGENT_PROVIDER` | `anthropic` / `ollama` / `stub`; unset, empty or other: dormant |
 /// | `CRANELISP_AGENT_MODEL` | model-id (provider-specific; required for a live provider) |
 /// | `ANTHROPIC_API_KEY` / `CRANELISP_AGENT_KEY` | Anthropic key (its presence is the reachability gate) |
 /// | `OLLAMA_API_BASE_URL` | Ollama endpoint (defaults to `http://localhost:11434`) |
 /// | `CRANELISP_AGENT_STUB_SCRIPT` | (test) path to a scripted-response fixture for the stub provider |
-const PROVIDER_VAR: &str = "CRANELISP_AGENT_PROVIDER";
 const MODEL_VAR: &str = "CRANELISP_AGENT_MODEL";
 
 /// The completion budget for every agent request (rig `CompletionRequest.max_tokens`).
@@ -51,31 +50,21 @@ const MODEL_VAR: &str = "CRANELISP_AGENT_MODEL";
 /// per-model/configurable budget would thread a field through `AgentRequest`.
 const AGENT_MAX_TOKENS: u64 = 64_000;
 
-/// Build the agent state for this session (§3.4). `enabled` is the resolved
-/// `--agent` runtime toggle (§6.4 opt-in-twice — the FIRST opt-in is the `agent`
-/// feature, the SECOND is this flag + a reachable provider). When `enabled` is
-/// false, or no provider is reachable, the returned state is DORMANT (model
-/// `None`) and `/ask`/the classifier route renders the dormant notice.
-pub fn build_agent_state(enabled: bool) -> AgentState {
-    build_agent_state_with(enabled, false)
-}
-
-/// Build the agent state, threading the resolved `--yes` autonomous-submit
-/// toggle (§20.1) onto `AgentState.auto_accept`. `auto_accept` is meaningful
-/// only with an active agent (it is already `&& agent_enabled` at the `main.rs`
-/// seam, §20.1); a dormant / disabled agent carries it inertly. This is the
-/// single construction site — every returned `AgentState` flows its
-/// `auto_accept` from here (`new_state` seeds the two §20 bits).
-pub fn build_agent_state_with(enabled: bool, auto_accept: bool) -> AgentState {
+/// Build the agent state for this session (§3.4). `enabled` is false only
+/// under `--no-agent`. An enabled agent activates only with an explicit
+/// `CRANELISP_AGENT_PROVIDER` whose configuration is complete; otherwise it is
+/// dormant and transmits nothing. `auto_accept` is the resolved `--yes`
+/// autonomous-submit toggle (§20.1); a dormant or off agent carries it
+/// inertly. This is the single construction site.
+pub(crate) fn build_agent_state_with(enabled: bool, auto_accept: bool) -> AgentState {
     if !enabled {
-        return new_state(None, "disabled (--agent not set)", auto_accept);
+        return AgentState::new(AgentLink::Off, auto_accept);
     }
-
-    let provider = std::env::var(PROVIDER_VAR).unwrap_or_else(|_| "anthropic".to_string());
-    let state = match provider.as_str() {
-        "stub" => build_stub_state(),
-        "ollama" => build_ollama_state(),
-        _ => build_anthropic_state(),
+    let state = match select_provider(std::env::var_os(PROVIDER_VAR).as_deref()) {
+        Ok(Provider::Stub) => build_stub_state(),
+        Ok(Provider::Ollama) => build_ollama_state(),
+        Ok(Provider::Anthropic) => build_anthropic_state(),
+        Err(reason) => dormant(reason),
     };
     AgentState {
         auto_accept,
@@ -83,83 +72,116 @@ pub fn build_agent_state_with(enabled: bool, auto_accept: bool) -> AgentState {
     }
 }
 
-/// Construct an `AgentState`, seeding the §20 autonomy bits (`auto_accept` +
-/// the once-only `auto_accept_notice_shown`, which always starts `false`). The
-/// single literal site so the field set cannot drift across providers.
-fn new_state(model: Option<Box<dyn AgentModel>>, label: &str, auto_accept: bool) -> AgentState {
-    AgentState {
-        transcript: Vec::new(),
-        model,
-        provider_label: label.to_string(),
-        auto_accept,
-        auto_accept_notice_shown: false,
-        submit_gave_up: false,
-        submit_committed: false,
-        current_turn: 0,
-        error_class_runup: Vec::new(),
-        turn_ring: std::collections::VecDeque::new(),
+/// The providers `CRANELISP_AGENT_PROVIDER` can name.
+#[derive(Debug, PartialEq, Eq)]
+enum Provider {
+    Anthropic,
+    Ollama,
+    Stub,
+}
+
+/// Select the provider by exact name. There is no default provider: unset or
+/// empty, and an unrecognised value, are dormant (`design/int/agent.md` §6.3).
+fn select_provider(value: Option<&std::ffi::OsStr>) -> Result<Provider, DormantReason> {
+    let Some(value) = value.filter(|v| !v.is_empty()) else {
+        return Err(DormantReason::NoProvider);
+    };
+    match value.to_str() {
+        Some("anthropic") => Ok(Provider::Anthropic),
+        Some("ollama") => Ok(Provider::Ollama),
+        Some("stub") => Ok(Provider::Stub),
+        _ => Err(DormantReason::UnrecognisedProvider(
+            value.to_string_lossy().into_owned(),
+        )),
     }
 }
 
-/// Anthropic (the default provider, §6.3). Reachable iff a key is present; the
-/// model-id comes from runtime config (never hardcoded from memory).
+/// The configured model id, when set and non-empty.
+fn configured_model() -> Option<String> {
+    std::env::var(MODEL_VAR).ok().filter(|m| !m.is_empty())
+}
+
+fn active(
+    model: Box<dyn AgentModel>,
+    provider: &'static str,
+    model_id: Option<String>,
+) -> AgentState {
+    AgentState::new(
+        AgentLink::Active {
+            model,
+            provider,
+            model_id,
+        },
+        false,
+    )
+}
+
+fn failed(provider: &'static str, cause: &str) -> AgentState {
+    dormant(DormantReason::Failed {
+        provider,
+        cause: cause.to_string(),
+    })
+}
+
+/// Anthropic. Reachable iff a key and a model id are configured; the model id
+/// is configuration, never a compiled-in constant.
 fn build_anthropic_state() -> AgentState {
+    const PROVIDER: &str = "anthropic";
     let key = std::env::var("ANTHROPIC_API_KEY")
         .ok()
-        .or_else(|| std::env::var("CRANELISP_AGENT_KEY").ok());
-    let model_id = std::env::var(MODEL_VAR).ok();
-    match (key, model_id) {
-        (Some(key), Some(model_id)) if !key.is_empty() && !model_id.is_empty() => {
-            match rig_core::providers::anthropic::Client::new(&key) {
-                Ok(client) => {
-                    let model = client.completion_model(model_id);
-                    match RigModel::new(model) {
-                        Ok(rig) => new_state(Some(Box::new(rig)), "anthropic", false),
-                        Err(_) => dormant("anthropic (async runtime construction failed)"),
-                    }
-                }
-                Err(_) => dormant("anthropic (client construction failed)"),
-            }
-        }
-        _ => dormant(
-            "anthropic (no API key or model-id; set ANTHROPIC_API_KEY + CRANELISP_AGENT_MODEL)",
-        ),
+        .filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("CRANELISP_AGENT_KEY").ok())
+        .filter(|k| !k.is_empty());
+    let (Some(key), Some(model_id)) = (key, configured_model()) else {
+        return dormant(DormantReason::Incomplete {
+            provider: PROVIDER,
+            missing: format!("ANTHROPIC_API_KEY (or CRANELISP_AGENT_KEY) and {MODEL_VAR}"),
+        });
+    };
+    let Ok(client) = rig_core::providers::anthropic::Client::new(&key) else {
+        return failed(PROVIDER, "client construction failed");
+    };
+    match RigModel::new(client.completion_model(model_id.clone())) {
+        Ok(rig) => active(Box::new(rig), PROVIDER, Some(model_id)),
+        Err(_) => failed(PROVIDER, "async runtime construction failed"),
     }
 }
 
-/// Ollama — the local / offline escape hatch (§6.3, the U6 privacy path). No key;
-/// the endpoint defaults to localhost. Requires a configured model-id.
+/// Ollama — the local, key-free provider; the endpoint defaults to localhost.
+/// Requires a configured model id.
 fn build_ollama_state() -> AgentState {
-    let model_id = std::env::var(MODEL_VAR).ok();
-    match model_id {
-        Some(model_id) if !model_id.is_empty() => {
-            match rig_core::providers::ollama::Client::new(rig_core::client::Nothing) {
-                Ok(client) => {
-                    let model = client.completion_model(model_id);
-                    match RigModel::new(model) {
-                        Ok(rig) => new_state(Some(Box::new(rig)), "ollama (local)", false),
-                        Err(_) => dormant("ollama (async runtime construction failed)"),
-                    }
-                }
-                Err(_) => dormant("ollama (client construction failed)"),
-            }
-        }
-        _ => dormant("ollama (no model-id; set CRANELISP_AGENT_MODEL)"),
+    const PROVIDER: &str = "ollama";
+    let Some(model_id) = configured_model() else {
+        return dormant(DormantReason::Incomplete {
+            provider: PROVIDER,
+            missing: MODEL_VAR.to_string(),
+        });
+    };
+    let Ok(client) = rig_core::providers::ollama::Client::new(rig_core::client::Nothing) else {
+        return failed(PROVIDER, "client construction failed");
+    };
+    match RigModel::new(client.completion_model(model_id.clone())) {
+        Ok(rig) => active(Box::new(rig), PROVIDER, Some(model_id)),
+        Err(_) => failed(PROVIDER, "async runtime construction failed"),
     }
 }
 
-/// The deterministic test stub provider, selected by `CRANELISP_AGENT_PROVIDER=stub`
-/// (the §1.1(a) stub-provider-by-config mechanism — makes Lane A genuine e2e).
-/// Loads a scripted-response fixture from `CRANELISP_AGENT_STUB_SCRIPT`.
+/// The deterministic test stub provider, selected by `CRANELISP_AGENT_PROVIDER=stub`;
+/// it loads a scripted-response fixture from `CRANELISP_AGENT_STUB_SCRIPT`. A
+/// configured model id is reported in the banner but changes nothing.
 fn build_stub_state() -> AgentState {
+    const PROVIDER: &str = "stub";
     match crate::agent::stub::StubModel::from_env() {
-        Ok(stub) => new_state(Some(Box::new(stub)), "stub (test)", false),
-        Err(reason) => dormant(&format!("stub ({reason})")),
+        Ok(stub) => active(Box::new(stub), PROVIDER, configured_model()),
+        Err(reason) => dormant(DormantReason::Incomplete {
+            provider: PROVIDER,
+            missing: format!("a loadable CRANELISP_AGENT_STUB_SCRIPT ({reason})"),
+        }),
     }
 }
 
-fn dormant(label: &str) -> AgentState {
-    new_state(None, label, false)
+fn dormant(reason: DormantReason) -> AgentState {
+    AgentState::new(AgentLink::Dormant(reason), false)
 }
 
 /// The rig-backed `AgentModel` impl — the membrane's other half (§6.1). Holds a
@@ -363,6 +385,62 @@ impl AgentState {
             // as a user turn instead (still visible to the model next turn).
             self.transcript.push(Turn::User(result.output));
         }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    // spec: repl/spec/17-embedded-agent.md §17.4, §17.10.2 — no default provider
+    #[test]
+    fn unset_or_empty_provider_is_dormant_naming_the_variable() {
+        assert_eq!(select_provider(None), Err(DormantReason::NoProvider));
+        assert_eq!(
+            select_provider(Some(OsStr::new(""))),
+            Err(DormantReason::NoProvider)
+        );
+    }
+
+    // spec: repl/spec/17-embedded-agent.md §17.10.3 — an unrecognised value is dormant and named
+    #[test]
+    fn an_unrecognised_provider_is_dormant_naming_the_value() {
+        for value in ["bogus", "Anthropic", " stub", "anthropic "] {
+            assert_eq!(
+                select_provider(Some(OsStr::new(value))),
+                Err(DormantReason::UnrecognisedProvider(value.to_string())),
+                "{value:?} must not fall back to a transmitting provider"
+            );
+        }
+    }
+
+    // spec: repl/spec/17-embedded-agent.md §17.10.2 — the three providers match exactly
+    #[test]
+    fn the_three_providers_are_selected_by_exact_name() {
+        assert_eq!(
+            select_provider(Some(OsStr::new("anthropic"))),
+            Ok(Provider::Anthropic)
+        );
+        assert_eq!(
+            select_provider(Some(OsStr::new("ollama"))),
+            Ok(Provider::Ollama)
+        );
+        assert_eq!(
+            select_provider(Some(OsStr::new("stub"))),
+            Ok(Provider::Stub)
+        );
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — `--no-agent` is off whatever is configured
+    #[test]
+    fn a_disabled_agent_is_off() {
+        let state = build_agent_state_with(false, true);
+        assert_eq!(
+            state.activation(),
+            crate::agent_activation::AgentActivation::Off
+        );
+        assert!(state.is_dormant());
     }
 }
 
@@ -593,18 +671,14 @@ mod tests {
                 },
             );
         }
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(rig)),
-            provider_label: "mock (test)".to_string(),
-            auto_accept: false,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(rig),
+                provider: "stub",
+                model_id: None,
+            },
+            false,
+        ));
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
         s.agent_turn("show me the source of f", &mut sink, &mut consent);
@@ -731,21 +805,17 @@ mod tests {
         let rig = RigModel::new(mock).expect("tokio current-thread runtime builds");
 
         let mut s = crate::agent::test_support::repl_session();
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(rig)),
-            provider_label: "mock (test)".to_string(),
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(rig),
+                provider: "stub",
+                model_id: None,
+            },
             // --yes so the confirm gate auto-accepts without a line-read; the
             // pairing defect is in the validator-repair loop, which runs BEFORE
             // (and independently of) the consent gate (§20.3).
-            auto_accept: true,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+            true,
+        ));
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
         s.agent_turn("write me a dbl fn in this module", &mut sink, &mut consent);
@@ -953,20 +1023,16 @@ mod tests {
         let rig = RigModel::new(mock).expect("tokio current-thread runtime builds");
 
         let mut s = crate::agent::test_support::repl_session();
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(rig)),
-            provider_label: "mock (test)".to_string(),
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(rig),
+                provider: "stub",
+                model_id: None,
+            },
             // --yes so the (never-reached) confirm gate would auto-accept; the
             // give-up happens in the validator-repair loop, BEFORE any gate.
-            auto_accept: true,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+            true,
+        ));
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
         s.agent_turn(
@@ -1081,18 +1147,14 @@ mod tests {
                 },
             );
         }
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(rig)),
-            provider_label: "mock (test)".to_string(),
-            auto_accept: false,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(rig),
+                provider: "stub",
+                model_id: None,
+            },
+            false,
+        ));
         s
     }
 
@@ -1250,18 +1312,8 @@ mod tests {
         use crate::agent::types::{
             AgentState, ToolCallRequest, ToolCallResult, Turn, assert_transcript_wire_valid,
         };
-        let mut state = AgentState {
-            transcript: Vec::new(),
-            model: None,
-            provider_label: "test".to_string(),
-            auto_accept: false,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 1,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        };
+        let mut state = AgentState::new(crate::agent::types::AgentLink::Off, false);
+        state.current_turn = 1;
         let calls = vec![
             ToolCallRequest {
                 id: "toolu_a".into(),
@@ -1386,18 +1438,8 @@ mod tests {
         use crate::agent::types::{
             AgentState, ToolCallRequest, ToolCallResult, Turn, assert_transcript_wire_valid,
         };
-        let mut state = AgentState {
-            transcript: Vec::new(),
-            model: None,
-            provider_label: "test".to_string(),
-            auto_accept: false,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 1,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        };
+        let mut state = AgentState::new(crate::agent::types::AgentLink::Off, false);
+        state.current_turn = 1;
         // The batch: [a = submit (will repair), b = a read call]. submit NOT last.
         state.record_assistant_tool_calls(vec![
             ToolCallRequest {
@@ -1465,10 +1507,9 @@ mod tests {
     // the single shared assembly for `complete` and `complete_streaming`
     // (Principle 7), so this one assertion guards BOTH transports.
     //
-    // This is a UNIT test, not an e2e, BECAUSE the defect is not e2e-reproducible:
-    // the agent module is `#[cfg(feature = "agent")]` (the default suite never
-    // compiles it), the e2e stub provider (`CRANELISP_AGENT_PROVIDER=stub`) bypasses
-    // `RigModel`/`build_request` entirely, and CI cannot call the live Anthropic API.
+    // This is a UNIT test, not an e2e, because the e2e stub provider
+    // (`CRANELISP_AGENT_PROVIDER=stub`) bypasses `RigModel`/`build_request`
+    // entirely, and CI cannot call the live Anthropic API.
     // Constructing `build_request` against the `MockModel` (the real rig
     // `CompletionModel` trait, below the membrane) is the only path that observes the
     // assembled `CompletionRequest.max_tokens`.

@@ -914,14 +914,31 @@ impl CompilerSession {
 
     // -- REPL display utilities (pipeline-v4.md §6) --
 
-    /// Print the session banner.
+    /// Print the session banner and, after it, the agent state line
+    /// (`repl/spec/00-cli-invocation.md` §0.6.1).
     pub fn print_banner(&self, stdout: &mut impl Write) {
         // §10.3 R13 (Prompt / Banner) — dim. Colour-off the bytes are unchanged.
-        let banner = render(&StyledDoc::span(
-            Role::Prompt,
-            "cranelisp REPL — type /help for help",
-        ));
-        let _ = writeln!(stdout, "{banner}");
+        for line in [
+            "cranelisp REPL — type /help for help".to_string(),
+            self.agent_activation().banner_line(),
+        ] {
+            let _ = writeln!(stdout, "{}", render(&StyledDoc::span(Role::Prompt, line)));
+        }
+    }
+
+    /// The agent's activation answer, recorded when the REPL enabled it.
+    #[cfg(feature = "agent")]
+    fn agent_activation(&self) -> crate::agent_activation::AgentActivation {
+        match &self.agent {
+            Some(state) => state.activation(),
+            None => unreachable!("invariant: the REPL enables the agent before its banner"),
+        }
+    }
+
+    /// The agent's activation answer in an agent-free build.
+    #[cfg(not(feature = "agent"))]
+    fn agent_activation(&self) -> crate::agent_activation::AgentActivation {
+        crate::agent_activation::AgentActivation::NotBuiltIn
     }
 
     /// Current module name for prompt display.

@@ -166,7 +166,7 @@ fn let_intermediate_push_loop_balances_and_reuses_in_place() {
 // compute 2. ACT-1026 previously left a residual of 1 for a forwarded binder
 // consumed in its frame (D1-M in `join_forwards_its_binder.rs`); U′ removed
 // that leak.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::cow_retains_reused_gate found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/vec_codegen.rs::cow_retains_reused_gate found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances() {
     let on_two_elements = |body: &str| {

@@ -1,4 +1,5 @@
 //! S123 U-12: synthetic accessors discharge their input after reading its field.
+//! Concrete accessor frames previously omitted their input release.
 #[path = "helpers/mod.rs"]
 mod helpers;
 use helpers::marginal::{Child, MarginalPair};
@@ -39,7 +40,7 @@ fn check(label: &str, defs: &str, control: &str, subject: &str, expected: i32, l
 const POINT: &str = "(deftype Point [:Int x :Int y])\n(defn py [p] (match p [(Point x y) y]))";
 
 // spec: spec/12-runtime.md §12.3.1 — U-12 concrete scalar-field accessor, run.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn point_y_releases_its_input_run() {
     check(
@@ -53,7 +54,7 @@ fn point_y_releases_its_input_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-12 concrete heap-field accessor, run.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn box_items_releases_its_input_and_returned_field_run() {
     check(
@@ -67,7 +68,7 @@ fn box_items_releases_its_input_and_returned_field_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-12 concrete scalar-field accessor, link.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn point_y_releases_its_input_link() {
     check(
@@ -94,7 +95,7 @@ fn generic_y_releases_its_input_and_returned_field() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-17 moves-off concrete scalar-field accessor.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/match_codegen.rs::compile_match found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn point_y_releases_its_input_moves_off() {
     let m = MarginalPair::new(

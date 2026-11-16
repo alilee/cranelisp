@@ -209,7 +209,7 @@ fn vec_set_static_site_shared_source_neg_does_not_leak() {
 
 // spec: spec/12-runtime.md §12.1 — value representation & reference counting;
 // §12.3.1 — heap free. The let-wrapped COW return must balance.
-// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn vec_set_let_wrapped_in_place_return_does_not_leak() {
     // The source is not re-read, so the let-wrapped return can transfer the

@@ -119,9 +119,13 @@ features = ["derive"]
 # io_trace`, so a `benches/` unit links it via `use cranelisp::io_trace::…`);
 # the accessor is purely additive (Principle 8 — no interim scaffolding).
 [features]
+# The embedded agent is in the default build (user ruling 2026-11-15,
+# design/int/agent.md §6.4); `--no-default-features` builds the supported
+# agent-free binary.
+default = ["agent"]
 bench = []
 # Sprint 99 Wave 0.2 (parallelism-perf measurement pre-wave): thread-caching
-# global allocator. OFF by default (`default = []`) — the `#[global_allocator]`
+# global allocator. Not a default feature — the `#[global_allocator]`
 # static in `src/main.rs` is entirely `#[cfg(feature = "thread-caching-alloc")]`,
 # so a default build emits NO allocator static and uses the system allocator
 # byte-identical to before. Pulls in the optional `mimalloc` crate ONLY when the
@@ -138,11 +142,8 @@ thread-caching-alloc = ["dep:mimalloc"]
 # build (incl. `--link` exe-bundle output). A pure-blocking program constructs no
 # mio `Poll` at runtime (lazy reactor init — `design/int/reactor.md`), so
 # lean-default is preserved as a RUNTIME property, not a `#[cfg]` split.
-# Sprint 88 Phase 5 (agentic-REPL track, Wave 3 — Advisor MVP core): the
-# embedded agent. OFF by default — in NO default feature set, enabled by no
-# dev-dependency, so `cargo build` / `cargo nextest run` never compile it and
-# the default suite stays agent-free (design/int/agent.md §6.4). All of
-# `src/agent/` is `#[cfg(feature = "agent")]`. The `agent` feature pulls in the
+# The embedded agent (design/int/agent.md §6.4), in the default set above.
+# All of `src/agent/` is `#[cfg(feature = "agent")]`. The `agent` feature pulls in the
 # `rig-core` LLM client (`rig::completion::CompletionModel` is the
 # provider-agnostic boundary, R3-amended) and a current-thread `tokio` runtime
 # (rig's completion methods are async; `agent_turn` is synchronous to the user's
@@ -179,9 +180,8 @@ optional = true
 features = ["rt", "macros"]
 
 # Agent-only: build the rig tool-definition JSON schema + decode tool-call
-# arguments (`src/agent/request.rs`). `serde_json` is already a transitive dep
-# (through `toml` / rig); declared optional + gated by the `agent` feature so the
-# default build's dependency surface is unchanged.
+# arguments (`src/agent/request.rs`). Optional, gated by the `agent` feature, so
+# the agent-free build does not name it.
 [dependencies.serde_json]
 version = "1"
 optional = true

@@ -17,8 +17,8 @@ only what the next code-touching agent would otherwise re-derive from source.
 Most modules externalize their tests to `foo/tests.rs` via a trailing
 `#[cfg(test)] mod tests;` (the `#[path]` is implicit — the sibling dir):
 `alloc`, `catalog`, `diagnostics`, `drop`, `heap_string`, `io`, `io_observer`,
-`ivar`, `layout`, `panic`, `rc`, `reactor`, `trace`, `trace_format`, and
-`vec_runtime`. `heap_access`, `io_guard`, and `strand` keep `mod tests { … }`
+`ivar`, `layout`, `panic`, `rc`, `reactor`, `runtime_switches`, `trace`,
+`trace_format`, and `vec_runtime`. `heap_access`, `io_guard`, and `strand` keep `mod tests { … }`
 inline in their `.rs` files; `lib.rs` also keeps the DEF-6 `host_callbacks`
 pin inline. `drop/rc_balance.rs` is a second test file under `drop/` holding
 the `assert_balanced` alloc==dealloc RC-leak assertions (the crate-internal
@@ -111,6 +111,16 @@ the consuming dec sequences (those stay per-module by design).
   no cross-crate consumer, and no `/strand` reader exists outside in-crate tests.
 
 ## Debug hooks
+
+**Every variable below that the runtime reads is a `runtime_switches::Switch`
+member, read only through that module**; `CRANELISP_NO_LENIENT` is the
+backend's, read at compile time (`design/intrinsics/process-lifecycle.md` §2). Add a
+switch as a member, never as a direct environment read: the
+`runtime_switches` census test fails on any `std::env` read elsewhere in
+non-test source. In the compiler process the members come from the process
+environment; in a `--link` executable they are the values baked at link time,
+and setting one on the produced program has no effect. An install after any
+read is a configuration fault.
 
 | Env var | Effect | Provenance |
 |---|---|---|

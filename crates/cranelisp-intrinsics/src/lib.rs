@@ -200,6 +200,7 @@ pub mod ivar;
 pub mod layout;
 pub mod panic;
 pub mod rc;
+pub mod runtime_switches;
 pub mod trace;
 /// The pure `(trace ...)` value formatter — the `DisplayDescriptor` ABI + the
 /// `cranelisp_trace_format` intrinsic. Split out of `trace` (HIGH-3, FIXME 0370);

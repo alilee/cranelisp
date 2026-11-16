@@ -1132,10 +1132,10 @@ fn non_tty_repl_output_byte_identical_line_editor_off() {
          /list\n\
          /sig id\n",
     );
-    // Mask only the non-deterministic prompt timing (`N+Mms; <module>> `); every
-    // other byte of the non-TTY session output MUST match the committed golden.
+    // The startup state is fixed; its explanatory wording is provisional.
     let prompt_re = regex::Regex::new(r"\d+\+\d+ms; \w+> ").unwrap();
-    out.assert_golden_masked("non_tty_repl_line_editor_off", &[&prompt_re]);
+    let state_re = regex::Regex::new(r"(?m)^[^\n]*\bdormant\b[^\n]*$").unwrap();
+    out.assert_golden_masked("non_tty_repl_line_editor_off", &[&prompt_re, &state_re]);
 }
 
 // =============================================================================

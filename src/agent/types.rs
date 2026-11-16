@@ -208,18 +208,33 @@ pub struct ReplTurn {
 /// trivially inside the §5.4 budget, and budget-gated regardless.
 pub const TURN_RING_CAP: usize = 8;
 
+/// The agent's activation and model handle as one fact (§3.4): the handle
+/// exists exactly when the agent is active. The every-build activation answer
+/// is [`AgentState::activation`], a projection of this.
+pub(crate) enum AgentLink {
+    /// `--no-agent` was given.
+    Off,
+    /// Enabled, but no provider can be reached; nothing is transmitted.
+    Dormant(crate::agent_activation::DormantReason),
+    /// Enabled with a reachable provider.
+    Active {
+        model: Box<dyn AgentModel>,
+        provider: &'static str,
+        /// The model id, when one is configured.
+        model_id: Option<String>,
+    },
+}
+
 /// The persistent agent state (§3.4) — transcript + the model handle. Lives on
 /// `CompilerSession` as a `#[cfg(feature="agent")] Option<AgentState>` so
-/// feature-off carries zero bytes. `None` until the first `/ask` or agent route.
-pub struct AgentState {
+/// feature-off carries zero bytes. `None` outside the REPL; the REPL prologue
+/// builds it before the startup banner, which renders from it.
+pub(crate) struct AgentState {
     /// The conversation transcript (§3.4) — oldest turns drop first under budget.
     pub transcript: Vec<Turn>,
-    /// The model handle (the membrane). `None` ⇒ dormant (no reachable provider,
-    /// the U6 opt-in-twice "no key" path — §6.4); `/ask` then says so.
-    pub model: Option<Box<dyn AgentModel>>,
-    /// A short human label for the active provider (e.g. "anthropic", "ollama",
-    /// "stub") or the dormancy reason, for the U6 disclosure notice.
-    pub provider_label: String,
+    /// Whether the agent is off, dormant or active; only an active link holds
+    /// the model handle (§3.4).
+    pub(crate) link: AgentLink,
     /// `--yes` autonomous-submit (§20.1). When true, the write-consent gate
     /// (`run_submit` step 2, §15.2) auto-accepts WITHOUT a `[y/N]` line-read —
     /// the policy knob. CRITICAL (§20.3): this bit lives in the CONSENT branch
@@ -270,9 +285,48 @@ pub struct AgentState {
 }
 
 impl AgentState {
-    /// True when no provider is reachable (the dormant / "no key" state — §6.4).
+    /// A fresh state over `link`, with an empty transcript and per-turn
+    /// bookkeeping; `auto_accept` is the resolved `--yes` toggle (§20.1).
+    pub(crate) fn new(link: AgentLink, auto_accept: bool) -> Self {
+        AgentState {
+            transcript: Vec::new(),
+            link,
+            auto_accept,
+            auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
+            current_turn: 0,
+            error_class_runup: Vec::new(),
+            turn_ring: VecDeque::new(),
+        }
+    }
+
+    /// The activation answer the banner line and the `/ask` notice render from.
+    pub(crate) fn activation(&self) -> crate::agent_activation::AgentActivation {
+        use crate::agent_activation::AgentActivation;
+        match &self.link {
+            AgentLink::Off => AgentActivation::Off,
+            AgentLink::Dormant(reason) => AgentActivation::Dormant(reason.clone()),
+            AgentLink::Active {
+                provider, model_id, ..
+            } => AgentActivation::Active {
+                provider,
+                model: model_id.clone(),
+            },
+        }
+    }
+
+    /// The model handle; `None` unless the agent is active.
+    pub(crate) fn model_mut(&mut self) -> Option<&mut dyn AgentModel> {
+        match &mut self.link {
+            AgentLink::Active { model, .. } => Some(model.as_mut()),
+            AgentLink::Off | AgentLink::Dormant(_) => None,
+        }
+    }
+
+    /// True when the agent is off or dormant, so no model can be called.
     pub fn is_dormant(&self) -> bool {
-        self.model.is_none()
+        !matches!(self.link, AgentLink::Active { .. })
     }
 
     /// F3 (§17.20.3a) — the MOST FREQUENT `error_class` in this turn's run-up
@@ -576,6 +630,42 @@ fn render_turn_for_debug(turn: &Turn) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_activation::{AgentActivation, DormantReason};
+
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — the activation answer projects the link
+    #[test]
+    fn activation_is_a_projection_of_the_link() {
+        let stub = crate::agent::stub::StubModel::new(Vec::new());
+        let mut active = AgentState::new(
+            AgentLink::Active {
+                model: Box::new(stub),
+                provider: "stub",
+                model_id: Some("m-1".to_string()),
+            },
+            false,
+        );
+        assert_eq!(
+            active.activation(),
+            AgentActivation::Active {
+                provider: "stub",
+                model: Some("m-1".to_string()),
+            }
+        );
+        assert!(!active.is_dormant());
+        assert!(active.model_mut().is_some());
+
+        let reason = DormantReason::NoProvider;
+        let mut dormant = AgentState::new(AgentLink::Dormant(reason.clone()), false);
+        assert_eq!(dormant.activation(), AgentActivation::Dormant(reason));
+        assert!(dormant.is_dormant());
+        assert!(dormant.model_mut().is_none());
+
+        let mut off = AgentState::new(AgentLink::Off, true);
+        assert_eq!(off.activation(), AgentActivation::Off);
+        assert!(off.is_dormant());
+        assert!(off.model_mut().is_none());
+        assert!(off.auto_accept);
+    }
 
     // F3 (§17.20.3a) — ENUMERATED case (iii): the dominant-error-class computation
     // over a give-up's run-up. The MOST FREQUENT class is returned; an empty
@@ -583,7 +673,7 @@ mod tests {
     // spec: repl/spec.md §17.20.3a F3 — dominant error class.
     #[test]
     fn dominant_error_class_picks_most_frequent() {
-        let mut st = crate::agent::provider::build_agent_state(false);
+        let mut st = crate::agent::provider::build_agent_state_with(false, false);
         assert_eq!(
             st.dominant_error_class(),
             None,

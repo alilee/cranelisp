@@ -5,7 +5,8 @@
 ([user rulings on the Phase 3 decisions, 2026-11-15](SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15)),
 and rows P11–P13 are approved
 ([user rulings at the Phase 3 → 4 checkpoint, 2026-11-15](SPRINT.md#user-rulings-at-the-phase-3--4-checkpoint-2026-11-15)).
-R10-9 is not yet a listed delta (Part C). A mismatch between an approved row
+Row P14 is approved (user, 2026-11-16). R10-9 is not yet a listed delta (Part C).
+A mismatch between an approved row
 and the generated diff returns here. **Checkpoint:** planning commit
 `b35bfb87`, 2026-11-15. Line counts are read from the committed
 `public-api.txt` files at that commit.
@@ -26,6 +27,7 @@ auto-trait rows the current format prints.
 | P1–P9 | Approved 2026-11-15. P6 as proposed: `runtime/panic` stays and never returns. P3, P4 and P9 because platform dispatch faults end the process |
 | P10 | Approved 2026-11-15 with U′; it lands only in U′'s change-set |
 | P11–P13 | Approved 2026-11-15 (§A5). P13 lands at S123 close if the superseded redefinition residue is deleted in Phase 5, otherwise in S124 |
+| P14 | Approved 2026-11-16 as proposed (§A6): `AgentState` and `build_agent_state_with` crate-private, `build_agent_state` off the public surface |
 | B1 | Scheduled for S124 |
 | B2, B3 | Scheduled for S123 close, with the baseline regeneration |
 
@@ -82,10 +84,10 @@ a later packet; nothing is proposed for S123.
 | Primitives: the `checked-quot` primitive (`spec/12-runtime.md` §12.7.3) | +0. A primitive is a declaration row in `PRIMITIVES_TABLE` and a `pub(crate)` body, as `parse-int` is; no public item changes. A design that needs a public item returns here | Unchanged baseline |
 | Macro-expansion panics end the process (user ruling) | +0: no containment entry is added | — |
 | The REPL panic report: `error: runtime panic:`, plain on stderr (user ruling) | +0: no host formatter registration | — |
-| Agent in the default build | No item, signature or edge changes; only the configuration that compiles `cranelisp::agent` (review §1.1) | — |
+| Agent in the default build | The feature change itself changes no item, signature or edge; it only selects the configuration that compiles `cranelisp::agent` (review §1.1). The `AgentState` change W3 made inside that module is row P14 | — |
 | Environment-file supply | A binary-private module (`design/int/environment.md` §1) | — |
 | ACT-1033's catalog derivation | Crate-private | `IntrinsicEntry` unchanged |
-| Any other root-crate item | No change beyond P12 (`design/int/int.md` §16.0, delta 6) | — |
+| Any other root-crate item | No change beyond P12 and P14 (`design/int/int.md` §16.0, delta 6). The activation module is `pub(crate)` | Root `src/` diff against `3bdf398e`: no other `pub` item added, removed or re-signed |
 
 ### A5. New deltas from `design`(int) — approved 2026-11-15
 
@@ -103,6 +105,73 @@ shape; a different name or parameter list returns to this gate.
 under the same baseline regeneration, if the residue deletion lands in Phase 5;
 otherwise it lands with B1 in S124. Until P13 lands, the one remaining hole is a new
 call to the public `SymbolTable::mark_broken`.
+
+### A6. Root crate: `AgentState` leaves the public surface — awaiting the user
+
+Source: W3's `design`(int) ruling that activation and the model handle are one
+fact (`design/int/agent.md` §3.4), realised by `dev`(src) as
+`AgentState.link: AgentLink`; `src/` review finding R3.
+
+**The gate applies.** The root library's consumers are separate crates: the
+binary target `src/main.rs`, each `tests/*.rs` integration test and each
+`benches/*.rs` bench. No workspace member depends on `cranelisp`. Its `pub`
+surface is therefore an inter-crate API without a baseline
+([bounded contexts](../design/arch/bounded-contexts.md) §6, "What crosses the boundary").
+The gate covers removed fields and changed visibility whether or not a consumer
+exists, as it does for P12 and B3. W3 has already removed two public fields,
+and narrowing further cannot restore them, so some row needs the user.
+
+**Census, `src/` against `3bdf398e`.** In `src/` outside `main.rs`, the only
+`pub` items added, removed or re-signed are the two `AgentState` fields.
+`AgentLink`, `link`, `AgentState::new`, `activation()`, `model_mut()` and the
+`agent_activation` module are `pub(crate)`. `env_files` is a module of the
+binary target. Outside the library:
+
+- `main.rs` uses `agent::Classify`, `agent::types::FnConsent` and
+  `agent::types::ReplTurnOutcome`, and calls `CompilerSession::enable_agent`,
+  `agent_is_active`, `classify_for_agent`, `agent_turn` and
+  `record_repl_turn`. None of those signatures names `AgentState`.
+- `tests/` and `benches/` have no Rust-level use of `cranelisp::agent` at the
+  checkpoint or now. `tests/` drive the binary; `benches/` use
+  `cranelisp::io_trace` only.
+- Outside a public type, only the two builders produce an `AgentState`. Its
+  only sink is the crate-private field `CompilerSession.agent`. An external
+  holder of one could do nothing with it.
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P14 | With the `agent` feature, which is now default. Make `pub struct agent::types::AgentState` `pub(crate)`. At the checkpoint it exposed ten public fields: `transcript`, `model`, `provider_label`, `auto_accept`, `auto_accept_notice_shown`, `submit_gave_up`, `submit_committed`, `current_turn`, `error_class_runup` and `turn_ring`. Its public methods were `is_dormant`, `dominant_error_class`, `record_turn`, `record_user`, `record_assistant`, `record_assistant_tool_calls`, `record_tool_result` and `record_pull_result`. Make `pub fn agent::provider::build_agent_state_with(bool, bool) -> AgentState` `pub(crate)`. Remove `pub fn agent::provider::build_agent_state(bool) -> AgentState` from the public surface; it has no production caller. This subsumes W3's removal of `model` and `provider_label` | None outside the library (census above). Inside: `CompilerSession::enable_agent` and the agent module's own tests | Breaks only a crate that names `AgentState` or calls a builder, and none exists. `AgentState` is never serialised (§3.4), so there is no schema effect and no ABI effect. The agent-free build has no `agent` module, so it does not change | Root has no baseline. The seven library baselines +0 |
+
+- **Recommended form.** `AgentState` is `design`(int)'s interior state. A
+  public `AgentState` would send every later change to it, including W3's own,
+  through this gate for no consumer
+  ([Principle 02](../design/arch/principles/02-narrow-interfaces.md)).
+- **Smaller alternative.** Remove only the fields `model` and
+  `provider_label`. `AgentState` stays public, but code outside the crate can no
+  longer construct it by struct literal. The user would then approve a public
+  shape that has no consumer and that changes whenever the interior changes. It
+  needs no further `dev` change.
+- **Declining both** returns the representation to `design`(int). To keep both
+  fields public, `AgentState` would have to give up activation and the handle
+  agreeing by construction
+  ([Principle 20](../design/arch/principles/20-model-invariants-by-representation.md)).
+- **Not proposed.** Narrowing the rest of the unconsumed `cranelisp::agent`
+  surface to the items `main.rs` uses. W3 did not change those items, and that
+  census belongs in a later packet.
+
+**`dev`(src) change under P14, after approval.**
+
+- In `src/agent/types.rs`, change `pub struct AgentState` to `pub(crate)`.
+- In `src/agent/provider.rs`, change `build_agent_state_with` to `pub(crate)`.
+- Retire the test-only `build_agent_state`, so that no crate-private item is
+  unused in the non-test build and no lint allowance is added. Its four test
+  callers, in `harvest.rs`, `types.rs` and `mod.rs`, call
+  `build_agent_state_with(false, false)`, or the function becomes
+  `#[cfg(test)]`.
+- Leave the remaining `pub` members alone: the type's visibility bounds them.
+- **Evidence:** the default and `--no-default-features` builds compile without a
+  new warning, and the three agent lanes pass. Review confirms that `tests/`,
+  `benches/` and `main.rs` name neither `AgentState` nor a builder.
 
 ## Part B — scheduled outside the Phase 5 functional change-sets
 

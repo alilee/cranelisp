@@ -66,6 +66,7 @@ pub use cranelisp_intrinsics::ivar;
 pub use cranelisp_intrinsics::layout;
 pub use cranelisp_intrinsics::panic;
 pub use cranelisp_intrinsics::rc;
+pub use cranelisp_intrinsics::runtime_switches;
 // `cranelisp_intrinsics::trace` re-export RESTORED in S76 (FIXME 0255). The
 // 2026-06-04 trace ruling retracted D40's trace half: `(trace ...)` now works
 // in all modes incl. `--link`, so `libcranelisp_exe_bundle.a` must carry the

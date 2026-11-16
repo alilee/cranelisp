@@ -23,12 +23,11 @@ use std::sync::{LazyLock, Once};
 use cranelisp_types::HeapHeader;
 
 use crate::alloc;
+use crate::runtime_switches::{self, Switch};
 
 /// Whether RC trace logging is enabled. Checked once at process start.
 static RC_TRACE_ENABLED: LazyLock<AtomicBool> = LazyLock::new(|| {
-    let enabled = std::env::var("CRANELISP_RC_TRACE")
-        .map(|v| v == "1")
-        .unwrap_or(false);
+    let enabled = runtime_switches::value(Switch::RcTrace) == Some("1");
     AtomicBool::new(enabled)
 });
 
@@ -92,8 +91,7 @@ pub fn is_rc_trace_enabled() -> bool {
 /// blessed atomic RC paths run unchanged (byte-identical-off).
 #[inline]
 pub(crate) fn nonatomic_rc_enabled() -> bool {
-    static E: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_NONATOMIC_RC").is_some());
+    static E: LazyLock<bool> = LazyLock::new(|| runtime_switches::is_set(Switch::NonatomicRc));
     *E
 }
 
@@ -120,7 +118,7 @@ static STATS_ATEXIT: Once = Once::new();
 #[inline]
 pub(crate) fn rc_stats_enabled() -> bool {
     static E: LazyLock<bool> = LazyLock::new(|| {
-        let on = std::env::var_os("CRANELISP_RC_STATS").is_some();
+        let on = runtime_switches::is_set(Switch::RcStats);
         if on {
             ensure_stats_atexit();
         }

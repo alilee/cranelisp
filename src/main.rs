@@ -3,21 +3,14 @@
 // Four modes: Run (--run), Test (--test), Link (--link), Repl (default).
 // One CompilerSession, one code path. Workers are persistent.
 //
-// Embedded agent (REPL-only). The optional LLM advisor is compiled in ONLY
-// with the `agent` Cargo feature, which is off by default — a default
-// `cargo build` has no agent at all (`cargo build --features agent` to
-// include it). It is configured entirely through the ENVIRONMENT, never
-// `Cranelisp.toml`: `CRANELISP_AGENT_PROVIDER` selects the backend
-// (`anthropic` or `ollama`), `CRANELISP_AGENT_MODEL` the model-id,
-// `ANTHROPIC_API_KEY` (or `CRANELISP_AGENT_KEY`) the Anthropic key, and
-// `OLLAMA_API_BASE_URL` the Ollama endpoint (local, no key — the offline
-// path). With the feature compiled in but no provider configured/reachable,
-// the agent stays dormant and `/ask` renders a notice. The `--agent` /
-// `--no-agent` flags are the runtime half of the opt-in (off by default,
-// `--no-agent` wins on conflict). On a binary built WITHOUT the agent feature
-// `--agent` and `--yes`/`-y` are a HARD ERROR (usage hint, exit 1 — S106 user
-// ruling, FIXME 0539); `--no-agent` stays an accepted no-op. See
-// `repl/spec.md §17.10`/§0.6 for the full normative enable+config scheme.
+// Embedded agent (REPL-only). The `agent` Cargo feature is in the default set;
+// `--no-default-features` builds the supported agent-free binary. A REPL
+// session enables the agent unless `--no-agent`, and it activates only with an
+// explicit `CRANELISP_AGENT_PROVIDER` whose configuration is complete
+// (`repl/spec/17-embedded-agent.md` §17.4, §17.10). Configuration comes from the
+// environment after the environment-file supply, never `Cranelisp.toml`. On an
+// agent-free build `--agent` and `--yes`/`-y` are usage errors and `--no-agent`
+// is accepted (`repl/spec/00-cli-invocation.md` §0.6).
 
 // Sprint 99 Wave 0.2 — thread-caching global allocator (parallelism-perf
 // measurement pre-wave). Feature-gated + OFF by default: with the feature
@@ -51,6 +44,8 @@ use cranelisp::{got_trace, io_trace};
 // line editor + per-project history) vs non-TTY (raw fd-0 line reads, byte-
 // identical output). See `src/repl_input.rs`.
 mod repl_input;
+// The startup environment-file supply (`design/int/environment.md` §2).
+mod env_files;
 use repl_input::{ReadOutcome, ReplInput};
 
 // ---------------------------------------------------------------------------
@@ -153,7 +148,6 @@ struct ParsedFlags {
     action_test: bool,
     action_link: bool,
     output_override: Option<PathBuf>,
-    agent_on: bool,
     agent_off: bool,
     yes: bool,
     target: Option<String>,
@@ -181,6 +175,15 @@ const USAGE: &str = "usage: cranelisp [target] [--run | --test | --link] [-o <pa
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Argument parsing is pure; the environment supply follows it and precedes
+    // every environment read and every thread, because `set_var` is sound
+    // only then (`design/int/environment.md` §2.1).
+    let spec = parse_args();
+    if let Err(e) = env_files::supply(&spec.project_root) {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
+
     // Observability (`design/int/observability.md` §7.1): the guards flush on
     // `main()` return, the panic hooks on a Rust unwind, and the exit hook on
     // every `exit`, including a runtime panic's, which ends the process inside
@@ -226,7 +229,6 @@ fn main() {
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
-    let spec = parse_args();
     cranelisp::style::init_color(spec.settings.no_color);
 
     // Captured before `run` consumes `spec` — the error path names the entry file.
@@ -351,10 +353,8 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
     let entry_module_name: &str = &entry_module;
     let output_override = output_override.as_deref();
 
-    // `agent_enabled` / `auto_accept` are threaded into `run_repl`'s
-    // `s.enable_agent` only under `#[cfg(feature="agent")]`; feature-off they are
-    // accepted no-ops (the `--agent` / `--yes` flags are still recognised, so a
-    // script written for an agent build runs unchanged).
+    // `agent_enabled` / `auto_accept` reach `s.enable_agent` only in an agent
+    // build.
     #[cfg(not(feature = "agent"))]
     let _ = (agent_enabled, auto_accept);
 
@@ -689,11 +689,8 @@ fn repl_prologue(
     // serves partial results + an "indexing N modules…" note.
     s.arm_importable_index();
 
-    // S88 W3: wire the embedded agent (the S1 `_agent_enabled` seam).
-    // REPL-only; selects the runtime provider (anthropic / ollama / stub
-    // by config) or stays dormant. Feature-off this call does not exist
-    // and `agent_enabled` is an accepted no-op (the `--agent` flag is
-    // still recognised so a script written for an agent build runs).
+    // Record the agent's activation answer (active, dormant or off) before
+    // the banner reports it. REPL-only; an agent-free build has no agent.
     #[cfg(feature = "agent")]
     s.enable_agent(agent_enabled, auto_accept);
 
@@ -904,19 +901,10 @@ fn parse_args() -> LaunchSpec {
         process::exit(1);
     });
 
-    // §0.6.1: resolve the agent toggle. `--no-agent` wins when both are present;
-    // default is off. The agent is a REPL-only, dev-session capability — it
-    // never participates in `--run`/`--link`, so the resolved value is only
-    // meaningful in REPL mode. The flags are accepted no-ops in a feature-off
-    // build (so a script written for an agent build runs); the `agent` feature
-    // build (S88 W3) threads `agent_enabled` into `s.enable_agent` (the runtime
-    // half of opt-in-twice — §6.4).
-    let agent_enabled = flags.agent_on && !flags.agent_off && matches!(action, Action::Repl);
+    let agent_enabled = agent_enabled(&flags, &action);
 
-    // §20.1: `--yes` is meaningful ONLY with an active agent (it auto-answers the
-    // write-consent gate). Off by default; REPL-only (gated by `agent_enabled`,
-    // already Action::Repl). On a default / non-agent build it is a parsed no-op
-    // (this resolves to `false` and the consuming `enable_agent` is `#[cfg]`-gated).
+    // §0.6.2: `--yes` auto-answers the write-consent gate of an active agent;
+    // it is inert otherwise.
     let auto_accept = flags.yes && agent_enabled;
 
     // Resolve (project_root, entry_module) per spec §0.5.1. `is_rule3` flags
@@ -1083,54 +1071,22 @@ fn parse_arg_flags(args: &[String]) -> ParsedFlags {
                     process::exit(1);
                 }
             }
-            // §0.6.1 (S106 user ruling 2026-07-09, FIXME 0539): `--agent` names
-            // the runtime half of the agent's opt-in-twice discipline. REPL-only.
-            // On an agent-CAPABLE build it is accepted (wired to the runtime
-            // toggle). On a binary built WITHOUT the agent feature it is a HARD
-            // ERROR (usage hint to stderr, exit 1 — the `--no-cache`+`--link`
-            // style), NOT an accepted no-op and NOT `unknown flag`: the flag names
-            // a capability the binary does not have. `--no-agent` is UNAFFECTED
-            // (asking for the agent OFF is trivially satisfied) — accepted no-op
-            // in both builds.
-            #[cfg(feature = "agent")]
+            // §0.6.1–§0.6.2: `--agent` and `--yes`/`-y` name agent capabilities,
+            // so an agent-free build refuses them (`agent_flag_refusal`).
+            // `--no-agent` is accepted in both builds. The `-y` arm must stay in
+            // the recognised set: the `_` arm would take it as the target.
             "--agent" => {
-                flags.agent_on = true;
+                refuse_unless_built_in(AgentFlag::Agent);
                 i += 1;
             }
-            #[cfg(not(feature = "agent"))]
-            "--agent" => {
-                eprintln!(
-                    "error: --agent is not supported: this binary was built \
-                     without the agent feature"
-                );
-                eprintln!("{USAGE}");
-                process::exit(1);
+            "--yes" | "-y" => {
+                refuse_unless_built_in(AgentFlag::Yes);
+                flags.yes = true;
+                i += 1;
             }
             "--no-agent" => {
                 flags.agent_off = true;
                 i += 1;
-            }
-            // §0.6.2 `--yes` (long) / `-y` (short) — the autonomous-submit toggle
-            // (§20.1). On an agent-capable build it is accepted (threaded onto
-            // `AgentState.auto_accept`). On a feature-off build it is a HARD ERROR
-            // (S106 ruling, FIXME 0539) — there is no agent write-consent gate for
-            // it to auto-answer; NOT `unknown flag`. The `-y` arm MUST live here,
-            // in the recognised-flag set, NOT in the `_` target-capture arm below
-            // — else `-y` (which does not start with `--`) is swallowed as the
-            // REPL target (the false-green trap the B.5 short-flag test guards).
-            #[cfg(feature = "agent")]
-            "--yes" | "-y" => {
-                flags.yes = true;
-                i += 1;
-            }
-            #[cfg(not(feature = "agent"))]
-            "--yes" | "-y" => {
-                eprintln!(
-                    "error: --yes is not supported: this binary was built without \
-                     the agent feature (no agent write-consent gate to auto-answer)"
-                );
-                eprintln!("{USAGE}");
-                process::exit(1);
             }
             arg if arg.starts_with("--") => {
                 eprintln!("error: unknown flag: {arg}");
@@ -1150,6 +1106,49 @@ fn parse_arg_flags(args: &[String]) -> ParsedFlags {
     }
 
     flags
+}
+
+/// §0.6.1: the agent is enabled in a REPL session unless `--no-agent`;
+/// `--agent` asks for the same state. It never takes part in a batch mode.
+fn agent_enabled(flags: &ParsedFlags, action: &Action) -> bool {
+    !flags.agent_off && matches!(action, Action::Repl)
+}
+
+/// Whether this binary contains the embedded agent.
+const AGENT_BUILT_IN: bool = cfg!(feature = "agent");
+
+/// A flag that names an agent capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentFlag {
+    Agent,
+    Yes,
+}
+
+/// The usage error for an agent flag on a binary without the agent, or `None`
+/// when the flag is accepted (§0.6.1–§0.6.2). It is a recognised flag refused
+/// for a reason, never `unknown flag`.
+fn agent_flag_refusal(flag: AgentFlag, agent_built_in: bool) -> Option<&'static str> {
+    if agent_built_in {
+        return None;
+    }
+    Some(match flag {
+        AgentFlag::Agent => {
+            "--agent is not supported: this binary was built without the agent feature"
+        }
+        AgentFlag::Yes => {
+            "--yes is not supported: this binary was built without the agent feature \
+             (no agent write-consent gate to auto-answer)"
+        }
+    })
+}
+
+/// Exit with a usage error when this binary cannot honour `flag`.
+fn refuse_unless_built_in(flag: AgentFlag) {
+    if let Some(message) = agent_flag_refusal(flag, AGENT_BUILT_IN) {
+        eprintln!("error: {message}");
+        eprintln!("{USAGE}");
+        process::exit(1);
+    }
 }
 
 /// The value following a value-taking flag, exiting with a usage error when it
@@ -1350,6 +1349,47 @@ mod tests {
             !is_rule3,
             "a bare missing-name target is NOT a rule-3 trigger"
         );
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.6.1–§0.6.2 — an agent-free
+    // build refuses `--agent` and `--yes` for a stated reason; a build with the
+    // agent accepts them.
+    #[test]
+    fn agent_flags_are_refused_only_without_the_agent() {
+        for flag in [AgentFlag::Agent, AgentFlag::Yes] {
+            assert_eq!(agent_flag_refusal(flag, true), None, "{flag:?}");
+            let message = agent_flag_refusal(flag, false).expect("refused");
+            assert!(message.contains("agent feature"), "{message}");
+            assert!(!message.contains("unknown flag"), "{message}");
+        }
+        assert!(
+            agent_flag_refusal(AgentFlag::Agent, false)
+                .unwrap()
+                .starts_with("--agent ")
+        );
+        assert!(
+            agent_flag_refusal(AgentFlag::Yes, false)
+                .unwrap()
+                .starts_with("--yes ")
+        );
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.6.1 — enabled by default in the
+    // REPL, `--no-agent` wins over `--agent`, never enabled in a batch mode.
+    #[test]
+    fn agent_is_enabled_in_the_repl_unless_no_agent() {
+        let enabled = |args: &[&str]| {
+            let flags = flags_of(args);
+            agent_enabled(&flags, &select_action(&flags).unwrap())
+        };
+        if AGENT_BUILT_IN {
+            assert!(enabled(&[]));
+            assert!(enabled(&["--agent"]));
+            assert!(!enabled(&["--agent", "--no-agent"]));
+            assert!(!enabled(&["--no-agent", "--agent"]));
+        }
+        assert!(!enabled(&["--no-agent"]));
+        assert!(!enabled(&["--run", "x.cl"]));
     }
 
     /// Parse `args` as the binary would, with a leading program name.

@@ -149,11 +149,27 @@ debug dump and the transmitted request cannot diverge
 
 `CompilerSession.agent: Option<AgentState>` exists only with the feature and is
 built by `enable_agent` at REPL start-up, before the read loop. `AgentState`
-holds the transcript, the `Box<dyn AgentModel>` model handle (`None` when
-dormant), the provider label, the recent-turn ring (§5.5), the `--yes`
-consent bits (§20), per-turn give-up bookkeeping, the failed-probe error-class
-tally for the log, and the current turn id. It is never serialised: durable
-memory is the code, its docstrings and preambles (§17).
+holds the agent link (below), the transcript, the recent-turn ring (§5.5),
+the `--yes` consent bits (§20), per-turn give-up bookkeeping, the
+failed-probe error-class tally for the log, and the current turn id. It is
+never serialised: durable memory is the code, its docstrings and preambles
+(§17).
+
+**Activation and model handle are one fact.** `AgentState.link` is an
+`AgentLink` with three arms: off, dormant (with its `DormantReason`), and
+active (with the `Box<dyn AgentModel>`, the provider and the model id). The
+handle exists only in the active arm, so a state that is active without a
+handle, or dormant with one, cannot be constructed. Everything else is a
+projection of the link
+([Principle 07](../arch/principles/07-single-source-of-truth.md)):
+
+- `activation()` derives the every-build `AgentActivation` answer (§6.3).
+  The banner and `agent_turn`'s inactive notice render from it.
+- `is_dormant()` is the classifier's active test (§2.3).
+- `model_mut()` yields the handle only for an active link. `agent_turn` and
+  the repair call (§16.2) reach the model through it.
+
+Tests construct the link directly, so they share this guarantee.
 
 ### 3.5 Output framing
 
@@ -308,22 +324,41 @@ already includes the file supply by then
   exactly. Unset or empty is dormant, and the notice names the variable
   (user ruling, 2026-11-15). An unrecognised value is also dormant, and the
   notice names that value (user ruling, 2026-11-15). No value falls back to a
-  transmitting provider. Today both cases fall back to Anthropic
-  (`build_agent_state_with`'s `unwrap_or_else` and its `_` arm), and both
-  fallbacks are removed.
+  transmitting provider.
 - `anthropic` requires a key and a model id. The model id is configuration,
   never a compiled-in constant.
 - `ollama` is the local, key-free provider, so zero-transmission operation is
   available.
 - `stub` is the deterministic test provider.
-- **State and banner.** `AgentState` records the activation answer once:
-  active (with provider and model), dormant (with its reason) or off
-  (`--no-agent`). One line builder renders the startup banner line from that
+- **State and banner.** `AgentState` derives the activation answer from its
+  agent link (§3.4): active (with provider and model), dormant (with its
+  reason) or off (`--no-agent`). One line builder renders the startup banner line from that
   answer, after the existing banner (`repl/spec/00-cli-invocation.md`
   §0.6.1). The agent-free build renders its line from a constant
   not-built-in answer, which says the agent is not built in (user ruling,
-  2026-11-15), so `repl_prologue` has no `#[cfg]` arm. The exact text is
-  `spec`'s. The line never names a configuration source.
+  2026-11-15), so `repl_prologue` has no `#[cfg]` arm. The line never names a
+  configuration source. The answer type is `src/agent_activation.rs`.
+- **Banner wording.** CLI §0.6.1 fixes the line's content, not its bytes:
+  one line, exactly one state word, provider and model when active, and no
+  configuration source. The built lines meet that content:
+  `agent: active (<provider>, model <id>)`,
+  `agent: dormant (/ask shows what to set)`, `agent: off (--no-agent)` and
+  `agent: not built in`. The design's position is that the wording stays
+  diagnostic, so `spec` need not rule on it. The parentheticals point to
+  what to do next without naming where a setting came from. The e2e cells
+  assert the state word and the provider and model, not the full line. If
+  `spec` later fixes the bytes, only the line builder changes.
+- **The model id renders on one line.** The id is configuration, so it may
+  hold line breaks, escape sequences or other control characters. The line
+  builder writes each control character as its Rust escape (`\n`, `\u{1b}`),
+  so a configured id can neither split the line nor restyle the terminal, and
+  the shown id still identifies the configured one. The provider is a
+  compiled-in label and needs no escaping.
+- **The stub with no model id** prints `agent: active (stub)`. §0.6.1 says an
+  active banner includes the model, but the stub needs none
+  (`repl/spec/17-embedded-agent.md` §17.10.3). This is `spec`'s to settle:
+  either the model appears "when one is configured", or the stub requires a
+  model id. The design reads it as the former.
 
 A further rig provider is one construction arm in `provider.rs`, not an
 `agent_turn` change.

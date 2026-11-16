@@ -1,43 +1,16 @@
-//! FIXME 0916 — a generic trait-method instance RC-manipulates a SCALAR
-//! payload as if it were a heap pointer, and wild-writes when the scalar's
-//! value crosses `NULLARY_TAG_THRESHOLD`.
+//! FIXME 0916 formerly treated a generic trait-method instance's scalar payload
+//! as a heap pointer. At S118 the residual-`Var` payload acquired a guarded RC
+//! increment; values at or above 1024 caused a wild atomic write at payload+8.
+//! The initial TCO-loss hypothesis was falsified: both variants used a loop jump.
 //!
-//! The filing's title ("a self tail call in a `match` arm SIGSEGVs at ~1,000
-//! depth when the scrutinee is a trait-method call") named a mechanism that
-//! `/qa`'s CLIF probe FALSIFIED (`tests/plan/s118-test-plan.md` §11.8.5): TCO
-//! is intact — `go`'s self call compiles to `jump block1(…)` in BOTH variants,
-//! no frame growth, no lost tail call. The ~1,000 "depth threshold" was the
-//! payload VALUE crossing 1024, because `n` counts DOWN from the start value.
+//! S121's concrete monomorphisation (992cb595) removed that exposure from this
+//! program. The trait call now has a concrete Int payload. These guards retain
+//! the 1023/1024 boundary and the plain-defn control at 400,000 iterations; they
+//! do not witness the remaining residual-Var family in FIXME 0903.
 //!
-//! What actually happens: the generic instance `Functor.fmap$user/Option` is
-//! compiled once per type constructor with the `Some` payload typed as a
-//! residual `Var`, and emits a threshold-guarded RC inc on that payload
-//! (`icmp ult v15, 1024; … atomic_rmw.i64 add v15+8`). The payload is a raw
-//! `Int`. When its value is ≥ 1024 the guard reads it as a heap pointer and
-//! performs a wild atomic write at address `payload+8` → SIGSEGV. The
-//! monomorphised control emits zero RC ops on the same payload. The nullary-tag
-//! guard discriminates TAGS from POINTERS; it is categorically unable to
-//! discriminate SCALARS from pointers, so it cannot license RC ops on a slot
-//! whose category is unknown at emission. Attributed to `cranelisp-backend`,
-//! FIXME 0903 family 2, whose consequence is upgraded by this cell from "silent
-//! leak" to memory-unsafe wild write.
-//!
-//! Measured at S118 HEAD, `--run --no-cache`, exit STATUS (the failure mode is
-//! a signal, so a value assertion would never see it):
-//!
-//! | scrutinee                | n=1023 | n=1024 | n=2000 | n=400000 |
-//! |--------------------------|--------|--------|--------|----------|
-//! | trait method `fmap`      | exit 7 | SIGSEGV| SIGSEGV| —        |
-//! | plain `defn fmapo`       | exit 7 | exit 7 | exit 7 | exit 7   |
-//!
-//! The three cells below are that table's discriminating corners. The pair is
-//! what makes the finding legible: a lone deep-recursion RED reads as "deep
-//! recursion overflows the stack", which is precisely what this is NOT — the
-//! plain-`defn` control survives 400,000 iterations of the same shape, and the
-//! subject dies on its FIRST iteration at n=1024 while surviving n=1023.
-//!
-//! Free-standing per root `CLAUDE.md` §"Stdlib separation": every name is
-//! either imported from `primitives` or defined in the fixture.
+//! Historical S118 observations, --run --no-cache:
+//! trait fmap returned 7 at n=1023 and SIGSEGV at n=1024 and n=2000;
+//! plain fmapo returned 7 through n=400000.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -99,7 +72,7 @@ fn assert_exited_cleanly(out: CrOutput, what: &str) {
 // is the filing's original observation (the symptom).
 // spec: spec/12-runtime.md §12.3.1 — the runtime manages heap values; a scalar
 // is not one, and nothing may dereference or RC it as if it were.
-// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev
+// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev fixed=S121/992cb595
 #[test]
 fn trait_method_instance_does_not_rc_a_scalar_payload_as_a_pointer() {
     for n in [1024, 2000] {
@@ -115,12 +88,11 @@ fn trait_method_instance_does_not_rc_a_scalar_payload_as_a_pointer() {
 }
 
 // The BOUNDARY control — one below the threshold, same subject program in every
-// other respect. GREEN at HEAD, and that is what makes the cell above a
-// value-threshold finding rather than a depth finding: 1023 iterations of the
-// identical shape complete cleanly.
+// other respect. It passed at S118 while the subject failed, distinguishing
+// the payload-value threshold from recursion depth.
 // spec: spec/12-runtime.md §12.3.1 — the runtime manages heap values; a scalar
 // is not one, and nothing may dereference or RC it as if it were.
-// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev
+// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev fixed=S121/992cb595
 #[test]
 fn trait_method_instance_is_clean_just_below_the_nullary_tag_threshold() {
     assert_exited_cleanly(
@@ -132,12 +104,11 @@ fn trait_method_instance_is_clean_just_below_the_nullary_tag_threshold() {
 }
 
 // The MONOMORPHISED control — the same body as a plain `defn`, 400,000
-// iterations, 400x past the depth the filing read as a stack threshold. GREEN
-// at HEAD: it emits zero RC ops on the payload, and the self tail call is a
-// jump in both variants, so this is also a standing §12.5 exercise.
+// iterations, 400x past the depth the filing read as a stack threshold. It
+// passed at S118: it emitted no payload RC, and both self calls were jumps.
 // spec: spec/12-runtime.md §12.5 — self-recursive tail calls run in constant
 // stack space and MUST NOT stack-overflow.
-// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev
+// defect: class=scalar-as-pointer locus=crates/cranelisp-backend generic trait-method instance, residual-var slot RC guard found=S118 owner=/dev fixed=S121/992cb595
 #[test]
 fn plain_defn_scrutinee_is_clean_at_400k_iterations() {
     assert_exited_cleanly(

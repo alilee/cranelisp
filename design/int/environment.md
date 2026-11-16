@@ -1,7 +1,9 @@
 # Process environment: file supply and linked parameters
 
 Owner: `design` (int). Subordinate to [the master](int.md). Status: designed
-in S123 Phase 3 to the user's rulings of 2026-11-15; not implemented.
+in S123 Phase 3 to the user's rulings of 2026-11-15. The supply (§2) is built
+in `src/env_files.rs` (S123 W3) and checked against source by `design` (int);
+it awaits review and the suite run.
 
 This document covers how the compiler process gets its environment before
 anything reads it, and how a `--link` executable carries its runtime switches.
@@ -24,7 +26,7 @@ anything reads it, and how a `--link` executable carries its runtime switches.
   configuration value is passed between crates
   ([Principle 07](../arch/principles/07-single-source-of-truth.md),
   [Principle 02](../arch/principles/02-narrow-interfaces.md)).
-- **Home.** One binary-private module, proposed `src/env_files.rs`. It holds the
+- **Home.** One binary-private module, `src/env_files.rs`. It holds the
   admission predicate, the parser, file location, precedence and the one
   `set_var` loop. `main.rs` calls it once.
 - **Repeated reads stay as written.** Nothing writes the environment after
@@ -72,7 +74,10 @@ workers start inside step 3 or later.
    defines it (even as an empty value), keep that. Otherwise take the project
    file's value, else the user file's. Within one file, the last occurrence
    wins.
-5. Set each chosen value with one `set_var` loop.
+5. Refuse the plan if a chosen value contains a NUL byte (§2.5). The check
+   covers every chosen value before the first is set, so a refusal leaves
+   the process environment untouched.
+6. Set each chosen value with one `set_var` loop.
 
 Children inherit the result. That includes the system linker under `--link`,
 `/sh` and the test runner's child processes, which are started with the
@@ -97,15 +102,22 @@ The controls come from the process environment only (CLI §0.8):
 
 | Control | Effect |
 |---|---|
-| `CRANELISP_NO_ENV=1` | Read neither file. |
-| `CRANELISP_ENV_FILE=<path>` | Read this path instead of the project `.env`. |
-| `CRANELISP_USER_ENV_FILE=<path>` | Read this path instead of the user file. |
+| `CRANELISP_NO_ENV=1` | Read neither file. Only the exact value `1` disables; any other value, `true` included, leaves both files read. |
+| `CRANELISP_ENV_FILE=<path>` | Read this path instead of the project `.env`. Empty is unset. |
+| `CRANELISP_USER_ENV_FILE=<path>` | Read this path instead of the user file. Empty is unset. |
 
+- **Exactly `1` is the reading.** It is how §0.7 defines the one other `=1`
+  switch, `CRANELISP_NO_LENIENT`. The residual is a user who writes `true`
+  and still gets the files. That is acceptable: the files supply only what the
+  shell could, and the agent still needs an explicit provider to transmit.
+  Accepting other spellings would need a list of truthy values that no other
+  switch has. CLI §0.8 does not say "exactly" (§5).
 - The controls are `CRANELISP_`-prefixed but excluded from admission (§2.6),
   so a file line that sets one is ignored. A control's answer never depends
   on reading a file.
 - An override path that does not exist is a missing file, so it is silent,
-  like the default location.
+  like the default location. A path whose parent is not a directory also
+  does not exist.
 - The suite must never inherit a developer's files. Which repository-level
   declaration sets `CRANELISP_NO_ENV` for it is `qa`'s choice, and it lands in
   the same change-set as the loader (arch §2.1). Loader tests clear it in the
@@ -124,24 +136,49 @@ defines nothing beyond it:
   removed. A ` #` begins a comment;
 - a single-quoted value is literal;
 - a double-quoted value may span lines and understands the escapes `\n`,
-  `\"` and `\\`;
+  `\"` and `\\`. Any other backslash sequence is kept as written;
+- after a closing quote, only whitespace and an optional `#` comment may
+  follow;
 - no interpolation. `${NAME}` is literal text.
 
 Dialects differ on interpolation and inline comments. This set is the part
-the common implementations agree on. Stating it as a user-facing contract is
-`spec`'s (§5).
+the common implementations agree on. CLI §0.8 adopts it as the user-facing
+contract (user ruling, 2026-11-15).
 
 **A malformed file is a startup error, in every mode** (CLI §0.8). Malformed
 means a line that is not blank, a comment or an assignment, an invalid key,
-or an unterminated quote. This holds for every line, not only for admitted
-keys, because the ruling is about the file. A `.env` shared with another tool
-must therefore stay inside this syntax.
+an unterminated quote, or text after a closing quote other than a comment.
+This holds for every line, not only for admitted keys, because the ruling is
+about the file. A `.env` shared with another tool must therefore stay inside
+this syntax.
+
+- **Text after a closing quote is refused** (`KEY='x' junk`). Dialects
+  disagree on it: some drop the tail, some join it to the value. Giving it
+  either meaning would define syntax beyond the common core, and a later
+  narrowing would break files that now load. A refusal can be widened later
+  without breaking anyone. A comment cannot be confused with the value once
+  the quote has closed, so no blank is needed before its `#`.
 
 **An unreadable file is a startup error.** Unreadable means the file exists
 but cannot be opened or read (permissions, a directory, invalid UTF-8).
 
-Both errors name the file and, when malformed, the line. They never contain a
-value (§2.7).
+**A chosen value the process environment cannot hold is a startup error.**
+The dotenv core admits a literal NUL byte in a value, but the process
+environment cannot hold one, and `set_var` would panic with the value in its
+message. So startup stops with
+`<path>:<line>: the value of KEY contains a NUL byte, which the process environment cannot hold`.
+
+- Only a value that would be set is refused: one chosen by §2.2 step 4. A NUL
+  under a foreign key, under a key the process environment defines, or on a
+  line a later occurrence or the project file overrides is ignored, like the
+  rest of that line's value.
+- This differs from malformed, which applies to every line, because the
+  fault is not in the syntax. It exists only where the value meets the
+  process environment.
+- The first refused key in key order is reported.
+
+All three errors name the file and, when the fault is on a line, the line.
+They never contain a value (§2.7).
 
 - No `dotenv` crate is used. The available crates expand variables and set the
   environment themselves. That would make their dialect our observable
@@ -159,7 +196,8 @@ switches without a registry.
 - **Protected:** values, because `ANTHROPIC_API_KEY` and `CRANELISP_AGENT_KEY`
   are secrets.
 - **Permitted in diagnostics:** the file path, the line number and the key
-  name.
+  name. The NUL refusal (§2.5) names its key and never its value, so a
+  corrupted secret is located without being shown.
 - Startup prints no list of loaded files and never names which file supplied
   a setting. The agent banner reports state, provider and model only
   ([agent §6.3](agent.md#63-provider-selection)).
@@ -220,7 +258,7 @@ switches without a registry.
 
 ## 4. Module evidence (`dev`)
 
-Unit rows in the proposed `src/env_files.rs`, one per scenario class:
+Unit rows in `src/env_files.rs`, one per scenario class:
 
 1. Admission: prefix keys and the three named keys are admitted; `PATH`,
    `LD_LIBRARY_PATH` and the three loader controls are not.
@@ -229,24 +267,39 @@ Unit rows in the proposed `src/env_files.rs`, one per scenario class:
 3. Syntax: `export`, comments, blank lines, inline comments, both quote
    styles, a multi-line double-quoted value and its escapes, and `${X}` kept
    literal.
-4. Malformed and unreadable: an unterminated quote, an invalid key and a
-   non-assignment line, each on a foreign key as well as an admitted one, are
+4. Malformed and unreadable: an unterminated quote, an invalid key, text
+   after a closing quote and a non-assignment line, each on a foreign key as
+   well as an admitted one, are
    located errors whose messages omit the value. A directory or invalid UTF-8
    at a file location is an unreadable error. A missing file, default or
    overridden, is silent.
 5. Location: `XDG_CONFIG_HOME` over `HOME`; `CRANELISP_ENV_FILE` replaces only
    the project file and `CRANELISP_USER_ENV_FILE` only the user file;
-   `CRANELISP_NO_ENV` reads neither.
+   `CRANELISP_NO_ENV=1` reads neither, and another value such as `0` reads both.
+6. NUL refusal: a chosen NUL value refuses the whole plan with an error that
+   names its file, line and key and omits the value. A NUL under a foreign
+   key, under a key the process environment defines, or on an overridden
+   line is not refused.
 
-The parser and resolution are pure functions over strings and an injected
+The parser, resolution and refusal are pure functions over strings and an injected
 environment view, so these rows set no process environment. Only the final
 `set_var` loop touches the process, and it has no branches to test.
 
 ## 5. Left to the owning roles
 
-- **The dialect.** CLI §0.8 says "dotenv syntax". §2.5 is the design's
-  reading. Whether `spec` states the accepted set is `spec`'s question for the
-  user. A wider dialect changes only the parser.
+CLI §0.8 leaves three of this design's readings unstated. `spec` should either
+record them or return them to the user:
+
+- **`CRANELISP_NO_ENV` takes exactly `1`** (§2.4), as §0.7 states for
+  `CRANELISP_NO_LENIENT`.
+- **Text after a closing quote is malformed** (§2.5). §0.8's malformed list
+  does not include it, although its "MUST use the following syntax" already
+  excludes such a line.
+- **A chosen value containing a NUL byte stops startup** (§2.5). §0.8 names
+  only malformed and unreadable files as startup errors, and its syntax does
+  not exclude a NUL, so a reader of §0.8 would expect such a file to load.
+
+A wider dialect changes only the parser.
 
 ## 6. Potential extensions
 

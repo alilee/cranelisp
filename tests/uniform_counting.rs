@@ -1,4 +1,5 @@
 //! S123 U-1 to U-3 and U-5, through public process boundaries.
+//! Before U′, forwarded aliases were freed early and forwarding joins leaked.
 #[path = "helpers/mod.rs"]
 mod helpers;
 use helpers::marginal::{Child, MarginalPair};
@@ -54,7 +55,7 @@ fn tail(arg: &str) -> String {
 const OWNED: &str = "(let [t (match p [b b]) u (vec-push [] 0)] alias)";
 
 // spec: spec/12-runtime.md §12.3.1 — U-1: a forwarded alias stays live.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn tail_heap_free_alias_run() {
     check(
@@ -67,7 +68,7 @@ fn tail_heap_free_alias_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-1: a forwarded alias stays live.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn tail_shadowed_alias_run() {
     check(
@@ -86,7 +87,7 @@ fn tail_owned_binder_control_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn forwarding_match_balances_run() {
     check(
@@ -99,7 +100,7 @@ fn forwarding_match_balances_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn forwarding_let_balances_run() {
     check(
@@ -112,8 +113,8 @@ fn forwarding_let_balances_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler found=S122 owner=/dev
-// ACT-1028: the counting mechanism remains unattributed.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler found=S122 owner=/dev fixed=S123/3bdf398e
+// ACT-1028 leaked at the checkpoint; U′ removed the per-shape counting paths.
 #[test]
 fn forwarding_set_balances_run() {
     check(
@@ -126,7 +127,7 @@ fn forwarding_set_balances_run() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-1: a forwarded alias stays live.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn tail_heap_free_alias_link() {
     check(
@@ -139,7 +140,7 @@ fn tail_heap_free_alias_link() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-1: a forwarded alias stays live.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn tail_shadowed_alias_link() {
     check(
@@ -158,7 +159,7 @@ fn tail_owned_binder_control_link() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn forwarding_match_balances_link() {
     check(
@@ -171,7 +172,7 @@ fn forwarding_match_balances_link() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn forwarding_let_balances_link() {
     check(
@@ -184,8 +185,8 @@ fn forwarding_let_balances_link() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler found=S122 owner=/dev
-// ACT-1028: the counting mechanism remains unattributed.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler found=S122 owner=/dev fixed=S123/3bdf398e
+// ACT-1028 leaked at the checkpoint; U′ removed the per-shape counting paths.
 #[test]
 fn forwarding_set_balances_link() {
     check(
@@ -198,7 +199,7 @@ fn forwarding_set_balances_link() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-1: a forwarded alias stays live.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn tail_heap_free_alias_repl() {
     check(
@@ -211,7 +212,7 @@ fn tail_heap_free_alias_repl() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-1: a forwarded alias stays live.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn tail_shadowed_alias_repl() {
     check(
@@ -230,7 +231,7 @@ fn tail_owned_binder_control_repl() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn forwarding_match_balances_repl() {
     check(
@@ -243,7 +244,7 @@ fn forwarding_match_balances_repl() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/fn_compiler.rs::value_provenance_with_calls found=S122 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn forwarding_let_balances_repl() {
     check(
@@ -256,8 +257,8 @@ fn forwarding_let_balances_repl() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-2: a forwarding join releases once.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler found=S122 owner=/dev
-// ACT-1028: the counting mechanism remains unattributed.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler found=S122 owner=/dev fixed=S123/3bdf398e
+// ACT-1028 leaked at the checkpoint; U′ removed the per-shape counting paths.
 #[test]
 fn forwarding_set_balances_repl() {
     check(
@@ -394,8 +395,8 @@ fn lead_r1_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 r1, independently observed subject.
-// Checkpoint face: RED, USE-AFTER-FREE at f5822487.
-// defect: class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias found=S123 owner=/dev
+// At f5822487 this stopped with USE-AFTER-FREE.
+// defect: class=binder-name-underkey locus=crates/cranelisp-backend/src/heap.rs::register_alias found=S123 owner=/dev fixed=S123/3bdf398e
 // U′ deleted the name-keyed alias-map seam; read compiler/ownership_plan.rs today.
 #[test]
 fn lead_r1_subject() {
@@ -422,9 +423,9 @@ fn lead_l2_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 l2, independently observed subject.
-// Checkpoint face: RED, USE-AFTER-FREE at f5822487.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev
-// Attribution remains provisional; the armed stop is the observed face.
+// At f5822487 this stopped with USE-AFTER-FREE.
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev fixed=S123/3bdf398e
+// The historical locus was provisional; the armed stop established the fault.
 #[test]
 fn lead_l2_subject() {
     check(
@@ -450,9 +451,9 @@ fn lead_l6_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 l6, independently observed subject.
-// Checkpoint face: RED, USE-AFTER-FREE at f5822487.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev
-// Attribution remains provisional; the armed stop is the observed face.
+// At f5822487 this stopped with USE-AFTER-FREE.
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev fixed=S123/3bdf398e
+// The historical locus was provisional; the armed stop established the fault.
 #[test]
 fn lead_l6_subject() {
     check(
@@ -478,9 +479,9 @@ fn lead_l5_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 l5, independently observed subject.
-// Checkpoint face: RED, STALE RC DEC at f5822487.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev
-// Attribution remains provisional; the armed stop is the observed face.
+// At f5822487 this stopped with STALE RC DEC.
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev fixed=S123/3bdf398e
+// The historical locus was provisional; the armed stop established the fault.
 #[test]
 fn lead_l5_subject() {
     check(
@@ -512,8 +513,8 @@ fn lead_l4_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 L4: duplicate tail arguments retain both references.
-// Checkpoint face: RED, STALE RC DEC at f5822487 plus W2 work.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev
+// At f5822487 plus the initial W2 work this stopped with STALE RC DEC.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn lead_l4_direct_subject() {
     check(
@@ -534,8 +535,8 @@ fn lead_l4_branch_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 L4: a branch forwards a live tail argument.
-// Checkpoint face: RED, STALE RC DEC at f5822487 plus W2 work.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev
+// At f5822487 plus the initial W2 work this stopped with STALE RC DEC.
+// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev fixed=S123/3bdf398e
 #[test]
 fn lead_l4_branch_subject() {
     check(
@@ -639,9 +640,9 @@ fn lead_l10_control() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — U-3 l10, independently observed subject.
-// Checkpoint face: RED, USE-AFTER-FREE at f5822487.
-// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev
-// Attribution remains provisional; the armed stop is the observed face.
+// At f5822487 this stopped with USE-AFTER-FREE.
+// defect: class=uaf locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_tail_self_call found=S123 owner=/dev fixed=S123/3bdf398e
+// The historical locus was provisional; the armed stop established the fault.
 #[test]
 fn lead_l10_subject() {
     check(

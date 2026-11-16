@@ -52,8 +52,26 @@ fn backstop_report_is_the_diagnostic_with_its_own_status() {
     assert_eq!(backstop.exit_status(), 70);
 }
 
+// spec: design/intrinsics/process-lifecycle.md §1.1 — switch-install misuse
+// reports a located configuration message, not a language panic.
+#[test]
+fn configuration_report_names_its_site_without_the_panic_prefix() {
+    let fault = Fault::Configuration {
+        site: "cranelisp_install_runtime_switches",
+        detail: "a runtime switch was read before the install",
+    };
+    let report = fault.report();
+    assert_eq!(
+        report,
+        "error: runtime configuration: cranelisp_install_runtime_switches: \
+         a runtime switch was read before the install\n"
+    );
+    assert!(!report.starts_with(PANIC_REPORT_PREFIX));
+    assert_eq!(fault.exit_status(), PANIC_EXIT_STATUS);
+}
+
 /// Every report kind, each carrying `text` in every interpolated field.
-fn reports_carrying(text: &str) -> [String; 4] {
+fn reports_carrying(text: &str) -> [String; 5] {
     [
         Fault::Panic(text).report(),
         Fault::Dispatch {
@@ -63,6 +81,11 @@ fn reports_carrying(text: &str) -> [String; 4] {
         .report(),
         Fault::RuntimeDefect(text).report(),
         Fault::BackstopExpired(text).report(),
+        Fault::Configuration {
+            site: text,
+            detail: text,
+        }
+        .report(),
     ]
 }
 
@@ -124,6 +147,7 @@ fn a_single_line_payload_is_reported_verbatim_in_every_kind() {
             format!("platform fn `{text}` dispatch failed: {text}\n"),
             format!("error: runtime defect: {text}\n"),
             format!("{text}\n"),
+            format!("error: runtime configuration: {text}: {text}\n"),
         ]
     );
 }

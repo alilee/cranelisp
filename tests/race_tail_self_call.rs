@@ -19,7 +19,7 @@ fn assert_immediate_winner(body: &str) {
 }
 
 // spec: spec/10-io.md §10.12.8 — the first completed race branch supplies the value.
-// defect: class=tail-context-leak locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_builtin_fn_call found=S123 owner=/dev
+// defect: class=tail-context-leak locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_builtin_fn_call found=S123 owner=/dev fixed=S123/3bdf398e
 // U-18: the self-call jumped to the enclosing loop before the race could be
 // built (exit 7 instead of 99).
 #[test]
@@ -28,7 +28,7 @@ fn race_with_self_call_first_returns_the_immediate_winner() {
 }
 
 // spec: spec/10-io.md §10.12.8 — either race operand can be the first to complete.
-// defect: class=tail-context-leak locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_builtin_fn_call found=S123 owner=/dev
+// defect: class=tail-context-leak locus=crates/cranelisp-backend/src/compiler/apply.rs::compile_builtin_fn_call found=S123 owner=/dev fixed=S123/3bdf398e
 // U-18 also affected the second operand; a correction confined to the first
 // operand would miss this case.
 #[test]

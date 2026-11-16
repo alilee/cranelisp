@@ -153,20 +153,16 @@ impl CompilerSession {
             warnings: Vec::new(),
             pending_cascade_reports: Vec::new(),
             entry_module,
-            // Agent starts unconfigured; `enable_agent` wires it in REPL mode
-            // when `--agent` is set + the `agent` feature is built (S88 W3).
+            // Unconfigured outside the REPL; the REPL prologue calls
+            // `enable_agent` before the startup banner.
             #[cfg(feature = "agent")]
             agent: None,
         })
     }
 
-    /// Enable the embedded agent for this (REPL) session (Sprint 88 Phase 5
-    /// Wave 3). Threads the resolved `--agent` runtime toggle (`main.rs` S1
-    /// `_agent_enabled`) into the agent state: selects + constructs the runtime
-    /// provider (anthropic / ollama / stub by config — `agent.md §6.3/§6.4`),
-    /// or leaves the agent dormant when no provider is reachable. The agent is
-    /// REPL-only, so this is called from `main.rs`'s REPL arm only. Idempotent
-    /// is not required (called once at startup).
+    /// Record the agent state for this REPL session: off when `enabled` is
+    /// false (`--no-agent`), else the configured provider or dormant
+    /// (`agent.md` §6.3–§6.4). Called once, from `main.rs`'s REPL arm.
     #[cfg(feature = "agent")]
     pub fn enable_agent(&mut self, enabled: bool, auto_accept: bool) {
         self.agent = Some(crate::agent::provider::build_agent_state_with(
@@ -3192,6 +3188,8 @@ impl CompilerSession {
             stub_entry_symbol,
             &platform_layout_checks,
             &result_exit,
+            // After the environment supply, so file-supplied values bake too.
+            &cranelisp_intrinsics::runtime_switches::capture_runtime_switches(),
         )?;
 
         // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.

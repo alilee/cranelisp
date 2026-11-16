@@ -967,8 +967,7 @@ impl CompilerSession {
     /// as an assistant prose turn). Used ONLY by the silent repair loop.
     fn agent_complete_for_repair(&mut self, req: &AgentRequest) -> Option<RepairResponse> {
         let state = self.agent.as_mut()?;
-        let model = state.model.as_mut()?;
-        match model.complete(req) {
+        match state.model_mut()?.complete(req) {
             Ok(ModelResponse::ToolCalls(calls)) => calls
                 .into_iter()
                 .find(|c| c.name.trim().trim_start_matches('/') == SUBMIT_TOOL)
@@ -1295,18 +1294,14 @@ mod tests {
     /// Wire a session's agent to a stub model (with `auto_accept`), so a write
     /// turn can drive `run_submit` deterministically with zero network.
     fn session_with_agent(s: &mut CompilerSession, script: Vec<ModelResponse>, auto_accept: bool) {
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(StubModel::new(script))),
-            provider_label: "stub (test)".to_string(),
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(StubModel::new(script)),
+                provider: "stub",
+                model_id: None,
+            },
             auto_accept,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+        ));
     }
 
     fn submit_call(form: &str) -> ToolCallRequest {

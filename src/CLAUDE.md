@@ -196,13 +196,24 @@ Test discovery is mounted by `bootstrap.rs` as a `primitives` entry, not by a sp
 
 ## Embedded agent (`src/agent/`)
 
-The embedded LLM advisor lives entirely in `src/agent/`, fully `#[cfg(feature = "agent")]` — **feature-off the module does not exist and the default `cargo build` / `cargo nextest run` never compile rig**, so the standard build stays agent-free (suite timing: [root testing guidance](../CLAUDE.md#testing)). `design/int/agent.md` is the design.
+The embedded LLM advisor lives entirely in `src/agent/`, fully `#[cfg(feature = "agent")]`. The `agent` feature is in the default set; `--no-default-features` builds the supported agent-free binary, in which the module does not exist. `design/int/agent.md` is the design.
 
-- **Feature + deps.** `agent = ["dep:rig-core", "dep:tokio", …]` (root `Cargo.toml`). `rig-core` is optional, `default-features = false`, with the smallest transport set that compiles the completion API + the anthropic/ollama providers. **native-tls, NOT rustls:** the rustls path pulls `aws-lc-rs` (a heavy C TLS backend, ~30 MB + a C toolchain); native-tls links the system OpenSSL. tokio is current-thread only.
+- **Feature + deps.** `agent = ["dep:rig-core", "dep:tokio", …]` (root `Cargo.toml`). `rig-core` is optional, `default-features = false`, with the smallest transport set that compiles the completion API + the anthropic/ollama providers. **native-tls, NOT rustls:** the rustls path pulls `aws-lc-rs` (a heavy C TLS backend, ~30 MB + a C toolchain); native-tls links the system OpenSSL, so a default build needs OpenSSL headers and `pkg-config`. tokio is current-thread only.
 - **The `AgentModel` membrane.** rig's `CompletionModel` is NOT object-safe in 0.39.0, so a thin object-safe internal trait `AgentModel` (`agent/types.rs`) is the handle; rig's `CompletionModel` is the wire boundary one layer below, inside `provider.rs`. The lib name is `rig_core` (imports are `use rig_core::…`).
 - **Module map.** `types.rs` (neutral vocabulary + `AgentModel` + `AgentState`); `provider.rs` (runtime provider selection by `CRANELISP_AGENT_PROVIDER` + the rig membrane + tokio bridge); `request.rs` (the one place coupled to rig's request/message/tool-call shapes); `harvest.rs` (push-context assembler); `primer.rs` + `primer.txt` (always-on language primer, `include_str!`); `pull.rs` (private read probes + gated writes); `stub.rs` (the deterministic test `AgentModel`); `mod.rs` (the classifier + `agent_turn` model↔tool loop).
-- **Wiring.** `CompilerSession.agent: Option<AgentState>` (`#[cfg]`-gated, zero bytes feature-off). `main.rs` threads the resolved `--agent` flag into `s.enable_agent(…)` in the REPL arm only (agent is REPL-only). Dormant (no reachable provider) ⇒ `/ask` renders the U6 notice.
-- **Testing.** The stub is selected e2e by `CRANELISP_AGENT_PROVIDER=stub` + `CRANELISP_AGENT_STUB_SCRIPT=<fixture>` (a line DSL). Lane A e2e lives in `tests/agent.rs` (`--features agent`); request-content assertions are `#[cfg(test)]` unit tests in `agent/mod.rs`. Run the isolated e2e lane with `bash tests/scripts/run-agent-lane.sh`. That launcher does not execute the feature-gated module tests; their execution must be allocated separately.
+- **Activation.** `main.rs` enables the agent in the REPL arm unless `--no-agent`, through `s.enable_agent(…)`. `provider.rs` has no default provider: unset, empty or unrecognised `CRANELISP_AGENT_PROVIDER` is dormant, and nothing falls back to a transmitting provider.
+- **One activation answer.** `AgentState.link` (`AgentLink`) is off, dormant (with its reason) or active, and only the active arm holds the model handle. `AgentState::activation()` projects it onto `AgentActivation` (`src/agent_activation.rs`, present in every build), from which the startup banner line and the `/ask` dormant notice both render; the agent-free build answers `NotBuiltIn`. Do not add a second state carrier or name a configuration source in either line.
+- **Wiring.** `CompilerSession.agent: Option<AgentState>` (`#[cfg]`-gated). The classifier diverts input only when the agent is active.
+- **Testing.** The stub is selected e2e by `CRANELISP_AGENT_PROVIDER=stub` + `CRANELISP_AGENT_STUB_SCRIPT=<fixture>` (a line DSL). The feature-on e2e cells in `tests/agent.rs` and the module tests run in the default suite. `bash tests/scripts/run-agent-lane.sh` runs the isolated agent lane; its `--agent-free` mode runs the agent-free configuration in its own target directory.
+
+## Environment supply (`src/env_files.rs`)
+
+`design/int/environment.md` is the design; `repl/spec/00-cli-invocation.md` §0.8 the requirement.
+
+- **Order is the soundness argument.** `main` runs `parse_args` (pure), then `env_files::supply`, then everything that reads the environment or starts a thread. `set_var` is sound only while no other thread exists. Do not add an environment read or a thread spawn to `parse_args` or the supply, or move a reader ahead of the supply.
+- **The binary is the only supplier**; every reader keeps reading `std::env`. No library crate reads an environment file.
+- **Diagnostics never carry a value.** A supply error names the file and line only.
+- **Linked executables.** `link_by_name` embeds `capture_runtime_switches()`'s opaque bytes; the startup stub's first call installs them. The binary never parses the capture or names a runtime switch.
 
 ## Testing
 

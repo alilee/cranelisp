@@ -117,10 +117,17 @@ pub(crate) mod thread_util;
 pub(crate) mod watch;
 pub(crate) mod worker;
 
+// The agent's activation answer and its banner line, in every build: an
+// agent-free build answers "not built in" (design/int/agent.md §6.3).
+#[cfg_attr(
+    not(feature = "agent"),
+    allow(dead_code, reason = "an agent-free build constructs only `NotBuiltIn`")
+)]
+pub(crate) mod agent_activation;
+
 // agent — the embedded LLM advisor, entirely `#[cfg(feature = "agent")]`:
-// feature-off ⇒ this module does not exist and the default build is
-// byte-identical (design/int/agent.md §1, §3.1; repl/spec.md §17.1;
-// src/CLAUDE.md §"Embedded agent"). Holds the dispatch classifier
+// feature-off ⇒ this module does not exist; that is the agent-free build
+// (design/int/agent.md §1, §3.1; src/CLAUDE.md §"Embedded agent"). Holds the dispatch classifier
 // (`classify_for_agent`) + the live `agent_turn` model↔tool loop (provider
 // selection, harvester, primer, pull-as-visible-commands). The `rig-core`
 // optional dep rides this feature.

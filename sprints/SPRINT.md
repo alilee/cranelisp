@@ -300,6 +300,30 @@ separate approval.
 | 5 W2 | `test` | C-10b, C-10c, U-18 retag, U-19 RED pair | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `7c2137d0`; 20 pass, 12 intended U-19 REDs; no U-19 filing yet |
 | 5 W2 | `qa` | accept the last W2 test changes; file U-19 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; U-19 filed as ACT-1050; C-10b and U-19 accepted; C-10c name and U-18 comments returned |
 | 5 W2 | `test` | C-10c rename; U-18 past-tense comments | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `a482f1e5`; `qa` accepted |
+| 5 W3 | `test` | W2 `fixed=` stamps (`3bdf398e`); E-0 to E-6, B-1 to B-4, A-1 to A-6 test-first | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `785f2933`; 41 stamps (95/95); stopped at E-0, whose detection proof cannot discriminate |
+| 5 W3 | `qa` | correct E-0 detection proof; accept the stamps | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; E-0 split into two plants, one per export; all 41 stamps accepted |
+| 5 W3 | `test` | W3 evidence from the corrected E-0 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `28651769`; both E-0 declaration plants detected; isolation plants and masked clause proofs owed after `dev` |
+| 5 W3 | `qa` | accept W3 evidence | claude-opus-5-5 | medium | primary (Claude Code subagent, resumed) | delivered 2026-11-16; most accepted; three groups returned (`HOME` leg setup, banner wording assumption, dormant reason location); owed-proof order set |
+| 5 W3 | `test` | three returned W3 groups | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `e0c531d0`; environment 4 pass/24 RED; agent lanes as expected |
+| 5 W3 | `dev` | intrinsics: runtime switch module, P8, core-count pool | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; 22 switches through one module; 395 tests pass; `public-api.txt` +3 as P8 |
+| 5 W3 | `dev` | `src/`: loader, link-time embedding, agent default and banner, Cargo default features | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; 28/28 environment cells; three agent lanes pass; 1,235 root tests; transcript cells red on the new banner |
+| 5 W3 | `test` | E-0 isolation plants; masked-clause rechecks; C-6 banner re-baseline | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; both E-0 plants fired; environment 28/28, agent 91/91, agent-free 23/23; C-6 13/13; eval self-check 18/18 |
+| 5 W3 | `design` | int: `NO_ENV` value, extra malformed reason, banner wording, `AgentState` residual | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; exactly `1`; extra reason adopted; banner wording diagnostic; `AgentState` must be structural |
+| 5 W3 | `dev` | `src/`: `AgentState` agreement by construction; stub model reading | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; `AgentLink` single field, structural; 3,973 root tests; three agent lanes pass |
+| 5 W3 | `test` | A-1 duplicate-line and provider assertions | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `e045de20`; both planted faults caught; three lanes pass |
+| 5 W3 | `design` | int: `agent.md` §3.4 as built | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16 |
+| 5 W3 | `review` ×2 | intrinsics; `src/` with `Cargo.toml` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; intrinsics: one advisory; `src/`: required R1 (NUL value panics and prints the credential), R2 (multi-line model splits the banner), R3 (root API widened beyond the packet), nit R4 |
+| 5 W3 | `review` | finding-scoped re-review: R3 under P14 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `649a5de0`; no finding survives; R3 closed |
+| 5 W3 | `qa` | W3 adequacy, full suite | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate with three §0.8 assertion gaps; suite 6,960 pass / 33 fail (32 known guards, 1 timing race filed ACT-1051); no guard turned green |
+| 5 W3 | `dev` | `src/`: the three §0.8 loader assertions | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; four `env_files` tests, green first run (implementation conforms); unit 27/27, environment 32/32 |
+| 5 W3 | `qa` | §0.8 annotations for the new tests | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; gaps closed; §0.8 heading `[Tested]`; both checkers exit 0 |
+| 5 W3 | `spec` | CLI §0.8: the three agreed loader readings | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `bc8f3826`; all three recorded in `repl/spec/00-cli-invocation.md` §0.8; checker clean; `qa` reassesses evidence |
+| 5 W3 | `dev` | `src/`: P14 crate-private `AgentState` and builders | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; `build_agent_state` deleted, test callers moved; both builds warning-free; agent lanes 91/91, 91/91, 23 pass; R3's `agent_activation` part was already crate-private |
+| 5 W3 | `test` | REDs for `src/` review R1, R2 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `c5861cfa`; both RED (value leaked, exit 101; two state lines); controls pass |
+| 5 W3 | `dev` | `src/`: review R1–R4 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; R1 values refused before any setter; R2 one-line banner; R3 narrowed except `AgentState` field removal; environment 32/32; three lanes pass |
+| 5 W3 | `arch` | ruling: `AgentState` public field removal | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; gate applies; packet row P14 (make `AgentState` and its builders crate-private) approved by the user 2026-11-16 |
+| 5 W3 | `review` | finding-scoped re-review: `src/` R1–R4 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; no required finding survives; one advisory comment |
+| 5 W3 | `design` | int: NUL refusal and one-line banner records | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; three §0.8 readings for `spec` and the user |
 | 5 W2 | `review` | finding-scoped: the `race` fix | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; no scoped finding; separate leak observed (ignored heap `bind` result) |
 | 5 W2 | `arch` | delete FIXME 0891 | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; verified at source and deleted; 0903 records its two remaining obligations |
 | 5 W2 | `design` | backend: R2 operand order, R3 wrappers | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; R2 one shared order definition (§3.2); R3 constrained fixed template (§3.3) |
@@ -469,6 +493,15 @@ accepting every recommendation presented with it:
   wording); `spec` records them at the start of Phase 5.
 - **Dispatch faults** report without the panic prefix, so a test child shows
   them as a failed test naming the cause.
+
+### User rulings in W3, 2026-11-16
+
+- **P14 approved** as proposed: `AgentState` and `build_agent_state_with`
+  become crate-private, and `build_agent_state` leaves the public surface.
+- **CLI §0.8 readings agreed** (`design/int/environment.md` §5):
+  `CRANELISP_NO_ENV` takes exactly `1`; text after a closing quote is
+  malformed; a chosen value containing a NUL byte stops startup without
+  printing the value. `spec` records them.
 
 ## Waves (Phase 4 proposal)
 
@@ -794,3 +827,20 @@ judges adequacy for the Phase 5 → 6a checkpoint.
   FIXME 0903 (no program reaches its guard), the §3.4 item 1 corpus
   measurement, the R2/R3 planted-run logs not kept, and FIXME 0889's possible
   fix to re-measure.
+- W2 committed as `3bdf398e`.
+- W3, 2026-11-16, `qa`: the `stub` provider's active banner must show the
+  configured `CRANELISP_AGENT_MODEL` (A-1); today the stub labels itself
+  `stub (test)` with no model. Owed proofs after `dev`: E-1 to E-6 and B-1 to
+  B-4 green after the loader; E-0's isolation plants before `review`; A-6 (all
+  of `tests/agent.rs` in the default build) and A-5 after the Cargo default
+  features change, with the exact-transcript re-baseline (C-6).
+- W3, 2026-11-16, `dev`(src) build cost of the agent in the default build:
+  123 → 225 packages in the binary's dependency tree; debug binary 171.3 MB →
+  257.7 MB. `pkg-config` and OpenSSL 3.5.5 were present.
+- W3 `src/` review, 2026-11-16: R1 is a secret-disclosure path, demonstrated
+  (a NUL in a `.env` credential panics in `set_var` and prints the value, exit
+  101, even with the agent off). R2: a quoted multi-line model value splits the
+  banner and can forge a second state line. R3: `pub mod agent_activation` and
+  the changed `AgentState` fields widen the root crate's public surface beyond
+  packet A4 with no external consumer; resolved by making them crate-private,
+  not by an API gate.

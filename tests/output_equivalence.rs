@@ -41,9 +41,10 @@ fn prog(body: &str) -> String {
 // spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (single print effect)
 #[test]
 fn output_equiv_single_print() {
-    let program = prog("(defn main [] (print \"hello\"))\n");
+    // State words printed by the program must survive chrome stripping.
+    let program = prog("(defn main [] (print \"active dormant off not built in\"))\n");
     run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
-        .assert_output_eq("hello");
+        .assert_output_eq("active dormant off not built in");
 }
 
 // spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (sequenced print effects)

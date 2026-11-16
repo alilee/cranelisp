@@ -130,8 +130,9 @@ pub(crate) fn live_alloc_snapshot() -> Vec<(usize, usize, i64)> {
 #[cfg(debug_assertions)]
 fn scan_live_headers(site: &'static str) {
     use std::sync::atomic::AtomicBool;
-    static ENABLED: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("CRANELISP_HEAP_SCAN").is_some());
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+        crate::runtime_switches::is_set(crate::runtime_switches::Switch::HeapScan)
+    });
     if !*ENABLED {
         return;
     }

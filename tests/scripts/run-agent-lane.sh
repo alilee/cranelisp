@@ -33,6 +33,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$WORKSPACE_ROOT"
 
+# Default-feature evidence must use the default binary; feature-free evidence
+# has its own directory so neither optional configuration can replace it.
+case "${1:-}" in
+  --default-build)
+    shift
+    unset CARGO_TARGET_DIR
+    exec cargo nextest run --test agent "$@"
+    ;;
+  --agent-free)
+    shift
+    export CARGO_TARGET_DIR="target/agent-free"
+    exec cargo nextest run --no-default-features --test agent \
+      -E 'not test(s123_defaults) or test(agent_free_banner)' "$@"
+    ;;
+esac
+
 # Isolated target dir: the agent-featured binary is quarantined here and can
 # never clobber the default `target/debug/cranelisp`.
 export CARGO_TARGET_DIR="target/agent"

@@ -199,18 +199,11 @@ impl CompilerSession {
         stdout: &mut impl Write,
         consent: &mut dyn crate::agent::types::ConsentReader,
     ) {
-        // The agent must be configured (enable_agent ran) AND have a reachable
-        // provider. Absent either, render the U6 dormant notice in the frame so
-        // the user sees WHY (`agent.md §2.3`, §6.4 opt-in-twice).
+        // An agent that is off or dormant renders its notice in the frame so
+        // the user sees what to set (`agent.md §2.3`).
         let dormant_label = match self.agent.as_ref() {
-            None => Some("agent not enabled (run with --agent)".to_string()),
-            Some(state) if state.is_dormant() => Some(format!(
-                "agent enabled but no provider reachable: {}. \
-                 Set a provider (Anthropic key + model, or a local Ollama) — \
-                 a turn transmits your message + harvested source excerpts to the provider.",
-                state.provider_label
-            )),
-            Some(_) => None,
+            None => Some("agent not enabled for this session".to_string()),
+            Some(state) => state.activation().inactive_notice(),
         };
         if let Some(notice) = dormant_label {
             let _ = write!(stdout, "{}", crate::style::agent_prose(&notice));
@@ -423,8 +416,7 @@ impl CompilerSession {
             .as_mut()
             .ok_or_else(|| "agent not enabled".to_string())?;
         let model = state
-            .model
-            .as_mut()
+            .model_mut()
             .ok_or_else(|| "agent dormant".to_string())?;
         model.complete_streaming(req, sink)
     }
@@ -683,18 +675,14 @@ mod tests {
         let mut s = repl_session();
         let stub = StubModel::new(script);
         let capture = stub.requests.clone();
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(stub)),
-            provider_label: "stub (test)".to_string(),
-            auto_accept: false,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(stub),
+                provider: "stub",
+                model_id: None,
+            },
+            false,
+        ));
         (s, capture)
     }
 
@@ -891,18 +879,14 @@ mod tests {
             ModelResponse::Done("done".to_string()),
         ]);
         let capture = stub.requests.clone();
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(stub)),
-            provider_label: "stub (test)".to_string(),
-            auto_accept: false,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(stub),
+                provider: "stub",
+                model_id: None,
+            },
+            false,
+        ));
         drive(&mut s, "show me the source of f");
 
         let reqs = capture.lock().unwrap();
@@ -993,7 +977,7 @@ mod tests {
         }
         // Dormant agent: enabled but NO provider/model. `/context` must still
         // succeed (assemble_request is pure).
-        s.agent = Some(crate::agent::provider::build_agent_state(false));
+        s.agent = Some(crate::agent::provider::build_agent_state_with(false, false));
         assert!(
             s.agent.as_ref().unwrap().is_dormant(),
             "the fixture agent must be dormant (no provider) — that is the point"
@@ -1064,7 +1048,7 @@ mod tests {
     #[test]
     fn dormant_agent_renders_notice() {
         let mut s = repl_session();
-        s.agent = Some(crate::agent::provider::build_agent_state(false));
+        s.agent = Some(crate::agent::provider::build_agent_state_with(false, false));
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
         s.agent_turn("hello", &mut sink, &mut consent);
@@ -1094,18 +1078,14 @@ mod tests {
     /// the consent gate).
     fn session_with_stub_auto(script: Vec<ModelResponse>, auto_accept: bool) -> CompilerSession {
         let mut s = repl_session();
-        s.agent = Some(AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(StubModel::new(script))),
-            provider_label: "stub (test)".to_string(),
+        s.agent = Some(AgentState::new(
+            crate::agent::types::AgentLink::Active {
+                model: Box::new(StubModel::new(script)),
+                provider: "stub",
+                model_id: None,
+            },
             auto_accept,
-            auto_accept_notice_shown: false,
-            submit_gave_up: false,
-            submit_committed: false,
-            current_turn: 0,
-            error_class_runup: Vec::new(),
-            turn_ring: std::collections::VecDeque::new(),
-        });
+        ));
         s
     }
 

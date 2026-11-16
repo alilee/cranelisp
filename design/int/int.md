@@ -3325,6 +3325,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     The default feature set gains `agent`, the provider fallback is removed,
     and the banner reports the activation answer.
   - *Environment files and baked switches:* [environment](environment.md).
+    The supply is built (W3); environment §2.4–§2.5 record the readings
+    taken on `dev`'s open points.
   - *Panics end the process (host side):*
     [io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side),
     [observability §7.1](observability.md#71-process-exit-and-panic-wiring)
@@ -3370,8 +3372,13 @@ in source. Each owning filing stays the tracker; this list is the design intent.
        cache-schema bump: a broken entry is never written
        ([session transaction §8.3](session-transaction.md#83-broken-modules-are-not-persisted)).
        Scheduling, with packet B3 at S123 close or in S124, is the user's.
-    6. No other root-crate item changes. `pub mod agent` already exists under
-       the feature gate, and the `env_files` module is binary-private.
+    6. `env_files` is binary-private (`mod env_files` in `main.rs`). As
+       built, the root library also gains `pub mod agent_activation`
+       ([agent §6.3](agent.md#63-provider-selection)): `pub mod agent`'s
+       public `AgentLink` carries its `DormantReason`, and
+       `AgentState::activation` returns its `AgentActivation`, so the module
+       must be public. No packet row names it. The root crate has no baseline;
+       whether the new item needs the user gate is `arch`'s ruling.
   - **Evidence conditions for `qa`**, proposed here and allocated in
     [the S123 evidence delta](../../tests/plan/s123-evidence-delta.md):
     - *Agent:* a plain `cargo build` REPL prints the banner line.

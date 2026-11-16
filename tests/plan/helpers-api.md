@@ -125,6 +125,18 @@ impl Cranelisp {
     /// Append a `(key, val)` to the child's env. Last write wins.
     pub fn env(self, key: &str, val: &str) -> Self;
 
+    /// Remove `key` from the inherited env. Every removal applies before every
+    /// `env` value, so it cannot undo an earlier `env` call.
+    pub fn env_remove(self, key: &str) -> Self;
+
+    /// `link_then_run` only: run the produced executable with exactly these
+    /// values, from a cleared environment, whatever the link step received.
+    pub fn linked_environment(self, values: &[(&str, &str)]) -> Self;
+
+    /// `link_then_run` only: run the produced executable from this
+    /// subdirectory of the TempDir.
+    pub fn linked_directory(self, relative: &str) -> Self;
+
     /// Append a raw CLI flag passed to the cranelisp binary. Escape hatch.
     pub fn cli_flag(self, flag: &str) -> Self;
 
@@ -188,6 +200,9 @@ pub struct CrOutput {
     /// compile whose artifact is absent is `CrError::LinkedExecutableMissing`,
     /// never `None` here.
     pub linked_execution_elapsed: Option<Duration>,
+    /// Stderr of only the executable `link_then_run` spawned; `stderr` also
+    /// carries the link step's.
+    pub linked_stderr: Option<String>,
     pub tmpdir: PathBuf,
     // _td: tempfile::TempDir held internally so cleanup runs on drop.
 }
