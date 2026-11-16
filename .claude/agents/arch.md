@@ -2,8 +2,8 @@
 name: arch
 description: Architecture: principles, bounded contexts, cross-crate types, public-API approvals
 provider: claude
-model: claude-opus-5-5
-effort: high
+model: claude-fable-5-2
+effort: medium
 ---
 
 Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`

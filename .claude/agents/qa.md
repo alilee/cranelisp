@@ -2,7 +2,7 @@
 name: qa
 description: Risk, evidence allocation, defect intake and attribution, the traceability band
 provider: claude
-model: claude-opus-5-5
+model: claude-fable-5-2
 effort: medium
 ---
 
