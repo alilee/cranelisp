@@ -72,7 +72,7 @@ At macro expansion time, the implementation MUST convert between its internal S-
 
 The heap layout of marshalled values follows the standard ADT representation defined in Section 12.1.4. The details of the marshalling functions are implementation-defined.
 
-## 9.2 Macro Definition [Tested+Neg tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/annotation_fold_macro_arg_0708.rs::macro_two_arg_call_without_annotation_control_green]
+## 9.2 Macro Definition [S124 — partial: Tested+Neg tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/annotation_fold_macro_arg_0708.rs::macro_two_arg_call_without_annotation_control_green; §9.2.3 fails for a clause without a fixed parameter]
 
 ### 9.2.1 Syntax
 
@@ -129,7 +129,7 @@ The `& rest` syntax captures all remaining arguments as a single value of type `
   (thread-first-fold x forms))
 ```
 
-### 9.2.3 Return Type Constraint
+### 9.2.3 Return Type Constraint [S124 — partial: the fixed-parameter shape is Tested+Neg tests/spec_09_macros::macro_body_non_sexp_int_rejected_neg, tests/spec_09_macros::macro_body_non_sexp_bool_rejected_neg, tests/spec_09_macros::macro_nullary_quoted_body_control; a clause with no fixed parameter escapes the check (ACT-1057; RED tests/spec_09_macros::macro_nullary_non_sexp_rejected_at_definition_neg, tests/spec_09_macros::macro_rest_only_non_sexp_rejected_at_definition_neg, tests/spec_09_macros::macro_multi_clause_nullary_non_sexp_rejected_at_definition_neg, tests/spec_09_macros::macro_nullary_non_sexp_repl_rejects_without_publication_neg)]
 
 The body of a macro MUST return a value of type `Sexp`. If the body has any other type, the implementation MUST report a compile-time error.
 
@@ -574,9 +574,9 @@ For cases where auto-gensym is not sufficient, macro authors MAY also use:
       (SCons (case-fold "__case__" clauses) SNil)))))
 ```
 
-## 9.9 Macro Errors [Tested tests/spec_09_macros::defmacro_malformed_no_params]
+## 9.9 Macro Errors [S124 — partial: Tested tests/spec_09_macros::defmacro_malformed_no_params; §9.9.1 fails]
 
-### 9.9.1 Return Type Mismatch
+### 9.9.1 Return Type Mismatch [S124 — the mismatch is reported at a synthetic location, not the `defmacro` form, and a clause without a fixed parameter is not rejected (ACT-1057; RED tests/spec_09_macros::macro_return_mismatch_located_at_definition_neg and the §9.2.3 cells)]
 
 If a macro body's inferred type is not `Sexp`, the implementation MUST report a compile-time error at the `defmacro` form.
 

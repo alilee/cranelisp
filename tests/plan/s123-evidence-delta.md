@@ -25,7 +25,7 @@
 > against the 2026-11-16 deletion ruling at `bc57cbf1`; §3.6 R-5 and the W4
 > adequacy against the W4 working tree on 2026-11-16; §8 against the W5
 > integrated gate at `b89cc7cc` on 2026-11-16; §3.7 K-6 against `390201c3` on
-> 2026-11-16.
+> 2026-11-16; §8.11 against `de20a40e` on 2026-11-16.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
@@ -1833,3 +1833,239 @@ for the unit rows when each fix is dispatched.
 enter S123 with the user's approval. K-9 is small but needs frontend
 `design` because it moves a diagnostic location. K-8 waits for the `arch`
 gate with ACT-0997.
+
+### 8.11 Phase 6b adequacy
+
+**Verdict, 2026-11-16: adequate, with the limits below.** The 6b evidence
+supports the Phase 6b → 7 checkpoint. No regression, no unclassified RED, and
+no guard turned green.
+
+The tree is `de20a40e` plus uncommitted coordination edits that touch no source
+or test. The binary is `target/debug/cranelisp`, sha256 `684cc1e2…`. The
+binary was unchanged across the sweep. QA's logs are under `.local/s123-6b/`:
+`qa-full-suite.log`, `qa-user-samples.log`, `qa-demo-sweep.log` and
+`qa-demos/`.
+
+#### 8.11.1 Full suite (acceptance evidence)
+
+There were 7,024 tests: 6,980 passed, 44 failed and 1 was skipped, in 196 s.
+Every RED is a filed guard and fails on its clause assertion. No premise or
+setup message appears.
+
+| Filing | REDs |
+|---|---|
+| ACT-1050 | the twelve `bind_unused_heap_argument` subjects (marginal 1 or 2) |
+| ACT-1056 (K-8) | six `spec_08_modules` mount and union cells |
+| ACT-1057 (K-9) | five `spec_09_macros` cells |
+| ACT-1034 | four `spec_07_traits` parametric-impl instance cells |
+| ACT-1016 | `spec_08_modules` export-cycle run and startup; `repl_persist::reload_failed_reexport_dependency_matches_restart_neg` |
+| ACT-1055 (K-7) | `selective_member_ctor_binds_bare_value_and_pattern`, `selective_member_trait_method_binds_bare_name` |
+| ACT-0973 | `platform_errors` root and nested non-entry declarations |
+| ACT-0997 | `box_import_renamed_binds_canonical_type`, `box_import_self_rename_is_accepted` |
+| ACT-1038 | `trace_records_every_call_of_spark_admitted_callee` (288 of 465); `traced_spark_admitted_callee_releases_every_formatted_string` (residual 354) |
+| ACT-1052 (K-6) | `cache::cache_restored_text_after_abi_change_preserves_importer_calls_across_modes`, leg 4 SIGSEGV |
+| ACT-0985 | `spec_05_definitions::impl_body_uses_impl_declared_later_in_cluster` |
+| ACT-1001 | `spec_08_modules::impl_ambiguous_trait_names_both_candidates_neg` |
+| ACT-1036 | `spec_10_io::batch_main_non_io_return_refusal_is_located_at_main` |
+| ACT-1018 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing`, at 2 |
+| ACT-1039 | `trace::trace_records_user_function_calls_in_every_mode` |
+
+- *Delta from §8.1's 29 REDs:* 13 are K-7 to K-9, one is K-6 (committed
+  after the W5 gate) and one is ACT-1038's second cell. That cell now fails
+  deterministically because §8.8's premise holds.
+- *Limit:* `export_mount_only_does_not_reexport_bare_names_neg` fails on the
+  mount parse refusal. Its bare-name clause becomes reachable only after the
+  fix (§8.11.5).
+- **M-1 holds** (safety fence). No new cache exists under `tests/` or
+  `examples/`. `exemplar/.cranelisp-cache/` dates from the W5 gate. The
+  ignored root `user.cl` and `.cranelisp_history` date from September.
+
+#### 8.11.2 M-3, the `user/` sample harness (maintenance check)
+
+- QA's direct run of `tests/scripts/user_samples.py --binary
+  target/debug/cranelisp` executed 83 fresh groups with no failure. The
+  census found 18 documents and 158 classified fences: 67 REPL, 57
+  definition and 34 illustrative.
+- Both suite cells pass, the corpus cell and the detection cell.
+- **Detection, accepted.** The fixture corpus moves sound (0) → planted wrong
+  value (1) → unclassified fence (1) → restored (0). Each planted fault fails
+  on its clause.
+- *Limit:* no mutation proves the definition-error branch. The wrong outcome
+  it leaves open is a definition whose diagnostic the checker misses. The
+  sound-fixture docstring containing `error:` bounds this, and its harm is a
+  doc claim, not compiler acceptance. QA accepts it as a named limit.
+- Every exemption carries a specific reason. *Advisory to `docs`:* the two
+  "input-only catalogue" exemptions (qualified and dotted binder rejections)
+  could be exact REPL transcripts, per the prefer-repair rule.
+- *Advisory to `docs`:* `user/guide/modules.md` links a reader to
+  `sprints/actions/ACT-0997…`. That link breaks when the action is resolved
+  and deleted. The document checker will catch it, but at someone else's
+  change.
+
+#### 8.11.3 M-4 and M-5, demos (diagnostic observer)
+
+- QA's sweep completed 40 of 40: 14 active and 26 archived.
+- Values were read from the transcripts, not inferred from the exit code.
+  - `11-live-reload`: 10, 20, three lock refusals, help and source shown while
+    locked, `/reset` unavailable, then 30, and 30 again after restart.
+  - `ring4s` gives 50. `ring4p`'s replacement gives 43 with no ABI refusal.
+  - `ring4e` shows `Module 'math' not found.`
+  - `ring4i` and `ring4d` end on their panic.
+- Every diagnostic line in the sweep is narrated as intended.
+- *Not re-run by QA:* the `optimization.demo` IR comparison. QA accepts
+  `test`'s nine byte-identical blocks
+  (`.local/s123-6b/test-demos/optimization-ir-comparison.txt`).
+
+#### 8.11.4 The `examples/` replay
+
+- `training` reports 152 of 152: 38 entries in four cells each.
+- The suite's seven `examples` cells pass. These include
+  `every_example_runs_with_documented_exit` and
+  `every_example_links_and_executes_with_documented_exit`.
+- QA did not re-run `training`'s replay. The two suite cells are the
+  executing evidence for the documented exits.
+
+#### 8.11.5 K-7, K-8 and K-9 (acceptance; safety fences once fixed)
+
+QA accepts `test`'s clause map against this record's §8.10, with no return.
+The map is in `.local/s123-6b/test2-report.md`.
+
+- *K-7.* Both REDs fail on `undefined variable: Blue` and `seven`. The three
+  negatives and the `[Shade.*]` control pass. The negatives are vacuous until
+  the positive row passes; they are guards against glob and parent-binding
+  fixes.
+- *K-8.* The mount cells fail on `expected symbol for export module path`.
+  The union cells fail on an undefined `square` or `Shade.Blue`. Both
+  controls pass. The mount-collision negatives remain owed by the
+  correction's dispatch.
+- *K-9.* The three shapes fail on acceptance with exit 0. The REPL cell fails
+  on the `; defmacro` echo. The location cell fails on `app.cl:3:1` at span
+  `1000007..1000006`. The quoted-body control passes.
+  - The tightened observers detect acceptance: substituting a valid body made
+    both fail (`test2-macro-success-detection.log`).
+- *Not claimed:* the clauses behind today's refusal points are not yet
+  independently reached. Each fix's GREEN run is their first observation.
+
+#### 8.11.6 FIXME 0907: not closed
+
+The legs listed in §8.9 that are met at source on `de20a40e`:
+
+- `test`: no `ctor_shapes` notation remains in `spec_10_io.rs` or
+  `ctor_as_value.rs`, and the two fixed-S102 notes are kept. The five cells
+  pass.
+- `test`: `ring4s` replays the working segment at 50.
+  The demo guide now links QA's attribution.
+- `docs` and `training` were satisfied in S122.
+
+Still open, both carried to S124 by the dispatch log:
+
+- `dev` on `stdlib/`: the six `core.io` self-tests.
+  [`plan-stdlib.md` §6.2](../../stdlib/plan-stdlib.md) is still open, and
+  `stdlib/core/io/` holds no `test.cl`.
+- `spec` on `repl/`: obligation 3, whether `/info Bind` and `/info IO` must
+  introspect.
+
+#### 8.11.7 Traceability band
+
+Restored on 2026-11-16. Annotations only; the requirement prose is unchanged.
+
+- `spec/08-modules.md`:
+  - §8.3.11 names the K-7 and K-8 union REDs, the vacuous negatives and the
+    controls.
+  - §8.4 is graded partial: export symmetry is RED, and §8.4.4 fails.
+  - §8.4.4 names the three mount REDs. It records that its two older citing
+    cells observe unmounted re-export.
+- `spec/09-macros.md`:
+  - §9.2 and §9.9 are graded partial.
+  - §9.2.3 is Tested+Neg for the fixed-parameter shape, with the four K-9
+    acceptance REDs.
+  - §9.9.1 names the location RED.
+- `repl/spec/18-redefinition.md` §18.1.2's 6b re-grade stands.
+- The export link in ACT-1056 no longer embeds the old annotation.
+- The spec reconcile shows 0 dead citations and 0 cleared awaiting QA. The
+  link check shows 0 malformed and 0 mis-cited.
+
+#### 8.11.8 What Phase 7 needs from this evidence
+
+**Action dispositions.**
+
+- *Open and carried, each with a standing RED:* ACT-1050, ACT-1049,
+  ACT-1018, ACT-1052, ACT-1038, ACT-1039, ACT-0973, ACT-0985, ACT-0997,
+  ACT-1001, ACT-1016, ACT-1034 and ACT-1036 (§8.6).
+- ACT-1056 carries with ACT-0997 to the `arch` gate.
+- ACT-1055 and ACT-1057 carry unless the user pulls them in (§8.11.9).
+- ACT-1049 has no RED. It is a false positive of an instrument.
+
+**The carries list adds:**
+
+- FIXME 0907's two legs (§8.11.6);
+- §17.4's file-supplied-provider combination cell (`test`);
+- the missing `fixed=` stamp on
+  `string_primitive_value_discharge::str_len_as_function_value_releases_its_argument_once`
+  (`test`);
+- the `PlatformError::DispatchError` wording in the rustdoc of
+  `platforms/test-capture/src/lib.rs` (QA-owned, needs a source-editing
+  dispatch);
+- the §8.11.2 advisories (`docs`).
+
+**Acceptance on a fresh build of the final close tree.** A pull-in, or any
+source change after `de20a40e`, voids the reuse of this run.
+
+1. Run `cargo build` and the full `cargo nextest run --no-fail-fast` once.
+   The RED set must equal §8.11.1's 44 names, less any cells a pulled fix
+   flips. Any other RED is a regression, and any other flip needs attribution.
+2. Run `bash tests/scripts/run-agent-lane.sh` if anything under `src/`
+   changed after `b89cc7cc`. It must give 91 of 91 and 23 passed with 10
+   skipped.
+3. Check the plain-build REPL banner and a project `.env` supplying a
+   `CRANELISP_*` setting. These are the settling target's third item, with
+   cells in the suite.
+4. Run the `user/` harness and the demo sweep once each. Run the document
+   checker, the spec reconcile and the link check. Each must exit 0.
+5. Confirm the public-API baselines equal the live output. A src-only or
+   frontend-interior fix must show +0/−0.
+
+#### 8.11.9 Evidence for a pull-in of ACT-1055 or ACT-1057
+
+**ACT-1055 (`dev` on `src/`).**
+
+- *Before the fix:* the K-7 unit row in `src/imports/tests.rs`, observed red.
+  It expects one exposure with bare local name `Blue` from `mathx/Shade.Blue`
+  and none named `Shade`.
+- *Recommended, cheap:* one REPL leg of K-7 cell 1. This guards the
+  `mode-divergence` class.
+- *After the fix:*
+  - both K-7 REDs pass;
+  - the three negatives pass, and now non-vacuously;
+  - the two K-8 union cells and the six K-8 cells stay RED, because their
+    loci are frontend. If a K-8 cell flips, QA attributes it before it counts.
+- *Also required:*
+  - `dev`'s gate;
+  - `review` in a fresh subagent;
+  - `docs` removes the `Symbol.member` limit from the modules guide, with
+    the harness re-run;
+  - QA restores the `Symbol.member` row of spec §8.3.11.
+- *Size:* small. No public type changes.
+
+**ACT-1057 (`design`(frontend), then `dev` on the frontend).**
+
+- *Before the fix:* `design` places the `Sexp` constraint and the
+  definition-site location. The K-9 unit row covers nullary, rest-only and
+  fixed clauses at the clause location, observed red first.
+- *After the fix:*
+  - all five K-9 REDs pass;
+  - both tightened observers and the control stay green;
+  - `display_exact.rs`'s synthetic-span pin and every other located-macro
+    diagnostic are re-read for movement.
+- *Highest collateral risk:* the fix newly rejects an existing macro without
+  fixed parameters. The stdlib has two such generators in `stdlib/defs.cl`,
+  and `user/`, `examples/` and the exemplar hold others.
+  - So the whole-suite run is not enough on its own. Name these as
+    discriminating evidence: `stdlib_conformance`, both `examples` replay
+    cells, the exemplar runs, and the `user/` harness.
+- *Also required:*
+  - `review` in a fresh subagent;
+  - `docs` re-reads the macros guide's return-type statement;
+  - QA restores §9.2.3 and §9.9.1.
+- *Size:* larger than ACT-1055, and it has a design step. A pull-in adds a
+  Phase 5-style wave, not a 6b edit.

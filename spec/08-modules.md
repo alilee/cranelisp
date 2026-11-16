@@ -289,7 +289,7 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 (defn make-point [:Int x :Int y] :Point (Point x y))
 ```
 
-### 8.3.11 Accessibility After Import [S124 — partial: tests/spec_08_modules::glob_import_bare_ctor_still_resolves evidences the `*` and `Symbol.*` bare-member rows; the `Symbol.member` row fails (ACT-1055) and a member glob in a multi-entry list drops its neighbours (ACT-1056); the remaining rows and negatives are not assessed]
+### 8.3.11 Accessibility After Import [S124 — partial: tests/spec_08_modules::glob_import_bare_ctor_still_resolves and tests/spec_08_modules::selective_member_glob_control evidence the `*` and `Symbol.*` bare-member rows; the `Symbol.member` row binds nothing (ACT-1055; RED tests/spec_08_modules::selective_member_ctor_binds_bare_value_and_pattern, tests/spec_08_modules::selective_member_trait_method_binds_bare_name), so its parent and sibling negatives (tests/spec_08_modules::selective_member_does_not_bind_sibling_neg, tests/spec_08_modules::selective_member_does_not_bind_parent_dotted_member_neg, tests/spec_08_modules::selective_member_does_not_bind_parent_type_neg) hold only vacuously; a member glob in a multi-entry list drops its neighbours (ACT-1056; RED tests/spec_08_modules::mixed_parent_and_member_glob_keeps_both, tests/spec_08_modules::mixed_member_glob_and_function_keeps_both; control tests/spec_08_modules::mixed_member_glob_two_specs_control); the rename rows and the remaining negatives are not assessed]
 
 Each entry in an import name list independently affects what is in bare scope after the import resolves. The following base cases enumerate the effects for an import from a module that exports a type `Option` with constructors `Some` and `None`. Multi-entry name lists union their effects (see §8.3.10 for accumulation rules across forms; the same rules apply within a single name list).
 
@@ -329,7 +329,7 @@ The same rules apply symmetrically when consumers import from a renamed re-expor
 
 See §8.6.4 for candidate registration and structural route conflicts, and §8.6.5 for use-site selection.
 
-## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_glob]
+## 8.4 Export [S124 — partial: Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_glob, tests/spec_08_modules::export_unmounted_control; a member glob in a mixed export list drops its neighbours (ACT-1056; RED tests/spec_08_modules::export_mixed_member_glob_keeps_function), and §8.4.4 mounting fails]
 
 The `export` special form brings names from other modules into the current module's scope as bare (unqualified) symbols **and** marks them public — part of the current module's public API (re-exposed to downstream consumers).
 
@@ -380,7 +380,7 @@ Re-exports all public names from `core` through the current module.
          primitives [vec-len vec-get vec-set]])
 ```
 
-### 8.4.4 Module Mounting on Export
+### 8.4.4 Module Mounting on Export [S124 — mounting is rejected at parse (ACT-1056; RED tests/spec_08_modules::export_mount_reexports_and_exposes_unlisted_member, tests/spec_08_modules::export_mount_only_exposes_qualified_member, tests/spec_08_modules::export_mount_only_does_not_reexport_bare_names_neg); the mount-collision negatives are owed with the correction; tests/spec_08_modules::export_transitive_reexport_chain and tests/spec_08_modules::export_private_name_not_reexported cite this section but observe unmounted re-export]
 
 ```clojure
 (export [(core.string str) [concat join]])

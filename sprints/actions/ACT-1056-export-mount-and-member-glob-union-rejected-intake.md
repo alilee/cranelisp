@@ -25,7 +25,7 @@ projects. The fixtures and cells are K-8 in the
 R2's third case, renamed entries, stays with
 [ACT-0997](ACT-0997-renamed-import-entries-rejected-intake.md).
 
-- **Export mount.** [§8.4](../../spec/08-modules.md#84-export-tested-cratescranelisp-frontendsrcmodule_extracttestsrstest_export_specific-cratescranelisp-frontendsrcmodule_extracttestsrstest_export_glob)
+- **Export mount.** [§8.4](../../spec/08-modules.md#84-export)
   applies the full §8.3 `module_spec` to exports, and §8.4.4 defines
   `(export [(m alias) [names]])` as re-export plus mount.
   `(export [(mathx math) [square]])` fails with
