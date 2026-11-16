@@ -23,7 +23,8 @@
 > against the W1 tree on 2026-11-15; §3.9 against the W2 U′ tree on
 > 2026-11-16; §3.4 E-0 against nextest 0.9.140 on 2026-11-16; §3.6 R-2
 > against the 2026-11-16 deletion ruling at `bc57cbf1`; §3.6 R-5 and the W4
-> adequacy against the W4 working tree on 2026-11-16.
+> adequacy against the W4 working tree on 2026-11-16; §8 against the W5
+> integrated gate at `b89cc7cc` on 2026-11-16.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
@@ -1326,8 +1327,9 @@ with their realisation; their annotations stay as they are.
 
 ## 5. Named residuals
 
-`sprint` presents these at the Phase 4 checkpoint; each needs the user's
-acceptance.
+The user accepted the first eight rows at the Phase 4 checkpoint. Phase 5
+added the last three, which `sprint` presents at the Phase 5 → 6a
+checkpoint (§8.5).
 
 | Residual | Why not evidenced end to end | What covers it |
 |---|---|---|
@@ -1380,5 +1382,177 @@ acceptance.
   no longer calls the workload a copy arm. U-18's two subject comments
   state the fixed defect in the past tense, as the
   [defect-repro notation](../CLAUDE.md#defect-repro-notation-defect) requires.
-- **`qa`:** U-8 and U-10 are recorded (§3.10). M-1's post-suite census,
-  M-6's §5 refresh and §4 remain.
+- **`qa`:** U-8 and U-10 are recorded (§3.10); M-1, M-6 and §4 are
+  discharged (§8).
+
+## 8. Phase 5 adequacy
+
+**Verdict, 2026-11-16: adequate, with named residuals.** Phase 5's evidence
+across W0–W5 supports the Phase 5 → 6a checkpoint. Each wave's own adequacy
+is recorded with its conditions: W1 in the sprint plan, W2 in §3.9 and
+§3.10, W3 in §3.5 and W4 in §3.6.
+
+The tree is `b89cc7cc` on a fresh build. The source is `sprint`'s
+integrated gate, `.local/s123-w5/gate-summary.md` and the logs it names.
+QA's targeted reruns used the same binary.
+
+### 8.1 Acceptance evidence
+
+- The full suite ran 7,001 tests: 6,972 passed, 29 failed, 1 skipped. Every
+  RED is a filed guard. There are no regressions and no unclassified REDs.
+
+  | Filing | REDs |
+  |---|---|
+  | ACT-1050 | the twelve `bind_unused_heap_argument` subjects |
+  | ACT-1034 | four `spec_07_traits` parametric-impl instance cells |
+  | ACT-1016 | `spec_08_modules` export-cycle run and startup; `repl_persist::reload_failed_reexport_dependency_matches_restart_neg` |
+  | ACT-0973 | `platform_errors` root and nested non-entry declarations |
+  | ACT-0997 | `spec_08_modules::box_import_renamed_binds_canonical_type`, `box_import_self_rename_is_accepted` |
+  | ACT-0985 | `spec_05_definitions::impl_body_uses_impl_declared_later_in_cluster` |
+  | ACT-1001 | `spec_08_modules::impl_ambiguous_trait_names_both_candidates_neg` |
+  | ACT-1036 | `spec_10_io::batch_main_non_io_return_refusal_is_located_at_main` |
+  | ACT-1018 | `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing`, at 2 |
+  | ACT-1038 | `trace::trace_records_every_call_of_spark_admitted_callee` |
+  | ACT-1039 | `trace::trace_records_user_function_calls_in_every_mode` |
+
+  Each failed on its clause assertion. No premise or setup message appears
+  in the log.
+- *The two W4 REDs absent here.* Neither is a guard turning green.
+  - `role_wiring::role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy`
+    was W4's stale principle count, repaired by `test` with Principle 27.
+  - `trace::traced_spark_admitted_callee_releases_every_formatted_string`
+    (ACT-1038) passes when no worker runs a traced call. On this binary it
+    fails 20 of 20 isolated runs at residual 926, the action's per-call
+    arithmetic. With every core busy it passes 2 of 10. The full-suite pass
+    is that interleaving, so it is neither a fix nor a misattribution.
+    `test` does not stamp it. A green run of either ACT-1038 cell is not
+    flip evidence until the subject child observes its own premise. The
+    action records this.
+- The agent lane passes 91 of 91, and the agent-free lane 23 with 10
+  skipped, which is A-1 to A-6.
+- The exemplar exits 0, 41 and 41 for `user.cl`, `tests.cl` and the serial
+  run. The server answers HTTP 200 with its page.
+- Every inter-crate public-API delta for the phase matches its approved
+  packet row, and the live baselines equal the committed ones.
+- §6's criteria hold.
+  - Each RED now and each re-pointed cell was observed failing before its
+    fix and passes on this build.
+  - The C-1, C-2 and C-5 censuses were emptied at W1 and W3. On this tree
+    `catch-runtime-error` appears only in `spec_12_runtime`'s cell asserting
+    that the name is unbound.
+  - U-8's numbers and binaries are in §3.10.
+  - The clause maps were accepted per wave.
+  - §4 is discharged (§8.4).
+  - The document checker exits 0.
+
+### 8.2 Safety fences
+
+- The U′ fences and the P-1 to P-19 fences pass, with the residuals of
+  §8.5.
+- **M-1 holds.** After the suite, `git status --ignored` shows no new
+  cache under `tests/` or `examples/`. The one cache written,
+  `exemplar/.cranelisp-cache/`, dates from 15:13:24. The suite ended at
+  15:12:43, so the cache came from the gate's exemplar runs.
+
+### 8.3 Diagnostic observers
+
+- **The demo sweep.** All 13 active demos and 26 archived demos exit 0.
+  The player's exit status is not evidence that a demo played. It never
+  checks whether the REPL is still running, so it reaches `[demo complete]`
+  after the REPL has exited.
+  - `ring4i` and `ring4d` narrate recovery after a panic. Under §12.7.4.1
+    the REPL now exits on a panic, so their later segments never play.
+    These are stale expectations from the W1 ruling, which M-5 already
+    covers. They are not defects. `ring4d`'s panic is its last input.
+    `ring4i` loses its `fmap`, test, `/source` and `/run-tests` segments.
+  - `test`, in Phase 6, rewrites both per M-5 and the archive's
+    stale-expectation rule. `test` also makes the player fail when the REPL
+    exits before the script ends. That check is cheap, and without it a
+    stale expectation and a crash both read green.
+- **Spec-to-test coverage reconcile** exits 0.
+
+### 8.4 Maintenance checks
+
+- **Spec link check, 11 stale anchors.** These are all in
+  `tests/projection_elision_guard.rs`, which cites two sections of the
+  backend ownership-codegen design that U′ retired. They do not block the checkpoint. No
+  Phase 5 acceptance condition rests on this file, and its fourteen cells
+  pass. Their assertions are a moves-on/off output oracle and an
+  iteration-independent balance on `vec-get` arguments, and both remain
+  meaningful under U′. The module documentation and citations describe a
+  mechanism that no longer exists, which is a missed C-10 member.
+  - *Owner:* `test`. Re-cite each cell to the
+    [uniform counting](../../design/backend/uniform-counting.md) section
+    its assertion now observes, and rewrite the module documentation. A
+    cell that duplicates a U-3 differential may be deleted instead.
+  - *Timing:* before S123 closes, or carried with a record.
+- **§4 is discharged.**
+  - Restored at W5: `repl/spec/17-embedded-agent.md` §17.4, §17.10.1 and
+    §17.10.2. §17.4 is graded partial: no cell observes a file-supplied
+    provider combined with a process-environment key. An offline cell can
+    observe it, because an `anthropic` provider with a model and a key
+    reports `active` at startup without transmitting. That cell is a
+    `test` gap for S124.
+  - Repaired: `spec/12-runtime.md` §12.3.1 item 2's stale RED tag for the
+    resolved ACT-0974. Its cell passes.
+- **`fixed=` stamp owed.** The `// defect:` line of
+  `string_primitive_value_discharge::str_len_as_function_value_releases_its_argument_once`
+  has no stamp, and the cell is green. *Owner:* `test`.
+- **M-6.** [Memory-safety coverage](memory-safety-coverage.md) §5 is
+  refreshed with the W5 reach.
+- **The test-capture contract.** `platforms/test-capture/spec.md` no longer
+  names the removed `PlatformError::DispatchError`. The same wording remains
+  in the rustdoc of `platforms/test-capture/src/lib.rs` line 85. `qa` owns
+  that file; the fix is a doc-comment change for a source-editing dispatch.
+
+### 8.5 Residuals for the Phase 5 → 6a checkpoint
+
+The user decides each of the three rows Phase 5 added to §5:
+
+- **P-15, a `runtime/panic` emitter outside the raise helper.** Grade:
+  asserted with a named falsifier. The census reads spelling, so an alias
+  passes it. The structural form needs an `arch` API decision, a wrapper
+  for `CompileContext::panic_func_id`. Until that decision, `review`
+  inspects any backend change-set that names `panic_func_id`.
+- **P-14, a terminator wired to skip its claim.** Grade: measured
+  deterministically at the pure claim-transition row. The two-raiser cell
+  detects a planted skip in 2 of 3 runs, so it is a diagnostic observer and
+  not a fence.
+- **FIXME 0903 family 2 on U′.** Unmeasured. No free-standing program is
+  known to reach a residual-`Var` trait-method instance, and the 0916 cell
+  no longer reaches the arm. The 0903 armed category census is the
+  instrument. `design`(backend) and `dev`(backend) own it.
+
+### 8.6 Carries into S124
+
+| Item | Why it carries |
+|---|---|
+| [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md) | Unbounded leak in a loop, not memory-unsafe. It predates U′ and was found after W2's first review, so the correction-loop stop rule applies. Twelve REDs stand |
+| [ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
+| [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
+| [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Unmeasured and advisory. No Phase 5 cell reaches the path. Its first act is a `qa` probe of the candidate on the final binary |
+| [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells need a same-child premise before any stamp |
+| ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
+| §8.4 maintenance items | The projection-guard re-citation if S123 does not close it; the §17.4 combination cell |
+
+### 8.7 What Phase 6a needs from this evidence
+
+- **Demo re-baselines (M-5, `test`).** Rewrite `ring4i` and `ring4d` so no
+  segment follows a panic, and fail the player on an early REPL exit.
+  Re-read `optimization.demo`'s narration of borrow elision and static
+  uniqueness against `/clif` on this binary. Replay the active set and the
+  archive after the rewrite. `test` attributes any change in an active
+  demo's output, not `docs`.
+- **Transcript re-baselines for the banner (C-6's remainder).** The suite's
+  exact transcripts were re-baselined in W3. The `user/` and `examples/`
+  transcripts that show the startup lines are `docs`' and `training`'s to
+  assess in 6a and change in 6b. Each new expectation asserts only the
+  state word, the named file and the variable (§1.2).
+- **The `user/` sample harness (M-3, Phase 6b).** It needs `docs`'
+  classification of every fenced block, and a second named
+  stdlib-dependency exception in root `CLAUDE.md`, recorded by `sprint`
+  first. The user accepted that exception at Phase 4. The harness is a
+  maintenance check for `user/`, and its detection proof is the two
+  planted faults M-3 names.
+- **Audit on `cranelisp-frontend`.** Nothing in this evidence constrains
+  it.

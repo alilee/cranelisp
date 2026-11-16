@@ -106,6 +106,17 @@ correction (finding 2). QA reproduced it on 2026-09-30 with
   without a consumer. `dev` adds the unit row at the chosen seam.
 - **`arch`:** qualify the two named-intrinsic rows, per review finding 2.
 
+- **Both cells can pass by interleaving (QA, 2026-11-16, `b89cc7cc`).**
+  `traced_spark_admitted_callee_releases_every_formatted_string` passed in
+  the S123 W5 full suite and failed in the W4 one. On the W5 binary it fails
+  20 of 20 isolated runs at residual 926, and passes 2 of 10 runs with every
+  core busy. A pass therefore means no worker ran a traced call; it is not a
+  fix. Neither cell observes, in its own subject child, that a worker ran a
+  traced call, so a green run is not flip evidence. `test` gives each
+  subject a same-child premise, for example a count of sparks a worker ran,
+  taken from the traced run, before either cell is stamped. A fix is credited only by green runs
+  under load and in isolation.
+
 ## Disposition
 
 Fix or carry is the user's decision under METHOD §2.4. QA retains this intake.

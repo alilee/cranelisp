@@ -130,7 +130,7 @@ In the S88 read-only MVP, when the agent answers a request that warrants code, i
 
 This satisfies the Stage C acceptance shape: `/ask "how do I define a constrained function over Num?"` → a spec-grounded, session-aware answer with a proposed `(defn …)` **shown, not submitted.** [S88]
 
-### 17.4 Default Enablement and Dormancy [S123]
+### 17.4 Default Enablement and Dormancy [Tested+Neg tests/agent.rs::default_repl_has_dormant_state, tests/agent.rs::default_repl_has_active_stub_and_model, tests/agent.rs::no_agent_has_off_state, tests/agent.rs::ambient_key_alone_is_dormant_and_sends_no_request, tests/environment_supply.rs::project_provider_precedes_user_file — except a file-supplied provider combined with a process-environment key; S124]
 
 **User rulings, 2026-11-15.** The default build includes the agent; an agent-free build remains supported. In the REPL the agent is enabled unless `--no-agent` is given. Activation requires an explicit `CRANELISP_AGENT_PROVIDER` plus the selected provider's configuration (§17.10). An ambient `ANTHROPIC_API_KEY` alone MUST NOT activate it.
 
@@ -276,11 +276,11 @@ Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live i
 
 This subsection specifies agent configuration. Environment variables and the file supply in §0.8 are the configuration channel; `Cranelisp.toml` does not supply provider, model or key.
 
-#### 17.10.1 Enabling — the `agent` Cargo feature [S123]
+#### 17.10.1 Enabling — the `agent` Cargo feature [Tested+Neg tests/agent.rs::default_build_includes_agent, tests/agent.rs::ask_feature_off_prints_not_built_in, tests/agent.rs::agent_free_banner_names_not_built_in — the feature-off cells run in the agent-free lane]
 
 **User ruling, 2026-11-15.** The `agent` Cargo feature is included in default builds. An agent-free build remains supported. In that build `/ask` reports `agent not built in`, and flag handling follows §0.6.
 
-#### 17.10.2 Configuring — environment and environment files [S123]
+#### 17.10.2 Configuring — environment and environment files [Tested+Neg tests/environment_supply.rs::process_provider_precedes_both_files, tests/environment_supply.rs::project_provider_precedes_user_file, tests/environment_supply.rs::user_provider_supplies_fallback, tests/environment_supply.rs::empty_process_provider_precedes_files, tests/agent.rs::unknown_provider_is_dormant_and_names_value]
 
 Agent configuration is read once at session construction, after the §0.8 file supply. Files and process environment use the same key meanings and precedence defined there (user ruling, 2026-11-15).
 

@@ -357,7 +357,7 @@ replaced by unit-only coverage?
    least one e2e fence per diagnostic mode keeps exercising the env-var
    wiring end-to-end (a sibling planted-fault face or a clean-run
    capability cell) — unit tests are structurally blind to the subprocess
-   env plumbing (§5's unit-tier row).
+   env plumbing.
 
 The m1_quarantine retirement is compliant on all three prongs (intrinsics
 unit seam carries the verification; sibling quarantine faces fence the
@@ -416,32 +416,32 @@ Standing rule, binding on every new or re-planted capability fence:
 
 ---
 
-## §5. Current exposure — quantified (S111, post-CS-5)
+## §5. Current exposure — measured S123 W5
 
-Suite ≈ 4,630 tests: **≈1,960 e2e** test fns across 90 files + **≈2,670
-unit** tests. Signal reach today:
+Measured 2026-11-16 at `b89cc7cc` by grep over `tests/*.rs` and
+`tests/helpers/`, against the W5 suite run of 7,001 tests: 2,982 e2e test
+functions in 173 files, the rest unit and lib rows. File counts are reach,
+not assertion counts.
 
-| Signal | Reach | Share |
-|---|---|---|
-| Differential oracle (`CRANELISP_NO_OWNERSHIP` both-polarity runs) | 8 e2e files, ≈30 tests | **≈1.5% of e2e, ≈0.6% of suite** |
-| RC accounting (`CRANELISP_RC_STATS`) | 9 files, 24 sites | ≈1–2% of e2e |
-| RC trace (`CRANELISP_RC_TRACE`) | 9 files, 25 sites | ≈1–2% of e2e |
-| Stale-dec trap (`CRANELISP_RC_DEC_CHECK`) | **2 sites, both `env_remove` hygiene — ZERO standing positive assertions** | **0%** |
-| `--link` face (72 direct `.link*` sites + 62 `run_through_all_modes` sites) | 25/90 files, ≈130 tests | ≈7% of e2e, ≈3% of suite |
-| Unit tier | executes no JIT code — **structurally blind to every runtime memory-safety signal** | 0% of ≈2,670 |
+| Signal | Files | Sites | S111 reach |
+|---|---|---|---|
+| Moves-on/off differential (`CRANELISP_NO_OWNERSHIP`, `SafetyMatrix`) | 29–30 | 87 | 8 files |
+| RC accounting (`CRANELISP_RC_STATS`, `MarginalPair`) | 46 | 59 direct | 9 files |
+| RC trace (`CRANELISP_RC_TRACE`) | 11 | 27 | 9 files |
+| Stale-release trap (`CRANELISP_RC_DEC_CHECK`) armed | 20 | 39 | 0 positive assertions |
+| `--link` face (`.link*`, `run_through_all_modes`, `LinkThenRun`) | 62 | 255 | 25 files |
 
-Read: **≈97% of the suite cannot see a UAF that does not perturb output, and
->98% cannot see a leak at all.** The strongest deterministic UAF signal in the
-tree (`RC_DEC_CHECK`) is asserted nowhere. The oracle — the one signal that
-fails the false-`Fresh` class mechanically — protects 0.6% of the suite, and
-its certification uses are manual. This is the quantified version of "these
-defects are only found incidentally": the suite's safety-signal surface is
-roughly two orders of magnitude thinner than its output-assert surface.
-
-Target after the first increment (§6): every ownership/RC-affected row and the
-seed corpus under all four signals (≈100–150 programs), `RC_DEC_CHECK` asserted
-suite-wide within the lane, and the generator core adding composition coverage
-no curated list reaches.
+- The armed stale-release trap now has standing positive assertions, and
+  [ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md)
+  limits it: an armed half cannot contain a stack-placed constructor.
+- Under U′ no position borrows, so the elision profile of §4's first row
+  no longer has an emitter; the differential now checks moves on against
+  moves off.
+- The unit tier's reach into executed JIT code was not remeasured.
+- Read: the safety signals still reach a minority of e2e files, roughly a
+  quarter for balance and a sixth for the differential. The generator
+  (`tests/gen_ownership_flows.rs`) supplies composition coverage beyond the
+  curated files.
 
 ---
 
