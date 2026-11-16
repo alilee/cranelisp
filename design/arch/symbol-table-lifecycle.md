@@ -79,7 +79,10 @@ There is no family-level dummy scheme and no separately indexed child binding.
 | `Concrete` | Checked concrete scheme and slot, with its realization and optional instance link. |
 | `Inline` | Backend lowering at concrete use sites; no table slot. |
 | `HostPromised` | Host-provided by-name realization; no table slot. |
-| `Broken` | Retained slot and failure provenance; excluded from ordinary body compilation. |
+
+No state represents a broken callable. A redefinition that would leave a
+dependent unable to typecheck is refused before publication
+([session transaction §5](../int/session-transaction.md#5-no-broken-symbols)).
 
 Origin/state legality is validated by the table; the Rust enums alone do not
 prove every combination legal. `Concrete` body realizations carry their view;
@@ -87,8 +90,8 @@ compiled owners are runtime-only and may be absent before compilation.
 
 ### 4.3 Slot identity
 
-Slot claims live in concrete or broken arms, retained declaration priors, and
-private retirement tombstones. Allocation derives its unavailable set from
+Slot claims live in concrete arms, retained declaration priors, and private
+retirement tombstones. Allocation derives its unavailable set from
 these claims; a separate stored allocation cursor is not another authority.
 The GOT is the single runtime home of callable pointers.
 
@@ -98,6 +101,18 @@ and types derives the final slot plan. Published retirement preserves the old
 index in tombstones; code-page retention is the separate integration half of
 that same lifetime obligation. Manifest-backed platform slots share this index
 space and remain tied to descriptor order.
+
+**Decoded-table release.** `release_callable` removes one callable from a
+decoded, code-free `SymbolTable<(), ()>` and drops its claim without a
+tombstone, so a later mint may reissue the index. Existing tombstones stay.
+The receiver type admits no compiled owner, so no live table offers it.
+Integration's entry preload releases the bodies its from-source recompile
+restages under new slots (the `__expr` wrapper and minted instances) before
+`into_concrete`. The caller's obligation is that no code this process may
+load embeds a released index. Integration's argument that the preload meets
+it is
+[session transaction §8.2](../int/session-transaction.md#82-faithful-writes).
+Approved 2026-11-16 (S123 packet row P15).
 
 **Whole-file rebuild.** Tombstones and claims are per table. A whole-source
 reload of a module installs a new, empty table that keeps the module's
@@ -188,9 +203,7 @@ owners into integration's retention pool. A fallible per-symbol owner loop
 following a visible owner-free commit is not equivalent to this transaction.
 
 `publish_compiled_owner` serves an already-concrete body and returns its previous
-owner, or the submitted owner on refusal. `mark_broken` returns the displaced
-owner and retained slot; integration owns the trap code and message lifetime.
-Types never chooses executable-memory retention policy. Existing module cadence
+owner, or the submitted owner on refusal. Types never chooses executable-memory retention policy. Existing module cadence
 serializes preparation/publication; this boundary adds no revision-token protocol.
 
 ### 4.5 Origins

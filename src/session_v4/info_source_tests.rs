@@ -1,5 +1,5 @@
 use super::*;
-use cranelisp_types::{BrokenProvenance, Symbol, Visibility};
+use cranelisp_types::{Symbol, Visibility};
 
 /// Fresh session with empty lib_dirs and a temp project_root so no
 /// prelude.cl is auto-discovered (mirrors
@@ -79,58 +79,6 @@ fn handle_info_healthy_includes_definition_source_before_stats() {
     assert!(
         src_pos < bytes_pos,
         "source precedes stats (§3.6 layout); got:\n{out}"
-    );
-
-    s.shutdown();
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-// spec: repl/spec.md §18.4 — `/info` on a BROKEN symbol MUST include the
-// primary line, the provenance comment line, AND the definition source —
-// and MUST NOT display code-size stats. FIXME 0480: the broken-arm
-// early-return inherited the §3.6 source omission.
-#[test]
-fn handle_info_broken_includes_source_and_provenance_no_stats() {
-    let (mut s, root) = isolated_session();
-    // code_size present in introspection so the no-stats leg is meaningful.
-    stage_fn_with_source(&s, "g", "(defn g [y] (f y))", Some(16));
-    let fq_g = FQSymbol {
-        module: ModuleFullPath::from("user"),
-        symbol: Symbol::from("g"),
-    };
-    let fq_f = FQSymbol {
-        module: ModuleFullPath::from("user"),
-        symbol: Symbol::from("f"),
-    };
-    let original_error = "type error: expected primitives/String, got primitives/Int";
-    let transition = s
-        .shared
-        .symbol_tables
-        .get_mut(&fq_g.module)
-        .expect("user table exists")
-        .mark_broken(
-            &fq_g.symbol,
-            BrokenProvenance::new(fq_f.clone(), original_error.to_string()),
-        )
-        .expect("concrete fixture becomes broken");
-    assert!(
-        transition.displaced_owner.is_none(),
-        "fixture has no compiled owner to retain"
-    );
-
-    let out = s.handle_info("g");
-    assert!(
-        out.contains("; broken by the redefinition of user/f:"),
-        "provenance comment line (§18.4); got:\n{out}"
-    );
-    assert!(
-        out.contains("\n  (defn g [y] (f y))"),
-        "/info on a broken symbol must show its definition source \
-             (§18.4 third MUST component); got:\n{out}"
-    );
-    assert!(
-        !out.contains("bytes"),
-        "no code-size stats for a broken symbol (§18.4); got:\n{out}"
     );
 
     s.shutdown();

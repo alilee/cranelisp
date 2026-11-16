@@ -4,18 +4,20 @@
 > [backend.md](backend.md).
 >
 > **Status**: **built** at the S123 W2 cutover (reading U′, chosen by the user
-> on 2026-11-15, [S123 rulings](../../sprints/SPRINT.md)). This is the backend's
-> one counting design. The sections it replaced are deleted from
-> [ring2-rc.md](ring2-rc.md), [ownership-codegen.md](ownership-codegen.md),
+> on 2026-11-15). This is the backend's one counting design. The sections it
+> replaced are deleted from [ring2-rc.md](ring2-rc.md),
+> [ownership-codegen.md](ownership-codegen.md),
 > [transitive-drop-glue.md](transitive-drop-glue.md),
 > [non-concrete-release-contract.md](non-concrete-release-contract.md) and
-> [binding-scope.md](binding-scope.md). Cited section numbers stay as one-line
-> retirement stubs. The as-built implementation is narrower than §2 and §3
-> first stated in three places, recorded where they apply: §2 (moves off), §3
-> (spark thunks) and §2 (tail self-call). The independent review's operand-order
-> and wrapper findings are decided in §3.2 and §3.3, which `dev` builds next.
-> §3.4 states the typing obligations a synthetic body owes the plan. Evidence is
-> open (§8).
+> [binding-scope.md](binding-scope.md); cited section numbers stay there as
+> one-line retirement stubs. §3.2 (operand order) and §3.3 (wrapper template)
+> are built. `qa` judged the W2 evidence adequate on 2026-11-16, and U′ is
+> within the user's cost bound (`tests/plan/s123-evidence-delta.md` §3.9 and
+> §3.10). [Section 8](#8-evidence-conditions-for-qa) lists the conditions
+> that evidence answers. Under
+> [Principle 27](../arch/principles/27-dev-tier-optimises-only-against-blow-up.md)
+> rules U1 and U2 are the dev tier's kept optimisations: each holds an update
+> loop's growth rate.
 >
 > **Authority**: `spec/12-runtime.md` §12.3.1 (release of unreachable values)
 > and §12.4.3 (lenient evaluation is unobservable). The option framing is the
@@ -157,12 +159,14 @@ none is implicated in the faults in §6:
 - the IO node's release and the trampoline balance
   ([ring2-rc.md](ring2-rc.md) §3.5).
 
-**Non-atomic RC for `Confined` has no consumer under U′.** Its only emission
-site was the return protect's increment, which §5 retires. A fresh value is
-allocated at count 1 and needs no increment, so no RC operation is left at a
-producing node for confinement to cheapen. The classifier stays, with no
-caller, while the user decides (§9). Until then every emitted RC operation is
-atomic, except under the unsound `CRANELISP_NONATOMIC_RC` probe.
+**Placement mechanisms leave the dev tier.** Stack placement and value
+flattening change only a constant, so Principle 27 retires them in S124, and
+non-atomic RC for `Confined` retired at S123 W4
+([ownership-codegen.md](ownership-codegen.md) §0, §5). Confined counting
+already had no consumer under U′: its only emission site was the return
+protect's increment, which §5 retires. Every emitted RC operation is atomic,
+except the inline helpers under the unsound `CRANELISP_NONATOMIC_RC` probe
+([ownership-codegen.md](ownership-codegen.md) §5.2).
 
 ## 3. Structure: one ownership plan per compiled body
 
@@ -468,14 +472,15 @@ of this design.
   (`CacheManifest::ownership_disabled`), so a cache written in one polarity is
   never loaded in the other, and `BUILD_ID` invalidates objects from an earlier
   compiler.
-- **No backend public API change is expected.** An unchanged baseline is the
-  evidence; it is `dev`'s to produce at the phase checkpoint.
+- **No backend public API change.** `dev` reported `public-api.txt` +0 at
+  the cutover and at each W2 fix.
 - **Cross-crate facts for `arch`, not deltas.** The backend no longer reads
   borrow modes from `ModeSummary`, so those typecheck outputs have no emission
   consumer (review §3.5; arch's follow-on packet). The toggle's meaning, as
   `cranelisp_types::ownership_analysis_off` documents it, widens to "moves
   off". Neither changes a signature.
-- **Every golden-CLIF fixture changes.** Re-baselining is `qa`'s and `test`'s.
+- **The golden-CLIF corpus was re-baselined** by `test`, with attribution, in
+  the same wave.
 
 ## 8. Evidence conditions for `qa`
 
@@ -535,34 +540,14 @@ pre-cutover emission did: falsified by a workload whose in-place count falls.
 
 ## 9. Open questions
 
-### 9.1 For the user: confined non-atomic RC
+### 9.1 Confined non-atomic RC — decided
 
-The user ruled that stack placement and confined non-atomic counting stay for
-now and are decided after the cost measurement. The ruling assumed both still
-act. Stack placement does. Confined counting does not: its one emission
-consumer was the return protect, which U′ removes (§2.4). Keeping it now
-therefore means **dead code until the decision**, with no effect on emitted
-code. The cost measurement cannot inform the decision, because both of its
-arms emit the same code.
-
-- **Retire it.** Delete the backend classifier and its census hook. The
-  per-site non-atomic arms stay for the measurement probe. Typecheck's
-  `confined` fact keeps one backend reader, the spark-density axis, which ships
-  disabled. Cost: nothing measurable today, because nothing reads it.
-- **Give it a consumer under U′.** Under U′ the RC operations are a binder's
-  duplicates and drops, not a producing node's increment, so the fact a
-  consumer needs is per binder: "this binder's cell is confined". Typecheck
-  does not produce that today
-  ([ownership-codegen.md](ownership-codegen.md) §5.1). This is cross-crate work
-  for `arch`, and its benefit is unmeasured.
-- **Keep it as dead code until the measurement**, as ruled. It is cheap, but it
-  is code with no caller, which Principle 08 excludes. It also gives the
-  measurement nothing to compare.
-
-**Recommendation:** retire the backend consumer now. Reopen confined counting
-as a typecheck and backend design only if the contention benchmark shows
-atomic RC traffic worth removing. The verdict is the user's. Stack placement is
-unaffected and stays under the existing ruling.
+The user ruled on 2026-11-16 to simplify the dev path to the optimisations
+that prevent asymptotic blow-up (Principle 27). The backend classifier and its
+census retired at S123 W4; typecheck keeps producing its confinement and escape
+facts. The as-built state is [ownership-codegen.md](ownership-codegen.md)
+§5. Reopening confined counting is a release-tier design, under that
+section's re-entry rule.
 
 ### 9.2 Falsifiers this design carries
 

@@ -43,11 +43,13 @@ pub fn resolve_module_file(
     None
 }
 
-/// The tier-2 file `resolve_module_file` tries first for `module`. A module
-/// whose recorded file equals this path was resolved from the project root,
-/// which is how the test runner tells project from library modules
-/// (`design/int/test-runner.md` §4.1).
-pub(crate) fn project_root_candidate(module: &ModuleFullPath, project_root: &Path) -> PathBuf {
+/// The file that `module`'s name maps to under `project_root`, and the first
+/// file the module resolver probes for it: each `.` in the module path is a
+/// directory separator, so `core.str` maps to `{project_root}/core/str.cl`.
+///
+/// The path is computed, not probed; it need not exist. A module whose
+/// recorded file equals this path was resolved from the project root.
+pub fn project_root_candidate(module: &ModuleFullPath, project_root: &Path) -> PathBuf {
     project_root.join(module_relative_path(module))
 }
 

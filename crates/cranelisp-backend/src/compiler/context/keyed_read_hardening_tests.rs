@@ -44,7 +44,7 @@ fn main_key(symbol: &str) -> FQSymbol {
     }
 }
 
-// spec: design/backend/backend.md "Two soft arms remain" (ACT-0964 item 1) —
+// spec: design/backend/backend.md §2 "Keyed type and constructor reads fail in every profile" —
 // control: every constructor of an intact type resolves.
 #[test]
 fn every_constructor_of_an_intact_type_resolves() {
@@ -52,7 +52,7 @@ fn every_constructor_of_an_intact_type_resolves() {
     assert_eq!(metas.expect("intact type").len(), 2);
 }
 
-// spec: design/backend/backend.md "Two soft arms remain" (ACT-0964 item 1) — a
+// spec: design/backend/backend.md §2 "Keyed type and constructor reads fail in every profile" — a
 // planted constructor no probe can resolve is an error, not a dropped entry.
 #[test]
 fn a_constructor_no_probe_resolves_is_an_error_not_a_dropped_entry() {
@@ -61,7 +61,7 @@ fn a_constructor_no_probe_resolves_is_an_error_not_a_dropped_entry() {
     assert!(err.to_string().contains("keying drift"), "{err}");
 }
 
-// spec: design/backend/backend.md "Two soft arms remain" (ACT-0964 item 1) — a
+// spec: design/backend/backend.md §2 "Keyed type and constructor reads fail in every profile" — a
 // type whose module has no table is an error, not an empty constructor list.
 #[test]
 fn a_type_with_no_module_table_is_an_error() {
@@ -71,7 +71,7 @@ fn a_type_with_no_module_table_is_an_error() {
     assert!(err.to_string().contains("keying drift"), "{err}");
 }
 
-// spec: design/backend/backend.md "Two soft arms remain" (ACT-0964 item 1) —
+// spec: design/backend/backend.md §2 "Keyed type and constructor reads fail in every profile" —
 // control: a resolvable pattern constructor yields its field types.
 #[test]
 fn a_resolvable_pattern_constructor_yields_its_field_types() {
@@ -79,7 +79,7 @@ fn a_resolvable_pattern_constructor_yields_its_field_types() {
     assert_eq!(fields.expect("Some resolves"), vec![Type::Int]);
 }
 
-// spec: design/backend/backend.md "Two soft arms remain" (ACT-0964 item 1) — a
+// spec: design/backend/backend.md §2 "Keyed type and constructor reads fail in every profile" — a
 // planted pattern-constructor key that misses is an error, never an empty field
 // list (which made every field of the arm an unreleased scalar).
 #[test]

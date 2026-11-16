@@ -125,9 +125,8 @@ fn slab_base_is_stable_across_full_allocation_and_store_churn() {
 }
 
 // spec: design/backend/ownership-codegen.md §8.2 — re-storing an existing
-// slot (the ABI-preserving in-place patch path, and the trap-stub patch
-// on a BROKEN symbol's slot) neither moves the slab nor disturbs
-// neighbouring slots.
+// slot (the ABI-preserving in-place patch path) neither moves the slab
+// nor disturbs neighbouring slots.
 #[test]
 fn in_place_slot_patch_is_isolated_and_base_stable() {
     let mut st: SymbolTable = SymbolTable::new(ModuleFullPath::from("user"));
@@ -137,7 +136,7 @@ fn in_place_slot_patch_is_isolated_and_base_stable() {
     st.got.store_slot(a, 0xAAAA as *const u8);
     st.got.store_slot(b, 0xBBBB as *const u8);
 
-    // Patch `a` in place (the store_slot path the trap stub rides).
+    // Patch `a` in place (the ABI-preserving redefinition path).
     st.got.store_slot(a, 0xCCCC as *const u8);
 
     assert_eq!(st.got.base_ptr(), base, "patch must not move the slab");

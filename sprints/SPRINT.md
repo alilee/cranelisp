@@ -315,6 +315,41 @@ separate approval.
 | 5 W3 | `review` ×2 | intrinsics; `src/` with `Cargo.toml` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; intrinsics: one advisory; `src/`: required R1 (NUL value panics and prints the credential), R2 (multi-line model splits the banner), R3 (root API widened beyond the packet), nit R4 |
 | 5 W3 | `review` | finding-scoped re-review: R3 under P14 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `649a5de0`; no finding survives; R3 closed |
 | 5 W3 | `qa` | W3 adequacy, full suite | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate with three §0.8 assertion gaps; suite 6,960 pass / 33 fail (32 known guards, 1 timing race filed ACT-1051); no guard turned green |
+| 5 W4 | `spec` | §14.9 deleted-file rule revision; retire S123-Q12 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `899afcb0`; §14.9 revised, S123-Q12 retired, ACT-1048 resolved and deleted; follow-up §15.1 consent clause removed (session `36eeed55`); `design` citation repair; checker 0 findings |
+| 5 W4 | `qa` | accept W4 evidence; rescope R-2 to the revised rule | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; R-1, R-3, R-4 and the refusal cell accepted (6 reds for `dev`); R-2 returned to `test` with R-2a and ACT-1051; plan §3.6 refreshed |
+| 5 W4 | `test` | R-2/R-2a rewrite, ACT-1051, fmt revert | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `67d79afb`; R-2/R-2a green on current code; ACT-1051 fixed (10 × 12/12) and deleted; 28 pass, six accepted reds unchanged |
+| 5 W4 | `arch` | dev-path optimisation principle and inventory | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; Principle 27 drafted (ratify at close); 15-row inventory; keep U1, U2, push doubling; defer stack placement, flattening; retire spark density, sibling carrier, mode-ABI gate; questions for the user |
+| 5 W4 | `dev` | `src/`: ACT-1047, ACT-1020, ACT-1035; delete superseded redefinition residue | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; six reds green; residue deleted (`redefine.rs` 3165 → ~1300 lines); cache-load retirement of persisted mono instances and absent-dependent reload skip added; lib 1184/1184; 23 binaries 1180/1191, the 11 pre-existing; two `main.rs` sites need a root helper (`arch`) |
+| 5 W4 | `review` | `src/` W4 change | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `194c794b`; one required finding R1: cache preload retires persisted mono instances as permanent tombstones, so each cached restart consumes GOT slots (128 generics: 7th cached `--run` and `--link` exhaust 1,024 slots); residue deletion, absent-dependent filter and file protection clean |
+| 5 W4 | `qa` | evidence for W4 review R1 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; attribution confirmed (5 launches × 129 tombstones; monomorphic control +1/launch); R-5 allocated (e2e in `tests/cache.rs`, dev unit row); ACT-1025 citation fixed |
+| 5 W4 | `test` | R-5 cached-restart slot growth RED | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `4dcb5f63`; `tests/cache.rs::cached_restarts_keep_generic_instance_slot_capacity_across_modes` RED on exhaustion at the third cached launch; control and six fences green |
+| 5 W4 | `qa` | accept R-5 cell | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; accepted; `test` drops a stray word in the cell comment before commit |
+| 5 W4 | `arch` | R1 fix boundary: slot release on cache load | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; no fix inside the current API; packet P15 (`SymbolTable<(), ()>::release_callable`) and P16 (`cranelisp::project_root_candidate` for ACT-1020's `main.rs` sites) awaiting the user; `performance.md` citations repaired |
+| 5 W4 | `design` | backend: audit R5/R6 remainder; Principle 27 records; classifier retirement design | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; `ownership-codegen.md` gains a per-mechanism disposition table and the retirement change-set (`RcAtomicity` collapses to the global probe); ACT-0964 items 1–2 met; R5 partial (history stubs still cited by other owners; `io-trampoline.md` rewrite ~1 wave, carried); R6 is `dev`'s |
+| 5 W4 | `dev` | backend: classifier retirement, `compile_trap_stub`, citations, R6 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; classifier, census, `RcAtomicity` and `RaiseMessage` gone; CLIF byte-identical pre/post; `public-api.txt` −1 (`compile_trap_stub`); 497 lib tests; probe detection proven; crate memory rewritten; golden lane already red on the W4 tree (4 renumbering drifts) |
+| 5 W4 | `review` | backend W4 change-set | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `937059fd`; no correctness or API finding; `public-api.txt` −1 matches P13; doc handoffs: `qa` plan citation, `design`(backend) probe-coverage claim |
+| 5 W4 | `qa` | attribute golden-lane drift on the W4 tree | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; benign renumbering from `derive_codegen_batch`'s sorted batch (control: HEAD plus `targets.sort()` reproduces all 14 captures); scoped four-entry re-baseline by `test`; plan citation repaired |
+| 5 W4 | `test` | scoped golden re-baseline (four entries); R-5 comment | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `68171dc8`; 130 declarations changed, `u0:K` only; ten goldens unchanged; lane passes; attribution for the commit at `.local/s123-w4/golden-rebaseline/commit-message.txt` |
+| 5 W4 | `dev` | types: P13 (`Life::Broken` and its items) and P15 (`release_callable`) | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; `public-api.txt` −26/+1 as approved; 290 lib tests; refusal-restore detection proven; downstream arms: typecheck `adt.rs` ×2, backend `lib.rs:241`, `src/worker.rs:85` |
+| 5 W4 | `dev` | typecheck: `Life::Broken` arms | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; two arms in `adt.rs`; nextest 972/972; `public-api.txt` +0 |
+| 5 W4 | `spec` | §7.7: stdlib arithmetic semantics leave the language spec | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `dff303ea`; §7.7.1 prescriptions and §7.7.1a removed; §7.5 examples use locally declared traits; checker 0 findings; `qa` regrades §7.4.2a and §7.7 at W4 adequacy |
+| 5 W4 | `dev` | backend: `Life::Broken` arm | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; one arm; nextest 498/498; `public-api.txt` −1 only; no schema bump |
+| 5 W4 | `dev` | `src/`: `Life::Broken` arm, P15 caller and R-5 unit row, P16 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; R-5 unit row red then green, e2e cell 6/6 legs; P16 guards red with the old mapping; 1,608/1,613 with 5 known guards (ACT-1034 ×4, ACT-1016); preload function renamed `release_bodies_the_recompile_restages` (coordinator repaired the packet citation mechanically) |
+| 5 W4 | `review` | finding-scoped R1 and the P13/P15/P16 change-set | gpt-6.1-sol | medium | `codex_role.py` | declined 2026-11-16 (session `4c66beb3`): spanned four surfaces; split per METHOD §1.1 |
+| 5 W4 | `review` | types: P13, P15 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `8202d217`; no implementation finding; baseline −26/+1 matches; advisory doc handoff already with `arch` |
+| 5 W4 | `review` | `src/`: R1 re-review, P15 caller, P16 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `ad702ed1`; R1 closed in every mode; P16 matches; one advisory: safety comment at `lifecycle.rs:4456` repeats the rejected no-cross-module claim |
+| 5 W4 | `dev` | `src/`: P15 safety comment | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; rustdoc states P15's safety grounds with the falsifier; comments only |
+| 5 W4 | `qa` | W4 adequacy, full suite, traceability | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate; suite 6,969 pass / 31 fail (30 filed guards; `role_wiring` principle count from Principle 27); seven guards green; ACT-1047, ACT-1020, ACT-1035 closable after stamps; ACT-1052 carries; spec band regraded; coordinator repaired the Appendix D anchor mechanically |
+| 5 W4 | `test` | `role_wiring` principle count; stamp seven green guards | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `9026ed10`; count updated (34/34); one spec anchor split; stamps follow the W4 commit |
+| 5 W4 | `design` | int: P15 built; rename citations | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; P15 and P13 recorded as built; citations renamed |
+| 5 W4 | `design` | backend: as-built records and probe claims | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; four files; probe coverage stated as a reach table; §5.3 fence corrected |
+| 5 W4 | `design` | int: trap-stub remnants; P15 records as proposed | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; five files; §8.2 records the confirmed defect and P15 as proposed; flips to built after `dev` |
+| 5 W4 | `arch` | W4 as-built records: types crate memory, symbol-table lifecycle, deleted-item mentions | claude-opus-5-5 | high | primary (Claude Code subagent) | delivered 2026-11-16; the types crate memory, the symbol-table lifecycle design, the interfaces record, principle 22's facts and the architecture ownership-inference record updated; redefinition sequence diagram deleted; checker and wiring 0 findings |
+| 5 W4 | `arch` | amend Principle 27 to the user's rulings | claude-opus-5-5 | high | primary (Claude Code subagent, resumed) | delivered 2026-11-16; parallelism carve-out with reasons; scope and inline-table sections; related records aligned; checker and role wiring 0 findings |
+| 5 W4 | `design` | int: W4 as-built records | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; 8 files +265/−380; residue recorded deleted; cache-load retirement recorded with an independent slot-growth concern (= review R1); freeing instead of retiring would need a types-crate function (`arch`, gate) |
+| 5 W4 | `design` | int: `int.md` stale consent paragraph | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; two `int.md` remnants fixed; `design/int/` sweep clean; checker 0 findings |
+| 5 W4 | `design` | int: drop deletion detection and consent from the lifecycle design | claude-opus-5-5 | medium | `claude_role.py` | delivered 2026-11-16; session `e7c1d798`; `repl-lifecycle.md` deletion rule now "needs nothing"; current code already conforms (`src/watch.rs`), no `dev` change |
+| 5 W4 | `test` | REDs R-1 to R-4 and the template-caller refusal cell | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `44b54cb4`; 20 tests, 7 intended REDs (R-1 overwrite and no lock; R-2 notice, written to the superseded rule; R-3 dotted empty start; R-4 SIGSEGV), controls green; refusal cell already passes |
 | 5 W3 | `dev` | `src/`: the three §0.8 loader assertions | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; four `env_files` tests, green first run (implementation conforms); unit 27/27, environment 32/32 |
 | 5 W3 | `qa` | §0.8 annotations for the new tests | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; gaps closed; §0.8 heading `[Tested]`; both checkers exit 0 |
 | 5 W3 | `spec` | CLI §0.8: the three agreed loader readings | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `bc8f3826`; all three recorded in `repl/spec/00-cli-invocation.md` §0.8; checker clean; `qa` reassesses evidence |
@@ -503,6 +538,54 @@ accepting every recommendation presented with it:
   malformed; a chosen value containing a NUL byte stops startup without
   printing the value. `spec` records them.
 
+- **Deleted backing file (revises the 2026-11-15 deletion ruling; resolves
+  S123-Q12 and ACT-1048).** The REPL owns its backing files. A deleted loaded
+  file needs no detection, notice or consent: its definitions stay live and
+  the next definition rewrites the file as usual. The rule for a file that
+  appears mid-session is unchanged.
+
+- **Dev-path optimisation (resolves `uniform-counting.md` §9.1).** The user's
+  words: "simplify the dev path. we just need enough optimisations to avoid
+  exponential time. otherwise we'll defer to release build. however, we
+  should be retaining the type annotations that release optimisations might
+  rely on, even if dev does nothing with them." The backend's confined
+  non-atomic classifier retires; typecheck keeps producing its confinement
+  and escape facts. `arch` records the principle and assesses the other
+  dev-path optimisations against it. Coordinator's reading, for the user to
+  correct: "exponential" covers any super-linear blow-up, such as the
+  quadratic update loops U′ removed.
+
+- **Principle 27 questions (2026-11-16).** The user accepted the
+  recommendations, except parallelism:
+  1. "Blow-up" means a change of growth rate, not literally exponential;
+     U1, U2 and `Vec` capacity doubling stay.
+  2. Principle 27 replaces the 2026-11-15 ruling that kept stack placement
+     pending a cost measurement.
+  3. No new dev-tier optimisation from now. The confined classifier retires
+     in W4; the other retirements and deferrals (stack placement,
+     flattening, spark density, the borrow-elision carrier, the mode-ABI
+     redefinition gate) are scheduled for S124 with their API packets and
+     spec rulings.
+  4. **Parallelism stays on the dev tier:** lenient evaluation and the
+     spine §0 parallelisation goal remain in force. `arch` amends
+     Principle 27 to say so.
+  5. The inline scalar primitive table is the direct lowering of a scalar
+     op, not an optimisation; it stays.
+  6. Compile-time machinery (module cache, incremental JIT) is outside
+     Principle 27, which covers emitted code.
+
+- **P15 and P16 approved** as proposed (packet §A6): `SymbolTable<(), ()>::release_callable`
+  for the cached-restart slot fix (review R1, R-5), and
+  `cranelisp::project_root_candidate` for ACT-1020's two `main.rs` sites.
+
+- **§7.7.1 `Num` overflow and §7.7.1a `Unchecked` (2026-11-16).** The
+  user's words: "this is a stdlib decision - so not part of language.
+  different stdlibs could have different levels of panic-aversion." The
+  language spec prescribes only the primitives' arithmetic (§12.7.3); how a
+  stdlib's `Num Int` treats overflow, and whether it offers an unchecked
+  variant, is that stdlib's choice. `spec` removes the prescription from
+  §7.7.1 and §7.7.1a and replaces §7.5's `Unchecked` examples.
+
 ## Waves (Phase 4 proposal)
 
 Rules for every wave:
@@ -574,9 +657,9 @@ user before W3.
 
 | Order | Role | Surface | Work |
 |---|---|---|---|
-| 1 | `test` | `tests/` | R-1 to R-4 (ACT-1047, ACT-1048, ACT-1020, ACT-1035) and the template-caller refusal cell |
-| 2 | `dev` | `src/` | ACT-1047, ACT-1048, ACT-1020, ACT-1035; delete the superseded redefinition machinery and its outcomes |
-| 3 | `dev` | types, backend | P13 and `compile_trap_stub`, if the deletion landed |
+| 1 | `test` | `tests/` | R-1 to R-4 (ACT-1047, the deleted-file rule R-2/R-2a, ACT-1020, ACT-1035), the template-caller refusal cell, and ACT-1051 |
+| 2 | `dev` | `src/` | ACT-1047, ACT-1020, ACT-1035 (ACT-1048 needs no change under the 2026-11-16 ruling); delete the superseded redefinition machinery and its outcomes |
+| 3 | `dev` | types, backend | P13 and `compile_trap_stub`, if the deletion landed; retire the backend confined classifier (`rc_atomicity_for_node`) and its census hook |
 | 4 | `design` | backend | audit R5/R6 remainder after the U′ landing |
 | 5 | `review` | `src/`, types | |
 

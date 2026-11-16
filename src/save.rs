@@ -2358,7 +2358,7 @@ mod tests {
     // `UserFn`. `generate_fns_and_macros` MUST suppress its SOURCE emission
     // (symmetric with the `$`-mangled filter), while leaving the live
     // in-session `__expr` symbol-table entry untouched — only emission is
-    // suppressed, not the entry the reload/T1 path reads.
+    // suppressed, not the entry the reload path reads.
     // spec: repl/spec.md §15.7 — transient expressions are session-only
     #[test]
     fn regen_excludes_bare_expr_wrapper_keeps_defns() {
@@ -2395,7 +2395,7 @@ mod tests {
         );
 
         // The live in-session entry is untouched — only its emission is
-        // suppressed (the reload / T1 / cache-restore paths read this entry).
+        // suppressed (the reload and cache-restore paths read this entry).
         assert!(
             st.get(&cranelisp_types::Symbol::from("__expr")).is_some(),
             "the live `__expr` symbol-table entry MUST remain after regeneration"

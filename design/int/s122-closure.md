@@ -76,9 +76,8 @@ publication.
 The Q1 control settled the replacement/instance lifecycle correction on
 2026-09-10. A caller-free replacement without a prior realization returns the
 new value, while the otherwise identical case with a prior concrete
-realization returns the stale value. Current source also excludes `__expr` from
-`ReverseIndex`, returns from `drive_t1_full_cure` when its named stale-caller
-set is empty, and lets the typechecker treat a visible `Life::Concrete` at the
+realization returns the stale value. Source also excludes `__expr` from
+`ReverseIndex` and lets the typechecker treat a visible `Life::Concrete` at the
 demand's instance key as already settled. The public control discriminates a
 stale previously realized instance; the empty-caller route is a source-backed
 inference rather than a directly instrumented observation.
@@ -125,10 +124,10 @@ The corrected binding cadence is part of the original ordinary prepared turn:
    introspection and backing-source updates.
 
 This work occurs inside `prepare_cluster_commit`, before
-`plan_staging_commit`, compilation or any live publication. The post-publication
-`apply_redefinition_outcomes` T1 reload is not the Q1 implementation: a failure
-there could no longer preserve the complete prior base-plus-realizations
-candidate. Q1 adds no dependent recompilation or cascade.
+`plan_staging_commit`, compilation or any live publication. Nothing runs after
+publication on its account: a failure there could no longer preserve the
+complete prior base-plus-realizations candidate. Q1 adds no dependent
+recompilation or cascade.
 
 A persisted-source reload does not use this cadence. It rebuilds the module
 from a fresh table and recompiles its dependents, whose definitions demand
@@ -570,7 +569,7 @@ and the `--test` environment is [test runner §7.1](test-runner.md#71---test-mai
    failed or waiting from the refusing record, with the refusal-chain check,
    and sets the cause from the structural refusal record of this attempt
    only. `ReloadOutcome` gains the waiting outcome, which has no notice;
-   `/mod`, T1 and T2 read only the rebuilt outcome.
+   `/mod` reads only the rebuilt outcome.
 5. **A failed load's record.** One session operation over the reset modules:
    the failure-dependency union, the classification and the purge. Startup
    recovery runs it after recording an unregistered entry's parse failure,

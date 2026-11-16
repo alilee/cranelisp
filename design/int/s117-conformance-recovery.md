@@ -100,9 +100,7 @@ expansion:
 
 - staged symbol-table entries and their staged slots;
 - the exact codegen enrollment derived from the turn's finalised program;
-- turn-local typecheck-product and introspection updates;
-- redefinition outcomes, which remain pending until codegen succeeds (as
-  built; they retire with the superseded residue, §1.1.3).
+- turn-local typecheck-product and introspection updates.
 
 An error before ordinary publication drops these products. Earlier live
 definitions and every successful macro checkpoint remain unchanged. The next
@@ -344,7 +342,7 @@ publication's committed `RedefinitionOutcome`s into a stack-owned, move-only
 receipt, so that a later `Err` in the same turn could not discard the §18
 dependent work they drove. The REPL redefinition rules
 (`repl/spec/18-redefinition.md`) now require no such work, and the outcomes
-are deleted with the superseded redefinition residue
+were deleted with the superseded redefinition residue in S123
 ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken);
 [arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
 

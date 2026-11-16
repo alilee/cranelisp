@@ -149,25 +149,6 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_dir: &Path) {
     use cranelisp_backend::cache;
 
-    // S101 cache-write poisoning (repl/spec.md §18.8; design/int/
-    // session-transaction.md §8.3): a module holding a BROKEN symbol at write
-    // time persists NOTHING — a cache snapshot would capture trap-stub GOT
-    // state as the module's compiled truth, letting a restart serve stale
-    // code for a definition whose source no longer typechecks. Skipping is
-    // cheap (the source hash has diverged anyway) and self-heals: the first
-    // fully-green turn re-enqueues (`mark_object_stale`) and persists
-    // normally. The caller still marks the module object-complete, so
-    // `wait_object_complete` never hangs on a poisoned module.
-    if shared.symbol_tables.get(module).is_some_and(|table| {
-        table.all_symbols().any(|(_, binding)| {
-            binding.callable().is_some_and(|callable| {
-                matches!(callable.arm.life, cranelisp_types::Life::Broken { .. })
-            })
-        })
-    }) {
-        return;
-    }
-
     // Resolve cache paths up front — `.meta.json` persistence is DECOUPLED from
     // `.o` output (S84 Phase 4B, FIXME 0387). A module that type-checked but
     // codegens nothing (a generic-only module whose sole defn is a slot-less

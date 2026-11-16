@@ -37,7 +37,7 @@ timebase (§6) and merges at dump time (§7).
 |---|---|---|---|
 | `CRANELISP_SCHEDULER_TRACE=1\|*\|<module>[,<module>…]` | scheduler ring | scheduler/worker pool transitions, dependency registration, `is_typechecked` hit/miss, REPL reload, symbol-table ensure | `src/observability.rs` |
 | `CRANELISP_IO_TRACE=1\|*` | IO ring | IO trampoline transitions, platform effects, continuation push/pop, `Par` spark/join | `src/io_trace.rs` |
-| `CRANELISP_GOT_TRACE=1\|*` | GOT ring | GOT-slot writes: `JitWrite`, `LinkerWrite`, `Redefinition`, plus int's `SlotFreeze` / `TrapPatch` | `src/got_trace.rs` |
+| `CRANELISP_GOT_TRACE=1\|*` | GOT ring | GOT-slot writes: `JitWrite`, `LinkerWrite`, `Redefinition`, plus int's `SlotFreeze` | `src/got_trace.rs` |
 | `CRANELISP_SCHED_DUMP_ON_SIGUSR1` (any value) | scheduler-state snapshot | live pool / `blocked_on` / waiter / queue state on `SIGUSR1` | `src/sched_dump.rs` (§8) |
 | *(none — `RunMode::Repl`)* | introspection store | per-symbol metadata (§10; shape in `int.md` §4.3) | `SharedState.introspection` |
 
@@ -86,10 +86,9 @@ int is a host-client only). int registers `record` as the observer and maps each
 ### 3.3 `CRANELISP_GOT_TRACE`
 
 Values `1` or `*`; anything else is off. Backend emits `JitWrite` and
-`LinkerWrite`; int's own redefinition machinery adds two tags backend has no
-name for — `SlotFreeze` (an ABI-changing redefinition froze the old slot and
-allocated a fresh one) and `TrapPatch` (a BROKEN symbol's slot was patched to a
-trap stub), per `session-transaction.md` §9.3.
+`LinkerWrite`; int's commit gate adds one tag backend has no name for,
+`SlotFreeze` (an ABI-changing redefinition froze the old slot and allocated a
+fresh one), per `session-transaction.md` §9.3.
 
 ## 4. Placement and hard constraints (MANDATORY)
 
@@ -391,7 +390,7 @@ improvement if one ever is.
 - `design/arch/d1-introspection-repl-only.md` §4 — the `RunMode` ruling.
 - `design/intrinsics/reactor.md` — the IO runtime int is a host-client of; §0 is
   the seam.
-- `design/int/session-transaction.md` §9.3 — the two int-owned GOT tags.
+- `design/int/session-transaction.md` §9.3 — the int-owned GOT tag.
 - `design/int/concurrency-architecture.md`, `design/int/signature-body-prepass.md`
   — the scheduler topology whose transitions the scheduler ring observes.
 - `design/int/heisenbug-race-closure.md` — the race investigation these

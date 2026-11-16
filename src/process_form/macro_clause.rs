@@ -129,7 +129,6 @@ pub(super) fn compile_macro_checkpoint(
         env.symbol_tables,
         module,
         staging,
-        &program,
         shared,
         &crate::worker::PublicationCheck {
             lookup_dependencies: &lookup_dependencies,

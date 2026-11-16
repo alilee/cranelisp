@@ -3061,3 +3061,30 @@ fn trait_qualified_nullary_return_dispatch_pinned_dispatches() {
         ":primitives/Float 0",
     ]);
 }
+
+fn w4_impl_begin(keep: &str) -> helpers::e2e::CrOutput {
+    repl_prims(&format!(
+        "(deftype (Opt a) Nope (Yep [:a v]))\n\
+         (deftrait Size (size [self] Int))\n\
+         (impl Size Int (defn size [n] n))\n\
+         (begin (impl Size (Opt a) (defn size [o] 1)) {keep})\n\
+         (size 5)\n"
+    ))
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 — R-4 survives a begin containing only the later parametric impl.
+// defect: class=mode-divergence locus=src/worker.rs::derive_codegen_batch found=S123 owner=/dev — ACT-1035; paired with w4_impl_begin_with_keep_retains_code_control (design/int/session-transaction.md §2.5).
+#[test]
+fn w4_impl_begin_without_keep_survives() {
+    w4_impl_begin("")
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 — R-4's discriminating control adds a staged concrete body in the same begin.
+#[test]
+fn w4_impl_begin_with_keep_retains_code_control() {
+    w4_impl_begin("(defn keep [] 0)")
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5");
+}

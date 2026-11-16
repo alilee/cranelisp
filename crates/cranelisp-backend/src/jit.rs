@@ -176,9 +176,8 @@ impl Drop for Jit {
 
 // The `pub(crate)` JIT-orchestration methods below (`declare_*`, `finalize*`,
 // `get_*ptr*`) are reached only from in-crate unit tests; production codegen
-// goes through `compile_to_module`. `new_with_symbols` also serves the
-// production trap-stub compiler. The `dead_code` allow covers the test-only
-// methods.
+// goes through `compile_to_module`. The `dead_code` allow covers these
+// test-only methods.
 #[allow(dead_code)]
 impl Jit {
     /// Construct a JIT whose entire symbol set is derived from `symbol_tables`

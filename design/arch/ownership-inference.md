@@ -13,8 +13,8 @@ until amended.
 pass (`crates/cranelisp-typecheck/src/ownership/`) and backend consumption of published
 summaries exist in source. This document states the contract; it does not grade how much of
 each increment (§7) is delivered — the interior designs and the verification plan own that.
-The user-directed R3 resolution (dependent recompilation, not ABI pinning) governs §5; the
-interim live-redefinition restriction it implies is tracked by
+Guarded redefinition governs §5, which also records the superseded R3 dependent-recompilation
+ruling; the interim live-redefinition restriction is tracked by
 [ACT-0953](../../sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md).
 **Provenance / measured basis:** the S99 ablation settlement (`sprints/archive/sprint-99.md`;
 `effect-concurrency.md` §3.1; `tests/plan/s99-measurement.md`) —
@@ -97,8 +97,8 @@ actors map — one producer, one boundary, five queries, five consumers.
   boundary type was considered and rejected — larger surface, a schema-relevant commitment on
   a serialised type, for a bug local to one walk; Principle 8). See
   `design/typecheck/ownership-inference.md` §3.4(i) + FIXME 0518.
-- **The backend lowering** (shared Cranelift path — see §3.4): five mechanisms, each consuming
-  one query's output; all intra-function analyses (`compute_last_uses`,
+- **The backend lowering** (the Cranelift path, which keeps only the mechanisms Principle 27
+  admits — see §3.4): the mechanisms, each consuming one query's output; all intra-function analyses (`compute_last_uses`,
   `HeapCategory::classify`) and all mechanism internals stay here.
 - **The session** (`src/session_v4.rs` + scheduler): owns the R3 dependent-recompilation
   transaction — the who-calls-whom index, the recompilation ordering, the cascade-error
@@ -494,17 +494,18 @@ judged against this sentence.
 
 ### 3.4 Tier statement + oracle (R7)
 
-**The mechanisms land in the shared Cranelift lowering** — not in `--release`. The S99 contention
-lives on the only tier that exists, and FIXME 0408's exemplar-witness is scheduled before
-`--release`. This **supersedes D-Rel-4's "the Cranelift dev path stays unoptimized" for the
-memory-model subset** (Q1–Q5 mechanisms); the codegen-engine mechanisms (M-LLVM, M1 direct calls,
-M2 LTO, M3 IR-level RC fusion) remain release-tier-only per `release-llvm-backend.md`. The
-correctness-oracle role D-Rel-4 assigned to the unoptimized path is preserved by the contract
-itself: **the conservative all-Owned / all-atomic / all-heap lowering remains reachable via an
-analysis-off toggle** (env-gated, byte-identical to today's lowering when on) and is the standing
-differential baseline / correctness oracle for `/qa`'s harness (part 17). `--release` later
-consumes the *same* facts through the same `MonoExpr` boundary — two tiers, one input, one
-analysis (Principle 7).
+**The facts are produced for both tiers; a mechanism lands in the dev lowering only under
+[Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md).** Typecheck computes
+and publishes the Q1–Q5 facts on every analysis-on compile, whether or not the Cranelift lowering
+reads them. A memory-model mechanism belongs in the dev lowering only when its absence would
+change a program's growth rate. Every other mechanism, and every codegen-engine mechanism (M-LLVM,
+M1 direct calls, M2 LTO, M3 IR-level RC fusion), belongs to the release tier
+(`release-llvm-backend.md`). This replaces the S100 placement of all memory-model mechanisms in the
+shared lowering. The current disposition of each built mechanism is
+[ownership codegen](../backend/ownership-codegen.md) §0. **The conservative all-Owned / all-atomic /
+all-heap lowering remains reachable via the analysis-off toggle** and is the standing differential
+baseline and correctness oracle for `/qa`'s harness (part 17). `--release` consumes the *same*
+facts through the same `MonoExpr` boundary: two tiers, one input, one analysis (Principle 7).
 
 ### 3.5 Increment-compatibility constraint (from finding 4)
 
@@ -835,6 +836,15 @@ inline-`vec-get` shapes.
 
 ## §5. Mode summaries, module caching, and the R3 redefinition model (part 4)
 
+**Current model.** Live redefinition is guarded publication
+([session transaction §0](../int/session-transaction.md#0-the-model)): an
+ABI-changing redefinition with a blocking dependent is refused, and no
+redefinition re-typechecks or recompiles a dependent. §5.1, §5.5 and §5.6's
+fresh-slot, freeze and retention rules describe the current system. §5.2–§5.4,
+§5.7 and §5.6's references to recompiled callers record the S101 R3 ruling and
+its dependent-recompilation transaction, which the guard replaced; they are not
+the current system.
+
 ### 5.1 Batch (`--run`/`--link`): summaries persist; invalidation is the cache's dependency record
 
 The `.meta.json` **is** a serialised `SymbolTable`
@@ -954,37 +964,17 @@ the same work a batch recompile would do for that cone, moved into the interacti
 summary-diff gate is what keeps the common case at today's cost; the fixpoint's optimistic
 initialisation keeps re-inference from ping-ponging.
 
-### 5.5 Cascading type/mode error management
+### 5.5 No cascade: a breaking redefinition is refused
 
-A caller that no longer typechecks under `f`'s new signature/mode is a **cascade error**. The
-design generalises the S45 model (module-level `reset_module` + embedded-original-error) to
-symbol level:
-
-- **The failing caller `g` is marked BROKEN, with provenance.** Its entry stays in the table
-  (scheme/docstring/ast intact for introspection and recovery) but its `code` **moves to the
-  session retention pool** (never `None`d in place — dropping what may be the last `Arc<Jit>`
-  frees machine-code pages in-flight frames or heap closures can still execute; the pool pairs
-  each retained handle with its trap-message buffer, `design/int/session-transaction.md` §6)
-  and its **GOT slot is patched to a trap stub** that, if called, raises a clean runtime error naming the
-  provenance: `g is broken by the redefinition of f: <original type/mode error>`. Note that under
-  §5.6's slot versioning `g`'s *old* code is ABI-consistent (it references frozen old slots), so
-  serving it stale would be memory-safe — the trap is a **deliberate UX ruling**, not a soundness
-  necessity: silently executing code that diverges from the source the user just changed is the
-  worse dev experience (the self-documenting-REPL principle: fail loud, with provenance,
-  recoverably). (The stub is the symbol-level analogue of the scheduler's Failed pool; its
-  mechanism — one intrinsic + per-symbol baked message vs. per-symbol stub emission — is a
-  backend-proposal question, §10.)
-- **The turn reports the full cascade**, grouped: `f` redefined; recompiled OK: [...]; broken:
-  `g` (error), `h` (error). The REPL's self-documenting principle applies — each broken symbol
-  answers `/info`/`/sig` with its broken status + provenance.
-- **Recovery is by redefinition**, either direction: redefining `g` to match, or redefining `f`
-  back, re-runs the transaction; a broken symbol that re-typechecks is recompiled and its slot
-  re-pointed at real code. Broken-ness is ordinary session state, not a sticky mode.
-- **Transitivity:** a broken `g` cannot be recompiled-against, so callers of `g` compiled against
-  `g`'s (unchanged) old summary remain valid **only if** `g`'s ABI surface didn't change — and it
-  didn't (it failed before producing a new one). Callers of `g` therefore stay live and simply
-  hit the trap through `g`'s slot at runtime. No transitive breaking is needed; provenance chains
-  are depth-1 by construction.
+A redefinition that would leave a caller unable to typecheck is refused before
+publication: a language-type change is admitted only when its target has no
+blocking dependent (`repl/spec/18-redefinition.md` §18.1). No callable is
+marked broken, no trap stub exists and no turn reports a cascade. The lifecycle
+has no broken state, so one cannot be represented
+([session transaction §5](../int/session-transaction.md#5-no-broken-symbols);
+[symbol-table lifecycle §4.2](symbol-table-lifecycle.md#42-the-state-machine)).
+The S101 broken-symbol design that this subsection held was deleted from
+source in S123; Git retains it.
 
 ### 5.6 Commit soundness — ABI-epoch slot versioning (no stop-the-world)
 
@@ -1004,11 +994,9 @@ illegal state unrepresentable by encoding ABI identity in slot identity):
   slot**; `f`'s entry now carries the new slot. The **old slot freezes**, pointing at the old
   implementation for the table's lifetime (iv). Every recompiled caller whose own ABI surface changed in the fixpoint
   gets a fresh slot the same way; a recompiled caller whose ABI is unchanged is patched in place
-  (its callers need no recompile). A BROKEN caller's trap stub is patched **in place** on its
-  existing slot — the stub raises without touching its arguments, which is signature-safe, and
-  in-place is what makes existing unrecompiled callers reach it. Stale code — heap closures,
-  suspended continuations, in-flight frames, and the old bodies of every not-yet-recompiled or
-  BROKEN caller — references old slots exclusively, reaching only old-ABI implementations.
+  (its callers need no recompile). Stale code — heap closures,
+  suspended continuations, in-flight frames, and the old bodies of every not-yet-recompiled
+  caller — references old slots exclusively, reaching only old-ABI implementations.
   **No mixed-ABI edge can exist, by construction**; the chain is consistent transitively (an old
   body's calls resolve through old slots to old bodies, recursively). Each slot write is
   independently atomic and independently safe — **no quiesce, no trampoline pause, no patch
@@ -1046,7 +1034,7 @@ illegal state unrepresentable by encoding ABI identity in slot identity):
 - **Semantics note.** Stale code sees pre-redefinition behaviour of the whole old chain (frozen
   world), rather than today's mid-chain late-binding mix — for ABI-changing edits this is the
   *more* coherent semantic, and recompiled callers (the reachable-by-name world) are fully
-  current. The turn's cascade report (§5.5) is where the user sees which world each symbol is in.
+  current.
 - Batch modes are untouched (no redefinition; `--link` a fortiori). The slot-allocation cost is
   one GOT entry per ABI-changing redefinition.
 
@@ -1312,8 +1300,7 @@ starved-inc regression fence). Value use of an inline-realised primitive is fenc
 11. **The R5 value-representation flattening design** (§6.3) — `HeapCategory` arm, ABI/size
     bounds, Vec-of-values layout, cache/`--link` parity, trace descriptors; the eligibility
     predicate is single-sourced in `cranelisp-types` per the [layout ruling](ownership-inference.md#63-the-copy-rows-mechanism-r5-named-routed-to-the-backend-proposal) (FIXME 0468 resolved).
-12. The R3 machinery's backend half: the trap-stub mechanism for broken callers (§5.5 — stub
-    args-untouched raise semantics + the RC-mid-panic caveat), fresh-slot allocation + frozen-slot
+12. The R3 machinery's backend half: fresh-slot allocation + frozen-slot
     retention (§5.6 — the `Code::Jit` retention rule extending Decision 31 Scenario 2) — jointly
     with `/int` (session transaction orchestration, the reverse-index lifecycle, diagnostics UX,
     file-watcher interplay), whose design home is `design/int/`.

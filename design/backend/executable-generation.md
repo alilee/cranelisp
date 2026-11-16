@@ -130,23 +130,10 @@ Key flags:
 - `-syslibroot`: SDK path from `xcrun --show-sdk-path`. Required by modern macOS `ld`.
 - `-platform_version macos 14.0 14.0`: required by modern `ld` to avoid warnings.
 
-### LinkerConfig abstraction
+### Linker selection
 
-```rust
-struct LinkerConfig {
-    arch: String,           // "arm64"
-    entry_symbol: String,   // "_start"
-    platform: String,       // "macos"
-    min_version: String,    // "14.0"
-    sdk_version: String,    // "14.0"
-}
-
-impl LinkerConfig {
-    fn for_host() -> Result<Self, CranelispError> { ... }
-}
-```
-
-Only the macOS aarch64 variant is implemented initially. The abstraction exists so that Linux ELF support can be added later without restructuring.
+The host's linker is chosen once per `--link` by `link::for_host()`, which
+returns one `Linker` implementation per supported host (§12).
 
 ### Sysroot detection
 
@@ -257,20 +244,21 @@ If no output path is specified, derive it from the entry file:
 
 ## 10. Future Work
 
-- ~~**Linux ELF**: extend `LinkerConfig` with Linux-specific flags.~~ **Designed in §11 (S80).**
 - **Release mode (Phase H)**: LLVM backend produces optimised `.o` files; same linking step applies.
 - **Incremental linking**: only re-link if any `.o` file is newer than the output executable.
 - **Code signing**: macOS may require ad-hoc signing for executables (`codesign -s -`).
 
 ---
 
-## 11. Linux aarch64 ELF support (S80)
+## 11. Linux aarch64 ELF support
 
-The dev/CI host moved to a Mac-hosted **aarch64 Linux VM** (Ubuntu 26.04). On Linux the entire `--link` family fails at `LinkerConfig::for_host()` with *"standalone executable generation is only supported on macOS aarch64"* — ~38 tests (`link::*` ~9, `build_confidence::*` ~12, `spec_platforms_adt` ~8, `spec_platforms` ~4, plus linked `trace`/`cache`/`examples`/`stdlib_link`/`platform_errors`). This section designs the Linux ELF path. See `memory/linux-vm-baseline.md` for the environment baseline.
+Built. `--link` supports macOS aarch64 (Mach-O) and Linux aarch64 (ELF). This
+section records why the two hosts differ.
 
-### 11.1 What is already host-correct (no change)
+### 11.1 What is host-independent
 
-The audit found the macOS coupling is **confined to the linker driver in `src/exe.rs`**. The following already do the right thing on Linux and need no change:
+The macOS coupling is confined to the linker implementations (§12). The
+following are host-independent:
 
 | Concern | Why it already works on Linux |
 |---|---|
@@ -280,17 +268,11 @@ The audit found the macOS coupling is **confined to the linker driver in `src/ex
 | **Bundle artifact name** | `staticlib` crate-type ⇒ `libcranelisp_exe_bundle.a` on both macOS and Linux. `find_bundle_lib()` already searches for `.a`. (Already built on the VM.) |
 | **Startup-stub Cranelift IR** | The stub's body (init-primitives → platform init → layout-hash gate → call main → IO trampoline → `exit`) is platform-neutral CLIF. Only its **exported symbol name** and the **entry strategy** change (§11.3). |
 
-So the work is: (a) a Linux branch of `LinkerConfig`, (b) a Linux branch of `link_executable()` that drives `cc` instead of Apple `ld`, (c) the crt-entry symbol rename (§11.3), (d) Linux platform static-linking (§11.5, the hard part). Items (a)–(c) are `src/exe.rs` — **binary crate, `/int`-owned** per §8; `/backend` owns this design + `build_isa`. Item (d) may pull in `/platform`.
+### 11.2 The host-specific surface
 
-### 11.2 The macOS-specific surface (exhaustive)
-
-Three functions in `src/exe.rs`:
-
-1. **`LinkerConfig::for_host()`** — the gate. Returns macOS config (`arch:"arm64"`, `entry_symbol:"_start"`, `platform:"macos"`, version strings) or the error.
-2. **`link_executable()`** — assembles Apple-ld64 args: `-arch arm64`, `-dead_strip`, `-e _start`, `-platform_version macos …`, `-lSystem`, `-syslibroot …`, `-force_load`. Invokes bare `ld`.
-3. **`get_sdk_sysroot()`** — `xcrun --show-sdk-path` (macOS-only tool).
-
-Plus two hardcoded symbol names that become host-dependent (§11.3): the stub's `declare_function("start", Export, …)` and `generate_main_alias_object`'s `main` export.
+The linker implementation (§12) and two host-dependent symbol names (§11.3):
+the startup stub's export and `generate_main_alias_object`'s `main` export,
+both read from `host_entry_symbols()`.
 
 ### 11.3 Entry-point strategy — the one real design decision
 
@@ -313,7 +295,7 @@ This forces a **two-symbol rename, host-conditional**:
 | Startup-stub export (kernel/crt entry) | `start` (linked `-e _start`) | **`main`** (crt calls it; no `-e`) |
 | User-main alias export / stub's import (`entry_fn_name`) | `main` | **`cranelisp_user_main`** (renamed to avoid colliding with the C `main`) |
 
-Both names are read from `LinkerConfig` so `generate_startup_object` and `generate_main_alias_object` stop hardcoding them. The stub keeps calling `exit(code)` and trapping after — valid under crt (glibc is up by the time `main` runs); the trailing `trap` stays unreachable. The stub's zero-param/zero-return CLIF signature is ABI-safe as `main`: crt passes `argc/argv/envp` in `x0/x1/x2`, which we ignore (AAPCS caller-cleanup), and we never return (we `exit`).
+Both names are read from `host_entry_symbols()` so `generate_startup_object` and `generate_main_alias_object` stop hardcoding them. The stub keeps calling `exit(code)` and trapping after — valid under crt (glibc is up by the time `main` runs); the trailing `trap` stays unreachable. The stub's zero-param/zero-return CLIF signature is ABI-safe as `main`: crt passes `argc/argv/envp` in `x0/x1/x2`, which we ignore (AAPCS caller-cleanup), and we never return (we `exit`).
 
 > **No leading underscore on ELF.** cranelift-object emits the symbol verbatim on ELF (`main`), and adds the Mach-O `_` only on macOS. So `declare_function("main", Export, …)` on Linux yields ELF symbol `main` — exactly what crt references.
 
@@ -380,51 +362,13 @@ Resolution options (decided during Phase-2 implementation):
 
 This is **Phase 2** and gates only the platform tests (`spec_platforms*`, `platform_errors` ~13). It landed after Phase 1. **Verified:** a `(platform stdio)` program (`(defn main [] (print "hello"))`) links and runs to `hello`/exit 0; `spec_platforms_adt::platform_stdio_print_link` (the R1 link-wiring guard) passes.
 
-### 11.6 `LinkerConfig` redesign
+### 11.6 Linker configuration
 
-Replace the flat macOS-only struct with a host-dispatched form carrying the **entry strategy** and **driver**:
-
-```rust
-enum LinkDriver { AppleLd, Cc }          // bare `ld` vs the gcc driver
-
-struct LinkerConfig {
-    driver: LinkDriver,
-    stub_entry_symbol: &'static str,     // macOS "start"   | linux "main"
-    user_main_symbol:  &'static str,     // macOS "main"    | linux "cranelisp_user_main"
-    // macOS-only fields (unused on Linux):
-    arch: Option<&'static str>,          // "arm64"
-    platform_triplet: Option<(&'static str,&'static str,&'static str)>, // (platform,min,sdk)
-}
-
-impl LinkerConfig {
-    fn for_host() -> Result<Self, CranelispError> {
-        match (cfg!(target_arch = "aarch64"), std::env::consts::OS) {
-            (true, "macos") => Ok(/* AppleLd, "start"/"main", arch+version */),
-            (true, "linux") => Ok(/* Cc, "main"/"cranelisp_user_main" */),
-            _ => Err(/* unchanged "only supported on …" message, widened */),
-        }
-    }
-}
-```
-
-`generate_startup_object` and `generate_main_alias_object` take `stub_entry_symbol` / `user_main_symbol` from this config instead of the string literals `"start"`/`"main"`. `link_executable` matches on `driver` to build the two arg vectors and pick the child process (`ld` vs `cc`). `get_sdk_sysroot` is called only on the `AppleLd` arm.
-
-### 11.7 Phasing & expected test recovery
-
-| Phase | Scope | Clears (approx) |
-|---|---|---|
-| **1 — non-platform ELF** | §11.3 entry rename + §11.4 `cc` driver + Rust-std externs. No platform statics. | `link::*` (9), `build_confidence::*` (12), `trace` linked (2), `cache` (2), `examples` (1), `stdlib_link` (1), `s68_link` (1) — **~28** |
-| **2 — platform statics** | §11.5 rlib object-extraction (or staticlib). | `spec_platforms_adt` (8), `spec_platforms` (4), `platform_errors` (1) — **~13** |
-
-A handful outside the `--link` family (`repl_persist` 1, `regression` 1, `public_api_relocations` 1, `spec_10_io` 2) are **not** addressed here — they need separate triage and may be unrelated to executable generation.
-
-### 11.8 Validation
-
-Per the Release Gate, after implementation: `cargo nextest run -E 'test(/^link_/) + binary(link) + binary(build_confidence)'` should go green (Phase 1); the full suite should return to ≤ the macOS baseline of ~7 failures once Phase 2 lands (modulo the ~4 unrelated residue). A minimal smoke check during bring-up: `cranelisp --link hello.cl && ./hello; echo $?` must produce the documented exit code. (`cc -fuse-ld=mold` was confirmed working on the VM: a 42-returning C `main` exits 42.)
+Superseded by the `Linker` abstraction (§12).
 
 ## 12. The `Linker` abstraction (S80 Wave 2E) — intent in, platform tokens out
 
-> **Status: TARGET design (S80 Wave 2E /arch ruling, 2026-06-13).** Replaces the §11.6 `LinkerConfig` + the parallel `link_executable_apple_ld` / `link_executable_cc` driver functions with a uniform `Linker` trait whose impls are the *sole* sites where platform tokens (`-force_load`, `--whole-archive`, `-arch`, `-dead_strip`, `/WHOLEARCHIVE:`) appear. `/dev` (int) implements the refactor; this section is the contract it implements against.
+> **Status: built** (`src/link/mod.rs`, `apple.rs`, `gnu.rs`). A uniform `Linker` trait whose impls are the *sole* sites where platform tokens (`-force_load`, `--whole-archive`, `-arch`, `-dead_strip`, `/WHOLEARCHIVE:`) appear. The binary crate implements it; this section is its contract.
 
 ### 12.1 Why — bug D4 and the leak it exposed
 
@@ -543,7 +487,7 @@ The abstraction **cleanly houses both**: they are exactly the kind of platform-p
 **Selection keeps the existing `cfg`-based host dispatch**, lightly reshaped: `for_host()` returns the chosen `Linker` rather than a config struct.
 
 ```rust
-/// The native linker driver for the current host (replaces LinkerConfig::for_host).
+/// The native linker driver for the current host.
 fn for_host() -> Result<Box<dyn Linker>, CranelispError> {
     match (cfg!(target_arch = "aarch64"), std::env::consts::OS) {
         (true, "macos") => Ok(Box::new(AppleLdLinker::new())),
@@ -553,7 +497,7 @@ fn for_host() -> Result<Box<dyn Linker>, CranelispError> {
 }
 ```
 
-**`Box<dyn Linker>` over an enum-dispatch — justified.** There are exactly two live impls and dispatch happens once per `--link` (not in a hot loop), so the virtual-call cost is irrelevant; the `Box<dyn>` form keeps each impl's surface (its private `build_args`, its Apple-only `get_sdk_sysroot`, its GNU-only `the rlib object-extraction step`) fully encapsulated in its own type with no shared enum forced to carry both platforms' fields — which is precisely the leak §11.6's flat `LinkerConfig` (macOS fields `Option`-nulled on Linux) embodied. The trait-object form makes "a token lives in exactly one impl" the default; an enum with a `match self` in every method re-opens the door to a shared body touching both platforms' tokens. (If a future need for `const`/no-alloc selection arises, an enum wrapper delegating to the same impls is a mechanical change — but it is not warranted now.)
+**`Box<dyn Linker>` over an enum-dispatch — justified.** There are exactly two live impls and dispatch happens once per `--link` (not in a hot loop), so the virtual-call cost is irrelevant; the `Box<dyn>` form keeps each impl's surface (its private `build_args`, its Apple-only `get_sdk_sysroot`, its GNU-only `the rlib object-extraction step`) fully encapsulated in its own type with no shared enum forced to carry both platforms' fields — which a flat configuration struct with host-only fields would carry. The trait-object form makes "a token lives in exactly one impl" the default; an enum with a `match self` in every method re-opens the door to a shared body touching both platforms' tokens. (If a future need for `const`/no-alloc selection arises, an enum wrapper delegating to the same impls is a mechanical change — but it is not warranted now.)
 
 **Where it lives: int-internal, `src/exe.rs` (or a new `src/link/` submodule — recommended).** Per §8, `link_executable` and its driver functions are in the **binary crate (`src/`), `/int`-owned**; `/backend` owns this *design* + the Cranelift startup-stub, not the linker-invocation source. The abstraction stays entirely within the binary crate:
 
@@ -566,35 +510,13 @@ fn for_host() -> Result<Box<dyn Linker>, CranelispError> {
 
 Windows is out of scope (§1 non-goals), but the trait is designed so a `MsvcLinker` could be added by writing one impl and one `for_host()` arm, with **zero change to `LinkRequest` or the caller**. The MSVC column of §12.4 sketches the renderings: `/OUT:`, `/ENTRY:` (or crt default), `<name>.lib`, `/WHOLEARCHIVE:<lib>` (MSVC's native force-include — it takes the archive directly, so MSVC would *not* need the GNU `.o`-extraction dance, confirming extraction is correctly a GNU-private detail and not a request-level concern), `/OPT:REF` for dead-strip, `link.exe` as the driver. The fact that MSVC's force-include is a single flag over the raw `.lib` — neither the Apple `-force_load` nor the GNU extract-and-whole-archive — is the proof that `force_include` is correctly modelled as *intent*: three toolchains render it three different ways, and only the request's platform-neutral "make these survive" is common. No field of `LinkRequest` is Apple- or GNU- or MSVC-shaped.
 
-### 12.8 `/dev` migration map (precise — which current code moves where)
+### 12.8 Token confinement
 
-The refactor is a structure-preserving relocation; no link behaviour changes on either live platform (that is the acceptance bar — the ~13 D4 reds go green because the Linux path stops emitting `-force_load`, and the macOS/GNU happy paths stay byte-identical in the commands they issue).
+Any path that spells `-force_load` outside `AppleLdLinker` is the D4 bug
+returning: the link diagnostic prints `Linker::describe`, which each impl
+renders from the command it runs.
 
-| Current code (`src/exe.rs`) | Moves to | Notes |
-|---|---|---|
-| `enum LinkDriver` (`:600`) | **deleted** | Subsumed by the `Box<dyn Linker>` selection; the variant identity is now the impl type. |
-| `struct LinkerConfig` + fields (`:612`) | **deleted** (fields redistributed) | `stub_entry_symbol`/`user_main_symbol` were already read via `host_entry_symbols()` (keep that fn — it stays the source of the stub/alias names, and now also feeds `req.entry_symbol`); `arch`/`platform_triplet` become `AppleLdLinker` internal constants. |
-| `LinkerConfig::for_host()` (`:629`) | `for_host() -> Box<dyn Linker>` | Same `cfg` match; returns the impl instead of the config. |
-| `host_entry_symbols()` (`:660`) | **unchanged** | Still computes `(stub_entry_symbol, user_main_symbol)` for `session_v4.rs`'s stub/alias emission; the caller now also passes `stub_entry_symbol` into `req.entry_symbol`. |
-| `link_executable(...)` dispatch (`:671`) | thin entry: build `LinkRequest`, `for_host()?.link(&req)` | The caller in `session_v4.rs:4121` either keeps calling `link_executable` (which now composes the request) OR `session_v4.rs` composes `LinkRequest` and calls `for_host()?.link()` directly — `/dev`'s call. The bundle dir/name derivation (`:680`–`:688`) becomes `BundleLib { dir, name }` construction. |
-| `link_executable_apple_ld(...)` (`:723`) | `AppleLdLinker::link` (+ private `build_args`) | Body relocated verbatim; reads `arch`/triplet from impl constants instead of `config`; `get_sdk_sysroot()` becomes an Apple-impl-internal call. The `-force_load <rlib>` loop renders `req.force_include`. |
-| `link_executable_cc(...)` (`:793`) | `GnuCcLinker::link` (+ private `build_args`) | Body relocated; the `--whole-archive` group renders `req.force_include`, calling the now-internal `the rlib object-extraction step`; preserves the before-bundle ordering. |
-| `the rlib object-extraction step(...)` (`:878`) | `GnuCcLinker` private (method or module-private fn) | GNU-only; extraction root from `req.startup_obj.parent()`. |
-| `run_linker(...)` (`:977`) | shared helper (stays in `src/exe.rs` or `src/link/`) | Both impls call it; no change. |
-| `get_sdk_sysroot()` (`:999`) | `AppleLdLinker` private | Apple-only; only `AppleLdLinker::link` calls it (the `_ => Err` host arm of the old `for_host` never reached it anyway). |
-| **`log_link_summary(...)` (`:1025`)** | **DELETED → `Linker::describe`** | **The D4 fix.** The hardcoded `-force_load` (`:1054`) is gone. `link_executable` (or the call site) prints `linker.describe(&req)` — each impl renders the real command it will run, from its own `build_args`. The `; Linking: …` line now shows GNU tokens on Linux and Apple tokens on macOS, always matching the executed command. |
-| `find_bundle_lib` / `find_platform_rlibs` / `resolve_platform_rlib` (`:1091`+) | **unchanged** | These are *locators* (produce the paths the request carries), not drivers. They stay in `src/exe.rs`. `find_platform_rlibs` output becomes `req.force_include` (`Vec<ForceIncludeArchive>`). |
+### 12.9 No public-API impact
 
-**`describe` must be called for the diagnostic, and the hardcoded `-force_load` must be deleted** — these are the same instruction stated two ways, and it is the load-bearing line of the migration. Any path that still spells `-force_load` outside `AppleLdLinker` is the D4 bug surviving the refactor.
-
-**Acceptance (for the `/dev` → `/review` cycle):** warm full-workspace build (the §11.5 build-skew caveat — verify only after one `cargo build --workspace`); the ~13 `output_equivalence` link permutations + `platform_stdio_print_link` go GREEN on Linux; `roundtrip_link` / `hash_gate_link_refuses` stay green; the macOS link command is byte-identical to pre-refactor (no token added or dropped); `grep -rn 'force_load' src/` returns hits only inside the `AppleLdLinker` impl.
-
-### 12.9 No public-API impact — confirmation
-
-Confirmed against the canonical set: this change is **int-internal** with **no cross-crate surface movement**.
-- **No `cranelisp-types` edit** — no boundary DTO or trait changes; `LinkRequest`/`Linker` are binary-crate types.
-- **No library surface edit** — int's library surface is `src/lib.rs`, not the `--link` orchestration internals; `link_executable` and the new types are `pub(crate)`/binary-internal.
-- **No `public-api.txt` regeneration** — the binary crate has no tracked baseline; no library crate's `public-api.txt` is touched.
-- **No `bounded-contexts.md` / sequence-diagram edit** — BC §6 (int) already owns "`--link` standalone executable generation"; the linker-driver internal restructure does not change any cross-crate call shape or flow depicted in `sequences/exec-flow-link.*`. The `session_v4.rs → exe::link_executable` arrow is preserved (the function may keep its name; if `/dev` routes the caller to `for_host()?.link()` directly, the arrow's target rename is below the facade granularity the diagram tracks — no signature crossing a crate edge changes).
-
-This section (and §11) is the manifestation site for the abstraction (a backend-owned subsystem design doc per §8 — the `--link` design home); the canonical-set audit sweep finds no consequent edit owed elsewhere.
+`LinkRequest` and `Linker` are binary-crate types; no library crate's surface
+or `public-api.txt` is involved.

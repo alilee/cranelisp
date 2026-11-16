@@ -94,9 +94,9 @@ function %(user/cell-at [(user/Grid (primitives/Vec user/Cell)) primitives/Int] 
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:83 sig0
+    fn0 = colocated u0:82 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:86 sig2
+    fn2 = colocated u0:85 sig2
     fn3 = u0:13 sig3
     fn4 = u0:2 sig4
 
@@ -177,9 +177,9 @@ function %(user/first-success [(user/SolveResult (user/Grid (primitives/Vec user
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:88 sig0
-    fn1 = colocated u0:88 sig1
-    fn2 = colocated u0:88 sig3
+    fn0 = colocated u0:87 sig0
+    fn1 = colocated u0:87 sig1
+    fn2 = colocated u0:87 sig3
     fn3 = u0:2 sig4
 
 block0(v0: i64, v1: i64):
@@ -241,11 +241,11 @@ function %(user/set-cell [(user/Grid (primitives/Vec user/Cell)) primitives/Int 
     sig6 = (i64, i64) system_v
     sig7 = (i64) -> i64 system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:83 sig0
-    fn1 = colocated u0:90 sig1
-    fn2 = colocated u0:86 sig2
+    fn0 = colocated u0:82 sig0
+    fn1 = colocated u0:89 sig1
+    fn2 = colocated u0:85 sig2
     fn3 = u0:2 sig3
-    fn4 = colocated u0:86 sig4
+    fn4 = colocated u0:85 sig4
     fn5 = u0:22 sig5
     fn6 = u0:13 sig6
     fn7 = u0:2 sig8
@@ -563,9 +563,9 @@ function %cell-value(i64) -> i64 system_v {
     sig1 = (i64) system_v
     sig2 = (i64) system_v
     sig3 = (i64, i64) system_v
-    fn0 = colocated u0:85 sig0
-    fn1 = colocated u0:85 sig1
-    fn2 = colocated u0:85 sig2
+    fn0 = colocated u0:84 sig0
+    fn1 = colocated u0:84 sig1
+    fn2 = colocated u0:84 sig2
     fn3 = u0:2 sig3
 
 block0(v0: i64):
@@ -652,7 +652,7 @@ function %checksum-helper(i64, i64, i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
-    fn0 = colocated u0:83 sig0
+    fn0 = colocated u0:82 sig0
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -745,12 +745,12 @@ function %eliminate(i64, i64, i64) -> i64 system_v {
     sig18 = (i64, i64, i64) -> i64 system_v
     sig19 = (i64) -> i64 system_v
     sig20 = (i64, i64) system_v
-    fn0 = colocated u0:85 sig1
-    fn1 = colocated u0:83 sig2
-    fn2 = colocated u0:85 sig4
-    fn3 = colocated u0:83 sig5
-    fn4 = colocated u0:85 sig7
-    fn5 = colocated u0:83 sig11
+    fn0 = colocated u0:84 sig1
+    fn1 = colocated u0:82 sig2
+    fn2 = colocated u0:84 sig4
+    fn3 = colocated u0:82 sig5
+    fn4 = colocated u0:84 sig7
+    fn5 = colocated u0:82 sig11
     fn6 = u0:0 sig14
     fn7 = u0:0 sig17
     fn8 = u0:2 sig20
@@ -976,11 +976,11 @@ function %eliminate-from-peers-helper(i64, i64, i64, i64) -> i64 system_v {
     sig7 = (i64) system_v
     sig8 = (i64, i64) system_v
     fn0 = u0:13 sig0
-    fn1 = colocated u0:81 sig1
+    fn1 = colocated u0:88 sig1
     fn2 = u0:2 sig3
     fn3 = u0:13 sig4
-    fn4 = colocated u0:81 sig6
-    fn5 = colocated u0:82 sig7
+    fn4 = colocated u0:88 sig6
+    fn5 = colocated u0:81 sig7
     fn6 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
@@ -1155,10 +1155,10 @@ function %find-min-helper(i64, i64, i64, i64) -> i64 system_v {
     sig5 = (i64) system_v
     sig6 = (i64) system_v
     sig7 = (i64, i64) system_v
-    fn0 = colocated u0:83 sig0
-    fn1 = colocated u0:85 sig3
-    fn2 = colocated u0:85 sig5
-    fn3 = colocated u0:85 sig6
+    fn0 = colocated u0:82 sig0
+    fn1 = colocated u0:84 sig3
+    fn2 = colocated u0:84 sig5
+    fn3 = colocated u0:84 sig6
     fn4 = u0:2 sig7
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
@@ -1356,27 +1356,27 @@ function %grids-differ-helper(i64, i64, i64) -> i64 system_v {
     sig22 = (i64) system_v
     sig23 = (i64, i64) system_v
     sig24 = (i64, i64) system_v
-    fn0 = colocated u0:83 sig0
-    fn1 = colocated u0:83 sig1
-    fn2 = colocated u0:85 sig4
-    fn3 = colocated u0:85 sig5
-    fn4 = colocated u0:83 sig6
-    fn5 = colocated u0:83 sig7
-    fn6 = colocated u0:85 sig8
-    fn7 = colocated u0:83 sig9
-    fn8 = colocated u0:83 sig10
+    fn0 = colocated u0:82 sig0
+    fn1 = colocated u0:82 sig1
+    fn2 = colocated u0:84 sig4
+    fn3 = colocated u0:84 sig5
+    fn4 = colocated u0:82 sig6
+    fn5 = colocated u0:82 sig7
+    fn6 = colocated u0:84 sig8
+    fn7 = colocated u0:82 sig9
+    fn8 = colocated u0:82 sig10
     fn9 = u0:2 sig11
-    fn10 = colocated u0:85 sig12
-    fn11 = colocated u0:85 sig13
-    fn12 = colocated u0:85 sig14
-    fn13 = colocated u0:83 sig15
-    fn14 = colocated u0:83 sig16
+    fn10 = colocated u0:84 sig12
+    fn11 = colocated u0:84 sig13
+    fn12 = colocated u0:84 sig14
+    fn13 = colocated u0:82 sig15
+    fn14 = colocated u0:82 sig16
     fn15 = u0:2 sig17
-    fn16 = colocated u0:85 sig18
-    fn17 = colocated u0:85 sig19
-    fn18 = colocated u0:85 sig20
-    fn19 = colocated u0:83 sig21
-    fn20 = colocated u0:83 sig22
+    fn16 = colocated u0:84 sig18
+    fn17 = colocated u0:84 sig19
+    fn18 = colocated u0:84 sig20
+    fn19 = colocated u0:82 sig21
+    fn20 = colocated u0:82 sig22
     fn21 = u0:2 sig23
     fn22 = u0:2 sig24
 
@@ -1617,11 +1617,11 @@ function %is-solved-helper(i64, i64) -> i64 system_v {
     sig4 = (i64) system_v
     sig5 = (i64) system_v
     sig6 = (i64, i64) system_v
-    fn0 = colocated u0:83 sig0
-    fn1 = colocated u0:85 sig2
-    fn2 = colocated u0:85 sig3
-    fn3 = colocated u0:85 sig4
-    fn4 = colocated u0:83 sig5
+    fn0 = colocated u0:82 sig0
+    fn1 = colocated u0:84 sig2
+    fn2 = colocated u0:84 sig3
+    fn3 = colocated u0:84 sig4
+    fn4 = colocated u0:82 sig5
     fn5 = u0:2 sig6
 
 block0(v0: i64, v1: i64):
@@ -1742,8 +1742,8 @@ function %main() -> i64 system_v {
     sig10 = (i64, i64) system_v
     sig11 = (i64, i64) system_v
     fn0 = u0:10 sig0
-    fn1 = colocated u0:82 sig3
-    fn2 = colocated u0:88 sig5
+    fn1 = colocated u0:81 sig3
+    fn2 = colocated u0:87 sig5
     fn3 = u0:2 sig10
     fn4 = u0:2 sig11
 
@@ -1879,7 +1879,7 @@ function %make-grid(i64) -> i64 system_v {
     sig2 = (i64, i64, i64) -> i64 system_v
     sig3 = (i64) system_v
     fn0 = u0:12 sig1
-    fn1 = colocated u0:89 sig3
+    fn1 = colocated u0:90 sig3
 
 block0(v0: i64):
     jump block1(v0)
@@ -2054,96 +2054,96 @@ function %make-grid-helper(i64, i64, i64) -> i64 system_v {
     sig103 = (i64, i64) system_v
     sig104 = (i64) system_v
     sig105 = (i64) system_v
-    fn0 = colocated u0:89 sig0
+    fn0 = colocated u0:90 sig0
     fn1 = u0:10 sig4
-    fn2 = colocated u0:89 sig6
+    fn2 = colocated u0:90 sig6
     fn3 = u0:0 sig8
-    fn4 = colocated u0:90 sig9
-    fn5 = colocated u0:86 sig10
+    fn4 = colocated u0:89 sig9
+    fn5 = colocated u0:85 sig10
     fn6 = u0:24 sig11
     fn7 = u0:23 sig12
     fn8 = u0:13 sig13
     fn9 = u0:10 sig14
-    fn10 = colocated u0:89 sig16
+    fn10 = colocated u0:90 sig16
     fn11 = u0:0 sig17
-    fn12 = colocated u0:90 sig18
-    fn13 = colocated u0:86 sig19
+    fn12 = colocated u0:89 sig18
+    fn13 = colocated u0:85 sig19
     fn14 = u0:24 sig20
     fn15 = u0:23 sig21
     fn16 = u0:13 sig22
     fn17 = u0:10 sig23
-    fn18 = colocated u0:89 sig25
+    fn18 = colocated u0:90 sig25
     fn19 = u0:0 sig26
-    fn20 = colocated u0:90 sig27
-    fn21 = colocated u0:86 sig28
+    fn20 = colocated u0:89 sig27
+    fn21 = colocated u0:85 sig28
     fn22 = u0:24 sig29
     fn23 = u0:23 sig30
     fn24 = u0:13 sig31
     fn25 = u0:10 sig32
-    fn26 = colocated u0:89 sig34
+    fn26 = colocated u0:90 sig34
     fn27 = u0:0 sig35
-    fn28 = colocated u0:90 sig36
-    fn29 = colocated u0:86 sig37
+    fn28 = colocated u0:89 sig36
+    fn29 = colocated u0:85 sig37
     fn30 = u0:24 sig38
     fn31 = u0:23 sig39
     fn32 = u0:13 sig40
     fn33 = u0:10 sig41
-    fn34 = colocated u0:89 sig43
+    fn34 = colocated u0:90 sig43
     fn35 = u0:0 sig44
-    fn36 = colocated u0:90 sig45
-    fn37 = colocated u0:86 sig46
+    fn36 = colocated u0:89 sig45
+    fn37 = colocated u0:85 sig46
     fn38 = u0:24 sig47
     fn39 = u0:23 sig48
     fn40 = u0:13 sig49
     fn41 = u0:10 sig50
-    fn42 = colocated u0:89 sig52
+    fn42 = colocated u0:90 sig52
     fn43 = u0:0 sig53
-    fn44 = colocated u0:90 sig54
-    fn45 = colocated u0:86 sig55
+    fn44 = colocated u0:89 sig54
+    fn45 = colocated u0:85 sig55
     fn46 = u0:24 sig56
     fn47 = u0:23 sig57
     fn48 = u0:13 sig58
     fn49 = u0:10 sig59
-    fn50 = colocated u0:89 sig61
+    fn50 = colocated u0:90 sig61
     fn51 = u0:0 sig62
-    fn52 = colocated u0:90 sig63
-    fn53 = colocated u0:86 sig64
+    fn52 = colocated u0:89 sig63
+    fn53 = colocated u0:85 sig64
     fn54 = u0:24 sig65
     fn55 = u0:23 sig66
     fn56 = u0:13 sig67
     fn57 = u0:10 sig68
-    fn58 = colocated u0:89 sig70
+    fn58 = colocated u0:90 sig70
     fn59 = u0:0 sig71
-    fn60 = colocated u0:90 sig72
-    fn61 = colocated u0:86 sig73
+    fn60 = colocated u0:89 sig72
+    fn61 = colocated u0:85 sig73
     fn62 = u0:24 sig74
     fn63 = u0:23 sig75
     fn64 = u0:13 sig76
     fn65 = u0:10 sig77
-    fn66 = colocated u0:89 sig79
+    fn66 = colocated u0:90 sig79
     fn67 = u0:0 sig80
-    fn68 = colocated u0:90 sig81
-    fn69 = colocated u0:86 sig82
+    fn68 = colocated u0:89 sig81
+    fn69 = colocated u0:85 sig82
     fn70 = u0:24 sig83
     fn71 = u0:23 sig84
     fn72 = u0:13 sig85
     fn73 = u0:10 sig86
-    fn74 = colocated u0:89 sig88
+    fn74 = colocated u0:90 sig88
     fn75 = u0:0 sig89
-    fn76 = colocated u0:90 sig90
-    fn77 = colocated u0:86 sig91
+    fn76 = colocated u0:89 sig90
+    fn77 = colocated u0:85 sig91
     fn78 = u0:24 sig92
     fn79 = u0:23 sig93
     fn80 = u0:13 sig94
     fn81 = u0:10 sig95
     fn82 = u0:0 sig98
-    fn83 = colocated u0:90 sig99
-    fn84 = colocated u0:86 sig100
+    fn83 = colocated u0:89 sig99
+    fn84 = colocated u0:85 sig100
     fn85 = u0:24 sig101
     fn86 = u0:23 sig102
     fn87 = u0:13 sig103
-    fn88 = colocated u0:89 sig104
-    fn89 = colocated u0:84 sig105
+    fn88 = colocated u0:90 sig104
+    fn89 = colocated u0:83 sig105
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -3390,8 +3390,8 @@ function %propagate(i64) -> i64 system_v {
     sig3 = (i64, i64, i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64, i64) system_v
-    fn0 = colocated u0:83 sig1
-    fn1 = colocated u0:82 sig2
+    fn0 = colocated u0:82 sig1
+    fn1 = colocated u0:81 sig2
     fn2 = u0:2 sig5
 
 block0(v0: i64):
@@ -3499,13 +3499,13 @@ function %propagate-pass-helper(i64, i64) -> i64 system_v {
     sig9 = (i64, i64) system_v
     sig10 = (i64) system_v
     sig11 = (i64, i64) system_v
-    fn0 = colocated u0:85 sig2
-    fn1 = colocated u0:82 sig4
+    fn0 = colocated u0:84 sig2
+    fn1 = colocated u0:81 sig4
     fn2 = u0:2 sig5
-    fn3 = colocated u0:85 sig6
-    fn4 = colocated u0:82 sig8
+    fn3 = colocated u0:84 sig6
+    fn4 = colocated u0:81 sig8
     fn5 = u0:2 sig9
-    fn6 = colocated u0:85 sig10
+    fn6 = colocated u0:84 sig10
     fn7 = u0:2 sig11
 
 block0(v0: i64, v1: i64):
@@ -3794,16 +3794,16 @@ function %solve(i64) -> i64 system_v {
     sig17 = (i64, i64) system_v
     sig18 = (i64, i64) system_v
     sig19 = (i64, i64) system_v
-    fn0 = colocated u0:82 sig1
-    fn1 = colocated u0:83 sig5
-    fn2 = colocated u0:87 sig6
-    fn3 = colocated u0:85 sig8
+    fn0 = colocated u0:81 sig1
+    fn1 = colocated u0:82 sig5
+    fn2 = colocated u0:86 sig6
+    fn3 = colocated u0:84 sig8
     fn4 = u0:13 sig10
-    fn5 = colocated u0:83 sig11
-    fn6 = colocated u0:81 sig12
+    fn5 = colocated u0:82 sig11
+    fn6 = colocated u0:88 sig12
     fn7 = u0:13 sig13
-    fn8 = colocated u0:85 sig15
-    fn9 = colocated u0:83 sig16
+    fn8 = colocated u0:84 sig15
+    fn9 = colocated u0:82 sig16
     fn10 = u0:2 sig17
     fn11 = u0:2 sig18
     fn12 = u0:2 sig19
@@ -4083,8 +4083,8 @@ function %solve-range(i64, i64, i64, i64, i64) -> i64 system_v {
     fn15 = u0:20 sig17
     fn16 = u0:19 sig18
     fn17 = u0:20 sig19
-    fn18 = colocated u0:83 sig20
-    fn19 = colocated u0:81 sig21
+    fn18 = colocated u0:82 sig20
+    fn19 = colocated u0:88 sig21
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):
     jump block1(v0, v1, v2, v3, v4)

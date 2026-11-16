@@ -2737,7 +2737,8 @@ regression; qualified calls failed before the G-7 fix.
 
 - **Classification.** Confirmed defect: a spec-conforming program is rejected.
   The requirement is settled: §8.3.11 derived dotted access, §8.5.2 and
-  §7.4.2a's `Unchecked.+` example. When trait `T` is imported from `tm` or
+  §7.4.2a's `Trait.method` qualification (its example was then `Unchecked.+`,
+  which S123 removed from the spec). When trait `T` is imported from `tm` or
   re-exported by the prelude, `(T.m 4)` reports `undefined variable: T.m`.
   Bare `(m 4)` exits 5.
 - **Attribution.** Provisional: `wrong-scope-lookup` in

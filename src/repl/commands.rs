@@ -548,7 +548,7 @@ impl CompilerSession {
     /// /info handler: the full card of every candidate the spelling denotes —
     /// signature, definition source and code size (§3.6, §4.1.11). A
     /// module-qualified argument resolves like any other, so the FQ names the
-    /// cascade reports print stay pasteable (FIXME 0487).
+    /// REPL prints stay pasteable (FIXME 0487).
     pub(crate) fn handle_info(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /info <name>".to_string();
@@ -571,28 +571,22 @@ impl CompilerSession {
     /// own canonical identity.
     ///
     /// §3.6 is a pure-introspection surface (FIXME 0647: an empty trait
-    /// `; impl:` section is omitted uniformly). S101 (repl/spec.md §18.4): a
-    /// BROKEN symbol shows the primary line (last-good signature), the
-    /// provenance comment line and the definition source, and MUST NOT show
-    /// code-size stats — its compiled code is gone, and the trap stub is an
-    /// implementation detail, not the symbol's code.
+    /// `; impl:` section is omitted uniformly).
     fn info_card(&self, symbol: &FQSymbol) -> String {
         let bare = symbol.symbol.as_ref();
         let module = &symbol.module;
         let mut out = render(&self.format_definition_symbol_doc(symbol));
-        // §3.6 third MUST component (FIXME 0480): the definition source,
-        // rendered for BOTH the broken and healthy arms.
+        // §3.6 third MUST component (FIXME 0480): the definition source.
         if let Some(source) = self.info_definition_source(bare, module) {
             out.push('\n');
             out.push_str(&source);
         }
-        let shows_code_size = self.broken_status_line(bare, module).is_none()
-            && self.entry_at(symbol).is_some_and(|entry| {
-                !matches!(
-                    entry.declaration,
-                    Decl::Macro(_) | Decl::Type(_) | Decl::Trait(_)
-                )
-            });
+        let shows_code_size = self.entry_at(symbol).is_some_and(|entry| {
+            !matches!(
+                entry.declaration,
+                Decl::Macro(_) | Decl::Type(_) | Decl::Trait(_)
+            )
+        });
         if shows_code_size && let Some(record) = self.introspection_at(symbol) {
             let size = record
                 .code_size
@@ -604,17 +598,15 @@ impl CompilerSession {
     }
 
     /// The definition-source component of `/info` (`repl/spec.md` §3.6 MUST,
-    /// second display line; the §18.4 broken arm inherits it — FIXME 0480):
+    /// second display line — FIXME 0480):
     /// the pretty-printed defining form as a 2-space-indented block, or
     /// `None` when no source is recoverable (batch mode, special forms,
     /// primitives with no recorded definition). Reads the introspection store
     /// first (populated at every REPL definition); on a miss, attempts the
-    /// FIXME-0220 lazy rehydration from the module's backing `.cl` — the same
-    /// resolution `redefine::resolve_recheck_sexps` uses for cache-restored
-    /// modules — then re-reads.
+    /// FIXME-0220 lazy rehydration from the module's backing `.cl` for
+    /// cache-restored modules, then re-reads.
     fn info_definition_source(&self, name: &str, module: &ModuleFullPath) -> Option<String> {
-        // Accept both bare and module-qualified spellings (mirrors
-        // `broken_status_line`).
+        // Accept both bare and module-qualified spellings.
         let (module, bare) = match name.rsplit_once('/') {
             Some((m, n)) => (ModuleFullPath::from(m), n),
             None => (module.clone(), name),

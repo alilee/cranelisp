@@ -471,7 +471,7 @@ where
             &mut self.builder,
             self.module,
             panic_id,
-            crate::raise::RaiseMessage::Source(crate::raise::PanicSource::MatchFailed),
+            crate::raise::PanicSource::MatchFailed,
             span,
         )
     }

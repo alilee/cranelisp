@@ -419,24 +419,12 @@ impl CompilerSession {
                     // them with a hardcoded empty `Vec`, so they never reached
                     // `format_eval_result`.
                     let cluster_warnings = processed.warnings().to_vec();
-                    // S101: the commit gate's redefinition classifications —
-                    // consumed AFTER the target's own codegen succeeds
-                    // (design/int/session-transaction.md §13).
-                    let redefinitions = processed.redefinitions().to_vec();
                     let definition_symbols = turn_definitions.published_symbols();
                     // If program is empty, the form was handled during expansion
                     // (defmacro, import, platform, mod). Return every definition
                     // actually published by this turn; structural forms remain
                     // silent.
                     if program.is_empty() {
-                        // F5a (S103, FIXME 0507 Issue 3): the defmacro exit
-                        // returns BEFORE the ordinary `apply_redefinition_outcomes`
-                        // call below, so the §10 T1 full-cure driver must be
-                        // reachable here too. Macro invocations do not create
-                        // stable runtime dependency edges, but ordinary
-                        // redefinition outcomes collected alongside an
-                        // expansion-only result must still reach the sink.
-                        self.apply_redefinition_outcomes(&redefinitions);
                         return if definition_symbols.is_empty() {
                             // import/platform/mod — no visible result.
                             Ok(None)
@@ -471,16 +459,10 @@ impl CompilerSession {
                             check.warnings.clone(),
                         )
                     {
-                        self.apply_redefinition_outcomes(&redefinitions);
                         return Ok(Some(display));
                     }
                     let eval_result =
                         self.codegen_and_execute(&module, &program, &definition_symbols, &check)?;
-                    // S101 dependent-recompilation transaction: clears broken
-                    // records for recovered symbols (§18.6 direction 1) and
-                    // runs the affected-set walk for AbiChanging redefinitions,
-                    // stashing the §18.3 cascade report for the REPL printer.
-                    self.apply_redefinition_outcomes(&redefinitions);
                     return Ok(Some(eval_result));
                 }
                 ClusterOnce::Gap {

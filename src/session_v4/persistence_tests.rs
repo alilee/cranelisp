@@ -38,6 +38,11 @@ fn session_with_backing(with_orphan: bool) -> (CompilerSession, PathBuf) {
         .or_default()
         .sexp = Some(kept);
     std::fs::write(root.join("user.cl"), BACKING).expect("write backing file");
+    // As the load of `user.cl` would have recorded it.
+    s.shared.record_source(
+        &root.join("user.cl"),
+        crate::watch::FileState::of_source(BACKING),
+    );
     (s, root)
 }
 
@@ -3648,4 +3653,142 @@ fn the_reload_read_updates_the_record_and_an_unreadable_rebuild_records_unreadab
         "a repeated unreadable event is no change"
     );
     s.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// An entry registered with no backing file (ACT-1047, ACT-1020;
+// design/int/repl-lifecycle.md §1.2 Absent is a recorded state, §1.3.1 Write
+// chokepoint, §6 The entry file follows the module mapping)
+// ---------------------------------------------------------------------------
+
+/// A REPL session started with no file for `entry`.
+fn absent_entry_session(root: &Path, entry: &str) -> CompilerSession {
+    let mut s = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.to_path_buf(),
+        entry,
+    )
+    .expect("test session bootstrap");
+    s.set_lib_dirs(Vec::new());
+    s.register_module(entry).unwrap();
+    s.mark_entry_eval_owned();
+    s
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1, repl/spec/14-file-watching.md
+// §14.9; design/int/repl-lifecycle.md §1.3.2 (Appearance) — an entry registered
+// with no file records absent; a file created at that path is kept by a
+// definition admitted before the next poll and is loaded by the reload. No OS
+// watcher is running, so the chokepoint holds without one.
+#[test]
+fn a_file_created_after_an_absent_entry_is_kept_and_reloaded() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = absent_entry_session(root.path(), "user");
+    assert!(s.watcher.is_none(), "precondition: no OS watcher");
+    let path = root.path().join("user.cl");
+    std::fs::write(&path, "(defn k [] 9)\n").unwrap();
+
+    s.eval("(defn h [] 2)").unwrap();
+    s.regenerate_backing_file();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "(defn k [] 9)\n",
+        "the created file is kept"
+    );
+
+    s.run_reload_plan(vec![(ModuleFullPath::from("user"), path.clone())]);
+    assert_eq!(s.eval("(k)").unwrap().expect("a value").value(), 9);
+    s.eval("(defn h [] 2)").unwrap();
+    s.regenerate_backing_file();
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        file.contains("(defn k [] 9)") && file.contains("(defn h [] 2)"),
+        "the next definition is written with the loaded file: {file}"
+    );
+    s.shutdown();
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2; design/int/repl-lifecycle.md
+// §1.3.2 (Appearance, control) — a first session with no file creates it.
+#[test]
+fn a_first_session_with_no_file_creates_it_control() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = absent_entry_session(root.path(), "user");
+    let path = root.path().join("user.cl");
+    assert_eq!(
+        s.shared.recorded_source(&path),
+        Some(crate::watch::FileState::Absent),
+        "registration records the entry absent"
+    );
+    s.eval("(defn g [] 1)").unwrap();
+    s.regenerate_backing_file();
+    let file = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(file.contains("(defn g [] 1)"), "{file}");
+    assert_eq!(
+        s.shared.recorded_source(&path),
+        Some(crate::watch::FileState::of_source(&file)),
+        "the first write replaces absent with the state it wrote"
+    );
+    s.shutdown();
+}
+
+// spec: repl/spec/14-file-watching.md §14.9; design/int/repl-lifecycle.md §1.2
+// (Absent is a recorded state) — the watcher maps the absent entry's path from
+// registration, so a file created there is a change at the next poll.
+#[test]
+fn a_file_created_at_an_absent_entry_path_is_reloaded_at_the_next_poll() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = absent_entry_session(root.path(), "user");
+    s.init_watcher();
+    if s.watcher.is_none() {
+        s.shutdown();
+        return; // the OS notification API is unavailable here
+    }
+    assert!(s.poll_watcher().is_empty(), "nothing exists yet");
+    let path = root.path().join("user.cl");
+    std::fs::write(&path, "(defn k [] 9)\n").unwrap();
+    let notices = poll_until_reloaded(&mut s);
+    assert_eq!(
+        notices,
+        ["[updated: user.cl]"],
+        "the created file is loaded"
+    );
+    assert_eq!(s.eval("(k)").unwrap().expect("a value").value(), 9);
+    s.shutdown();
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.5.6; spec/08-modules.md §8.1;
+// design/int/repl-lifecycle.md §6 (The entry file follows the module mapping)
+// — an absent dotted entry `core.str` is backed by `core/str.cl`; `user` is
+// the undotted control.
+#[test]
+fn an_absent_dotted_entry_is_backed_by_its_module_path() {
+    for (entry, file, not) in [
+        ("core.str", "core/str.cl", Some("core.str.cl")),
+        ("user", "user.cl", None),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = absent_entry_session(root.path(), entry);
+        s.eval("(defn answer [] 41)").unwrap();
+        s.regenerate_backing_file();
+        let written = std::fs::read_to_string(root.path().join(file)).unwrap_or_default();
+        assert!(
+            written.contains("(defn answer [] 41)"),
+            "{entry}: {written:?}"
+        );
+        if let Some(not) = not {
+            assert!(
+                !root.path().join(not).exists(),
+                "{entry}: no literal-dot file"
+            );
+        }
+        s.shutdown();
+    }
 }

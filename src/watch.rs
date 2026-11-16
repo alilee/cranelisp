@@ -36,11 +36,31 @@ pub struct FileWatcher {
 }
 
 /// The state of a source file (`design/int/repl-lifecycle.md` §1.2, Content
-/// hash): its source hash, or that it exists but cannot be read.
+/// hash): its source hash, that it exists but cannot be read, or, for a module
+/// registered with no file, that it does not exist. A file observed on disk is
+/// never absent, so one created at an absent path is a change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FileState {
     Source(String),
     Unreadable,
+    Absent,
+}
+
+/// The key the record and the watcher's file map use for `path`: its
+/// canonical path, or, for a file that does not exist yet, its canonical
+/// directory joined with its name, so a file created there later is found
+/// under the key its creation event canonicalizes to.
+pub(crate) fn source_key(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => dir
+            .canonicalize()
+            .map(|dir| dir.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => path.to_path_buf(),
+    }
 }
 
 impl FileState {
@@ -301,5 +321,30 @@ mod tests {
         w.watch_file(&unchanged);
 
         assert_eq!(w.poll_changes(&recorded), Some(vec![saved]));
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.9; design/int/repl-lifecycle.md
+    // §1.2 (Absent is a recorded state) — against an absent record, a file
+    // created at the path is a change, keyed as its creation event
+    // canonicalizes it; while the path stays missing it is not.
+    #[test]
+    fn a_file_created_at_an_absent_record_is_a_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("user.cl");
+        let recorded = RecordedSources::new();
+        recorded.insert(source_key(&path), FileState::Absent);
+        assert!(
+            !FileWatcher::has_content_changed(&source_key(&path), &recorded),
+            "a still-missing file is not a change"
+        );
+
+        std::fs::write(&path, "(defn k [] 9)\n").expect("create");
+        let canonical = path.canonicalize().expect("canonicalize");
+        assert_eq!(
+            source_key(&path),
+            canonical,
+            "the key recorded before creation is the created file's canonical path"
+        );
+        assert!(FileWatcher::has_content_changed(&canonical, &recorded));
     }
 }

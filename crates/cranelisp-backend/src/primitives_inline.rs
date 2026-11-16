@@ -34,9 +34,7 @@ use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
-use crate::raise::{self, PanicSource, RaiseMessage};
-
-const DIVISION_BY_ZERO: RaiseMessage = RaiseMessage::Source(PanicSource::DivisionByZero);
+use crate::raise::{self, PanicSource};
 
 /// Try to emit inline Cranelift IR for a Ring 0 primitive call.
 ///
@@ -307,7 +305,7 @@ fn emit_checked_div<M: Module>(
 
     builder.switch_to_block(zero_block);
     builder.seal_block(zero_block);
-    raise::emit_raise(builder, module, panic_id, DIVISION_BY_ZERO, span)?;
+    raise::emit_raise(builder, module, panic_id, PanicSource::DivisionByZero, span)?;
 
     builder.switch_to_block(divide_block);
     builder.seal_block(divide_block);

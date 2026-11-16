@@ -334,7 +334,7 @@ build flag).
 > **v9 note (S97, ctx-vtable handle model; §17).** The node keeps the v8 shape **unchanged** —
 > no growth, no `role` field, no descriptor region (the intermediate descriptor-cut design that
 > would have repurposed the two admission slots into `role`@32 + a `desc_out` `ResourceDesc`
-> region @40 is **RETIRED** — §17.7). Under the ctx-vtable model the platform poll-fn computes
+> region @40 is **RETIRED**; Git history holds it). Under the ctx-vtable model the platform poll-fn computes
 > the token from its handle and calls the trampoline-owned `ctx` vtable itself, so **nothing
 > scheduling-related is baked on the node**; the two admission slots are inert. The v8
 > `(token, capacity)`-from-positional-args bake is **deleted** (§14 superseded). The env layout
@@ -524,30 +524,6 @@ with the cancellation slice (≥ 7); designing the glue to *accept* it now (a nu
 deferrable — S94 may bake pure capture-dec glue and add the `drop_state` branch in the
 cancellation slice.
 
-### 12.6 Implementation steps for /dev
-
-1. Add `IO_TAG_EFFECT_POLL = 4` to the IO tag constants (`cranelisp-platform` /
-   `cranelisp-types`, gated with the `concurrency` layout contracts, §1.4).
-2. Extract `emit_got_slot_load(data_id, slot) -> Value` from
-   `emit_got_indirect_call_via_data_id` (the load prefix); have the existing call path
-   call it (no behaviour change — refactor + its own equivalence is covered by the
-   unchanged blocking tests).
-3. At the `DefKind::PlatformEffect` dispatch recognition site, read the effect's
-   `DefKind::PlatformEffect.poll_shape` field (via `resolve_poll_effect_target`).
-   `poll_shape == false` → the unchanged blocking arm (§7). `poll_shape == true` →
-   the poll-construction arm (§12.3). The backend reads only this boolean; the full
-   `ConcurrencyDescriptor` is not on the symbol table (§12.1).
-4. Implement the poll-construction arm: GOT-load the poll-fn (step 2), build the
-   state-closure reusing the `compile_lambda` closure-site emission — but store the arg
-   captures under the **consuming convention** (a plain store, **no**
-   `emit_capture_inc`; the args are already inc'd by `compile_consuming_arg_list`),
-   build the `IO_TAG_EFFECT_POLL` node (§12.3).
-5. Generate the state-closure drop glue via the existing `build_closure_drop_glue`
-   path (capture-dec only for S94; the `drop_state` branch is deferred, §12.5).
-6. Confirm the blocking arm is reached for every stock-platform effect (every effect
-   has `poll_shape == false` in a non-concurrency toolchain) so the default build is
-   byte-identical (the negative guard, §12.7).
-
 ### 12.7 Unit-test seams for /dev (backend tier)
 
 Per the project's unit-test-per-fix discipline, the mandatory backend-tier seams:
@@ -580,25 +556,6 @@ reactor; `EffectDispatched→Suspended→Resumed`; `--link` links no executor) a
 `/qa` integration seams driven through `cranelisp_run_io` (the intrinsics + reactor
 half); they are listed in `effect-concurrency.md` Appendix B §"What /qa can assert"
 and are not backend-unit-tier.
-
-### 12.8 Quality attributes touched
-
-- **Simplicity / complexity budget (Principle 6).** The arm adds one tag, one thin
-  node, and one data-driven branch; it reuses the GOT-load and closure-construction
-  codegen wholesale rather than standing up a parallel mechanism. No `#[cfg]`, no mode
-  fork.
-- **Maintainability / single source of truth (Principle 7).** The GOT-indirect
-  mechanism stays single-source via the extracted `emit_got_slot_load`; the closure
-  build stays single-source via reuse of `compile_lambda`'s emission. A future ABI
-  change to the GOT or closure layout lands in one place each.
-- **Concurrency-safety (Principle 1).** The backend emits no concurrency primitive —
-  it constructs a value (the node). All await/poll/wake lives in the trampoline. RC of
-  the captured args is atomic (Decision 13) because the state-closure can be read on a
-  reactor thread.
-- **Testability (Principle 5).** The arm is decided on a data field (`blocking`) and
-  emits an inspectable node shape, so it is unit-testable at the CLIF seam without a
-  running reactor; the reactor-dependent behaviour is cleanly the trampoline's, tested
-  separately.
 
 ## 13. Slice 3 + 6 — `(token, capacity)` node carrier, two-pool partition (S95)
 
@@ -752,12 +709,8 @@ acquire wiring lands with the poll-shape refinement. This is the shaped-to-be-su
 (Principle 8): the slots exist at their final offsets, so the refinement fills them without a
 layout change.
 
-> **RESOLVED in S96 (Chunk A, item 3) — see §14.** The deferred live `(token, capacity)`
-> supply lands as a **construction-time backend bake** (acquire-around-poll needs the values
-> before the first poll, so the poll-fn/reactor first-poll-narrowing alternatives are
-> retired — §14.1). The bake replaces the two sentinel `iconst` stores with live operand
-> Values at the *same* offsets (token @ abs 32, capacity @ abs 40); the read sites are
-> unchanged. §14 is the design.
+> **Superseded.** S96 replaced the sentinels with a live bake, and ABI v9 deleted the
+> bake (§14, §17). The two admission slots are inert.
 
 Both reserved fields are `NeverHeap` scalars — the node's drop glue is unchanged in shape
 (§13.6).
@@ -836,27 +789,6 @@ untouched: the reserved fields live on the *node*, not the closure env. The `dro
 hook remains reserved-but-inert (§12.5; cancellation slice). The blocking node's appended
 `capacity` (§13.2) is likewise `NeverHeap` — the DLL-side blocking drop glue is unchanged.
 
-### 13.7 Implementation steps (by crate)
-
-1. **`/platform`** — add `CLIO::effect_on_resource_with_capacity(token, capacity, f)`
-   appending `capacity` at payload offset 32 (`IO_EFFECT_CAPACITY_OFFSET`, the new
-   constant); redefine `effect_on_resource(token, f)` as `…_with_capacity(token, 1, f)`;
-   widen the node alloc by one i64 (§13.2). **Backend unaffected.**
-2. **`/backend`** (the one backend change) — widen `compile_poll_effect` (§13.3): node
-   alloc `payload_size(1)` → `payload_size(3)`; add the two sentinel stores
-   (`token = 0` at `field_offset(1)`, `capacity = 1` at `field_offset(2)`). **No
-   `DefKind` read, no `cardinality`/`got_slot` derivation** — those are deleted.
-3. **`/design int` + intrinsics** — the pool read (§13.4): generalize `read_resource_token`
-   to both effect tags; add `read_capacity`; the `HashMap<token, Semaphore>`; acquire /
-   release / park; the first-writer-wins capacity reconciliation + the strand event;
-   within-token ordering for capacity-1 (§8.2).
-4. **No backend change for the two-pool partition** (§13.5) — the partition key is the
-   existing node tags; the partition + wakeable join are `io.rs`/`reactor.md`.
-5. The **poll-shape live `(token, capacity)` supply + acquire-around-poll is deferred** to
-   the Phase-3 refinement (`/arch`, §8.1/§8.2) — not in S95 scope; the backend only
-   reserves the carrier. **(Resolved in S96 — §14: the backend bakes the live values into
-   the reserved slots; the acquire-around-poll permit is intrinsics-side, `/design int`.)**
-
 ### 13.8 Unit-test seams for Phase 5 (by tier)
 
 Per the unit-test-per-fix discipline. **NO `DefKind`-bake test, NO `got_slot` test** — both
@@ -913,270 +845,31 @@ backend↔intrinsics convention — **no `cranelisp-types` edge, no `public-api`
 backend side, no `ABI_VERSION` bump** (the appended blocking field is governed by the v6/v7
 node-layout convention, not a struct ABI freeze). The `_neg` gated-edge guard stays green.
 
-### 13.10 Quality attributes touched
+## 14. Poll-node `(token, capacity)` bake — retired
 
-- **Simplicity / complexity budget (Principle 6).** The ratified carrier is *simpler* than
-  the superseded draft: a one-field additive generalization of the existing dynamic-token
-  mechanism, no static `DefKind` field, no loader lift, no two token-notions. The backend's
-  contribution shrinks to two sentinel stores; slice 6 adds **zero** backend codegen.
-- **Maintainability / single source of truth (Principle 7).** Capacity reaches the runtime
-  the *same way the token already does* — one carrier, one read site per node kind;
-  `compile_poll_effect` stays the single poll-node construction site; the two-pool join
-  reuses the two existing dispatchers (no third dispatcher).
-- **Concurrency-safety (Principle 1).** The backend emits no concurrency primitive — it
-  reserves a self-describing `(token, capacity)` carrier. All acquire/park/release/wake lives
-  in the trampoline; the wakeable rayon→reactor bridge (no `block_on` on the reactor thread)
-  is the structural guard against re-starvation; the first-writer-wins reconciliation never
-  exceeds a platform-declared capacity ceiling.
-- **Testability (Principle 5).** The reserved carrier emits an inspectable node shape
-  (offsets + sentinel constants), unit-testable at the CLIF seam without a running reactor;
-  the pool/routing behaviour is cleanly the trampoline's, tested separately by `/qa`.
+ABI v9 deleted the S96 bake (§17). The resource descriptor is not a cranelisp
+operand, not a leaf argument and not stored on the node: the platform poll-fn
+computes its token from the handle it holds and calls the trampoline-owned
+`ctx` vtable itself (`design/arch/effect-concurrency.md` §4.1.1). The v8
+design is in Git history. Two rules it stated still hold and are cited from
+§15 and §16:
 
-## 14. Poll-node LIVE `(token, capacity)` bake (S96 Chunk A, item 3)
+### 14.2 The bake source — retired
 
-> **SUPERSEDED by ABI v9 (S97, ctx-vtable handle model) — see §17.** This entire section
-> designs the **v8 leading-pair bake**: the poll-shape lowering supplies `(token, capacity)` as
-> the two leading operands of every poll effect (`arg_vals = [token, capacity, leaf_0, …]`) and
-> the backend bakes them from those positional args into the poll node's offset-32/40 slots
-> (§14.2–§14.4). **v9 deletes this mechanism.** Under the ratified ctx-vtable model the resource
-> descriptor `(token, capacity)` is no longer a cranelisp operand, no longer a leaf argument,
-> and is not stored anywhere (no node slot, no value-header slot) — the **platform poll-fn
-> computes the token from the handle it holds and calls the trampoline-owned `ctx` vtable
-> (`acquire`/`register_*`/`retire`) itself** (`effect-concurrency.md` §4.1.1). The backend
-> **stops baking from positional args** — `compile_poll_effect`'s leaf-arg list is
-> `arg_vals[0..]` directly (no leading-pair peel) — and bakes nothing in its place. §14 is
-> retained as the historical v8 design record (the model the v8 server shipped on); read it for
-> provenance, not as the live contract. The v9 backend delta is the deletion-only reshape in
-> **§17** (the intermediate descriptor-cut header-slot/`desc_out` design is itself retired —
-> §17.7).
+`compile_poll_effect` marshals `arg_vals[0..]` directly; there is no
+leading-pair peel (§17.3).
 
-Sprint 96 Chunk A lights up the **live** poll-shape `(token, capacity)` carrier — the
-deferred half of §13.3. S95 reserved the poll node's `(token, capacity)` slots at
-**sentinel** (`token = 0`, `capacity = 1`) at the symmetric offsets; S96 **replaces the two
-sentinel `iconst` stores with stores of the live runtime values**, so the reactor's
-acquire-around-poll admission gate reads a real `(token, capacity)` off the poll node — the
-poll analogue of the S95 blocking-carrier capacity-N proof. This is the **whole backend
-job** for item 3; the permit (RAII acquire-around-poll lifecycle) is intrinsics-side
-(`design/intrinsics/reactor.md`, `/design int`).
+### 14.6 RC and drop glue
 
-This section is the `/design` intent for the bake. It builds against `effect-concurrency.md`
-§8.1 (capacity rides WITH the token, **platform-supplied dynamically at the effect site** —
-not a `DefKind` field, not `got_slot`-derived) and the S96 Phase-2 gate (a) ruling
-(acquire-around-poll: the poll node carries live `(token, capacity)`; the permit is an
-intrinsics-side RAII drop-guard; the backend's job is the **bake**).
+The poll node is a one-heap-field ADT: only field 0, the state closure, is
+heap-typed, and its drop glue is §12.5's capture-dec glue.
 
-### 14.1 Why the backend bakes at construction (not poll-fn / reactor narrowing at first poll)
+### 14.7 The node carrier is an in-process convention
 
-§13.3 left the poll live-value supply as an interior choice between *backend bake at
-construction* and *the poll-fn (or reactor) narrowing `(token, capacity)` at first poll*.
-The S96 acquire-around-poll ruling **resolves it to backend-bake-at-construction**, and the
-reason is load-bearing:
-
-> Gate (a): "the acquire is the trampoline's single admission gate **wrapping the whole
-> establish→ready arc**". The *establish* step is the **first poll** (open fd, issue the
-> non-blocking syscall). So **acquire precedes the first poll**, and acquire needs
-> `(token, capacity)` to size/key the `Semaphore` — therefore `(token, capacity)` MUST be
-> on the node **before any poll runs**. A poll-fn that narrows them at first poll is
-> structurally too late (the permit was already acquired). The values are known at the
-> effect site (the resource handle is in hand; the pool ceiling is a runtime config the
-> platform supplies), so the **construction-time bake is the only consistent placement.**
-
-This retires the "poll-fn narrows / reactor narrows" alternatives §13.3 floated.
-
-### 14.2 Where the live values come from — the bake source (and the cross-crate seam)
-
-Both values are **runtime i64 Values available at the poll effect site**, baked by a plain
-scalar store (both are `NeverHeap` — an opaque fd/handle identity and a count — so **no RC**,
-§14.5):
-
-- **token** (field 1, abs offset 32): the resource handle the poll effect operates on — the
-  connection token for `read`/`send`, the listener/pool token for `accept`. It is a Value
-  the backend already holds (it is also the poll-fn's syscall fd, so it is *also* marshaled
-  into the state-closure env, §12.2). The bake copies that one i64 into the node's admission
-  slot.
-- **capacity** (field 2, abs offset 40): the resource's declared concurrency ceiling — the
-  pool size (`(listen addr :pool N)`'s `N`, `(connect-pool url :size 16)`'s `16`), a runtime
-  config value known when the pool/listener opens (`effect-concurrency.md` §8.1). It is
-  **admission metadata only** (the poll-fn does not need it), so it is baked **node-only**,
-  not into the env.
-
-**The bake is positional and uniform — the recommended operand convention.** So that
-`poll_shape: bool` stays the **sole** symbol-table discriminator (no `cranelisp-types` edge
-touch, Phase-2 public-API ruling), the poll-shape lowering supplies `(token, capacity)` as
-the **two leading operands** of every poll effect, ahead of the leaf args, with the resource
-handle re-passed as the first leaf arg (so the poll-fn still finds its fd in the env). The
-backend then bakes **uniformly, with no per-leaf discriminator**:
-
-```
-arg_vals = [ token, capacity, leaf_0, leaf_1, ... ]   ; the poll-shape operand convention
-                                  └ leaf_0 = the re-passed resource handle (poll-fn fd)
-
-token_val = arg_vals[0]       ; → node field 1 (and == leaf_0, the env fd)
-cap_val   = arg_vals[1]       ; → node field 2 (node-only)
-leaf args = arg_vals[2..]     ; → state-closure env captures (result @ capture(0), leaf i @ capture(1+i))
-```
-
-A **tokenless** poll leaf (a bare timer — no resource) carries the leading pair as the
-explicit constants `(0, 1)`; the backend bakes them by the *same* path, so `token = 0`
-(no-acquire) / `capacity = 1` (serial) — the S95 sentinel behaviour **preserved by value**,
-not by special-case. This is why the convention is uniform: the backend always peels
-`arg_vals[0]`/`arg_vals[1]`; there is no "tokened vs tokenless" branch and no new types
-field.
-
-> **SEAM — flag for `/sprint` reconciliation.** The backend's bake is positional; the
-> **operand-injection convention** (the lowering that places `(token, capacity)` as the two
-> leading operands + re-passes the resource handle as `leaf_0`) is owned jointly by
-> `/platform` (the `concurrency`-gated `poll_support` poll-leaf lowering) and `/design int`
-> (the reactor read), with `/arch` arbitrating the in-process convention. The **bake offsets
-> and the no-types-touch constraint are fixed** (this doc + the S95 reservation); the precise
-> operand *positions* are the reconcilable detail. The rejected-this-sprint alternative — keep
-> the user-arg operand shape and discriminate token/capacity positions via a per-leaf
-> `resource_arity` field — is rejected because it requires a `cranelisp-types` edge touch
-> (forbidden by the Phase-2 public-API ruling). If the wave gate prefers a different
-> operand placement, only §14.4's `arg_vals[..]` indices move; the offsets, RC treatment,
-> and byte-identical-off properties are unchanged.
-
-### 14.3 Codegen delta — minimal, same construction site
-
-The change to `compile_poll_effect` (§12.3 / `apply.rs`) is **two store operands plus the
-env-marshal start index** — no new node field, no alloc change (the node is already
-`payload_size(3)` from S95), no new arm (Principle 7 — same single construction site):
-
-```
-;; (steps 1+2: GOT-load the poll-fn, build the state-closure — unchanged in shape;
-;;  the env now marshals leaf args = arg_vals[2..] at capture(1+i), result @ capture(0))
-
-node = emit_alloc(HeapAdt::payload_size(3))                       ; unchanged (48 bytes)
-store IO_TAG_EFFECT_POLL at node + HeapAdt::TAG_OFFSET            ; unchanged
-store clo                at node + HeapAdt::field_offset(0)       ; unchanged (state-closure, rc=1, no inc)
-
-;; (S96, item 3) LIVE bake — replaces the two S95 sentinel iconst stores:
-store arg_vals[0]        at node + HeapAdt::field_offset(1)       ; token   (was: iconst 0)
-store arg_vals[1]        at node + HeapAdt::field_offset(2)       ; capacity (was: iconst 1)
-
-return node
-```
-
-The S95 code (`apply.rs` ~lines 1002–1007) stored `iconst(0)` / `iconst(1)`; S96 stores the
-two live operand Values. Everything else in `compile_poll_effect` is untouched.
-
-### 14.4 Offset agreement — the cross-crate contract (the heap-offset class that silently breaks)
-
-The bake offsets were **frozen at the S95 reservation** and the intrinsics read sites
-**already read them** (they read the sentinels today); S96 changes only the *value stored*,
-not the offset — so the read sites need **no change** and the contract cannot drift. Pinned
-explicitly (this is the offset class the S95 close praised /dev for disciplining):
-
-| Field | Backend bake (`compile_poll_effect`, `apply.rs`) | Intrinsics read (`cranelisp-intrinsics/src/io.rs`) | Abs offset |
-|---|---|---|---|
-| token | `HeapAdt::field_offset(1)` | `read_resource_token` → `FIELD_1_OFFSET` (tag-agnostic over both effect tags) | **32** |
-| capacity | `HeapAdt::field_offset(2)` | `read_capacity` (poll arm) → `POLL_CAPACITY_ABS_OFFSET = FIELD_1_OFFSET + 8` | **40** |
-
-Both sides already resolve to abs 32 / 40 (`HeapAdt::FIELDS_START = 24`, +8 = 32 = field 1,
-+8 = 40 = field 2; intrinsics `FIELD_1_OFFSET = 32`, `POLL_CAPACITY_ABS_OFFSET = 40`). The
-token offset is **symmetric with the blocking node's token** (also field 1 / abs 32), which
-is exactly why `read_resource_token` is one tag-agnostic field-1 read for both effect tags
-(§13.3 / §13.4) — S96 does not disturb that symmetry. **No backend or intrinsics offset
-constant changes this sprint;** the only edit is the value the backend stores.
-
-### 14.5 acquire-around-poll consumption (intrinsics-side — stated for the seam)
-
-Stated only to pin the boundary; the authoritative design is `/design int`'s
-(`reactor.md`). With a live token on the node, a poll branch in the per-branch acquire
-(`io.rs::run_par_node_async` / `dispatch_*`, currently reading the sentinel `token == 0` ⇒
-no-op acquire) now reads a **non-zero** token and **acquires its `Semaphore(capacity)` permit
-before the first poll**, holding it across the establish→ready arc (whether the future parks
-or is immediately ready) and **releasing on `Poll::Ready` AND on future-drop**. That
-release-on-drop is the **RAII `Permit` drop-guard** (gate (a) requirement 1 — the named A→C
-contract: Chunk A *builds* the drop-release path, Chunk C *exercises* it on
-cancellation/timeout). The drop-guard and the `Semaphore` machinery are **intrinsics-owned**
-(`/design int`); the backend's only contribution is supplying the live `(token, capacity)`
-the gate reads off the node. The backend emits **no concurrency primitive** (Principle 1 — it
-constructs a value; all acquire/park/release/drop lives in the reactor).
-
-### 14.6 RC and drop glue — unchanged in shape
-
-Both baked fields are `NeverHeap` i64 scalars (`token` = an opaque fd/handle identity;
-`capacity` = a count), so the two stores take **no `rc_inc`** and the node's drop glue is
-**unchanged from §13.6** — the poll node remains a one-heap-field ADT (only field 0, the
-state-closure, is heap-typed). The token's appearance in **both** the node admission slot and
-the env capture is a **scalar copy of one i64**, not a shared heap reference — there is no
-extra reference to balance and no double-free risk. `build_poll_state_drop_glue` (the
-capture-dec glue, §12.5) is untouched; the `drop_state` hook stays reserved-but-inert until
-the cancellation slice.
-
-### 14.7 Public-API / ABI impact — ZERO (per the Phase-2 public-API ruling)
-
-- **`cranelisp-types`: no edge touch.** The dispatch discriminator stays the
-  already-landed `poll_shape: bool`; `(token, capacity)` flow as ordinary i64 operands —
-  no new `DefKind` field, no `cardinality`/`resource_arity` (the rejected alternative,
-  §14.2). The `_neg`/frozen-edge guard stays green.
-- **`cranelisp-platform`: no `public-api.txt` touch.** The operand-injection convention is
-  the `concurrency`-gated `poll_support` lowering (off the default edge).
-- **No `ABI_VERSION` bump.** The poll node layout is **unchanged** from S95 — same 48-byte,
-  3-field (`state_closure`, `token`, `capacity`) shape; S96 changes only the *values stored*
-  in the two reserved slots. The poll-node carrier is an in-process backend↔intrinsics
-  convention (the offsets), not a struct ABI freeze (Phase-2 public-API ruling).
-
-### 14.8 Byte-identical-when-feature-off
-
-The live bake lives **inside** `compile_poll_effect`, which is reached only for a
-`poll_shape == true` effect — and a poll-shape effect only exists in a `concurrency`-built
-toolchain (the v7 `poll_support` poll-emission is feature-gated). A stock blocking-only
-platform has `poll_shape == false` for every effect, so `compile_poll_effect` is **never
-invoked**, **no `IO_TAG_EFFECT_POLL` node is constructed**, and the emitted CLIF for every
-effect is **byte-identical** to today's default build. The selection is the existing
-data-driven branch on `poll_shape` — **no `#[cfg]`, no mode fork** (Principle 11 — mode by
-parameter, not by build flag). The bake is a value change within an already-gated-by-data
-path.
-
-### 14.9 Unit-test seams for /dev (backend tier)
-
-Per the unit-test-per-fix discipline — inspect via CLIF (`CRANELISP_CODEGEN_TRACE=1`) on a
-shrunk single-leaf poll effect (small repro → small CLIF readable by eye):
-
-- **Live-token bake.** A tokened poll effect stores `arg_vals[0]` (the resource-handle
-  operand Value) — **not** an `iconst 0` — at `field_offset(1)` (abs 32). Assert the store
-  reads the live operand, not the sentinel.
-- **Live-capacity bake.** Stores `arg_vals[1]` (the capacity operand Value) — **not** an
-  `iconst 1` — at `field_offset(2)` (abs 40).
-- **Tokenless leaf preserves sentinel-by-value.** A poll leaf whose lowering supplies the
-  leading pair as constants `(0, 1)` bakes `token = 0` / `capacity = 1` through the same
-  store path (the S95 behaviour preserved without a special-case).
-- **Env layout under the leading-pair peel.** Leaf args (`arg_vals[2..]`) land at
-  `capture(1+i)`; the result slot stays at `capture(0)`; the re-passed resource handle is
-  `leaf_0` at `capture(1)` (the poll-fn's fd at `state+8`). This guards that peeling the two
-  leading operands did not corrupt the env arg offsets the poll-fn relies on.
-- **No-RC at the bake.** Neither node-field store emits an `rc_inc` (both `NeverHeap`
-  scalars); the node's drop glue shape is unchanged (one heap field).
-- **Byte-identical-off negative guard (unchanged from §12.7 / §13.8).** A blocking effect
-  constructs an unchanged `IO_TAG_EFFECT` node and **no `IO_TAG_EFFECT_POLL` node** is built;
-  the default-build CLIF is unchanged.
-
-Update note for `/qa`: the S95 `poll_codegen_tests` assertions that pin the **sentinel
-`iconst 0` / `iconst 1`** stores change to assert the **live operand stores**, and the env
-arg-offset assertions update for the leading-pair peel (leaf args at `arg_vals[2..]`). The
-overlap/parking end-to-end seams (poll capacity-N: N overlap, the (N+1)th parks; permit
-released on `Poll::Ready` and on drop) are `/qa` integration seams driven through
-`cranelisp_run_io`, not backend-unit-tier.
-
-### 14.10 Quality attributes touched
-
-- **Simplicity / complexity budget (Principle 6).** The backend's item-3 contribution is
-  **two store operands + the env-marshal start index** — no new node field, no alloc change,
-  no new arm. The live bake *replaces* sentinel constants at the same site; it does not add
-  machinery.
-- **Maintainability / single source of truth (Principle 7).** `compile_poll_effect` stays
-  the single poll-node construction site; the offset contract is frozen at the S95
-  reservation and the intrinsics read sites are untouched, so the cross-crate seam cannot
-  silently drift (§14.4).
-- **Concurrency-safety (Principle 1).** The backend emits no concurrency primitive — it
-  bakes a self-describing `(token, capacity)` carrier; all acquire/park/release/RAII-drop
-  lives in the reactor. The token's node/env duplication is a scalar copy, not a shared heap
-  reference (§14.6).
-- **Testability (Principle 5).** The live bake emits an inspectable node shape (live operand
-  stores at fixed offsets), unit-testable at the CLIF seam without a running reactor; the
-  acquire-around-poll lifecycle is cleanly the reactor's, tested separately by `/qa`.
+IO node offsets are a backend↔intrinsics convention under
+`cranelisp_platform::ABI_VERSION`, not a struct ABI freeze. A node-tag or
+layout change touches neither `cranelisp-types` nor a `public-api.txt`; it is
+governed by the ABI version and the cache schema.
 
 ## 15. The `IO_TAG_LAUNCH` launch-and-continue node (S96 Chunk B, slice 5)
 
@@ -1493,42 +1186,6 @@ panicking handler → server lives; global-budget bounds in-flight strands; stra
 permits + sub-tree) are `/qa` integration seams driven through `cranelisp_run_io` + the reactor —
 they are listed in `design/intrinsics/reactor.md §2.10` and are not backend-unit-tier.
 
-### 15.10 Implementation steps for `/dev` (backend half)
-
-1. **Add `IO_TAG_LAUNCH = 5`** to the IO tag constants in `cranelisp-platform` (alongside
-   `IO_TAG_EFFECT_POLL`, CORE/ungated — §15.2). The backend emits the literal `5` at the bake
-   (no platform-const read at codegen, the §12.3/`par_bind.rs` convention).
-2. **Consume the launch marker** (blocked on FIXME 0466 — the `Expr`/`MonoExpr::LaunchContinue`
-   variant + the `/int` analysis extension; §15.3). Add the dispatch arm in `compile_expr`/the
-   mono lowering that recognizes the marker and routes to `compile_launch`.
-3. **Implement `compile_launch`** (§15.4): derive the launched result disposer, compile the
-   launched sub-tree, `emit_alloc(payload_size(2))`, then store tag `5`, the sub-tree pointer
-   (ownership transfer, no inc), and the disposer. The surrounding `Bind(Launch, cont)` uses
-   the shared Bind emitter with a zero disposer because Launch yields Unit.
-4. **Generate the `Launch` drop glue with a null-guarded field-0 dec** (§15.5/§15.6) — the one
-   deviation from a plain `AlwaysHeap` ADT field; pin the `0`-sentinel move-out contract with
-   `/design int` (§15.5 cross-crate seam).
-5. **Confirm the no-launch negative guard** (§15.7/§15.9) — ordinary programs and ineligible `do`
-   sites emit no `IO_TAG_LAUNCH` node and unchanged codegen.
-
-### 15.11 Quality attributes touched
-
-- **Simplicity / complexity budget (Principle 6).** The slice adds **one tag, one
-  single-owning-field node, one bake arm, and one drop-glue guard** — the simplest IO-node construction (no GOT load, no
-  state-closure, no operand peel). It reuses `emit_alloc`/`heap_store`/the bind codegen wholesale.
-- **Maintainability / single source of truth (Principle 7).** Independence detection is **not
-  forked** — the launch eligibility rides the existing `/int` `Par` token-disjointness analysis
-  (§15.3); the launch node is consumed via the `Expr::ParBind` marker precedent; the construction
-  reuses the constructor-convention store shared by `par_bind`/`compile_poll_effect`.
-- **Concurrency-safety (Principle 1).** The backend emits **no concurrency primitive** — it
-  constructs a value (the `Launch` node) and a null-guarded drop path. All spawn/supervise/global-
-  budget/strand-consume lives in the reactor (`design/intrinsics/reactor.md`). The one new RC subtlety
-  (sub-tree move-out) is modeled by representation (the `0` sentinel = "moved", `design/backend/io-trampoline.md` §15.5) so "consumed
-  exactly once" is structural, not a flag to keep in sync.
-- **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one field + a
-  null-guarded dec), unit-testable at the CLIF seam without a running reactor; the detach/supervise
-  behaviour is cleanly the reactor's, tested separately by `/qa`.
-
 ## 16. The `IO_TAG_SELECT` race/select combinator node (S96 Chunk C, slice 7)
 
 Sprint 96 Chunk C lands the **explicit control surface** — the user-facing combinators
@@ -1832,74 +1489,16 @@ graceful shutdown drops all in-flight strands) are `/qa` integration seams drive
 `cranelisp_run_io` + the reactor — they are listed in `effect-concurrency.md §9`/`reactor.md`
 and are **not** backend-unit-tier.
 
-### 16.10 Implementation steps for `/dev` (backend half) — in this order
-
-1. **Add `IO_TAG_SELECT = 6`** to the IO tag constants in `cranelisp-platform`
-   (`lib.rs`, alongside `IO_TAG_LAUNCH = 5`, CORE/ungated — §16.2). The backend emits the
-   literal `6` at the bake (no platform-const read at codegen, the `par_bind.rs`/`launch.rs`
-   convention).
-2. **Recognize `select`** (and, only if the §16.3 fast-path is taken, `race`) by name in
-   `compile_resolved_call`'s `BuiltinFn` arm (`apply.rs:259`), the `bind` precedent — compile
-   args via `compile_consuming_arg_list`, then dispatch to `compile_select`. **No** new
-   `Expr`/`MonoExpr` variant, **no** `PrimitiveKind` (§16.2). (Depends on `/int` bootstrap +
-   `/typecheck` seeding `select`/`race`/`timeout` as inline builtins with their `§9`
-   signatures — that is their work, not the backend's; the backend only name-matches.)
-3. **Implement `compile_select`** (§16.4): derive the common result disposer, then
-   `emit_alloc(payload_size(2))` and store tag `6`, the branch-Vec pointer (ownership
-   transfer, no inc), and the disposer. The surrounding `Bind(Select, cont)` reuses the
-   shared Bind emitter.
-4. **Generate the Select drop glue as a standard unconditional one-heap-field ADT dec**
-   (§16.7) — the existing `emit_inline_drop_glue` path, field 0 `AlwaysHeap`, **no**
-   null-guard (the explicit contrast with launch). Pin the §16.5 cross-crate seam with
-   `/design int`: the node owns the list for the tree lifetime; cancellation drops the loser
-   **futures**, not the loser heap.
-5. **Confirm the no-combinator negative guard** (§16.9) — ordinary programs construct no
-   `IO_TAG_SELECT` node and emit unchanged codegen.
-
-### 16.11 Quality attributes touched
-
-- **Simplicity / complexity budget (Principle 6).** The slice adds **one tag, one
-  single-owning-field node, one recognition arm, one bake, and one standard drop-glue field** — the
-  simplest IO-node construction (simpler than `Par`'s N-slot drop and `Launch`'s move-out).
-  **One tag, no mode field, no second node kind** for race+select+timeout; `race`/`timeout`
-  are derived stdlib (the §9 minimization). No `#[cfg]`, no new AST variant.
-- **Maintainability / single source of truth (Principle 7).** Recognition reuses the `bind`
-  inline-primitive arm; construction reuses the constructor-convention store shared by
-  `bind`/`par_bind`/`launch`/`compile_poll_effect`; the two-pool branch partition reuses
-  `Par`'s (§13.5, no new dispatcher). One node kind serves all three combinators.
-- **Concurrency-safety (Principle 1).** The backend emits **no concurrency primitive** — it
-  constructs a value (the Select node) and a standard drop path. All poll/first-ready/
-  cancel-drop/permit-release lives in the reactor. The backend supplies the common disposer;
-  the runtime owns it while a produced winner or loser has not transferred.
-- **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one owning
-  field + one scalar disposer word), unit-testable at the CLIF seam without a running reactor; the
-  first-ready/cancel/timeout behaviour is cleanly the reactor's, tested separately by `/qa`.
-
-> **§16.12 — Fresh-continuation-produced `select`/`par` node leak (S97, FIXME 0474).** The
-> §16.5/§16.7 RC model (node owns the branch Vec; drop glue cascades to free every branch
-> exactly once) is correct for **caller-tree** select/par nodes — `consume_io_tree`'s
-> `IO_TAG_SELECT`/`IO_TAG_PAR` arms walk the branch container. A node produced **fresh by a
-> bind continuation** (`(bind X (fn [_] (select […])))`) is instead released by the
-> trampoline's *shallow* fresh-node path (`dec_shallow_io`), which frees the node header but
-> **not** its branch container → the branches leak. The ruling (apply to **BOTH** tags) is
-> **`ring2-rc.md §3.5.10`** — the fresh-node release path becomes shape-aware for these two
-> multi-child tags and deep-frees the branch container (reusing the `consume_io_tree` branch
-> arm), keeping the spine tags (Pure/Effect/Bind) shallow. See there for the full design call.
-
----
-
 ## 17. ABI v9 — the ctx-vtable handle model: poll-node emit is a DELETION pass (S97, Wave 0 re-cascade)
 
 > **REWRITTEN for the `/arch`-ratified ctx-vtable handle model (2026-06-30; supersedes the
-> descriptor cut).** §17.1–§17.6 below are the **live** backend delta. Conforms to
+> descriptor cut).** §17.1–§17.5 below are the **live** backend delta. Conforms to
 > `design/arch/effect-concurrency.md` §4.1.1 (the ctx-vtable model), `platform-interface.md`
 > §6.8.0b, `bounded-contexts.md` §3, and the platform-side leaf-authoring contract
 > [Platform leaf authoring](../platform/poll-leaf-authoring.md) describes the uniform
 > poll-fn skeleton. The earlier descriptor-cut design in this document — a fixed-offset `ResourceDesc` **header slot @24** on
 > resource-handle ADTs, a baked poll-node **`role`@32** + **`desc_out` `ResourceDesc` region
-> @40**, the **§17.5 offset contract**, and the **§17.7/§17.8** wiring/QA notes written to it —
-> is **RETIRED**; it is preserved under the **[SUPERSEDED]** banner at §17.7 (provenance only,
-> read for the rejected shape + why). FIXME 0482 is **deleted** (resolved-by-supersession).
+> @40** and the wiring and QA notes written to it — is **RETIRED**; Git history holds it.
 >
 > **The whole backend delta under the new model is a *subtraction*.** Scheduling state
 > (`token`/`capacity`) never rides on a value and never rides on the poll node — it flows
@@ -1968,7 +1567,7 @@ Two deletions, both in `cranelisp-backend`:
    token itself (§17.1).
 2. **Delete the `arg_vals[0..1]` positional peel in `compile_poll_effect`** (§12.3 / `apply.rs`):
    the leaf-arg list is `arg_vals[0..]` directly, marshaled into the state-closure env at
-   `capture(1+i)` (result @ `capture(0)`). The §14.2/§14.3 leading-pair peel is removed — a poll
+   `capture(1+i)` (result @ `capture(0)`). The S96 leading-pair peel is removed — a poll
    leaf's natural args are its only args.
 
 Everything else in `compile_poll_effect` (the node alloc, the state-closure build, the
@@ -2031,249 +1630,3 @@ So the seam is: **backend hands the trampoline a uniform poll node + the leaf's 
 the platform poll-fn drives all scheduling through the trampoline-owned ctx vtable.** The
 backend↔trampoline interface for poll effects is exactly its v8 shape *minus* the leading-pair
 convention — there is no v9-specific offset either side must agree on.
-
-### 17.6 Quality attributes touched
-
-- **Simplicity / complexity budget (Principle 6).** v9 is a **net subtraction at the backend
-  layer** — it deletes a whole codegen pass (`inject_poll_leading_pair` + its `scheduling_class`
-  keying + its `(0,1)` synthesis) and the positional peel, and adds **nothing** (no header slot,
-  no role bake, no desc_out — all of which the dead descriptor design would have added). This is
-  strictly less machinery than even the v8 baseline.
-- **No-interim-implementations (Principle 8).** v9 *removes* the v8 leading-pair interim; the
-  uniform poll node + platform-driven ctx vtable is the end-state. The backend builds nothing to
-  be discarded.
-- **Maintainability / single source of truth (Principle 7).** All scheduling lives in **one
-  place** — the trampoline's ctx vtable + permit map (int). The backend no longer holds any
-  scheduling knowledge (no offset constant, no manifest-derived resource-handle type set, no
-  role), so the cross-crate offset-drift class the dead §17.5 table guarded against **cannot
-  exist** — there is no shared baked offset to drift.
-- **Concurrency-safety (Principle 1).** Unchanged: the backend emits no concurrency primitive;
-  it lays out a uniform node and passes leaf args. All acquire/register/retire/park/release lives
-  in the trampoline.
-- **Testability (Principle 5).** The deletion is inspectable at the CLIF seam on a shrunk repro
-  (`CRANELISP_CODEGEN_TRACE=1`): a poll effect's construct has **no `arg_vals[0]/[1]` positional
-  store displaced ahead of the natural args** (the deleted bake is the negative guard) and the
-  node is the v8 shape (no growth, no `role` at +32). A resource-handle ADT (`Connection [fd]`)
-  is a plain 1-field ADT at `FIELDS_START = 24` (the byte-identical-to-ordinary-ADT witness).
-  The runtime ctx-vtable behaviour is the trampoline's, tested separately by `/qa` + /design int.
-
-### 17.7 [SUPERSEDED — provenance only] the descriptor-cut emit design (RETIRED by the ctx-vtable pivot)
-
-> **RETIRED (2026-06-30) — do not implement.** Everything in §17.7.x below is the dead
-> descriptor-cut design (`ResourceDesc` header slot @24, poll-node `role`@32 + `desc_out`
-> region @40, the per-role stamp/read hooks, the frozen offset contract, the resource-handle
-> type-set wiring). It is kept for provenance — the rejected shape + the Wave-2 blocker that
-> killed it — and is **superseded in full** by §17.1–§17.6 above and `effect-concurrency.md`
-> §4.1.1. The descriptor never rides a value (no header slot), `PollFn`/`Poll` are unchanged
-> (no `desc_out`), and the trampoline owns the ctx vtable (no baked `role`, no offset contract).
-> The blocker that retired it: an opaque zero-field `Connection []` minted inside the DLL via
-> `CLAdt::construct` was a 24-byte object with no room for a 16-byte header slot stamped at
-> `value+24`, and reserving that slot at the DLL-mint→host-alloc boundary was an undesigned
-> cross-crate interface (SPRINT.md "Wave 2 STOP" note). The ctx-vtable model dissolves it by
-> giving `Connection` a genuine `fd` field and never touching the value with scheduling state.
-
-#### 17.7.1 [retired] Job (a) — reserve the `ResourceDesc` header slot on resource-handle ADTs
-
-**Which ADTs.** A type `T` is a **resource handle** iff a loaded platform manifest marks some
-effect `Produce`/`Consume` (`ConcurrencyDescriptor.role`) with `T` as the produced/consumed
-handle type — e.g. `web/Connection` (produced by `accept-conn`, consumed by `read-conn`/
-`send-conn`). The backend computes this **resource-handle type set** from the loaded manifests
-and consults it at ADT layout + field-access codegen. (Wiring note — §17.7: the set is
-derived where the backend already resolves effect targets; this is the one new piece of
-manifest-derived state the backend reads.)
-
-**The slot — fixed offset 24, uniform across all resource-handle types.** A resource-handle
-ADT lays out as the standard `HeapAdt` (`header(16)` + ctor-`tag @ 16`) **plus a 16-byte
-`ResourceDesc` region immediately after the tag**, with logical fields shifted to start
-after it:
-
-```
-resource-handle ADT (e.g. web/Connection):
-  +0   alloc_size : i64        HeapHeader
-  +8   rc         : i64        HeapHeader
-  +16  ctor tag   : i64        HeapAdt::TAG_OFFSET (unchanged — every ADT has it)
-  +24  ResourceDesc.token    : u64    ⟍ the fixed-offset DESCRIPTOR HEADER SLOT
-  +32  ResourceDesc.capacity : u32    │ (16 bytes; RESOURCE_DESC_OFFSET = 24, uniform)
-  +36  ResourceDesc._pad     : [u8;4] ⟋
-  +40  logical field 0 …             (RESOURCE_HANDLE_FIELDS_START = 40, NOT 24)
-```
-
-`RESOURCE_DESC_OFFSET = HeapAdt::FIELDS_START = 24` is the **single fixed offset** the
-trampoline reads with **no per-ADT "token is field N" knowledge** (the property the arch
-ruling requires; `design/arch/interfaces.md` §"Resource scheduling — the `ctx` vtable handle model"). For a resource-handle ADT the
-logical fields shift to `FIELDS_START + 16 = 40`; field-access codegen for these types uses
-`40` (only these types — every other ADT is unchanged at `24`). **web `Connection` is empty
-(`deftype Connection []`)**, so it has **zero** logical fields → a 40-byte object
-(`header 16 + tag 8 + ResourceDesc 16`); nothing shifts this sprint. The escape-hatch
-(`token != fd`, a future `Connection [fd]`) puts its genuine datum at the shifted `40` —
-the descriptor region and logical fields **never share a slot** (`design/arch/platform-interface.md`).
-
-**Construction zero-inits the slot.** When the backend emits a resource-handle ADT
-constructor (e.g. `accept-conn`'s ready-phase `CLAdt::<Connection>::construct`), it
-**zero-inits** the 16-byte descriptor region (`token = 0, capacity = 0`). The trampoline
-**stamps** the real `(token, capacity)` into it later from the produce leaf's `desc_out`
-(§17.5); a handle is "born unstamped" and becomes stamped at production. **No RC** on the
-region — both fields are `NeverHeap` scalars (an opaque identity + a count), so the slot adds
-**no drop-glue obligation** (the ADT's logical-field drop glue is unchanged).
-
-**Rejected:** placing the descriptor **after** the logical fields (offset = `24 + 8·n`) — it
-would make the slot a per-type offset the trampoline must compute from field count, defeating
-"uniform, no per-ADT knowledge." Offset 24 (between tag and logical fields) is the only fixed
-uniform choice that leaves the header + ctor-tag undisturbed.
-
-#### 17.7.2 [retired] Job (b) — the poll-node shape: `role` + the `desc_out` `ResourceDesc` slot
-
-The poll node grows from the v8 3-field (48-byte) shape to a 4-field (56-byte) shape; the
-v8 `(token, capacity)` slots are repurposed. **The poll node is an in-process backend↔
-intrinsics convention (not a struct ABI freeze — §14.7), so this shape change is free of any
-`cranelisp-types`/`public-api` touch** — it costs only a `CACHE_SCHEMA_VERSION` bump (§17.6).
-
-```
-v9 IO_TAG_EFFECT_POLL node — payload_size(4) = 56 bytes:
-  +16  tag           : i64   (= IO_TAG_EFFECT_POLL = 4)        HeapAdt::TAG_OFFSET
-  +24  field 0: state_closure : i64   (heap, RC'd)             — UNCHANGED from v8
-  +32  field 1: role          : i64   (baked from manifest ConcurrencyDescriptor.role: 0/1/2)
-  +40  field 2: desc.token     : u64    ⟍ the 16-byte ResourceDesc region = the `desc_out` slot
-  +48  field 3: desc.capacity  : u32    │ (RESOURCE_DESC fields baked-or-zero per role, §17.4)
-  +52         desc._pad        : [u8;4] ⟋   POLL_DESC_OUT_OFFSET = HeapAdt::field_offset(2) = 40
-```
-
-- **`role` (field 1, abs 32)** is the per-effect static `ResourceRole {None=0, Produce=1,
-  Consume=2}` read off the effect's manifest `ConcurrencyDescriptor.role`, baked as a literal
-  `iconst`. It tells the trampoline stamp-vs-read-vs-nothing **without a manifest lookup at
-  poll time** — the node stays self-describing for admission, exactly the v8 philosophy (the
-  node carried `(token, capacity)`; it now carries `role` + the descriptor region).
-- **The `ResourceDesc` region (fields 2–3, abs 40–55)** is the **`desc_out` slot**: the
-  trampoline passes `node + 40` as the `desc_out: *mut ResourceDesc` argument to the poll-fn
-  (`poll(state, host, waker, desc_out) -> Poll`). What the backend bakes into it depends on
-  role (§17.4). Both descriptor fields are `NeverHeap` scalars → **no RC, no drop-glue change**
-  — the node remains a one-heap-field ADT (only field 0, the state-closure, is heap-typed), so
-  §13.6/§14.6's drop glue is untouched.
-
-#### 17.7.3 [retired] Job (c) — delete the positional bake; what the backend stores per role
-
-`compile_poll_effect` (§12.3 / `apply.rs`) **stops** peeling `arg_vals[0]`/`arg_vals[1]` as
-`(token, capacity)`. Leaf args are `arg_vals[0..]` directly, marshaled into the state-closure
-env at `capture(1+i)` (result @ `capture(0)`) — **the leading-pair peel of §14.2/§14.3 is
-removed**; `inject_poll_leading_pair` no longer prepends anything (the pass is deleted, not
-re-keyed — its `scheduling_class` discriminator and its `(0,1)` synthesis go away with it).
-
-What the backend bakes into the node, by the effect's manifest `role` (a compile-time
-constant from the resolved effect target — **not** from any operand):
-
-| `role` | field 1 (`role`) | `ResourceDesc` region (fields 2–3) at construction |
-|---|---|---|
-| **Produce** (`accept-conn`) | `iconst 1` | **zero-init** — the produce leaf writes it through `desc_out`; the trampoline reads it back on `Ready` to stamp (§17.5) |
-| **Consume** (`read-conn`/`send-conn`; `read-line`) | `iconst 2` | **bake the effect's manifest-static `ConcurrencyDescriptor {token, capacity}`** — `token == 0` (the per-value `ResourceSerial` default, `read-conn`) signals the trampoline to read the **dynamic** descriptor off the consumed handle's header; `token ≠ 0` (a singleton, `read-line`'s `{STDIN_TOKEN, 1}`) signals it to acquire the **manifest-static** token directly with no handle to read (`poll-support.md` §3.1/§3.6.1) |
-| **None** (bare timer, `bind-listener`) | `iconst 0` | **zero-init** — never read |
-
-This is the v9 replacement for §14's "synthesize `(0,1)` for tokenless / bake live pair for
-resource": **one uniform construction site**, role-keyed, **no positional peel**, **no per-leaf
-node-shape branch**. The two Consume cases are the **same** bake — the manifest-static
-descriptor — distinguished only by the baked `token`'s zero-ness (effect-concurrency §5:
-"token 0 = unrestricted/dynamic"), not by a second node field or a codegen branch.
-
-#### 17.7.4 [retired] Job (d) — the per-role hooks: who does the stamp, who does the read
-
-**The backend reserves slots and emits the node; the trampoline does the runtime stamp/read.**
-This is the load-bearing boundary `/design int` and Phase-5 `/dev` implement against. Crisply:
-
-**Codegen (backend) owns:**
-1. the `RESOURCE_DESC_OFFSET = 24` header slot on resource-handle ADTs + the shifted
-   `FIELDS_START = 40` field-access; zero-init at construction (§17.2);
-2. the poll-node `role` bake + the `desc_out` `ResourceDesc` region at `POLL_DESC_OUT_OFFSET =
-   40`, baked-or-zero per §17.4 (§17.3);
-3. deletion of the positional `(token, capacity)` bake / `inject_poll_leading_pair` (§17.4);
-4. the resource-handle type set derived from manifests (§17.7).
-   The backend emits **no acquire, no stamp, no header write** — it only lays out storage.
-
-**Trampoline (int, runtime) owns** — reading `role` off `node + 32` and acting:
-- **`role == Produce`:** pass `node + 40` (the `desc_out` slot) to `poll(…, desc_out)`. The
-  leaf writes `*desc_out = {token, capacity}` before `Ready`. On `Ready` the trampoline reads
-  `node + 40` and **stamps** it into the produced value's header (`produced_value +
-  RESOURCE_DESC_OFFSET(24)`) — the produced value is a resource-handle ADT (`Connection`) the
-  backend laid out with the slot. No pre-poll acquire (accept is structurally serial,
-  `poll-support.md` §3.5.2).
-- **`role == Consume`:** read the node's baked `ResourceDesc` (`node + 40`). If `token ≠ 0`
-  (singleton, §17.4) acquire that manifest-static token. If `token == 0` (dynamic), **read**
-  the descriptor off the **consumed handle's header** — the handle is the first leaf arg
-  (`arg(0)`), marshaled as the state-closure's `capture(1)` = env offset `state + 8` (the
-  poll-fn's `PollEnv::arg(0)`, §12.2: `state` = env base, result @ `state+0`, arg_0 @
-  `state+8`); the trampoline reads that handle pointer, then `handle +
-  RESOURCE_DESC_OFFSET(24)` → `(token, capacity)` → acquire. Acquire
-  **before** the first poll (acquire-around-poll, §14.1 ordering unchanged); release on `Ready`/
-  drop (RAII `Permit`). `desc_out` is passed but the leaf ignores it.
-- **`role == None`:** poll with a `desc_out` pointer the leaf ignores; no acquire, no stamp.
-
-The **cross-crate offset contract** (the §14.4-style frozen seam — the class that silently
-breaks if the two sides disagree):
-
-| Constant | Value | Backend site | Trampoline site |
-|---|---|---|---|
-| `RESOURCE_DESC_OFFSET` (handle header slot) | **24** | resource-handle ADT layout + construct zero-init | `handle + 24` read (consume); `produced + 24` write (produce-stamp) |
-| poll-node `role` | `field_offset(1)` = **32** | `role` bake | `node + 32` read |
-| `POLL_DESC_OUT_OFFSET` (= `desc_out`) | `field_offset(2)` = **40** | `desc_out` region bake/zero | `node + 40` passed as `desc_out`; read-back on Produce `Ready` |
-
-#### 17.7.5 [retired] Job (e) — cache invalidation + baseline regen
-
-- **`CACHE_SCHEMA_VERSION` bump (required).** Both baked shapes change vs v8: the poll node
-  grows `48 → 56` bytes with a new field meaning (`role` + `desc_out` region, no positional
-  `(token, capacity)`), and resource-handle ADTs gain the 16-byte header slot + shifted
-  fields. A stale `.o` cached under the v8 shape would mis-read the node/handle at the new
-  offsets. The cutover change-set bumps `CACHE_SCHEMA_VERSION` so every cached artifact
-  re-derives (`module-caching.md` — the schema-version gate).
-- **`public-api.txt` baseline regen rides the cutover (baseline-diff discipline,
-  `design/arch/CLAUDE.md`).** `cranelisp-backend`'s baseline is regenerated in the **same**
-  change-set as the source reshape (`cargo public-api --omit … -p cranelisp-backend >
-  crates/cranelisp-backend/public-api.txt`) and the diff is included alongside. Whether the
-  backend edge actually moves depends on what `/dev` exposes (e.g. a new `RESOURCE_DESC_OFFSET`
-  const); the discipline is to regen + include the diff regardless, side-by-side with the
-  `cranelisp-types`/`cranelisp-platform` regen the arch ruling already names (`ABI_VERSION`
-  8 → 9 surface). `/review` (backend) confirms the regen is present in the diff.
-
-#### 17.7.6 [retired] Phase-5 watch items + the resource-handle type-set wiring
-
-- **Resource-handle type set.** The backend must know, at ADT layout + field-access codegen,
-  which ADTs are resource handles. Derive it once per session from the loaded manifests where
-  the backend already resolves effect targets (`resolve_poll_effect_target` /
-  `DefKind::PlatformEffect`): a type is a resource handle iff some effect's
-  `ConcurrencyDescriptor.role ∈ {Produce, Consume}` names it as the produced/consumed handle
-  type. This is the one new manifest-derived input to layout. **If this set cannot be made
-  available at ADT-layout time without a cross-crate interface change, STOP and file a FIXME
-  `target: /arch`** — the layout shift (§17.2) depends on it.
-- **Empty-bodied `Connection []` marshalling** through `CLAdt`/`web.platform-schema` (the
-  platform doc's flagged watch item, `poll-support.md` §3.5.7): the schema regen
-  (`/platform-schema web`) must accept a zero-logical-field resource handle whose only
-  in-object storage is the descriptor header slot. Confirm `CLAdt::<Connection>::construct`
-  emits a 40-byte object (header + tag + descriptor region, no field stores) and that schema
-  derivation does not treat the descriptor region as a logical field.
-- **`set_result` value still flows the old path.** v9 adds **only** the descriptor channel;
-  the leaf's i64 result still lands in the env result slot (`state + 0`) read generically on
-  `Ready` (§12.4). The produced `Connection` pointer is that result; the trampoline stamps its
-  header after reading it — `set_result` and the stamp are two independent writes (the result
-  slot vs the value header), neither widening `Poll` (still single-register `#[repr(i32)]`).
-
-#### 17.7.7 [retired] Quality attributes touched (descriptor-cut)
-
-- **Simplicity / complexity budget (Principle 6).** v9 is a **net subtraction**: it deletes
-  `inject_poll_leading_pair` (a whole codegen pass + its `scheduling_class` keying + its
-  `(0,1)` synthesis) and the leading-pair peel. What it adds — a fixed-offset header slot, a
-  role-keyed node bake — is **less** machinery than the pass it removes (Principle 8 — v9
-  removes an interim, it is not one).
-- **Maintainability / single source of truth (Principle 7).** Both new offsets
-  (`RESOURCE_DESC_OFFSET = 24`, `POLL_DESC_OUT_OFFSET = 40`) are frozen cross-crate constants
-  (§17.5) — one backend write site, one trampoline read site each. The descriptor-slot offset
-  lives in **one** place per side (`PollEnv::desc_of`/`set_desc` on the platform side,
-  `poll-support.md` §3.6.2; the layout const on the backend side), so a slot move is a single
-  edit, not a per-leaf drift — the same discipline §12.2's result-slot offset already has.
-- **Concurrency-safety (Principle 1).** The backend still emits **no concurrency primitive** —
-  it lays out a self-describing carrier (header slot + role + `desc_out`); all
-  acquire/stamp/read/park/release/RAII-drop lives in the trampoline. The descriptor is a value
-  the backend reserves space for, never one it manipulates.
-- **Testability (Principle 5).** Both reshapes are inspectable at the CLIF seam on a shrunk
-  repro (`CRANELISP_CODEGEN_TRACE=1`): a resource-handle ADT construct stores zero into
-  `+24/+32` and (for `Connection []`) no logical fields; a poll effect bakes `role` at `+32`
-  and zero/static into the `+40` region with **no `arg_vals[0]/[1]` positional store** (the
-  deleted bake is the negative guard). A non-resource ADT keeps `FIELDS_START = 24`
-  unchanged (the byte-identical-off witness). The runtime stamp/read is the trampoline's,
-  tested separately by `/qa`.

@@ -1,28 +1,16 @@
 //! Heap layout types, RC emit helpers, and codegen heap classification.
 //!
-//! This module is the SOLE location that imports the cross-crate layout
-//! constants (`HeapHeader`, `HeapAdt`, `HeapClosure` offsets — the runtime
-//! layout contract intrinsics and codegen agree on). All other codegen code
-//! calls these helpers, confining heap-layout assumptions per
-//! `src/CLAUDE.md` §"Heap Access". These items are `pub` because
-//! `cranelisp-intrinsics` reads the layouts and codegen emits offset-keyed
-//! loads against the same constants; no external consumer should call the emit
-//! helpers.
+//! Owns the backend's heap layout structs (`HeapAdt`, `HeapClosure`,
+//! `HeapVec`) over the types-owned `HeapHeader`, and the inline RC and
+//! allocation emitters other codegen calls rather than spelling offsets. The
+//! layouts are `pub` for the binary crate's value display and test runner.
+//! `cranelisp-intrinsics` cannot depend on this crate and carries its own
+//! offsets for the same layouts.
 //!
-//! [`HeapCategory`] + [`HeapCategory::classify`] are backend-internal codegen
-//! classification (relocated here from `cranelisp-types` per S69 Sub 38 — zero
-//! production consumers outside this crate). `classify` carries an interim
-//! two-mode `Option<&tables>` contract (pre-typecheck: ADTs conservatively
-//! `Mixed`; post-typecheck: classified by constructor inspection) and several
-//! pending structural cascades noted at the item.
-//!
-//! Contents:
-//!   - `HeapAdt` — ADT data-constructor layout
-//!   - `HeapClosure` — closure layout
-//!   - `heap_load` / `heap_store` — load/store an i64 from/into a heap object
-//!   - `emit_rc_inc` — inline atomic RC increment
-//!   - `emit_rc_dec` — inline atomic RC decrement + conditional dealloc
-//!   - `emit_alloc` — emit call to `runtime/alloc`
+//! [`HeapCategory`] + [`HeapCategory::classify`] are the codegen heap
+//! classification. `classify` carries a two-mode `Option<&tables>` contract
+//! (pre-typecheck: ADTs conservatively `Mixed`; post-typecheck: classified by
+//! constructor inspection), noted at the item.
 
 use std::mem::{self, offset_of};
 
@@ -165,94 +153,41 @@ pub(crate) fn heap_store(builder: &mut FunctionBuilder, val: Value, ptr: Value, 
 // RC emission helpers
 // ---------------------------------------------------------------------------
 
-/// Per-site RC atomicity verdict (B3.3, `design/backend/ownership-codegen.md`
-/// §5.1). Derived from the emitting node's `confined` site fact:
-/// `Some(true)` (Confined — every surviving RC op on the cell runs on the
-/// owning strand) ⇒ [`RcAtomicity::NonAtomic`]; `Some(false)` (Crossing) /
-/// `None` (fact absent / analysis off) ⇒ [`RcAtomicity::Atomic`], verbatim
-/// today.
-///
-/// **Soundness rests entirely on typecheck's op-wise confinement join** (the
-/// spine §5 / `ownership/confinement.rs`): a cell is `Confined` only if *every*
-/// surviving RC op on it, across all reachable frames, runs on the owning
-/// strand — so a non-atomic op can only ever exist on a cell with no concurrent
-/// ops, and mixed atomic/non-atomic emission on a Confined cell cannot race.
-/// The backend performs **no strand reasoning** — it consumes the verdict (the
-/// spine's narrowness counterweight).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RcAtomicity {
-    /// The blessed inline `atomic_rmw` path — today's Decision-24 codegen.
-    Atomic,
-    /// The non-atomic plain load/`iadd`(/`isub`)/store arm — sound ONLY on a
-    /// Confined cell (typecheck verdict `confined = Some(true)`).
-    NonAtomic,
-}
-
-// B3.3 codegen-time non-atomic-op-share counter (`design/backend/
-// ownership-codegen.md` §11 — the designed `/dev` per-mechanism stat; H2). The
-// counter STATE lives in `cranelisp-intrinsics::rc` (single source of truth —
-// it owns the process-exit `[RC_STATS]` print surface, which this crate cannot
-// own: no dependency edge points back). This crate is the sole WRITER, pushing
-// at EMISSION time via `tally_rc_emit`. Both the atomic and non-atomic arms are
-// counted so the confined-share is `nonatomic / total` (A/B: analysis on vs
-// off, or probe on vs off). Codegen-time push ⇒ no emitted IR ⇒ byte-identical
-// off is untouched.
-
-/// Decide the RC arm and tally it (one call per emitted op). Returns `true` for
-/// the non-atomic arm. The per-site sound gate ([`RcAtomicity::NonAtomic`]) and
-/// the process-global measurement-ceiling probe (`CRANELISP_NONATOMIC_RC`,
-/// documented-unsound) share this ONE decision point — one non-atomic code
-/// path, two gates (Principle 7).
-pub(crate) fn use_nonatomic_arm(atomicity: RcAtomicity) -> bool {
-    let nonatomic = matches!(atomicity, RcAtomicity::NonAtomic) || nonatomic_rc_codegen_enabled();
+/// Whether an inline RC operation takes the plain (non-atomic) arm: only when
+/// the `CRANELISP_NONATOMIC_RC` probe is set (`design/backend/ownership-codegen.md`
+/// §5.1). Tallies the decision, at codegen time, for `[RC_STATS]`'s
+/// `rc_nonatomic`/`rc_atomic` split. Call once per emitted operation.
+pub(crate) fn use_nonatomic_arm() -> bool {
+    let nonatomic = nonatomic_rc_codegen_enabled();
     cranelisp_intrinsics::rc::tally_rc_emit(nonatomic);
     nonatomic
 }
 
-/// Codegen-time RC-op emission tally: `(non_atomic_ops, total_ops)`. Backend
-/// half of the H2 non-atomic-op-share attribution (§11) — reads back the single
-/// source of truth owned by `cranelisp-intrinsics::rc` so this crate's unit
-/// matrix (`rc_atomicity_tests`) and the process-exit print agree by
-/// construction. The print surface (`cranelisp-intrinsics::rc::print_rc_stats`)
-/// reads the same counts to emit `rc_nonatomic=…`/`rc_atomic=…`.
+/// The emission tally [`use_nonatomic_arm`] writes, `(non_atomic_ops,
+/// total_ops)`. Its state is `cranelisp-intrinsics::rc`'s, which also prints it
+/// at exit, so these tests and the `[RC_STATS]` line read one count.
 #[allow(dead_code)]
 pub(crate) fn rc_emit_counts() -> (u64, u64) {
     cranelisp_intrinsics::rc::rc_emit_counts()
 }
 
-/// Emit inline atomic RC increment.
+/// Emit an inline RC increment: `atomic_rmw(Add, ptr + RC_OFFSET, 1)`, or a
+/// plain load/`iadd`/store under the probe ([`use_nonatomic_arm`]).
 ///
-/// Cranelift atomic_rmw(Add, ptr + RC_OFFSET, 1, Release).
-/// This is an INLINE atomic op, NOT an extern function call.
-///
-/// `module` is threaded for the S99 instrumentation gate (an emitted
-/// `runtime/rc_stat_inc` call) and is otherwise unused; with both S99 gates off
-/// the emission is byte-identical to the pre-S99 `atomic_rmw` path.
-///
-/// This is the atomic-verbatim entry point (the §2.2 else-arm); the per-site
-/// B3.3 consumers call [`emit_rc_inc_atomicity`].
+/// `module` is used only by the `CRANELISP_RC_STATS` gate, which emits a
+/// `runtime/rc_stat_inc` call first.
 pub(crate) fn emit_rc_inc<M: Module>(builder: &mut FunctionBuilder, module: &mut M, ptr: Value) {
-    emit_rc_inc_atomicity(builder, module, ptr, RcAtomicity::Atomic);
-}
-
-/// Emit inline RC increment, selecting the atomic or non-atomic arm per the
-/// [`RcAtomicity`] verdict (B3.3, §5.1). `Atomic` is byte-identical to the
-/// pre-B3.3 `atomic_rmw` path; `NonAtomic` emits the plain load/`iadd`/store
-/// arm (sound only on a Confined cell — the S99 arm, now per-site-gated).
-pub(crate) fn emit_rc_inc_atomicity<M: Module>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    ptr: Value,
-    atomicity: RcAtomicity,
-) {
     emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_inc");
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    if use_nonatomic_arm(atomicity) {
-        // Non-atomic inc — the S99 measurement arm, per-site-gated on a
-        // Confined cell (or forced by the CRANELISP_NONATOMIC_RC probe).
+    emit_rc_add(builder, rc_addr, one);
+}
+
+/// The count update shared by both increments.
+fn emit_rc_add(builder: &mut FunctionBuilder, rc_addr: Value, one: Value) {
+    if use_nonatomic_arm() {
         let cur = builder
             .ins()
             .load(types::I64, MemFlags::trusted(), rc_addr, 0);
@@ -267,21 +202,6 @@ pub(crate) fn emit_rc_inc_atomicity<M: Module>(
             one,
         );
     }
-}
-
-/// Emit inline atomic RC increment with nullary tag guard.
-///
-/// For Mixed HeapCategory types, checks if the value is a bare nullary tag
-/// (below NULLARY_TAG_THRESHOLD) before accessing the RC header.
-///
-/// Atomic-verbatim entry point; the per-site B3.3 consumers call
-/// [`emit_rc_inc_guarded_atomicity`].
-pub(crate) fn emit_rc_inc_guarded<M: Module>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    ptr: Value,
-) {
-    emit_rc_inc_guarded_atomicity(builder, module, ptr, RcAtomicity::Atomic);
 }
 
 /// The nullary-tag skip guard shared by BOTH guarded RC halves. Emits the
@@ -324,12 +244,12 @@ fn emit_nullary_skip_guard(builder: &mut FunctionBuilder, ptr: Value, cont_block
     builder.seal_block(guarded_block);
 }
 
-/// Guarded inline RC increment with per-site [`RcAtomicity`] (B3.3, §5.1).
-pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
+/// Emit an inline RC increment that skips a bare nullary tag (a value below
+/// `NULLARY_TAG_THRESHOLD`, which has no RC header). Otherwise as [`emit_rc_inc`].
+pub(crate) fn emit_rc_inc_guarded<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     ptr: Value,
-    atomicity: RcAtomicity,
 ) {
     let cont_block = builder.create_block();
     emit_nullary_skip_guard(builder, ptr, cont_block);
@@ -340,23 +260,7 @@ pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    if use_nonatomic_arm(atomicity) {
-        // Non-atomic inc — the S99 measurement arm, per-site-gated on a
-        // Confined cell (or forced by the CRANELISP_NONATOMIC_RC probe).
-        let cur = builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), rc_addr, 0);
-        let new = builder.ins().iadd(cur, one);
-        builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
-    } else {
-        builder.ins().atomic_rmw(
-            types::I64,
-            MemFlags::trusted(),
-            AtomicRmwOp::Add,
-            rc_addr,
-            one,
-        );
-    }
+    emit_rc_add(builder, rc_addr, one);
 
     builder.ins().jump(cont_block, &[]);
     builder.switch_to_block(cont_block);
@@ -393,8 +297,8 @@ fn rc_dec_check_enabled() -> bool {
 /// reused chunk. Off by default ⇒ no emitted call ⇒ **byte-identical codegen**.
 ///
 /// The ONE seam (Principle 7) every backend-emitted inline dec routes its check
-/// through: the header-dec path ([`emit_rc_dec_guarded_atomicity`]) AND the
-/// Vec-aware dec (`vec_codegen::emit_vec_rc_dec_with_drop_atomicity` — the COW
+/// through: the header-dec path ([`emit_rc_dec_guarded`]) AND the
+/// Vec-aware dec (`vec_codegen::emit_vec_rc_dec_with_drop` — the COW
 /// copy-branch source release + every vec teardown/scope-exit dec), so the
 /// DEC_CHECK lane sees EVERY backend dec, not only the header-dec inline.
 pub(crate) fn emit_rc_dec_check_gated<M: Module>(
@@ -478,15 +382,7 @@ pub(crate) fn emit_rc_dec<M: Module>(
     dealloc_func_id: FuncId,
     drop_glue_id: Option<FuncId>,
 ) {
-    emit_rc_dec_guarded_atomicity(
-        builder,
-        module,
-        ptr,
-        dealloc_func_id,
-        drop_glue_id,
-        false,
-        RcAtomicity::Atomic,
-    );
+    emit_rc_dec_guarded(builder, module, ptr, dealloc_func_id, drop_glue_id, false);
 }
 
 /// Emit RC dec with optional null guard for bare nullary tags.
@@ -495,8 +391,9 @@ pub(crate) fn emit_rc_dec<M: Module>(
 /// ADT tags from nullary constructors) are skipped — they are not heap
 /// pointers and have no RC header.
 ///
-/// Atomic-verbatim entry point; the per-site B3.3 consumers call
-/// [`emit_rc_dec_guarded_atomicity`].
+/// The count update is `atomic_rmw(Sub)`, or a plain load/`isub`/store under
+/// the probe ([`use_nonatomic_arm`]); the `old == 1` free path is the same in
+/// both.
 pub(crate) fn emit_rc_dec_guarded<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -504,31 +401,6 @@ pub(crate) fn emit_rc_dec_guarded<M: Module>(
     dealloc_func_id: FuncId,
     drop_glue_id: Option<FuncId>,
     guard_nullary: bool,
-) {
-    emit_rc_dec_guarded_atomicity(
-        builder,
-        module,
-        ptr,
-        dealloc_func_id,
-        drop_glue_id,
-        guard_nullary,
-        RcAtomicity::Atomic,
-    );
-}
-
-/// Guarded RC dec with per-site [`RcAtomicity`] (B3.3, §5.1/§5.3). `Atomic` is
-/// byte-identical to the pre-B3.3 path; `NonAtomic` emits the plain
-/// load/`isub`/store count update (sound only on a Confined cell). The free
-/// path (drop glue + dealloc, guarded by `old == 1`) is unchanged in both arms.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    ptr: Value,
-    dealloc_func_id: FuncId,
-    drop_glue_id: Option<FuncId>,
-    guard_nullary: bool,
-    atomicity: RcAtomicity,
 ) {
     let cont_block = builder.create_block();
 
@@ -552,10 +424,8 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    let old_rc = if use_nonatomic_arm(atomicity) {
-        // Non-atomic dec — the S99 measurement arm, per-site-gated on a
-        // Confined cell (or forced by the CRANELISP_NONATOMIC_RC probe). The
-        // pre-decrement value stands in for the atomic_rmw's returned old value.
+    let old_rc = if use_nonatomic_arm() {
+        // The pre-decrement value stands in for the atomic_rmw's returned old value.
         let cur = builder
             .ins()
             .load(types::I64, MemFlags::trusted(), rc_addr, 0);

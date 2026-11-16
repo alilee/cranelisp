@@ -17,7 +17,7 @@ refers_to:
 
 - **One failure.** In `dev`(backend)'s full `cargo nextest run --no-fail-fast`
   on 2026-09-30, `worker::tests::dispatch_without_a_stored_continuation_retires_nothing`
-  failed at `src/worker/tests.rs:4413`: `requeue_without_continuation(&user)`
+  failed in `src/worker/tests.rs`: `requeue_without_continuation(&user)`
   returned `false` (`.local/s122-tail-cow-dev/full-suite.log`).
 - **Passes otherwise.** It passed in isolation on the pre-change tree and on
   the final tree (97/97 worker tests).

@@ -3,11 +3,16 @@
 > section numbers are pinned; the surrounding wave narrative is dated. Current design is
 > `int.md` (master) plus the subsystem docs indexed in `design/int/CLAUDE.md`
 > §"Document index"; where this record disagrees with the source or the master, they win.
+>
+> S123 deleted the redefinition transaction, the downgrade report and the T1 reload
+> designed below, so the functions this record names for them no longer exist; Git
+> retains them.
 
 # S102 defect wave — /int-owned cluster designs (Block A items 1, 2, 4, 5)
 
 > **Status: DESIGN (S102 Phase 3).** Companion to `design/int/session-transaction.md`
-> (amended this phase: §9.1.1 downgrade `stale:` contract; §10 T1 full-cure mechanics).
+> (amended this phase with a downgrade `stale:` contract and the T1 full-cure mechanics,
+> both deleted in S123).
 > Scope authority: `sprints/archive/sprint-102.md` Block A. Acceptance authority: the S101 6a/6b
 > guard set (the retired failure ledger, section "Sprint 101 Phase 6a/6b defect set") — every design
 > below names the guards it flips. Master design: `design/int/int.md` (§8 REPL flow,
@@ -24,8 +29,8 @@
 
 ## §1. T1 interim cure — the downgrade print (ships regardless)
 
-**Ruling-grade content lives in `session-transaction.md`** (§9.1.1 data contract, §10 T1
-amendment); this section is the change-set plan.
+**Ruling-grade content lived in the S102 session transaction design** (its downgrade data
+contract and T1 amendment, deleted in S123); this section is the change-set plan.
 
 Mechanism recap: the §2.2 `!per_symbol` classification arm (prior `Def` exists, target
 kind outside concrete-single-sig precision, not gate-exempt) is the T1 route. The turn
@@ -46,7 +51,7 @@ never-compiled/late-bound callers MUST NOT appear).
    `ReverseIndex::build` + `callers_of(target) ∪ callers_of(target$…)` (variant-aware:
    a mangled callee whose `base_fq` == target), filtered to entries with compiled code,
    `is_gate_exempt_internal` excluded, sorted/deduped.
-2. `src/redefine.rs::apply_redefinition_outcomes` — a second arm: for outcomes
+2. `apply_redefinition_outcomes` in `src/redefine.rs` (deleted S123) — a second arm: for outcomes
    matching the item-3 trigger (`prior_was_def && !per_symbol`, gate-exempt excluded),
    build the stale set; if non-empty, push a `TransactionReport { target, stale, .. }`
    rendering through the existing `pending_cascade_reports` channel (Principle 8 pin:
@@ -353,7 +358,7 @@ variable: =`, `unknown type Int (from module '')` — D3's reduced face and 0487
 **Sharper finding**: `TypecheckProduct.file_path` is **never `Some` on any path** —
 the only constructor site is `worker.rs:794–799` with `file_path: None`, and no
 assignment site exists. So the §4.2 rehydration chokepoint
-(`redefine.rs::resolve_recheck_sexps`) and the T2 `module_grain_reload` are dead as
+(`resolve_recheck_sexps` in `redefine.rs`, deleted S123) and the T2 `module_grain_reload` are dead as
 wired for every module — this is D3's "definition source unavailable" face waiting
 behind the env wall, and it also explains why those faces only appear at scale.
 

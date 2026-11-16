@@ -139,7 +139,7 @@ fn role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy() {
         "conformant: 11 dispatched roles, checked-in adapters",
         "11 subordinate roles",
         "11 Copilot adapters",
-        "26 principles",
+        "27 principles",
         "4 first-read roles",
         "0 local finding(s)",
     ] {

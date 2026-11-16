@@ -343,7 +343,9 @@ one is the target:
   runtime probe against "always copy". Every other decider retires, including
   the static uniqueness proof and borrow elision. Stack placement, `Confined`
   non-atomic counting and value flattening are placement decisions outside
-  the list and stay, pending the user's question in that design's §9.
+  the list. [Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)
+  retires all three from the dev tier: confined counting in S123, stack
+  placement and flattening in S124.
 
 R and U are named so the measurement can be read correctly; neither is
 proposed for adoption.
@@ -436,8 +438,9 @@ emission change over the collapsed mechanism — never interleaved with it.
 ### 3.5 One emission tier
 
 There is no `--release` tier: the [release proposal](release-llvm-backend.md)
-is unratified and LLVM is excluded. The mechanisms live in the one shared
-Cranelift lowering ([ownership inference](ownership-inference.md) §3.4).
+is unratified and LLVM is excluded. Every built mechanism lives in the one
+Cranelift lowering; [Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)
+now limits which belong there ([ownership inference](ownership-inference.md) §3.4).
 Adopting U′ therefore changes emission for the REPL, `--run` and shipped
 `--link` executables alike.
 
@@ -446,10 +449,10 @@ Adopting U′ therefore changes emission for the REPL, `--run` and shipped
   parameters) and the root rule that a REPL/`--run`/`--link` divergence is a
   defect.
 - **The ownership analysis loses most emission consumers.** Outside U′'s list
-  its output would feed nothing, which is "landed with zero consumers". If the
-  user adopts U′, `arch` frames retiring or narrowing it (`cranelisp-types`
-  `Mode`, `ModeSummary` and related items, and typecheck) as a separate
-  public-API packet. No such delta is proposed in S123.
+  its output would feed nothing, which is "landed with zero consumers". The
+  user ruled on 2026-11-16 that typecheck keeps producing these facts for the
+  release tier even with no dev consumer (Principle 27), so they are not
+  retired.
 - **Assurance.** Outside the list the emitted code is the uniform rule, so
   Principle 25's equivalence becomes structural there and the R9 differential
   lane checks only the listed rules.

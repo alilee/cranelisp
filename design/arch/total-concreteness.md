@@ -61,8 +61,8 @@ Section numbers are stable because designs, source and tests cite them. Retired 
 
 How each is held (verified at source, 2026-09-21):
 
-- I-CONC is represented by the lifecycle: `Life::Concrete` and `Life::Broken` carry the
-  `CallableSlot` their arm is settled on; `Life::Template`, inline primitives and
+- I-CONC is represented by the lifecycle: `Life::Concrete` carries the
+  `CallableSlot` its arm is settled on; `Life::Template`, inline primitives and
   host-promised externs have none; `Life::Declared` may retain a displaced prior, which
   is not callable (next bullet) (`crates/cranelisp-types/src/lifecycle.rs`). The slot's field
   is private, and every settlement and install funnel converts the scheme through

@@ -386,7 +386,6 @@ fn ordinary_replacement_preparation_rematerializes_prior_instance() {
         &session.shared.prelude_fallback,
         &module,
         &replacement,
-        &replacement,
         &session.shared,
     )
     .unwrap()
@@ -465,10 +464,7 @@ fn prepare_uncheckable_cluster(
         &session.shared.module_aliases,
         &session.shared.prelude_fallback,
         &ModuleFullPath::from("user"),
-        ClusterPrograms {
-            working: &[],
-            codegen: &[],
-        },
+        &[],
         OwedFacts {
             lookup_dependencies,
         },
@@ -565,7 +561,6 @@ fn ordinary_same_type_replacement_preparation_rematerializes_prior_instance() {
         &session.shared.module_aliases,
         &session.shared.prelude_fallback,
         &module,
-        &replacement,
         &replacement,
         &session.shared,
     )
@@ -764,7 +759,6 @@ fn same_type_backflow_concrete_arm_replacement_uses_staged_arm() {
         &session.shared.prelude_fallback,
         &module,
         &replacement,
-        &replacement,
         &session.shared,
     )
     .unwrap()
@@ -903,7 +897,6 @@ fn ordinary_overload_reorder_remaps_instances_before_atomic_publication() {
         &session.shared.module_aliases,
         &session.shared.prelude_fallback,
         &module,
-        &replacement,
         &replacement,
         &session.shared,
     )
@@ -1105,7 +1098,6 @@ fn caller_free_changed_overload_declines_removed_arm_instances() {
         &session.shared.prelude_fallback,
         &module,
         &replacement,
-        &replacement,
         &session.shared,
     )
     .unwrap()
@@ -1207,7 +1199,6 @@ fn caller_free_overload_to_plain_retires_prior_arm_instances() {
         &session.shared.prelude_fallback,
         &module,
         &replacement,
-        &replacement,
         &session.shared,
     )
     .unwrap()
@@ -1292,7 +1283,6 @@ fn declined_prior_demand_retirement_is_unpublished_until_commit() {
         &session.shared.module_aliases,
         &session.shared.prelude_fallback,
         &module,
-        &replacement,
         &replacement,
         &session.shared,
     )
@@ -1402,7 +1392,6 @@ impl Q1FailureSnapshot {
             self.backing_source
         );
         assert!(processed.warnings().is_empty());
-        assert!(processed.redefinitions().is_empty());
         assert!(processed.pending_codegen_notification.is_none());
     }
 }
@@ -1527,7 +1516,6 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
         &session.shared.module_aliases,
         &session.shared.prelude_fallback,
         &module,
-        &replacement,
         &replacement,
         &session.shared,
     )
@@ -2068,15 +2056,9 @@ fn introspection_reads_code_from_symbol_table_not_codegen_products() {
 // case in `finalize_module`).
 #[test]
 fn repl_expr_finalize_module_no_longer_uses_special_case() {
-    // Register `__expr` as a synthetic zero-arg defn on the symbol table
-    // (mirroring `wrap_exprs_as_defns`). Drive `derive_codegen_batch`
-    // over a program consisting solely of a `TopLevel::Expr`; confirm
-    // `__expr` appears in the derived names list — the uniform path.
-    // Then run `inline_jit_codegen_for_names` on it and assert the
-    // `code` field on the `__expr` entry becomes Some(_). No
-    // `finalize_module` special case is taken — the same G6 write path
-    // that serves every other symbol serves `__expr`.
-    use cranelisp_types::{DefnVariant, Expr, TopLevel};
+    // A staged `__expr` (as `wrap_exprs_as_defns` produces) is in the
+    // derived batch and compiles through the same write path as any name.
+    use cranelisp_types::{DefnVariant, Expr};
 
     let module = ModuleFullPath::from("user");
     let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
@@ -2101,12 +2083,9 @@ fn repl_expr_finalize_module_no_longer_uses_special_case() {
         Some(expr_variant.clone()),
         slot,
     );
+    // A staged `__expr` is in the batch like any staged body — no special case.
+    let names = derive_codegen_batch(&st);
     symbol_tables.insert(module.clone(), st);
-
-    // `derive_codegen_batch` for a program whose only TopLevel is Expr
-    // must produce a names list containing `__expr` — no special case.
-    let program = vec![TopLevel::Expr(expr_variant.body.clone())];
-    let names = derive_codegen_batch(&module, &program, &symbol_tables);
     assert!(
         names.contains(&binding_target(&module, expr_name.clone())),
         "__expr must appear in the derived codegen batch alongside any named defn; got {names:?}"
@@ -2155,215 +2134,107 @@ fn derive_codegen_batch_includes_synthesised_constructors() {
         0,
     );
 
-    let symbol_tables = dashmap::DashMap::new();
-    symbol_tables.insert(module.clone(), st);
-
-    // The TypeDef itself isn't in `program` as a Defn — the ctor must be
-    // picked up by the final symbol-table sweep (0249-b).
-    let program: Vec<TopLevel> = vec![];
-    let names = derive_codegen_batch(&module, &program, &symbol_tables);
+    // The ctor has no authored form; it is compiled because it is staged.
+    let names = derive_codegen_batch(&st);
     assert!(
         names.contains(&binding_target(&module, "Some")),
         "synthesised constructor `Some` must appear in the derived codegen batch (0249-b); got {names:?}"
     );
 }
 
-// spec: spec/05-definitions.md §5.4.5 — a re-`impl` of an existing
-// (trait, target-type) pair REPLACES the previous implementation; dispatch
-// afterwards runs the NEW method bodies (hot-reload, like `defn`).
-// Design: design/int/session-transaction.md §2.5.
-//
-// The seam: `derive_codegen_batch`'s FORCED first loop must enroll the
-// impl's MANGLED method Defs (`Trait.method$<fq-type>` — the callables), so
-// an already-compiled entry (`code: Some(_)`, which `commit_slotted_def`
-// carries over on the AbiPreserving re-impl commit) is still recompiled.
-// The fixture is DISCRIMINATING by construction: the entry carries
-// `code: Some(_)`, so the `already_compiled`-gated sweep at the end of
-// `derive_codegen_batch` cannot enroll it — only the TraitImpl arm can.
-// Fail-on-revert: the pre-fix arm pushed the UNMANGLED `size`, a dead
-// lookup, and this assertion fails.
-#[test]
-fn derive_codegen_batch_enrolls_mangled_impl_methods_even_when_compiled() {
-    use cranelisp_backend::cache::linker::Linker;
-    use cranelisp_types::{
-        Defn, TopLevel, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
-    };
-    use std::sync::Arc;
-
-    let module = ModuleFullPath::from("user");
-    let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    // The callable an `(impl Sizeable Box (defn size [x] …))` compiles to,
-    // homed in the impl writer's module (D45 as amended, S110 W0.1).
-    let mangled = Symbol::from("Sizeable.size$user/Box");
-    install_body_fixture(
-        &mut st,
-        mangled.clone(),
-        CallableOrigin::Plain,
-        Some(trivial_variant()),
-        0,
-    );
-    // Prior compiled code, as carried over by `commit_slotted_def` on the
-    // AbiPreserving re-impl commit — the state that made the sweep skip it.
-    let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
-    st.publish_compiled_owner(
-        &binding_target(&module, mangled.clone()),
-        crate::code::Code::linker(linker),
-    )
-    .map_err(|rejection| rejection.into_parts().0)
-    .expect("concrete body accepts prior compiled owner");
-
-    let symbol_tables = dashmap::DashMap::new();
-    symbol_tables.insert(module.clone(), st);
-
-    let program = vec![TopLevel::TraitImpl(TraitImpl {
-        trait_name: TraitRef::new(None, TraitName::from("Sizeable")),
-        head_con_var: None,
-        target: TypeExpr::Named(TypeRef::new(None, TypeName::from("Box"))),
-        type_constraints: vec![],
-        methods: vec![Defn {
-            name: Symbol::from("size"),
-            docstring: None,
-            variants: vec![trivial_variant()],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }],
-        span: Span::SYNTHETIC,
-    })];
-
-    let names = derive_codegen_batch(&module, &program, &symbol_tables);
-    assert!(
-        names.contains(&binding_target(&module, mangled.clone())),
-        "a re-impl's MANGLED method Def must enter the FORCED codegen batch even \
-             though its live entry already carries compiled code (spec §5.4.5 \
-             hot-reload); got {names:?}"
-    );
-}
-
 // spec: spec/07-traits.md §7.1.5 — "Methods with defaults are automatically
 // synthesized if not explicitly provided"; spec/05-definitions.md §5.4.5 — a
-// re-`impl` REPLACES the previous implementation. Together: a re-impl that
-// OMITS a method the prior impl overrode MUST fall back to the trait's
-// DEFAULT body, not keep dispatching the stale override.
-// Design: design/int/session-transaction.md §2.5. FIXME 0791.
+// re-`impl` REPLACES the previous implementation. Design:
+// design/int/session-transaction.md §2.5.
 //
-// The seam: the re-impl's `TopLevel::TraitImpl` names only `size` in
-// `impl_.methods` (`weight` is omitted, and its re-staged DEFAULT `Defn`
-// rides `finalize_cluster`'s WORKING program, never the `program` slice that
-// reaches `derive_codegen_batch`). So the enrollment set must be derived from
-// the TRAIT, not from the methods this impl form happens to spell.
-// Fail-on-revert: with a `{trait}.{method}$` per-method prefix the omitted
-// `weight` is absent from the batch and this assertion fails.
+// A re-impl that omits a method the prior impl overrode re-stages the
+// trait's default body for it. The batch is the staged body set, so both the
+// provided method and the restored default are compiled.
 #[test]
 fn derive_codegen_batch_enrolls_omitted_default_method_of_the_impl() {
-    use cranelisp_backend::cache::linker::Linker;
-    use cranelisp_types::{
-        Defn, TopLevel, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
-    };
-    use std::sync::Arc;
-
     let module = ModuleFullPath::from("user");
-    let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-
+    let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
     let provided = Symbol::from("Sizeable.size$user/Box");
     let omitted = Symbol::from("Sizeable.weight$user/Box");
     for (index, name) in [&provided, &omitted].into_iter().enumerate() {
         install_body_fixture(
-            &mut st,
+            &mut staging,
             name.clone(),
             CallableOrigin::Plain,
-            Some(trivial_variant()),
+            None,
             index,
         );
-        // The prior impl's compiled code, carried over by
-        // `commit_slotted_def` on the AbiPreserving re-impl commit — the
-        // state that makes the `already_compiled` sweep skip the entry, so
-        // ONLY the forced TraitImpl arm can enroll it.
-        let linker = Arc::new(Linker::new().expect("Linker::new must succeed"));
-        st.publish_compiled_owner(
-            &binding_target(&module, (*name).clone()),
-            crate::code::Code::linker(linker),
-        )
-        .map_err(|rejection| rejection.into_parts().0)
-        .expect("concrete body accepts prior compiled owner");
     }
 
-    let symbol_tables = dashmap::DashMap::new();
-    symbol_tables.insert(module.clone(), st);
-
-    // The RE-impl: provides `size` only; `weight` reverts to the default.
-    let program = vec![TopLevel::TraitImpl(TraitImpl {
-        trait_name: TraitRef::new(None, TraitName::from("Sizeable")),
-        head_con_var: None,
-        target: TypeExpr::Named(TypeRef::new(None, TypeName::from("Box"))),
-        type_constraints: vec![],
-        methods: vec![Defn {
-            name: Symbol::from("size"),
-            docstring: None,
-            variants: vec![trivial_variant()],
-            visibility: Visibility::Public,
-            span: Span::SYNTHETIC,
-        }],
-        span: Span::SYNTHETIC,
-    })];
-
-    let names = derive_codegen_batch(&module, &program, &symbol_tables);
-    assert!(
-        names.contains(&binding_target(&module, provided.clone())),
-        "the explicitly-provided method must be enrolled; got {names:?}"
-    );
-    assert!(
-        names.contains(&binding_target(&module, omitted.clone())),
-        "a method the re-impl OMITS (reverting to the trait default) must \
-             ALSO be enrolled — otherwise the stale override's carried-over code \
-             keeps dispatching (spec §7.1.5 + §5.4.5, FIXME 0791); got {names:?}"
+    let names = derive_codegen_batch(&staging);
+    assert_eq!(
+        names,
+        vec![
+            binding_target(&module, provided.clone()),
+            binding_target(&module, omitted.clone()),
+        ],
+        "both the provided method and the re-staged default body are compiled"
     );
 }
 
-// The forced-enrollment instrument's discriminating control (METHOD §2.2 —
-// an assertion ships with its detection proof). `forced_enrollment_resolves`
-// is the predicate behind `derive_codegen_batch`'s `debug_assert!`; this pins
-// that it actually discriminates rather than always answering `true`.
-// spec: design/int/session-transaction.md §2.5 (the dead-lookup class)
+// spec: design/int/session-transaction.md §2.5 — every compiled target has a
+// publication owner (ACT-1035). A parametric impl stages only templates, so
+// its turn compiles nothing; a live sibling implementation of the same trait
+// must not enter the batch, because publication would patch its slot with
+// code that nothing owns.
 #[test]
-fn forced_enrollment_predicate_discriminates() {
-    let module = ModuleFullPath::from("user");
-    let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    let live = Symbol::from("Sizeable.size$user/Box");
-    install_body_fixture(
-        &mut st,
-        live.clone(),
-        CallableOrigin::Plain,
-        Some(trivial_variant()),
-        0,
-    );
+fn parametric_impl_turn_does_not_compile_live_sibling_impl() {
+    use cranelisp_backend::cache::linker::Linker;
+    use std::sync::Arc;
 
+    let shared = test_shared_state();
+    let module = ModuleFullPath::from("user");
+    let sibling = Symbol::from("Size.size$primitives/Int");
+    let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    install_body_fixture(&mut live, sibling.clone(), CallableOrigin::Plain, None, 0);
+    live.publish_compiled_owner(
+        &binding_target(&module, sibling.clone()),
+        crate::code::Code::linker(Arc::new(Linker::new().expect("test linker"))),
+    )
+    .map_err(|rejection| rejection.into_parts().0)
+    .expect("live sibling accepts its compiled owner");
+    shared.symbol_tables.insert(module.clone(), live);
+
+    let staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    let prepared = plan_staging_commit(
+        &shared.symbol_tables,
+        &module,
+        staging,
+        &shared,
+        &no_cycle_check(),
+    )
+    .expect("a template-only turn prepares");
     assert!(
-        crate::worker::forced_enrollment_resolves(
-            Some(&st),
-            &binding_target(&module, live.clone()),
-        ),
-        "a live mangled method Def must satisfy the forced-enrollment predicate"
+        prepared.targets.is_empty(),
+        "a turn that stages no concrete body compiles nothing; got {:?}",
+        prepared.targets
     );
-    // The exact shape the pre-S115 TraitImpl arm pushed: the UNMANGLED method
-    // name. No `Def` is ever registered under it — a dead lookup.
+}
+
+// Detection proof for the batch check (session transaction §2.5): a planted
+// batch member that staging does not hold is refused before codegen, and the
+// staged set itself passes.
+// spec: design/int/session-transaction.md §2.5
+#[test]
+fn unstaged_codegen_target_is_refused_before_codegen() {
+    let module = ModuleFullPath::from("user");
+    let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+    install_body_fixture(&mut staging, "f", CallableOrigin::Plain, None, 0);
+    let staged = derive_codegen_batch(&staging);
+    refuse_unstaged_codegen_targets(&staging, &staged).expect("the staged set passes");
+
+    let mut planted = staged;
+    planted.push(binding_target(&module, "Size.size$primitives/Int"));
+    let error = refuse_unstaged_codegen_targets(&staging, &planted)
+        .expect_err("an unstaged target is refused");
     assert!(
-        !crate::worker::forced_enrollment_resolves(Some(&st), &binding_target(&module, "size"),),
-        "the unmangled method name resolves to nothing and MUST be rejected — \
-             this is the dead lookup that shipped undetected because `try_push`'s \
-             `bool` is discarded at every call site"
-    );
-    assert!(
-        !crate::worker::forced_enrollment_resolves(
-            Some(&st),
-            &binding_target(&module, "fabricated"),
-        ),
-        "a fabricated enrollment name must be rejected"
-    );
-    // A module with no table yet is a legitimate no-table case, not a dead
-    // lookup — the instrument must stay silent there.
-    assert!(
-        crate::worker::forced_enrollment_resolves(None, &binding_target(&module, "anything"),),
-        "an absent table must not be reported as a dead lookup"
+        error.to_string().contains("is not a staged concrete body"),
+        "located invariant error names the rule; got {error}"
     );
 }
 
@@ -3278,15 +3149,8 @@ fn commit_staging_preserves_source_order_slots_into_empty_live() {
         2,
     );
 
-    let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
+    commit_staging_to_live(&symbol_tables, &module, staging, None)
         .expect("commit into an empty live table cannot exhaust the GOT");
-    // Fresh symbols into an empty live table classify `New` (S101 gate).
-    assert!(
-        outcomes
-            .iter()
-            .all(|o| o.kind == crate::redefine::RedefKind::New),
-        "fresh commits classify New: {outcomes:?}"
-    );
 
     let live = symbol_tables.get(&module).unwrap();
     let slot_of = |name: &str| live.get(name).and_then(|e| e.callable_got_slot());
@@ -3349,8 +3213,8 @@ fn test_shared_state() -> crate::session_v4::SharedState {
 // commit gate's THIRD displacement site: a SLOT-LESS staged Def (a concrete
 // fn redefined as a polymorphic/constrained template or an `Overloaded`
 // base) replacing a SLOTTED prior with compiled code must move the prior
-// `Code` into the session retention pool (frozen supersession,
-// `trap_msg: None`), pairing it with the frozen slot. Before the fix the
+// `Code` into the session retention pool (frozen supersession),
+// pairing it with the frozen slot. Before the fix the
 // `callable_got_slot().is_some()` gate skipped this case entirely:
 // `live.insert` dropped the possibly-last `Code` Arc (JIT pages freed)
 // while the prior's GOT slot still held the raw pointer — a use-after-free
@@ -3425,20 +3289,6 @@ fn commit_slotless_staged_over_slotted_prior_retains_prior_code_in_pool() {
         Some(prior_slot),
         "pool entry pairs the frozen slot with the retained code"
     );
-    assert!(
-        pool[0].trap_msg.is_none(),
-        "frozen supersession, not a trap stub"
-    );
-}
-
-fn transaction_top_def(name: &str) -> TopLevel {
-    TopLevel::Defn(Defn {
-        name: Symbol::from(name),
-        docstring: None,
-        variants: vec![trivial_variant()],
-        visibility: Visibility::Public,
-        span: Span::SYNTHETIC,
-    })
 }
 
 fn install_transaction_entry(
@@ -3517,7 +3367,6 @@ fn prepared_failure_fixture(
         &shared.symbol_tables,
         &module,
         staging,
-        &[transaction_top_def("f")],
         &shared,
         &no_cycle_check(),
     )
@@ -3599,7 +3448,6 @@ fn prepared_multi_member_codegen_failure_is_all_or_nothing() {
         &shared.symbol_tables,
         &module,
         staging,
-        &[transaction_top_def("good"), transaction_top_def("bad")],
         &shared,
         &no_cycle_check(),
     )
@@ -3652,7 +3500,6 @@ fn prepared_publish_installs_entry_drop_glue_and_planned_retention_only() {
         &shared.symbol_tables,
         &module,
         staging,
-        &[transaction_top_def("f")],
         &shared,
         &no_cycle_check(),
     )
@@ -3792,145 +3639,6 @@ fn commit_staging_to_live_permits_declared_public_reexport() {
     assert!(
         !live.name_candidates(&Symbol::from("Int")).is_empty(),
         "the declared re-export committed"
-    );
-}
-
-// spec: design/int/s102-defect-wave.md §1 item 3 / session-transaction.md
-// §9.1.1 "Gate-side production" — the commit gate emits a
-// `RedefinitionOutcome` for EVERY staged `Def` whose name had a prior
-// live `Def`, including both T1 shapes that previously emitted none:
-// (a) slot-less staged displacing a slotted prior (the FIXME-0479
-// displacement arm) and (b) template-replacing-template (slot-less over
-// slot-less). Outcomes are the driver's only channel — a shape emitting
-// no outcome is invisible to the §18.1.1 downgrade print.
-#[test]
-fn commit_gate_emits_prior_was_def_outcome_for_both_t1_shapes() {
-    let module = ModuleFullPath::from("user");
-
-    // Shape (a): slotted concrete prior, slot-less staged (Overloaded).
-    // `shared: None` — the OUTCOME must not depend on the retention pool
-    // (only the code retention does).
-    let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-        dashmap::DashMap::new();
-    let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    install_body_fixture(
-        &mut live,
-        "f",
-        CallableOrigin::Plain,
-        Some(trivial_variant()),
-        0,
-    );
-    let prior_slot = live
-        .get("f")
-        .and_then(Binding::callable_got_slot)
-        .expect("concrete prior has slot");
-    symbol_tables.insert(module.clone(), live);
-    let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    install_plain_template_fixture(&mut staging, "f");
-    let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
-        .expect("slot-less commit cannot exhaust the GOT");
-    assert_eq!(
-        outcomes.len(),
-        1,
-        "displacement shape emits ONE outcome: {outcomes:?}"
-    );
-    let o = &outcomes[0];
-    assert_eq!(o.fq.symbol.as_ref(), "f");
-    assert!(o.prior_was_def, "prior was a live Def");
-    assert!(!o.per_symbol, "T1 route is outside per-symbol precision");
-    assert_eq!(o.old_slot, Some(prior_slot));
-    assert_eq!(
-        o.new_slot, None,
-        "slot-less staged entry commits no live slot"
-    );
-    assert!(
-        crate::redefine::is_t1_downgrade(o),
-        "the displacement shape must reach the §18.1.1 trigger"
-    );
-
-    // Shape (b): template-replacing-template (slot-less over slot-less).
-    let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-        dashmap::DashMap::new();
-    let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    install_plain_template_fixture(&mut live, "t");
-    symbol_tables.insert(module.clone(), live);
-    let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    install_plain_template_fixture(&mut staging, "t");
-    let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
-        .expect("slot-less commit cannot exhaust the GOT");
-    assert_eq!(
-        outcomes.len(),
-        1,
-        "template-over-template emits ONE outcome: {outcomes:?}"
-    );
-    let o = &outcomes[0];
-    assert!(o.prior_was_def && !o.per_symbol, "T1 trigger fields: {o:?}");
-    assert!(crate::redefine::is_t1_downgrade(o));
-}
-
-// spec: design/int/s102-defect-wave.md §1 item 3 — the SLOTTED-staged arm
-// also carries `prior_was_def`: a concrete staged Def over a slot-less
-// prior template (the L-U1 worked shape — generic `id` redefined with a
-// concrete body) classifies `New` (no frozen slot to version) yet MUST
-// reach the §18.1.1 trigger via `prior_was_def`. Negative cells: a
-// genuinely fresh commit and a defn shadowing a prior `Import` (0484's
-// territory) carry `prior_was_def: false` and never trigger.
-#[test]
-fn commit_gate_concrete_over_template_prior_and_negative_cells() {
-    let module = ModuleFullPath::from("user");
-    let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-        dashmap::DashMap::new();
-    let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    // Slot-less prior template `id`; prior `Import` binding `imp`.
-    install_plain_template_fixture(&mut live, "id");
-    live.expose_candidate(
-        Symbol::from("imp"),
-        FQSymbol {
-            module: ModuleFullPath::from("primitives"),
-            symbol: Symbol::from("add-i64"),
-        },
-        Visibility::Private,
-    )
-    .expect("import candidate fixture installs");
-    symbol_tables.insert(module.clone(), live);
-
-    let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-    for (slot, name) in ["id", "imp", "fresh"].into_iter().enumerate() {
-        install_body_fixture(
-            &mut staging,
-            name,
-            CallableOrigin::Plain,
-            Some(trivial_variant()),
-            slot,
-        );
-    }
-
-    let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
-        .expect("commit cannot exhaust the GOT");
-    let by_name = |n: &str| {
-        outcomes
-            .iter()
-            .find(|o| o.fq.symbol.as_ref() == n)
-            .unwrap_or_else(|| panic!("outcome for {n}: {outcomes:?}"))
-    };
-    let id = by_name("id");
-    assert!(
-        id.prior_was_def && !id.per_symbol && crate::redefine::is_t1_downgrade(id),
-        "concrete-over-template reaches the trigger: {id:?}"
-    );
-    assert!(
-        id.new_slot.is_some(),
-        "concrete staged entry commits a live slot"
-    );
-    let imp = by_name("imp");
-    assert!(
-        !imp.prior_was_def && !crate::redefine::is_t1_downgrade(imp),
-        "prior-Import shadow is genuine New, never a downgrade: {imp:?}"
-    );
-    let fresh = by_name("fresh");
-    assert!(
-        !fresh.prior_was_def && !crate::redefine::is_t1_downgrade(fresh),
-        "fresh commit is genuine New, never a downgrade: {fresh:?}"
     );
 }
 

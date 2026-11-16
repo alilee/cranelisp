@@ -64,8 +64,8 @@
 //!   code carrier) and `L: LinkerStore` (per-module linker carrier);
 //!   both default to `()` so crates that don't handle compiled code work
 //!   with `SymbolTable<(), ()>` and never see the parameters.
-//!   **Callability is structural:** only [`Life::Concrete`] and
-//!   [`Life::Broken`] carry a [`CallableSlot`]; [`Life::Template`],
+//!   **Callability is structural:** only [`Life::Concrete`] carries a
+//!   [`CallableSlot`]; [`Life::Template`],
 //!   [`Life::Declared`], [`Life::Inline`] and [`Life::HostPromised`] cannot.
 //!   Allocation derives from live claims plus [`RetiredSlot`] tombstones, and
 //!   [`SymbolTable::validate_lifecycle`] rechecks restored state.
@@ -301,15 +301,15 @@ pub use scheduling::SchedulingClass;
 // *types* are part of every build. See `crates/cranelisp-types/src/scheduling.rs`
 // and `design/arch/effect-concurrency.md` §5/§6/§12.
 pub use lifecycle::{
-    Binding, BrokenProvenance, Callable, CallableArm, CallableArmDraft, CallableArmId,
-    CallableArmSettlement, CallableOrigin, CallableTarget, ConstrainedMeta, Decl, ImplShell,
-    InstanceKeyError, InstanceLink, Life, LifecycleError, MacroClause, MacroClauseDraft,
-    MacroDeclaration, MonoDemand, NameCandidate, OverloadArm, OverloadedCallable, Realization,
-    RetireReason, RetiredSlot, SpecialFormRecord, SynthSpec, TemplateBody, TemplateKind,
-    TraitMethodRecord, TraitRecord, TypeRecord, concrete_callable_key,
+    Binding, Callable, CallableArm, CallableArmDraft, CallableArmId, CallableArmSettlement,
+    CallableOrigin, CallableTarget, ConstrainedMeta, Decl, ImplShell, InstanceKeyError,
+    InstanceLink, Life, LifecycleError, MacroClause, MacroClauseDraft, MacroDeclaration,
+    MonoDemand, NameCandidate, OverloadArm, OverloadedCallable, Realization, RetireReason,
+    RetiredSlot, SpecialFormRecord, SynthSpec, TemplateBody, TemplateKind, TraitMethodRecord,
+    TraitRecord, TypeRecord, concrete_callable_key,
 };
 pub use module::{
-    BrokenTransition, CHAIN_FOLLOW_DEPTH_LIMIT, CallablePublicationRecord, CallableSlot, CodeStore,
+    CHAIN_FOLLOW_DEPTH_LIMIT, CallablePublicationRecord, CallableSlot, CodeStore,
     CompiledOwnerRejection, CompiledPublicationRejection, EnrolOutcome, EnsureOutcome, ExportSpec,
     GotExhausted, ImportNames, ImportSpec, LinkerStore, MacroParam, ModDecl, ModuleAliasEntry,
     ModuleAliases, PlatformSpec, PublicationRecord, RetainedCallables, SlotMintError,

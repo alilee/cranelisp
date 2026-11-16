@@ -21,7 +21,9 @@
 > **Checkpoint:** HEAD `b35bfb87`, 2026-11-15; design citations verified
 > against the designs committed there. §3.2, §3.3 and M-2 were re-verified
 > against the W1 tree on 2026-11-15; §3.9 against the W2 U′ tree on
-> 2026-11-16; §3.4 E-0 against nextest 0.9.140 on 2026-11-16.
+> 2026-11-16; §3.4 E-0 against nextest 0.9.140 on 2026-11-16; §3.6 R-2
+> against the 2026-11-16 deletion ruling at `bc57cbf1`; §3.6 R-5 and the W4
+> adequacy against the W4 working tree on 2026-11-16.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
@@ -62,15 +64,13 @@ condition's shape.
   signal-terminated, never the value `1`.
 - **Located panic form.** §12.7.5 permits `error: runtime panic: <file>:<line>: <message>`.
   Cells accept both forms.
-- **Unstated wordings.** The deletion notice (§14.9), the banner text and the
-  dormant notice are not fixed by `spec`. Cells assert the named file, the
+- **Unstated wordings.** The banner text and the dormant notice are not
+  fixed by `spec`. Cells assert the named file, the
   state word (`active`, `dormant`, `off`, `not built in`) and the named
   variable or value only.
 - **The U′ cost rule** (U-8) is this record's operational reading of the
   user's "no cost cliff, and the exemplar within the same order of magnitude".
   `sprint` presents it at the Phase 4 checkpoint for the user to confirm.
-- **Piped consent.** REPL lifecycle §1.2 makes non-interactive input decline
-  recreation, so the yes leg is not observable without a terminal (R-2).
 
 ## 2. Existing evidence the rulings change
 
@@ -582,15 +582,48 @@ suite (`.local/s123-w3/qa-full-suite.log`) ran 6,993 tests: 6,960 passed,
   leg: after the external save, `(k)` gives 9 and the final file holds `k`
   and `h`. A mid-session file that fails to compile locks the session and
   keeps its bytes. **RED now** (load leg). *Class:* acceptance. *Owner:*
-  `test`, with new `Stage` variants for deletion and rename.
-- **R-2 — ACT-1048.** Deleting a loaded `user.cl` prints a notice naming the
-  file, and its definitions stay callable; in a piped session later
-  definitions leave the file absent. Negative legs: a write-then-rename save
-  gives no notice; a file restored after deletion is reloaded. The consent
-  yes leg is `dev`'s unit row
-  ([REPL lifecycle §1.3.2](../../design/int/repl-lifecycle.md#132-module-evidence-dev),
-  Deletion). **RED now.**
-  *Class:* acceptance. *Owner:* `test`.
+  `test`.
+- **R-2 — deleted backing file** ([§14.9](../../repl/spec/14-file-watching.md#149-backing-file-appearance-and-deletion),
+  second paragraph; [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
+  "A deleted backing file needs nothing").
+  - *Harm:* a deletion read as a change or a failure unloads live
+    definitions, locks the session, or regenerates from a reset module, so
+    source the user holds only in the session is lost. R-1's watcher change
+    is the likeliest way to introduce it.
+  - *Wrong implementations:* the deletion resets the module, so a later
+    `(g)` fails or the recreated file lacks `g`; the deletion locks the
+    session; regeneration skips a file whose record predates the deletion,
+    leaving it absent; recreation asks `[y/N]`, which in a piped session
+    consumes the next line.
+  - *Seam:* the piped REPL; `Stage::Remove` at a prompt, the idle wait, then
+    turns; `user.cl` read after exit.
+  - *Cell:* `(g)` gives 1 before and after the deletion; `(defn h [] 2)` and
+    `(defn i [] 3)` are live; the session exits 0; no `[y/N]` prints; the
+    final file holds `g`, `h` and `i`. No `// defect:` line: the checkpoint
+    binary conforms, so the cell is green with no pre-fix red.
+  - *Controls:* the same deletion with no definition leaves the file absent
+    and `g` callable, which proves the removal is real and that the
+    definition causes the recreation. A file restored before the next
+    definition is reloaded, and persists with the later definition.
+  - *Not asserted:* the absence of a deletion notice. §14.9 requires none
+    and forbids none; the lifecycle design's "prints nothing" is a module
+    row.
+  - *Class:* acceptance, and the safety fence for R-1's change. *Owner:*
+    `test`. Required now.
+- **R-2a — rename-over save.** An editor's save that writes a temporary
+  file, removes `user.cl` and renames the temporary over it is an ordinary
+  save ([§14.2](../../repl/spec/14-file-watching.md#142-eager-recompilation)).
+  *Harm:* a watcher that loses the event, or reads the removal as an
+  appearance or a reset, lets the next definition overwrite the save.
+  *Cell:* `(g)` gives the saved 7, and after `(defn h [] 2)` the final file
+  holds `(defn g [] 7)` and `h`. *Class:* acceptance. *Owner:* `test`.
+  Required now.
+- **Placement (R-1, R-2, R-2a; ACT-1051).** Every cell that writes, removes
+  or renames a file at a prompt waits idle before its next line, the
+  `idle_save_then` cells included. The REPL prints nothing before its
+  pre-turn poll, so no output can be awaited. The wait is placement, not
+  proof of delivery. *Falsifier:* such a cell failing with the wait in
+  place, which routes to `design`(int) under ACT-1051's attribution.
 - **R-3 — ACT-1020.** `cranelisp core.str` loads `core/str.cl` under
   `--run`, `--test`, `--link` and the REPL (§0.5.6 says every mode); a REPL
   empty start writes `core/str.cl`. Control: the path target `core/str`.
@@ -601,6 +634,133 @@ suite (`.local/s123-w3/qa-full-suite.log`) ran 6,993 tests: 6,960 passed,
   without `keep` the session must survive. That pair is the mechanism's
   discriminating control. `dev` owns the `worker`-seam rows. *Class:*
   acceptance. *Owner:* `test`, `dev`.
+- **R-5 — cached restarts keep GOT capacity** (W4 review R1;
+  [session transaction §7.5](../../design/int/session-transaction.md#75-got-exhaustion):
+  a restart consumes no capacity; §8.2 entry slot preload;
+  [§0.6](../../repl/spec/00-cli-invocation.md) `--no-cache` bypasses an
+  acceleration).
+  - *Harm:* an unchanged program that compiles stops compiling after a fixed
+    number of cached launches, in every mode, and only `--no-cache` recovers
+    it; `--link` cannot take `--no-cache`.
+  - *Attribution (confirmed, 2026-11-16, W4 tree binary):* R-4's preload
+    retires every persisted minted instance with `retire_abi_changing`, and
+    the tombstones persist. Seam: `retired_slots` in the entry's
+    `.meta.json`. With 128 generic identities and concrete callers, five
+    cached launches persisted 645 tombstones (5 × 129: each instance and
+    `Pure`'s); the seventh launch exhausted 1,024 slots. Control: 128
+    monomorphic functions of the same shape persisted one tombstone per
+    launch, all `Pure`'s instance, and stayed callable through ten launches.
+    Refuted if a build without the preload retirement grows the same way.
+  - *Wrong implementations:* tombstone per launch (current); per-launch
+    growth smaller than `k + 1`; dropping the retirement, so a preloaded
+    instance keeps a slot with no code (R-4's six cells, below).
+  - *Cell* (`tests/cache.rs`): 300 generic identities, each with a concrete
+    caller; `main` returns `(add-i64 (use0) (use7))`. Legs on one project:
+    `--no-cache --run` gives 7 and writes no cache; cold `--run` gives 7 and
+    writes the cache; cached `--run` gives 7; cached `--link`, whose
+    executable gives 7; piped REPL `(use7)` gives `:primitives/Int 7`; cached
+    `--run` gives 7. Measured: the third launch exhausts now.
+  - *Fixture property:* a leak of `k + 1` slots per launch must exhaust by
+    the third launch while `2(k + 1)` slots fit. At `GOT_TABLE_SIZE` 1,024
+    that bounds `k` to 256–340. The cell comment names the dependency.
+  - *Arming:* each leg asserts its exit status and output separately and
+    shows stderr. The red must fail on the third launch with "GOT slot table
+    exhausted". A `--no-cache` failure or a missing cache directory is a
+    fixture error, not the red.
+  - *Fence:* R-4's preload cells stay green —
+    `tests/repl_persist::{persist_bad_import_then_run_succeeds_e2e,
+    persist_bare_expr_then_run_module_clean_e2e,
+    persist_macro_defining_macro_use_survives_restart}` and
+    `tests/spec_07_traits::return_type_dispatch_{annotation_context,
+    float_impl_selected,argument_context}_all_modes`.
+  - *`dev` unit row* (`src/session_v4/lifecycle.rs`): three sessions over
+    one cache and unchanged source with `k` minted instances. After the
+    second and third, the persisted `retired_slots` and the slot high-water
+    equal the first's. Each authored definition keeps its slot, and each
+    instance has code. The row replaces the `retired_slots` growth assertion
+    in `preload_releases_the_bodies_the_recompile_restages` (named
+    `preload_retires_the_bodies_the_recompile_restages` in the red run), which
+    pinned the defect. It must be observed failing on the count before the fix. The
+    existing in-session ABI-changing tombstone rows stay green.
+  - *Not asserted e2e:* the tombstone count. It is cache-internal; the unit
+    row owns it.
+  - *Class:* acceptance (cell), safety fence (R-4 cells). *Owner:* `test`
+    (cell), `dev` (unit row). Required now; **RED now**.
+  - *Accepted, 2026-11-16:* `tests/cache.rs::cached_restarts_keep_generic_instance_slot_capacity_across_modes`.
+    It fixes `k` at 300 and runs the six legs in plan order. Every leg
+    asserts its exit status and output and prints stderr, and the two
+    fixture-error guards hold. The RED is "GOT slot table exhausted" at
+    cached `--link`, the third cache-enabled launch, after the `--no-cache`,
+    cold and cached `--run` legs passed (`.local/s123-w4/r5-red-final.log`).
+    The six R-4 fences pass (`.local/s123-w4/r5-fences.log`). The REPL and
+    final `--run` legs are not reached before the fix. They count only
+    when they pass on the fixed build (§6). Before commit, `test` repairs the
+    sizing comment's broken last sentence ("leaks are belong to").
+
+**W4 adequacy, 2026-11-16: adequate, with one RED to clear before the commit.**
+The tree is `bc57cbf1` plus the uncommitted W4 work, after every W4 review
+and the P15 comment fix. The full suite (`.local/s123-w4/qa-full-suite.log`,
+133 s) ran 7,000 tests: 6,969 passed, 31 failed, 1 skipped.
+
+- *Met: R-1 to R-5, R-2a and the refusal cell.* Every cell and control
+  named above passes on this build. That includes R-5's REPL and final
+  `--run` legs, which the red run never reached, and R-4's six preload
+  fences. The P-18 refusal pair
+  (`repl_redefinition::template_only_caller_refuses_language_type_change_keeps_prior_callable`
+  and its admitted control) passes. The golden lanes pass on the four-entry
+  re-baseline, and `public_api_relocations` passes on the −26/+1 and −1
+  baselines.
+- *Met: the `dev` unit rows.* Each was observed red before its fix and
+  passes in the full run.
+  - ACT-1047 and ACT-1020's three persistence rows.
+  - ACT-1035's `worker::tests::parametric_impl_turn_does_not_compile_live_sibling_impl`.
+  - R-5's `cached_restarts_persist_no_new_tombstones_or_slots`.
+  - P16's two `src/main.rs` rows.
+  - The absent-dependent reload-plan row.
+  - The template-caller guard, by a planted fault.
+  - P15's refusal-restore row, by a planted mutation.
+  - The backend RC probe rows, by inverting the probe.
+  The red and green logs are `.local/s123-w4/dev-*.log`.
+  ACT-1035's mechanism is confirmed: the control pair
+  differs only in a concrete body in the same `begin`, and the worker row
+  observes the seam.
+- *REDs.* 30 are filed guards, all in W3's set:
+  - ACT-1050, the twelve `bind_unused_heap_argument` cells.
+  - ACT-0973 ×2, ACT-0985, ACT-0997 ×2, ACT-1001 and ACT-1016 ×3.
+  - ACT-1018, `sudoku_warm_serial_solve_retains_nothing`.
+  - ACT-1034 ×4, ACT-1036, and ACT-1038/ACT-1039 ×3.
+  The 31st, `role_wiring::role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy`,
+  is a W4 consequence and not a product regression. The negative leg pins
+  the clean copy's output to `26 principles`, and W4 adds
+  `design/arch/principles/27-dev-tier-optimises-only-against-blow-up.md`.
+  The gate reports 27 principles and 0 findings, so the instrument is
+  working. Its count is stale. *Owner:* `test`, in the change-set that
+  lands Principle 27. *Class:* maintenance check.
+- *Turned green.* Two W3 guards:
+  `repl_persist::persist_save_creating_backing_file_survives_definition`
+  (ACT-1047) and `spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl`
+  (ACT-1035). Five W4 REDs also turned green:
+  `w4_appearance_loads_before_definition`,
+  `w4_appearance_bad_file_locks_without_overwrite`,
+  `cli_missing_entry::w4_dotted_empty_entry_persists_at_mapped_path`,
+  `spec_07_traits::w4_impl_begin_without_keep_survives` and
+  `cache::cached_restarts_keep_generic_instance_slot_capacity_across_modes`.
+  `test` stamps all seven `fixed=S123/<sha>` and puts their comments in the
+  past tense.
+- *Not a W4 finding.* `tests/plan/spec_link_check.py` reports twelve
+  `// spec:` anchors that do not resolve. Eleven are in
+  `tests/projection_elision_guard.rs`, which cites sections 3.3 and 3.4 of
+  the backend ownership-codegen design. HEAD's copy already lacks them. The twelfth
+  is the two-target comment at `tests/environment_supply.rs:51`. These
+  are `test`'s, as maintenance.
+- *ACT-1052 carries; it does not block W4.* The hazard is unmeasured and
+  predates W4. P15 releases preloaded instance bodies, not authored entry
+  slots, so it neither causes nor widens the hazard. Reaching it takes a
+  cached dependent of the entry, an ABI-changing edit reverted within one
+  session, and a later cached launch. No W4 cell exercises that path. Its
+  first act is a `qa` probe of the action's candidate on the final binary.
+  If the probe reproduces it, `test` commits the RED, and `qa` attributes
+  the owner from a control.
 
 ### 3.7 Committed REDs for carried defects
 
@@ -805,8 +965,8 @@ deallocs are shown as `a/d`.
     source reads `CRANELISP_CAPTURE_BORROW` any more, so each `*_capture_borrow_*`
     equivalence cell duplicates its `*_parallel_equals_serial` sibling. Remove
     the switch's `env_remove` lines in `ownership_fences.rs` and
-    `golden_clif_w0b.rs` in the same change. The doc comment in
-    `crates/cranelisp-backend/src/rc_site_stats.rs` is `dev`'s (R5).
+    `golden_clif_w0b.rs` in the same change. No backend source names the
+    switch.
   - *Owner:* `test`.
 - **M-8 — the W0.b capture asserts each program's outcome** (golden G-2).
   *Risk:* a corpus entry whose program is refused still passes its golden,
@@ -1137,8 +1297,16 @@ comments and `// defect:` metadata only.
 - `repl/spec/05-error-presentation.md` §5.1 and §5.2 rows; the cited tests
   are compile errors and are expected to restore unchanged.
 - `repl/spec/16-test-discovery.md` §16.2; `repl/spec/00-cli-invocation.md`
-  §0.8; `repl/spec/14-file-watching.md` §14.9; `repl/spec/17-embedded-agent.md`
+  §0.8; `repl/spec/14-file-watching.md` §14.9 and the matching
+  `repl/spec/15-session-persistence.md` §15.1 ruling; `repl/spec/17-embedded-agent.md`
   §17.4, §17.10.1 and §17.10.2, tagged `[S123]`.
+
+Restored at W4 (2026-11-16): `repl/spec/14-file-watching.md` §14.9 and its
+§14.2 rename-over row, `repl/spec/15-session-persistence.md` §15.1,
+`repl/spec/05-error-presentation.md` §5.1 and
+`repl/spec/00-cli-invocation.md` §0.5.6. `spec/07-traits.md` §7.7 and §7.7.1
+are graded partial on their non-normative examples. Section 7.4.2a stays
+partial, because the new `Text`/`Debug` example has no cell.
 
 K6 C3 and C4 (`spec/10-io.md` §10.10.1, `spec/08-modules.md` §8.9.3) carry
 with their realisation; their annotations stay as they are.
@@ -1150,7 +1318,6 @@ acceptance.
 
 | Residual | Why not evidenced end to end | What covers it |
 |---|---|---|
-| TTY consent yes leg (R-2) | Piped input declines by design; no pty harness | `dev` unit row |
 | A test child dying by signal (T-6) | No legitimate program raises a signal | `dev` scripted rows |
 | A REPL test child writes no cache | Indistinguishable from the REPL's own writes | `dev` unit row 8 |
 | Crash-consistent writers (P-17) | No controllable mid-write exit | `dev` rows; arch §1.7 falsifier |
@@ -1182,11 +1349,11 @@ acceptance.
 - **`test`, now (Phase 5, test-first):** E-0's declaration and detection
   proof with the loader change-set; the C-1, C-2, C-3, C-5 and C-9 re-points;
   every **RED now** cell; U-1 to U-5; P-1 to P-12, P-18 and P-19; T-1 to
-  T-5, T-7; E-1 to E-6; B-1 to B-4; A-1 to A-6; R-1 to R-4; K-1 to K-5; M-1; M-7. Then
+  T-5, T-7; E-1 to E-6; B-1 to B-4; A-1 to A-6; R-1 to R-5 with R-2a; K-1 to K-5; M-1; M-7. Then
   C-6 and C-7 in their change-sets, M-3 with `docs`, M-4 and M-5 in Phase 6b.
 - **`dev`, with each surface:** U-6, U-7's structure, U-9; P-10's unit rows,
-  P-13 to P-17, P-18's guard rows; T-6; T-8; E-7; B-5; A-5's flag function; R-2's
-  consent row and R-4's worker rows.
+  P-13 to P-17, P-18's guard rows; T-6; T-8; E-7; B-5; A-5's flag function;
+  R-4's worker rows; R-5's unit row.
 - **`test`, W2 intake (§3.9):** U-11 to U-14, C-10a and M-8 are landed and
   accepted. Before `dev`(backend) starts the R1, G-1, R2 and R3
   change-set: U-15, U-16, U-17 and the C-10a addendum. `qa` accepts their

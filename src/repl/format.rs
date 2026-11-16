@@ -109,8 +109,7 @@ pub(crate) fn classification_metadata(classification: &str, docstring: Option<&s
 }
 
 /// Indent every line of a rendered definition source by two spaces — the
-/// `/info` block layout (`repl/spec.md` §3.6 worked example; the §18.4
-/// broken-symbol example uses the same indentation).
+/// `/info` block layout (`repl/spec.md` §3.6 worked example).
 pub(crate) fn indent_source_block(text: &str) -> String {
     text.lines()
         .map(|l| format!("  {l}"))
@@ -450,15 +449,7 @@ impl CompilerSession {
         // FIXME 0647: a trait's empty `; impl:` section is omitted for BOTH
         // the definition echo and the bare lookup (matching the deftype
         // `; match:` precedent); no bare-lookup-vs-echo flag.
-        let mut body = self.format_def_entry_doc(&entry, display_name, module);
-        // S101 (repl/spec.md §18.4): a broken symbol is self-documenting — the
-        // ordinary per-class display (last-good signature) plus the provenance
-        // comment line (R6 metadata).
-        if let Some(line) = self.broken_status_line(name, module) {
-            body.plain("\n");
-            push_metadata(&mut body, line);
-        }
-        body
+        self.format_def_entry_doc(&entry, display_name, module)
     }
 
     /// Render the narrow §1.5.1 display-only value family. Empty Vec syntax is

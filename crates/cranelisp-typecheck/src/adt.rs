@@ -253,10 +253,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         .map(|callable| &callable.arm.life);
                     let keep_existing_template =
                         matches!(existing_life, Some(Life::Template { .. }));
-                    if matches!(
-                        existing_life,
-                        Some(Life::Concrete { .. } | Life::Broken { .. })
-                    ) {
+                    if matches!(existing_life, Some(Life::Concrete { .. })) {
                         table
                             .retire_abi_changing(&key)
                             .map_err(crate::result::lifecycle_error)?;
@@ -530,10 +527,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .and_then(Binding::callable)
             .map(|callable| &callable.arm.life);
         let keep_existing_template = matches!(existing_life, Some(Life::Template { .. }));
-        let replace_existing_synth = matches!(
-            existing_life,
-            Some(Life::Concrete { .. } | Life::Broken { .. })
-        );
+        let replace_existing_synth = matches!(existing_life, Some(Life::Concrete { .. }));
         let result = if keep_existing_template {
             Ok(())
         } else if scheme.ty.is_concrete() {

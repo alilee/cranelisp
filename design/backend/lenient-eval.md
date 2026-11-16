@@ -113,7 +113,8 @@ Both sites skip admission entirely when any of these hold:
   once per arm, not O(2^depth) times.
 - **IO combinator callees (apply site only).** An apply whose resolved call is
   one of the inline IO combinators (`apply::IoCombinator`) never sparks its
-  arguments (`design/backend/s122-closure.md` §8).
+  arguments; a combinator lowers to an IO node that takes over its operands,
+  so there is no evaluation to run in parallel.
 
 ### 2.5 Apply-argument sparkability
 
@@ -192,7 +193,10 @@ emission.
 
 B4 is a static contention proxy, reachable **only** through the syntactic
 predicate (§2.2) and **disabled by default** (`SPARK_DENSITY_MAX_DEFAULT = 0`).
-It is not part of default admission. The reason is recorded in §2.8.5.
+It is not part of default admission. The reason is recorded in §2.8.5. It is
+a tuning mechanism rather than parallel evaluation itself, so it retires in
+S124 under Principle 27 (`ownership-codegen.md` §0, §13.4); parallel
+evaluation and its admission heuristic stay.
 
 **Score.** `spark_density` walks the candidate subtree and reads only the
 per-site ownership facts pass 5 already annotated (`ownership-codegen.md`

@@ -5,7 +5,8 @@
 ([user rulings on the Phase 3 decisions, 2026-11-15](SPRINT.md#user-rulings-on-the-phase-3-decisions-2026-11-15)),
 and rows P11–P13 are approved
 ([user rulings at the Phase 3 → 4 checkpoint, 2026-11-15](SPRINT.md#user-rulings-at-the-phase-3--4-checkpoint-2026-11-15)).
-Row P14 is approved (user, 2026-11-16). R10-9 is not yet a listed delta (Part C).
+Row P14 is approved (user, 2026-11-16). Rows P15 and P16 are approved (user, 2026-11-16)
+(§A6). R10-9 is not yet a listed delta (Part C).
 A mismatch between an approved row
 and the generated diff returns here. **Checkpoint:** planning commit
 `b35bfb87`, 2026-11-15. Line counts are read from the committed
@@ -28,6 +29,7 @@ auto-trait rows the current format prints.
 | P10 | Approved 2026-11-15 with U′; it lands only in U′'s change-set |
 | P11–P13 | Approved 2026-11-15 (§A5). P13 lands at S123 close if the superseded redefinition residue is deleted in Phase 5, otherwise in S124 |
 | P14 | Approved 2026-11-16 as proposed (§A6): `AgentState` and `build_agent_state_with` crate-private, `build_agent_state` off the public surface |
+| P15, P16 | Approved 2026-11-16 as proposed (§A6) |
 | B1 | Scheduled for S124 |
 | B2, B3 | Scheduled for S123 close, with the baseline regeneration |
 
@@ -87,7 +89,7 @@ a later packet; nothing is proposed for S123.
 | Agent in the default build | The feature change itself changes no item, signature or edge; it only selects the configuration that compiles `cranelisp::agent` (review §1.1). The `AgentState` change W3 made inside that module is row P14 | — |
 | Environment-file supply | A binary-private module (`design/int/environment.md` §1) | — |
 | ACT-1033's catalog derivation | Crate-private | `IntrinsicEntry` unchanged |
-| Any other root-crate item | No change beyond P12 and P14 (`design/int/int.md` §16.0, delta 6). The activation module is `pub(crate)` | Root `src/` diff against `3bdf398e`: no other `pub` item added, removed or re-signed |
+| Any other root-crate item | No change beyond P12, P14 and P16 (`design/int/int.md` §16.0, delta 6). The activation module is `pub(crate)` | Root `src/` diff against `3bdf398e`: no other `pub` item added, removed or re-signed |
 
 ### A5. New deltas from `design`(int) — approved 2026-11-15
 
@@ -106,7 +108,9 @@ under the same baseline regeneration, if the residue deletion lands in Phase 5;
 otherwise it lands with B1 in S124. Until P13 lands, the one remaining hole is a new
 call to the public `SymbolTable::mark_broken`.
 
-### A6. Root crate: `AgentState` leaves the public surface — awaiting the user
+### A6. Phase 5 deltas from W3 and W4
+
+#### P14. Root crate: `AgentState` leaves the public surface — approved 2026-11-16
 
 Source: W3's `design`(int) ruling that activation and the model handle are one
 fact (`design/int/agent.md` §3.4), realised by `dev`(src) as
@@ -173,6 +177,129 @@ binary target. Outside the library:
   new warning, and the three agent lanes pass. Review confirms that `tests/`,
   `benches/` and `main.rs` name neither `AgentState` nor a builder.
 
+#### P15. `cranelisp-types`: the entry preload releases restaged slots — approved 2026-11-16, built in W4
+
+Source: W4 `src/` review finding R1 and `qa`'s attribution
+([evidence plan](../tests/plan/s123-evidence-delta.md) §3.6, row R-5). The entry
+preload retires `__expr` and every minted instance with `retire_abi_changing`
+before the recompile mints them again
+([session transaction §8.2](../design/int/session-transaction.md#82-faithful-writes)).
+Each retirement is a tombstone, and tombstones persist, so every cached launch
+of an entry with `k` instances loses `k + 1` of its 1,024 slots for good. With
+128 generics the seventh cached `--run` or `--link` fails.
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P15 | In `cranelisp-types`, add `pub fn SymbolTable<(), ()>::release_callable(&mut self, name: &Symbol) -> Result<(), LifecycleError>` to the `impl` block that holds `into_concrete`. It removes the single callable `name` from a decoded, code-free table and drops its slot claim without recording a tombstone, so a later mint may reissue the index. Existing tombstones are kept. Errors: `MissingBinding` when `name` is absent; `NotCallable` when it is not a `Decl::Callable`; a lifecycle-validation failure leaves the table unchanged and returns that error. Rustdoc states the caller's obligation: release only an index that no code this process may load embeds | Root: `src/session_v4/lifecycle.rs::release_bodies_the_recompile_restages`, called by `preload_entry_slot_assignments`. It releases `__expr` and each `minted_from: Some(_)` instance on the decoded table before `into_concrete`, instead of retiring them on the live-typed table. New consumer edge: root → `release_callable`. `retire_abi_changing` keeps its contract and its in-session consumers, the demand replay's table clone in `src/worker.rs` and typecheck's `adt.rs` | Additive; no existing item changes. **No `CACHE_SCHEMA_VERSION` bump**: no serde shape changes, and `retired_slots` still serializes but stops growing per launch. Caches written by the uncommitted W4 tree keep their surplus tombstones until the entry's source changes or the cache is removed; no committed build wrote them, because `bc57cbf1` has no preload retirement. No ABI effect: emitted code and the GOT layout are unchanged | types +1 |
+
+- **No correct fix exists inside the current API.**
+  - *Not retiring* leaves a preloaded instance live with a slot and no code.
+    The batch compiles only staged bodies (session transaction §2.5), and
+    R-4's cells crash.
+  - *Restaging under the same key* would extend the worker's demand replay,
+    which today restages only instances of templates the same turn restages,
+    to every persisted instance. Each launch would then replay a set that never
+    shrinks: an instance demanded once by a REPL expression would compile on
+    every later launch. The instances a module needs follow from its source,
+    which the recompile checks anyway; the whole-file rebuild already rests on
+    that (§8.5). A persisted demand set is a second source of that fact
+    ([Principle 07](../design/arch/principles/07-single-source-of-truth.md))
+    recorded before the source it depends on settles
+    ([Principle 26](../design/arch/principles/26-record-from-settled-state.md)).
+    Restaging also cannot cover `__expr`, which no definition demands.
+  - *Not persisting the retirement* needs either a filter in the
+    serialization, which is another API change, or removing the claim from
+    the table, which is this release.
+  - *`retain_callables` then `rollback_callables`* would drop the new
+    tombstones, but only by restoring a transaction snapshot outside its
+    contract. A facade that its consumer must misuse is an architecture
+    defect. `discard_declared` and `remove_non_callable` refuse slot-carrying
+    callables by design.
+- **The safety argument, checked against
+  [Principle 22](../design/arch/principles/22-published-pointers-have-retention-owners.md).**
+  A tombstone protects code that embeds an index
+  ([session transaction §7.2](../design/int/session-transaction.md#72-freezing-is-structural)).
+  There are three possible holders:
+  - *This process.* A decoded table holds no compiled owner (`C = ()`). Its
+    GOT is the fresh slab that deserialization creates, because `got` is
+    `#[serde(skip)]`. Nothing has compiled against it, so a release displaces
+    no code and creates no retention obligation. The preload runs once, from
+    the binary's one `register_module` call, before any live entry table
+    exists. Grade: **structural**: the type admits no compiled owner.
+  - *Other modules' cached objects.* These can embed the entry's indices.
+    §8.2's ground, that a cache-restored module cannot depend on the entry
+    without a module cycle, does not hold for a module that `/mod` loads and
+    that imports the entry. The argument rests on the mint rule instead.
+    Instances are minted in the demanding module with their own slot
+    ([monomorphisation §3.7](../design/typecheck/monomorphisation.md#37-cross-module-body-recheck-scoping)),
+    and `__expr` is never referenced across modules. Such code therefore
+    embeds only authored slots, which the preload keeps. Grade: **asserted
+    with a named falsifier**: another module's cached object that relocates
+    against the entry's GOT at an index the entry's table holds for a minted
+    instance or for `__expr`.
+  - *The entry's own earlier object.* The entry is compiled from source, and
+    one compile writes its new object and `.meta.json` together.
+- **Why only on the decoded table.** On a live table, the same removal would
+  reopen the hazard that tombstones close. Placing it on `SymbolTable<(), ()>`
+  makes that misuse fail to compile
+  ([Principle 18](../design/arch/principles/18-enforce-invariants-structurally.md),
+  [Principle 20](../design/arch/principles/20-model-invariants-by-representation.md)).
+  Residual: `got` is a `pub` field, so a caller could assign a live GOT to a
+  decoded table. This row does not widen that field.
+- **Mechanism here, policy in int.** Types supplies the release. Which bodies
+  the recompile restages stays int's policy, recorded by `design`(int) in
+  §8.2. A predicate form, `release_minted_instances(&mut self)`, would need no
+  caller obligation for instances. It cannot name `__expr`, which is an int
+  constant, and retiring that alone would still exhaust the table after about
+  a thousand REPL restarts.
+- **Not in this row.** Persisted tombstones from ABI-changing redefinitions
+  remain backlog item 0466, which the user deferred indefinitely
+  ([performance backlog](../design/arch/backlog/performance.md) §4).
+
+**`dev` changes after approval.**
+
+- `dev`(types) adds `release_callable` with module tests. A released index is
+  reissued by the next mint. Existing tombstones are unchanged. The `Missing`
+  and `NotCallable` refusals and a validation failure leave the table
+  unchanged.
+- `dev`(src), in `preload_entry_slot_assignments`, releases on the decoded
+  table and then calls `into_concrete`. It adds `qa`'s R-5 unit row and
+  observes it failing on the count before the change. The row runs three
+  sessions over one cache with unchanged source: `retired_slots` and the slot
+  high-water mark after the second and third equal the first's, each
+  authored definition keeps its slot, and each instance has code. The R-5
+  cell turns green and R-4's fence cells stay green.
+
+#### P16. Root crate: one module-to-file mapping for the binary (ACT-1020) — approved 2026-11-16, built in W4
+
+Source: W4 `dev`(src). Two `src/main.rs` sites still build `{module}.cl`
+without the resolver's mapping, which turns dots into directories
+(spec §8.1). One is the error path's fallback entry file (line 235). The other
+is the Rule 3 probe in `resolve_target_from` (line 1224). The mapping,
+`pipeline::module_relative_path`, is private to the library, and the binary is
+a separate crate, so converging the two sites needs a `pub` item. The gate
+applies as it does for P12 and P14.
+
+| Row | Exact delta | Consumers | Compatibility, schema, ABI | `public-api.txt` |
+|---|---|---|---|---|
+| P16 | Root crate (no baseline). Widen `pub(crate) fn pipeline::project_root_candidate(module: &ModuleFullPath, project_root: &Path) -> PathBuf` to `pub` and re-export it from the crate root: `pub use pipeline::project_root_candidate;`, giving `cranelisp::project_root_candidate`. Rustdoc states the promise: this is the file that `module`'s name maps to under `project_root`, and the first file the resolver probes; `core.str` maps to `{project_root}/core/str.cl` | `src/main.rs` (the binary target): the fallback entry file and the Rule 3 file probe. New consumer edge bin → `project_root_candidate`. The library's own callers (the resolver, the entry-registration refusal and the test runner's selection) are unchanged | Additive: a visibility widening with an unchanged signature. No schema or ABI effect | Root has no baseline. The seven library baselines +0 |
+
+- **Rejected alternatives.**
+  - *A second copy of the mapping in `main.rs`* would derive the same file
+    from the same module name in two places
+    ([Principle 07](../design/arch/principles/07-single-source-of-truth.md)).
+    That divergence is what ACT-1020 is.
+  - *Moving target resolution into the library* would add a larger public
+    surface for the same edge.
+  - *Putting the mapping in `cranelisp-types`* would add an item to a
+    baselined crate for a fact that only the root uses.
+- **Not decided here.** Whether Rule 3's directory probe applies to a dotted
+  target is a CLI question for `spec` (§0.5.5). P16 supplies only the file
+  half.
+- **`dev`(src) change after approval.** Widen and re-export the function. In
+  `main.rs`, derive both paths from it with `ModuleFullPath::from`. Keep the
+  R-3 cells for ACT-1020 and their undotted control green.
+
 ## Part B — scheduled outside the Phase 5 functional change-sets
 
 ### B1. K5 N1: renamed import and export entries (ACT-0997) — S124
@@ -216,3 +343,5 @@ consumers.
 | | Decision | Recommendation |
 |---|---|---|
 | G7 | R10-9, once its constants are listed | Decide when listed |
+| G8 | P15: the entry preload releases restaged slots (§A6) | Approve. No correct fix exists inside the current API, and the decoded-table placement keeps the release off live tables |
+| G9 | P16: `cranelisp::project_root_candidate` for the binary (§A6) | Approve. It is the narrowest item that gives `main.rs` the resolver's mapping |

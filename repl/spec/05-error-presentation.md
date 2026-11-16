@@ -2,7 +2,7 @@
 
 ## 5. Error Presentation [S122 — partial; see the subsections]
 
-### 5.1 Error Format [S122 — partial. The items are Tested; a REPL crash that displays no error is defective, RED tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl (ACT-1035)]
+### 5.1 Error Format [Tested]
 
 **User ruling, 2026-11-15.** Runtime panics end the process under [language §12.7](../../spec/12-runtime.md#127-error-model). The continuation requirements in §5.1–§5.2 apply to compiler and command errors, not runtime panics.
 
@@ -12,7 +12,7 @@ Compiler and command errors MUST display:
 2. The source location (file/line/column or character span) [Tested tests/repl_negative::type_error_arg_mismatch]
 3. A human-readable message [Tested tests/repl_negative::type_error_arg_mismatch]
 
-Compiler and command errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Compiler and command errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after those errors. Runtime panics report their message and end the process (§12.7). [Tested+Neg tests/repl_negative::type_error_arg_mismatch, tests/repl_negative::type_error_neg_stderr_empty_and_session_survives, tests/spec_12_runtime::vec_get_index_past_length_panics_and_exits — a compiler error leaves the session running; a runtime panic reports on stderr and ends it]
+Compiler and command errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Compiler and command errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after those errors. Runtime panics report their message and end the process (§12.7). [Tested+Neg tests/repl_negative::type_error_arg_mismatch, tests/repl_negative::type_error_neg_stderr_empty_and_session_survives, tests/spec_12_runtime::vec_get_index_past_length_panics_and_exits — a compiler error leaves the session running; a runtime panic reports on stderr and ends it] [Tested tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl, tests/spec_07_traits::w4_impl_begin_without_keep_survives — a parametric impl entered after a concrete impl of the same trait, alone or inside `begin`, leaves the session running and the concrete method callable; `repl_concrete_impl_call_with_parametric_impl_first_control` and `w4_impl_begin_with_keep_retains_code_control` are the controls]
 
 ### 5.2 Error Recovery [Tested]
 

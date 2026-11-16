@@ -151,7 +151,6 @@ impl CompilerSession {
             repl_check_state: Mutex::new(Some(CheckState::new(entry_module.clone()))),
             repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
             warnings: Vec::new(),
-            pending_cascade_reports: Vec::new(),
             entry_module,
             // Unconfigured outside the REPL; the REPL prologue calls
             // `enable_agent` before the startup banner.
@@ -1073,6 +1072,8 @@ impl CompilerSession {
                 .map(|(dependent, _)| dependent.clone())
                 .collect::<Vec<_>>();
             layer.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            // A dependent still recorded absent has no saved source; like a
+            // missing file, it keeps its generation (§1.2).
             let admitted = layer
                 .into_iter()
                 .filter_map(|dependent| {
@@ -1080,6 +1081,9 @@ impl CompilerSession {
                         .iter()
                         .find(|(_, module)| **module == dependent)
                         .map(|(path, _)| (dependent, path.clone()))
+                })
+                .filter(|(_, path)| {
+                    self.shared.recorded_source(path) != Some(crate::watch::FileState::Absent)
                 })
                 .collect::<Vec<_>>();
             if admitted.is_empty() {
@@ -1096,8 +1100,8 @@ impl CompilerSession {
 
     /// Rebuild `roots` and their dependents from their saved files — the one
     /// executor every reload of a saved file runs through: the watcher poll,
-    /// `/mod`'s recompile of a cache-installed module and the T1 and T2
-    /// residue (`design/int/repl-lifecycle.md` §1.2). It returns each plan
+    /// and `/mod`'s recompile of a cache-installed module
+    /// (`design/int/repl-lifecycle.md` §1.2). It returns each plan
     /// member's last outcome, in the order the module first entered a plan.
     ///
     /// Each root is attempted, because its saved source decides what it
@@ -1905,7 +1909,7 @@ struct DeferredAttempt {
 }
 
 /// How a plan member ended. Only `Rebuilt` counts as success for the order
-/// check, `/mod`, T1 and T2.
+/// check and `/mod`.
 pub(crate) enum ReloadStatus {
     /// The module compiled from its saved file.
     Rebuilt,
@@ -2001,16 +2005,20 @@ impl CompilerSession {
     /// differs from the state the session last recorded for it
     /// (`design/int/repl-lifecycle.md` §1.3.1, Write chokepoint, Unseen save).
     /// Then regeneration must not write: the user's bytes win, and the watcher
-    /// reloads the file. A missing file is written. Every module regeneration
-    /// can write was loaded by a read that records its state, the cache-hit
-    /// restore included, so a file with no record is not reached today; it
-    /// would be written.
+    /// reloads the file. A missing file is written. A module registered with
+    /// no file records it absent, so one created later differs from its record.
     fn backing_file_changed_unseen(&self, path: &Path, on_disk: &std::io::Result<String>) -> bool {
-        let (Some(state), Some(recorded)) = (
-            crate::watch::FileState::of_read(on_disk),
-            self.shared.recorded_source(path),
-        ) else {
+        let Some(state) = crate::watch::FileState::of_read(on_disk) else {
             return false;
+        };
+        let Some(recorded) = self.shared.recorded_source(path) else {
+            // Every registration records a state, so a regenerating module
+            // always has one; the file is kept rather than overwritten.
+            eprintln!(
+                "Warning: invariant: no recorded state for {}; it is kept and not overwritten",
+                path.display()
+            );
+            return true;
         };
         if state == recorded {
             return false;
@@ -2024,16 +2032,17 @@ impl CompilerSession {
     }
 
     /// Resolve `module`'s backing `.cl` path — the typecheck product's recorded
-    /// path, else `{project_root}/{module}.cl` (the fresh-session default). Shared
-    /// by [`Self::regenerate_backing_file`] and [`Self::startup_restore_notice`].
+    /// path, else the project-root file the module mapping names (the
+    /// fresh-session default; `design/int/repl-lifecycle.md` §6). Shared by
+    /// [`Self::regenerate_backing_file`] and [`Self::startup_restore_notice`].
     fn backing_file_path_for(&self, module: &ModuleFullPath) -> std::path::PathBuf {
-        match self.shared.typecheck_products.get(module) {
-            Some(tp) => match &tp.file_path {
-                Some(p) => p.clone(),
-                None => self.shared.project_root.join(format!("{module}.cl")),
-            },
-            None => self.shared.project_root.join(format!("{module}.cl")),
-        }
+        self.shared
+            .typecheck_products
+            .get(module)
+            .and_then(|tp| tp.file_path.clone())
+            .unwrap_or_else(|| {
+                crate::pipeline::project_root_candidate(module, &self.shared.project_root)
+            })
     }
 
     pub fn regenerate_backing_file(&mut self) {
@@ -2959,7 +2968,14 @@ impl CompilerSession {
                 (src, path)
             }
             None if self.shared.run_mode.is_repl() => {
-                let default_path = self.shared.project_root.join(format!("{module_name}.cl"));
+                // The empty module is referenced from the start, so a file
+                // created at its path later is an unseen save, not a new file
+                // (`design/int/repl-lifecycle.md` §1.2, Absent is a recorded
+                // state).
+                let default_path =
+                    crate::pipeline::project_root_candidate(&module, &self.shared.project_root);
+                self.shared
+                    .record_source(&default_path, crate::watch::FileState::Absent);
                 (String::new(), default_path)
             }
             None => {
@@ -2996,15 +3012,13 @@ impl CompilerSession {
         self.register_module_with_source(module_name, &source, &entry_path)
     }
 
-    /// Map the entry's file to it for the watcher, when the file exists.
+    /// Map the entry's file to it for the watcher, whether or not it exists.
     fn map_entry_file(&self, module: &ModuleFullPath, path: &Path) {
-        if let Ok(canonical) = path.canonicalize() {
-            self.shared
-                .file_to_module
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(canonical, module.clone());
-        }
+        self.shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(crate::watch::source_key(path), module.clone());
     }
 
     /// Pre-seed the entry module's live table from its persisted `.meta.json`
@@ -3043,15 +3057,11 @@ impl CompilerSession {
         let Ok(Some(cached)) = cache::try_load_cached_module(&cache_dir, module) else {
             return;
         };
-        let mut table = cached.symbol_table.into_concrete::<Code, ()>();
-        // The synthetic `__expr` wrapper is a per-turn artifact, not a user
-        // definition — dropping it keeps the codegen batch sweep from
-        // recompiling a stale persisted expression body.
-        let synthetic = Symbol::from(crate::worker::SYNTHETIC_EXPR_WRAPPER);
-        if table.get(synthetic.as_ref()).is_some() && table.retire_abi_changing(&synthetic).is_err()
-        {
+        let mut decoded = cached.symbol_table;
+        if release_bodies_the_recompile_restages(&mut decoded).is_err() {
             return;
         }
+        let table = decoded.into_concrete::<Code, ()>();
         // Fresh type vars must not collide with the persisted schemes' ids.
         cranelisp_typecheck::advance_next_id_past_table(&self.shared.next_type_id, &table);
         cranelisp_types::install_module(&self.shared.symbol_tables, module.clone(), table);
@@ -3759,6 +3769,34 @@ mod watcher_reload_plan_tests {
         session.shutdown();
     }
 
+    // spec: repl/spec/14-file-watching.md §14.9; design/int/repl-lifecycle.md
+    // §1.2 (Absent is a recorded state; A missing file is not a change) — a
+    // dependent whose file is still recorded absent has no saved source to
+    // rebuild from, so it keeps its generation; once written it is selected.
+    #[test]
+    fn reload_plan_skips_a_dependent_recorded_absent() {
+        let (mut session, root) = plan_session();
+        let changed = install_plan_module(&session, root.path(), "zlib", &[]);
+        let app = install_plan_module(&session, root.path(), "app", &["zlib"]);
+        session
+            .shared
+            .record_source(&app, crate::watch::FileState::Absent);
+        assert_eq!(
+            plan_names(&watcher_plan(&session, &[changed.clone()])),
+            vec!["zlib"]
+        );
+
+        session
+            .shared
+            .record_source(&app, crate::watch::FileState::of_source("(defn a [] 1)\n"));
+        assert_eq!(
+            plan_names(&watcher_plan(&session, &[changed])),
+            vec!["zlib", "app"],
+            "control: a written dependent is selected"
+        );
+        session.shutdown();
+    }
+
     // spec: design/int/repl-lifecycle.md §1.2 Guards; session-transaction.md
     // §7.3.2 — a dependent whose last rebuild failed has a partial table that
     // records no edge, and is still selected through its held reference's
@@ -4126,6 +4164,168 @@ mod entry_registration_tests {
         s
     }
 
+    // spec: design/int/session-transaction.md §2.5, §8.2 — the decoded entry
+    // table keeps each authored definition's slot for the recompile to reuse,
+    // and releases the minted instance and `__expr` the recompile restages
+    // without a tombstone, so no preloaded body stays live without code.
+    #[test]
+    fn preload_releases_the_bodies_the_recompile_restages() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("user.cl"),
+            "(import [primitives [Pure]])\n(defn main [] (Pure 6))\n",
+        )
+        .unwrap();
+        let mut table = cached_launch(root.path());
+        let minted = |table: &cranelisp_types::SymbolTable| -> Vec<Symbol> {
+            table
+                .all_symbols()
+                .filter(|(_, binding)| is_minted_instance(binding))
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        assert!(
+            !minted(&table).is_empty(),
+            "precondition: `(Pure 6)` mints an instance in the entry table"
+        );
+        let main_slot = table
+            .get("main")
+            .and_then(cranelisp_types::Binding::callable_got_slot);
+        let retired_before = table.retired_slots().to_vec();
+
+        release_bodies_the_recompile_restages(&mut table).unwrap();
+
+        assert!(minted(&table).is_empty(), "minted instances are released");
+        assert!(table.get(crate::worker::SYNTHETIC_EXPR_WRAPPER).is_none());
+        assert_eq!(
+            table
+                .get("main")
+                .and_then(cranelisp_types::Binding::callable_got_slot),
+            main_slot,
+            "an authored definition keeps its persisted slot"
+        );
+        assert_eq!(
+            table.retired_slots(),
+            retired_before.as_slice(),
+            "the release records no tombstone"
+        );
+    }
+
+    /// The slot facts a cached launch persists for `user`.
+    #[derive(Debug, PartialEq, Eq)]
+    struct PersistedSlots {
+        retired: Vec<usize>,
+        high_water: Option<usize>,
+        authored: BTreeMap<Symbol, Option<usize>>,
+    }
+
+    impl PersistedSlots {
+        fn of(table: &cranelisp_types::SymbolTable) -> Self {
+            let retired: Vec<usize> = table
+                .retired_slots()
+                .iter()
+                .map(|retired| retired.slot.index())
+                .collect();
+            let mut high_water = retired.iter().copied().max();
+            let mut authored = BTreeMap::new();
+            for (name, binding) in table.all_symbols() {
+                let slot = binding.callable_got_slot();
+                high_water = high_water.max(slot);
+                if !is_minted_instance(binding)
+                    && name.as_ref() != crate::worker::SYNTHETIC_EXPR_WRAPPER
+                {
+                    authored.insert(name.clone(), slot);
+                }
+            }
+            PersistedSlots {
+                retired,
+                high_water,
+                authored,
+            }
+        }
+    }
+
+    /// Run one `--run`-shaped launch of `user` over the project cache and
+    /// return the table it persisted. Each minted instance must have code.
+    fn cached_launch(root: &Path) -> cranelisp_types::SymbolTable {
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: false,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 1,
+                run_mode: RunMode::Run,
+            },
+            root.to_path_buf(),
+            "user",
+        )
+        .expect("test session bootstrap");
+        s.set_lib_dirs(Vec::new());
+        s.register_module("user").unwrap();
+        s.wait_object_complete().unwrap();
+        let module = ModuleFullPath::from("user");
+        {
+            let live = s.shared.symbol_tables.get(&module).unwrap();
+            for (name, binding) in live.all_symbols() {
+                let Some(callable) = binding.callable() else {
+                    continue;
+                };
+                if let Life::Concrete {
+                    minted_from: Some(_),
+                    realization,
+                    ..
+                } = &callable.arm.life
+                {
+                    assert!(
+                        matches!(
+                            realization,
+                            cranelisp_types::Realization::Body { code: Some(_), .. }
+                        ),
+                        "minted instance `{name}` has code"
+                    );
+                }
+            }
+        }
+        let cache_dir = s.shared.cache.cache_dir().expect("cache enabled");
+        let cached = cranelisp_backend::cache::try_load_cached_module(&cache_dir, &module)
+            .unwrap()
+            .expect("the launch persists `user`");
+        s.shutdown();
+        cached.symbol_table
+    }
+
+    // spec: design/int/session-transaction.md §7.5, §8.2 — a cached restart of
+    // unchanged source consumes no GOT capacity: the persisted tombstones and
+    // slot high-water stay those of the first launch, each authored definition
+    // keeps its slot, and each minted instance has code.
+    #[test]
+    fn cached_restarts_persist_no_new_tombstones_or_slots() {
+        const GENERICS: usize = 4;
+        let root = tempfile::tempdir().unwrap();
+        let mut source = String::from("(import [primitives [*]])\n");
+        for i in 0..GENERICS {
+            source.push_str(&format!(
+                "(defn id{i} [x] x)\n(defn use{i} [] (id{i} {i}))\n"
+            ));
+        }
+        source.push_str("(defn main [] (add-i64 (use0) (use3)))\n");
+        std::fs::write(root.path().join("user.cl"), source).unwrap();
+
+        let first = PersistedSlots::of(&cached_launch(root.path()));
+        assert!(
+            first.authored.contains_key(&Symbol::from("use0")),
+            "precondition: the authored callers persist with slots: {first:?}"
+        );
+        let second = PersistedSlots::of(&cached_launch(root.path()));
+        let third = PersistedSlots::of(&cached_launch(root.path()));
+        assert_eq!(
+            second, first,
+            "the second launch persists the first's slots"
+        );
+        assert_eq!(third, first, "the third launch persists the first's slots");
+    }
+
     fn is_registered(s: &CompilerSession) -> bool {
         s.shared
             .scheduler
@@ -4243,4 +4443,48 @@ mod entry_registration_tests {
         assert_eq!(recorded, Some(lib_entry));
         s.shutdown();
     }
+}
+
+/// Release the decoded entry bodies that the from-source recompile restages
+/// under new slots rather than replacing in place: the synthetic `__expr`
+/// wrapper, a per-turn artifact, and every minted instance, which the
+/// definitions demanding it mint again. Only the recompile's staged bodies are
+/// compiled (`design/int/session-transaction.md` §2.5), so a preloaded body
+/// left live would have a slot and no code. The release records no tombstone,
+/// so a cached restart consumes no GOT capacity (§7.5, §8.2). Why no loadable
+/// code embeds a released index (§8.2, "Why a release is safe"): the decoded
+/// table has compiled nothing; the entry is recompiled from source rather
+/// than loaded from its cached object; and another module's cached object,
+/// which may import the entry, embeds only the entry's authored slots, which
+/// stay reserved, because instances are minted in the demanding module and
+/// `__expr` is never referenced across modules. That last ground is asserted;
+/// its falsifier is another module's object relocating at an entry index held
+/// for a minted instance or `__expr`.
+fn release_bodies_the_recompile_restages(
+    table: &mut cranelisp_types::SymbolTable,
+) -> Result<(), cranelisp_types::LifecycleError> {
+    let synthetic = Symbol::from(crate::worker::SYNTHETIC_EXPR_WRAPPER);
+    let released: Vec<Symbol> = table
+        .all_symbols()
+        .filter(|(name, binding)| **name == synthetic || is_minted_instance(binding))
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in &released {
+        table.release_callable(name)?;
+    }
+    Ok(())
+}
+
+fn is_minted_instance<C: cranelisp_types::CodeStore>(
+    binding: &cranelisp_types::Binding<C>,
+) -> bool {
+    binding.callable().is_some_and(|callable| {
+        matches!(
+            callable.arm.life,
+            Life::Concrete {
+                minted_from: Some(_),
+                ..
+            }
+        )
+    })
 }

@@ -25,8 +25,7 @@ use cranelisp_types::{ModuleFullPath, Span, Symbol};
 /// Used as the Cranelift data symbol name for the module's GOT table in both
 /// JIT and object codegen. See session-restructure.md.
 ///
-/// Convention: `__cranelisp_got_<flat_path>` where dots are replaced by
-/// underscores. Each `.o` file defines all GOT data symbols it needs
+/// Convention: `__cranelisp_got_<escaped path>`. Each `.o` file defines all GOT data symbols it needs
 /// (own module + imported modules) as `Export` with a placeholder value;
 /// the linker/loader patches them at load time.
 ///
@@ -36,54 +35,14 @@ use cranelisp_types::{ModuleFullPath, Span, Symbol};
 /// DOWN from this module at S76 precisely so the scheme is not duplicated: the
 /// backend REFERENCES the symbol (`Linkage::Import` at every cross-module
 /// GOT-indirect call site) while **int DEFINES it** (`jit.rs::symbol_lookup_fn`,
-/// `worker.rs:1610`, `exe.rs:862` — all on the types-owned fn). A backend-local
+/// `src/worker.rs`, `src/exe.rs` — all on the types-owned fn). A backend-local
 /// copy of the scheme is therefore a definer/consumer divergence channel: change
 /// one side and every cross-module call fails to link with
 /// `can't resolve symbol __cranelisp_got_…`.
 ///
-/// The S76 relocation left this function behind as a live duplicate body; it is
-/// now a one-line forward. The agreement is unit-fenced
+/// It is a one-line forward; the agreement is unit-fenced
 /// (`resolution::tests::got_data_symbol_name_agrees_with_the_types_owned_home`).
-///
-/// # R4 status — OWED at the types home, not here
-///
-/// `design/arch/safety-invariants.md` §4 R4 (census:
-/// `design/backend/s115-carrier-and-rc-sweep.md` §4) records this family as the
-/// one backend-facing OWED-witness: the `.`→`_` flatten is **not injective** —
-/// module names admit `_` as well as `.`, so the two-component path `a.b` and
-/// the one-component module `a_b` both flatten to `__cranelisp_got_a_b`, i.e.
-/// two modules sharing ONE GOT slab data symbol (cross-module wrong-slab
-/// dispatch, the R4 class one level up from the drop-glue keying defect
-/// 0633/0640). Constructible in a multi-module program.
-///
-/// The fix is a `cranelisp-types` edit (the scheme's canonical home) and is
-/// filed as FIXME 0748 `target: /arch` with the pinned diff — an injective,
-/// prefix-free mint, the CS-1.2 model that
-/// [`cranelisp_types::drop_glue_symbol_name`] already applies to type-glue
-/// keying: every variable-length component is written length-prefixed and
-/// hex-encoded, so no component's encoding is a prefix of another's and the
-/// whole name decodes back to its inputs. (The backend-local `escape_symbol`
-/// this paragraph used to name was the pre-S118 second identity home for that
-/// model; it was DELETED with the rest of the backend-local glue-naming scheme
-/// at S118 W3 §8 — type-glue identity is now `drop_glue_symbol_name` and
-/// nothing else.) Fixing it HERE alone is the divergence above (verified: the
-/// whole stdlib fails to load).
-///
-/// # Linker-symbol ABI (preserved here before the S75 W3 `pub(crate)` narrow)
-///
-/// Returns the per-module GOT data-symbol name `__cranelisp_got_{M}` (the
-/// module path flattened, `.`→`_`). This is the relocation target every CLIF
-/// call site references (`Linkage::Import` against `__cranelisp_got_{M}`,
-/// indexed by `SymbolTable[M].symbols[name].got_slot`); the defining `.o`
-/// exports it (`Linkage::Export`) per Decision 23/36. This is the single
-/// source of truth for the GOT data-symbol naming scheme.
-///
-/// Narrowed to `pub(crate)` per the S75 W3 /arch re-ruling: this is a
-/// codegen-internal relocation-symbol naming primitive, not a backend
-/// boundary. `compiler/mod.rs` is the canonical home; `cache::object` re-exports
-/// it `pub(crate)`. int names it (`exe.rs:163`, `worker.rs:3004/3590`) only to
-/// construct the same relocation name int-side — int reaching into backend's
-/// codegen-naming internals; re-wired S77.
+/// The escape and its injectivity are documented at the types home.
 pub(crate) fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
     cranelisp_types::got_data_symbol_name(module_path)
 }

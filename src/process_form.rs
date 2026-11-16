@@ -673,45 +673,42 @@ fn finalize_cluster(
     // NEVER on error class — a native finalize error (its span within an origin
     // form) passes through unchanged.
     let mut prepared = None;
-    let (maybe_gap, cluster_warnings, unresolved_dispatch, redefinitions) =
-        if let Some(shared) = ctx.shared_state {
-            match crate::worker::prepare_cluster_commit_with_demands(
-                ctx.symbol_tables,
-                ctx.module_aliases,
-                ctx.prelude_fallback,
-                module,
-                crate::worker::ClusterPrograms {
-                    working: &final_working,
-                    codegen: expanded_program,
-                },
-                crate::worker::OwedFacts {
-                    lookup_dependencies: &prefix.attempt.macro_lookup_dependencies,
-                },
-                program,
-                shared,
-            ) {
-                Ok(None) => (None, Vec::new(), Vec::new(), Vec::new()),
-                Ok(Some(Err(gap))) => (Some(gap), Vec::new(), Vec::new(), Vec::new()),
-                Ok(Some(Ok((mut turn, check)))) => {
-                    turn.unresolved_dispatch = check.unresolved_dispatch.clone();
-                    prepared = Some(turn);
-                    (None, check.warnings, check.unresolved_dispatch, Vec::new())
-                }
-                Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+    let (maybe_gap, cluster_warnings, unresolved_dispatch) = if let Some(shared) = ctx.shared_state
+    {
+        match crate::worker::prepare_cluster_commit_with_demands(
+            ctx.symbol_tables,
+            ctx.module_aliases,
+            ctx.prelude_fallback,
+            module,
+            &final_working,
+            crate::worker::OwedFacts {
+                lookup_dependencies: &prefix.attempt.macro_lookup_dependencies,
+            },
+            program,
+            shared,
+        ) {
+            Ok(None) => (None, Vec::new(), Vec::new()),
+            Ok(Some(Err(gap))) => (Some(gap), Vec::new(), Vec::new()),
+            Ok(Some(Ok((mut turn, check)))) => {
+                turn.unresolved_dispatch = check.unresolved_dispatch.clone();
+                prepared = Some(turn);
+                (None, check.warnings, check.unresolved_dispatch)
             }
-        } else {
-            match check_program_compat(
-                ctx.symbol_tables,
-                ctx.module_aliases,
-                ctx.prelude_fallback,
-                module,
-                &final_working,
-                None,
-            ) {
-                Ok(result) => result,
-                Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
-            }
-        };
+            Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+        }
+    } else {
+        match check_program_compat(
+            ctx.symbol_tables,
+            ctx.module_aliases,
+            ctx.prelude_fallback,
+            module,
+            &final_working,
+            None,
+        ) {
+            Ok(result) => result,
+            Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+        }
+    };
     if let Some(gap) = maybe_gap {
         // 0571 (B4/B5 + AL-3): the qualified-reference gap now fires
         // unconditionally on a member-absent abs module (typecheck
@@ -780,9 +777,7 @@ fn finalize_cluster(
         });
     }
 
-    // Build a program view for codegen. The nice worker no longer reads program
-    // contents — it enumerates via `defined_symbols()` — but a non-empty
-    // `program` signals "has compilable defns" and drives `derive_codegen_batch`.
+    // The expanded program travels back to the driver with the cluster.
     let program: Vec<TopLevel> = expanded_program.to_vec();
 
     // Cluster-level metadata. The per-symbol staging entries already committed
@@ -793,11 +788,6 @@ fn finalize_cluster(
     // only when this cluster's generation publishes.
     let mut processed =
         crate::cluster::ProcessedCluster::from_parts(cluster_warnings, Vec::new(), records);
-    processed.set_redefinitions(redefinitions);
-    // S101: the commit gate's redefinition classifications ride the cluster
-    // carrier back to the driver; the eval path runs the dependent-
-    // recompilation transaction for `AbiChanging` outcomes after the target's
-    // own codegen succeeds (design §13).
     // 0611 carrier — the return-poly dispatch sites still unresolved at
     // finalize (EMPTY for every valid program). The eval driver consults these
     // at the `__expr` eval-result boundary (class (b), Principle 19): a bare

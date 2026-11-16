@@ -9,7 +9,7 @@ rematerialization cadence around them is `design/int/s122-closure.md` §2.
 Section numbers are pinned by live source comments and tests; keep them
 stable.
 
-## §0. The current model, and what it superseded
+## §0. The model
 
 Redefinition is a guarded publication inside the ordinary prepared transaction:
 
@@ -31,13 +31,9 @@ recompiles a dependent, marks a symbol broken or installs a trap stub.**
 A reload of a saved file is not a redefinition. It rebuilds the module from a
 fresh table and recompiles or locks its dependents (§7.3).
 
-The S101–S103 design this document formerly carried — an affected-set
-dependent-recompilation transaction, BROKEN symbols with trap-stub slots, the
-`stale:` downgrade report and the T1 end-of-turn module reload — is superseded
-by that rule. Its code remains in `src/redefine.rs`; §§4, 5, 9.1–9.2 and 10
-describe the residue only so source comments that cite them resolve, and
-`int.md` §16.0 records its removal and the one leg whose reachability is
-suspect. Do not extend it.
+The S101–S103 dependent-recompilation transaction, its broken symbols and trap
+stubs, its cascade and `stale:` reports and its end-of-turn module reload were
+deleted from `src/` in S123 (§5.2). Git retains them.
 
 ---
 
@@ -71,9 +67,8 @@ binding under the same name:
 
 The gate runs at the commit because the slot decision must precede codegen that
 embeds slot indices. The slot policy and the rematerialization check read
-`classify_redefinition` directly. As built, each classification also rides the
-processed cluster back to eval as a `RedefinitionOutcome`; only the superseded
-residue consumes it, and it is deleted with that residue (§5.2).
+`classify_redefinition` directly. No classification leaves the commit: nothing
+runs after publication on its account (§5.2).
 
 ### 2.2 The comparand
 
@@ -113,67 +108,39 @@ admission or commit path (Principles 7 and 11).
   classifies `AbiPreserving`, subject to the §2.4 ownership-ABI check, and its
   bodies patch the existing slots. A non-conforming body is rejected with the
   prior implementation still live.
-- The codegen batch must recompile every re-staged method body even though
-  publication retained a prior owner. `worker::derive_codegen_batch` forces
-  every concrete implementation body of the authored trait into the batch.
-  It selects them from the table, not from the impl form's written methods.
-- Deriving the set from the form under-approximates it. When a method changes
-  from explicit to default, the synthesised default body never appears in the
-  form, and the stale override would keep dispatching (`spec/07-traits.md`
-  §7.1.5). Recompiling a sibling implementation of the same trait costs a
-  compile and changes nothing observable, provided that publication owns
-  every body it compiled (next bullet).
-- **Every compiled target has a publication owner** (ACT-1035; S123 design,
-  2026-11-15, not implemented). Codegen writes each compiled body's address
-  into its GOT slot. Publication, however, attaches the batch's code owner
-  only to the staged concrete bodies (`publish_prepared_generation_with`'s
-  owners come from `prepared.staging.codegen_targets()`). A live sibling
-  enrolled by the trait-wide predicate above is compiled and patched without
-  an owner. If the turn stages no concrete body, as with a parametric impl,
-  whose methods are templates, nothing holds the new code. The JIT is freed
-  when the turn ends, and the sibling's slot points into freed memory
-  (Principle 22).
-  - **Confirmed by probe** (2026-11-15, debug binary at `f747990f`,
-    primitives-only prelude, fresh directories). ACT-1035's five-line
-    program dies with SIGSEGV. Wrapping the parametric impl as
-    `(begin (impl Size (Opt a) …) (defn keep [] 0))` prints
-    `:primitives/Int 5`: one staged concrete body gives the JIT an owner.
-    The same `begin` without `keep` dies. `CRANELISP_CODEGEN_DUMP` shows
-    `Size.size$primitives/Int` compiled at the parametric impl's turn as
-    well as its own.
-  - **Rule: the batch is the staged body set.** Publication can own only
-    staged bodies: `SymbolTable::publish_compiled_staged` requires the owner
-    keys to equal the staged `Concrete`/`Body` key set (its rustdoc). So
-    codegen must compile only what staging holds, and everything staging
-    holds. The trait-wide predicate above therefore selects from the staging
-    table's codegen targets, not from the candidate table that merges live
-    and staged state (`worker::plan_staging_commit_inner`'s `tables`). The validity check after
-    `derive_codegen_batch` tightens from "is a live concrete callable" to
-    "is a staged concrete body". It is a located hard error before codegen,
-    so an unowned compile cannot be written again
-    ([Principle 07](../arch/principles/07-single-source-of-truth.md),
-    [Principle 22](../arch/principles/22-published-pointers-have-retention-owners.md)).
-  - **What the omitted-default case needs.** A method whose source changes
-    from explicit to default must still be compiled. Its synthesised default
-    body is re-staged by the turn, so selecting from staging keeps it.
-    `dev` confirms this first with the existing cell
-    `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`,
-    re-run against a staging-only selection. If the default body turns out
-    not to be staged, the defect is in staging and is fixed there. The
-    fallback is to let publication own an unstaged recompiled sibling and
-    retain its displaced `Code`. That changes `publish_compiled_staged`'s
-    public contract, so it goes to `arch` and the user gate, and is not
-    designed here.
-  - **Unit evidence (`dev`, at the `worker` seam).** A live concrete
-    `Size.size$Int` plus a staged parametric `Size` impl: the batch does not
-    contain `Size.size$Int`. RED today, because the trait-wide predicate
-    enrols it. A planted unstaged target in the batch is refused by the
-    tightened check, which is the detection proof. The omitted-default row
-    still passes. QA's REPL cell is the end-to-end evidence.
-- The discriminating unit cell is
-  `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl`; an
-  explicit-method cell passes under either derivation. End-to-end behaviour
-  is `tests/impl_redefinition_dispatch.rs`.
+- **The codegen batch is the staged body set** (ACT-1035, as built S123).
+  `worker::derive_codegen_batch` returns exactly the staging table's codegen
+  targets: every staged concrete body and nothing else. Publication can own
+  only staged bodies, because `SymbolTable::publish_compiled_staged` requires
+  the owner keys to equal the staged `Concrete`/`Body` key set (its rustdoc).
+  A compiled body that publication did not own would have its address
+  written into its GOT slot while its JIT is freed at the end of the turn
+  ([Principle 07](../arch/principles/07-single-source-of-truth.md),
+  [Principle 22](../arch/principles/22-published-pointers-have-retention-owners.md)).
+  - **The refusal.** Before codegen, `worker::refuse_unstaged_codegen_targets`
+    rejects any batch member that staging does not hold, with a located
+    invariant error. An unowned compile therefore cannot be written.
+  - **Omitted defaults.** A re-impl that turns an explicit method into a
+    default re-stages the trait's synthesised default body, so the staged set
+    already contains it. A stale override cannot keep dispatching
+    (`spec/07-traits.md` §7.1.5).
+  - **Live siblings.** A live implementation of the same trait that the turn
+    does not re-stage is not recompiled. A parametric impl, whose methods are
+    templates, therefore compiles nothing at its own turn.
+  - **Consequence for preloaded tables.** A live concrete body can be
+    compiled only by a turn that stages it. A table installed without code
+    for its bodies must therefore leave none of them live unless the next
+    compile restages it under the same key (§8.2).
+- **Guards.** At the `worker` seam:
+  `derive_codegen_batch_enrolls_omitted_default_method_of_the_impl` (both
+  the provided method and the re-staged default compile),
+  `parametric_impl_turn_does_not_compile_live_sibling_impl` (the ACT-1035
+  shape compiles nothing), and the detection proof
+  `unstaged_codegen_target_is_refused_before_codegen` (a planted unstaged
+  member is refused, and the staged set passes). End to end:
+  `tests/impl_redefinition_dispatch.rs`, and in `tests/spec_07_traits.rs`
+  `w4_impl_begin_without_keep_survives` with its control
+  `w4_impl_begin_with_keep_retains_code_control`.
 
 ### 2.6 Type re-establishment (REPL §18.5, §14.8)
 
@@ -278,7 +245,7 @@ restored table's edges are extraction-current.
 
 Reverse edges are derived by scanning the live tables' `callees` when a
 decision needs them — the blocking-dependent scan at admission, and
-`ReverseIndex` for the superseded residue. There is no maintained caller index:
+`ReverseIndex` for `/refs`. There is no maintained caller index:
 a scan is correct by construction against current tables and costs nothing on a
 body-only turn. REPL §18.2 makes the no-persisted-index rule normative.
 
@@ -288,27 +255,7 @@ deduplicates, sorts by canonical name and excludes only the target's self-edge.
 
 ---
 
-## §4. Affected-set closure (superseded residue)
-
-`redefine::affected_closure`, `condense_reverse_topo`, `scc_should_visit`,
-`member_propagates` and `run_transaction` implement the former transaction:
-transitive reverse closure, SCC condensation, a callee-first walk with a
-propagation skip test and slot-less pass-through. `apply_redefinition_outcomes`
-runs it for a per-symbol `AbiChanging` outcome. The guard admits such an outcome
-only when no blocking dependent exists, so the closure should be empty; no
-current requirement relies on it.
-
-### 4.1 Closure and ordering
-
-Superseded as above. The frozen-world argument of §4.3 is the part that remains
-load-bearing, for slot versioning.
-
-### 4.2 Per-symbol re-typecheck
-
-Superseded. The residue re-checks from stored introspection sexps and falls back
-to module-grain reload when a sexp is unavailable.
-
-### 4.3 No quiesce
+## §4. No quiesce
 
 Between a fresh-slot commit and any later use there is no unsound window: old
 machine code embeds the **old** slot index, which is frozen and still points at
@@ -318,91 +265,54 @@ workers.
 
 ---
 
-## §5. BROKEN state (superseded residue)
+## §5. No broken symbols
 
-§5.1 describes the residue. §5.2 is the S123 design that retires it.
-
-### 5.1 Marking
-
-`redefine::mark_broken` transitions a slotted entry through the types-owned
-`Life::Broken` funnel, retains its displaced code and a paired trap stub in the
-pool, and patches the slot in place. A slot-less entry is left unchanged.
-`broken_status_line` renders a `Life::Broken` entry's provenance at `/sig`,
-`/info` and bare lookup. REPL §18 forbids creating broken symbols on ordinary
-redefinition; reload and restart never restore broken state (§18.8).
-
-### 5.2 No symbol is left broken
-
-Status: S123 design (2026-11-15); not implemented. The user ruled that a call
-to a symbol a redefinition left broken is refused at compile time. A trap
-stub raises through `runtime/panic`, which now ends the process, so a
-reachable trap would end the REPL.
+### 5.1 Why no redefinition can break a caller
 
 - **The refusal is the redefinition's.** A language-type change is admitted
   only when the target has no blocking dependent (REPL §18.1). The scan (§3.3)
-  reads every binding's recorded `callees`, and those are recorded for
-  template and concrete bodies and for macro clauses alike
-  (`callee_edges::binding_callees`, read 2026-11-15). So every symbol that a
-  type change could break is a blocker, and the change is refused before
-  publication with the §18.1 diagnostic. A same-type replacement patches in
-  place and breaks no caller. A whole-file reload recompiles or locks its
-  dependents (§7.3), and a locked session runs no code. No path leaves a
-  callable symbol broken, so no compiled call can reach a trap.
-- **Making it structural: the residue is deleted.** The only constructor of
-  `Life::Broken` in `src/` is `mark_broken`, and its only caller is the
-  superseded transaction, whose closure the guard keeps empty (§4). `dev`
-  deletes, in one change-set:
-  - `run_transaction` and the closure machinery of §4. `ReverseIndex` and
-    `base_fq_from_tables` stay, because `/refs` uses them;
-  - `mark_broken`, the trap-stub construction and `RetainedCode`'s trap
-    message (§5.1, §6.1);
-  - `drive_t1_full_cure` and the module-grain fallback (§10);
-  - `TransactionReport`, `pending_cascade_reports` and the stale report (§9.1);
-  - `broken_status_line` and its readers in `src/repl/commands.rs` and
-    `src/repl/format.rs` (§9.2), `outcome_clears_broken`, and the broken-module
-    check in `nice_worker` (§8.3).
-
-  - the redefinition outcomes: `RedefinitionOutcome`, its `ProcessedCluster`
-    field and `PreparedCommit` carrier, their construction in `worker`, and
-    `apply_redefinition_outcomes` with its three call sites in `src/eval.rs`.
-    Their fields feed only the deleted transaction, the T1 reload and the
-    broken-record clearing (read 2026-11-15), so nothing is left to settle.
-
-  The approved S121 publication receipt
+  reads every binding's recorded `callees`, which are recorded for template
+  and concrete bodies and for macro clauses alike
+  (`callee_edges::binding_callees`). Every symbol a type change could break is
+  therefore a blocker, and the change is refused before publication with the
+  §18.1 diagnostic.
+- **The other paths.** A same-type replacement patches in place and breaks no
+  caller (§2.3). A whole-file reload recompiles or locks its dependents
+  (§7.3), and a locked session runs no code.
+- **Nothing follows publication.** No classification, outcome or report
+  leaves the commit (§2.1). A redefinition never re-typechecks or recompiles a
+  dependent and never triggers a module reload (§10). The approved S121
+  publication receipt
   ([S117 recovery §1.1.3](s117-conformance-recovery.md#113-post-publication-outcomes-retired))
-  retires with its subject: the REPL redefinition rules require no
-  post-publication work for a later `Err` to discard
+  retired unbuilt with its subject
   ([arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
-  It was never built, so no source changes for it.
-- **Grade.** Until the deletion lands: asserted, with two falsifiers — a turn
-  that reaches `mark_broken` outside a test, or a type change admitted while
-  some binding's `callees` name its target. After it: no `src/` code can
-  construct the state. The remaining hole is a new call to the public
-  `SymbolTable::mark_broken`, which packet row P13 closes
-  (`sprints/s123-api-packet.md`).
-- **Cost.** Deletion only, with no new path: on the order of a thousand
-  production lines of `src/redefine.rs` (3,165 lines in all), their unit tests,
-  and the readers listed above. It is one `dev` pass. The risk is the T1 reload, which today runs for a
-  slot-less redefinition that has compiled callers. §18.1's eager
-  rematerialization is the required behaviour for that case
-  (`design/int/s122-closure.md` §2), so the T1 reload is not needed.
-  Deleting it must leave the REPL redefinition cells in
-  `tests/repl_redefinition.rs` green, together with `qa`'s S122 probe shape:
-  a generic `f`, a compiled caller `g`, a same-type body edit, and a concrete
-  twin as the control.
-- **Unit evidence (`dev`, at the guard).** A language-type change of `f` is
-  refused, naming the caller, when the caller is a concrete body, a template
-  with no realisation, or a macro clause. With no caller it is admitted, which
-  is the control. The detection proof is a planted scan that skips template
-  callees: it turns the template row red.
-- **Backend, coordinated and not edited here.** `cranelisp_backend::compile_trap_stub`
-  loses its only consumer. The open question in `backend.md` §7 and the stub in
-  `ownership-codegen.md` §8.1 close under this design: no call to a broken
-  symbol is ever compiled, so the stub's raise shape is moot. Removing the stub,
-  `cranelisp_types::Life::Broken` with `SymbolTable::mark_broken`,
-  `BrokenProvenance`, `BrokenTransition` and the match arms on `Broken` is
-  packet row P13, which follows this deletion and needs no cache-schema bump
-  (§8.3).
+
+### 5.2 No symbol is left broken
+
+The user ruled that a call to a symbol a redefinition would leave broken is
+refused at compile time. The deleted trap stub raised through `runtime/panic`,
+which ends the process, so a reachable trap would have ended the REPL.
+
+- **Grade: structural.** A broken symbol cannot be represented. Packet row
+  P13 removed `Life::Broken`, `BrokenProvenance`, `BrokenTransition`,
+  `mark_broken` and `cranelisp_backend::compile_trap_stub`, with no
+  cache-schema bump (§8.3; `sprints/s123-api-packet.md`). It is built in the
+  S123 W4 tree, not yet committed: `Life` in
+  `crates/cranelisp-types/src/lifecycle.rs` has no `Broken` variant, and no
+  name of the five occurs in a source file under `crates/` or `src/` (read
+  2026-11-16). `src/worker.rs`'s slot reader matches only `Life::Concrete`.
+  The S123 deletion had already removed every int construction site.
+  The open question in `backend.md` §7 and the stub in `ownership-codegen.md`
+  §8.1 are moot: no call to a broken symbol is compiled.
+- **Guards.** `redefine.rs`'s
+  `concrete_and_unrealised_template_callers_block_a_type_change`: a concrete
+  caller and a template caller with no realisation both block a type change
+  of `f`, and with no caller nothing blocks it. End to end:
+  `tests/repl_redefinition.rs`.
+- **Evidence still owed.** The unit rows for a macro-clause caller and the
+  detection proof (a planted scan that skips template callees turns the
+  template row red) were not found in `src/` on 2026-11-16. `qa` decides
+  whether they are required before the grade is credited.
 
 ---
 
@@ -417,9 +327,8 @@ retained_code: Mutex<Vec<RetainedCode>>   // append-only, session-lifetime
 struct RetainedCode {
     fq: FQSymbol,
     module: ModuleFullPath,
-    slot: Option<usize>,        // the frozen or patched slot, when there is one
-    code: Code,                 // keeps the executable pages mapped
-    trap_msg: Option<Box<str>>, // Some only for a trap stub's baked message
+    slot: Option<usize>,  // the frozen or patched slot, when there is one
+    code: Code,           // keeps the executable pages mapped
 }
 ```
 
@@ -432,8 +341,8 @@ struct RetainedCode {
 - **Retaining paths:** the staged commit gate (`worker::commit_staging_to_live`),
   the prepared compiled publication and its rejection restore
   (`worker::compile_and_publish_prepared_with`,
-  `worker::retain_and_restore_rejected_compilation`), the rebuild prologue in
-  `session_v4::lifecycle::reload_module`, and the residue's `mark_broken`.
+  `worker::retain_and_restore_rejected_compilation`) and the rebuild prologue
+  in `session_v4::lifecycle::reload_module`.
 - **Two paths do not pool:** cache-hit owner publication
   (`worker::load_cached_module_via_linker`) drops displaced owners, and a commit
   with no session `SharedState` (unit tests, dry runs) keeps the plain drop.
@@ -447,8 +356,7 @@ The pool is append-only to session end. A same-ABI replacement cannot prove that
 no detached strand is mid-call in the old body, so freeing on replacement would
 trade a use-after-free for a few hundred bytes. The leak is bounded by the
 session's pooled displacements, is visible as pool length and GOT-trace events
-(§9.3), and restart reclaims it. A trap stub's message buffer rides the same
-entry as its `Code`, so neither can outlive the other (Principle 18).
+(§9.3), and restart reclaims it.
 
 ### 6.3 No clear-before-replace
 
@@ -654,6 +562,13 @@ are [REPL lifecycle §1.2–§1.3](repl-lifecycle.md#12-poll-and-reload).
     that started without a file and whose regeneration never wrote one: one
     that declares an inline `(mod name body…)` in the REPL, which FIXME 0343's
     guard exempts from regeneration. Unmeasured.
+  - A dependent whose file is still recorded absent is not rebuilt either
+    ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload), Reload
+    set). It is safe only while that module holds no compiled definition.
+    A defining turn's regeneration replaces the absent record, so the
+    falsifier is a module with compiled definitions whose regeneration
+    failed to write: a write error or the FIXME 0343 exemption above.
+    Unmeasured.
   - The pool grows by one displaced table's owners per rebuild, the same
     order as its growth under redefinition (§6.2).
   - `/search` rows for a failed module stay at their last publication.
@@ -701,8 +616,18 @@ not a new kind of growth.
 
 Each module GOT has `GOT_TABLE_SIZE` slots and a table never reuses its retired
 slots, so repeated language-type-changing redefinition by increments consumes
-capacity until the module's next whole-file rebuild or restart. A rebuild
-starts a fresh table on the same GOT and consumes none (§7.3.3). The types-owned mint refuses an index at or beyond the table size with a
+capacity until the module's next whole-file rebuild. A rebuild starts a fresh
+table on the same GOT and consumes none (§7.3.3).
+
+A restart returns capacity only when the module's cache entry does not
+restore. Retired slots serialize (§8.1, §8.4). An entry whose cache stays
+valid is preloaded with its persisted tombstones (§8.2), and a cache-restored
+dependency installs its persisted table. As built, the entry preload adds
+`k + 1` tombstones per launch, which is a confirmed defect (§8.2). The
+persisted tombstones of ABI-changing redefinitions are backlog item 0466,
+which the user deferred.
+
+The types-owned mint refuses an index at or beyond the table size with a
 diagnosed "GOT slot table exhausted" error rather than writing past the slab
 (`redefine.rs` unit `got_exhaustion_surfaces_error_not_ub`).
 
@@ -719,15 +644,65 @@ so no path renumbers or compacts them.
 ### 8.2 Faithful writes
 
 `regenerate_backing_file` runs after every successful defining turn; a rejected
-redefinition is never written (REPL §18.8). Startup pre-seeds the entry
-module's slot assignments from a still-valid `.meta.json` before recompiling
-from source, so persisted slots are reused and new definitions mint above them.
+redefinition is never written (REPL §18.8).
+
+**The entry slot preload.** At registration, every mode pre-seeds the entry
+module's table from a `.meta.json` that the manifest validates against the
+current source, then recompiles the module from source onto it
+(`session_v4::lifecycle::preload_entry_slot_assignments`). Each authored
+definition keeps its persisted slot, and new definitions mint above them.
+
+- **What the preload releases** (packet row P15, built in the S123 W4 tree,
+  not yet committed; read 2026-11-16). `release_bodies_the_recompile_restages`
+  releases the synthetic `__expr` wrapper and each `minted_from: Some(_)`
+  instance on the decoded table, before `into_concrete`, through the
+  types-owned `SymbolTable<(), ()>::release_callable`. That call removes one
+  callable from a decoded, code-free table and drops its slot claim without a
+  tombstone; a refusal leaves the table unchanged, and the preload then
+  installs nothing. The recompile restages each instance a definition demands
+  under a fresh slot, rather than replacing it in place. A preloaded instance
+  left live would hold a slot with no code, because the batch compiles only
+  staged bodies (§2.5). Releasing it removes that state by construction.
+  Which bodies to release is int's policy, recorded here; existing tombstones
+  are kept. No cache-schema bump and no ABI effect
+  (`sprints/s123-api-packet.md` P15).
+- **Defect P15 closes: the tombstones accumulated** (confirmed by `qa`,
+  2026-11-16, [evidence plan](../../tests/plan/s123-evidence-delta.md) §3.6
+  R-5). The earlier preload retired these bodies through
+  `retire_abi_changing`, and each retirement recorded a tombstone in
+  `retired_slots`, which serializes (§8.1). The nice worker rewrites the
+  entry's `.meta.json` after the from-source compile, and an unchanged source
+  keeps the cache valid, so every cached launch of an entry with `k`
+  instances lost `k + 1` slots for good. With 128 generic identities, five
+  cached launches persisted 645 tombstones and the seventh exhausted the GOT
+  (§7.5). The release records none, so a cached restart consumes no GOT
+  capacity. The guard is R-5's cell,
+  `tests/cache.rs::cached_restarts_keep_generic_instance_slot_capacity_across_modes`;
+  its flip to green awaits the suite run.
+- **Why a release is safe** (`arch`'s ground, P15; it replaces the earlier
+  "no module cycle" ground, which fails for a module `/mod` loads that
+  imports the entry). A tombstone protects code that embeds the old index
+  (§7.2). There are three possible holders:
+  - *This process.* A decoded table holds no compiled owner, and its GOT is
+    the fresh slab deserialization creates. Nothing has compiled against it.
+    Grade: structural.
+  - *Other modules' cached objects.* Instances are minted in the demanding
+    module with their own slot
+    ([monomorphisation §3.7](../typecheck/monomorphisation.md#37-cross-module-body-recheck-scoping)),
+    and `__expr` is never referenced across modules, so such code embeds
+    only authored slots, which the preload keeps. Grade: asserted with a
+    named falsifier: another module's cached object that relocates against
+    the entry's GOT at an index the entry's table holds for a minted
+    instance or for `__expr`.
+  - *The entry's own earlier object.* The entry is compiled from source, and
+    one compile writes its new object and `.meta.json` together.
 
 ### 8.3 Broken modules are not persisted
 
-A module holding a `Life::Broken` entry at write time persists no `.o`/`.meta`,
-because a snapshot would record a trap stub as compiled truth. Broken state is
-never persisted; restart recompiles current source.
+No module can hold a `Life::Broken` entry, because `src/` constructs none
+(§5.2). The nice worker therefore has no broken-module check, and no
+`.meta.json` holds the variant. P13 relies on this to remove it without a
+cache-schema bump.
 
 ### 8.4 High water across sessions
 
@@ -745,55 +720,32 @@ the definitions that use an instance demand it again when they recompile.
 
 ## §9. Surfacing
 
-### 9.1 The cascade report (superseded residue)
+### 9.1 What the user sees
 
-`TransactionReport` renders the residue's `recompiled:`, `broken:`, `recovered:`
-and `stale:` sections. Current §18 surfaces an ordinary redefinition only
-through the definition confirmation or the rejection diagnostic.
+An ordinary redefinition surfaces only as the definition confirmation or the
+rejection diagnostic (REPL §18). There is no cascade, `stale:` or downgrade
+report.
 
-#### 9.1.1 The downgrade (`stale:`) section (superseded residue)
+### 9.2 Introspection
 
-`is_t1_downgrade` selects a redefinition of a prior callable outside per-symbol
-precision where either the prior or the staged entry is slot-less — including a
-template-to-template body edit, which changes no slot shape; `stale_callers` names the compiled direct
-callers of the target and its instances, folding a macro clause to its owning
-macro. REPL §18 no longer defines this section. The reachability of this leg is
-the open question in `int.md` §16.0.
-
-### 9.2 Broken status at `/sig` and `/info` (superseded residue)
-
-See §5.1.
+`/sig`, `/info` and bare lookup show only live definitions. No entry carries
+broken provenance (§5.2).
 
 ### 9.3 Observability
 
-`got_trace` records redefinition, slot-freeze and trap-patch events
-(`src/got_trace.rs`). Pool length is the retention leak metric. The rejection
-diagnostic and definition confirmation are the user-visible record.
+`got_trace` records redefinition and slot-freeze events (`src/got_trace.rs`).
+Pool length is the retention leak metric.
 
 ---
 
-## §10. T1 and module-grain reload (superseded residue)
+## §10. No reload follows a redefinition
 
-- **T1 — target outside per-symbol precision.** Such a redefinition classifies
-  without the per-symbol transaction. The residue then drives
-  `drive_t1_full_cure` from `apply_redefinition_outcomes`:
-  - **CS-1:** when compiled stale callers exist and the module may regenerate,
-    regenerate the backing file and run a reload plan rooted at the target
-    module through the one executor
-    ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)), which
-    rebuilds the target and its dependents (§7.3);
-  - **CS-2:** a successful reload pushes no `stale:` report;
-  - **CS-3:** a failed reload leaves its module standing failed like any
-    failed rebuild, which locks the session, and keeps the `stale:` report;
-    a suppressed module keeps the report.
-  REPL §18.1 now requires same-language-type generic edits to rematerialize
-  their instances in the original candidate without re-typechecking callers
-  (`design/int/s122-closure.md` §2), so this reload is not the cure. Its reachability is
-  the suspected defect recorded in `int.md` §16.0.
-- **T2 — unrecoverable re-check input** and **T3 — untrusted edge feed** belong to
-  the residue's module-grain fallback and have no current requirement. T2's
-  module-grain reload runs a plan rooted at the caller's module through the
-  same executor and reads the root's outcome.
+A redefinition turn never runs a reload plan. The reload executor's callers
+are the watcher poll and `/mod`'s recompile of a cache-installed module
+([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)). A same-type
+edit of a generic definition rematerializes its prior instances in the turn's
+own candidate, so a compiled caller reaches the new body without being
+re-typechecked (REPL §18.1; `design/int/s122-closure.md` §2).
 
 ---
 
@@ -804,8 +756,8 @@ diagnostic and definition confirmation are the user-visible record.
 | Admission guard, blocking dependents, rematerialization policy, overload-arm correspondence | `src/redefine.rs` (`validate_guarded_redefinition`, `blocking_dependents`, `instance_rematerialization_policy`, `match_replacement_overload_arm`) |
 | Guard invocation, type re-establishment pass (§2.6) and prepared candidate | `src/worker.rs` (`prepare_cluster_commit`, `validate_guarded_staging_except`); the refusal record on `scheduler::ModuleState` |
 | Classification, slot policy and pooling | `redefine::classify_redefinition`; `worker::commit_staging_to_live`; the prepared compiled publication |
+| Codegen batch and its refusal (§2.5) | `worker::derive_codegen_batch`, `worker::refuse_unstaged_codegen_targets` |
 | Whole-file rebuild (§7.3) | prologue and reference hold: `session_v4::lifecycle::reload_module`; whole-source provenance and the reference it carries: `scheduler::SourceContinuation`, read by `process_form::process_cluster_once` and handed to the prepare step by `process_form::finalize_cluster`; plan, order check and executor: `session_v4::lifecycle` ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)) |
-| Outcomes to eval (superseded residue, §5.2) | `RedefinitionOutcome` on the processed cluster (`src/cluster.rs`), consumed after codegen in `src/eval.rs` |
 | Retention pool | `redefine::RetainedCode`, `RetentionPool`; `SharedState.retained_code` |
-| Persistence | `session_v4::lifecycle::regenerate_backing_file`, `reload_module`; `session_v4::nice_worker::compile_module_object` |
-| Superseded residue | `run_transaction`, `mark_broken`, `stale_callers`, `TransactionReport`, `RedefinitionOutcome`, `apply_redefinition_outcomes`, `drive_t1_full_cure`; `ReverseIndex` stays for `/refs` (§5.2) |
+| Persistence | `session_v4::lifecycle::regenerate_backing_file`, `reload_module`, `preload_entry_slot_assignments` (§8.2); `session_v4::nice_worker::compile_module_object` |
+| Reverse index for `/refs` (§3.3) | `redefine::ReverseIndex`, `redefine::base_fq_from_tables` |

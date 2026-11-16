@@ -59,8 +59,8 @@ impl super::SharedState {
     /// Record `state` as the state the session last loaded, reloaded or wrote
     /// for the source file at `path`.
     pub(crate) fn record_source(&self, path: &std::path::Path, state: crate::watch::FileState) {
-        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.recorded_sources.insert(key, state);
+        self.recorded_sources
+            .insert(crate::watch::source_key(path), state);
     }
 
     /// The state recorded for the source file at `path`, if any.
@@ -68,7 +68,8 @@ impl super::SharedState {
         &self,
         path: &std::path::Path,
     ) -> Option<crate::watch::FileState> {
-        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.recorded_sources.get(&key).map(|state| state.clone())
+        self.recorded_sources
+            .get(&crate::watch::source_key(path))
+            .map(|state| state.clone())
     }
 }

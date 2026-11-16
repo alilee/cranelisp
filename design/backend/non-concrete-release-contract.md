@@ -422,7 +422,7 @@ cannot lower is a compile error in this crate.
 | `HostPromised` | nothing; by-name import | — |
 | `Template` | nothing — not a codegen target | located refusal naming the symbol: no instantiation was demanded |
 | `Declared` | nothing | located refusal: settlement did not run (a compiler-invariant breach) |
-| `Broken { slot, error }` | nothing; the retained slot carries its trap stub | — |
+| `Broken { slot, error }` | nothing; no production path constructs it, and no trap stub exists to fill the slot ([ownership codegen](ownership-codegen.md) §8.1) | — |
 
 `defn_param_types` then reads a witness-checked concrete scheme, so the
 parameter channel cannot deliver a residual type — the structural half of §7.4.
@@ -631,7 +631,6 @@ E2e acceptance is `qa`'s.
   (the superseded I-CT record), §11 (the no-interim list this extends)
 - [io-trampoline.md](io-trampoline.md) §1.1 — IO node layout
 - [ownership-codegen.md](ownership-codegen.md) §4 — stack placement
-- [s122-closure.md](s122-closure.md) — the current delivered selected slice
 - [total-concreteness.md](../arch/total-concreteness.md) §3.2, §3.4, §3.5
 - [symbol-table-lifecycle.md](../arch/symbol-table-lifecycle.md) §4, §5.5
 - [safety-invariants.md](../arch/safety-invariants.md) §4 — R17, R18, R19

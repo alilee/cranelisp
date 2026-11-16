@@ -89,7 +89,8 @@ never sees a panic, chooses no panic status and formats no panic text.
   refused at compile time. Int meets it before any call exists: the
   redefinition that would break a caller is the refusal
   ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken)),
-  so no trap stub is ever reached.
+  so no call to a broken symbol is compiled. The backend's trap stub is
+  removed in the S123 W4 tree (packet row P13).
 - **No mode branch.** The REPL, `--run`, `--test` and the linked stub delete
   the same arms. The REPL keeps no panic arm
   ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).

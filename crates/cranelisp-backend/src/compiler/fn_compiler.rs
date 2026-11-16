@@ -688,29 +688,6 @@ where
         Some(val)
     }
 
-    /// B3.3 (`design/backend/ownership-codegen.md` §5.1): the per-site RC
-    /// atomicity for a value produced DIRECTLY by `node` — `NonAtomic` iff the
-    /// node carries `confined = Some(true)`. `Some(false)` (Crossing) / `None`
-    /// (fact absent / analysis off) ⇒ `Atomic`.
-    ///
-    /// No counting site reads it under U′: its only consumer was the retired
-    /// return protect. It stays, with its census hook, as the retained
-    /// confinement classification (`uniform-counting.md` §2, "not in the list").
-    #[allow(dead_code)]
-    pub(crate) fn rc_atomicity_for_node(&self, node: &MonoExpr) -> heap::RcAtomicity {
-        let confined = node_confined(node);
-        crate::rc_site_stats::record_rc_site_if_enabled(
-            &self.ctx.current_module,
-            self.current_fn_name.as_ref(),
-            node.span(),
-            confined,
-        );
-        match confined {
-            Some(true) => heap::RcAtomicity::NonAtomic,
-            _ => heap::RcAtomicity::Atomic,
-        }
-    }
-
     /// B3.4 (`design/backend/ownership-codegen.md` §4.1): is the use-site
     /// data-constructor call `apply` eligible for a Cranelift **stack slot**
     /// (immortal-RC sentinel, §4.2) in the caller's frame instead of the heap?
@@ -873,11 +850,11 @@ where
     }
 }
 
-/// B3.3 (`design/backend/ownership-codegen.md` §5.1): read the `confined` site
-/// fact off a [`MonoExpr`] node. Only the five allocation/capture-producing
-/// variants carry the fact (`StringLit`, `Lambda`, `Apply`, `VecLit`,
-/// `ConstrADT` — the enum-level rustdoc on `MonoExpr`); every other variant has
-/// no cell of its own to confine and answers `None` (⇒ conservative `Atomic`).
+/// Read the `confined` site fact off a [`MonoExpr`] node, for the spark density
+/// scorer (`design/backend/ownership-codegen.md` §13.4). Only the five
+/// allocation/capture-producing variants carry the fact (`StringLit`, `Lambda`,
+/// `Apply`, `VecLit`, `ConstrADT` — the enum-level rustdoc on `MonoExpr`);
+/// every other variant has no cell of its own to confine and answers `None`.
 /// Backend-local (no `cranelisp-types` accessor); kept a total match so a new
 /// fact-bearing variant is a compile error here.
 pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
@@ -1571,13 +1548,11 @@ mod b34_stack_eligibility_tests {
 
 #[cfg(test)]
 mod b33_node_confined_tests {
-    //! B3.3 confined-fact classifier (`design/backend/ownership-codegen.md`
-    //! §5.1; §13.5): `node_confined` reads the `confined` site fact off the five
+    //! `node_confined` reads the `confined` site fact off the five
     //! allocation/capture-producing variants and answers `None` for every other
-    //! variant. The atomicity derivation is `Some(true) ⇒ NonAtomic`, else
-    //! `Atomic` — the classifier is the pure seam under it.
+    //! variant. Its consumer is the spark density scorer
+    //! (`design/backend/ownership-codegen.md` §13.4).
     use super::node_confined;
-    use crate::heap::RcAtomicity;
     use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, MonoExpr, Span, TypeName};
 
     fn int() -> ConcreteType {
@@ -1673,8 +1648,8 @@ mod b33_node_confined_tests {
         }
     }
 
-    // NEGATIVE: non-allocation variants have no cell of their own ⇒ None
-    // (⇒ conservative Atomic). Var / Let / If / Match are the through-carriers,
+    // NEGATIVE: non-allocation variants have no cell of their own ⇒ None.
+    // Var / Let / If / Match are the through-carriers,
     // never the fact source.
     #[test]
     fn non_fact_bearing_variants_are_none() {
@@ -1707,24 +1682,5 @@ mod b33_node_confined_tests {
         assert_eq!(node_confined(&var), None);
         assert_eq!(node_confined(&iflit), None);
         assert_eq!(node_confined(&intlit), None);
-    }
-
-    // The atomicity derivation: Some(true) ⇒ NonAtomic; Some(false)/None ⇒ Atomic.
-    // (mirrors `FnCompiler::rc_atomicity_for_node`; the classifier is the seam).
-    #[test]
-    fn atomicity_derivation_from_confined_fact() {
-        let map = |c: Option<bool>| match c {
-            Some(true) => RcAtomicity::NonAtomic,
-            _ => RcAtomicity::Atomic,
-        };
-        assert_eq!(
-            map(node_confined(&constr_adt(Some(true)))),
-            RcAtomicity::NonAtomic
-        );
-        assert_eq!(
-            map(node_confined(&constr_adt(Some(false)))),
-            RcAtomicity::Atomic
-        );
-        assert_eq!(map(node_confined(&constr_adt(None))), RcAtomicity::Atomic);
     }
 }

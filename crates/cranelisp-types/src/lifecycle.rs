@@ -57,10 +57,10 @@ impl<C: crate::CodeStore> Binding<C> {
         }
     }
 
-    /// Project the dispatchable GOT index carried by a concrete or broken callable.
+    /// Project the dispatchable GOT index carried by a concrete callable.
     pub fn callable_got_slot(&self) -> Option<usize> {
         match self.callable().map(|callable| &callable.arm.life) {
-            Some(Life::Concrete { slot, .. } | Life::Broken { slot, .. }) => Some(slot.index()),
+            Some(Life::Concrete { slot, .. }) => Some(slot.index()),
             _ => None,
         }
     }
@@ -247,7 +247,6 @@ impl Life<()> {
             },
             Life::Inline { mode_summary } => Life::Inline { mode_summary },
             Life::HostPromised => Life::HostPromised,
-            Life::Broken { slot, error } => Life::Broken { slot, error },
         }
     }
 }
@@ -408,8 +407,8 @@ impl<C: crate::CodeStore> CallableArm<C> {
 
 /// Slot-free semantic inputs for constructing one freshly settled family arm.
 ///
-/// A draft deliberately cannot carry a callable slot, compiled owner, broken
-/// state, or provisional declaration state. [`crate::SymbolTable`] converts
+/// A draft deliberately cannot carry a callable slot, compiled owner or
+/// provisional declaration state. [`crate::SymbolTable`] converts
 /// the complete draft roster into settled arms while it owns slot allocation.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -774,20 +773,13 @@ pub enum Life<C: crate::CodeStore = ()> {
     },
     /// Concrete host symbol imported by name, with no slot.
     HostPromised,
-    /// Failed recompilation retaining its prior slot as a trapping capability.
-    Broken {
-        /// Retained slot populated with the trap stub.
-        slot: CallableSlot,
-        /// Provenance of the transaction that broke the binding.
-        error: BrokenProvenance,
-    },
 }
 
 impl<C: crate::CodeStore> Life<C> {
     pub(crate) fn claimed_slot(&self) -> Option<CallableSlot> {
         match self {
             Life::Declared { prior } => *prior,
-            Life::Concrete { slot, .. } | Life::Broken { slot, .. } => Some(*slot),
+            Life::Concrete { slot, .. } => Some(*slot),
             Life::Template { .. } | Life::Inline { .. } | Life::HostPromised => None,
         }
     }
@@ -795,7 +787,7 @@ impl<C: crate::CodeStore> Life<C> {
     fn is_callable_target(&self) -> bool {
         matches!(
             self,
-            Life::Concrete { .. } | Life::Inline { .. } | Life::HostPromised | Life::Broken { .. }
+            Life::Concrete { .. } | Life::Inline { .. } | Life::HostPromised
         )
     }
 }
@@ -933,23 +925,6 @@ pub enum Realization<C: crate::CodeStore = ()> {
         /// Linker-visible name of the shared body.
         abi_name: LinkerSymbol,
     },
-}
-
-/// Diagnostic provenance retained when a concrete callable becomes broken.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct BrokenProvenance {
-    /// Callable whose failed transaction caused this binding to break.
-    pub broken_by: FQSymbol,
-    /// Stable diagnostic explaining why the prior slot now traps.
-    pub message: String,
-}
-
-impl BrokenProvenance {
-    /// Construct provenance for a concrete-to-broken lifecycle transition.
-    pub fn new(broken_by: FQSymbol, message: String) -> Self {
-        Self { broken_by, message }
-    }
 }
 
 /// A slot that remains permanently unavailable after displacement.

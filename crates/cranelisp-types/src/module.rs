@@ -145,16 +145,6 @@ impl<C: CodeStore> CompiledPublicationRejection<C> {
     }
 }
 
-/// Result of moving a concrete callable into its retained-slot broken state.
-#[non_exhaustive]
-#[must_use = "the displaced compiled owner and retained slot must be handled"]
-pub struct BrokenTransition<C: CodeStore = ()> {
-    /// Slot retained by the broken callable.
-    pub slot: CallableSlot,
-    /// Runtime body owner displaced by the transition, when any.
-    pub displaced_owner: Option<C>,
-}
-
 // --- Symbol Table ---
 
 /// Per-module symbol table.
@@ -746,6 +736,52 @@ impl SymbolTable<(), ()> {
             transactions: TableTransactions::default(),
         }
     }
+
+    /// Remove the single callable `name` from a decoded, code-free table and
+    /// drop its slot claim without recording a tombstone, so a later mint may
+    /// reissue its index.
+    ///
+    /// Every lifecycle state of a [`Decl::Callable`] is accepted. Existing
+    /// [`RetiredSlot`] tombstones are kept. The receiver type admits no
+    /// compiled owner, so the release displaces no code in this table; it is
+    /// not offered on a live table, where tombstones protect published code.
+    ///
+    /// **Caller obligation:** release only an index that no code this process
+    /// may load embeds. Code compiled earlier against this module's GOT and
+    /// restored from a cache — another module's object, or this module's own
+    /// — must not relocate against the released index.
+    ///
+    /// # Errors
+    ///
+    /// - [`LifecycleError::MissingBinding`] when `name` has no binding.
+    /// - [`LifecycleError::NotCallable`] when the binding is not a
+    ///   [`Decl::Callable`].
+    /// - The [`SymbolTable::validate_lifecycle`] error when the table without
+    ///   `name` is invalid, for example because a local name candidate still
+    ///   targets it.
+    ///
+    /// Every refusal leaves the table unchanged.
+    pub fn release_callable(&mut self, name: &Symbol) -> Result<(), LifecycleError> {
+        let binding = self
+            .get(name.as_ref())
+            .ok_or_else(|| LifecycleError::MissingBinding {
+                symbol: name.clone(),
+            })?;
+        if binding.callable().is_none() {
+            return Err(LifecycleError::NotCallable {
+                symbol: name.clone(),
+            });
+        }
+        let binding = self
+            .remove_binding(name)
+            .expect("binding presence checked above");
+        if let Err(error) = self.validate_lifecycle() {
+            self.replace_binding(name.clone(), binding);
+            return Err(error);
+        }
+        self.note_symbol_mutation(name);
+        Ok(())
+    }
 }
 
 impl<C: CodeStore> SymbolTable<C, ()> {
@@ -1107,9 +1143,8 @@ impl std::error::Error for GotExhausted {}
 /// slot witnesses *scheme* concreteness for the whole slotted population —
 /// including `Realization::ExternShim` primitives and platform-effect entries
 /// whose bodies are Rust/DLL code that can never carry a view — and its
-/// lifetime is the published ABI epoch (rebind carry-forward; the trap-stub
-/// freeze retains the slot of an entry with NO body), while the view's
-/// lifetime is one definition. The slot's home is the kind variant beside the
+/// lifetime is the published ABI epoch (rebind carry-forward), while the
+/// view's lifetime is one definition. The slot's home is the kind variant beside the
 /// scheme; the view carries no slot.
 ///
 /// **Rejected relocation — a `symbol → slot` register owned by/beside
@@ -2363,9 +2398,9 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// exposure which reaches the canonical binding.
     ///
     /// This authoring-time operation accepts only an existing synthetic
-    /// [`Life::Concrete`] or [`Life::Broken`] entry with the same constructor or
-    /// accessor identity. Its provisional slot must still contain a null GOT row
-    /// and a concrete body must have no compiled owner. The replacement records
+    /// [`Life::Concrete`] entry with the same constructor or accessor
+    /// identity. Its provisional slot must still contain a null GOT row and
+    /// the body must have no compiled owner. The replacement records
     /// no retired-slot tombstone; live publication and ABI retirement remain the
     /// responsibility of [`SymbolTable::publish_staged`]. Every refusal leaves
     /// the table unchanged.
@@ -2497,11 +2532,11 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             });
         }
         let slot = match &callable.arm.life {
-            Life::Concrete { slot, .. } | Life::Broken { slot, .. } => *slot,
+            Life::Concrete { slot, .. } => *slot,
             _ => {
                 return Err(LifecycleError::WrongState {
                     symbol: name.clone(),
-                    expected: "unpublished synthesized Concrete or Broken",
+                    expected: "unpublished synthesized Concrete",
                 });
             }
         };
@@ -2993,22 +3028,6 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             visibility,
         )?;
         Ok(slot)
-    }
-
-    /// Move a concrete callable to its explicit broken state without losing
-    /// the slot claim.
-    pub fn mark_broken(
-        &mut self,
-        name: &Symbol,
-        error: crate::BrokenProvenance,
-    ) -> Result<BrokenTransition<C>, LifecycleError> {
-        let mut candidate = self.clone();
-        let _candidate_transition = apply_broken_transition(&mut candidate, name, error.clone())?;
-        candidate.validate_lifecycle()?;
-
-        let transition = apply_broken_transition(self, name, error)?;
-        self.note_symbol_mutation(name);
-        Ok(transition)
     }
 
     /// Remove a non-callable binding, refusing every callable lifecycle state.
@@ -3722,8 +3741,7 @@ fn validate_arm<C: CodeStore>(
     arm: &CallableArm<C>,
     seen: &mut HashSet<usize>,
 ) -> Result<(), LifecycleError> {
-    if matches!(arm.life, Life::Concrete { .. } | Life::Broken { .. })
-        && ConcreteType::from_type(&arm.scheme.ty).is_err()
+    if matches!(arm.life, Life::Concrete { .. }) && ConcreteType::from_type(&arm.scheme.ty).is_err()
     {
         return Err(LifecycleError::NonConcreteSlot {
             symbol: symbol.clone(),
@@ -3768,10 +3786,10 @@ fn validate_publication_binding<C: CodeStore>(
     name: &Symbol,
 ) -> Result<(), LifecycleError> {
     for arm in binding_callable_arm_refs(binding) {
-        if matches!(arm.life, Life::Declared { .. } | Life::Broken { .. }) {
+        if matches!(arm.life, Life::Declared { .. }) {
             return Err(LifecycleError::WrongState {
                 symbol: name.clone(),
-                expected: "a settled, non-broken staged callable",
+                expected: "a settled staged callable",
             });
         }
     }
@@ -4393,47 +4411,6 @@ fn take_compiled_owner_from_arm<C: CodeStore>(arm: &mut CallableArm<C>) -> Optio
     code.take()
 }
 
-fn apply_broken_transition<C: CodeStore, L: LinkerStore>(
-    table: &mut SymbolTable<C, L>,
-    name: &Symbol,
-    error: crate::BrokenProvenance,
-) -> Result<BrokenTransition<C>, LifecycleError> {
-    let Some(entry) = table.symbols.get_mut(name) else {
-        return Err(LifecycleError::MissingBinding {
-            symbol: name.clone(),
-        });
-    };
-    let Some(callable) = entry.callable_mut() else {
-        return Err(LifecycleError::NotCallable {
-            symbol: name.clone(),
-        });
-    };
-    let (slot, displaced_owner) = match &mut callable.arm.life {
-        Life::Concrete {
-            slot, realization, ..
-        } => {
-            let displaced_owner = match realization {
-                Realization::Body { code, .. } => code.take(),
-                Realization::ExternShim { .. }
-                | Realization::Dll
-                | Realization::FacadeOf { .. } => None,
-            };
-            (*slot, displaced_owner)
-        }
-        _ => {
-            return Err(LifecycleError::WrongState {
-                symbol: name.clone(),
-                expected: "Concrete",
-            });
-        }
-    };
-    callable.arm.life = Life::Broken { slot, error };
-    Ok(BrokenTransition {
-        slot,
-        displaced_owner,
-    })
-}
-
 fn set_publication_arm_slot<C: CodeStore>(
     arm: &mut CallableArm<C>,
     slot: CallableSlot,
@@ -4835,14 +4812,11 @@ fn validate_origin_state<C: CodeStore>(
             | (RustPrimitive, Life::Inline { .. } | Life::HostPromised)
             | (
                 Plain | TraitMethod { .. },
-                Life::Declared { .. }
-                    | Life::Template { .. }
-                    | Life::Concrete { .. }
-                    | Life::Broken { .. },
+                Life::Declared { .. } | Life::Template { .. } | Life::Concrete { .. },
             )
             | (
                 Ctor { .. } | Accessor { .. },
-                Life::Template { .. } | Life::Concrete { .. } | Life::Broken { .. },
+                Life::Template { .. } | Life::Concrete { .. },
             )
     );
     if !state_legal {

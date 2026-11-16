@@ -835,10 +835,8 @@ impl CompilerSession {
     /// uses); a bare argument keeps the current REPL module as its home.
     ///
     /// This is the single argument-shape authority shared across `/sig`,
-    /// `/info`, `/source`, `/sexp`, `/clif`, and `/refs` — the FQ names the
-    /// transaction/cascade reports print (`; broken: n/ng — …`) MUST be
-    /// pasteable into every introspection command (0487's operational
-    /// complaint).
+    /// `/info`, `/source`, `/sexp`, `/clif`, and `/refs` — an FQ name the REPL
+    /// prints MUST be pasteable into every introspection command (0487).
     pub(crate) fn resolve_symbol_arg(&self, name: &str) -> (ModuleFullPath, String) {
         match name.rsplit_once('/') {
             Some((module_part, bare)) => {

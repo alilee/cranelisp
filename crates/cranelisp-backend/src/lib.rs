@@ -161,10 +161,6 @@ pub mod heap;
 pub mod jit;
 pub mod primitives_inline;
 mod raise;
-/// N3 (S105, `design/backend/ownership-codegen.md` §13.2.2): the gated,
-/// backend-side per-site residual-atomic-RC dump (`[RC_SITE_STATS]`). Internal —
-/// no public surface (codegen-time measurement counter, zero-cost-off).
-mod rc_site_stats;
 
 // Platform-interface schema generator (platform-interface.md §5.5/§6.0; BC §3
 // "the platform-interface codegen role"). The single generator with multiple
@@ -242,7 +238,7 @@ pub(crate) fn callable_arm_slot<C: cranelisp_types::CodeStore>(
     arm: &cranelisp_types::CallableArm<C>,
 ) -> Option<usize> {
     match &arm.life {
-        Life::Concrete { slot, .. } | Life::Broken { slot, .. } => Some(slot.index()),
+        Life::Concrete { slot, .. } => Some(slot.index()),
         _ => None,
     }
 }
@@ -1468,176 +1464,6 @@ fn disasm_host(code_bytes: &[u8], addr: u64) -> Result<String, String> {
             );
         }
         Ok(out)
-    }
-}
-
-// =========================================================================
-// Free function — `compile_trap_stub` (S101 R3 machinery, backend §8.1/§8.3)
-// =========================================================================
-
-/// Compile a per-symbol **trap stub** — the R3 redefinition machinery's
-/// backend half (`design/backend/ownership-codegen.md` §8.1/§8.3; spine §5.5).
-///
-/// A BROKEN symbol's GOT slot is patched (by the session, via
-/// `got().store_slot`) to point at this stub, so every existing unrecompiled
-/// caller that dispatches through the slot raises a runtime panic with
-/// per-symbol provenance instead of executing stale code. The body is one
-/// raise of the baked message (`design/backend/backend.md` §7): `runtime/panic`
-/// reports it and ends the process, so the stub never returns.
-///
-/// **Signature `() -> i64`, sound for any caller arity** under the uniform
-/// all-I64 value representation on both supported ABIs (SysV x86-64 /
-/// AAPCS64): the stub never reads its argument registers (caller-owned
-/// scratch), and stack-passed args (arity > 8) are caller-cleaned in both
-/// conventions.
-///
-/// Returns `(code_ptr, Code)`: the code pointer is `*const u8` — exactly what
-/// `store_slot(slot, ptr)` consumes — and the `Code::Jit` handle is the
-/// retention root for the stub's JIT pages (per-symbol JIT cardinality, the
-/// Decision-41 norm; keep it alive for as long as the slot may be called).
-///
-/// # Message lifetime — the CALLER's obligation
-///
-/// `msg_ptr`/`msg_len` name a UTF-8, **no-NUL** provenance string
-/// (`"g is broken by the redefinition of f: <original error>"`) whose ADDRESS
-/// is baked into the stub as `iconst`s and read at every trap **invocation**,
-/// not at compile time. The string MUST live exactly as long as the returned
-/// `Code` retention handle — the session stores them paired
-/// (`design/int/session-transaction.md`; `/arch` S101 Phase-2 checklist (i)).
-/// The backend's obligation is only that the baked pointer is never read
-/// after the `Code` handle drops.
-pub fn compile_trap_stub(
-    msg_ptr: *const u8,
-    msg_len: usize,
-) -> Result<(*const u8, Code), CompilationError> {
-    let mut jit = jit::Jit::new_with_symbols(&[]).map_err(CompilationError::from)?;
-    let module = jit.jit_module();
-
-    // `runtime/panic` via the ordinary intrinsics declaration path (no
-    // bespoke symbol wiring — §8.1).
-    let intrinsic_ids = declare_intrinsics_generic(module).map_err(CompilationError::from)?;
-    let panic_id = intrinsic_ids
-        .panic
-        .unwrap_or_else(|| unreachable!("invariant: runtime/panic is in the intrinsics catalog"));
-
-    // Stub signature: () -> i64 (see the fn-level ABI note).
-    let mut sig = module.make_signature();
-    sig.returns.push(AbiParam::new(types::I64));
-
-    let func_id = module
-        .declare_function(
-            "__cranelisp_trap_stub__",
-            cranelift_module::Linkage::Local,
-            &sig,
-        )
-        .map_err(|e| {
-            CompilationError::from(CranelispError::CodegenError {
-                message: format!("failed to declare trap stub: {e}"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })
-        })?;
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = sig;
-    let mut func_ctx = FunctionBuilderContext::new();
-    {
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-        let entry = builder.create_block();
-        builder.append_block_params_for_function_params(entry);
-        builder.switch_to_block(entry);
-        builder.seal_block(entry);
-
-        raise::emit_raise(
-            &mut builder,
-            module,
-            panic_id,
-            raise::RaiseMessage::Baked {
-                ptr: msg_ptr,
-                len: msg_len,
-            },
-            Span::SYNTHETIC,
-        )
-        .map_err(CompilationError::from)?;
-        builder.seal_all_blocks();
-        builder.finalize();
-    }
-
-    module.define_function(func_id, &mut ctx).map_err(|e| {
-        CompilationError::from(CranelispError::CodegenError {
-            message: format!("failed to define trap stub: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })
-    })?;
-    module.finalize_definitions().map_err(|e| {
-        CompilationError::from(CranelispError::CodegenError {
-            message: format!("failed to finalize trap stub: {e}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })
-    })?;
-
-    let code_ptr = module.get_finalized_function(func_id);
-
-    // Post-finalize the Jit is effectively read-only; `Code`'s
-    // `unsafe impl Send + Sync` (code.rs module docs) carries the safety
-    // argument. Same allow as the int-side `Arc<Jit>` construction
-    // (`src/worker.rs` precedent).
-    #[allow(clippy::arc_with_non_send_sync)]
-    let jit_arc = std::sync::Arc::new(jit);
-
-    Ok((code_ptr, Code::jit(jit_arc)))
-}
-
-/// Unit tests for [`compile_trap_stub`] (backend §8.1/§8.3). A call to the
-/// stub ends the process, so each cell calls it in a child.
-#[cfg(test)]
-mod trap_stub_tests {
-    use super::compile_trap_stub;
-    use crate::test_child;
-
-    const MESSAGE: &str = "g is broken by the redefinition of f: type error";
-
-    // Child body: compile the stub over `MESSAGE` and call it through an
-    // imported signature of arity `ARITY` (0 or 3).
-    #[test]
-    fn child_calls_trap_stub() {
-        if !test_child::selected("child_calls_trap_stub") {
-            return;
-        }
-        let msg = String::from(MESSAGE);
-        let (ptr, _code) = compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
-        assert!(
-            !ptr.is_null(),
-            "trap stub must finalize to a non-null code ptr"
-        );
-        if test_child::arg::<usize>("ARITY") == 0 {
-            let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-            stub();
-        } else {
-            let stub3: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-            stub3(1, 2, 3);
-        }
-        println!("{}", test_child::RESUMED);
-    }
-
-    fn call_in_child(arity: usize) -> test_child::Ending {
-        let path = test_child::child_path(module_path!(), "child_calls_trap_stub");
-        test_child::run(&path, &[("ARITY", arity.to_string())])
-    }
-
-    // spec: design/backend/ownership-codegen.md §8.1 — the stub raises the baked
-    // provenance message through `runtime/panic`, which ends the process; the
-    // stub never returns to its caller.
-    #[test]
-    fn trap_stub_raises_provenance_message_and_ends_the_process() {
-        call_in_child(0).assert_panicked_with(MESSAGE, "trap stub at arity 0");
-    }
-
-    // spec: design/backend/ownership-codegen.md §8.1 — the `() -> i64` stub is
-    // signature-safe for any caller arity under the uniform all-I64 convention:
-    // a caller that imported an N-arg signature raises the same message.
-    #[test]
-    fn trap_stub_is_callable_at_nonzero_arity() {
-        call_in_child(3).assert_panicked_with(MESSAGE, "trap stub at arity 3");
     }
 }
 

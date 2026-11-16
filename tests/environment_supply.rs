@@ -48,7 +48,8 @@ fn probe(c: Cranelisp) -> CrOutput {
         .output().assert_ok()
 }
 
-// spec: CLAUDE.md §Assurance; repl/spec/00-cli-invocation.md §0.8 — E-0 declaration.
+// spec: CLAUDE.md §Assurance — E-0 declaration.
+// spec: repl/spec/00-cli-invocation.md §0.8 — E-0 declaration.
 #[test]
 fn suite_declares_file_isolation_and_empty_provider() {
     assert_eq!(

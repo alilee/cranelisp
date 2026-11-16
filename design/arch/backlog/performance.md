@@ -328,11 +328,17 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
 #### 0507 — T1 trigger route + 0491 exclusion — design-argument holes (nine items)
 - **Origin** — FIXME 0507 · filed_by `/sprint` · target `/design` (src/) · sprint 102 (+ Wave-5 and
   Wave-5-review addenda, same drain).
-- **`refers_to`** — `design/int/session-transaction.md` §9.1.1; `design/int/s102-defect-wave.md`
+- **`refers_to`** — `design/int/session-transaction.md`'s former downgrade (`stale:`) section,
+  removed in S123 W4 with that report ([§9.1](../../int/session-transaction.md#91-what-the-user-sees)
+  now states that no cascade, `stale:` or downgrade report exists); `design/int/s102-defect-wave.md`
   §1/§7.1; and the REPL specification's former stale-caller negative requirement (then numbered 18.1.1).
   That specification has since been rewritten
   as [callable redefinition](../../../repl/spec/18-redefinition.md#181-callable-redefinition-uncovered-s121);
   re-verify every item against it before acting.
+- **Current state (`src/` read 2026-11-16, S123 W4 tree)** — `is_t1_downgrade`,
+  `apply_redefinition_outcomes`, the cascade report and `is_repair_definition_turn` no longer exist,
+  so issues 1, 3, 4 and 6 address deleted machinery. `ReverseIndex` and `is_gate_exempt_internal`
+  remain.
 - **Pinned analysis** — nine design-argument holes surfaced by the Wave-4/Wave-5 reviews (the fixes
   conform to their designs; the holes are in the *arguments*). **Issue 1 (F2 — T1 over-fires for
   slotted→slotted late-binding targets):** `is_t1_downgrade()` (`prior_was_def && !per_symbol &&
@@ -355,7 +361,7 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
   reverse edges — but the S103 module-grain cure should note the T1 route cannot fire for macro targets
   today). **Wave-5 addenda:** (4) startup-load exception pin — `recover_startup_failure` (CS-0489)
   drains `pending_cascade_reports`; a load is not a user redefinition turn so `stale:`/cascade sections
-  are suppressed (record in `session-transaction.md` §9.1.1). (5) `design/int/s102-defect-wave.md` §5.2 correction — "today `error_modules` gates nothing" is wrong; the [file-watching error-blocking gate](../../../repl/spec/14-file-watching.md#144-error-blocking-tested-testsrepl_watchwatch_errors_block_evaluation_no_last_known_good) WAS wired in
+  are suppressed (to be recorded in the downgrade section, since removed). (5) `design/int/s102-defect-wave.md` §5.2 correction — "today `error_modules` gates nothing" is wrong; the [file-watching error-blocking gate](../../../repl/spec/14-file-watching.md#144-error-blocking-tested-testsrepl_watchwatch_errors_block_evaluation_no_last_known_good) WAS wired in
   `process_commands`, the actual Wave-5 change was the [startup load failure, section 15.2.3](../../../repl/spec/15-session-persistence.md) definition carve-out
   (`is_repair_definition_turn`, watcher-path included). **Wave-5 review addenda:** (6) I-1 repair
   carve-out taxonomy — `is_repair_definition_turn` allowlists only special-form heads so macro-mediated
@@ -404,6 +410,14 @@ Re-entry trigger: measured GOT slab growth from redefinition churn.
   their slot); a pathological session wastes a few KB, recovered on any genuine recompile. The
   reclamation invariant would be a new correctness obligation on the redefinition subsystem — the
   hottest new machinery in the memory-model design — for negligible return.
+- **Current state (source read 2026-11-16)** — the pinned allocator facts are superseded. No
+  `next_got_slot` cursor exists: allocation takes the first index absent from live claims and
+  tombstones (`SymbolTable::allocate_got_slot_with_claims`), and each module GOT has a fixed 1,024
+  slots (`GOT_TABLE_SIZE`). A persisted tombstone therefore costs a slot of a bounded table, not slab
+  bytes: while an entry's cache stays valid, each persisted ABI-changing redefinition removes one
+  slot of capacity until a cache miss rebuilds the table. The entry preload's own retirements are
+  a separate cause, with a fix proposed as [packet row P15](../../../sprints/s123-api-packet.md#a6-phase-5-deltas-from-w3-and-w4) (awaiting
+  the user); this item keeps the persisted ABI-changing tombstones.
 - **Re-entry trigger** — measured GOT slab growth from redefinition churn actually mattering
   (long-lived dev sessions with thousands of ABI-changing redefinitions, or a future
   GOT-size-sensitive deployment mode). If actioned: load-time free-list reconstruction in the session

@@ -1561,36 +1561,29 @@ where
         Ok(self.builder.inst_results(call)[0])
     }
 
-    /// Poll-construction arm (FIXME 0457 / S94 R1) — build an `IO_TAG_EFFECT_POLL`
-    /// node over a host-built state-closure for a poll-shape platform effect,
-    /// instead of CALLING the effect fn (the blocking arm's behaviour). The
-    /// poll-fn is LOADed from the platform GOT (`emit_got_slot_load`, the shared
-    /// load prefix — Principle 7) and baked as the state-closure `code_ptr`; the
-    /// effect's i64 args are marshaled as the closure's env captures; the
+    /// Poll-construction arm — build an `IO_TAG_EFFECT_POLL` node over a
+    /// host-built state-closure for a poll-shape platform effect, instead of
+    /// CALLING the effect fn (the blocking arm's behaviour). The poll-fn is
+    /// LOADed from the platform GOT (`emit_got_slot_load`, the shared load
+    /// prefix — Principle 7) and baked as the state-closure `code_ptr`; the
     /// trampoline supplies `HostCtx`/`Waker` and calls the poll-fn later
     /// (`design/backend/io-trampoline.md §12`, `design/intrinsics/reactor.md §2.5`).
     ///
-    /// Operand convention (`io-trampoline.md §14.2` / SPRINT.md S96 Phase-3):
-    ///   `arg_vals = [ token, capacity, resource_handle(=leaf_0), leaf_1, ... ]`.
-    /// The backend peels the leading `(token, capacity)` pair and bakes the live
-    /// values into the node carrier (fields 1/2); the leaf args (`arg_vals[2..]`)
-    /// marshal into the state-closure env.
+    /// Operands: `arg_vals` are the leaf's natural args and nothing else
+    /// (`io-trampoline.md §17.3`); the poll-fn acquires its own scheduling token.
     ///
     /// State-closure (standard `HeapClosure`) env layout:
     ///   `capture(0)` = result slot (sentinel `0`, the poll-fn writes its result),
-    ///   `capture(1+i)` = leaf arg `i` (`arg_vals[2+i]`). The trampoline passes the
-    ///   env base (`closure + 32`) as `state`, so the poll-fn sees result at
-    ///   `state+0`, the re-passed resource handle (`leaf_0`) at `state+8`. The node
-    ///   holds tag + the state-closure pointer (field 0) + the LIVE `(token,
-    ///   capacity)` carrier (fields 1 and 2 — S96 item 3, `io-trampoline.md §14`;
-    ///   replaces the S95 `0`/`1` sentinels at the same abs 32 / 40 offsets).
+    ///   `capture(1+i)` = `arg_vals[i]`. The trampoline passes the env base
+    ///   (`closure + 32`) as `state`, so the poll-fn sees its result at `state+0`
+    ///   and its first arg (the resource handle) at `state+8`. The node holds the
+    ///   tag, the state-closure pointer (field 0) and two inert scalar fields
+    ///   (`0`, `1`) nothing reads (`io-trampoline.md §17.2`).
     ///
-    /// RC: leaf args reach here as owned values, so storing
-    /// them into the env is an ownership transfer (no inc — like `ParBind`/`Bind`
-    /// constructor convention); the state-closure drop glue
-    /// (`build_poll_state_drop_glue`) dec's the heap-typed arg slots when the node is
-    /// consumed (`consume_io_tree`). The baked `(token, capacity)` are `NeverHeap`
-    /// scalars (no inc, no dec — §14.6).
+    /// RC: the args reach here as owned values, so storing them into the env is
+    /// an ownership transfer (no inc); the state-closure drop glue
+    /// (`build_poll_state_drop_glue`) releases the heap-typed arg slots when the
+    /// node is consumed (`consume_io_tree`). The inert fields are scalars (§14.6).
     fn compile_poll_effect(
         &mut self,
         module_path: &cranelisp_types::ModuleFullPath,
@@ -1627,10 +1620,7 @@ where
             })?;
         let poll_fn = self.emit_got_slot_load(data_id, slot);
 
-        // 2. Build the state-closure: env = result-slot + leaf arg captures (the
-        //    leading `(token, capacity)` pair is NOT marshaled into the env — capacity
-        //    is node-only; the resource handle reaches the env as the re-passed
-        //    `leaf_0`).
+        // 2. Build the state-closure: env = result slot + one capture per arg.
         let leaf_count = leaf_args.len();
         let env_slots = 1 + leaf_count;
         let closure_size = HeapClosure::payload_size(env_slots) as i64;
@@ -1646,19 +1636,10 @@ where
 
         // drop_glue_ptr = capture-dec glue (null when no arg is heap-typed).
         //
-        // The glue is keyed on the **leaf** param types — those aligned with the
-        // env captures (`leaf_args` = `arg_vals[2..]`), NOT the full effect scheme.
-        // A `ResourceSerial` leaf's scheme carries `(token, capacity)` as its first
-        // two params (the S95 `pool-demo` convention, e.g. `poll-log : (Fn [Int Int
-        // Int String] …)`), but those two operands are PEELED to the node fields
-        // and are NOT marshaled into the env — so keying the glue on the full scheme
-        // would mis-offset the dec walk (dec'ing a heap field at a capture slot that
-        // does not exist → corruption). The leaf params are the TRAILING
-        // `leaf_args.len()` entries of the scheme: for a `Commutative` leaf the
-        // `(0,1)` pair is SYNTHESIZED by the producer injection (absent from the
-        // scheme), so the trailing slice is the whole scheme; for a `ResourceSerial`
-        // leaf it drops the two leading `(token, capacity)` params. One uniform
-        // alignment rule, no `scheduling_class` branch here.
+        // The glue is keyed on the param types aligned with the env captures:
+        // the trailing `leaf_count` entries of the scheme. A glue keyed on a
+        // longer scheme would mis-offset the release walk (releasing a slot that
+        // does not exist).
         let leaf_param_types = &param_types[param_types.len().saturating_sub(leaf_count)..];
         let drop_glue = self.build_poll_state_drop_glue(leaf_param_types, span)?;
         let drop_glue_val = if let Some(glue_id) = drop_glue {
@@ -1684,10 +1665,8 @@ where
             HeapClosure::capture_offset(0),
         );
 
-        // env(1+i) = leaf arg i (ownership transfer, no inc — consuming conv).
-        // leaf_args = arg_vals[2..]; leaf_0 (the re-passed resource handle) lands at
-        // capture(1) = state+8 (the poll-fn's fd). The leading-pair peel does not
-        // shift any arg the poll-fn relies on — env layout is unchanged from S94/S95.
+        // env(1+i) = arg i (ownership transfer, no inc); arg 0, the resource
+        // handle, lands at capture(1) = state+8.
         for (i, &arg) in leaf_args.iter().enumerate() {
             heap::heap_store(
                 &mut self.builder,

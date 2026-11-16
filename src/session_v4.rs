@@ -328,16 +328,13 @@ pub struct SharedState {
     /// `introspection.is_some()` proxy.
     pub run_mode: RunMode,
 
-    /// Session-lifetime retention pool for superseded code + trap stubs
-    /// (S101, `design/int/session-transaction.md` §6). Append-only, never
-    /// drained (the `kept_dlls` precedent): an ABI-changing redefinition
-    /// pushes the prior entry's `Code` here BEFORE the commit replaces the
-    /// entry (frozen-slot supersession — stale closures and in-flight frames
-    /// keep executing the old pages through the frozen slot), and a BROKEN
-    /// symbol's trap stub rides one entry PAIRED with the provenance buffer
-    /// its baked address points into (Principle 18 — the buffer must live
-    /// exactly as long as the stub). Bounded by the count of ABI-changing
-    /// redefinitions + breaks in one session; restart reclaims everything.
+    /// Session-lifetime retention pool for superseded code
+    /// (`design/int/session-transaction.md` §6). Append-only, never drained
+    /// (the `kept_dlls` precedent): a publication pushes each displaced
+    /// compiled owner here (frozen-slot supersession — stale closures and
+    /// in-flight frames keep executing the old pages through the frozen slot).
+    /// Bounded by the count of displacing redefinitions in one session;
+    /// restart reclaims everything.
     /// This pool is also the cure for the former `*code = None` latent
     /// page-free hazard on the Replace/reload paths (design §6.3).
     pub(crate) retained_code: crate::redefine::RetentionPool,
@@ -498,14 +495,6 @@ pub struct CompilerSession {
     /// `repl.rs` methods (module-scoped field privacy).
     pub(crate) entry_module: ModuleFullPath,
 
-    /// Rendered cascade-report sections pending display for the current turn
-    /// (S101, `repl/spec.md` §18.3). `apply_redefinition_outcomes` pushes one
-    /// rendered `; recompiled:`/`; broken:` block per ABI-changing
-    /// redefinition after its transaction completes; the REPL printer drains
-    /// via `take_cascade_report` and appends after the §1.3 confirmation.
-    /// Initiator-only state (eval thread).
-    pub(crate) pending_cascade_reports: Vec<String>,
-
     /// The embedded agent's state (Sprint 88 Phase 5 Wave 3 — Advisor MVP core).
     /// `#[cfg(feature="agent")]`-gated so feature-off the field does NOT exist
     /// and the binary is byte-identical to today (`design/int/agent.md §3.4`).
@@ -563,7 +552,7 @@ mod persistent_worker_tests;
 mod bare_primitive_value_path_tests;
 
 // S101 Wave 5 (FIXME 0480) — `/info` definition-source component
-// (`handle_info` healthy + broken arms, repl/spec.md §3.6 / §18.4).
+// (`handle_info`, repl/spec.md §3.6).
 #[cfg(test)]
 mod info_source_tests;
 

@@ -8,8 +8,8 @@
 // (`arg_vals[0..]`), marshaled into the state-closure env at `capture(1+i)`, and the
 // node's two former admission slots carry INERT zero/sentinel `iconst`s (nothing the
 // trampoline reads). These units pin the v9 node SHAPE + the bake-DELETION at the
-// CLIF layer (the `/dev`-owed "no positional bake" absence guard, `io-trampoline.md
-// §17.8`), independent of the reactor/loader.
+// CLIF layer (the "no positional bake" absence guard, `io-trampoline.md
+// §17.3`), independent of the reactor/loader.
 //
 // Harness: compile a zero-arg `defn` whose body is `(async-read <arg>)`, where
 // `async-read` is a synthetic `DefKind::PlatformEffect` with a chosen `poll_shape`.
@@ -220,7 +220,7 @@ fn poll_shape_true_builds_io_tag_effect_poll_with_closure_env() {
     );
 }
 
-// spec: design/backend/io-trampoline.md §17.2/§17.8 (the v9 "no positional bake"
+// spec: design/backend/io-trampoline.md §17.2/§17.3 (the v9 "no positional bake"
 // ABSENCE guard) — under the ctx-vtable model the poll node carries NO scheduling
 // state baked from positional args. With a DISTINCTIVE leaf arg (777) the node's two
 // admission slots @ +32/+40 must carry the INERT zero/sentinel `iconst`s (0/1), NOT

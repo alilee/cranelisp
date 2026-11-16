@@ -37,8 +37,9 @@
   header count, never as extern calls.
 - The last-reference path fences before it reads fields for release, then runs
   the value's release and deallocates.
-- The confined non-atomic arm has no consumer since S123 W2
-  (`ownership-codegen.md` §5.1), so every emitted RC operation is atomic. The
+- Every emitted RC operation is atomic. Confined non-atomic counting is
+  retired from the dev tier; only the unsound measurement probe selects the
+  non-atomic arm (`ownership-codegen.md` §5.1). The
   ordering policy itself is intrinsics'
   ([intrinsics context](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics),
   invariant 3).

@@ -34,11 +34,11 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
-use cranelisp_types::{CodegenBehaviour, CranelispError};
+use cranelisp_types::{CodegenBehaviour, CranelispError, ModuleFullPath};
 
 use cranelisp::observability;
 use cranelisp::session_v4::{CommandResult, CompilerSession, RunMode, SessionSettings};
-use cranelisp::{got_trace, io_trace};
+use cranelisp::{got_trace, io_trace, project_root_candidate};
 
 // Sprint 106 (FIXMEs 0544 + 0551): the REPL input abstraction — TTY (rustyline
 // line editor + per-project history) vs non-TTY (raw fd-0 line reads, byte-
@@ -232,12 +232,18 @@ fn main() {
     cranelisp::style::init_color(spec.settings.no_color);
 
     // Captured before `run` consumes `spec` — the error path names the entry file.
-    let entry_file = spec.project_root.join(format!("{}.cl", spec.entry_module));
+    let entry_file = entry_file(&spec.project_root, &spec.entry_module);
 
     if let Err(e) = run(spec) {
         eprintln!("{}", format_error(&e, &entry_file));
         process::exit(1);
     }
+}
+
+/// The entry module's file under the project root, by the resolver's module
+/// mapping: the error formatter's fallback location.
+fn entry_file(project_root: &Path, entry_module: &str) -> PathBuf {
+    project_root_candidate(&ModuleFullPath::from(entry_module), project_root)
 }
 
 /// Format a `CranelispError` with a `file:line:col` prefix derived from the
@@ -523,11 +529,7 @@ fn run_repl(
             // somehow parses, surface any result for symmetry with the
             // in-loop path.
             Ok(Some(mut result)) => {
-                let mut text = s.format_eval_result(&result);
-                if let Some(report) = s.take_cascade_report() {
-                    text.push('\n');
-                    text.push_str(&report);
-                }
+                let text = s.format_eval_result(&result);
                 // The turn's display is complete — release the owning result
                 // exactly once (`design/int/result-owner.md` §4.2).
                 result.release_program_result();
@@ -805,7 +807,7 @@ fn try_agent_dispatch(
 }
 
 /// Evaluate a `CommandResult::Compile` source form and render the outcome:
-/// value + cascade report on `Ok(Some)`, backing-file regen on `Ok(None)`, the
+/// value on `Ok(Some)`, backing-file regen on `Ok(None)`, the
 /// error line on `Err`; update the prompt's `compile_ms`/`eval_ms` timings and
 /// (agent build) record the turn on the recent-turn ring.
 fn handle_compile_result(
@@ -825,15 +827,9 @@ fn handle_compile_result(
     match s.eval(src) {
         Ok(Some(mut result)) => {
             let t1 = Instant::now();
-            let mut text = s.format_eval_result(&result);
-            // S101 (repl/spec.md §18.3): the cascade
-            // report renders after the §1.3 confirmation.
-            if let Some(report) = s.take_cascade_report() {
-                text.push('\n');
-                text.push_str(&report);
-            }
-            // The turn's value feedback is complete (the §1.3 confirmation
-            // plus any §18.3 cascade report). Release the owning result
+            let text = s.format_eval_result(&result);
+            // The turn's value feedback is complete (the §1.3 confirmation).
+            // Release the owning result
             // exactly once, before control returns to the prompt
             // (`design/int/result-owner.md` §4.2). Inert for scalar results
             // and for definition turns.
@@ -1231,7 +1227,9 @@ fn resolve_target_from(target: Option<&str>, cwd: &Path) -> (PathBuf, String, bo
             .to_string();
         let project_root = make_absolute(dir, cwd);
         (project_root, module, false)
-    } else if cwd.join(target).is_dir() && !cwd.join(format!("{target}.cl")).is_file() {
+    } else if cwd.join(target).is_dir()
+        && !project_root_candidate(&ModuleFullPath::from(target), cwd).is_file()
+    {
         // Rule 3: existing directory with no same-named entry file. This is the
         // §0.5.7 scaffold trigger (`is_rule3 = true`).
         let project_root = make_absolute(Path::new(target), cwd);
@@ -1286,6 +1284,48 @@ mod tests {
                 "target {target:?}: an entry-`.cl` launch is NOT a rule-3 scaffold trigger"
             );
         }
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5, §0.5.6; spec/08-modules.md
+    // §8.1 — a dotted entry's file is `core/str.cl`, so an existing
+    // `core/str.cl` keeps a same-named `core.str/` directory from reading as a
+    // Rule 3 project; `core.str.cl` is not the entry's file.
+    #[test]
+    fn dotted_entry_file_follows_the_module_mapping_in_the_rule_3_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        std::fs::create_dir(cwd.join("core.str")).unwrap();
+        std::fs::create_dir(cwd.join("core")).unwrap();
+        std::fs::write(cwd.join("core/str.cl"), "(defn main [] 0)").unwrap();
+        assert_eq!(
+            resolve_target_from(Some("core.str"), cwd),
+            (cwd.to_path_buf(), "core.str".to_string(), false),
+            "the mapped entry file wins over the directory"
+        );
+
+        std::fs::remove_file(cwd.join("core/str.cl")).unwrap();
+        std::fs::write(cwd.join("core.str.cl"), "(defn main [] 0)").unwrap();
+        assert_eq!(
+            resolve_target_from(Some("core.str"), cwd),
+            (cwd.join("core.str"), "user".to_string(), true),
+            "control: a literal `core.str.cl` is not the entry's file"
+        );
+    }
+
+    // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling; spec/08-modules.md
+    // §8.1 — an error with no file of its own is located in the dotted entry's
+    // mapped file.
+    #[test]
+    fn an_unfiled_error_is_located_in_the_mapped_entry_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = entry_file(tmp.path(), "core.str");
+        assert_eq!(file, tmp.path().join("core").join("str.cl"));
+        let error = CranelispError::TypeError {
+            message: "unfiled".to_string(),
+            location: cranelisp_types::ErrorLocation::unknown(),
+        };
+        let line = format_error(&error, &file);
+        assert!(line.starts_with(&format!("{}:", file.display())), "{line}");
     }
 
     /// Rule 3 still fires for a genuine directory target with no same-named

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use cranelisp_types::{
-    Binding, BrokenProvenance, CallableArmDraft, CallableOrigin, CallableTarget, ConcreteType,
-    ConstrainedMeta, Decl, DefnVariant, Expr, FQSymbol, FQTypeName, InstanceLink, Life,
-    MacroClauseDraft, ModeSummary, MonoDefnVariant, MonoExpr, Realization, Scheme, Sexp, Span,
-    SpecialFormRecord, StagedPublicationDecision, Symbol, SymbolTable, SymbolTables, SynthSpec,
-    TemplateBody, TemplateKind, TraitDeclInfo, TraitMethodRecord, TraitName, TraitRecord, Type,
-    TypeName, Visibility, WrittenTraitImpl, member_key,
+    Binding, CallableArmDraft, CallableOrigin, CallableTarget, ConcreteType, ConstrainedMeta, Decl,
+    DefnVariant, Expr, FQSymbol, FQTypeName, InstanceLink, Life, MacroClauseDraft, ModeSummary,
+    MonoDefnVariant, MonoExpr, Realization, Scheme, Sexp, Span, SpecialFormRecord,
+    StagedPublicationDecision, Symbol, SymbolTable, SymbolTables, SynthSpec, TemplateBody,
+    TemplateKind, TraitDeclInfo, TraitMethodRecord, TraitName, TraitRecord, Type, TypeName,
+    Visibility, WrittenTraitImpl, member_key,
 };
 
 fn scheme(ty: Type) -> Scheme {
@@ -94,14 +94,6 @@ fn external_consumer_can_author_lifecycle_records_and_instance_funnel() {
     );
     let synth = SynthSpec::new(ast());
     let constrained = ConstrainedMeta::new(HashMap::new());
-    let broken = BrokenProvenance::new(
-        FQSymbol {
-            module: "consumer".into(),
-            symbol: Symbol::from("ordinary"),
-        },
-        "compile failed".into(),
-    );
-
     let mut table = SymbolTable::new("consumer".into());
     for (name, decl) in [
         ("trait", Decl::Trait(trait_record)),
@@ -239,7 +231,7 @@ fn external_consumer_can_author_lifecycle_records_and_instance_funnel() {
         )
         .unwrap();
 
-    let slot = table
+    table
         .install_concrete(
             Symbol::from("ordinary"),
             concrete.clone(),
@@ -253,15 +245,6 @@ fn external_consumer_can_author_lifecycle_records_and_instance_funnel() {
             Visibility::Private,
         )
         .unwrap();
-    let broken_transition = table
-        .mark_broken(&Symbol::from("ordinary"), broken.clone())
-        .unwrap();
-    assert_eq!(broken_transition.slot, slot);
-    assert!(broken_transition.displaced_owner.is_none());
-    assert!(matches!(
-        &table.get("ordinary").unwrap().callable().unwrap().arm.life,
-        Life::Broken { error, .. } if error == &broken
-    ));
 
     let link = InstanceLink::from_type_args(
         CallableTarget::Binding(FQSymbol {
@@ -412,20 +395,6 @@ fn external_consumer_can_publish_and_retain_owner_transitions() {
         Ok(None) => {}
         Ok(Some(())) | Err(_) => panic!("fresh owner publication must displace nothing"),
     }
-    let transition = live
-        .mark_broken(
-            &Symbol::from("f"),
-            BrokenProvenance::new(
-                FQSymbol {
-                    module: "consumer".into(),
-                    symbol: Symbol::from("cause"),
-                },
-                "failed".into(),
-            ),
-        )
-        .unwrap();
-    assert_eq!(transition.slot, first_slot);
-    assert_eq!(transition.displaced_owner, Some(()));
 }
 
 #[test]

@@ -334,3 +334,112 @@ fn repl_unreadable_entry_first_readable_save_releases_lock() {
         ill_typed.stdout
     );
 }
+
+fn w4_mapped_entry(target: &str, mode: &str) -> CrOutput {
+    let source = "(import [primitives [*]])\n(defn main [] (Pure 37))\n\
+                  (defn test-mapped [] (if true None (Some \"unreachable\")))\n";
+    let builder = Cranelisp::new()
+        .file("core/str.cl", source)
+        // A literal-dot resolver reaches a semantic error instead of this module.
+        .file(
+            "core.str.cl",
+            "(defn wrong [] (literal-dot-should-not-load))\n",
+        );
+    match mode {
+        "run" => builder.run(target).output(),
+        "test" => builder.test(target).output(),
+        "link" => builder.link(target).output(),
+        "repl" => builder.repl().cli_flag(target).stdin("(main)\n").output(),
+        _ => unreachable!(),
+    }
+}
+
+fn assert_w4_mapped_entry(target: &str, mode: &str) {
+    let out = w4_mapped_entry(target, mode);
+    match mode {
+        "run" => {
+            out.assert_exit(37);
+        }
+        "test" => {
+            out.assert_ok()
+                .assert_stdout_contains("/test-mapped")
+                .assert_stdout_contains("1 passed");
+        }
+        "link" => {
+            out.assert_ok();
+        }
+        "repl" => {
+            out.assert_ok().assert_stdout_contains(":primitives/Int 37");
+        }
+        _ => unreachable!(),
+    }
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 dotted --run target loads core/str.cl; path twin controls resolution.
+#[test]
+fn w4_dotted_entry_run() {
+    assert_w4_mapped_entry("core.str", "run");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 path control for --run.
+#[test]
+fn w4_path_entry_run_control() {
+    assert_w4_mapped_entry("core/str", "run");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 dotted --test target discovers the mapped module's test.
+#[test]
+fn w4_dotted_entry_test() {
+    assert_w4_mapped_entry("core.str", "test");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 path control for --test.
+#[test]
+fn w4_path_entry_test_control() {
+    assert_w4_mapped_entry("core/str", "test");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 dotted --link target compiles core/str.cl.
+#[test]
+fn w4_dotted_entry_link() {
+    assert_w4_mapped_entry("core.str", "link");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 path control for --link.
+#[test]
+fn w4_path_entry_link_control() {
+    assert_w4_mapped_entry("core/str", "link");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 dotted REPL target loads core/str.cl.
+#[test]
+fn w4_dotted_entry_repl() {
+    assert_w4_mapped_entry("core.str", "repl");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 path control for the REPL.
+#[test]
+fn w4_path_entry_repl_control() {
+    assert_w4_mapped_entry("core/str", "repl");
+}
+
+fn assert_w4_empty_entry(target: &str) {
+    let out = Cranelisp::new()
+        .repl()
+        .cli_flag(target)
+        .stdin("(defn answer [] 41)\n(answer)\n")
+        .output();
+    let file = fs::read_to_string(out.tmpdir.join("core/str.cl")).unwrap_or_default();
+    assert!(
+        file.contains("(defn answer [] 41)") && !out.tmp_exists("core.str.cl"),
+        "empty mapped entry must persist at core/str.cl\nfile: {file:?}\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_ok().assert_stdout_contains(":primitives/Int 41");
+}
+
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 an absent dotted REPL entry regenerates at core/str.cl.
+// defect: class=mode-divergence locus=src/session_v4/lifecycle.rs::register_entry_module found=S123 owner=/dev — ACT-1020; control: w4_path_empty_entry_persists_control.
+#[test]
+fn w4_dotted_empty_entry_persists_at_mapped_path() {
+    assert_w4_empty_entry("core.str");
+}
+// spec: repl/spec/00-cli-invocation.md §0.5.6 — R-3 empty path target control.
+#[test]
+fn w4_path_empty_entry_persists_control() {
+    assert_w4_empty_entry("core/str");
+}

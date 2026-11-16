@@ -72,30 +72,28 @@ fn s99_emit_rc_inc_default_is_atomic_rmw_no_stat() {
 }
 
 // ===========================================================================
-// B3.3 — per-site non-atomic RC for Confined cells
-// (`design/backend/ownership-codegen.md` §5; §13.5 rc_emission/heap.rs matrix).
-//
-// Seam-level scenario matrix: {emit_rc_inc, emit_rc_inc_guarded, emit_rc_dec,
-// emit_rc_dec_guarded, emit_vec_rc_dec_with_drop} × RcAtomicity → {non-atomic
-// arm, atomic arm verbatim}. The negative (else-arm) class asserts the
-// `Atomic` arm is CLIF-text-identical to the plain (pre-B3.3) helper — the
-// §2.2 byte-identity discipline, which under `confined = Some(false) | None`
-// (analysis off) is exactly what every call site emits.
+// The `CRANELISP_NONATOMIC_RC` probe (`design/backend/ownership-codegen.md`
+// §5.1): every inline RC helper asks `use_nonatomic_arm`, whose only input is
+// the probe. The probe is read once per process, so each leg runs the five
+// helpers in a child process started with exactly the environment it names.
+// The two legs discriminate each other: a probe that is ignored fails the
+// probe leg, and a non-atomic default fails the default leg.
 // ===========================================================================
 #[cfg(test)]
-mod rc_atomicity_b33_tests {
+mod rc_probe_tests {
     use crate::heap::{
-        self, RcAtomicity, emit_rc_dec, emit_rc_dec_guarded, emit_rc_dec_guarded_atomicity,
-        emit_rc_inc, emit_rc_inc_atomicity, emit_rc_inc_guarded, emit_rc_inc_guarded_atomicity,
-        rc_emit_counts,
+        emit_rc_dec, emit_rc_dec_guarded, emit_rc_inc, emit_rc_inc_guarded, rc_emit_counts,
     };
     use crate::jit::Jit;
+    use crate::test_child;
     use cranelift::prelude::*;
-    use cranelift_module::Module;
+    use cranelift_module::{FuncId, Linkage, Module};
+
+    const CHILD: &str = "child_emits_rc_helpers";
+    const PASSED: &str = "RC_PROBE_CHILD_PASSED";
 
     /// Build a one-arg function, run `emit` (given builder + module + the arg
-    /// pointer), and return the CLIF text. The blessed harness mirror of
-    /// `s99_emit_rc_inc_default_is_atomic_rmw_no_stat`.
+    /// pointer), and return the CLIF text.
     fn clif_of(
         emit: impl FnOnce(&mut FunctionBuilder, &mut cranelift_jit::JITModule, Value),
     ) -> String {
@@ -118,128 +116,151 @@ mod rc_atomicity_b33_tests {
         ctx.func.display().to_string()
     }
 
-    /// The non-atomic RC arm is a plain read-modify-write: it must contain the
-    /// three-instruction `load` / `iadd`|`isub` / `store` sequence and NO
-    /// `atomic_rmw` on the count. (The dec free path keeps its `fence`, but
-    /// that is not `atomic_rmw`.)
-    fn asserts_nonatomic(clif: &str, is_dec: bool) {
+    fn import(module: &mut cranelift_jit::JITModule, name: &str, params: usize) -> FuncId {
+        let mut sig = module.make_signature();
+        for _ in 0..params {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        module
+            .declare_function(name, Linkage::Import, &sig)
+            .expect("declare import")
+    }
+
+    /// `(helper, is_dec, CLIF)` for each inline RC helper.
+    fn emissions() -> Vec<(&'static str, bool, String)> {
+        vec![
+            ("emit_rc_inc", false, clif_of(emit_rc_inc)),
+            ("emit_rc_inc_guarded", false, clif_of(emit_rc_inc_guarded)),
+            (
+                "emit_rc_dec",
+                true,
+                clif_of(|b, m, p| {
+                    let d = import(m, "runtime/dealloc", 1);
+                    emit_rc_dec(b, m, p, d, None);
+                }),
+            ),
+            (
+                "emit_rc_dec_guarded",
+                true,
+                clif_of(|b, m, p| {
+                    let d = import(m, "runtime/dealloc", 1);
+                    emit_rc_dec_guarded(b, m, p, d, None, true);
+                }),
+            ),
+            (
+                "emit_vec_rc_dec_with_drop",
+                true,
+                clif_of(|b, m, p| {
+                    let d = import(m, "runtime/vec_drop", 2);
+                    let no_elem_release = b.ins().iconst(types::I64, 0);
+                    crate::compiler::vec_codegen::emit_vec_rc_dec_with_drop(
+                        b,
+                        m,
+                        p,
+                        d,
+                        no_elem_release,
+                    );
+                }),
+            ),
+        ]
+    }
+
+    /// The plain arm is a load / `iadd`|`isub` / store of the count with no
+    /// `atomic_rmw`; a decrement keeps its free-path `fence`.
+    fn assert_nonatomic(helper: &str, is_dec: bool, clif: &str) {
         assert!(
             !clif.contains("atomic_rmw"),
-            "non-atomic arm must not emit atomic_rmw:\n{clif}"
+            "{helper}: atomic_rmw under the probe:\n{clif}"
         );
         assert!(
             clif.contains("load.i64"),
-            "non-atomic arm must load the count:\n{clif}"
+            "{helper}: no count load:\n{clif}"
         );
         let op = if is_dec { "isub" } else { "iadd" };
-        assert!(clif.contains(op), "non-atomic {op} arm missing:\n{clif}");
+        assert!(clif.contains(op), "{helper}: no {op}:\n{clif}");
+        assert!(clif.contains("store"), "{helper}: no count store:\n{clif}");
+        if is_dec {
+            assert!(
+                clif.contains("fence"),
+                "{helper}: free-path fence lost:\n{clif}"
+            );
+        }
+    }
+
+    /// The default arm updates the count with exactly one `atomic_rmw` and
+    /// never loads it.
+    fn assert_atomic(helper: &str, is_dec: bool, clif: &str) {
+        let op = if is_dec {
+            "atomic_rmw.i64 sub"
+        } else {
+            "atomic_rmw.i64 add"
+        };
+        assert_eq!(clif.matches("atomic_rmw").count(), 1, "{helper}:\n{clif}");
+        assert!(clif.contains(op), "{helper}: expected {op}:\n{clif}");
         assert!(
-            clif.contains("store"),
-            "non-atomic arm must store the count:\n{clif}"
+            !clif.contains("load.i64"),
+            "{helper}: plain count load by default:\n{clif}"
         );
     }
 
-    fn asserts_atomic(clif: &str) {
-        assert!(
-            clif.contains("atomic_rmw"),
-            "atomic arm must emit atomic_rmw:\n{clif}"
-        );
-    }
-
-    fn dealloc_id(module: &mut cranelift_jit::JITModule) -> cranelift_module::FuncId {
-        let mut sig = module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        module
-            .declare_function("runtime/dealloc", cranelift_module::Linkage::Import, &sig)
-            .expect("declare dealloc")
-    }
-
-    // --- emit_rc_inc: {NonAtomic → non-atomic, Atomic → atomic} + else-arm id ---
+    // Child body: emit every helper and check the arm the parent's `EXPECT`
+    // names, then that one emission advanced the tally on the same arm.
     #[test]
-    fn inc_confined_true_emits_nonatomic() {
-        // spec: design/backend/ownership-codegen.md §5.1 — confined=Some(true) ⇒ non-atomic inc
-        let clif = clif_of(|b, m, p| emit_rc_inc_atomicity(b, m, p, RcAtomicity::NonAtomic));
-        asserts_nonatomic(&clif, false);
-    }
-    #[test]
-    fn inc_crossing_and_absent_emit_atomic_verbatim() {
-        // spec: design/backend/ownership-codegen.md §5.1 — Some(false)/None ⇒ atomic verbatim
-        let atomic = clif_of(|b, m, p| emit_rc_inc_atomicity(b, m, p, RcAtomicity::Atomic));
-        asserts_atomic(&atomic);
-        // else-arm identity (§2.2): the plain helper == the Atomic-parameterised one.
-        let plain = clif_of(|b, m, p| emit_rc_inc(b, m, p));
+    fn child_emits_rc_helpers() {
+        if !test_child::selected(CHILD) {
+            return;
+        }
+        let nonatomic = test_child::arg::<String>("EXPECT") == "nonatomic";
+        for (helper, is_dec, clif) in emissions() {
+            if nonatomic {
+                assert_nonatomic(helper, is_dec, &clif);
+            } else {
+                assert_atomic(helper, is_dec, &clif);
+            }
+        }
+        let (na0, tot0) = rc_emit_counts();
+        let _ = clif_of(emit_rc_inc);
+        let (na1, tot1) = rc_emit_counts();
+        assert_eq!(tot1, tot0 + 1, "one emission advances the total");
         assert_eq!(
-            plain, atomic,
-            "emit_rc_inc must equal emit_rc_inc_atomicity(Atomic) — §2.2 else-arm identity"
+            na1,
+            na0 + u64::from(nonatomic),
+            "the non-atomic tally follows the arm"
         );
+        println!("{PASSED}");
     }
 
-    // --- emit_rc_inc_guarded ---
-    #[test]
-    fn inc_guarded_confined_true_emits_nonatomic() {
-        // spec: design/backend/ownership-codegen.md §5.2 — guarded inc gated per-site
-        let clif =
-            clif_of(|b, m, p| emit_rc_inc_guarded_atomicity(b, m, p, RcAtomicity::NonAtomic));
-        asserts_nonatomic(&clif, false);
-    }
-    #[test]
-    fn inc_guarded_atomic_is_else_arm_identity() {
-        // spec: design/backend/ownership-codegen.md §2.2 — else-arm identity
-        let atomic = clif_of(|b, m, p| emit_rc_inc_guarded_atomicity(b, m, p, RcAtomicity::Atomic));
-        let plain = clif_of(|b, m, p| emit_rc_inc_guarded(b, m, p));
-        asserts_atomic(&atomic);
-        assert_eq!(plain, atomic);
+    fn run_child(env: &[(&str, String)]) -> test_child::Ending {
+        let path = test_child::child_path(module_path!(), CHILD);
+        test_child::run(&path, env)
     }
 
-    // --- emit_rc_dec / emit_rc_dec_guarded ---
-    #[test]
-    fn dec_guarded_confined_true_emits_nonatomic() {
-        // spec: design/backend/ownership-codegen.md §5.3 — non-atomic dec, free path kept
-        let clif = clif_of(|b, m, p| {
-            let d = dealloc_id(m);
-            emit_rc_dec_guarded_atomicity(b, m, p, d, None, false, RcAtomicity::NonAtomic);
-        });
-        asserts_nonatomic(&clif, true);
+    #[track_caller]
+    fn assert_child_passed(ending: &test_child::Ending, what: &str) {
+        assert_eq!(ending.code, Some(0), "{what}\nstderr:\n{}", ending.stderr);
         assert!(
-            clif.contains("fence"),
-            "non-atomic dec must keep the free-path fence:\n{clif}"
+            ending.stdout.contains(PASSED),
+            "{what}: child body did not run\n{}",
+            ending.stdout
         );
     }
+
     #[test]
-    fn dec_atomic_is_else_arm_identity() {
-        // spec: design/backend/ownership-codegen.md §2.2 — plain emit_rc_dec == guarded(false, Atomic)
-        let plain = clif_of(|b, m, p| {
-            let d = dealloc_id(m);
-            emit_rc_dec(b, m, p, d, None);
-        });
-        let atomic = clif_of(|b, m, p| {
-            let d = dealloc_id(m);
-            emit_rc_dec_guarded_atomicity(b, m, p, d, None, false, RcAtomicity::Atomic);
-        });
-        asserts_atomic(&atomic);
-        assert_eq!(plain, atomic);
-    }
-    #[test]
-    fn dec_guarded_atomic_is_else_arm_identity() {
-        // spec: design/backend/ownership-codegen.md §2.2 — guarded dec else-arm identity
-        let plain = clif_of(|b, m, p| {
-            let d = dealloc_id(m);
-            emit_rc_dec_guarded(b, m, p, d, None, true);
-        });
-        let atomic = clif_of(|b, m, p| {
-            let d = dealloc_id(m);
-            emit_rc_dec_guarded_atomicity(b, m, p, d, None, true, RcAtomicity::Atomic);
-        });
-        asserts_atomic(&atomic);
-        assert_eq!(plain, atomic);
+    fn probe_unset_emits_the_atomic_sequence() {
+        // spec: design/backend/ownership-codegen.md §5.2 — atomic unless the probe is set
+        let ending = run_child(&[("EXPECT", "atomic".into())]);
+        assert_child_passed(&ending, "probe unset");
     }
 
-    // --- the probe (CRANELISP_NONATOMIC_RC) shares the same non-atomic arm ---
-    // NOTE: the probe is a process-global env read (OnceLock); it is exercised
-    // end-to-end (excluded-from-canonical) rather than unit-forced here so the
-    // OnceLock is not poisoned for sibling tests. The per-site gate and the
-    // probe route through the SAME `use_nonatomic_arm` decision point (one
-    // code path, two gates — Principle 7), verified by construction above.
+    #[test]
+    fn probe_set_emits_the_plain_sequence() {
+        // spec: design/backend/ownership-codegen.md §5.1 — the probe selects the non-atomic arm
+        let ending = run_child(&[
+            ("EXPECT", "nonatomic".into()),
+            ("CRANELISP_NONATOMIC_RC", "1".into()),
+        ]);
+        assert_child_passed(&ending, "probe set");
+    }
 
     // --- the codegen-time stack-slot-hit counter (h2 backend half, B3.4) ---
     #[test]
@@ -264,31 +285,6 @@ mod rc_atomicity_b33_tests {
             h0 + 3,
             "two more stack allocs must advance by 2"
         );
-    }
-
-    // --- the codegen-time non-atomic-op-share counter (h2 backend half) ---
-    #[test]
-    fn nonatomic_share_counter_tallies_emitted_ops() {
-        // spec: design/backend/ownership-codegen.md §11 — backend-side counter
-        let (na0, tot0) = rc_emit_counts();
-        // One atomic inc: total++ , nonatomic unchanged.
-        let _ = clif_of(|b, m, p| emit_rc_inc_atomicity(b, m, p, RcAtomicity::Atomic));
-        let (na1, tot1) = rc_emit_counts();
-        assert_eq!(tot1, tot0 + 1, "total RC-emit count must advance");
-        assert_eq!(
-            na1, na0,
-            "an Atomic emit must NOT advance the non-atomic tally"
-        );
-        // One non-atomic inc: both advance.
-        let _ = clif_of(|b, m, p| emit_rc_inc_atomicity(b, m, p, RcAtomicity::NonAtomic));
-        let (na2, tot2) = rc_emit_counts();
-        assert_eq!(tot2, tot1 + 1);
-        assert_eq!(
-            na2,
-            na1 + 1,
-            "a NonAtomic emit must advance the non-atomic tally"
-        );
-        let _ = heap::use_nonatomic_arm; // keep the shared decision point referenced
     }
 }
 

@@ -563,12 +563,19 @@ impl Default for Cranelisp {
 }
 
 /// One step of a prompt-gated REPL session; see [`Cranelisp::staged_output`].
+#[derive(Clone, Copy)]
 pub enum Stage<'a> {
     /// Send one complete input line, then wait for the REPL's next prompt.
     Line(&'a str),
     /// Write the bytes to a path under the TempDir while the REPL waits at
     /// its prompt.
     Write(&'a str, &'a [u8]),
+    /// Remove a test-owned file while the REPL waits at its prompt.
+    Remove(&'a str),
+    /// Rename a test-owned file within the TempDir at the prompt.
+    Rename(&'a str, &'a str),
+    /// Leave the REPL idle to allow filesystem events and save coalescing.
+    Wait(Duration),
     /// Write the bytes to a path under the TempDir once the duration has
     /// passed since spawn, without waiting for a prompt. It places a save
     /// inside startup, which no prompt marks, so it may only precede every
@@ -737,6 +744,11 @@ impl CrInvocationOwned {
                     live = await_prompts(&mut child, prompts)?;
                 }
                 Stage::Write(rel, bytes) => write(rel, bytes),
+                Stage::Remove(rel) => fs::remove_file(self.cwd.join(rel))
+                    .unwrap_or_else(|e| panic!("staged remove {rel}: {e}")),
+                Stage::Rename(from, to) => fs::rename(self.cwd.join(from), self.cwd.join(to))
+                    .unwrap_or_else(|e| panic!("staged rename {from} to {to}: {e}")),
+                Stage::Wait(delay) => std::thread::sleep(*delay),
                 Stage::WriteAfterSpawn(..) => unreachable!("timed stages precede the rest"),
             }
         }

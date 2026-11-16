@@ -82,14 +82,6 @@ pub struct ProcessedCluster {
     /// ([`Self::install_published_records`]).
     pub(crate) introspection_records: Vec<(FQSymbol, Introspection)>,
 
-    /// The commit gate's per-symbol redefinition classifications (S101,
-    /// `design/int/session-transaction.md` §13) — one per committed callable
-    /// `Def`. The eval driver consumes these after codegen: `AbiChanging`
-    /// outcomes trigger the dependent-recompilation transaction; any
-    /// successful redefinition of a BROKEN symbol clears its record
-    /// (`repl/spec.md` §18.6 recovery direction 1).
-    pub(crate) redefinitions: Vec<crate::redefine::RedefinitionOutcome>,
-
     /// The 0611 carrier — return-poly dispatch sites still UNRESOLVED at
     /// finalize (`design/typecheck/return-poly-dispatch-signal.md`). EMPTY for
     /// every valid program. The eval driver consults these at the `__expr`
@@ -154,21 +146,6 @@ impl ProcessedCluster {
         }
     }
 
-    /// Read-only access to the commit gate's redefinition classifications
-    /// (S101 — consumed by the eval driver post-codegen).
-    pub(crate) fn redefinitions(&self) -> &[crate::redefine::RedefinitionOutcome] {
-        &self.redefinitions
-    }
-
-    /// Attach the commit gate's redefinition classifications (set by
-    /// `process_form::finalize_cluster`).
-    pub(crate) fn set_redefinitions(
-        &mut self,
-        redefinitions: Vec<crate::redefine::RedefinitionOutcome>,
-    ) {
-        self.redefinitions = redefinitions;
-    }
-
     /// Read-only access to the 0611 unresolved-return-poly-dispatch carrier —
     /// consumed by the eval driver at the `__expr` eval-result boundary.
     pub(crate) fn unresolved_dispatch(&self) -> &[cranelisp_typecheck::UnresolvedDispatchSite] {
@@ -197,7 +174,6 @@ impl ProcessedCluster {
             warnings,
             resolved_imports,
             introspection_records,
-            redefinitions: Vec::new(),
             unresolved_dispatch: Vec::new(),
             prepared: None,
             pending_codegen_notification: None,
@@ -213,7 +189,6 @@ impl ProcessedCluster {
             warnings: Vec::new(),
             resolved_imports: Vec::new(),
             introspection_records: Vec::new(),
-            redefinitions: Vec::new(),
             unresolved_dispatch: Vec::new(),
             prepared: None,
             pending_codegen_notification: None,

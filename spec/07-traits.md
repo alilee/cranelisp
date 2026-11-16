@@ -535,7 +535,7 @@ After ordinary name and type constraints select a trait method declaration under
 
 ### 7.4.2 Name Mangling
 
-Each resolved trait method call maps to a **trait-qualified** mangled name of the form `Trait.method$Type`. The trait name prefix ensures no collisions when different traits define the same method name (e.g., `Num.+$Int` vs `Unchecked.+$Int`).
+Each resolved trait method call maps to a **trait-qualified** mangled name of the form `Trait.method$Type`. The trait name prefix ensures no collisions when different traits define the same method name (e.g., `Text.render$Int` vs `Debug.render$Int` for the locally declared traits in §7.4.2a).
 
 **Example:** Given traits like those in Section 7.7, typical mangled names would be:
 
@@ -556,18 +556,23 @@ For HKT methods, the mangled name uses the bare constructor name (e.g., `Functor
 
 For polymorphic impl specializations, the mangled name includes the concrete inner types (e.g., `Display.show$Option$Int`).
 
-### 7.4.2a Same-Named Methods and Disambiguation [Uncovered S122 — partial: `Trait.method` call tests/spec_07_traits::trait_qualified_method_call_dispatches, tests/spec_07_traits::trait_method_bare_call_and_qualified_value_dispatch, tests/spec_05_definitions::impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::trait_qualified_primitive_operator_collapses_to_builtin, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_pinned_dispatches; imported-trait dotted access tests/spec_08_modules::imported_trait_dotted_method_resolves_via_import_and_prelude_reexport, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::dotted_trait_method_dispatches_through_imported_trait_head; selection and ambiguity among same-named methods of different traits remain untested, including dispatch-index selection (ACT-1001 P-2)]
+### 7.4.2a Same-Named Methods and Disambiguation [Uncovered S122 — partial: `Trait.method` call tests/spec_07_traits::trait_qualified_method_call_dispatches, tests/spec_07_traits::trait_method_bare_call_and_qualified_value_dispatch, tests/spec_05_definitions::impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::trait_qualified_primitive_operator_collapses_to_builtin, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_pinned_dispatches; imported-trait dotted access tests/spec_08_modules::imported_trait_dotted_method_resolves_via_import_and_prelude_reexport, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::dotted_trait_method_dispatches_through_imported_trait_head; selection and ambiguity among same-named methods of different traits remain untested, including this section's `Text.render`/`Debug.render` example and its ambiguous bare `(render 1)`, and dispatch-index selection (ACT-1001 P-2)]
 
 Different traits MAY define methods with the same name, and multiple such methods MAY be visible under one unqualified spelling. Ordinary argument, result, annotation, and surrounding expected-type constraints select the declaration when exactly one candidate remains (§8.6.5). If several same-named methods remain compatible, the use is ambiguous and MUST be qualified.
 
-**Disambiguation syntax:** Use `Trait.method` to specify which trait's method to call:
+**Disambiguation syntax:** Use `Trait.method` to specify which trait's method to call. For example, given these locally declared traits and implementations:
 
 ```clojure
-(Num.+ x y)        ; explicitly calls Num's +
-(Unchecked.+ x y)  ; explicitly calls Unchecked's +
+(deftrait Text (render [x] String))
+(deftrait Debug (render [x] String))
+(impl Text Int (defn render [x] "integer"))
+(impl Debug Int (defn render [x] "Int"))
+
+(Text.render 1)   ; → "integer"
+(Debug.render 1)  ; → "Int"
 ```
 
-The `Unchecked` trait is NOT exported from the prelude. Users who need it MUST explicitly import it: `(import [core/unchecked [Unchecked]])`. If both `Num.+` and `Unchecked.+` are compatible with a bare use, that use requires qualification; merely making both declarations visible is permitted.
+Both methods are compatible with `(render 1)`, so that bare use requires qualification; merely making both declarations visible is permitted.
 
 ### 7.4.3 Impl Search Order
 
@@ -631,15 +636,15 @@ When an operator (or any trait method) is used as a value rather than called dir
 
 Note: When used as a value, the operator's type is the fully polymorphic trait method type (e.g., `Num a => a -> a -> a` for `+`). The concrete dispatch type is determined at the point where the closure is actually called.
 
-## 7.7 Standard Library Traits (Non-Normative) [Tested]
+## 7.7 Standard Library Traits (Non-Normative) [Uncovered S123 — partial: each subsection's `true`-valued examples are asserted on the suite's test prelude; the `-`, `*` and `/` examples of §7.7.1, the `false`-valued examples of §7.7.2 and §7.7.3, and the `Bool` and `String` rows of §7.7.4 have no cell. §7.7.2 to §7.7.4 are cited from this heading: tests/stdlib_trait_impls::stdlib_eq_int_inline_path, tests/stdlib_trait_impls::stdlib_eq_float_inline_path, tests/stdlib_trait_impls::stdlib_ord_int_inline_path, tests/stdlib_trait_impls::stdlib_ord_float_inline_path, tests/stdlib_trait_impls::stdlib_display_int_inline_path, tests/stdlib_trait_impls::stdlib_display_float_inline_path]
 
-This section is **non-normative**. The traits below (Num, Eq, Ord, Display, Functor) are not language primitives — they are ordinary `deftrait` declarations defined in the standard library's core modules. They appear here as illustrative examples of the trait mechanism defined in §§7.1–7.6, and to document the semantic contracts (checked arithmetic, IEEE 754 comparison, etc.) that a conforming standard library is expected to provide. The authoritative home for these definitions is the standard library itself (e.g., `core/numerics`, `core/formats`); the REPL displays them under their stdlib-qualified names (e.g., `core.numerics/+`), not as builtins.
+This section is **non-normative**. The traits below (Num, Eq, Ord, Display, Functor) are not language primitives — they are ordinary `deftrait` declarations defined in the standard library's core modules. They appear here as illustrative examples of the trait mechanism defined in §§7.1–7.6. The authoritative home for these definitions is the standard library itself (e.g., `core/numerics`, `core/formats`); the REPL displays them under their stdlib-qualified names (e.g., `core.numerics/+`), not as builtins.
 
 **Implementation note — compiler-seeded core traits:** The four core traits (Num, Eq, Ord, Display) and their implementations for primitive types (Int, Float, Bool, String) are defined as Cranelisp `deftrait`/`impl` forms evaluated through the normal pipeline during compiler initialization. They live in the compiler-seeded `primitives` module — the same synthetic module that provides primitive types and functions. This makes them available before the standard library loads. The standard library re-exports these traits via the prelude for user convenience and may layer additional higher-level traits on top, but the core trait *declarations* and *primitive-type implementations* are language infrastructure, not stdlib content. (See Decision 17 in `design/arch/CLAUDE.md`.)
 
 The following traits are available in all programs that load the prelude. They are not compiler intrinsics — they are ordinary trait declarations with ordinary implementations. A standard library typically provides these traits because operators and string conversion depend on them.
 
-### 7.7.1 Num
+### 7.7.1 Num [Uncovered S123 — partial: `+` on `Int` and `Float` tests/stdlib_trait_impls::stdlib_num_int_inline_path, tests/stdlib_trait_impls::stdlib_num_float_inline_path; the `-`, `*` and `/` examples, including truncating `Int` division, have no cell. No overflow behaviour is claimed, so none is graded; the primitives' arithmetic is graded under §12.7.3]
 
 Numeric arithmetic operations.
 
@@ -657,9 +662,10 @@ Numeric arithmetic operations.
 
 **Semantics:**
 
+How a standard library's `Num` implementation for `Int` treats overflow and other arithmetic failures is that library's choice. The language's arithmetic rules govern the primitives; see [§12.7.3](12-runtime.md#1273-arithmetic-policy).
+
 | Type | `+` | `-` | `*` | `/` |
 |---|---|---|---|---|
-| `Int` | Checked addition (panics on overflow) | Checked subtraction (panics on overflow) | Checked multiplication (panics on overflow) | Integer division follows [§12.7.3](12-runtime.md#1273-arithmetic-policy): panics on division by zero; `Int.MIN / -1` wraps to `Int.MIN` (user ruling, 2026-11-15) |
 | `Float` | IEEE 754 addition | IEEE 754 subtraction | IEEE 754 multiplication | IEEE 754 division |
 
 **Example:**
@@ -670,36 +676,6 @@ Numeric arithmetic operations.
 (* 3.0 4.0)   ; → 12.0
 (/ 7 2)       ; → 3   (integer division truncates)
 (/ 7.0 2.0)   ; → 3.5
-(/ 1 0)       ; → panic: "integer division by zero"
-(+ 9223372036854775807 1)  ; → panic: "integer overflow in +"
-```
-
-### 7.7.1a Unchecked
-
-Unchecked arithmetic operations. Same method names as `Num` but without overflow/div-by-zero checks. Not in the prelude — must be explicitly imported from `core/unchecked`.
-
-**Declaration:**
-
-```clojure
-(deftrait Unchecked "Unchecked arithmetic (wraps on overflow, traps on div-by-zero)"
-  (+ "Unchecked addition" [a b] self)
-  (- "Unchecked subtraction" [a b] self)
-  (* "Unchecked multiplication" [a b] self)
-  (/ "Unchecked division" [a b] self))
-```
-
-**Semantics:**
-
-| Type | `+` | `-` | `*` | `/` |
-|---|---|---|---|---|
-| `Int` | Two's complement addition (wraps on overflow) | Two's complement subtraction (wraps on overflow) | Two's complement multiplication (wraps on overflow) | Signed integer division (traps on division by zero) |
-| `Float` | IEEE 754 addition | IEEE 754 subtraction | IEEE 754 multiplication | IEEE 754 division |
-
-**Example:**
-
-```clojure
-(import [core/unchecked [Unchecked]])
-(Unchecked.+ 9223372036854775807 1)  ; wraps to -9223372036854775808
 ```
 
 ### 7.7.2 Eq

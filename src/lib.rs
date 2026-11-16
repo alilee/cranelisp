@@ -68,6 +68,7 @@ pub(crate) mod marshal;
 // deleted in a prior sprint (FIXME 0109 Wave A — verified no v3 type remains;
 // renamed to shed the misleading "v3 lingering" connotation).
 pub(crate) mod pipeline;
+pub use pipeline::project_root_candidate;
 pub(crate) mod platform;
 // result_owner — the ONE program-result owner (arch ruling 9,
 // `design/int/result-owner.md`). `pub` because `OwnedProgramResult` rides the
@@ -85,12 +86,9 @@ pub(crate) mod session_setup;
 // `process_regular_form` + their family-private helpers. The permanent home
 // named in `design/int/int.md` §3.3 Wave-D target map.
 pub(crate) mod process_form;
-// redefine — the dependent-recompilation session transaction (S101 R3
-// machinery, `design/int/session-transaction.md`): the AbiSurface summary-diff
-// comparand + RedefKind classification consumed by the commit gate in
-// `worker.rs`, the on-demand reverse dependency index, the affected-set
-// closure/SCC walk, BROKEN marking (trap stubs + retention pool + registry),
-// and the cascade-report data contract (`repl/spec.md` §18).
+// redefine — the redefinition guard, the commit gate's slot classification,
+// the retention pool and the `/refs` reverse index
+// (`design/int/session-transaction.md`).
 pub(crate) mod redefine;
 // eval — REPL eval form-chain extracted from session_v4.rs (FIXME 0109 Wave D).
 // `eval` + `process_form_cluster`/`process_single_form` (eval-thread dep-retry

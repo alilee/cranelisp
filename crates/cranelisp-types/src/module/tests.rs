@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
-    BrokenProvenance, Expr, MonoDefnVariant, MonoDemand, MonoExpr, SynthSpec, TraitRecord, Type,
-    TypeRecord,
+    Expr, MonoDefnVariant, MonoDemand, MonoExpr, SynthSpec, TraitRecord, Type, TypeRecord,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -681,24 +680,6 @@ fn plain_callable_docstring_accepts_every_legal_plain_lifecycle() {
 
     let mut concrete = owner_table("concrete", Some("compiled"));
     assert_plain_docstring_update(&mut concrete, &name, "concrete doc");
-
-    let mut broken = owner_table("broken", Some("compiled"));
-    let old_slot = broken.get("f").unwrap().callable_got_slot().unwrap();
-    let transition = broken
-        .mark_broken(
-            &name,
-            BrokenProvenance::new(
-                FQSymbol {
-                    module: ModuleFullPath::from("broken"),
-                    symbol: Symbol::from("cause"),
-                },
-                "failed recompilation".into(),
-            ),
-        )
-        .unwrap();
-    assert_eq!(transition.slot.index(), old_slot);
-    assert_eq!(transition.displaced_owner.as_deref(), Some("compiled"));
-    assert_plain_docstring_update(&mut broken, &name, "broken doc");
 }
 
 #[test]
@@ -1168,30 +1149,6 @@ fn compiled_owner_publication_conserves_submitted_and_displaced_owners() {
     let (reason, owner) = rejection.into_parts();
     assert!(matches!(reason, LifecycleError::WrongState { .. }));
     assert_eq!(owner, "extern-owner");
-}
-
-#[test]
-fn broken_transition_retains_slot_and_returns_body_owner() {
-    let mut table = owner_table("m", Some("compiled"));
-    let old_slot = table.get("f").unwrap().callable_got_slot().unwrap();
-    let transition = table
-        .mark_broken(
-            &Symbol::from("f"),
-            BrokenProvenance::new(
-                FQSymbol {
-                    module: ModuleFullPath::from("m"),
-                    symbol: Symbol::from("cause"),
-                },
-                "failed".into(),
-            ),
-        )
-        .unwrap();
-    assert_eq!(transition.slot.index(), old_slot);
-    assert_eq!(transition.displaced_owner.as_deref(), Some("compiled"));
-    assert!(matches!(
-        &table.get("f").unwrap().callable().unwrap().arm.life,
-        Life::Broken { slot, .. } if slot.index() == old_slot
-    ));
 }
 
 #[test]
@@ -2495,31 +2452,6 @@ fn compiled_staged_publication_refusal_matrix_is_atomic_and_returns_submitted_ow
     assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
     assert!(live.all_symbols().next().is_none());
 
-    let mut broken_staging = owner_table("m", None);
-    let broken_transition = broken_staging
-        .mark_broken(
-            &Symbol::from("f"),
-            BrokenProvenance::new(
-                FQSymbol {
-                    module: ModuleFullPath::from("m"),
-                    symbol: Symbol::from("cause"),
-                },
-                "failed".into(),
-            ),
-        )
-        .unwrap();
-    assert!(broken_transition.displaced_owner.is_none());
-    let rejection = match live.publish_compiled_staged(broken_staging, &[], owners()) {
-        Err(rejection) => rejection,
-        Ok(_) => panic!("broken staging must be refused"),
-    };
-    assert!(matches!(
-        rejection.reason(),
-        LifecycleError::WrongState { .. }
-    ));
-    assert_eq!(rejection.into_parts().1[&binding_target("m", "f")], "new-f");
-    assert!(live.all_symbols().next().is_none());
-
     let mut collision = SymbolTable::<String, ()>::new_with_params(ModuleFullPath::from("m"));
     collision
         .install_binding(
@@ -2714,7 +2646,7 @@ fn compiled_staged_publication_rejects_declared_life_without_live_mutation() {
     assert!(matches!(
         rejection.reason(),
         LifecycleError::WrongState { expected, .. }
-            if *expected == "a settled, non-broken staged callable"
+            if *expected == "a settled staged callable"
     ));
     let (_, recovered) = rejection.into_parts();
     assert_eq!(recovered.len(), 1);
@@ -2859,16 +2791,7 @@ fn load_validation_rejects_duplicate_claims_and_claim_tombstone_collision() {
         raw_callable(
             concrete_scheme(),
             CallableOrigin::Plain,
-            Life::Broken {
-                slot,
-                error: BrokenProvenance {
-                    broken_by: FQSymbol {
-                        module: ModuleFullPath::from("m"),
-                        symbol: Symbol::from("b"),
-                    },
-                    message: "plant".into(),
-                },
-            },
+            Life::Declared { prior: Some(slot) },
         ),
     );
     assert_eq!(
@@ -3035,7 +2958,6 @@ enum State {
     Concrete,
     Inline,
     HostPromised,
-    Broken,
 }
 
 fn life_for(origin: &CallableOrigin, state: State) -> Life<()> {
@@ -3077,16 +2999,6 @@ fn life_for(origin: &CallableOrigin, state: State) -> Life<()> {
         }
         State::Inline => Life::Inline { mode_summary: None },
         State::HostPromised => Life::HostPromised,
-        State::Broken => Life::Broken {
-            slot: CallableSlot(0),
-            error: BrokenProvenance {
-                broken_by: FQSymbol {
-                    module: ModuleFullPath::from("m"),
-                    symbol: Symbol::from("f"),
-                },
-                message: "plant".into(),
-            },
-        },
     }
 }
 
@@ -3098,12 +3010,9 @@ fn expected_legal(origin: &CallableOrigin, state: State) -> bool {
             State::Template | State::Concrete | State::Inline | State::HostPromised
         ),
         CallableOrigin::Ctor { .. } | CallableOrigin::Accessor { .. } => {
-            matches!(state, State::Template | State::Concrete | State::Broken)
+            matches!(state, State::Template | State::Concrete)
         }
-        _ => matches!(
-            state,
-            State::Declared | State::Template | State::Concrete | State::Broken
-        ),
+        _ => matches!(state, State::Declared | State::Template | State::Concrete),
     }
 }
 
@@ -3115,7 +3024,6 @@ fn load_validation_exercises_exhaustive_origin_life_matrix() {
         State::Concrete,
         State::Inline,
         State::HostPromised,
-        State::Broken,
     ];
     for origin in origins() {
         for state in states {
@@ -3193,16 +3101,7 @@ fn serde_and_clone_bypass_are_rejected_by_validation() {
         raw_callable(
             concrete_scheme(),
             CallableOrigin::Plain,
-            Life::Broken {
-                slot,
-                error: BrokenProvenance {
-                    broken_by: FQSymbol {
-                        module: ModuleFullPath::from("m"),
-                        symbol: Symbol::from("g"),
-                    },
-                    message: "clone plant".into(),
-                },
-            },
+            Life::Declared { prior: Some(slot) },
         ),
     );
     assert!(matches!(
@@ -3276,19 +3175,6 @@ fn illegal_funnels_refuse_without_mutating_the_table() {
             Visibility::Public,
         )
         .unwrap();
-    assert!(matches!(
-        table.mark_broken(
-            &Symbol::from("effect"),
-            BrokenProvenance {
-                broken_by: FQSymbol {
-                    module: ModuleFullPath::from("m"),
-                    symbol: Symbol::from("effect"),
-                },
-                message: "plant".into(),
-            },
-        ),
-        Err(LifecycleError::IllegalOriginState { .. })
-    ));
     assert!(matches!(
         table.get("effect").unwrap().callable().unwrap().arm.life,
         Life::Concrete {
@@ -4967,25 +4853,10 @@ fn unpublished_synthesized_template_replacement_preserves_complete_candidates() 
 }
 
 #[test]
-fn unpublished_synthesized_concrete_replaces_broken_and_returns_its_slot() {
+fn unpublished_synthesized_concrete_replaces_concrete_and_returns_its_slot() {
     let mut table = SymbolTable::new(ModuleFullPath::from("m"));
     let name = Symbol::from("Box.v");
     let old_slot = install_packet_a_accessor(&mut table, name.as_ref(), None);
-    let broken = table
-        .mark_broken(
-            &name,
-            BrokenProvenance::new(
-                FQSymbol {
-                    module: ModuleFullPath::from("m"),
-                    symbol: Symbol::from("cause"),
-                },
-                "failed".into(),
-            ),
-        )
-        .unwrap();
-    assert_eq!(broken.slot, old_slot);
-    assert!(broken.displaced_owner.is_none());
-
     let returned = table
         .replace_unpublished_synthesized_concrete(
             name.clone(),
@@ -5757,4 +5628,130 @@ fn lookup_dependencies_round_trip_and_absence_fails_to_decode() {
         serde_json::from_value::<SymbolTable>(without).is_err(),
         "a sidecar without lookup dependencies must not decode as an empty set"
     );
+}
+
+fn settled_concrete(table: &mut SymbolTable, name: &str) -> CallableSlot {
+    declare(table, name, concrete_scheme(), CallableOrigin::Plain);
+    table
+        .settle_concrete(&Symbol::from(name), body(), Some(ast()), Vec::new())
+        .unwrap()
+}
+
+fn decoded(table: &SymbolTable) -> SymbolTable {
+    let decoded: SymbolTable =
+        serde_json::from_str(&serde_json::to_string(table).unwrap()).unwrap();
+    decoded.validate_lifecycle().unwrap();
+    decoded
+}
+
+#[test]
+fn released_callable_slot_is_reissued_and_tombstones_are_kept() {
+    let mut written = SymbolTable::new(ModuleFullPath::from("m"));
+    let released_slot = settled_concrete(&mut written, "f");
+    let retired_slot = settled_concrete(&mut written, "retired");
+    written
+        .retire_abi_changing(&Symbol::from("retired"))
+        .unwrap();
+    let kept_slot = settled_concrete(&mut written, "g");
+    let mut table = decoded(&written);
+    let tombstones = table.retired_slots().to_vec();
+    let revision = table.symbol_revision(&Symbol::from("f"));
+
+    table.release_callable(&Symbol::from("f")).unwrap();
+
+    assert!(table.get("f").is_none());
+    assert_eq!(table.retired_slots(), tombstones);
+    assert_eq!(table.retired_slots()[0].slot, retired_slot);
+    assert_eq!(
+        table.symbol_revision(&Symbol::from("f")),
+        revision.wrapping_add(1)
+    );
+    assert_eq!(
+        table.get("g").unwrap().callable_got_slot(),
+        Some(kept_slot.index())
+    );
+    table.validate_lifecycle().unwrap();
+
+    assert_eq!(settled_concrete(&mut table, "h"), released_slot);
+    table.validate_lifecycle().unwrap();
+}
+
+#[test]
+fn release_accepts_a_slotless_callable() {
+    let mut written = SymbolTable::new(ModuleFullPath::from("m"));
+    written
+        .install_template(
+            Symbol::from("generic"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    let mut table = decoded(&written);
+
+    table.release_callable(&Symbol::from("generic")).unwrap();
+
+    assert!(table.get("generic").is_none());
+    assert!(table.retired_slots().is_empty());
+}
+
+#[test]
+fn release_refusals_are_exact_and_leave_the_table_unchanged() {
+    let mut written = SymbolTable::new(ModuleFullPath::from("m"));
+    let slot = settled_concrete(&mut written, "f");
+    written
+        .install_binding(Symbol::from("x"), non_callable_binding())
+        .unwrap();
+    let alias = Symbol::from("alias");
+    written
+        .expose_candidate(
+            alias.clone(),
+            FQSymbol {
+                module: ModuleFullPath::from("m"),
+                symbol: Symbol::from("f"),
+            },
+            Visibility::Public,
+        )
+        .unwrap();
+    let mut table = decoded(&written);
+    let before = serde_json::to_value(&table).unwrap();
+    let revisions = |table: &SymbolTable| {
+        ["missing", "x", "f"].map(|name| table.symbol_revision(&Symbol::from(name)))
+    };
+    let revisions_before = revisions(&table);
+
+    let missing = Symbol::from("missing");
+    assert_eq!(
+        table.release_callable(&missing),
+        Err(LifecycleError::MissingBinding { symbol: missing })
+    );
+    let non_callable = Symbol::from("x");
+    assert_eq!(
+        table.release_callable(&non_callable),
+        Err(LifecycleError::NotCallable {
+            symbol: non_callable
+        })
+    );
+    assert_eq!(
+        table.release_callable(&Symbol::from("f")),
+        Err(LifecycleError::WrongState {
+            symbol: Symbol::from("f"),
+            expected: "terminal local name-candidate source",
+        })
+    );
+
+    assert_eq!(serde_json::to_value(&table).unwrap(), before);
+    assert_eq!(revisions(&table), revisions_before);
+    assert_eq!(
+        table.get("f").unwrap().callable_got_slot(),
+        Some(slot.index())
+    );
+    assert_eq!(table.name_candidates(&alias).len(), 1);
+    table.validate_lifecycle().unwrap();
 }

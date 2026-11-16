@@ -11,8 +11,6 @@
 
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-use cranelisp_types::Defn;
 use cranelisp_types::{
     Binding, CallableOrigin, CallableTarget, CranelispError, Decl, ErrorLocation, InstanceLink,
     Life, ModuleFullPath, Realization, Sexp, Span, StagedPublicationDecision, Symbol, TopLevel,
@@ -26,7 +24,6 @@ pub(crate) struct PreparedCommit {
     decisions: Vec<StagedPublicationDecision>,
     tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     targets: Vec<CallableTarget>,
-    outcomes: Vec<crate::redefine::RedefinitionOutcome>,
     pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
 }
 
@@ -61,13 +58,6 @@ impl OwedFacts<'_> {
     }
 }
 
-/// The two views of one cluster that the prepare step reads: the working
-/// program it checks and the program whose definitions it enrols for codegen.
-pub(crate) struct ClusterPrograms<'a> {
-    pub(crate) working: &'a [TopLevel],
-    pub(crate) codegen: &'a [TopLevel],
-}
-
 struct PreparedCompilation {
     jit: std::sync::Arc<cranelisp_backend::jit::Jit>,
     clif_ir: String,
@@ -90,16 +80,9 @@ struct PreparedCheck {
     result: cranelisp_typecheck::CheckResult,
 }
 
-fn binding_is_definition(binding: &Binding<crate::code::Code>) -> bool {
-    matches!(
-        binding.declaration,
-        Decl::Callable(_) | Decl::Overloaded(_) | Decl::Macro(_)
-    )
-}
-
 fn binding_first_slot(binding: &Binding<crate::code::Code>) -> Option<usize> {
     let life_slot = |life: &Life<crate::code::Code>| match life {
-        Life::Concrete { slot, .. } | Life::Broken { slot, .. } => Some(slot.index()),
+        Life::Concrete { slot, .. } => Some(slot.index()),
         _ => None,
     };
     match &binding.declaration {
@@ -252,7 +235,6 @@ pub(crate) fn check_program_compat(
         Option<cranelisp_types::ResolutionGap>,
         Vec<cranelisp_types::Warning>,
         Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
-        Vec<crate::redefine::RedefinitionOutcome>,
     ),
     CranelispError,
 > {
@@ -266,10 +248,8 @@ pub(crate) fn check_program_compat(
     // `CheckError::Gap` — the FQ-auto-load orchestration (spec §8.5.4 / §9.3.6,
     // FIXME 0268) catches an unloaded-module gap here and loads-and-retries.
     //
-    // S101: `shared` carries the session retention pool for the commit gate's
-    // ABI-epoch slot policy (design/int/session-transaction.md §7.1); the
-    // returned `RedefinitionOutcome`s ride `ProcessedCluster` back to the
-    // eval driver.
+    // `shared` carries the session retention pool for the commit gate's
+    // ABI-epoch slot policy (design/int/session-transaction.md §7.1).
     process_cluster_with_staging(
         symbol_tables,
         module_aliases,
@@ -301,14 +281,13 @@ pub(crate) fn check_program_compat_no_gap(
         module,
         working_program,
         // No session context on these paths: the gate falls back to the
-        // reuse-and-patch slot policy (no retention pool to freeze into) and
-        // the redefinition outcomes are dropped. The internal-name shapes
-        // these callers commit (`__expr`, `__macro_*` clauses) are
-        // gate-exempt anyway (S101, `redefine::is_gate_exempt_internal`).
+        // reuse-and-patch slot policy (no retention pool to freeze into). The
+        // internal-name shapes these callers commit (`__expr`, `__macro_*`
+        // clauses) are gate-exempt anyway (`redefine::is_gate_exempt_internal`).
         None,
     )? {
-        (None, _warnings, _dispatch, _redefs) => Ok(()),
-        (Some(gap), _warnings, _dispatch, _redefs) => Err(CranelispError::TypeError {
+        (None, _warnings, _dispatch) => Ok(()),
+        (Some(gap), _warnings, _dispatch) => Err(CranelispError::TypeError {
             message: format!("unresolved cross-module reference: {gap:?}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
@@ -341,7 +320,6 @@ pub(crate) fn process_cluster_with_staging(
         Option<cranelisp_types::ResolutionGap>,
         Vec<cranelisp_types::Warning>,
         Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
-        Vec<crate::redefine::RedefinitionOutcome>,
     ),
     CranelispError,
 > {
@@ -349,7 +327,7 @@ pub(crate) fn process_cluster_with_staging(
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
-        return Ok((None, Vec::new(), Vec::new(), Vec::new()));
+        return Ok((None, Vec::new(), Vec::new()));
     }
 
     let mut staging: crate::code::SessionSymbolTable =
@@ -371,7 +349,7 @@ pub(crate) fn process_cluster_with_staging(
         // so int can thread them onto `ProcessedCluster.warnings` and the
         // REPL can render them as `; warning: <message>` lines.
         Ok(check_result) => {
-            let redefs = commit_staging_to_live(symbol_tables, module, staging, shared)?;
+            commit_staging_to_live(symbol_tables, module, staging, shared)?;
             // 0611: persist THIS module's unresolved-return-poly-dispatch
             // carrier so `src/exe.rs::validate_main` can reject a `main` whose
             // body carries one (the `--run`/`--link` class-(b) leg, Principle
@@ -390,7 +368,6 @@ pub(crate) fn process_cluster_with_staging(
                 None,
                 check_result.warnings,
                 check_result.unresolved_dispatch,
-                redefs,
             ))
         }
         // A recoverable resolution gap (e.g. an FQ reference to a module not
@@ -398,7 +375,7 @@ pub(crate) fn process_cluster_with_staging(
         // the gap is handed back to `finalize_module` for FQ-auto-load
         // orchestration (FIXME 0268). On retry a fresh staging frame runs.
         // No warnings on the gap path — the cluster re-runs from the top.
-        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new(), Vec::new(), Vec::new())),
+        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new(), Vec::new())),
         // A genuine type error — staging drops, live unchanged.
         Err(e) => Err(check_error_to_cranelisp_error(e)),
     }
@@ -443,7 +420,6 @@ pub(crate) fn prepare_cluster_commit(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-    codegen_program: &[TopLevel],
     shared: &crate::session_v4::SharedState,
 ) -> Result<
     Option<
@@ -456,10 +432,7 @@ pub(crate) fn prepare_cluster_commit(
         module_aliases,
         prelude_fallback,
         module,
-        ClusterPrograms {
-            working: working_program,
-            codegen: codegen_program,
-        },
+        working_program,
         OwedFacts {
             lookup_dependencies: &std::collections::BTreeSet::new(),
         },
@@ -481,7 +454,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     module_aliases: &cranelisp_types::ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
-    programs: ClusterPrograms<'_>,
+    working_program: &[TopLevel],
     owed: OwedFacts<'_>,
     provenance: &crate::scheduler::SourceProvenance,
     shared: &crate::session_v4::SharedState,
@@ -496,7 +469,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         module_aliases,
         prelude_fallback,
         module,
-        programs.working,
+        working_program,
     )?;
     let checked = match checked {
         Some(checked) => checked,
@@ -535,12 +508,11 @@ pub(crate) fn prepare_cluster_commit_with_demands(
         module_aliases,
         prelude_fallback,
         module,
-        programs.codegen,
         checked,
         PublicationCheck {
             lookup_dependencies: owed.lookup_dependencies,
             later_members,
-            working: programs.working,
+            working: working_program,
         },
         shared,
     )?;
@@ -699,7 +671,6 @@ fn finish_prepared_commit(
     module_aliases: &cranelisp_types::ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
-    codegen_program: &[TopLevel],
     mut checked: PreparedCheck,
     cycle_check: PublicationCheck<'_>,
     shared: &crate::session_v4::SharedState,
@@ -722,47 +693,18 @@ fn finish_prepared_commit(
         return Ok(Some(Err(gap)));
     }
     let DemandPublicationPlan {
-        targets,
         decisions,
         guard_exempt_symbols,
-        authored_bases,
     } = plan_demand_publication(symbol_tables, module, &checked.staging, demands)?;
-    // A top-level expression whose return-directed dispatch is still
-    // unresolved deliberately survives typecheck so the REPL/executable entry
-    // boundary can report the language-level ambiguity. It has no concrete
-    // `__expr` body to compile, however. Keep every successfully checked
-    // definition in this cluster eligible for codegen and omit only the
-    // affected expression wrapper from the forced-enrollment input. Exact
-    // demand targets are added to that complete batch below.
-    let codegen_program: Vec<TopLevel> = codegen_program
-        .iter()
-        .filter(|top| match top {
-            TopLevel::Expr(expr) => {
-                crate::exe::first_dispatch_within(&checked.result.unresolved_dispatch, expr.span())
-                    .is_none()
-            }
-            _ => true,
-        })
-        .cloned()
-        .collect();
-    let mut prepared = plan_staging_commit_inner(
+    let prepared = plan_staging_commit_inner(
         symbol_tables,
         module,
         checked.staging,
-        &codegen_program,
         shared,
         &decisions,
         &guard_exempt_symbols,
         &cycle_check,
     )?;
-    prepared
-        .outcomes
-        .retain(|outcome| !authored_bases.contains(&outcome.fq.symbol));
-    for target in targets {
-        if !prepared.targets.contains(&target) {
-            prepared.targets.push(target);
-        }
-    }
     Ok(Some(Ok((prepared, checked.result))))
 }
 
@@ -975,10 +917,8 @@ struct CapturedMonoDemand {
 }
 
 struct DemandPublicationPlan {
-    targets: Vec<CallableTarget>,
     decisions: Vec<StagedPublicationDecision>,
     guard_exempt_symbols: Vec<Symbol>,
-    authored_bases: Vec<Symbol>,
 }
 
 fn plan_demand_publication(
@@ -991,18 +931,10 @@ fn plan_demand_publication(
         CallerFreeLanguageTypeChange, SameLanguageType,
     };
 
-    let mut targets = Vec::new();
     let mut decisions = Vec::new();
     let mut guard_exempt_symbols = Vec::new();
-    let mut authored_bases = Vec::new();
     let live = symbol_tables.get(module);
     for captured in demands {
-        if let Some(owner) = callable_target_owner(&captured.old_link.template)
-            && &owner.module == module
-            && !authored_bases.contains(&owner.symbol)
-        {
-            authored_bases.push(owner.symbol.clone());
-        }
         let realized = captured.demand.as_ref().and_then(|demand| {
             let expected_link = demand.instance_link();
             staging.codegen_targets().find_map(|(target, arm)| {
@@ -1038,8 +970,7 @@ fn plan_demand_publication(
                         .as_ref(),
                 )
                 .ok_or_else(|| rematerialization_error(captured, "new instance disappeared"))?;
-            let (kind, _) =
-                crate::redefine::classify_redefinition(symbol.as_ref(), Some(prior), staged);
+            let kind = crate::redefine::classify_redefinition(symbol.as_ref(), Some(prior), staged);
             let abi_compatible = kind != crate::redefine::RedefKind::AbiChanging
                 && cranelisp_types::ModeSummary::abi_eq_opt(
                     prior.mode_summary(),
@@ -1088,9 +1019,6 @@ fn plan_demand_publication(
                     symbol: captured.prior_key.clone(),
                 });
             }
-            if !targets.contains(&target) {
-                targets.push(target);
-            }
             if !guard_exempt_symbols.contains(&symbol) {
                 guard_exempt_symbols.push(symbol);
             }
@@ -1119,10 +1047,8 @@ fn plan_demand_publication(
         }
     }
     Ok(DemandPublicationPlan {
-        targets,
         decisions,
         guard_exempt_symbols,
-        authored_bases,
     })
 }
 
@@ -1325,7 +1251,6 @@ pub(crate) fn plan_staging_commit(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
-    codegen_program: &[TopLevel],
     shared: &crate::session_v4::SharedState,
     cycle_check: &PublicationCheck<'_>,
 ) -> Result<PreparedCommit, CranelispError> {
@@ -1333,7 +1258,6 @@ pub(crate) fn plan_staging_commit(
         symbol_tables,
         module,
         staging,
-        codegen_program,
         shared,
         &[],
         &[],
@@ -1346,14 +1270,12 @@ fn plan_staging_commit_inner(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
-    codegen_program: &[TopLevel],
     shared: &crate::session_v4::SharedState,
     additional_decisions: &[StagedPublicationDecision],
     rematerialized_instances: &[Symbol],
     cycle_check: &PublicationCheck<'_>,
 ) -> Result<PreparedCommit, CranelispError> {
-    use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
-    use cranelisp_types::FQSymbol;
+    use crate::redefine::{RedefKind, classify_redefinition};
 
     validate_guarded_staging_except(
         symbol_tables,
@@ -1377,7 +1299,6 @@ fn plan_staging_commit_inner(
         });
     };
     let mut decisions = additional_decisions.to_vec();
-    let mut outcomes = Vec::new();
     for (name, exposure) in staging.all_name_candidates() {
         crate::imports::check_exposed_candidate_closure(
             module,
@@ -1390,11 +1311,9 @@ fn plan_staging_commit_inner(
     }
     for (name, binding) in staging.all_symbols() {
         let prior = candidate.get(name.as_ref());
-        let prior_was_def = prior.is_some_and(binding_is_definition);
-        let staged_is_def = binding_is_definition(binding);
         let prior_slot = prior.and_then(binding_first_slot);
         let staged_slot = binding_first_slot(binding);
-        let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, binding);
+        let kind = classify_redefinition(name.as_ref(), prior, binding);
         if prior_slot.is_some()
             && staged_slot.is_some()
             && !additional_decisions.iter().any(|decision| match decision {
@@ -1413,59 +1332,21 @@ fn plan_staging_commit_inner(
                 }
             });
         }
-        if staged_is_def && (staged_slot.is_some() || prior_was_def) {
-            outcomes.push(RedefinitionOutcome {
-                fq: FQSymbol {
-                    module: module.clone(),
-                    symbol: name.clone(),
-                },
-                kind,
-                per_symbol,
-                prior_was_def,
-                old_slot: prior_slot,
-                new_slot: staged_slot,
-            });
-        }
     }
-    let records = candidate
+    candidate
         .publish_staged(staging.clone(), &decisions)
         .map_err(|error| CranelispError::ModuleError {
             message: error.to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
-    for outcome in &mut outcomes {
-        if let Some(record) = records
-            .iter()
-            .find(|record| record.symbol == outcome.fq.symbol)
-        {
-            outcome.new_slot = record
-                .bodies
-                .iter()
-                .find_map(|body| body.published_slot.map(|slot| slot.index()));
-        }
-    }
     drop(candidate);
-    let targets = derive_codegen_batch(module, codegen_program, &tables);
-    for target in &targets {
-        let valid = tables.get(module).is_some_and(|table| {
-            table
-                .callable_target(target)
-                .is_some_and(|arm| matches!(arm.life, Life::Concrete { .. }))
-        });
-        if !valid {
-            return Err(CranelispError::ModuleError {
-                message: format!("prepared codegen target '{target:?}' is not callable"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            });
-        }
-    }
+    let targets = derive_codegen_batch(&staging);
     Ok(PreparedCommit {
         module: module.clone(),
         staging,
         decisions,
         tables,
         targets,
-        outcomes,
         unresolved_dispatch: Vec::new(),
     })
 }
@@ -1563,23 +1444,17 @@ pub(crate) fn validate_forms_dry_run(
 /// template — FIXME 0479) takes the complementary displacement arm: the
 /// prior `Code` is retained in the pool (frozen supersession) so compiled
 /// callers keep dispatching the frozen old chain through the still-populated
-/// slot instead of a use-after-free. Since S102 (§9.1.1 gate widening) BOTH
-/// slot-less-staged shapes — displacement and template-over-template — emit a
-/// `RedefinitionOutcome` with `prior_was_def: true`, feeding the §18.1.1
-/// downgrade (`stale:`) print (the T1 semantic cure itself is S103 —
-/// design §10 T1).
+/// slot instead of a use-after-free.
 ///
-/// The returned [`RedefinitionOutcome`]s ride `ProcessedCluster` back to the
-/// eval driver, which runs the dependent-recompilation transaction for
-/// `AbiChanging` outcomes (design §13). When `shared` is `None` (no session —
-/// unit tests, dry-run shapes) there is no retention pool to freeze into, so
-/// the gate degrades to the reuse-and-patch policy for every redefinition.
+/// When `shared` is `None` (no session — unit tests, dry-run shapes) there is
+/// no retention pool to freeze into, so the gate degrades to the
+/// reuse-and-patch policy for every redefinition.
 fn commit_staging_to_live(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
     shared: Option<&crate::session_v4::SharedState>,
-) -> Result<Vec<crate::redefine::RedefinitionOutcome>, CranelispError> {
+) -> Result<(), CranelispError> {
     let declared = shared.and_then(|s| s.declared_exports.get(module).map(|d| d.clone()));
     for (name, exposure) in staging.all_name_candidates() {
         crate::imports::check_exposed_candidate_closure(
@@ -1599,9 +1474,9 @@ fn commit_staging_to_live(
         shared.map(|shared| &shared.scheduler),
     )?;
     let Some(mut live) = symbol_tables.get_mut(module) else {
-        return Ok(Vec::new());
+        return Ok(());
     };
-    let (decisions, mut outcomes) = publication_plan(&live, &staging);
+    let decisions = publication_decisions(&live, &staging);
     let records =
         live.publish_staged(staging, &decisions)
             .map_err(|error| CranelispError::ModuleError {
@@ -1629,17 +1504,8 @@ fn commit_staging_to_live(
                 ));
             }
         }
-        if let Some(outcome) = outcomes
-            .iter_mut()
-            .find(|outcome| outcome.fq.symbol == record.symbol)
-        {
-            outcome.new_slot = record
-                .bodies
-                .iter()
-                .find_map(|body| body.published_slot.map(|slot| slot.index()));
-        }
     }
-    Ok(outcomes)
+    Ok(())
 }
 
 fn validate_guarded_staging(
@@ -1704,27 +1570,17 @@ fn validate_guarded_staging_except(
     Ok(())
 }
 
-fn publication_plan(
+fn publication_decisions(
     live: &crate::code::SessionSymbolTable,
     staging: &crate::code::SessionSymbolTable,
-) -> (
-    Vec<StagedPublicationDecision>,
-    Vec<crate::redefine::RedefinitionOutcome>,
-) {
-    use crate::redefine::{RedefKind, RedefinitionOutcome, classify_redefinition};
-    use cranelisp_types::FQSymbol;
+) -> Vec<StagedPublicationDecision> {
+    use crate::redefine::{RedefKind, classify_redefinition};
 
     let mut decisions = Vec::new();
-    let mut outcomes = Vec::new();
     for (name, binding) in staging.all_symbols() {
         let prior = live.get(name.as_ref());
-        let prior_was_def = prior.is_some_and(binding_is_definition);
-        let staged_is_def = binding_is_definition(binding);
-        let old_slot = prior.and_then(binding_first_slot);
-        let staged_slot = binding_first_slot(binding);
-        let (kind, per_symbol) = classify_redefinition(name.as_ref(), prior, binding);
-        if old_slot.is_some() && staged_slot.is_some() {
-            decisions.push(match kind {
+        if prior.and_then(binding_first_slot).is_some() && binding_first_slot(binding).is_some() {
+            decisions.push(match classify_redefinition(name.as_ref(), prior, binding) {
                 RedefKind::AbiChanging => StagedPublicationDecision::ChangeAbi {
                     symbol: name.clone(),
                 },
@@ -1735,21 +1591,8 @@ fn publication_plan(
                 }
             });
         }
-        if staged_is_def && (staged_slot.is_some() || prior_was_def) {
-            outcomes.push(RedefinitionOutcome {
-                fq: FQSymbol {
-                    module: live.path.clone(),
-                    symbol: name.clone(),
-                },
-                kind,
-                per_symbol,
-                prior_was_def,
-                old_slot,
-                new_slot: staged_slot,
-            });
-        }
     }
-    (decisions, outcomes)
+    decisions
 }
 
 /// Translate `CheckError` to the legacy `CranelispError` shape used by
@@ -1932,136 +1775,48 @@ pub(crate) fn ensure_typecheck_product(
 // internally by `Jit::new(symbol_tables)` (backend, BC §3). int assembles no
 // JIT symbols by hand.
 
-/// The predicate behind `derive_codegen_batch`'s forced-enrollment
-/// `debug_assert!` — "this name resolves to a live concrete body in the
-/// module's table".
+/// The codegen batch of a prepared turn: every concrete body the turn staged,
+/// and nothing else (`design/int/session-transaction.md` §2.5).
 ///
-/// Split out as a named function so the instrument's DISCRIMINATION is itself
-/// unit-testable without needing production code to be wrong (see
-/// `worker::tests::forced_enrollment_predicate_discriminates`). `None` table =
-/// the module is not in `tc_modules` yet; that is a legitimate no-table case,
-/// not a dead lookup, so it answers `true`.
-#[cfg(test)]
-fn forced_enrollment_resolves(
-    table: Option<&crate::code::SessionSymbolTable>,
-    target: &CallableTarget,
-) -> bool {
-    let Some(table) = table else {
-        return true;
-    };
-    table.callable_target(target).is_some_and(|arm| {
-        matches!(
-            arm.life,
-            Life::Concrete {
-                realization: Realization::Body { .. },
-                ..
-            }
-        )
-    })
-}
-
-/// Derive the typed codegen batch from a `program` and the module's symbol
-/// table. Separated out from `inline_jit_codegen_for_module` so unit tests can
-/// exercise the target-selection policy without standing up a full JIT
-/// pipeline. See the sprint's testing ownership clause.
-///
-/// The batch includes:
-/// - each `TopLevel::Defn`'s `name` (when the symbol-table entry has
-///   `ast: Some(_)` and is not a constrained template, a `Polymorphic`
-///   generic template (S84 Phase 4B, FIXME 0381 — its concrete mono
-///   instances carry the bodies that codegen), or an `Overloaded` base);
-/// - every mangled multi-sig variant whose base name appears in `program`;
-/// - `__expr` when `program` contains a `TopLevel::Expr` and that wrapper is a
-///   live concrete callable (a polymorphic value shown by REPL introspection is
-///   a template and has no body to codegen);
-/// - for each `TopLevel::TraitImpl`, every live mangled method `Def` of that
-///   TRAIT (`{trait}.` prefix + a `$` in the remainder) — not only the methods
-///   the impl explicitly provides, so a method whose source changes explicit ->
-///   default re-enrolls too (FIXME 0791);
-/// - any symbol-table entry with `$` in its name (mono specialisation or
-///   other mangling) that is not already compiled (`code: Some(_)` on the
-///   entry).
+/// Publication attaches the batch's code owner to exactly the staged
+/// `Concrete`/`Body` key set (`SymbolTable::publish_compiled_staged`). A
+/// compiled live sibling outside staging would have its slot patched with
+/// code nothing owns, freed when the turn ends (Principle 22). A re-impl
+/// whose method reverts to its trait default re-stages the synthesised
+/// default body, so selecting from staging still recompiles it.
 #[doc(hidden)]
 pub fn derive_codegen_batch(
-    module: &ModuleFullPath,
-    program: &[TopLevel],
-    tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    staging: &crate::code::SessionSymbolTable,
 ) -> Vec<cranelisp_types::CallableTarget> {
-    let Some(table) = tc_modules.get(module) else {
-        return Vec::new();
-    };
-    let mut candidates: Vec<_> = table
+    let mut targets: Vec<_> = staging
         .codegen_targets()
-        .map(|(target, arm)| {
-            let needs_codegen = matches!(
-                arm.life,
-                Life::Concrete {
-                    realization: Realization::Body { code: None, .. },
-                    ..
-                }
-            );
-            (target, needs_codegen)
-        })
+        .map(|(target, _)| target)
         .collect();
-    candidates.sort_by(|(left, _), (right, _)| left.cmp(right));
-
-    let mut targets = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut push_matching = |predicate: &dyn Fn(&CallableTarget) -> bool| {
-        for (target, _) in &candidates {
-            if predicate(target) && seen.insert(target.clone()) {
-                targets.push(target.clone());
-            }
-        }
-    };
-
-    // Source-present definitions are forced even if publication retained the
-    // prior compiled owner for ABI-preserving replacement. For an owned
-    // declaration family, matching the authored owner selects every concrete
-    // arm without turning an emitted label back into semantic identity.
-    for top in program {
-        match top {
-            TopLevel::Defn(defn) => {
-                push_matching(&|target| {
-                    callable_target_owner(target).is_some_and(|owner| owner.symbol == defn.name)
-                });
-            }
-            TopLevel::Expr(_) => {
-                push_matching(&|target| {
-                    callable_target_owner(target)
-                        .is_some_and(|owner| owner.symbol.as_ref() == SYNTHETIC_EXPR_WRAPPER)
-                });
-            }
-            TopLevel::TraitImpl(impl_) => {
-                // A re-impl must also recompile an omitted method restored from
-                // its default body. Select every concrete implementation body
-                // for the authored trait, as before, but return its typed
-                // binding target. The generated storage spelling is compared
-                // only as a private table key; it is never source-resolved.
-                let prefix = format!("{}.", impl_.trait_name);
-                push_matching(&|target| {
-                    callable_target_owner(target).is_some_and(|owner| {
-                        owner
-                            .symbol
-                            .as_ref()
-                            .strip_prefix(&prefix)
-                            .is_some_and(|rest| rest.contains('$'))
-                    })
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // Pick up newly synthesized constructors/accessors and monomorphic
-    // instances which have no corresponding authored top-level form.
-    for (target, needs_codegen) in candidates {
-        if needs_codegen && seen.insert(target.clone()) {
-            targets.push(target);
-        }
-    }
+    targets.sort();
     targets
 }
+
+/// Refuse, before codegen, a batch member that is not a staged concrete body:
+/// publication could not own its compiled code (§2.5).
+fn refuse_unstaged_codegen_targets(
+    staging: &crate::code::SessionSymbolTable,
+    targets: &[CallableTarget],
+) -> Result<(), CranelispError> {
+    let staged: std::collections::HashSet<_> = staging
+        .codegen_targets()
+        .map(|(target, _)| target)
+        .collect();
+    match targets.iter().find(|target| !staged.contains(*target)) {
+        None => Ok(()),
+        Some(target) => Err(CranelispError::ModuleError {
+            message: format!(
+                "invariant: prepared codegen target '{target:?}' is not a staged concrete body"
+            ),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }),
+    }
+}
+
 /// Compile the defined symbols of a module through the unified
 /// `compile_to_module` entry point.
 ///
@@ -2282,6 +2037,7 @@ where
         return Ok(());
     };
     let prepared = *prepared;
+    refuse_unstaged_codegen_targets(&prepared.staging, &prepared.targets)?;
 
     // Construct the JIT from the live tables before taking the target write
     // guard. Its GOT data symbols therefore name the canonical session slabs,
@@ -2544,7 +2300,6 @@ where
             unresolved_dispatch: Vec::new(),
         })
         .unresolved_dispatch = prepared.unresolved_dispatch;
-    processed.set_redefinitions(prepared.outcomes);
     let notification_names = prepared
         .targets
         .iter()

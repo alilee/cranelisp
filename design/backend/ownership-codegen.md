@@ -4,15 +4,18 @@
 [backend.md](backend.md).
 
 **Status:** the current design of the backend mechanisms that consume the
-ownership analysis without deciding a count: stack placement, confined
-atomicity, value flattening, reuse counters, the redefinition machinery and the
-supporting contracts. Counting — move, duplicate and drop — is
+ownership analysis without deciding a count: stack placement, value
+flattening, reuse counters, the redefinition machinery and the supporting
+contracts. Counting — move, duplicate and drop — is
 [uniform counting](uniform-counting.md), built at S123 W2. The counting
 mechanisms this document used to carry (borrow elision, the static uniqueness
 proof, the tail and COW counting contracts, the borrowed extern sibling) are
 deleted; their section numbers remain as one-line stubs because source and
-tests cite them. Verified against source on 2026-11-15. The increment ladders,
-as-built narratives and falsified analyses are in Git history.
+tests cite them. §0 records each mechanism's disposition under
+[Principle 27](../arch/principles/27-dev-tier-optimises-only-against-blow-up.md):
+the dev tier keeps an optimisation only against a change of growth rate.
+Verified against source on 2026-11-16. The increment ladders, as-built
+narratives and falsified analyses are in Git history.
 
 **Governing authority:** [the ownership spine](../arch/ownership-inference.md)
 (arch). Where this design and the spine disagree, the spine governs. The
@@ -30,19 +33,27 @@ producer of every fact consumed here is
 
 ## §0. Scope and state
 
-| Mechanism | Section | State |
-|---|---|---|
-| Master analysis-off toggle and cache key | §2 | Built |
-| Borrow elision | §3 | Retired (uniform counting) |
-| Stack placement for `NoEscape` | §4 | Built for scalar-payload ADT constructor calls. Closures and Vec literals decline; the region arena is deferred (§4.4) |
-| Non-atomic RC for `Confined` | §5 | Classifier retained with **no consumer**; every emitted RC operation is atomic. Disposition is the user's ([uniform counting](uniform-counting.md) §9.1) |
-| Uniqueness and reuse | §6 | Built: the dynamic Vec COW `rc == 1` check and the reuse counters. The static-proof elision is retired. **Not built:** general drop-guided reuse tokens (§6.1) |
-| One-word value flattening | §7 | Built |
-| Redefinition machinery (backend half) | §8 | Built |
-| Dual-symbol extern convention | §9 | Retired: no position borrows |
-| Vec-query trio in value position | §12.7 | Built |
-| Supporting contracts (golden oracle, counters, wrapper contracts, spark density, unit scenarios, producer pins) | §13 | Current |
-| RC/alloc seam assertion density | §15 | Row 6 built; rows 2 and 5 retired; rows 1, 3 and 4 open |
+The disposition column applies Principle 27's acid test: remove the mechanism
+and scale the input; if only the constant changes, the mechanism leaves the dev
+tier. The user ruled the schedule on 2026-11-16 (no new dev-tier optimisation;
+confined counting retires in S123; the rest in S124 with their API packets and
+spec rulings). A retiring mechanism's typecheck facts keep being produced.
+
+| Mechanism | Section | State | Disposition |
+|---|---|---|---|
+| Master analysis-off toggle and cache key | §2 | Built | Stays: the differential oracle, not an optimisation |
+| Borrow elision | §3 | Retired (uniform counting) | — |
+| Stack placement for `NoEscape` | §4 | Built for scalar-payload ADT constructor calls; closures and Vec literals decline | Constant factor: retires in S124 (§4). The region arena (§4.4) is release-tier |
+| Non-atomic RC for `Confined` | §5 | Retired at S123 W4: no classifier or census; every emitted RC operation is atomic unless the probe is set | Constant factor: release tier (§5). The unsound measurement probe stays |
+| Dynamic Vec COW check and reuse counters | §6 | Built | Stays: rule U2 holds an update loop linear ([uniform counting](uniform-counting.md) §2). The counters are instrumentation |
+| General drop-guided reuse | §6.1 | Not built | Release tier |
+| One-word value flattening | §7 | Built | Constant factor: retires in S124 (§7). The value-layout predicate stays a published fact |
+| Redefinition machinery (backend half) | §8 | Fresh slots built; the trap stub retired at S123 W4 (P13) | Not an optimisation |
+| Dual-symbol extern convention | §9 | Retired: no position borrows | The carrier's removal is `arch`'s, scheduled for S124 |
+| Vec-query trio in value position | §12.7 | Built | A required lowering, not an optimisation |
+| Spark density axis | §13.4 | Built, disabled by default | Retires in S124. Parallel evaluation itself stays (Principle 27's carve-out) |
+| Supporting contracts (golden oracle, counters, wrapper contracts, unit scenarios, producer pins) | §13 | Current | — |
+| RC/alloc seam assertion density | §15 | Row 6 built; rows 2 and 5 retired; rows 1, 3 and 4 open | — |
 
 ---
 
@@ -51,12 +62,13 @@ producer of every fact consumed here is
 The mechanisms land on existing seams; there is no new pipeline stage, graph or
 store. The main ones, by module (the seam map is `crates/cranelisp-backend/CLAUDE.md`):
 
-- **`cranelisp-backend/src/heap.rs`** — the RC emission helpers, the atomicity
-  decision (`use_nonatomic_arm`), `emit_stack_alloc`, `HeapCategory::classify`.
-  Only `cranelisp-backend/src/heap.rs` imports layout constants, so atomicity
-  and slot-initialisation changes stay local to it.
-- **`compiler/fn_compiler.rs`** — the stack-eligibility gates and the confined
-  classifier.
+- **`cranelisp-backend/src/heap.rs`** — the inline RC emission helpers, the
+  atomicity decision (`use_nonatomic_arm`), `emit_stack_alloc`,
+  `HeapCategory::classify`. The atomicity decision and stack-slot
+  initialisation live only here. Header layout is also read by
+  `compiler/rc_emission.rs` and `drop_glue.rs`.
+- **`compiler/fn_compiler.rs`** — the stack-eligibility gates and the site-fact
+  readers `node_escapes` and `node_confined`.
 - **`compiler/apply.rs`** — the stack-eligible constructor path.
 - **`compiler/vec_codegen.rs`** — the inline COW cores and their reuse
   counters.
@@ -108,10 +120,11 @@ cache, at the price of a rebuild on flip.
 
 ### 2.4 The measurement probes
 
-`CRANELISP_NONATOMIC_RC` (a documented-unsound blanket non-atomic probe)
-remains an independent, off-by-default measurement toggle. §5 shares its
-emission arms. It participates in neither the canonical run nor the golden
-corpus.
+`CRANELISP_NONATOMIC_RC` is a documented-unsound non-atomic probe and an
+independent, off-by-default measurement toggle. It is the only selector of the
+non-atomic emission arms, and it covers the inline helpers only (§5.2). It participates in neither the canonical run
+nor the golden corpus. It is an instrument, not a dev-tier optimisation: it
+measures the ceiling a release-tier non-atomic mechanism could reach.
 
 ---
 
@@ -134,6 +147,28 @@ consuming entry with nothing to adapt (§13.3).
 The mechanism is live: `STACK_ALLOC_ESCAPE_FACT_SOUND = true`, with
 `CRANELISP_NO_STACK_ALLOC=1` as the fine runtime oracle and
 `CRANELISP_NO_OWNERSHIP` as the coarse one.
+
+**Disposition: retires from the dev tier in S124** (Principle 27; it replaces
+the 2026-11-15 ruling that kept stack placement pending a cost measurement).
+Without it a `NoEscape` construction allocates on the RC heap, which costs a
+constant per construction and changes no growth rate. Until the S124 change
+lands, this section is the current design. The retirement is one change-set:
+
+- **Deleted:** `emit_stack_alloc` and `IMMORTAL_RC` (`heap.rs`), the
+  eligibility verdict and its five gates (§4.1), the spark-relocation flag
+  (§4.3) where the gate is its only reader, the `CRANELISP_NO_STACK_ALLOC`
+  oracle (§13.2.2 N4) and the `stack_slot` tally push.
+- **Kept:** typecheck's escape fact, produced and tested where it is computed.
+  With stack placement gone the backend has no escape reader except the spark
+  density scorer, which retires in the same sprint (§13.4).
+- **Evidence shape:** emission changes at every eligible construction, so the
+  golden corpus is re-baselined with attribution, and the analysis-on and
+  analysis-off lowerings agree on allocation placement. `BUILD_ID` invalidates
+  cached objects, so no schema bump is needed for placement alone.
+- **Other owners:** the `[RC_STATS]` `stack_slot` field belongs to intrinsics'
+  print surface; whether it stays as a zero or leaves is `design`(intrinsics)'s
+  and `arch`'s. Spec §12.1's descriptive layouts should not describe stack
+  placement after S124 (`spec`).
 
 ### 4.1 Eligibility
 
@@ -208,50 +243,63 @@ cannot.
 
 ## §5. Non-atomic RC for `Confined`
 
-### 5.1 One decision point, two gates
+**Disposition: retired from the dev tier** (Principle 27; user ruling
+2026-11-16). A confined cell counted atomically costs a constant per RC
+operation, so non-atomic counting belongs to the release tier. Typecheck keeps
+producing the `confined` site fact. Under uniform counting the classifier
+already had no caller: its one consumer was the return protect's increment,
+which [uniform counting](uniform-counting.md) §5 deleted, so its removal at
+S123 W4 left the golden corpus byte-identical.
 
-`RcAtomicity { Atomic, NonAtomic }` feeds a single decision,
-`heap::use_nonatomic_arm`: the per-site gate or the process-global probe. The
-gated helpers have `_atomicity` siblings, and the plain names delegate with
-`Atomic`. Soundness rests on typecheck's op-wise per-cell join: a cell is
-`Confined` only if every surviving RC operation on it runs on the owning
-strand, so mixed emission cannot race. The backend performs no strand
-reasoning.
+### 5.1 One decision point, one selector
 
-**No consumer (S123 W2).** The classifier `rc_atomicity_for_node` reads the
-node carrier `node_confined` and feeds the `[RC_SITE_STATS]` census (§13.2.2),
-but nothing calls it. Its one consumer was the return protect's
-materialization increment, which uniform counting removed. Every emitted RC
-operation is atomic. The disposition is the user's
-([uniform counting](uniform-counting.md) §9.1).
+Every inline RC helper asks one question, `heap::use_nonatomic_arm`, and its
+only input is the process-global `CRANELISP_NONATOMIC_RC` probe (§2.4). There
+is no per-site atomicity input. Every emitted RC operation is atomic unless the
+probe is set.
 
-**A consumer under uniform counting would be per binder.** The RC operations
-are now a binder's duplicates and drops, so the fact needed is "this binder's
-cell is confined". The analysis produces no confined binding today. A former
-`Symbol`-keyed carrier for binding sites was removed: it was provably always
-empty, and with no shadow save/restore it would have leaked an outer confined
-verdict onto an inner crossing binding — a data race. **Re-add rule:** only once
-the analysis confines a binding, and then keyed on the plan's binder identity,
-never on the name.
+`node_confined` stays as a site-fact reader for the spark density scorer
+(§13.4) and leaves with that axis in S124. Each probe-selected helper has a
+unit cell for both polarities, run in a child process because the probe is
+read once per process.
 
-### 5.2 What stays atomic
+**Re-entry rule, for a release-tier design.** Under uniform counting the RC
+operations are a binder's duplicates and drops, so a future consumer needs
+"this binder's cell is confined", which the analysis does not produce today.
+Key such a fact on the plan's binder identity, never on the name. A former
+`Symbol`-keyed binding carrier had no shadow save/restore and would have leaked
+an outer confined verdict onto an inner crossing binding, which is a data
+race. Shared artifacts (Vec element adapters, extern copy loops, canonical
+glue bodies) have no site identity and stay atomic in any design.
 
-Operations emitted inside shared artifacts have no site identity:
+### 5.2 What the probe covers
 
-| Artifact | Why it stays atomic |
+The probe selects the count update inside the inline helpers that call
+`use_nonatomic_arm`, wherever they are emitted. It does not reach the
+decrements other emitters write directly:
+
+| Emission | Under the probe |
 |---|---|
-| Vec element inc/dec adapters | one function per element type serves every vec of that shape |
-| Rust-side copy loops and `rc_inc`/`consume_shallow` | inside extern bodies; would need dual extern variants |
-| ADT and closure release | one canonical glue body serves every site of its type |
-| COW consumed-source decs and static vec-op decs | their sources are crossing in the measured corpus |
+| Inline increments and decrements in `heap.rs`, plain and nullary-guarded | non-atomic |
+| The Vec-aware decrement in `compiler/vec_codegen.rs`, including its use as the Vec glue adapter | non-atomic |
+| Canonical ADT, String and IO drop glue's own decrement (`drop_glue.rs`) | atomic |
+| Closure release (`compiler/rc_emission.rs`) and IVar releases (`let_if.rs`, `dependent_spark.rs`) | atomic |
+| Rust-side counts inside extern bodies (`cranelisp-intrinsics`) | atomic |
 
-`emit_vec_rc_dec_with_drop` has an atomicity input, but no confined verdict
-reaches it.
+A probe measurement therefore still includes those atomic operations and every
+free-path fence (§5.3). It approximates the per-site ceiling of a release-tier
+confined mechanism, not a blanket non-atomic build: it also reaches the Vec
+glue adapter, which the re-entry rule (§5.1) keeps atomic. Attribute a probe
+measurement to that set, not to all counting. The probe is unsound outside a
+single strand by design.
 
 ### 5.3 The free path
 
-The non-atomic dec keeps the `old == 1` → drop glue → `dealloc` sequence and
-omits the Acquire fence: single-strand cells need no publication ordering.
+Every decrement, probe-selected or not, keeps the `old == 1` → Acquire fence →
+drop glue → `dealloc` sequence; the probe changes only the count update. The
+fence runs once per free, not per operation, so it does not distort the
+per-operation measurement. The probe leg of the helper unit cells asserts
+that it survives.
 
 ---
 
@@ -304,6 +352,25 @@ split is a runtime tally, reported in the `[RC_STATS]` line (§13.2.1).
 ---
 
 ## §7. One-word value flattening
+
+**Disposition: retires from the dev tier in S124** (Principle 27). A
+one-word single-constructor value held on the heap costs an allocation and its
+counts, a constant per value. Until the S124 change lands, this section is the
+current design. What the retirement must respect:
+
+- **The predicate stays.** `value_layout` in `cranelisp-types` is a retained
+  fact (Principle 27, "Retained facts"); only the backend's use of it as a
+  representation retires. Typecheck's `Copy` mode no longer couples to
+  emission, because the backend reads no mode summary (§1), so §7.1's
+  "missing increment" hazard does not arise while `Value` is gone.
+- **It changes representation.** Removing the `Value` category changes
+  compiled layout, so `CACHE_SCHEMA_VERSION` is bumped (§7.4), the descriptor
+  baker renders those types as heap values (§7.5), and Vecs of them gain
+  element functions (§7.3).
+- **It changes the public surface.** `HeapCategory::Value` is a public
+  variant, so its removal goes through `arch` and the user's API gate.
+- Spec §12.1's descriptive layouts should not describe flattening after S124
+  (`spec`).
 
 ### 7.1 `HeapCategory::Value` and its single source
 
@@ -375,23 +442,12 @@ backend's contribution. Slot holes are never reclaimed.
 
 ### 8.1 The trap stub
 
-A symbol broken by a redefinition cascade gets a per-symbol stub:
-`iconst msg_ptr; iconst msg_len; call runtime/panic; trap`, emitted by the one
-raise helper ([backend.md §7](backend.md#7-runtime-failure)). It compiles with
-signature `() -> i64` and never reads its arguments, so one body is safe for any
-caller arity under the uniform all-i64 convention on SysV x86-64 and AAPCS64
-(register arguments are caller scratch, stack arguments are caller-cleaned).
-That is what makes patching the broken symbol's **existing** slot sound for
-unrecompiled callers. A shared intrinsic cannot do this, because the slot holds
-one bare pointer and no side channel says which symbol was hit.
-
-- **The message** is session-owned UTF-8 with no terminator, baked as
-  `(ptr, len)`. It must live exactly as long as the returned `Code` handle; a
-  broken symbol later recovered with a new ABI leaves its old slot on the stub
-  for the session's life.
-- **No return.** The `() -> i64` signature is kept only so the stub can occupy
-  the broken symbol's slot. The stub never returns, so the caller's consuming
-  increments are never balanced; the process ends at the raise.
+Retired at S123 W4 with packet row P13. A call to a symbol a redefinition
+would leave broken is refused at compile time (user ruling, 2026-11-15;
+`spec/12-runtime.md` §12.7.1), and int installs no stub
+([session transaction §5.2](../int/session-transaction.md#52-no-symbol-is-left-broken)).
+The backend no longer emits one; the raise helper's consumers are the three
+source messages ([backend.md §7](backend.md#7-runtime-failure)).
 
 ### 8.2 Fresh slots and frozen slots
 
@@ -405,11 +461,7 @@ is int's session pool.
 ### 8.3 The interface to int
 
 1. `compile_to_module` — unchanged, called per affected symbol.
-2. `compile_trap_stub(msg_ptr: *const u8, msg_len: usize) -> Result<(*const u8, Code), CompilationError>`
-   — builds the stub in a fresh per-symbol JIT (so `runtime/panic` resolves
-   through ordinary intrinsic registration) and returns the pointer to store in
-   the slot plus its retention handle.
-3. The GOT's `store_slot` and slot allocation — existing. Freezing a slot is
+2. The GOT's `store_slot` and slot allocation — existing. Freezing a slot is
    session bookkeeping, not a GOT mechanism.
 
 ---
@@ -438,11 +490,10 @@ the carrier is `arch`'s.
 
 ## §11. Quality attributes
 
-- **Simplicity.** Every mechanism rides an existing seam: the non-atomic arms,
-  the null element-function path, the panic machinery and the slot allocator.
-  Net-new machinery is stack-slot emission with its sentinel, the trap stub and
-  one manifest key.
-- **Maintainability.** Atomicity and slot initialisation stay in
+- **Simplicity.** Every mechanism rides an existing seam: the null
+  element-function path, the panic machinery and the slot allocator. Net-new
+  machinery is stack-slot emission with its sentinel and one manifest key. The S124 retirements (§0) remove the stack-slot emission.
+- **Maintainability.** The atomicity decision and slot initialisation stay in
   `cranelisp-backend/src/heap.rs`.
 - **Observability.** `[RC_STATS]` attributes the mechanisms (§13.2), the CLIF
   dump shows fact-gated deltas, and the toggle gives every observation an A/B
@@ -522,6 +573,9 @@ working:
 - `stack_slot`, `rc_nonatomic` and `rc_atomic` are **codegen-time** counts,
   honest for `--run` and the REPL (compile and run share a process) and honestly
   zero for a `--link` binary, which did no codegen.
+- `rc_nonatomic` and `rc_atomic` count only the probe-selected helpers (§5.2):
+  `rc_nonatomic` is non-zero only under the probe, and `rc_atomic` is not the
+  total of atomic operations emitted.
 
 The counter state and the print surface live in `cranelisp-intrinsics::rc`; the
 backend is the sole writer, pushing (`tally_stack_slot`, `tally_rc_emit`) from
@@ -538,10 +592,8 @@ changes a public API, a `cranelisp-types` item or a C-ABI symbol:
   form is a two-bucket in-spark versus parent tally keyed off a thread-local
   marker the spark runtime sets; a per-site dump needs a compile-to-run site
   channel and is heavier.
-- **N3 — per-site residual atomic RC** (`[RC_SITE_STATS]`) — built in
-  `rc_site_stats.rs`: a codegen-time map at `use_nonatomic_arm` keyed by
-  enclosing function and span with the confinement class, dumped by a
-  backend-side exit hook, so it needs no intrinsics print path.
+- **N3 — per-site residual atomic RC** (`[RC_SITE_STATS]`) — retired at S123
+  W4 with the confined classifier, its only record site (§5.1).
 - **N4 — fine stack oracle** — `CRANELISP_NO_STACK_ALLOC=1`, read once at codegen
   and ANDed with `STACK_ALLOC_ESCAPE_FACT_SOUND`, declines stack placement only
   while every other mechanism stays live. Built.
@@ -580,10 +632,12 @@ reduced repro.
 ### 13.4 Spark density — the fact supply
 
 The density admission axis is designed in [lenient-eval.md](lenient-eval.md)
-§2.7 and ships disabled by default (`SPARK_DENSITY_MAX_DEFAULT = 0`). This
-design's obligation is the fact supply: `spark_density` scores a candidate
-subtree through the same `node_escapes` and `node_confined` readers §4 and §5
-use, counting heap-result sites not covered by `NoEscape` and RC sites not
+§2.7 and ships disabled by default (`SPARK_DENSITY_MAX_DEFAULT = 0`). It is a
+tuning mechanism, not parallel evaluation itself, so it retires in S124
+(Principle 27's carve-out excludes it); with it go the backend's last readers
+of `node_escapes` and `node_confined`. Until then, this design's obligation is
+the fact supply: `spark_density` scores a candidate
+subtree through the same `node_escapes` and `node_confined` readers, counting heap-result sites not covered by `NoEscape` and RC sites not
 confined. **As built, the scorer also excludes sites it reads as borrow-elided
 projections.** Nothing elides them since the S123 cutover, so that exclusion
 under-counts; removing it is `dev`'s, and the axis ships disabled. A subtree
@@ -599,13 +653,13 @@ oracle.
 
 | Seam | Scenario space |
 |---|---|
-| RC helpers (`cranelisp-backend/src/heap.rs`, `rc_emission.rs`) | helper × atomicity {`NonAtomic`, `Atomic`} → non-atomic arm or unchanged atomic arm; the unsound probe still overrides |
+| RC helpers (`cranelisp-backend/src/heap.rs`, `rc_emission.rs`) | helper × probe {unset, set} → unchanged atomic arm or the non-atomic arm (§5.1) |
 | Wrappers (`fn_as_value.rs`) | dispatch kind {user function, extern, inline primitive, constructor, trait method, operator} × use {HOF argument, partial application, returned, stored, bound} × instantiation count {1, 2 same op, 2 different ops, n} × mode {REPL, `--run`} |
 | COW cores (`vec_codegen.rs`) | branch {mutate, copy, grow} × source count {1, >1} × call site {static, wrapper, curry} → the source is always owned; mutate and grow forward its reference, copy releases it; the result owns exactly one reference on every branch. Counting scenarios are the ownership plan's ([uniform counting](uniform-counting.md) §8) |
 | Vec literal element move-in | element {fresh temporary, COW-aliased result} × escape |
 | Stack placement | the five gates × `escapes` × site kind → stack slot or unchanged heap; sentinel behaviour |
 | Spark density (`sparkability.rs`) | facts {present, absent} × body {allocation-dense, compute-dense, mixed} × threshold boundary → admitted, declined, inert |
-| Trap stub and GOT | exhaustion, freeze, in-place patch |
+| GOT | exhaustion, freeze, in-place patch |
 
 ### 13.6 Producer pins
 

@@ -28,16 +28,14 @@ use cranelisp_backend::got_observer::{
 // Event taxonomy (consumer-side; mirrors backend's GotEvent for storage)
 // ---------------------------------------------------------------------------
 
-/// Consumer-side event tag: the backend-emitted tags plus the two int-owned
-/// redefinition-machinery kinds (S101, `design/int/session-transaction.md`
-/// §9.3) that backend's `GotEventTag` does not carry — **slot-freeze** (an
-/// ABI-changing redefinition froze the old slot and allocated a fresh one)
-/// and **trap-patch** (a BROKEN symbol's slot was patched to a trap stub).
+/// Consumer-side event tag: the backend-emitted tags plus the int-owned
+/// **slot-freeze** (`design/int/session-transaction.md` §9.3) that backend's
+/// `GotEventTag` does not carry: an ABI-changing redefinition froze the old
+/// slot and allocated a fresh one.
 #[derive(Debug, Clone, Copy)]
 pub enum StoredTag {
     Backend(GotEventTag),
     SlotFreeze,
-    TrapPatch,
 }
 
 /// Stored event with timestamp + thread-ordering metadata for merge-sort.
@@ -178,7 +176,6 @@ fn format_event_line(e: &StoredGotEvent) -> String {
         StoredTag::Backend(GotEventTag::Redefinition) => "Redefinition",
         StoredTag::Backend(_) => "Unknown",
         StoredTag::SlotFreeze => "SlotFreeze",
-        StoredTag::TrapPatch => "TrapPatch",
     };
     let prov = match e.provenance {
         GotProvenance::Jit { jit_addr } => format!("jit_addr={jit_addr:#x}"),
@@ -333,29 +330,8 @@ pub fn emit_slot_freeze(
     );
 }
 
-/// Emit a `TrapPatch` event (S101 §9.3): a BROKEN symbol's slot was patched
-/// in place to a trap stub (`ptr` = the stub's code address).
-pub fn emit_trap_patch(
-    module: &cranelisp_types::ModuleFullPath,
-    symbol: &cranelisp_types::Symbol,
-    slot: usize,
-    stub_ptr: *const u8,
-) {
-    if !filter_enabled() {
-        return;
-    }
-    record_int_event(
-        StoredTag::TrapPatch,
-        module,
-        symbol,
-        slot,
-        stub_ptr as usize,
-        GotProvenance::Jit { jit_addr: 0 },
-    );
-}
-
 /// Shared int-side ring-buffer push for events the backend observer does not
-/// emit (Redefinition / SlotFreeze / TrapPatch — see `emit_redefinition`'s
+/// emit (Redefinition / SlotFreeze — see `emit_redefinition`'s
 /// rustdoc for why these record directly into the consumer ring).
 fn record_int_event(
     tag: StoredTag,

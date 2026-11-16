@@ -326,9 +326,6 @@ impl core::marker::UnsafeUnpin for cranelisp_types::InstanceKeyError
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::InstanceKeyError
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::InstanceKeyError
 pub enum cranelisp_types::Life<C: cranelisp_types::CodeStore>
-pub cranelisp_types::Life::Broken
-pub cranelisp_types::Life::Broken::error: cranelisp_types::BrokenProvenance
-pub cranelisp_types::Life::Broken::slot: cranelisp_types::CallableSlot
 pub cranelisp_types::Life::Concrete
 pub cranelisp_types::Life::Concrete::ast: core::option::Option<cranelisp_types::DefnVariant>
 pub cranelisp_types::Life::Concrete::callees: alloc::vec::Vec<cranelisp_types::FQSymbol>
@@ -1099,28 +1096,6 @@ impl<C> core::marker::Unpin for cranelisp_types::Binding<C> where C: core::marke
 impl<C> core::marker::UnsafeUnpin for cranelisp_types::Binding<C> where C: core::marker::UnsafeUnpin
 impl<C> core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::Binding<C> where C: core::panic::unwind_safe::RefUnwindSafe
 impl<C> core::panic::unwind_safe::UnwindSafe for cranelisp_types::Binding<C> where C: core::panic::unwind_safe::UnwindSafe
-#[non_exhaustive] pub struct cranelisp_types::BrokenProvenance
-pub cranelisp_types::BrokenProvenance::broken_by: cranelisp_types::FQSymbol
-pub cranelisp_types::BrokenProvenance::message: alloc::string::String
-impl cranelisp_types::BrokenProvenance
-pub fn cranelisp_types::BrokenProvenance::new(cranelisp_types::FQSymbol, alloc::string::String) -> Self
-impl core::marker::Freeze for cranelisp_types::BrokenProvenance
-impl core::marker::Send for cranelisp_types::BrokenProvenance
-impl core::marker::Sync for cranelisp_types::BrokenProvenance
-impl core::marker::Unpin for cranelisp_types::BrokenProvenance
-impl core::marker::UnsafeUnpin for cranelisp_types::BrokenProvenance
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::BrokenProvenance
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::BrokenProvenance
-#[non_exhaustive] pub struct cranelisp_types::BrokenTransition<C: cranelisp_types::CodeStore>
-pub cranelisp_types::BrokenTransition::displaced_owner: core::option::Option<C>
-pub cranelisp_types::BrokenTransition::slot: cranelisp_types::CallableSlot
-impl<C> core::marker::Freeze for cranelisp_types::BrokenTransition<C> where C: core::marker::Freeze
-impl<C> core::marker::Send for cranelisp_types::BrokenTransition<C>
-impl<C> core::marker::Sync for cranelisp_types::BrokenTransition<C>
-impl<C> core::marker::Unpin for cranelisp_types::BrokenTransition<C> where C: core::marker::Unpin
-impl<C> core::marker::UnsafeUnpin for cranelisp_types::BrokenTransition<C> where C: core::marker::UnsafeUnpin
-impl<C> core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::BrokenTransition<C> where C: core::panic::unwind_safe::RefUnwindSafe
-impl<C> core::panic::unwind_safe::UnwindSafe for cranelisp_types::BrokenTransition<C> where C: core::panic::unwind_safe::UnwindSafe
 #[non_exhaustive] pub struct cranelisp_types::Callable<C: cranelisp_types::CodeStore>
 pub cranelisp_types::Callable::arm: cranelisp_types::CallableArm<C>
 pub cranelisp_types::Callable::docstring: core::option::Option<alloc::string::String>
@@ -1995,6 +1970,7 @@ pub cranelisp_types::SymbolTable::submodules: alloc::vec::Vec<cranelisp_types::M
 pub cranelisp_types::SymbolTable::written_trait_impls: alloc::vec::Vec<cranelisp_types::WrittenTraitImpl>
 impl cranelisp_types::SymbolTable<(), ()>
 pub fn cranelisp_types::SymbolTable<(), ()>::into_concrete<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>(self) -> cranelisp_types::SymbolTable<C, L>
+pub fn cranelisp_types::SymbolTable<(), ()>::release_callable(&mut self, &cranelisp_types::Symbol) -> core::result::Result<(), cranelisp_types::LifecycleError>
 impl cranelisp_types::SymbolTable<(), ()>
 pub fn cranelisp_types::SymbolTable<(), ()>::new(cranelisp_types::ModuleFullPath) -> Self
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> cranelisp_types::SymbolTable<C, L>
@@ -2018,7 +1994,6 @@ pub fn cranelisp_types::SymbolTable<C, L>::install_platform(&mut self, cranelisp
 pub fn cranelisp_types::SymbolTable<C, L>::install_template(&mut self, cranelisp_types::Symbol, cranelisp_types::Scheme, alloc::vec::Vec<cranelisp_types::Symbol>, core::option::Option<alloc::string::String>, u64, cranelisp_types::CallableOrigin, cranelisp_types::TemplateBody, cranelisp_types::TemplateKind, alloc::vec::Vec<cranelisp_types::FQSymbol>, cranelisp_types::Visibility) -> core::result::Result<(), cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::install_trait_method(&mut self, cranelisp_types::Symbol, cranelisp_types::TraitMethodRecord, cranelisp_types::Visibility) -> core::result::Result<(), cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::lookup_dependencies(&self) -> impl core::iter::traits::iterator::Iterator<Item = &cranelisp_types::ModuleFullPath>
-pub fn cranelisp_types::SymbolTable<C, L>::mark_broken(&mut self, &cranelisp_types::Symbol, cranelisp_types::BrokenProvenance) -> core::result::Result<cranelisp_types::BrokenTransition<C>, cranelisp_types::LifecycleError>
 pub fn cranelisp_types::SymbolTable<C, L>::name_candidates(&self, &cranelisp_types::Symbol) -> alloc::vec::Vec<cranelisp_types::NameCandidate>
 pub fn cranelisp_types::SymbolTable<C, L>::new_with_params(cranelisp_types::ModuleFullPath) -> Self
 pub fn cranelisp_types::SymbolTable<C, L>::public_name_candidates(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&cranelisp_types::Symbol, cranelisp_types::NameCandidate)>

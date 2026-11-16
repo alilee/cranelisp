@@ -354,8 +354,7 @@ ownership, slot conservation and atomic publication. This section maps the facad
   iterators and typed projections. No public iterator has write capability.
 - `codegen_targets` is exactly the concrete body realization projection over direct
   callables, overload arms and macro clauses. Templates, inline and host-promised callables,
-  extern, platform and facade realizations, and broken entries are excluded by lifecycle
-  shape.
+  extern, platform and facade realizations are excluded by lifecycle shape.
 - `CodeStore` and `LinkerStore` are sealed marker traits; only `arch` extends that boundary.
 
 ### Lifecycle authoring facade
@@ -368,9 +367,9 @@ ownership, slot conservation and atomic publication. This section maps the facad
   `settle_checked_concrete`, atomically across scheme, source body, view, callees and slot.
 - `publish_body_ownership` stamps an annotated view together with its summary; there is no
   one-sided summary setter.
-- `mark_broken` owns the concrete-to-broken transition and returns the displaced compiled
-  owner.
-- `remove_non_callable` and `discard_declared` are the only cleanup surfaces.
+- `remove_non_callable` and `discard_declared` are the only live-table cleanup surfaces.
+  `release_callable` is offered only on a decoded `SymbolTable<(), ()>`
+  ([symbol-table lifecycle §4.3](symbol-table-lifecycle.md#43-slot-identity)).
 - All slot minting, rebinding, displacement and retirement stays inside `SymbolTable`. There
   is no public allocator and no raw callable insertion.
 - Live publication is module-atomic. The binary supplies the complete decision set for a
@@ -423,8 +422,8 @@ for trait-implementation registration.
 
 ### Slot and cache authority
 
-- Slots occur only in `Life::Concrete`, `Life::Broken`, a declared callable's prior claim and
-  the private retired-slot tombstones. Allocation derives its unavailable set from live
+- Slots occur only in `Life::Concrete`, a declared callable's prior claim and the private
+  retired-slot tombstones. Allocation derives its unavailable set from live
   claims plus tombstones; no counter is stored. `CallableSlot` is an opaque newtype, so no
   other crate can mint one.
 - The per-module `GotTable` is the runtime pointer source and is rebuilt on restore. A

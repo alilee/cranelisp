@@ -3,13 +3,15 @@
 **Owner:** `arch`. **Reader:** `design`, `dev` and `review` for backend,
 intrinsics and Binary/int, and `qa` allocating evidence for them.
 
-**Status: approved target, not implemented.** The user's S123 rulings of
+**Status: approved; realization in progress.** S123 W1 (`f5822487`) and W3
+(`efd09d29`) are committed; §1.4's deletions are built in the uncommitted W4
+tree. The user's S123 rulings of
 2026-11-15 (`sprints/SPRINT.md`, User rulings) set the behaviour; the
 requirements are `spec/12-runtime.md` §12.7 and `repl/spec/00-cli-invocation.md`
 §0.8. This contract states the boundaries and invariants that realise them.
 The current contracts it replaces, listed in the
 [fold list](#3-where-each-section-folds-on-landing), describe the as-built
-system until the Phase 5 change-sets land. At that point `arch` folds each section
+system until the Phase 5 change-sets land. At S123 close `arch` folds each section
 into its listed home and retires this file.
 
 Exact public-API deltas are in the [S123 API packet](../../sprints/s123-api-packet.md).
@@ -116,26 +118,23 @@ Replaces safety register R13 (the fork-join ferry).
   (`repl/spec/18-redefinition.md` §18.1), so no publication leaves a callable
   broken and no compiled call can reach a trap. The interior is
   [session transaction §5.2](../int/session-transaction.md#52-no-symbol-is-left-broken).
-- **The broken state becomes unrepresentable.** The superseded redefinition
-  residue is deleted, and then packet row P13 removes `Life::Broken`,
+- **The broken state is unrepresentable** (Principle 20). The superseded
+  redefinition residue is deleted, and packet row P13 removed `Life::Broken`,
   `SymbolTable::mark_broken`, `BrokenProvenance`, `BrokenTransition` and
-  `cranelisp_backend::compile_trap_stub` (Principle 20). Grade until the
-  deletion lands: asserted, with the falsifiers of session transaction §5.2.
-  After it and before P13: structural in the binary, with one hole, a new
-  caller of the public `mark_broken`. After P13: structural.
-- **Redefinition outcomes retire with the residue.** After the deletion,
-  nothing consumes the commit gate's `RedefinitionOutcome`s: their fields
-  feed only the deleted transaction, the T1 reload and the broken-record
-  clearing, while the slot-policy decision and the rematerialization check
-  read `classify_redefinition` directly. So the outcomes, their
-  `ProcessedCluster` carrier and `apply_redefinition_outcomes` are deleted, not
-  settled. The approved S121 publication receipt
+  `cranelisp_backend::compile_trap_stub`; both are built in the W4 tree,
+  uncommitted (read 2026-11-16). Grade: structural
+  ([session transaction §5.2](../int/session-transaction.md#52-no-symbol-is-left-broken)).
+- **Redefinition outcomes retired with the residue.** Nothing consumed the
+  commit gate's `RedefinitionOutcome`s once the transaction, the T1 reload
+  and the broken-record clearing were gone; the slot-policy decision and the
+  rematerialization check read `classify_redefinition` directly. The outcomes,
+  their `ProcessedCluster` field and `apply_redefinition_outcomes` are deleted.
+  The approved S121 publication receipt
   (`design/int/s117-conformance-recovery.md` §1.1.3) existed so that a later
   `Err` could not discard the dependent work those outcomes drove. The REPL
-  redefinition rules (`repl/spec/18-redefinition.md`) now require no such
-  work, so the receipt is never built and its rule retires with its subject.
-  That follows from the user's redefinition and broken-symbol rulings, as
-  propagation of approved substance (`sprints/METHOD.md` §1.3). If a later
+  redefinition rules (`repl/spec/18-redefinition.md`) require no such work, so
+  the receipt retired unbuilt with its subject, as propagation of the user's
+  redefinition and broken-symbol rulings (`sprints/METHOD.md` §1.3). If a later
   requirement needs post-publication work to survive a later `Err`, the
   receipt's recorded shape in Git is the reference. The change is
   binary-private and passes no API gate.
@@ -297,7 +296,7 @@ Each section of this contract folds into the listed home:
 
 - §1.1 and §1.3: [bounded contexts](bounded-contexts.md) §4b (runtime-error slot, invariant 13) and §6 (one program driver); [safety invariants](safety-invariants.md) (R13 replaced; `catch-runtime-error` leaves R11's roster and R22's host-promised list).
 - §1.2: [test discovery](test-discovery.md), [tracing](tracing.md) §6, [effect concurrency](effect-concurrency.md) §10, [total concreteness](total-concreteness.md) §3.3.
-- §1.4: [bounded contexts](bounded-contexts.md) §6 (macro execution; the redefinition guard), and, once P13 removes `Life::Broken`, the [symbol-table lifecycle](symbol-table-lifecycle.md) and safety register R22's entry-convention list.
+- §1.4: [bounded contexts](bounded-contexts.md) §6 (macro execution; the redefinition guard). The [symbol-table lifecycle](symbol-table-lifecycle.md) half is folded (§4.2–§4.4, W4). R22 has no entry-convention list to fold into: U′ deleted `EntryConvention`.
 - §1.5: [test discovery](test-discovery.md) and [bounded contexts](bounded-contexts.md) §6.
 - §1.6: [bounded contexts](bounded-contexts.md) §4b.
 - §2.1: [bounded contexts](bounded-contexts.md) §6.

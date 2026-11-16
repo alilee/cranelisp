@@ -5909,6 +5909,10 @@ fn qualified_reference_to_unparseable_module_names_its_file_without_locking() {
 // save's event arrives by the end of the following turn. Legs that need the
 // save seen before the turn runs are `dev`'s module rows.
 
+// Allow event delivery and the design's 200 ms save-coalescing window while
+// stdin remains open at the prompt. This is placement, not a reload oracle.
+const IDLE_SAVE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
 const IS_READABLE: &[u8] = b"(defn g [] 5)\n(defn k [] 9)\n";
 const IS_UNREADABLE: &[u8] = b"(defn g [] 1)\n\xff\n";
 
@@ -5916,7 +5920,11 @@ const IS_UNREADABLE: &[u8] = b"(defn g [] 1)\n\xff\n";
 /// written while the REPL is idle at the next prompt, then the `after` lines
 /// are turns 2 onwards.
 fn idle_save_then(saved: &'static [u8], after: &[&'static str]) -> e2e::CrOutput {
-    let mut stages = vec![e2e::Stage::Line("(g)"), e2e::Stage::Write("user.cl", saved)];
+    let mut stages = vec![
+        e2e::Stage::Line("(g)"),
+        e2e::Stage::Write("user.cl", saved),
+        e2e::Stage::Wait(IDLE_SAVE_WAIT),
+    ];
     stages.extend(after.iter().map(|line| e2e::Stage::Line(line)));
     Cranelisp::new()
         .user("(defn g [] 1)\n")
@@ -6116,6 +6124,7 @@ fn save_then_definitions(during_startup: bool) -> e2e::CrOutput {
     };
     Cranelisp::new().user(&entry).repl().staged_output(&[
         save,
+        e2e::Stage::Wait(IDLE_SAVE_WAIT),
         e2e::Stage::Line("(g)"),
         e2e::Stage::Line("(defn h [] 2)"),
         e2e::Stage::Line("(k)"),
@@ -6214,6 +6223,7 @@ fn assert_created_save_survives(backing: BackingFile) {
         BackingFile::WrittenBySession => stages.push(e2e::Stage::Line("(defn g [] 1)")),
     }
     stages.push(e2e::Stage::Write("user.cl", CREATED_SAVE));
+    stages.push(e2e::Stage::Wait(IDLE_SAVE_WAIT));
     stages.push(e2e::Stage::Line("(defn h [] 2)"));
     let out = builder.repl().staged_output(&stages);
     let file = String::from_utf8_lossy(&final_user_cl(&out)).into_owned();
@@ -6385,4 +6395,195 @@ fn failed_import_reload_has_one_located_prefix_neg() {
             "failed-import reload diagnostic must have at most one located prefix; {line}"
         );
     }
+}
+
+fn w4_appearance(backing: BackingFile, saved: &[u8]) -> e2e::CrOutput {
+    let builder = match backing {
+        BackingFile::PresentAtStart => Cranelisp::new().user("(defn g [] 1)\n"),
+        BackingFile::Absent => Cranelisp::new(),
+        BackingFile::WrittenBySession => unreachable!(),
+    };
+    builder.repl().staged_output(&[
+        e2e::Stage::Write("user.cl", saved),
+        e2e::Stage::Wait(IDLE_SAVE_WAIT),
+        e2e::Stage::Line("(defn h [] 2)"),
+        e2e::Stage::Line("(k)"),
+        e2e::Stage::Line("(h)"),
+    ])
+}
+
+fn assert_w4_appearance_loaded(out: &e2e::CrOutput) {
+    let file = String::from_utf8_lossy(&final_user_cl(out)).into_owned();
+    let mut legs = Legs::default();
+    legs.check(out.status.success(), "session survives");
+    legs.check(
+        out.stdout.contains(":primitives/Int 9"),
+        "saved k is callable and gives 9",
+    );
+    legs.check(
+        out.stdout.contains(":primitives/Int 2"),
+        "later h is callable and gives 2",
+    );
+    legs.check(file.contains("(defn k [] 9)"), "final file holds k");
+    legs.check(file.contains("(defn h [] 2)"), "final file holds h");
+    legs.assert_all(&format!("{}\nfinal user.cl: {file:?}", transcript(out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.9 — R-1 loads a newly appearing backing file before regeneration.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev — ACT-1047; control: w4_appearance_recorded_file_loads_control.
+#[test]
+fn w4_appearance_loads_before_definition() {
+    assert_w4_appearance_loaded(&w4_appearance(BackingFile::Absent, CREATED_SAVE));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — the same save over a recorded backing file loads normally.
+#[test]
+fn w4_appearance_recorded_file_loads_control() {
+    assert_w4_appearance_loaded(&w4_appearance(BackingFile::PresentAtStart, CREATED_SAVE));
+}
+
+const W4_BAD_SAVE: &[u8] = b"(defn k [] (missing-w4-function 9))\n";
+
+fn assert_w4_appearance_locks(out: &e2e::CrOutput) {
+    let t = turns(&out.stdout);
+    let last = t.get(3).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(out.status.success(), "session survives failed load");
+    legs.check(
+        !error_blocks(out, "user.cl").is_empty(),
+        "failed load reports user.cl",
+    );
+    legs.check(
+        refusal_names(last, &["user.cl"]),
+        "later h call is locked with file and save remedy",
+    );
+    legs.check(
+        final_user_cl(out) == W4_BAD_SAVE,
+        "failing source stays byte-identical",
+    );
+    legs.assert_all(&transcript(out));
+}
+
+// spec: repl/spec/14-file-watching.md §14.9 — R-1 failing appearance locks and preserves source bytes.
+// defect: class=lost-update locus=src/session_v4/lifecycle.rs::CompilerSession::backing_file_changed_unseen found=S122 owner=/dev — ACT-1047; control: w4_appearance_recorded_bad_file_locks_control.
+#[test]
+fn w4_appearance_bad_file_locks_without_overwrite() {
+    assert_w4_appearance_locks(&w4_appearance(BackingFile::Absent, W4_BAD_SAVE));
+}
+
+// spec: repl/spec/14-file-watching.md §14.5 — the same failing save over a recorded file locks.
+#[test]
+fn w4_appearance_recorded_bad_file_locks_control() {
+    assert_w4_appearance_locks(&w4_appearance(BackingFile::PresentAtStart, W4_BAD_SAVE));
+}
+
+fn w4_deleted_then(after: &[e2e::Stage]) -> e2e::CrOutput {
+    let mut stages = vec![
+        e2e::Stage::Line("(g)"),
+        e2e::Stage::Remove("user.cl"),
+        e2e::Stage::Wait(IDLE_SAVE_WAIT),
+        e2e::Stage::Line("(g)"),
+    ];
+    stages.extend(after.iter().cloned());
+    Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .staged_output(&stages)
+}
+
+// spec: repl/spec/14-file-watching.md §14.9 — R-2 retains live definitions and recreates a deleted backing file on the next definition without asking.
+#[test]
+fn w4_deleted_file_keeps_definitions_and_recreates_without_asking() {
+    let out = w4_deleted_then(&[
+        e2e::Stage::Line("(defn h [] 2)"),
+        e2e::Stage::Line("(g)"),
+        e2e::Stage::Line("(h)"),
+        e2e::Stage::Line("(defn i [] 3)"),
+        e2e::Stage::Line("(i)"),
+    ]);
+    let file = String::from_utf8_lossy(&final_user_cl(&out)).into_owned();
+    let mut legs = Legs::default();
+    legs.check(out.status.success(), "session survives deletion");
+    legs.check(
+        !out.stdout.contains("[y/N]"),
+        "recreation does not ask permission",
+    );
+    legs.check(
+        out.stdout.matches(":primitives/Int 1").count() == 3,
+        "g stays callable after deletion and a later definition",
+    );
+    legs.check(
+        out.stdout.contains(":primitives/Int 2"),
+        "later definition remains live",
+    );
+    legs.check(
+        out.stdout.contains(":primitives/Int 3"),
+        "further definition remains live after recreation",
+    );
+    legs.check(
+        file.contains("(defn g [] 1)")
+            && file.contains("(defn h [] 2)")
+            && file.contains("(defn i [] 3)"),
+        "recreated file holds g, h and i",
+    );
+    legs.assert_all(&format!("{}\nfinal user.cl: {file:?}", transcript(&out)));
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — R-2a reloads a rename-over save and preserves it through later regeneration.
+#[test]
+fn w4_atomic_save_reloads_and_persists_saved_source() {
+    let out = Cranelisp::new()
+        .user("(defn g [] 1)\n")
+        .repl()
+        .staged_output(&[
+            e2e::Stage::Write("save.cl.tmp", b"(defn g [] 7)\n"),
+            e2e::Stage::Remove("user.cl"),
+            e2e::Stage::Rename("save.cl.tmp", "user.cl"),
+            e2e::Stage::Wait(IDLE_SAVE_WAIT),
+            e2e::Stage::Line("(g)"),
+            e2e::Stage::Line("(defn h [] 2)"),
+        ]);
+    let file = String::from_utf8_lossy(&final_user_cl(&out)).into_owned();
+    assert!(
+        file.contains("(defn g [] 7)") && file.contains("(defn h [] 2)"),
+        "rename-over source and later definition persist: {file:?}\n{}",
+        transcript(&out)
+    );
+    out.assert_ok().assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: repl/spec/14-file-watching.md §14.9 — R-2 restoring a deleted file reloads its new source.
+#[test]
+fn w4_deleted_file_restored_is_reloaded() {
+    let out = w4_deleted_then(&[
+        e2e::Stage::Write("user.cl", b"(defn g [] 7)\n"),
+        e2e::Stage::Wait(IDLE_SAVE_WAIT),
+        e2e::Stage::Line("(g)"),
+        e2e::Stage::Line("(defn h [] 2)"),
+    ]);
+    let file = String::from_utf8_lossy(&final_user_cl(&out)).into_owned();
+    assert!(
+        file.contains("(defn g [] 7)") && file.contains("(defn h [] 2)"),
+        "restored source and later definition persist: {file:?}\n{}",
+        transcript(&out)
+    );
+    out.assert_ok().assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: repl/spec/14-file-watching.md §14.9 — live definitions survive deletion without regeneration; also proves Stage::Remove removed the fixture.
+#[test]
+fn w4_removed_file_without_definition_control() {
+    let out = w4_deleted_then(&[]);
+    assert!(
+        !out.tmp_exists("user.cl"),
+        "staged removal must leave user.cl absent\n{}",
+        transcript(&out)
+    );
+    assert_eq!(
+        out.stdout.matches(":primitives/Int 1").count(),
+        2,
+        "{}",
+        transcript(&out)
+    );
+    out.assert_ok();
 }

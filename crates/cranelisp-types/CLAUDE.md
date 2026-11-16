@@ -40,9 +40,9 @@ the backend's `.meta.json` sidecars.
 
 ## Callability is structural — read through the accessors
 
-The GOT slot exists only on `Life::Concrete` and `Life::Broken` beneath a
+A callable GOT slot exists only on `Life::Concrete` beneath a
 `Decl::Callable`; templates, inline primitives and host-promised callables
-have no slot field
+have no slot field, and a `Life::Declared` prior claim is not callable
 ([Principle 20](../../design/arch/principles/20-model-invariants-by-representation.md)).
 Use the read-throughs; never re-pattern the lifecycle set:
 
@@ -91,8 +91,8 @@ Use the read-throughs; never re-pattern the lifecycle set:
 - **Public non-exhaustive lifecycle records have explicit authoring paths.**
   Construct `Callable`, `CallableArm`, `OverloadedCallable`,
   `MacroDeclaration`, `MacroClause`, `TraitRecord`, `TraitMethodRecord`,
-  `SpecialFormRecord`, `SynthSpec`, `ConstrainedMeta` and `BrokenProvenance`
-  through their role-specific `new` functions or the `SymbolTable` installers.
+  `SpecialFormRecord`, `SynthSpec` and `ConstrainedMeta` through their
+  role-specific `new` functions or the `SymbolTable` installers.
   Do not add raw field-literal or lifecycle-state escape hatches. `RetiredSlot`
   stays private; `ImplShell` is authored only through
   `enrol_written_trait_impl`. `NameCandidate` is read-only to consumers; only
@@ -124,9 +124,17 @@ Use the read-throughs; never re-pattern the lifecycle set:
   redefinition: the §18.5 structural policy is integration's redefinition
   guard ([symbol-table lifecycle §5.8](../../design/arch/symbol-table-lifecycle.md#58-constructors-and-accessors)).
 - **Cleanup is state-specific.** `remove_non_callable` is the ADT pre-seed
-  rollback; `discard_declared` accepts only `Declared { prior: None }`. There
-  is no generic callable remove, rename, mutable binding projection or
+  rollback; `discard_declared` accepts only `Declared { prior: None }`. A live
+  table has no generic callable remove, rename, mutable binding projection or
   caller-side slot reclamation.
+- **`release_callable` exists only on the decoded `SymbolTable<(), ()>`.** It
+  removes one callable and drops its slot claim with no tombstone, so the index
+  may be reissued; the receiver type admits no compiled owner. Its one
+  consumer is int's entry preload, before `into_concrete`. The caller must
+  release only an index that no loadable code embeds (rustdoc;
+  [symbol-table lifecycle §4.3](../../design/arch/symbol-table-lifecycle.md#43-slot-identity)).
+  Do not add a live-table twin: on a live table, tombstones protect published
+  code.
 
 ## Resolution primitive traps
 

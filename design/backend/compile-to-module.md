@@ -375,7 +375,7 @@ wrapper's captured arguments, are the forwarding template of
 - Entry contract, object mode, target collection and GOT emission:
   `crates/cranelisp-backend/src/module_assembly_tests.rs`.
 - Slab stability and bounds: `crates/cranelisp-backend/src/got_slab_tests.rs`.
-- Per-member failure attribution: [failed-member attribution](s117-failed-member-attribution.md) §5.
+- Per-member failure attribution: §15.
 - Constructors: §2.6.6.
 
 ## 14. Open points
@@ -388,7 +388,25 @@ wrapper's captured arguments, are the forwarding template of
 When one member of a batch fails, the error names that member's module and
 executable label. The attribution is attached at the body loop, where the
 identity is in hand, and the original cause and location pass through
-unchanged ([failed-member attribution](s117-failed-member-attribution.md)).
+unchanged; the helper must not format and re-parse either. A later-member
+failure may leave declarations inside the caller-owned, unpublished module,
+but it cannot publish a function pointer to the live GOT, so the backend gains
+no rollback, retention or transaction responsibility.
+
+- **Rejected sources of the identity**, each a second resolver for a fact the
+  loop already has: the failing body's callee or punctuation, a "last name"
+  side channel, a scan of the requested names or symbol tables, message
+  parsing in the backend or the binary, and a new error variant or shared
+  carrier to hold it.
+- **Out of scope:** a non-body batch error (target collection, declaration)
+  keeps the generic conversion and is not attributed by the body helper.
+- **Unit scenarios** (`module_assembly_tests.rs`, through production
+  `compile_to_module`): a later member failing after an earlier success is
+  attributed to the later member with its original source location, never to
+  the cause's callee; reversing the names moves the attribution with the
+  failing member; a single-name failure attributes the same way; a non-body
+  error stays unattributed; the success control is unchanged; and in JIT mode
+  the live GOT values are unchanged after the failure.
 
 ## 16. Error contract
 

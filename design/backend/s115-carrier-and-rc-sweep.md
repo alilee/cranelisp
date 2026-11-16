@@ -107,10 +107,9 @@ did not change the result. The bare-vector twin balanced at 202/202. Replacing
 the parameter with an unrelated fresh `Gr` leaked identically. That isolated the
 tail-jump parameter flush, not the match that consumes the parameter.
 
-The fix landed. The current rule is the single transfer/replacement predicate
-and its exemptions in
-[transitive drop glue §6](transitive-drop-glue.md#6-tco-replacementtransfer-predicate).
-The pins are the three tests in `tests/adt_wrapped_supersede_leak_0720.rs`,
+The fix landed. Its transfer/replacement predicate is retired: under uniform
+counting a tail self-call releases nothing at the jump
+([uniform counting](uniform-counting.md) §2.3). The pins are the three tests in `tests/adt_wrapped_supersede_leak_0720.rs`,
 including the bare-vector control. All three pass.
 
 ### 2.3 Acceptance bar
@@ -190,12 +189,6 @@ rule, and this seam propagates only the instance-key lifecycle error.
 
 ## 6. W-B5 patch-collapse — retired
 
-The planned collapse of the three fn-return finders (`return_var_in_scope`,
-`return_cow_source_in_scope`, `operand_live_binding_root`) onto one contract is
-retired: they answer three different questions — exact same-frame cleanup slot,
-carrier-keyed current-frame COW source, and name-valued provenance through
-binding indirection — and their separation is the current design
-([s122-closure.md](s122-closure.md) §5.1). Widening the fn-return skip to the
-binding-indirection class remains a potential extension with a stated hazard and
-trigger ([non-concrete-release-contract.md](non-concrete-release-contract.md)
-§10).
+Moot: the three fn-return finders it would have collapsed are deleted, and
+binder identity is the ownership plan's
+([uniform counting](uniform-counting.md) §3).

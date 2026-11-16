@@ -157,7 +157,7 @@ The two structural facts that dominate the tree today:
 | Test discovery and running | `session_v4/test_runner.rs` (the `discover-tests` extern and its runner state) + `test_runner/{discovery,selection,run}.rs` (the one eligibility scan, test-module selection and the run-and-report core shared by `--test`, `/run-tests` and `/run-all-tests`) ([test runner](test-runner.md)) |
 | Scheduling + workers | `scheduler.rs` (+ `scheduler/tests.rs`) — the single coordination authority; `worker.rs` (+ `worker/tests.rs`) priority/nice loops + codegen/cache subsystem; `worker_pool.rs`; `thread_util.rs` |
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
-| Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records and the boxed `PreparedCommit`, which lives in `worker.rs`; as built it also carries the committed `RedefinitionOutcome`s, which are deleted with the superseded residue ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken))). |
+| Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records and the boxed `PreparedCommit`, which lives in `worker.rs`. No redefinition outcome rides it ([session transaction §5.1](session-transaction.md#51-why-no-redefinition-can-break-a-caller)). |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
 | REPL command/display surface | `src/repl/` — five files; §3.3 states the structure and `src/CLAUDE.md` §"Session/REPL module map" lists the members |
 | Live redefinition | `redefine.rs` — the guarded-redefinition gate, blocking-dependent scan, instance-rematerialization policy, `RedefKind` slot classification and the retention pool (`session-transaction.md`); it still carries the superseded dependent-recompilation machinery recorded in `design/int/int.md` §16.0 |
@@ -2128,7 +2128,7 @@ Step that runs compiled code (REPL expression turn, /run-tests, /run-all-tests;
       the corrected build whose module trace shows that module restored by a
       pool worker during the turn.
     - *Forgotten failed load.* Every failed-module reset (after a failed
-      dependency wait, a T1 redefinition rollback, or a failed load's
+      dependency wait, a failed code turn, or a failed load's
       record at startup or for `/mod`) also resets a failed cached load, but it leaves the
       module's table installed, because the module was once terminal. A later
       step then no longer refuses, and a call into that module can reach an
@@ -3177,7 +3177,7 @@ live-state snapshot (a fifth instrument, not a sink) is in its §8.
 |---|---|---|---|
 | Scheduler trace | `CRANELISP_SCHEDULER_TRACE=1\|*\|<module-list>` | Worker lifecycle, scheduler dispatch, pool transitions, `is_typechecked` hit/miss | `src/observability.rs` (+ `observability/tests.rs`) |
 | IO trace | `CRANELISP_IO_TRACE=1\|*` | IO trampoline transitions, platform effects, Par fork-join | `src/io_trace.rs` |
-| GOT trace | `CRANELISP_GOT_TRACE=1\|*` | GOT-slot writes: JitWrite, LinkerWrite, Redefinition, SlotFreeze, TrapPatch | `src/got_trace.rs` |
+| GOT trace | `CRANELISP_GOT_TRACE=1\|*` | GOT-slot writes: JitWrite, LinkerWrite, Redefinition, SlotFreeze | `src/got_trace.rs` |
 | Introspection store | `RunMode::Repl` only (D1 §4) | Per-symbol metadata: source, sexp, clif_ir, code_size, compile_duration | `SharedState.introspection` |
 
 The first three are per-thread `VecDeque<Event>` ring buffers with FIFO overflow; activated by env-var; flushed to stderr at session end (with merge-sort across threads via shared `TRACE_ANCHOR` `Instant`; the IO sink's cross-thread half is currently unreachable — `observability.md` §10). Sinks 2 + 3 are reached via observer-callback contracts owned by their originating crates: `cranelisp_intrinsics::register_io_observer(...)` (Decision 40 — the registration host moved to intrinsics with the D43 split of the former `cranelisp-runtime`) and `cranelisp_backend::register_got_observer(...)` (FIXME 0099). `main` registers the observers when the activator is on, no-ops otherwise; the relaxed-load null check costs one branch per call site in the unregistered case.
@@ -3317,10 +3317,10 @@ dispositions never executed, and on files since deleted.
 The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
 
-- **S123 (designed 2026-11-15, Phase 3; not implemented).** Designed to the
+- **S123 (designed 2026-11-15, Phase 3).** Designed to the
   user's Phase 3 rulings (`sprints/SPRINT.md`) and arch's
   [panic and environment contract](../arch/s123-panics-and-environment.md).
-  Each item's design lives in the section named here.
+  Each item's design, and its build status, lives in the section named here.
   - *Agent on by default:* [agent §6.3–§6.4](agent.md#63-provider-selection).
     The default feature set gains `agent`, the provider fallback is removed,
     and the banner reports the activation answer.
@@ -3334,16 +3334,16 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     ACT-1041's host locus. Macro-expansion panics and platform dispatch faults
     end the process too.
   - *Broken symbols:* [session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken).
-    The redefinition guard is the compile-time refusal, and the superseded
-    residue is deleted.
+    The redefinition guard is the compile-time refusal. The superseded
+    residue was deleted in W4, and P13 is built in the W4 tree.
   - *ACT-1047, ACT-1048 and ACT-1020:* [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload)
-    (Absent is a recorded state; Deletion) and
+    (Absent is a recorded state; A deleted backing file needs nothing) and
     [§6](repl-lifecycle.md#6-project-root-resolution).
   - *Entry settled at publication (W1):* [§6.1.2](#612-the-entry-is-settled-before-the-eval-thread-owns-it).
   - *ACT-1017 prefix (W1):* [§6.11](#611-module-cycles-at-publication),
     Diagnostic.
-  - *ACT-1035:* [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition),
-    with the mechanism confirmed by probe.
+  - *ACT-1035:* [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition);
+    built in W4.
   - **Deltas at the user gate.** `arch` settled them as packet rows
     (`sprints/s123-api-packet.md`); the user's gate decides each:
     1. Packet row P8, consumed as stated: `src/exe.rs` calls
@@ -3372,6 +3372,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
        cache-schema bump: a broken entry is never written
        ([session transaction §8.3](session-transaction.md#83-broken-modules-are-not-persisted)).
        Scheduling, with packet B3 at S123 close or in S124, is the user's.
+       Both halves are built in the W4 tree, uncommitted:
+       `compile_trap_stub` and `Life::Broken` are gone
+       ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken)).
     6. `env_files` is binary-private (`mod env_files` in `main.rs`). As
        built, the root library also gains `pub mod agent_activation`
        ([agent §6.3](agent.md#63-provider-selection)): `pub mod agent`'s
@@ -3417,11 +3420,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
       green, together with `qa`'s S122 generic-edit probe shape.
     - *ACT-1047:* FC-1 with its control, plus the load leg (`(k)` gives 9 and
       the file holds `k` and `h`).
-    - *ACT-1048:* deleting a loaded `user.cl` prints the notice and keeps its
-      definitions callable. The next definition asks. A decline leaves the
-      file absent after later definitions, and a yes recreates it. Negative
-      leg: an editor's write-then-rename save gives no notice. A file restored
-      after deletion is reloaded.
+    - *ACT-1048:* the Deleted backing file row of
+      [REPL lifecycle §1.3.2](repl-lifecycle.md#132-module-evidence-dev),
+      under the user's 2026-11-16 ruling: no detection, notice or consent.
     - *ACT-1020:* `cranelisp core.str` loads `core/str.cl` in `--run` and the
       REPL, and a REPL empty start with that target writes `core/str.cl`.
       Control: an undotted target.
@@ -3607,38 +3608,6 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   table and reports the load error, and whether a second importer's
   already-installed guard takes the stale table as satisfied. Attribution
   belongs to `qa`.
-- **Superseded dependent-recompilation machinery.** `src/redefine.rs` still
-  contains the S101–S103 transaction (`run_transaction`, `mark_broken` and trap
-  stubs, the T1 end-of-turn reload, `TransactionReport` sections). It serves
-  no current requirement. S123 designs its deletion
-  ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken)).
-  Until then its T1 and T2 reloads run through the one reload executor and
-  lock on failure; T1's repairable error block retires with the whole-file
-  rebuild (`session-transaction.md` §10). Reachability differs by leg. The per-symbol
-  transaction runs only for an admitted language-type change, which the guard
-  admits only without a blocking dependent, so its closure should be empty
-  (read from source). The T1 reload is not guarded that way: a redefinition
-  where either the prior or the staged entry is slot-less — for example a
-  same-type generic body edit after realization, which changes no slot shape —
-  whose target has compiled callers satisfies `is_t1_downgrade`, and
-  `drive_t1_full_cure` would then reload the target and dependent modules,
-  which §18.1 excludes. `qa`'s S122 REPL probe of that shape (generic `f`,
-  named compiled caller `g`, same-type body edit, concrete twin as control)
-  observed conforming public behaviour: `g` returned the new value, the turn
-  printed only the ordinary confirmation, and no dependent was visibly
-  re-typechecked. Whether the reload leg executed is still unobserved — the
-  probe's sentinel was unarmed and confounded by stale macro persistence — so
-  this remains a suspected defect, not a confirmed one. The discriminating
-  observation is at the seam: whether `drive_t1_full_cure` reaches
-  `reload_module` on that input.
-- **Redefinition outcomes retire with the residue** (`arch`, 2026-11-15;
-  [arch §1.4](../arch/s123-panics-and-environment.md#14-macro-expansion-and-broken-symbols)).
-  The residue deletion above also deletes `RedefinitionOutcome`, its
-  `ProcessedCluster` field and `apply_redefinition_outcomes`, and the approved
-  S121 publication receipt retires unbuilt
-  ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken);
-  [S117 recovery §1.1.3](s117-conformance-recovery.md#113-post-publication-outcomes-retired)).
-  Binary-private; no API gate.
 
 ---
 

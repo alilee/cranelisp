@@ -27,6 +27,91 @@ use std::time::{Duration, SystemTime};
 
 use helpers::e2e::Cranelisp;
 
+// spec: design/int/session-transaction.md §7.5, §8.2 — restarting an unchanged
+// cached entry consumes no GOT capacity; repl/spec/00-cli-invocation.md §0.6.
+// defect: class=wrong-reject locus=src/session_v4/lifecycle.rs::retire_bodies_the_recompile_restages found=S123 owner=/dev
+#[test]
+fn cached_restarts_keep_generic_instance_slot_capacity_across_modes() {
+    // Depends on GOT_TABLE_SIZE = 1,024: k = 300 lies in 256..=340, so
+    // 2(k + 1) slots fit, but retiring k identities + Pure on every launch
+    // exhausts capacity by the third cache-enabled launch. Smaller per-launch leaks
+    // belong to the allocated lifecycle unit row, not this e2e sizing bound.
+    let mut source = String::from("(import [primitives [Pure add-i64]])\n");
+    for i in 0..300 {
+        source.push_str(&format!(
+            "(defn id{i} [x] x)\n(defn use{i} [] (id{i} {i}))\n"
+        ));
+    }
+    source.push_str("(defn main [] (Pure (add-i64 (use0) (use7))))\n");
+
+    let uncached = Cranelisp::new()
+        .user(&source)
+        .run("user.cl")
+        .cli_flag("--no-cache")
+        .output();
+    assert_slot_capacity_leg(&uncached, "--no-cache control", 7, "");
+    assert!(
+        !uncached.tmp_exists(".cranelisp-cache"),
+        "fixture error: --no-cache created a cache; stderr:\n{}",
+        uncached.stderr
+    );
+
+    let cold = uncached.run_again().run("user.cl").output();
+    assert_slot_capacity_leg(&cold, "launch 1: cold --run", 7, "");
+    assert!(
+        cold.tmp_exists(".cranelisp-cache/user.meta.json")
+            && cold.tmp_exists(".cranelisp-cache/user.o"),
+        "fixture error: cold launch did not write the cache; stderr:\n{}",
+        cold.stderr
+    );
+
+    let warm = cold.run_again().run("user.cl").output();
+    assert_slot_capacity_leg(&warm, "launch 2: cached --run", 7, "");
+
+    let linked = warm.run_again().link_then_run("user.cl").output();
+    assert!(
+        linked.linked_execution_elapsed.is_some(),
+        "launch 3: cached --link must succeed and execute its artifact; stdout:\n{}\nstderr:\n{}",
+        linked.stdout,
+        linked.stderr
+    );
+    assert_slot_capacity_leg(&linked, "launch 3: cached --link executable", 7, "");
+
+    let repl = linked.run_again().repl().stdin("(use7)\n/quit\n").output();
+    assert_slot_capacity_leg(&repl, "launch 4: cached REPL", 0, ":primitives/Int 7");
+
+    let final_run = repl.run_again().run("user.cl").output();
+    assert_slot_capacity_leg(&final_run, "launch 5: cached --run", 7, "");
+}
+
+fn assert_slot_capacity_leg(
+    out: &helpers::e2e::CrOutput,
+    leg: &str,
+    exit: i32,
+    expected_stdout: &str,
+) {
+    eprintln!(
+        "R-5 {leg}: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(exit),
+        "R-5 {leg}; stderr:\n{}",
+        out.stderr
+    );
+    if expected_stdout.is_empty() {
+        assert_eq!(out.stdout, "", "R-5 {leg}; stderr:\n{}", out.stderr);
+    } else {
+        assert!(
+            out.stdout.contains(expected_stdout),
+            "R-5 {leg}: missing {expected_stdout:?}; stdout:\n{}\nstderr:\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
 // spec: spec/03-types.md §3.6.3 — cached generic definitions preserve distinct
 // result-context specializations at independent Int and String uses.
 #[test]
