@@ -844,3 +844,4 @@ judges adequacy for the Phase 5 → 6a checkpoint.
   the changed `AgentState` fields widen the root crate's public surface beyond
   packet A4 with no external consumer; resolved by making them crate-private,
   not by an API gate.
+- W3 closed 2026-11-16 and committed as `efd09d29`. Open for the user: confined non-atomic counting (`uniform-counting.md` §9.1) and `spec/07-traits.md` §7.7.1 wrapping with `Unchecked` removed. Carried: ACT-1051 (idle-save lock test race, `test`).
