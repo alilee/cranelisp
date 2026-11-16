@@ -104,7 +104,7 @@ adapters match the shared allocation and add repository entry context only.
 
 **Dispatch.** Use a fresh named subagent in the primary harness when it offers
 the exact shared provider, model and effort; fresh context supplies review
-independence. The package allocates `arch`, `dev` and `qa` to Claude and the
+independence. The package allocates `arch`, `design`, `dev` and `qa` to Claude and the
 other subordinate roles to Codex; see `.agents/CONSUMING.md` §Role allocation
 and dispatch.
 For a role hosted by another provider, use the corresponding shared transport
@@ -281,7 +281,7 @@ individual behavior is not language specification.
 ## Git & Remote
 
 - **Remote**: `origin` → `https://github.com/alilee/cranelisp`
-- **History**: The remote uses an orphan commit (no prior history). When pushing, always force-push (`git push --force origin main`) since the local repo has a longer reflog that doesn't share ancestry with the remote.
+- **History**: Local `main` and `origin/main` share ancestry. Push with a plain `git push origin main`; do not force-push.
 - **Do not push without explicit user request.**
 - **Commit directly to `main`; do NOT create branches.** This single-developer repo is managed linearly on `main` — sprint/feature/worktree branches only accumulate as cruft (and worktree isolation is broken here anyway; see §Testing "single agent at a time"). This **overrides** the general "branch first when on the default branch" convention. There is no merge step at sprint close — work is already on `main`. (The forbidden-git-ops list for subagents still applies: no `stash drop/clear`, `reset --hard`, `checkout --`, `restore`, `clean -f/-fd`.)
 

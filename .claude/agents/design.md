@@ -1,8 +1,8 @@
 ---
 name: design
 description: Design one crate-shaped surface's interior; does not edit code
-provider: codex
-model: gpt-6.1-sol
+provider: claude
+model: claude-opus-5-5
 effort: medium
 ---
 
