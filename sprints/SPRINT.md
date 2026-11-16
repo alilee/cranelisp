@@ -622,8 +622,8 @@ accepting every recommendation presented with it:
     mechanism matches.
   - The user: carries with a committed failing test carry without a ruling.
   - ACT-1052: the user asked for its failing test now. `qa` reproduced it
-    (SIGSEGV across modes) and `test` committed K-6 RED; its fix is put to the
-    user.
+    (SIGSEGV across modes) and `test` committed K-6 RED. The user carried the
+    fix to S124 with the cache and slot work.
 
 ## Waves (Phase 4 proposal)
 
