@@ -98,7 +98,7 @@ new generic template. No dependent caller is re-typechecked or recompiled. If
 any part of the candidate fails, the complete prior base or family and all its
 prior realizations remain live.
 
-#### 18.1.2 Interim Ownership-ABI Compatibility Gate [Uncovered S121]
+#### 18.1.2 Interim Ownership-ABI Compatibility Gate [S124 — partial: tests/repl_redefinition::same_type_ownership_abi_change_is_rejected_before_slot_patch evidences the ordinary-slot parameter-mode rejection without callers, its diagnostic and old-body retention; tests/repl_redefinition::caller_free_type_change_publishes evidences the caller-free language-type change; tests/cache::cache_restored_sum_field_projection_keeps_ownership_abi and src/worker/tests.rs::cache_preloaded_sum_projection_recheck_preserves_ownership evidence unconstrained restart reconstruction; a result-mode change, the overload-member, generic-realization and impl-method slots, whole-unit non-publication and source retention are unevidenced, and the gate's S124 retirement (ACT-0953) decides whether they are owed]
 
 Ownership modes and `ModeSummary` remain compiler-internal information and are
 not part of a callable's language type. They nevertheless form the ownership

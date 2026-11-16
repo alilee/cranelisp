@@ -289,7 +289,7 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 (defn make-point [:Int x :Int y] :Point (Point x y))
 ```
 
-### 8.3.11 Accessibility After Import [Tested+Neg]
+### 8.3.11 Accessibility After Import [S124 — partial: tests/spec_08_modules::glob_import_bare_ctor_still_resolves evidences the `*` and `Symbol.*` bare-member rows; the `Symbol.member` row fails (ACT-1055) and a member glob in a multi-entry list drops its neighbours (ACT-1056); the remaining rows and negatives are not assessed]
 
 Each entry in an import name list independently affects what is in bare scope after the import resolves. The following base cases enumerate the effects for an import from a module that exports a type `Option` with constructors `Some` and `None`. Multi-entry name lists union their effects (see §8.3.10 for accumulation rules across forms; the same rules apply within a single name list).
 

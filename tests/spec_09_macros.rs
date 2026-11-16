@@ -159,39 +159,26 @@ fn macro_arity_mismatch_error() {
 // spec: spec/09-macros.md §9.2.3 — macro body returning Int (non-Sexp) is rejected
 #[test]
 fn macro_body_non_sexp_int_rejected_neg() {
-    // `(defmacro bad [x] 42)` — body typechecks to Int, not Sexp. MUST be a
-    // compile-time error. REPL mode: the error appears in the output.
     let out = repl_prims("(defmacro bad [x] 42)\n");
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        combined.to_lowercase().contains("error") || combined.contains("Sexp"),
-        "macro body of type Int must be rejected with a type error naming Sexp; got: {combined}"
-    );
+    assert_macro_return_mismatch(&out);
 }
 
 // spec: spec/09-macros.md §9.2.3 — macro body returning Bool (non-Sexp) is rejected
 #[test]
 fn macro_body_non_sexp_bool_rejected_neg() {
-    // `(defmacro bad [x] true)` — body typechecks to Bool, not Sexp. MUST be
-    // a compile-time error. `--run` mode: the program must NOT compile and
-    // run to a clean exit.
-    let out = Cranelisp::new()
-        .run("user.cl")
-        .with_prelude(PreludeVariant::None)
-        .user(
-            "(defmacro bad [x] true)\n\
-             (defn main [] (bad 1))",
-        )
-        .output();
-    let combined = format!("{}{}", out.stdout, out.stderr);
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "macro body of type Bool must be rejected (non-zero exit); combined:\n{combined}"
+    let out = repl_prims("(defmacro bad [x] true)\n");
+    assert_macro_return_mismatch(&out);
+}
+
+fn assert_macro_return_mismatch(out: &helpers::e2e::CrOutput) {
+    let diagnostic = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diagnostic.contains("type mismatch:") && diagnostic.contains("Sexp"),
+        "expected a macro return type mismatch: {diagnostic}"
     );
     assert!(
-        combined.to_lowercase().contains("error") || combined.contains("Sexp"),
-        "macro body of type Bool must be diagnosed with a type error naming Sexp; got: {combined}"
+        !diagnostic.contains("; defmacro"),
+        "rejected declaration was published: {diagnostic}"
     );
 }
 
@@ -1272,4 +1259,107 @@ fn nested_quasiquote_depth_agreement_double_unquote_expands_single_does_not() {
         .assert_stdout_contains("Sexp.SexpSym \"mm\"")
         .assert_stdout_does_not_contain("777")
         .assert_stdout_does_not_contain("should have been expanded");
+}
+
+// K-9 / ACT-1057; allocation: plan/s123-evidence-delta.md §8.10.
+fn unused_macro_run(declaration: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .file(
+            "app.cl",
+            &format!("{declaration}\n(defn main [] (primitives/Pure 0))\n"),
+        )
+        .run("app.cl")
+        .with_prelude(PreludeVariant::None)
+        .output()
+}
+
+fn assert_unused_macro_rejected(declaration: &str) {
+    let out = unused_macro_run(declaration);
+    assert!(
+        out.status.code().is_some(),
+        "compiler aborted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.status.success(),
+        "accepted unused non-Sexp macro (exit {}): {}{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+    assert_macro_return_mismatch(&out);
+}
+
+// spec: spec/09-macros.md §9.2.3, §9.9.1 — reject non-Sexp bodies even when unused
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+#[test]
+fn macro_nullary_non_sexp_rejected_at_definition_neg() {
+    assert_unused_macro_rejected("(defmacro bad [] 3.14)");
+}
+
+// spec: spec/09-macros.md §9.2.3, §9.9.1 — reject non-Sexp bodies even when unused
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+#[test]
+fn macro_rest_only_non_sexp_rejected_at_definition_neg() {
+    assert_unused_macro_rejected("(defmacro bad [& xs] 3.14)");
+}
+
+// spec: spec/09-macros.md §9.2.3, §9.9.1 — reject non-Sexp bodies even when unused
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+#[test]
+fn macro_multi_clause_nullary_non_sexp_rejected_at_definition_neg() {
+    assert_unused_macro_rejected("(defmacro bad ([] 42) ([x] (quote 1)))");
+}
+
+// spec: spec/09-macros.md §9.9.1 — locate the mismatch at the defmacro form
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+#[test]
+fn macro_return_mismatch_located_at_definition_neg() {
+    let out = unused_macro_run("(defmacro bad [x] 42)");
+    assert!(
+        !out.status.success(),
+        "non-Sexp macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_macro_return_mismatch(&out);
+    let diagnostic = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diagnostic.contains("app.cl:1:"),
+        "mismatch must name line 1: {diagnostic}"
+    );
+}
+
+// spec: spec/09-macros.md §9.2.3, §9.9.1 — REPL rejects the declaration and remains usable
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+#[test]
+fn macro_nullary_non_sexp_repl_rejects_without_publication_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin("(defmacro bad [] 3.14)\n42\n")
+        .output();
+    assert!(
+        out.status.success(),
+        "REPL did not survive: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_macro_return_mismatch(&out);
+    out.assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/09-macros.md §9.2.3 — quoted nullary macro body is a valid Sexp
+#[test]
+fn macro_nullary_quoted_body_control() {
+    Cranelisp::new()
+        .file(
+            "app.cl",
+            "(defmacro good [] (quote 7))\n(defn main [] (primitives/Pure (good)))",
+        )
+        .run("app.cl")
+        .with_prelude(PreludeVariant::None)
+        .output()
+        .assert_exit(7);
 }

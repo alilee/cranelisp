@@ -26,7 +26,9 @@
 ;; sequentially or in parallel. Programs MUST NOT depend on
 ;; evaluation order within a `let` block.
 ;;
-;; Disable with: CRANELISP_NO_LENIENT=1
+;; Disable by setting CRANELISP_NO_LENIENT=1 on the compiler invocation.
+;; With --link, the setting is baked into the executable: relink to change it.
+;; Setting it only when launching an already-linked program has no effect.
 
 ;; --- Expensive helper functions ---
 ;; These are non-trivial computations the compiler considers

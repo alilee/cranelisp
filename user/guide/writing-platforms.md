@@ -74,6 +74,7 @@ inside a syscall waiting to be interrupted.
 
 Each async-capable effect is a **poll function** with a uniform signature (C-ABI):
 
+<!-- sample: {"kind":"illustrative","reason":"Poll-function signature pseudocode"} -->
 ```
 poll(state, ctx, waker) -> Ready | Pending
 ```
@@ -92,6 +93,7 @@ first-poll-vs-re-poll phase for you.
 Every poll-shape leaf has the **same skeleton**
 ([`effect-concurrency.md §4.1.1`](../../design/arch/effect-concurrency.md)):
 
+<!-- sample: {"kind":"illustrative","reason":"Rust-side polling pseudocode"} -->
 ```
 poll(state, ctx, waker):
     token = project_token(state.handle)          # you compute it from your handle
@@ -157,6 +159,7 @@ program a **handle**: an ordinary cranelisp ADT. Two properties define the model
    address) in real ADT fields the program can `match` open. Model it on
    `std::net::TcpStream` with `as_raw_fd()` *available* — not a sealed newtype.
 
+   <!-- sample: {"kind":"definition"} -->
    ```clojure
    ;; the web Connection: a slim opaque handle carrying only the platform's fd
    (deftype Connection [:primitives/Int fd])
@@ -271,6 +274,7 @@ own effects must live in a **different** module
    `ctx`-vtable model these wrappers are near-trivial pass-throughs (no token/capacity
    pair to thread, no descriptor to read):
 
+   <!-- sample: {"kind":"illustrative","reason":"Wrapper fragment requires platform-specific read-conn and send-conn imports"} -->
    ```clojure
    ;; serve.cl — wrappers over the raw platform effects
    (defn read [conn]      (read-conn conn))

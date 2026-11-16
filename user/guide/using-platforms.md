@@ -7,6 +7,7 @@ console operations most programs start with.
 
 Using a platform is **two steps**, and missing the second is the usual first stumble:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (platform stdio)                 ; step 1 — load the DLL and register its module
 (import [platform.stdio [*]])    ; step 2 — bring its functions into scope
@@ -20,6 +21,7 @@ that is the author's side and none of it is needed to consume a platform.
 
 ## Step 1 — `(platform <name>)` loads and registers
 
+<!-- sample: {"kind":"definition","group":"platform"} -->
 ```clojure
 (platform stdio)
 ```
@@ -37,6 +39,7 @@ its names.
 
 ## Step 2 — `(import [platform.<name> [*]])` brings functions into scope
 
+<!-- sample: {"kind":"definition","group":"platform"} -->
 ```clojure
 (import [platform.stdio [*]])          ; everything the platform exports
 ;; or name what you use:
@@ -60,6 +63,7 @@ The synthetic module a platform registers is `platform.<name>` — **singular
 A very easy typo is `platforms.stdio` (plural). There is **no** `platforms.stdio`
 module, so `(import [platforms.stdio [*]])` fails with:
 
+<!-- sample: {"kind":"illustrative","reason":"Output-only diagnostic fragment"} -->
 ```
 module 'platforms.stdio' not found
 ```
@@ -76,6 +80,7 @@ REPL and `--run` behave identically here: without the import, both report
 Put this in `hello.cl` and run it with `--run`, with the platform on the search
 path ([below](#finding-the-dll--the-platform-search-path)):
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (platform stdio)
 (import [platform.stdio [*]])
@@ -83,6 +88,7 @@ path ([below](#finding-the-dll--the-platform-search-path)):
 (defn main [] (print "hello world"))
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell launch and stdout"} -->
 ```
 $ CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug cranelisp --run hello.cl
 hello world

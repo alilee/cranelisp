@@ -14,17 +14,15 @@ defn
 
 (area 3 4)
 
-; /sig reports the multi-sig name; variants appear under mangled names
+; /sig reports each signature under the shared name; /list shows that name.
 
 /sig area
 
 /list
 
-; Each variant is separately compiled — /clif shows the generated IR
+; /clif on the shared name displays the separately compiled overload arms.
 
-/clif area$Int
-
-/clif area$Int+Int
+/clif area
 
 ; Type-based dispatch — same name, different argument types
 

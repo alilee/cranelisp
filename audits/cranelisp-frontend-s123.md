@@ -182,7 +182,7 @@ separate from this defect family.
 **Priority: high. Proposed owner: `qa`, then `arch` for any carrier/API delta.
 Cost: medium, with public-interface approval potentially required.**
 
-[Import composition](../spec/08-modules.md#8311-accessibility-after-import-testedneg)
+[Import composition](../spec/08-modules.md#8311-accessibility-after-import)
 requires independent entry classification and explicitly permits
 `(import [m [Option Option.*]])`. Exports inherit the grammar, including module
 aliases, under §8.4 and §8.4.4.

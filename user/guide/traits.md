@@ -13,15 +13,18 @@ them at the edges.
 
 > **About the transcripts.** Every `user>` transcript on this page was checked
 > against the real binary; the prompt's timing prefix (`3+0ms; user>`) is elided
-> to `user>` for readability. The examples import primitives explicitly
-> (`add-i64`, `str-len`) so they run in any directory, with or without the
-> standard prelude on the search path.
+> to `user>` for readability; startup is omitted. Use the default prelude for
+> these groups. Keep the preceding declarations and shown primitive imports
+> when replaying a dependent transcript. The return-type group imports
+> `default` explicitly; the higher-kinded group uses the prelude's `Option`,
+> `Some`, `None` and `+` alongside the `Functor` declared in that group.
 
 ## Declaring a trait — `deftrait`
 
 A trait is a bare (uppercase) name followed by one or more **method signatures**.
 Each signature is `(name [params] ReturnType)`:
 
+<!-- sample: {"kind":"definition","group":"describe"} -->
 ```clojure
 (deftrait Describe
   (describe [self] String))
@@ -40,6 +43,7 @@ Two things to know about the parameter list:
 
 A trait may declare several methods:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (deftrait Eq
   (= [a b] Bool)
@@ -54,6 +58,7 @@ Here the bare params `a` and `b` both take the implementing type, so for
 Inside the parameter bracket, `:Type name` is how you annotate a parameter. In
 the **return** position there is no colon: you write the type bare.
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (deftrait Describe
   (describe [self] String))     ; String — not :String
@@ -62,7 +67,9 @@ the **return** position there is no colon: you write the type bare.
 This looks like an inconsistency with `defn`, and it is worth understanding why
 it is not. A `defn` has a **body**:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
+(import [primitives [mul-i64]])
 (defn area [:Int r] :Int (mul-i64 r r))
 ```
 
@@ -98,6 +105,7 @@ an **occurrence** rule, not a rule about parameter counts — a non-empty parame
 list does not rescue a signature if every parameter is annotated with some *other*
 type:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait Zeroable (zed [] Int))
 Error: type error at 19..31: trait `Zeroable` method `zed`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
@@ -114,6 +122,7 @@ with the type being implemented — that is a plain `defn`, not a trait method.
 restriction on any other type variables a method wants to introduce, so a method
 may be generic in its own right as long as the implementing type also occurs:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait Mappable (map-val [:(Fn [a] b) f x] self))
 :user/Mappable ; deftrait
@@ -133,6 +142,7 @@ A **marker trait** — a trait with no methods at all, existing only to be asser
 by an impl and required as a bound, like other languages' `Send` or `Sized` — has
 **no form in Cranelisp today**. A trait must declare at least one method:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait Marker)
 Error: parse error at 0..17: deftrait requires a trait head and at least one method
@@ -158,6 +168,7 @@ specified" rather than a hedge — see
 An `impl` block names the trait, then the target type, then a `defn` for each
 method. The `defn` parameter counts must match the trait's signatures:
 
+<!-- sample: {"kind":"definition","group":"describe"} -->
 ```clojure
 (deftype Dog [:Int age])
 
@@ -167,6 +178,7 @@ method. The `defn` parameter counts must match the trait's signatures:
 
 Now `describe` dispatches on `Dog`:
 
+<!-- sample: {"kind":"repl","group":"describe"} -->
 ```
 user> (describe (Dog 3))
 :primitives/String "a dog"
@@ -176,6 +188,7 @@ The trait in slot 1 is a **reference** to an existing declaration, so you may
 write its module-qualified name when that is clearer or when you have not
 imported its bare name:
 
+<!-- sample: {"kind":"definition","group":"describe"} -->
 ```clojure
 (impl user/Describe Dog
   (defn describe [self] "a dog"))
@@ -192,8 +205,10 @@ An impl MUST provide every method the trait declares, except those with a
 [default body](#default-methods--a-body-instead-of-a-return-type).
 Re-entering an `impl` for the same (trait, type) pair **replaces** it — see
 [live development](live-development.md#other-definitions).
-A method's name may not collide with an existing **field accessor** of the target
-type — see [spec §7.3.1](../../spec/07-traits.md#731-concrete-implementation).
+A trait method and a field accessor may share a bare spelling. Qualify the
+parent to select one explicitly: `Trait.method` or `Type.field`. See
+[candidate selection, spec §8.6.4–§8.6.5](../../spec/08-modules.md#864-module-scope-candidate-registration)
+and the [field-accessor guide](field-accessors.md).
 
 ### Impl declaration needs a resolvable trait reference
 
@@ -219,7 +234,9 @@ The distinction is made by the single element after the parameter bracket:
   method is **required**;
 - anything else is an **expression**, and it is the method's **default body**.
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
+(import [primitives [add-i64]])
 (deftrait Sized
   (size [x] Int)                            ; required — impls must define it
   (tag  [x] (add-i64 (size x) 1000)))       ; default — a body, so impls need not
@@ -230,6 +247,7 @@ parameters, exactly like any other expression's type. There is no return-type
 slot to fill in — and if you want to pin the type, you annotate the *body* with
 the ordinary `:Type` annotation, the same one you would use anywhere else:
 
+<!-- sample: {"kind":"illustrative","reason":"Default-method fragment belongs inside a trait declaration"} -->
 ```clojure
 (<= [a b] :Bool (not (> a b)))
 ```
@@ -240,6 +258,7 @@ of signature — it is a parameter list and an expression.
 
 ### An impl inherits the default, or overrides it
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (import [primitives [add-i64]])
 user> (deftrait Sized (size [x] Int) (tag [x] (add-i64 (size x) 1000)))
@@ -271,6 +290,7 @@ use the default**. It does **not** become a requirement of the trait.
 So a type that cannot satisfy what the default body needs can still implement the
 trait perfectly well, by overriding the method:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (import [primitives [str-len]])
 user> (deftrait Display2 (show2 [x] String))
@@ -293,13 +313,13 @@ user> (impl Named A (defn nm [a] "A"))       ; no label — takes the default
 impl user/Named for user/A
 
 user> (str-len (label (A 1)))
-:primitives/Int 4                            ; "an A" — the default called show2
+:primitives/Int 4
 
 user> (deftype B [:Int n])
 :(Fn [primitives/Int] user/B) user/B ; deftype
 
 user> (impl Named B (defn nm [b] "B") (defn label [b] "own label"))
-impl user/Named for user/B                   ; B is not Display2 — and needn't be
+impl user/Named for user/B
 
 user> (str-len (label (B 1)))
 :primitives/Int 9
@@ -320,6 +340,7 @@ trait-level obligation
 A method can be dispatched purely on its **return** type — an empty parameter
 list with `self` in return position:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (deftrait Zeroable
   (zed [] self))
@@ -329,6 +350,7 @@ There is no argument to dispatch on, so the call site must pin the return type.
 The `:Type` annotation is the disambiguator. The prelude's `Default` trait works
 this way — `(default)` returns "the default value of the expected type":
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (import [default [default]])
 user> :Int (default)
@@ -353,6 +375,7 @@ A trait can range over a **type constructor** rather than a plain type. The head
 is parenthesised with a lowercase **constructor variable**, applied in the method
 signatures as `(f a)`:
 
+<!-- sample: {"kind":"definition","group":"functor"} -->
 ```clojure
 (deftrait (Functor f)
   (fmap [:(Fn [a] b) g :(f a) x] (f b)))
@@ -366,6 +389,7 @@ An HKT impl **echoes the declared head** `(Functor f)` in slot 1, and names a
 **trait-constructor pairing** `(Functor Option)` in slot 2 — the trait applied to
 the concrete constructor being implemented:
 
+<!-- sample: {"kind":"definition","group":"functor"} -->
 ```clojure
 (impl (Functor f) (Functor Option)
   (defn fmap [g x]
@@ -374,6 +398,7 @@ the concrete constructor being implemented:
        (Some v)  (Some (g v))])))
 ```
 
+<!-- sample: {"kind":"repl","group":"functor"} -->
 ```
 user> (fmap (fn [n] (+ n 1)) (Some 4))
 :(primitives/Option primitives/Int) (Option.Some 5)
@@ -395,6 +420,7 @@ The rules that shape the two slots:
 For example, these two references deliberately use different spellings but
 still name the same trait:
 
+<!-- sample: {"kind":"definition","group":"functor"} -->
 ```clojure
 (impl (user/Functor f) (Functor Option)
   (defn fmap [func opt]
@@ -415,6 +441,7 @@ when a slot is malformed.
 The REPL keeps trait identity visible when inference adds a constraint. Here
 `double` works for every type implementing the prelude's `Num` trait:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (defn double [x] (+ x x))
 :(Fn [:num.num/Num a] a) user/double ; defn
@@ -429,7 +456,18 @@ constraint means; it is not syntax you must copy into the function.
 
 For an implementation, ask the same relationship from either end:
 
+<!-- sample: {"kind":"repl"} -->
 ```
+user> (deftrait Sizeable (size [x] Int))
+:user/Sizeable ; deftrait
+; defn:
+;  size
+user> (deftype Box (MkBox [:Int w :Int h]))
+:user/Box ; deftype
+; match:
+;  MkBox
+user> (impl Sizeable Box (defn size [b] (match b [(MkBox w h) (+ w h)])))
+impl user/Sizeable for user/Box
 user> /info Sizeable
 :user/Sizeable ; deftrait
 ; defn:
@@ -460,10 +498,12 @@ You do **not** have to import a trait to call its methods. Importing the
 **method** alone is sufficient for dispatch. Given a module `shapes` that declares
 `(deftrait Area (area [self] Int))` with an impl for `Circle`:
 
+<!-- sample: {"kind":"definition","group":"shapes","files":{"shapes.cl":"(deftype Circle [:Int radius])\n(deftrait Area (area [self] Int))\n(impl Area Circle (defn area [c] (primitives/mul-i64 (Circle.radius c) (Circle.radius c))))\n"}} -->
 ```clojure
 (import [shapes [area Circle]])   ; the method `area`, not the trait `Area`
 ```
 
+<!-- sample: {"kind":"repl","group":"shapes"} -->
 ```
 user> (area (Circle 3))
 :primitives/Int 9
@@ -477,9 +517,11 @@ Two consequences worth knowing:
 - **Diagnostics still name the trait.** If there is no impl for the dispatch type,
   the error names the owning trait even though you never imported it — e.g.
   `no impl of trait shapes/Area for type Int`.
-- **Two same-named method imports conflict.** Importing an `area` from two
-  different traits is a duplicate-name conflict (rejected), not a silent shadow.
-  Choosing which module's `area` you import *is* how you disambiguate.
+- **Same-named methods form candidates.** Importing `area` from two traits can
+  expose both declarations. Argument and result context can select one; if
+  several remain applicable, use the module/trait-qualified reference you mean.
+  See [spec §8.6.4–§8.6.5](../../spec/08-modules.md#864-module-scope-candidate-registration) and the
+  [constructor ambiguity examples](constructors.md).
 
 Remember the one asymmetry from above: this covers **dispatch**. To **declare**
 an `(impl Area …)` you still need the trait `Area` itself in scope.

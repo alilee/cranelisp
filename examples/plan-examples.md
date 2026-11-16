@@ -130,25 +130,38 @@ their exit codes. Batch those changes, because `test` reconciles
 
 ## 4. Standing assessment
 
-The `training` contract asks this whole-sequence question every increment. The
-last full outside-in assessment against `spec/` was S115 (2026-07-21). S122
-(2026-09-30) re-ran every entry in all four cells and reassessed the sequence
-against the S122 language and CLI delta. Entries marked *scan 2026-09-22*
-were re-checked by a static corpus search; *probe 2026-09-30* entries were
-run. Other entries carry S115 evidence that has not been re-probed.
-S123 W1 (2026-11-15) checks the corpus for obsolete panic recovery teaching
-and updates 11 and 32 for process termination and checked division. This
-bounded pass does not replace the full-sequence verification gate.
+The `training` contract asks this whole-sequence question every increment.
+S123 (2026-11-16) read the complete sequence and local library against the
+language and CLI contracts. Phase 6b at checkpoint `640d2ec7` replayed all 38
+entries in cold and warm `--run` and linked execution: **152/152 exits matched**
+`tests/examples.rs`. 38 also reported four `ok` lines under `--test`, exit 0.
+The replay used the isolated environment in
+[`CLAUDE.md`](CLAUDE.md#verification), with no stdlib path. These observations
+verify the teaching material, not independent acceptance coverage. Dated probes
+below retain their original dates where their specific scenario was not
+repeated; a green sequence run does not re-prove those diagnostic claims.
 
-**Verdict.** The sequence is sound where it teaches. It is not comprehensive,
-its tail is ordered by delivery rather than by dependency, and it rarely
-teaches boundaries as a subject.
+**Verdict.** Every entry runs, but coverage is partial, order and pacing need
+improvement, negative-space teaching is partial, and readability is uneven.
+The early core progression works; the tail interleaves subjects by delivery
+order. The S123 correction preserves filenames, executable forms and exits.
+11 contrasts unchecked wrapping with checked `None`; 28 and 30 explain that
+serial-baseline switches belong on the compiler invocation and require
+relinking to change a linked program. These repairs leave the broader gaps
+below open; they do not constitute a sequence redesign.
+
+Focused replay also reproduced 15's mid-session type and result lines with
+both the default agent state and `--no-agent`. 30 linked with spark budget 64
+then launched with budget 0 reported 14 spawns; linked with budget 0 then
+launched with budget 64 reported zero spawns and seven serial continuations.
+Both exited 56. Statistics were enabled only at link time, confirming the
+linked-switch binding point rather than relying on unchanged arithmetic.
 
 ### 4.1 Coverage gaps
 
 | Gap | Spec | Evidence | Notes |
 |---|---|---|---|
-| **A1** The full error model: panic sources and process termination in every mode, errors encoded in types, wrapping arithmetic, `Inf`/`NaN` | §12.7, App A.3 | S123 W1: 11 teaches checked division with `Option`; 32 explains process termination for branch panics | Checked failure cases run; panic sources still need teaching as a subject (§4.3) |
+| **A1** The full error model: panic sources and process termination in every mode, errors encoded in types, wrapping arithmetic, `Inf`/`NaN` | §12.7, App A.3 | S123: 11 teaches checked division and contrasts unchecked `Int.MIN / -1` wrapping; 32 explains process termination for branch panics | Checked failure cases run; panic sources still need teaching as a subject (§4.3) |
 | **A2** Generated `Type.field` accessors as the idiomatic single-field read. 10 names them; no example uses them. The boundary to teach is that accessors are minted for product fields only, while sum-constructor payload labels mint none | §5.2.6 | S115 probe; spec settled S121 | A corpus-wide style pass, not one beat |
 | **A4** Module visibility and the import/export surface: private `-` forms and the private-import rejection, `export`/re-export, glob, member, alias and renamed imports, `super`, shadowing and conflict | §8.3–§8.7 | scan 2026-09-22: no `defn-`, `(export`, or `[*]` in any example | Grow `16-modules/` |
 | **A5** The string surface beyond basics, including `parse-int` to `Option` as the fallible-input idiom | App A.3, §12.1.2 | scan 2026-09-22: 09's comment defers these | Extend 09; no `Byte`/text examples until those facilities ship |
@@ -170,8 +183,10 @@ Out of scope by the library ruling: the stdlib prelude vocabulary (`do`,
 
 ### 4.2 Order
 
-01–20 form a designed progression. 21–38 were appended in delivery order, so
-position does not signal difficulty. For example, 31 needs only 01–02, and
+The early core has a designed progression, but `Pure` appears in each `main`
+before the IO introduction at 21 without an orientation beat. 21–38 were
+appended in delivery order, so position does not signal difficulty. For
+example, 31 needs only 01–02, and
 25–27 sit inside the IO arc. Two specific defects:
 
 - 29's capstone content is a prerequisite for 11, 26, 35, 36 and 37. A short
@@ -197,8 +212,10 @@ panic ends the process, so panic demonstrations require separate executions
 rather than sub-tests that continue afterward. A boundaries example should
 follow A1 and gather §6.6's prohibitions,
 exhaustiveness, the binder rules, the annotation traps and ambiguity.
-Quoting batch diagnostics waits on ACT-1017 and ACT-1036: today each one
-repeats its category-and-span prefix.
+S123 checked ACT-1017 at its source filing: both its failed-dependency
+location and duplicate-prefix faces are resolved. ACT-1036 remains open for
+the synthetic location on a non-IO `main` refusal; it is not a blanket
+diagnostic-prefix blocker. Re-probe any diagnostic before quoting it.
 
 ### 4.4 Readability
 
@@ -211,8 +228,15 @@ repeats its category-and-span prefix.
   appears in 27 files (scan 2026-09-22).
 - **Weakest files.** 20 is 250 lines of hand-written derive output. 15 is long
   and repeats setup. 19 spends more than half its length building `->` and
-  `->>` and keeps a worked example it annotates as wrong. 27 implements a lazy
+  `->>` and keeps a working pipeline its opening labels wrong; its
+  thread-last definition comment also spells `->`. 18 calls `with-double` a
+  swap avoiding double evaluation although its expansion duplicates `x` and
+  deliberately captures `doubled`. 27 implements a lazy
   library rather than using one.
+- **Library recap.** `lib/prelude.cl` hard-codes an obsolete primitive count;
+  `lib/operators.cl` overstates its match to 15, whose default `Ord` bodies
+  become explicit implementations in the library. These wording repairs
+  remain outside the bounded S123 correction.
 - **House style.** 29, 33 and 37 show the standard to bring the rest to.
 
 ### 4.5 Direction
@@ -238,8 +262,8 @@ the file it names.
 
 - **37: no-impl diagnostic comment.** Calling `describe` on a type without
   an impl is rejected with `no impl of trait main.traits/Describe for type
-  main/Hex` (probe 2026-09-30). Quote it after ACT-1017 and ACT-1036 remove
-  the repeated prefix around it.
+  main/Hex` (probe 2026-09-30). Re-probe the full diagnostic before quoting
+  it; ACT-1036 concerns a different refusal and does not block this edit.
 - **Not a beat: a non-`Int` program result.** It is legal and exits 0
   ([spec §10.6.1](../spec/10-io.md)), so an example whose
   `main` does not return `Int` cannot verify itself.

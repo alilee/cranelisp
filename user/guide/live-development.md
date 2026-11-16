@@ -21,14 +21,18 @@ An unchanged language type updates the function's callable slot. Existing
 callers use the replacement body the next time they call it; they are not
 recompiled and there is no cascade report.
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (import [primitives [add-i64]])
 user> (defn f [x] (add-i64 x 1))
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
 user> (defn g [x] (f x))
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
 user> (g 1)
 :primitives/Int 2
 
 user> (defn f [x] (add-i64 x 10))
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
 user> (g 1)
 :primitives/Int 11
 ```
@@ -80,17 +84,21 @@ The REPL watches every module file it has loaded. When you save one, the REPL
 recompiles it, then every module that depends on it, and reports each file at
 the next prompt:
 
+<!-- sample: {"kind":"repl","group":"reload","files":{"math.cl":"(defn sq [x] (* x x))\n(defn cube [x] (* x (* x x)))\n","user.cl":"(import [math [sq]])\n(defn f [] (sq 3))\n"}} -->
 ```
 user> (f)
 :primitives/Int 9
-;; math.cl changes sq from (* x x) to (+ x x) and is saved
+user> /sh printf '%s\n' '(defn sq [x] (+ x x))' > math.cl
 [updated: math.cl]
 [updated: user.cl]
 user> (f)
 :primitives/Int 6
 ```
 
-Here `user.cl` imports `sq` from `math.cl`. A module that uses another only
+Here `user.cl` imports `sq` from `math.cl` and defines `(defn f [] (sq 3))`.
+Initially `math.cl` defines `(defn sq [x] (* x x))` and
+`(defn cube [x] (* x (* x x)))`. `/sh` makes the saves explicit; an editor
+save triggers the same watcher. A module that uses another only
 through a fully-qualified reference, such as `math/sq`, is a dependent too and
 is recompiled with it.
 
@@ -98,8 +106,8 @@ A save replaces the module as a whole. The session keeps exactly what the saved
 file declares, so a definition or `import` you delete from the file is gone
 after the reload:
 
+<!-- sample: {"kind":"repl","group":"reload"} -->
 ```
-;; the save above also deleted cube from math.cl
 user> (math/cube 2)
 Error: module error at 1..10: module 'math' has no member 'cube'
 ```
@@ -110,36 +118,69 @@ The rules are [`repl/spec/14-file-watching.md`](../../repl/spec/14-file-watching
 ### When a saved file does not compile
 
 If a saved file does not parse or typecheck, the REPL reports the error instead
-of `[updated: …]`, and the module becomes **locked**:
+of `[updated: …]`, and the **session locks**:
 
-- expressions are refused until the error is fixed — there is no fallback to
-  the previous version of the module;
+- expressions and definitions in every module are refused until the error is
+  fixed — there is no fallback to the previous version;
 - the REPL does not overwrite the file, so your saved text stays on disk, and a
   definition that would rewrite it is refused;
-- a dependent that no longer compiles against it fails and locks too.
+- dependents wait until the failed dependency compiles, then rebuild; a
+  dependent that fails keeps the session locked.
 
+`{{ROOT}}` below stands for your project directory.
+
+<!-- sample: {"kind":"repl","group":"reload"} -->
 ```
-;; math.cl is saved with sq changed to (* x "a")
+user> /sh printf '%s\n' '(defn sq [x] (* x "a"))' > math.cl
 [errors: math.cl]
-  module error at 13..22: module 'math' failed: type error at 13..22: no impl of trait num.num/Num for type primitives/String
-[errors: user.cl]
-  module error at 13..22: module 'user' failed: module error at 13..22: type error at 13..22: no impl of trait num.num/Num for type primitives/String
+  module error in {{ROOT}}/math.cl: at 13..22: module 'math' failed: type error: no impl of trait num.num/Num for type primitives/String
 user> (f)
-Cannot evaluate: module 'math', 'user' has errors. Fix the source file and save.
+Cannot evaluate: the session is locked while these files have errors:
+  math.cl — does not compile; fix it and save a version that compiles
 user> /mod math
 math> (defn h [] 1)
-Cannot define in module 'math': its saved file does not compile. Save a version that compiles to release the module.
+Cannot evaluate: the session is locked while these files have errors:
+  math.cl — does not compile; fix it and save a version that compiles
 math> /mod
-;; math.cl is fixed and saved
+user> /sh printf '%s\n' '(defn sq [x] (* x 10))' > math.cl
 [updated: math.cl]
 [updated: user.cl]
 user> (f)
 :primitives/Int 30
 ```
 
-A compiling save releases the lock and recompiles the dependents that failed
-with it. Restarting the REPL does not get around a failure: the new session
+A compiling save rebuilds the waiting dependents and releases the lock when
+no module remains failed. Restarting the REPL does not get around a failure: the new session
 compiles the same saved file and reports the same error. See §14.4–§14.6.
+
+### When the entry file appears or disappears
+
+Starting without an entry file creates an empty live module; it does not write
+an empty file immediately. If an entry file appears while that session is
+running, the REPL loads it **before a later definition can regenerate the file**.
+A file that does not compile locks the session and keeps its bytes on disk;
+repair and save it as described above.
+
+Deleting a backing file keeps the module's live definitions. The next successful
+definition recreates the file from that live source, without a consent prompt.
+Deletion is therefore not a way to clear a running session. For example, in a
+fresh default-prelude REPL in an empty directory (these are excerpts):
+
+<!-- sample: {"kind":"repl"} -->
+```
+user> (defn kept [] 17)
+:(Fn [] primitives/Int) user/kept ; defn
+user> /sh rm user.cl
+user> (kept)
+:primitives/Int 17
+user> (defn added [] 3)
+:(Fn [] primitives/Int) user/added ; defn
+```
+
+The recreated `user.cl` contains both `kept` and `added`. To remove a definition,
+edit the file's contents and save a compiling module; to start empty, open a
+fresh directory. See [REPL §14.9](../../repl/spec/14-file-watching.md#149-backing-file-appearance-and-deletion)
+and [§15.1](../../repl/spec/15-session-persistence.md#151-source-regeneration).
 
 ### Changing a type's structure needs a restart
 
@@ -147,13 +188,19 @@ A save that changes the structure of a type already live in the session — for
 example adding a field to a `deftype` — fails, and the error tells you to
 restart:
 
+<!-- sample: {"kind":"repl","files":{"shapes.cl":"(deftype Pt [:Int x :Int y])\n"}} -->
 ```
+user> (import [shapes [Pt]])
+user> (Pt 1 2)
+:shapes/Pt (Pt 1 2)
+user> /sh printf '%s\n' '(deftype Pt [:Int x :Int y :Int z])' > shapes.cl
 [errors: shapes.cl]
-  module error at 0..35: module 'shapes' failed: type error at 0..35: cannot re-establish type shapes/Pt: its structure differs from the live declaration; keep the live structure, use a new name, or edit the saved source and restart the REPL to establish the changed type
+  module error in {{ROOT}}/shapes.cl: at 0..35: module 'shapes' failed: type error: cannot re-establish type shapes/Pt: its structure differs from the live declaration; keep the live structure, use a new name, or edit the saved source and restart the REPL to establish the changed type
   in expansion of `(deftype Pt [:Int x :Int y :Int z])`
 ```
 
-Modules that use `Pt` fail with the same error. The saved file is locked as above, so your edit is kept. Restart the REPL: the
+Modules that use `Pt` wait for the failed dependency. The session is locked
+as above, so your edit is kept. Restart the REPL: the
 new session compiles the saved file with no older declaration to conflict with,
 and the changed type takes effect. A save that changes only a docstring or a
 sum variant's payload labels is not a structural change and reloads normally.
@@ -166,6 +213,7 @@ and definitions you enter belong to that module and are saved to its file. If th
 module has a file that is not loaded yet, `/mod` loads it (and the REPL starts
 watching it). Bare `/mod` returns to the entry module.
 
+<!-- sample: {"kind":"repl","files":{"geometry.cl":"(defn area [:Int w :Int h] (* w h))\n"}} -->
 ```
 user> /mod geometry
 geometry> (area 2 3)
@@ -180,6 +228,7 @@ user> (geometry/perimeter 2 3)
 `/mod` never creates a module. A name that resolves to no module is an error,
 and the current module stays the same:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> /mod nowhere
 Error: Module 'nowhere' not found.
@@ -199,25 +248,13 @@ source as it stands; they do not replay your edit history
 
 ### When saved source fails at startup
 
-If the saved source no longer compiles when the REPL starts, the REPL reports
-the load error and still reaches a prompt. Until you repair the module:
-
-- expressions are refused;
-- definitions are accepted, so you can redefine the broken definition at the
-  prompt; and
-- the broken definition's source stays in the backing file verbatim — even when
-  you successfully define a different name — until a successful definition
-  replaces it.
-
-A successful repair clears the block.
-
-Two cases lock the module as a failed save does
-([above](#when-a-saved-file-does-not-compile)) instead of accepting repairs at
-the prompt: a backing file that does not parse at all, and a module that fails
-again when the session recompiles it from its file — for example after you save
-it or a module it depends on. Fix the file and save it. The requirement
-is
-[`repl/spec.md §15.2.3`](../../repl/spec/15-session-persistence.md#1523-startup-load-failure).
+If saved source fails to compile at startup, the REPL reports the load error
+and still reaches a prompt. The session is locked: expressions and definitions
+are refused, and the failing file stays on disk as saved. Repair the file and
+save a version that compiles. Introspection, `/sh`, `/mod` and `/quit` remain
+available. The same rule applies to a failed save during the session; see
+[REPL §15.2.3](../../repl/spec/15-session-persistence.md#1523-startup-load-failure)
+and [§14.5](../../repl/spec/14-file-watching.md#145-module-state-on-error).
 
 ## The `def` macro's current boundary
 

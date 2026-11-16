@@ -111,6 +111,9 @@
 ;; operation when failure is an expected outcome: checked-quot returns
 ;; (Some quotient), or None for a zero divisor or Int.MIN divided by -1.
 ;; Neither None case panics; match decides what the program does next.
+;; Unchecked (div-i64 -9223372036854775808 -1) instead wraps to Int.MIN
+;; (-9223372036854775808); it does not panic (spec §12.7.3). The checked
+;; operation refuses this overflow as None. Unchecked division by zero panics.
 
 ;; Chain two divisions: a / b / c, choosing 0 if either has no quotient.
 (defn chain-div [a b c]

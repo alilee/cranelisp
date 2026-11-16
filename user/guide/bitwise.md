@@ -9,6 +9,7 @@ Clojure-style names and a few composed helpers.
 
 The primitives live in the `primitives` module. Import the ones you use:
 
+<!-- sample: {"kind":"definition","group":"bits"} -->
 ```clojure
 (import [primitives [bit-and bit-or bit-xor bit-not shl shr popcount]])
 ```
@@ -25,6 +26,7 @@ The primitives live in the `primitives` module. Import the ones you use:
 
 At the REPL (every result in `:Type value` notation):
 
+<!-- sample: {"kind":"repl","group":"bits"} -->
 ```
 user> (bit-and 12 10)
 :primitives/Int 8
@@ -56,6 +58,7 @@ There is one right-shift primitive, `shr`, and on the signed `Int` it is
 **arithmetic**: the sign bit is replicated into the vacated high bits. So a negative
 number stays negative:
 
+<!-- sample: {"kind":"repl","group":"bits"} -->
 ```
 user> (shr -8 1)
 :primitives/Int -4
@@ -72,6 +75,7 @@ variant is a future concern, tracked alongside other integer types in
 single-bit helpers you would otherwise compose by hand. It is reached by import (not
 bare-promoted into the prelude):
 
+<!-- sample: {"kind":"definition","group":"bits"} -->
 ```clojure
 (import [num.bits [bit-shift-left bit-shift-right
                    bit-test bit-set bit-clear bit-flip
@@ -92,6 +96,7 @@ bare-promoted into the prelude):
 pass-throughs with curated docstrings, so you can import the whole bitwise surface
 from one place.)
 
+<!-- sample: {"kind":"repl","group":"bits"} -->
 ```
 user> (bit-shift-left 3 2)
 :primitives/Int 12

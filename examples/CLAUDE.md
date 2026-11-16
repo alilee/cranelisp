@@ -41,24 +41,53 @@ Build first, then run every entry — each top-level `NN-*.cl`,
 warm cache × `--run` and `--link`-then-execute. Each must reach its documented
 exit.
 
+Run this Bash recipe from the repository root. It copies only the examples
+project, clears inherited compiler settings, disables both environment files,
+and keeps cache and REPL backing-file writes in its private scratch directory.
+Compare every printed exit with `tests/examples.rs`; these are teaching-material
+replays, not independent acceptance tests.
+
 ```bash
-cargo build
-bash tests/scripts/build-link-prereqs.sh          # platform libraries --link resolves from target/debug
-export CRANELISP_PLATFORM_PATH=$PWD/target/debug  # 34 needs async-demo, which has no link in lib/platforms
-EX="examples/[0-9]*.cl examples/16-modules/main.cl examples/37-method-import/main.cl"
-for f in $EX; do ./target/debug/cranelisp --run "$f" >/dev/null 2>&1; echo "$f => $?"; done
-for f in $EX; do o=target/ex-$(echo $f | tr / _); \
-  ./target/debug/cranelisp --link -o "$o" "$f" >/dev/null 2>&1 && "$o" >/dev/null 2>&1; \
-  echo "$f => $?"; done
+cargo build --bin cranelisp
+bash tests/scripts/build-link-prereqs.sh
+(
+  repo=$PWD
+  scratch=$(mktemp -d /tmp/cranelisp-training-XXXXXX)
+  trap 'rm -rf "$scratch"' EXIT
+  tar -C examples --exclude=.cranelisp-cache -cf - . | tar -C "$scratch" -xf -
+  for name in ${!CRANELISP_@}; do unset "$name"; done
+  export CRANELISP_NO_ENV=1 CRANELISP_AGENT_PROVIDER=
+  export CRANELISP_PLATFORM_PATH="$repo/target/debug"
+  cd "$scratch" || exit 1
+  compiler="$repo/target/debug/cranelisp"
+  for f in [0-9]*.cl 16-modules/main.cl 37-method-import/main.cl; do
+    find . -type d -name .cranelisp-cache -prune -exec rm -rf {} +
+    "$compiler" --run "$f" </dev/null >run.log 2>&1
+    echo "$f cold run => $?"
+    "$compiler" --run "$f" </dev/null >run.log 2>&1
+    echo "$f warm run => $?"
+    # --link rejects --no-cache; remove caches only in this private copy.
+    find . -type d -name .cranelisp-cache -prune -exec rm -rf {} +
+    for cell in cold warm; do
+      if "$compiler" --link -o "$scratch/linked" "$f" >link.log 2>&1; then
+        "$scratch/linked" </dev/null >run.log 2>&1
+        echo "$f $cell link => $?"
+      else
+        echo "$f $cell link FAILED"; cat link.log
+      fi
+    done
+  done
+  "$compiler" --test 38-program-tests.cl </dev/null
+)
 ```
 
-- **Cold cells:** add `--no-cache` to the run loop. `--link` rejects
-  `--no-cache` (`user/cli-reference.md`), so for cold link cells first delete
-  the git-ignored directory named `.cranelisp-cache` that the compiler generates in each entry's directory.
-- **Test mode:** `./target/debug/cranelisp --test examples/38-program-tests.cl`
-  must report four `ok` lines and exit 0.
-- **Never set `CRANELISP_LIB`.** Library directories are an additive union
-  ([lib directory configuration](../spec/08-modules.md#8114-lib-directory-configuration-tested-testsspec_platformscranelisp_toml_lib_dirs_resolves_module)), so it adds the real stdlib and breaks free-standing runs.
+- **Test mode:** 38 must report four `ok` lines and exit 0.
+- **Free-standing lookup:** keep `CRANELISP_LIB` unset and
+  `CRANELISP_NO_ENV=1`. Library directories are an additive union
+  ([lib directory configuration](../spec/08-modules.md#8114-lib-directory-configuration-tested-testsspec_platformscranelisp_toml_lib_dirs_resolves_module));
+  an inherited or file-supplied stdlib path breaks free-standing runs.
+- **Diagnostics:** inspect `run.log` or `link.log` inside the subshell if a
+  cell differs; its exit trap removes the scratch copy and logs on completion.
 - **Platform links.** `lib/platforms/` holds committed `stdio.so` and
   `test-capture.so` links. On a host without matching links, set
   `CRANELISP_PLATFORM_PATH`.

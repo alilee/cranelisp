@@ -21,7 +21,7 @@ Do not add a sprint-named demo to the active set.
 
 ## The active set
 
-Ten capability-named demos, each self-contained, each replaying green against
+The numbered demos are each self-contained, each replaying green against
 the prebuilt binary. They consume the **curated surface** (see below) — the same
 idiomatic surface the exemplar uses.
 
@@ -43,10 +43,11 @@ only: `./repl/showcase tour` (bare name) resolves to `01-tour.demo` just as
 | `08-sudoku.demo` | The centerpiece: ADT domain types, grid geometry, a backtracking solver, formatted output, and a single `print` effect — a 4×4 sibling of `exemplar/user.cl`. |
 | `09-library-discovery.demo` | `/search` across reachable public non-macro symbols; "is there already a function for this?" answered before importing, with exact in-scope matches marked as already available. |
 | `10-redefinition.demo` | Live-editing with guarded publication: body edits late-bind; a blocked type change is rejected atomically with the prior callable intact; an unblocked change publishes as one replacement. |
+| `11-live-reload.demo` | File saves update a running module; an invalid save locks expressions and definitions while help and source remain accessible; repair releases the lock and survives restart. |
 
 The language arc deliberately ends at `08-sudoku.demo`, which reuses every concept
 the prior demos introduced. The demos after it showcase the development *workflow*
-around that language — library discovery, live redefinition.
+around that language — library discovery, live redefinition and file reload.
 
 Known-defect output in the active set stays visible and attributed. The
 `def` echoes in `08-sudoku.demo` show the singular definition result that
@@ -61,7 +62,7 @@ recovery from it; the permanent e2e guards carry that evidence.
 is a compiler-internals demo, not a language-capability one: it steps through a
 series of tiny compilations and their `/clif` output to show what the optimizer
 does today (loop scalars → registers, single-field ADTs → words, mutate-in-place,
-borrow-elision, escape→stack) and where it stops (multi-field aggregates never
+owned argument consumption, escape→stack) and where it stops (multi-field aggregates never
 register-promote; gate 3 declines the stack path in loops; heap-field and Vec
 locals stay on the heap). It is deliberately outside the "demonstrate the language,
 not the changelog" arc — its subject is the IR, not a language feature. Each
@@ -122,8 +123,9 @@ reproducing it: the failing segment stays, uncommented, with a brief `;` comment
 naming the FIXME that owns it, so the next replay reader can tell an attributed
 red from a fresh regression. Never comment out, rewrite, or re-spell the segment
 to make the sweep green — that destroys the guard and hides the defect.
-Currently attributed: `ring4s.demo`'s `then`/`bind` combinator segment (FIXME
-0907, IO's existential `Bind` ctor defeats canonical per-concrete glue).
+`ring4s.demo`'s `then`/`bind` workload compiles and evaluates to 50.
+The former FIXME 0907 refusal is fixed; the IO-glue evidence and remaining
+owner handoffs are in [QA's attribution](../../tests/plan/s123-evidence-delta.md#89-phase-6b-attributions-of-the-archive-replay).
 
 ## Curated surface
 

@@ -1,6 +1,6 @@
 # Sprint 123: One ownership answer, contained panics, agent on by default
 
-**Status**: PHASE 6a USER-FACING ASSESSMENT
+**Status**: PHASE 6b USER-FACING DELIVERY
 
 **Goal**: Decide the ownership stratum's shape on a measured number and fix
 the observed memory-unsafe faults under it; make a callee's runtime panic a
@@ -32,6 +32,7 @@ tree):
 | Phase 3 → Phase 4 | Designs, API packet P11–P13, QA readiness with one gap, decisions 1–10 and the Phase 4 proposal | 2026-11-15, conversation: "approved" | approved |
 | Phase 4 → Phase 5 | Wave plan W0–W5, audit choice, and the checkpoint commit | 2026-11-15, conversation: "yes"; checkpoint commit `b35bfb87` | approved |
 | Phase 5 → Phase 6a | W5 gate, Phase 5 adequacy, residuals and carries item by item, public-API phase diff (intrinsics +7/−28, types +1/−30, backend −1, others +0) | 2026-11-16, conversation: "confirming public api, and approved to move to 6a" | approved |
+| Phase 6a → Phase 6b | 6a assessments (`docs`, `training`, `audit`, `test`), the proposed 6b scope, and the two older traits-guide inaccuracies | 2026-11-16, conversation: "all approved" (traits fixes included) | approved |
 
 ## Scope
 
@@ -341,6 +342,13 @@ separate approval.
 | 5 W4 | `dev` | `src/`: P15 safety comment | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; rustdoc states P15's safety grounds with the falsifier; comments only |
 | 5 W4 | `qa` | W4 adequacy, full suite, traceability | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate; suite 6,969 pass / 31 fail (30 filed guards; `role_wiring` principle count from Principle 27); seven guards green; ACT-1047, ACT-1020, ACT-1035 closable after stamps; ACT-1052 carries; spec band regraded; coordinator repaired the Appendix D anchor mechanically |
 | 5 W4 | `test` | stamp seven green guards `fixed=S123/91acf712`; four behaviour renames | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `14d0a119`; 7/7 pass; coordinator applied the four renames to spec, plan and design citations mechanically (both citation checkers clean) |
+| 6b | `test` | M-3 harness and metadata format; live-reload demo; demo narration; `qa` returns | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `8d775c2d`; harness with both planted-fault proofs; `11-live-reload.demo`; 40/40 demos complete; metadata in `tests/CLAUDE.md` §"User documentation sample harness" (`.local/s123-6b/test-report.md`) |
+| 6b | `docs` | fence classification; harness green | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `83b6e62b`; 158 fences (67 REPL, 57 definition, 34 illustrative); harness 83 groups pass |
+| 6b | `docs` | modules and macros guides; seven page repairs incl. traits | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `8e044581`; both guides and seven repairs; checker 0; three compiler observations to `qa` (selective constructor import, export mount, non-`Sexp` macro body) |
+| 6b | `qa` | intake: three `docs` observations vs audit R1/R2 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; three defects filed: ACT-1055 selective member import binds nothing (K-7), ACT-1056 export mount and member-glob union (K-8, = audit R2), ACT-1057 macro without fixed parameters escapes the `Sexp` check and aborts on call (K-9); §18.1.2 re-graded; coordinator repaired the audit's anchor mechanically |
+| 6b | `test` | K-7, K-8, K-9 REDs; `qa` §8.9 demo and 0907 cleanup | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `a6683846`; 13 REDs, 9 controls green; macro observers tightened with detection; 26 archive demos complete; 0907 notes cleaned |
+| 6b | `training` | five files (F1–F5) | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16 (see `.local/s123-6b/training.out`) |
+| 6b | `qa` | attribute `ring4p`'s ownership refusal; `ring4s` | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; `ring4p`: §18.1.2 mode-ABI gate, conformant, stale demo (retirement S124); `ring4s`: FIXME 0907 fixed, not masked; handoffs: `test` (two demos, five stale `// defect:` notes, demo guide 0907 line), carried to S124: `core.io` self-tests (`dev` stdlib), `/info Bind` (`spec`); `qa` re-grades §18.1.2 |
 | 6a | `audit` | `cranelisp-frontend` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `2b59eb3c`; fulfilment partial, maintenance economy C; R1–R5 (macro syntax rejects, module grammar, operator/digit asymmetry, obsolete adapter, stale guidance) pending S124 Phase 1; 432 frontend tests pass |
 | 6a | `docs` | assess `user/` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `bcff593b`; accuracy fails on S123 changes (removed catcher, agent default, env files, dotted paths, persistence) plus two older trait inaccuracies; proposed 6b: two guides, seven page repairs, 133-fence classification (`.local/s123-6a/docs-assessment.md`) |
 | 6a | `training` | assess `examples/` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `4f749a55`; 38 entries pass all four cells; one S123 contradiction (example 30 says linked switches are launch-time); proposed 6b: five files, ~40–80 lines (`.local/s123-6a/training-assessment.md`) |
@@ -976,3 +984,4 @@ judges adequacy for the Phase 5 → 6a checkpoint.
 - W4 closed 2026-11-16: build `91acf712`, close-out (guard stamps, three actions closed, citation repairs) in the following commit.
 - W5 gate run 2026-11-16 on `b89cc7cc`; Phase 5 adequacy recorded. Phase 5 → 6a checkpoint put to the user.
 - Phase 6a assessments delivered 2026-11-16 (`docs`, `training`, `audit`, `test`); 6a → 6b checkpoint put to the user.
+- Phase 6b delivered 2026-11-16: guides, page repairs, 158 fences classified with the harness green, examples, live-reload demo, demo maintenance; ACT-1055, ACT-1056, ACT-1057 filed with REDs. `qa` 6b adequacy next.

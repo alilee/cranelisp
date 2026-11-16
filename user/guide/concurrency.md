@@ -46,6 +46,7 @@ the next. Because each connection is independent of the next, the handlers overl
 This is the shape the showcase web server uses (from
 [`exemplar/main.cl`](../../exemplar/main.cl), validated by `tests/exemplar_web.rs`):
 
+<!-- sample: {"kind":"illustrative","reason":"Server skeleton requires application-specific accept/read/send and request handlers"} -->
 ```clojure
 ;; accept one connection, launch its handler, immediately accept the next
 (defn serve-loop [listener]
@@ -101,6 +102,7 @@ independence; they run on different substrates (the reactor for I/O, rayon for C
 *your* connection: you can `match` it open to read its fields exactly like any
 other data type. A minimal web `Connection` carries the socket descriptor:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (deftype Connection [:primitives/Int fd])
 
@@ -148,6 +150,7 @@ the composed effect runs only when it is sequenced into the program.
 `sleep`, `race`, and `select` are `primitives` builtins — no platform DLL, no
 environment variable needed. Import them by name:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [primitives [Pure bind sleep race select]])
 ```
@@ -156,6 +159,7 @@ environment variable needed. Import them by name:
 
 Define each branch as a named helper so it reads as a self-contained unit of work:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [primitives [Pure bind sleep race]])
 
@@ -167,6 +171,7 @@ Define each branch as a named helper so it reads as a self-contained unit of wor
     (fn [r] (Pure r))))                                 ;; -> 111
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell invocation and process status"} -->
 ```
 cranelisp --run race.cl   # exit code 111 — fast won; slow was cancelled
 ```
@@ -180,6 +185,7 @@ effects never happen.
 `select` generalises `race` to a `Vec` of branches. It takes a Vec literal `[..]`,
 never a List:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [primitives [Pure bind sleep select]])
 
@@ -191,19 +197,20 @@ never a List:
     (fn [r] (Pure r))))                                 ;; -> 7 (the fast branch)
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell invocation and process status"} -->
 ```
 cranelisp --run select.cl   # exit code 7
 ```
 
-**Empty `select` is a fatal error.** `(select [])` over an empty `Vec` has no branch
-that can win and no value to return, so it **raises a runtime error** rather than
-returning a value or hanging. This raise happens when the effect *runs*, which is
-outside any `catch-runtime-error` bracket — so it is **fatal and NOT catchable**:
-it terminates the process in batch mode and aborts the expression in the REPL.
-Wrapping the `select` in a thunk does not help; it only defers the raise. Always
-give `select` a **non-empty** Vec. This is the honest general rule for *every*
-run-time effect error, not a `select` special case (spec
-[§10.12.8](../../spec/10-io.md) — the empty-`select` ruling).
+**Empty `select` ends the process.** `(select [])` over an empty `Vec` has no
+branch that can win, so running that effect panics. It ends the REPL session,
+`--run` process or linked program with status `1`. Wrapping it in a thunk only
+defers the panic. Give `select` a non-empty Vec.
+
+A panic in a detached handler also ends the whole process. Cancellation of a
+losing branch is a separate operation: it discards work without being a panic.
+See [spec §10.12.8](../../spec/10-io.md#10128-structured-control-combinators--race--select--timeout) and the
+[process-ending panic contract](../../spec/12-runtime.md#127-error-model).
 
 ### `timeout` — bound work by a deadline
 
@@ -213,6 +220,7 @@ v)` if the work completes in time, `None` if the deadline fires (cancelling the
 work). Because it lives in `core.io`, it is available to programs that use the
 standard library (run with `CRANELISP_LIB=stdlib`):
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [core.io [timeout]])
 (import [primitives [Pure bind sleep Some None]])
@@ -225,6 +233,7 @@ standard library (run with `CRANELISP_LIB=stdlib`):
          None     (Pure 0)]))))       ;; deadline fired -> None
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell library-path setup"} -->
 ```
 CRANELISP_LIB=stdlib cranelisp --run timeout.cl
 ```
@@ -236,6 +245,7 @@ stdlib — including the `examples/` and `tests/`) writes the timeout *pattern* 
 race the work against a `sleep` deadline branch, using a sentinel value to mark which
 won.
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [primitives [Pure bind sleep race]])
 
@@ -247,6 +257,7 @@ won.
     (fn [r] (Pure r))))                                    ;; -> 99 (deadline won)
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell invocation and process status"} -->
 ```
 cranelisp --run timeout-inline.cl   # exit code 99 — work overran, was cancelled
 ```
@@ -279,6 +290,7 @@ observable. The following stdio program races a slow `print "LATE"` against a 10
 deadline branch; only `EARLY` is printed — `LATE` never happens because the slow
 branch is cancelled:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (platform stdio)
 (import [primitives [Pure bind sleep race]])
@@ -294,6 +306,7 @@ branch is cancelled:
     (fn [_] (bind (race (slow-print) (deadline)) (fn [_] (Pure 0))))))
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell cancellation walkthrough; definition loading does not execute main"} -->
 ```
 CRANELISP_PLATFORM_PATH=target/debug cranelisp --run cancel.cl
 EARLY

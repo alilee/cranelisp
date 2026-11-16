@@ -1,0 +1,31 @@
+; Live development — save, diagnose, repair
+; A file-backed module updates the running session when its source changes.
+
+/sh printf '%s\n' '(defn value [] 10)' > live.cl
+(import [live [value]])
+(value)
+
+; Save a new body: the update notifications precede the next prompt.
+/sh printf '%s\n' '(defn value [] 20)' > live.cl
+(value)
+
+; An invalid save locks evaluation, including new definitions.
+/sh printf '%s\n' '(defn value [] missing)' > live.cl
+(value)
+(defn blocked [] 99)
+
+; Help and the authored source remain available while locked.
+/help
+/sh cat live.cl
+
+; /reset is unavailable; it does not release the lock.
+/reset
+(value)
+
+; Repair the file and save: compilation releases the lock.
+/sh printf '%s\n' '(defn value [] 30)' > live.cl
+(value)
+
+; Restart in the same project: the repaired source still gives 30.
+/quit
+(value)

@@ -9,24 +9,37 @@ feature guides. For the full command line see [`cli-reference.md`](cli-reference
 
 Cranelisp builds with Cargo from the workspace root:
 
+<!-- sample: {"kind":"illustrative","reason":"Shell build command"} -->
 ```
 cargo build
 ```
 
 This produces `target/debug/cranelisp`. (A release build — `cargo build --release`
-— produces `target/release/cranelisp`.)
+— produces `target/release/cranelisp`.) Add the chosen build directory to your
+`PATH`, for example `export PATH="$PWD/target/debug:$PATH"` from the repository
+root, so the `cranelisp` commands below find it.
 
 ## Start the REPL
 
 Run the binary with no arguments to open the interactive REPL in the current
 directory:
 
+<!-- sample: {"kind":"repl"} -->
 ```
-$ cranelisp
 cranelisp REPL — type /help for help
+agent: dormant (/ask shows what to set)
 0+0ms; user> (+ 1 2)
 :primitives/Int 3
 ```
+
+The default build includes the embedded agent and enables it, but activation
+requires an explicit provider and its configuration. Without them it is
+**dormant**, as shown above; `/ask` explains what to set. Supply settings in the
+process environment, project `.env`, or user configuration file; see
+[agent configuration](cli-reference.md#agent-configuration) and
+[environment files](cli-reference.md#environment-files). `cranelisp --no-agent`
+starts with the agent off. Later prompt-only transcripts on this page are
+excerpts, with startup and timing details omitted.
 
 Every result is printed in `:Type value` notation — here, the `Int` value `3` lives
 in the `primitives` module. The prompt shows compile and eval timings and the
@@ -56,13 +69,42 @@ Everything you then type or **pipe in** is *session input*, evaluated against th
 restored state — not a fresh, self-contained program. So `cranelisp < script.cl`
 run in a directory carrying prior state will resolve any name the script does not
 itself redefine to the **previous session's** binding; the same script piped into
-an **empty** directory can give a different result. (Redefinitions always win — a
-`(defn f …)` in the piped input takes effect over the stored one.)
+an **empty** directory can give a different result. (Successful replacements win: a
+`(defn f …)` takes effect over the stored definition only if the replacement is
+accepted under the live-development rules above.)
 
 If you want fresh-program semantics — a self-contained program with no resumed
 state — use `cranelisp --run script.cl` (see the
 [CLI reference](cli-reference.md)) or run the REPL in an empty directory. The
 normative model is [`repl/spec.md §15.2.1`](../repl/spec.md).
+
+## Panics end the process
+
+A runtime panic, such as primitive integer division by zero, prints a diagnostic
+to stderr and ends the process with status `1`. In the REPL it ends the session,
+so later input does not run. Use a checked operation when failure is an expected
+result. In a fresh REPL with the default prelude:
+
+<!-- sample: {"kind":"repl"} -->
+```
+user> (primitives/checked-quot 7 -2)
+:(primitives/Option primitives/Int) (Option.Some -3)
+user> (primitives/checked-quot 10 0)
+:(primitives/Option primitives/Int) Option.None
+user> (primitives/checked-quot -9223372036854775808 -1)
+:(primitives/Option primitives/Int) Option.None
+user> (primitives/div-i64 -9223372036854775808 -1)
+:primitives/Int -9223372036854775808
+```
+
+`checked-quot` returns `None` for zero divisors and for `Int.MIN / -1`.
+Primitive `div-i64` wraps that latter pair to `Int.MIN`; its zero divisor panics.
+These primitive operations have their own contract; a standard-library trait
+such as `Num` supplies library policy. See [runtime arithmetic and panics,
+spec §12.7](../spec/12-runtime.md#127-error-model)
+and [library numeric traits, §7.7.1](../spec/07-traits.md#771-num).
+The [testing guide](guide/testing.md) explains how the compiler runner isolates
+a test panic so the remaining tests can still run.
 
 ## Your first program
 
@@ -75,6 +117,7 @@ learning sequence of self-contained `.cl` files you can run directly.
 Start with [`examples/01-integers.cl`](../examples/01-integers.cl). It defines a
 few arithmetic functions and combines them in `main`:
 
+<!-- sample: {"kind":"illustrative","reason":"Shell invocation"} -->
 ```
 cranelisp --run examples/01-integers
 ```
@@ -85,6 +128,7 @@ performs none. Every `main` returns an `IO` action; this one wraps its result in
 **process exit code** (`01-integers` computes `69`, so the process exits with
 code `69`). You can confirm it ran cleanly by inspecting the exit code:
 
+<!-- sample: {"kind":"illustrative","reason":"Shell exit status walkthrough"} -->
 ```
 $ cranelisp --run examples/01-integers
 $ echo $?
@@ -103,6 +147,7 @@ confirm your build works on any host.
 To actually print, a program performs IO. The smallest complete IO program is the
 platform two-step plus a `main` that prints:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 ;; hello.cl
 (platform stdio)
@@ -111,6 +156,7 @@ platform two-step plus a `main` that prints:
 (defn main [] (print "hello world"))
 ```
 
+<!-- sample: {"kind":"illustrative","reason":"Shell launch and stdout"} -->
 ```
 $ CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug cranelisp --run hello.cl
 hello world
@@ -133,6 +179,7 @@ On macOS, and for any program outside `examples/` — including the `hello.cl`
 above, written in a directory of your own — point the binary at the directory
 holding the built library with `CRANELISP_PLATFORM_PATH`:
 
+<!-- sample: {"kind":"illustrative","reason":"Shell environment setup"} -->
 ```
 CRANELISP_PLATFORM_PATH=/path/to/cranelisp/target/debug cranelisp --run hello.cl
 ```
@@ -156,6 +203,7 @@ why an IO program names the platform it needs and the runtime loads the matching
 Using a platform is **two steps** — and missing the second is the usual first
 stumble:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (platform stdio)                 ; step 1 — load the DLL, register the platform.stdio module
 (import [platform.stdio [*]])    ; step 2 — bring print/read-line into scope
@@ -175,6 +223,7 @@ REPL prints `Executing IO…`, then whatever the action outputs, then the value 
 returns under that value's own type. Start the REPL with `CRANELISP_PLATFORM_PATH`
 set as above so it can find the platform:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (platform stdio)
 user> (import [platform.stdio [print]])
@@ -242,12 +291,17 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
   ASCII and HTML, exercising ADTs, traits, modules, and IO together. It needs the
   standard library and a platform on the search path:
 
+  <!-- sample: {"kind":"illustrative","reason":"Shell showcase launch"} -->
   ```
   CRANELISP_LIB=stdlib CRANELISP_PLATFORM_PATH=target/debug \
     cranelisp --run exemplar/user.cl
   ```
 
 - **Guide** — feature-by-feature pages:
+  - [`guide/modules.md`](guide/modules.md) — files, child modules, imports and
+    public interfaces.
+  - [`guide/macros.md`](guide/macros.md) — source transformations, templates and
+    expansion helpers.
   - [`guide/live-development.md`](guide/live-development.md) — redefining
     functions in a live session, editing module files while the REPL runs, and
     moving between modules with `/mod`.

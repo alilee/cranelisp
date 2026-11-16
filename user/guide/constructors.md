@@ -5,6 +5,7 @@ function (or, for a variant with no fields, the value) you use to build that
 variant. Just like field accessors, a constructor has two names, and knowing
 which is which saves you a confusing error later.
 
+<!-- sample: {"kind":"definition","group":"ctors"} -->
 ```clojure
 (deftype Shape
   Dot
@@ -25,6 +26,7 @@ A constructor's real, canonical name is the **qualified** `Type.Ctor` form —
 reports a constructed value, and it is **always** valid wherever the type is in
 scope:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (Shape.Circle 5)
 :user/Shape (Shape.Circle 5)
@@ -35,6 +37,7 @@ you can pass it as an argument or bind it to a variable. A nullary constructor
 (one with no fields) is a value rather than a function, and its canonical name
 works the same way:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> Shape.Dot
 :user/Shape user/Shape.Dot ; deftype
@@ -51,6 +54,7 @@ canonical `Shape.Circle`. It resolves to the same constructor, and it is the
 natural way to write code when no other type in scope owns a constructor of the
 same name:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (Circle 5)
 :user/Shape (Shape.Circle 5)
@@ -65,6 +69,7 @@ Two in-scope types may each own a constructor with the same name. You meet this
 as soon as you define your own optional type, because the standard prelude's
 `Option` already owns `Some` and `None`:
 
+<!-- sample: {"kind":"definition","group":"ctors"} -->
 ```clojure
 (deftype (Maybe a) None (Some [:a v]))
 ```
@@ -75,6 +80,7 @@ bare spelling `Some` now has two candidates, and so does `None`. Typing the bare
 name at the prompt lists every candidate; looking a name up never reports an
 ambiguity:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> Some
 :(Fn [a] (primitives/Option a)) primitives/Option.Some ; deftype
@@ -95,6 +101,7 @@ the canonical alternatives.
 A bare construction whose type nothing fixes is ambiguous, because `7` fits
 either type:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (Some 7)
 Error: type error at 1..5: ambiguous bare name 'Some'; surviving declarations: primitives/Option.Some, user/Maybe.Some; qualify the name or add an annotation
@@ -102,6 +109,7 @@ Error: type error at 1..5: ambiguous bare name 'Some'; surviving declarations: p
 
 Write the constructor you mean:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (Maybe.Some 5)
 :(user/Maybe primitives/Int) (Maybe.Some 5)
@@ -112,6 +120,7 @@ user> (Option.Some 5)
 Or let a type annotation choose. Here the declared return type selects
 `Maybe.Some`:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (defn g [] :(Maybe Int) (Some 7))
 :(Fn [] (user/Maybe primitives/Int)) user/g ; defn
@@ -127,6 +136,7 @@ In a `match`, a bare constructor pattern resolves against the type of the value
 being matched. When that type is known, the bare patterns read as naturally as
 in unambiguous code:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (match (Maybe.Some 7) [(Some x) x None 0])
 :primitives/Int 7
@@ -139,6 +149,7 @@ When the scrutinee's type is not known, the bare pattern is ambiguous. In the
 function below, the parameter `m` has no annotation and nothing else constrains
 it:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (defn f [m] (match m [(Some x) x None 0]))
 Error: type error at 22..30: ambiguous constructor 'Some'; surviving declarations: primitives/Option.Some, user/Maybe.Some; qualify the constructor or add an annotation
@@ -149,6 +160,7 @@ parenthesised with its field bindings (`(Maybe.Some x)`). A nullary pattern is
 the bare dotted name (`Maybe.None`). The dotted pattern always resolves,
 whatever the scrutinee:
 
+<!-- sample: {"kind":"repl","group":"ctors"} -->
 ```
 user> (defn f [m] (match m [(Maybe.Some x) x Maybe.None 0]))
 :(Fn [(user/Maybe primitives/Int)] primitives/Int) user/f ; defn

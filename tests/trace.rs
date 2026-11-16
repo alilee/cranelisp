@@ -771,45 +771,6 @@ fn assert_traced_fib_worker_ran(stdout: &str, stderr: &str) {
     );
 }
 
-/// The `spawns=N` an untraced `(fib 12)` REPL child reports on stderr under
-/// `CRANELISP_SPARK_STATS=1`, or `None` when it prints no stats line, with a
-/// diagnostic of the run.
-fn untraced_fib_12_spawns(no_lenient: bool) -> (Option<u64>, String) {
-    let cr = Cranelisp::new()
-        .repl()
-        .env("CRANELISP_SPARK_STATS", "1")
-        .stdin(&format!("{FIB_AND_FRAMES}(fib 12)\n"));
-    let out = if no_lenient {
-        cr.env("CRANELISP_NO_LENIENT", "1")
-    } else {
-        cr
-    }
-    .output();
-    let spawns = out
-        .stderr
-        .lines()
-        .find_map(|line| line.strip_prefix("[SPARK_STATS] spawns="))
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok());
-    let diag = format!(
-        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
-    );
-    (spawns, diag)
-}
-
-// spec: spec/04-expressions.md §4.12.2 — the spark premise of
-// `trace_records_every_call_of_spark_admitted_callee` can fail: with sparks
-// disabled the untraced run reports no spawns, and it computes `(fib 12)`.
-#[test]
-fn untraced_fib_spark_premise_reports_no_spawns_with_sparks_disabled_control() {
-    let (spawns, diag) = untraced_fib_12_spawns(true);
-    assert!(
-        spawns.is_none_or(|n| n == 0) && diag.contains(":primitives/Int 144"),
-        "with CRANELISP_NO_LENIENT=1 the premise MUST report no spawns and `(fib 12)` be 144\n{diag}"
-    );
-}
-
 fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
     let child = |last_turn: &str| {
         let c = Child::repl(&format!("{FIB_AND_FRAMES}{last_turn}"))

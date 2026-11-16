@@ -41,7 +41,8 @@
 (let [t (trace (factorial 4))] (match t [(TraceCall _ _ _ ch _) (show-tree ch "")]))
 (let [t (trace (factorial 4))] (trace-show-tree t))
 
-; /mod — bare goes to user, /mod name switches silently
+; /mod — bare goes to user; an unknown name is refused.
+; The refused switch leaves definitions in the current user module.
 
 /mod
 /mod math

@@ -18,6 +18,7 @@ head position is rejected, and the message names the bare form to write.
 
 **A `defn` head:**
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (defn user/foo [n] n)
 Error: parse error at 6..14: 'user/foo' is a qualified name, but a binder must be a bare (unqualified) name — write 'foo' (a binder introduces a name into the current module or scope; use an import or qualified reference to reach another module)
@@ -25,9 +26,10 @@ Error: parse error at 6..14: 'user/foo' is a qualified name, but a binder must b
 
 **A `deftype` constructor head** — same rule, the message names the constructor:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftype Shape (user/Circle [:Int r]))
-Error: parse error at 16..27: 'user/Circle' is a qualified name, but a binder must be a bare (unqualified) name — write 'Circle' (…)
+Error: parse error at 16..27: 'user/Circle' is a qualified name, but a binder must be a bare (unqualified) name — write 'Circle' (a binder introduces a name into the current module or scope; use an import or qualified reference to reach another module)
 ```
 
 The message is **position-neutral** — it says "a binder", not "a definition
@@ -46,6 +48,7 @@ qualified spelling in a `defn`/`fn` **parameter**, a `let` **name**, or a `match
 **variable pattern** is rejected too — these positions *introduce* a name into a
 local scope, so they are binders and must be bare:
 
+<!-- sample: {"kind":"illustrative","reason":"Input-only catalogue of qualified binder rejections; no exact response claimed"} -->
 ```
 user> (defn f [user/x] x)
 user> (let [user/y 5] y)
@@ -71,6 +74,7 @@ Normative: [spec §5](../../spec/05-definitions.md) (binder-positions table),
 A **dotted** spelling (`a.b`) in a binder position is rejected on exactly the
 same footing as a qualified one, with its own message:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (defn a.b [x] x)
 Error: parse error at 6..9: 'a.b' is a dotted name, but a binder must be a bare (unqualified) name — write 'b' ('.' is reserved for type/trait qualification)
@@ -81,6 +85,7 @@ variant-constructor names, field names, type parameters, trait method-signature
 names and constructor variables, `defmacro` heads, and the value-level `let`,
 parameter and `match` binders:
 
+<!-- sample: {"kind":"illustrative","reason":"Input-only catalogue of dotted binder rejections; no exact response claimed"} -->
 ```
 user> (deftype A.B [:Int r])          ; head
 user> (deftype P [:Int a.b])          ; field name
@@ -119,6 +124,7 @@ does not depend on what the name would have meant, and the message differs by
 
 **Empty module half — `/bar`** (nothing before the `/`):
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (add-i64 /bar 1)
 Error: parse error at 9..10: `/` here has no module name before it — a qualified name needs a non-empty module (`mod/name`); a bare `/` division must be separated (`(/ a b)`)
@@ -134,6 +140,7 @@ with whitespace around it (`(/ 6 2)`) is arithmetic and stays legal — only a `
 
 **Empty local half — `foo/`** (nothing after the `/`):
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> foo/
 Error: parse error at 4..4: `/` here has no local name after it — a qualified name needs a non-empty local (`mod/name`); drop the trailing `/` to write a bare name
@@ -156,6 +163,7 @@ A `:` annotation binds the single form that immediately follows it, and that for
 **must be a type**. Pointing `:` at a value — an integer literal, say — is a
 located compile-time error:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> :3 5
 Error: parse error at 1..2: invalid type expression
@@ -176,6 +184,7 @@ In a parameterised `deftype` or `deftrait` head, the parameters are **type
 variables**, written **lowercase**. An uppercase name in a parameter slot reads as
 a *named-type reference*, not a fresh parameter binder, so it is rejected:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftype (Box A) (Box [:A x]))
 Error: parse error at 14..15: type parameter `A` must be a lowercase symbol (a type variable); an uppercase name is a named-type reference, not a parameter (spec §2.2.2)
@@ -197,6 +206,7 @@ variable `f` is applied — `(f a)` — in a method signature. A head whose vari
 is never applied is malformed; the message points you at the conventional
 bare-head + `self` form:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait (Boxy f) (make [:Int n] Int))
 Error: type error at 0..39: trait `Boxy`'s type parameter `f` is never applied `(f …)`; a trait that returns the implementing type uses the bare head and `self`: `(deftrait Boxy (make [] self))`.
@@ -212,6 +222,7 @@ Every method of a conventional (bare-head) trait must mention the implementing
 type at least once — a bare parameter, a `:self` annotation, or `self` in the
 return type. A method that mentions it nowhere has nothing to dispatch on:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait Zeroable (zed [] Int))
 Error: type error at 19..31: trait `Zeroable` method `zed`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
@@ -220,6 +231,7 @@ Error: type error at 19..31: trait `Zeroable` method `zed`: no occurrence of the
 The rule is about **occurrence, not arity** — a non-empty parameter list does not
 help if every parameter is annotated with some other type:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait Conv (cvt [:String s] Int))
 Error: type error at 15..36: trait `Conv` method `cvt`: no occurrence of the implementing type to dispatch on — a trait method MUST mention the implementing type at least once: either a parameter carries it (a bare name `[x …]` or a `:self` annotation), or the return type is `self`
@@ -235,6 +247,7 @@ occurs. Normative:
 
 ### A trait with no methods
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftrait Marker)
 Error: parse error at 0..17: deftrait requires a trait head and at least one method
@@ -249,9 +262,14 @@ workaround is rejected by the occurrence rule above. See the
 An impl method's body must typecheck against the trait's declared signature for
 the target type. When it does not, the impl is rejected:
 
+<!-- sample: {"kind":"repl","group":"errors"} -->
 ```
 user> (deftrait Sizeable (size [x] Int) (tag [x] Int))
+:user/Sizeable ; deftrait
+; defn:
+;  size tag
 user> (deftype Box [:Int w :Int h])
+:(Fn [primitives/Int primitives/Int] user/Box) user/Box ; deftype
 user> (impl Sizeable Box (defn size [b] "nope") (defn tag [b] 7))
 Error: type error at 19..41: impl of trait `Sizeable` for `user/Box`: method `size` does not conform: type mismatch: expected primitives/Int, got primitives/String
 ```
@@ -268,6 +286,7 @@ Re-entering an `impl` replaces the whole implementation for the (trait, type)
 pair, so the new one must implement the trait on its own. Omitting a method is
 not "keep the previous one":
 
+<!-- sample: {"kind":"repl","group":"errors"} -->
 ```
 user> (impl Sizeable Box (defn size [b] (match b [(Box w h) (sub-i64 w h)])))
 Error: type error at 0..71: impl Sizeable for Box: missing required method tag
@@ -277,14 +296,19 @@ Error: type error at 0..71: impl Sizeable for Box: missing required method tag
 implementation is left installed and dispatching, so nothing is lost while you
 retype it. Normative:
 [spec §5.4.5](../../spec/05-definitions.md#545-implementation-semantics) and
-[`repl/spec.md §18.9`](../../repl/spec.md).
+[`REPL §18.7`](../../repl/spec/18-redefinition.md#187-impl-redefinition--re-entering-an-impl).
 
 ### Pairing-head does not name the trait (HKT impl)
 
 A higher-kinded impl's slot 2 is a trait-constructor pairing `(Trait Constructor)`
 whose **head must be the trait** being implemented:
 
+<!-- sample: {"kind":"repl"} -->
 ```
+user> (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
+:user/Functor ; deftrait
+; defn:
+;  fmap
 user> (impl (Functor f) (Foo Option) (defn fmap [g x] x))
 Error: type error at 0..51: impl of trait `Functor` (slot 1) pairs slot 2 with head `Foo`: a trait-constructor pairing's head must name the trait being implemented — write `(Functor Option)`, not `(Foo Option)`.
 ```
@@ -299,7 +323,12 @@ A higher-kinded impl target must be a type **constructor** of the arity the
 trait's variable expects. Naming a plain type (kind `*`) where a `* -> *`
 constructor is required is rejected:
 
+<!-- sample: {"kind":"repl"} -->
 ```
+user> (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
+:user/Functor ; deftrait
+; defn:
+;  fmap
 user> (impl (Functor f) (Functor Int) (defn fmap [g x] x))
 Error: type error at 0..52: Int is not a type constructor (trait Functor expects arity 1)
 ```
@@ -313,6 +342,7 @@ Not trait-specific, but adjacent: two `defn` clauses of the **same arity** whose
 written parameter types could both match one argument tuple are a
 dispatch-ambiguity error, reported at the definition:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (defn amb ([:Num x] x) ([:Num y] y))
 Error: type error at 23..35: ambiguous dispatch for 'amb': the 1-arg arity clauses #1 and #2 have unifiable (overlapping) parameter types — a call matching one matches both signatures (spec §5.1.1 dispatch coherence); make their parameter types disjoint
@@ -329,6 +359,7 @@ Calling a trait method on a type that has no impl is a clean typecheck error tha
 **names the owning trait** — even when you imported only the method and never the
 trait:
 
+<!-- sample: {"kind":"repl","files":{"shapes.cl":"(deftype Circle [:Int radius])\n(deftrait Area (area [self] Int))\n(impl Area Circle (defn area [c] (primitives/mul-i64 (Circle.radius c) (Circle.radius c))))\n"}} -->
 ```
 user> (import [shapes [area]])
 user> (area 7)
@@ -346,6 +377,7 @@ return position — like the prelude `Default`'s `default`) needs the return typ
 pinned by an argument, an annotation, or surrounding context. When nothing pins
 it, the call is ambiguous:
 
+<!-- sample: {"kind":"repl","group":"default"} -->
 ```
 user> (import [default [default]])
 user> (default)
@@ -355,6 +387,7 @@ Error: type error at 0..9: ambiguous type: the return-type-polymorphic call to `
 **Fix:** add a `:Type` annotation to the call so the compiler can select the
 impl — the annotation binds the following form:
 
+<!-- sample: {"kind":"repl","group":"default"} -->
 ```
 user> :Int (default)
 :primitives/Int 0

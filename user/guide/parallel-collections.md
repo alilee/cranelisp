@@ -20,12 +20,14 @@ parallelism comes from the compiler's automatic lenient-evaluation substrate (se
 
 They are **import-on-demand**, not part of the prelude. Pull in the ones you need:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [collections.parallel [par-map par-reduce par-map-reduce]])
 ```
 
 ## Using them
 
+<!-- sample: {"kind":"illustrative","reason":"Call shapes use application-supplied expensive-fn, add and v"} -->
 ```clojure
 ;; Apply an expensive function to every element, in parallel.
 (par-map expensive-fn v)

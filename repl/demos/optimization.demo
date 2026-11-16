@@ -20,9 +20,9 @@
 (defn sumto [:Int n :Int acc] (if (eq-i64 n 0) acc (sumto (sub-i64 n 1) (add-i64 acc n))))
 /clif sumto
 
-; Read the IR: `block1(v2, v3)` are the loop header's parameters — n and acc,
-; in registers. The recursive tail is `jump block1(v9, v10)` — a back-edge, not
-; a call, not a stack frame. No allocation anywhere. This is the ideal.
+; Read the IR: n and acc ride the loop header's block parameters in registers.
+; The recursive tail jumps back to that header without a call or a new frame.
+; No allocation appears in this function.
 
 
 ; 2. A single-field wrapper vanishes into a bare word.
@@ -33,9 +33,9 @@
 (defn unwrap [:Int n] (let [c (MkCell n)] (match c [(MkCell v) v])))
 /clif unwrap
 
-; Read the IR: `(MkCell n)` emits NOTHING. The argument v1 flows straight to
-; `block2(v1)` and returns. No alloc, no store, no load — the value is a
-; register the whole way through. Construction and match are free. Hold onto
+; Read the IR: `(MkCell n)` needs no allocation. The argument flows through
+; block parameters and returns. No store or load — the value stays in a
+; register. Hold onto
 ; this: it is exactly single-field that gets this treatment (see Act 2).
 
 
@@ -47,23 +47,23 @@
 (defn set-first [:Int n] (let [v (vec 1 2 3)] (vec-set v 0 n)))
 /clif set-first
 
-; Read the IR: `load v6+8` fetches the refcount, `icmp eq ..., 1` tests
-; uniqueness, and `brif block2, block3` forks. block2 stores in place;
-; block3 (`call fn1(...)`) is the copy-on-write fallback. Unique writes never
-; copy.
+; Read the IR: after the bounds check, a load at header offset +8 fetches
+; the refcount. A comparison with 1 forks to an in-place store or a call to
+; the copy-on-write fallback. Uniqueness is tested at runtime.
 
 
-; 4. Borrowing a value costs no reference-count traffic.
-; A parameter the callee only reads is passed as a borrow — the caller keeps
-; ownership, so there is no increment on entry and no decrement on exit:
+; 4. Reading an owned value still consumes it.
+; Uniform counting passes this Box as an owned argument. The callee reads
+; the scalar fields, then releases the Box before returning the selected Int:
 
 (deftype Box (MkBox [:Int a :Int b]))
 (defn get-h [:Box x] (match x [(MkBox a b) b]))
 /clif get-h
 
-; Read the IR: get-h reads the fields (`load x+24`, `load x+32`) and returns.
-; There is not a single atomic_rmw in the function — the inc/dec pair a naive
-; refcounting scheme would emit is elided entirely. Reads are free.
+; Read the IR: field loads at +24 and +32 precede a typed release call on
+; the Box pointer. The selected scalar then returns. No inline atomic_rmw
+; appears here; release work lives behind the call, so its absence is not
+; evidence that reading a heap value has no reference-count cost.
 
 
 ; 5. A small fixed record that never escapes goes on the stack, not the heap.
@@ -75,12 +75,12 @@
 (defn area [:Int a :Int b :Int flip] (let [r (if (eq-i64 flip 0) (Portrait a b) (Landscape a b))] (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)])))
 /clif area
 
-; Read the IR: `ss0`/`ss1 = explicit_slot 40` are stack slots (one per arm),
-; addressed by `stack_addr`. The header stores an immortal refcount
-; `0x4000_0000_0000_0000` — so the residual `atomic_rmw sub` at the end can
-; never reach zero and the free path is dead code. No allocator call at all.
-; But note WHERE the fields live: `store ...v+24`, `load ...v+24` — stack
-; MEMORY. That detail is the whole story of Act 2.
+; Read the IR: two `explicit_slot 40` declarations reserve one slot per arm,
+; addressed by `stack_addr`. Each header stores the immortal refcount
+; `0x4000_0000_0000_0000`. Each match arm loads fields and calls typed release;
+; the immortal header keeps that release from freeing stack storage.
+; There is no allocator call. Fields still use stores and loads at +24/+32:
+; stack MEMORY. That detail is the whole story of Act 2.
 
 
 ; ─────────────────────────────────────────────────────────────────────
@@ -112,10 +112,10 @@
 (defn sum-areas [:Int k :Int acc] (if (eq-i64 k 0) acc (let [r (if (eq-i64 (sub-i64 k (mul-i64 (div-i64 k 2) 2)) 0) (Portrait k k) (Landscape k k))] (sum-areas (sub-i64 k 1) (add-i64 acc (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)]))))))
 /clif sum-areas
 
-; Read the IR: the SAME Rect that stack-allocated in `area` now heap-allocates
-; — `iconst.i64 24` (header + payload) into an allocator `call`, with a real
-; `atomic_rmw sub` decrement and free path per iteration. The escape is not the
-; problem; the self-call is. This gates out the entire iterative hot core.
+; Read the IR: the same Rect that stack-allocated in `area` now passes a
+; 24-byte payload size to an allocator call in each constructor arm. Each
+; match arm calls typed release before the loop back-edge. The self-call
+; disqualifies this local from stack placement even though it does not escape.
 
 
 ; 8. A record with a heap field stays on the heap regardless.
@@ -126,9 +126,10 @@
 (defn label [:Int n :String s :Int flip] (let [t (if (eq-i64 flip 0) (TA n s) (TB n s))] (match t [(TA k u) k (TB k u) k])))
 /clif label
 
-; Read the IR: heap `call` allocation, and an `atomic_rmw add` — the refcount
-; increment keeping the String field alive inside the box. Nothing here can be
-; a register or a stack slot.
+; Read the IR: each arm allocates on the heap and stores the owned String
+; pointer at +32. Matching calls typed release on the aggregate; that release
+; also owns the unused String field. There is no inline increment here:
+; ownership moves into the aggregate. No stack slot holds this record.
 
 
 ; 9. A Vec local is heap-allocated — its size is dynamic.
@@ -145,17 +146,16 @@
 ; ─────────────────────────────────────────────────────────────────────
 ; WHAT THE IR SAYS
 ; ─────────────────────────────────────────────────────────────────────
-; The optimizer is strong on the scalar/unique/borrow axes: loop scalars are
-; registers, single-field wrappers flatten to words, unique writes mutate in
-; place, borrows carry no refcount traffic, and small escape-free scalar
-; records dodge the allocator via a stack slot.
+; Loop scalars ride registers, single-field wrappers flatten to words,
+; dynamically unique writes mutate in place, and small escape-free scalar
+; records dodge the allocator via a stack slot. Heap arguments are consumed
+; uniformly; last-use moves avoid an extra retain, while typed releases
+; can carry reference-count work behind calls.
 ;
 ; The frontier is register-residency for AGGREGATES. A multi-field record never
 ; decomposes into SSA registers — the best case is a stack SLOT, which is
 ; memory; and that path is itself declined inside any loop (self-recursion) and
 ; for any heap-field or dynamically-sized value. The missing piece is
 ; multi-field SSA-decomposition (SROA / value-flattening beyond one word). That
-; is the precondition for a future `--release` tier — LLVM's mem2reg/SROA
-; promote such locals into registers, never onto the heap — to close the gap.
-; It is the identified next direction, not a defect: the IR here is correct and
-; conservative at every step.
+; would let more aggregate locals stay in registers. The IR shown here
+; demonstrates the current limits; it does not promise a future compiler tier.

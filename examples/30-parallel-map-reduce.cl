@@ -34,13 +34,18 @@
 ;;     `work` leaf below is a safe, non-over-sparking unit of parallel work).
 ;;
 ;; Runtime safety net: a global in-flight-spark budget (default 4x threads,
-;; override with CRANELISP_SPARK_BUDGET=N) caps how many sparks are live at
-;; once -- over-budget sites resolve inline, so deep recursion can't explode.
+;; set CRANELISP_SPARK_BUDGET=N on the compiler invocation) caps how many
+;; sparks are live at once. Over-budget sites resolve inline, so deep recursion
+;; can't explode.
 ;;
-;; A/B any timing claim yourself: CRANELISP_NO_LENIENT=1 forces every binding
-;; AND every argument serial; CRANELISP_SPARK_BUDGET=0 is the equivalent
-;; runtime escape hatch for an already-compiled binary. Same result either way
-;; -- parallelism is semantically transparent because the code is pure.
+;; A/B any timing claim yourself: CRANELISP_NO_LENIENT=1 suppresses spark
+;; emission; CRANELISP_SPARK_BUDGET=0 keeps the gates but admits no sparks.
+;; Either gives a serial baseline. Set the knob on the compiler invocation:
+;;   CRANELISP_NO_LENIENT=1 cranelisp --run 30-parallel-map-reduce.cl
+;; For linked A/B runs, link one executable normally and a second with either
+;; serial knob set on --link, then time each executable. These settings are
+;; baked at link time; changing only the launch environment has no effect.
+;; Same result either way -- parallelism is transparent because the code is pure.
 ;; ---------------------------------------------------------------------------
 
 ;; --- The per-element work leaf: real work, single tail-recursive self-call ---
@@ -84,7 +89,7 @@
 
 ;; Wall-clock A/B (8 leaves, ~1,000,000 work iterations each):
 ;;     lenient ON  : the two halves at each level run in parallel
-;;     lenient OFF : halves run sequentially  (CRANELISP_NO_LENIENT=1)
+;;     lenient OFF : halves run sequentially (CRANELISP_NO_LENIENT=1 at compile time)
 ;; Same RESULT either way -- parallelism is semantically transparent (pure code).
 ;;
 ;; HONESTY ON SPEED -- parallel is NOT an unconditional win. Sparking costs real

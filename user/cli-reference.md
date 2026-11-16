@@ -9,12 +9,14 @@ page re-presents it for everyday use.
 
 ## Synopsis
 
+<!-- sample: {"kind":"illustrative","reason":"CLI synopsis, not REPL input"} -->
 ```
-cranelisp [--run | --test | --link] [-o <path> | --output <path>] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--no-agent] [target]
+cranelisp [--run | --test | --link] [-o <path> | --output <path>] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [--yes] [target]
 ```
 
-This synopsis shows the default build’s options before the target. An agent-capable build prints
-`[--agent | --no-agent] [--yes]` in place of `[--no-agent]`.
+The default build includes the embedded agent. An agent-free build, made with
+`cargo build --no-default-features`, advertises only `[--no-agent]` in place
+of `[--agent | --no-agent] [--yes]`.
 
 - `[target]` is an optional positional argument naming the entry module / project
   root. With no target, the REPL opens on the `user` module in the current
@@ -46,8 +48,10 @@ The four modes are mutually exclusive. Exactly one is selected per invocation.
 Opens the interactive read-eval-print loop on the resolved entry module. The REPL
 loads the prelude, prints a banner, and presents a prompt. Definitions you enter
 are type-checked, evaluated, and persisted back to the entry module's source file.
-If the entry source file does not exist, the REPL creates an empty one and proceeds
-— so `cranelisp` in an empty directory is a valid way to start a new project.
+If the entry source file does not exist, the REPL starts an empty module. It
+creates the backing file after a successful definition; simply opening and
+quitting an empty session creates no source file. See the
+[backing-file lifecycle](guide/live-development.md#when-the-entry-file-appears-or-disappears).
 
 The REPL is self-documenting: every symbol and expression you enter responds with
 its type and value in `:Type value` notation, and slash commands (`/sig`, `/doc`,
@@ -81,6 +85,7 @@ module remains the authority for its complete contents.
 
 Search by **name** or by **type signature**, exact or partial:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> /search filter
 :(Fn [(Fn [a] primitives/Bool) (collections.list/List a)] (collections.list/List a)) filter-list
@@ -89,9 +94,9 @@ user> /search filter
   in collections.vec   — (import [collections.vec [vec-filter]])
 :(Fn [(Fn [a] primitives/Bool) (seq.lazy/Seq a)] (seq.lazy/Seq a)) seq-filter
   in seq.lazy   — (import [seq.lazy [seq-filter]])
-
-user> /search (Fn [Int Int] Int)
 ```
+
+To search by type, enter `/search (Fn [Int Int] Int)`.
 
 - **By name** — exact, or a case-insensitive substring (`/search grid` finds
   `grid-get`, `grid-set`, `make-grid`).
@@ -131,6 +136,9 @@ output comes from IO effects inside your program.
   applies the identical rule** — see [Link](#link---link).
 - A program that references `discover-tests` is refused before it runs; see
   [Test discovery is REPL-only](#test-discovery-is-repl-only).
+
+A runtime panic prints to stderr and ends its process with status `1`, in the
+REPL as well as in batch mode. See [panics and checked arithmetic](getting-started.md#panics-end-the-process).
 
 **Artifact:** none — the program runs and the process exits with the program's code.
 
@@ -230,6 +238,7 @@ Pass `-o <path>` (or its long form `--output <path>`) to set the output path exp
 (the standard `cc -o` / `rustc -o` escape hatch). The resolved path is used verbatim;
 a relative path is resolved against the current directory.
 
+<!-- sample: {"kind":"illustrative","reason":"Shell invocation; the REPL harness does not run link commands"} -->
 ```
 cranelisp --link -o build/myapp myproject
 ```
@@ -240,6 +249,7 @@ If the resolved output path is an **existing directory**, `cranelisp` emits a cl
 diagnostic naming the path and telling you to pass `-o`, rather than surfacing a raw
 linker error:
 
+<!-- sample: {"kind":"illustrative","reason":"Output-only CLI diagnostic"} -->
 ```
 error: output path 'user' is a directory — use -o <path> to choose a different output
 ```
@@ -272,7 +282,7 @@ numeric argument.
 | `--no-cache` | Bypass the on-disk module cache (recompile from source). **Error if combined with `--link`.** | cache on |
 | `--priority-workers N` | Number of priority compilation workers. `N` must be numeric (non-numeric is an error). | `1` |
 | `--nice-workers N` | Number of background ("nice") compilation workers. `N` must be numeric. | `1` |
-| `--agent` | On an agent-capable binary, request the embedded agent for a REPL session. It still needs a configured provider at runtime; in `--run`, `--test` or `--link` it is accepted but has no effect. A feature-off binary rejects this flag. See [`repl/spec/00-cli-invocation.md` §0.6.1](../repl/spec/00-cli-invocation.md). | agent off |
+| `--agent` | On an agent-capable binary, explicitly enable the embedded agent (already enabled by default). Activation needs an explicit provider and its configuration; in `--run`, `--test` or `--link` it is accepted but has no effect. A feature-off binary rejects this flag. See [`repl/spec/00-cli-invocation.md` §0.6.1](../repl/spec/00-cli-invocation.md). | agent enabled |
 | `--no-agent` | Force the embedded agent off; it wins when paired with `--agent`. It is accepted in both build variants and is a no-op in a feature-off binary. | — |
 | `--yes` (short: `-y`) | On an agent-capable binary, auto-answer the agent's write-consent prompts. It does not enable the agent and is inactive in `--run`, `--test` and `--link`; a feature-off binary rejects it. See [`repl/spec/00-cli-invocation.md` §0.6.2](../repl/spec/00-cli-invocation.md). | off |
 
@@ -287,10 +297,38 @@ Notes:
   itself is specified in
   [`repl/spec/17-embedded-agent.md` §17](../repl/spec/17-embedded-agent.md).
 
+## Agent configuration
+
+Enabled means the capability is available; **active** means the selected
+provider has its required configuration.
+Startup reports one state line: active (including provider and model), dormant
+(with `/ask` guidance), or off. `--no-agent` forces off and wins over `--agent`.
+An agent-free binary reports that the agent is not built in.
+
+Select `CRANELISP_AGENT_PROVIDER` explicitly. An ambient `ANTHROPIC_API_KEY`
+alone does not activate the agent. For example, put the following in your
+project `.env` to select an Ollama model:
+
+<!-- sample: {"kind":"illustrative","reason":"Environment-file configuration, not language source"} -->
+```dotenv
+CRANELISP_AGENT_PROVIDER=ollama
+CRANELISP_AGENT_MODEL=docs-probe
+```
+
+With this configuration the startup line is
+`agent: active (ollama, model docs-probe)`; making a request still needs the
+Ollama service and that model available. For Anthropic, select `anthropic`,
+set `CRANELISP_AGENT_MODEL`, and supply `ANTHROPIC_API_KEY` (or `CRANELISP_AGENT_KEY`). Both live providers need
+an explicit model. Provider options and defaults are in
+[REPL §17.4](../repl/spec/17-embedded-agent.md#174-default-enablement-and-dormancy)
+and [activation, §17.10](../repl/spec/17-embedded-agent.md#1710-enabling--configuring-the-agent).
+The [environment-file workflow](#environment-files) below applies to these
+settings too. Agent settings and credentials are excluded from linked programs.
+
 ## Choosing what to compile (the target)
 
 The optional `[target]` resolves to a `(project root, entry module)` pair. The
-project root is the directory containing the entry file (per
+project root is the base against which module paths are resolved (per
 [`spec/08-modules.md §8.11`](../spec/08-modules.md)); the entry module is the module
 the binary runs, tests, links, or opens the REPL on. A trailing `.cl` is always optional and
 stripped — `cranelisp app` and `cranelisp app.cl` are equivalent.
@@ -308,7 +346,12 @@ Resolution applies these rules in order:
    module is `user`. `cranelisp myproject` (where `myproject/` exists and there is no
    `myproject.cl`) opens `myproject/user.cl`.
 4. **Bare name** → project root is the current directory and the entry module is the
-   name. `cranelisp app` opens `app.cl` in the current directory.
+   name. `cranelisp app` opens `app.cl` in the current directory. Dots in the
+   entry module map to directories: `cranelisp --run a.b` loads `a/b.cl`
+   beneath the current project root, rather than a literal `a.b.cl`. Likewise,
+   `cranelisp --run project/a.b` resolves root `project/`, entry `a.b`, and
+   source `project/a/b.cl`. Filesystem targets such as `project/a/b.cl` remain
+   supported; their directory part selects the root.
 
 ### Worked example: a `.cl` file vs a same-named directory
 
@@ -316,10 +359,11 @@ A project's entry file can declare submodules with `(mod child)`, which live in 
 sibling directory named after the entry file. So it is normal for both `app.cl` and
 `app/` to exist side by side:
 
+<!-- sample: {"kind":"illustrative","reason":"Directory-layout illustration"} -->
 ```
 app.cl          ; the entry module — contains (mod child) and (defn main ...)
 app/
-  child.cl      ; the `child` submodule, referenced as child/...
+  child.cl      ; module app.child, referenced canonically as app.child/...
 ```
 
 When both `app.cl` and `app/` exist, the **file wins**: `cranelisp app` (and
@@ -364,6 +408,7 @@ they contribute nothing and suppress nothing. The normative rules are in
 
 A minimal `Cranelisp.toml` looks like this:
 
+<!-- sample: {"kind":"illustrative","reason":"Project TOML configuration, not language source"} -->
 ```toml
 # Paths are relative to this file, or absolute. Entries are ADDED to whatever
 # CRANELISP_LIB and {project-root}/stdlib/ already contribute.
@@ -378,10 +423,11 @@ where `myproject/` exists and there is no `myproject.cl` beside it (resolution r
 3 above) — and that directory has no `Cranelisp.toml`, the REPL writes a commented
 template there and tells you:
 
+<!-- sample: {"kind":"illustrative","reason":"Abbreviated startup and shell walkthrough"} -->
 ```
 $ cranelisp myproject
 [created Cranelisp.toml]
-cranelisp REPL — type /help for help
+... startup banner and agent state ...
 0+0ms; user>
 ```
 
@@ -409,6 +455,59 @@ The trigger, mode, notice, and safety guarantees are specified in
 
 ## Environment variables
 
+### Environment files
+
+Supply settings through the process environment, `.env` in the **resolved project
+root**, or `~/.config/cranelisp/env`. If `XDG_CONFIG_HOME` is set, the user file
+is `$XDG_CONFIG_HOME/cranelisp/env` instead. Precedence is process environment,
+then project file, then user file; even an empty process value takes precedence.
+This supply happens before settings are used in every compiler mode.
+
+Files accept `CRANELISP_*` keys plus `NO_COLOR`, `ANTHROPIC_API_KEY` and
+`OLLAMA_API_BASE_URL`; other keys are ignored. Use `KEY=VALUE` assignments,
+optionally prefixed by `export `. Comments and blank lines are allowed. Single
+quotes are literal; double quotes support escapes and multiline values. Values
+are not interpolated: `${NAME}` stays literal. The exact dialect is in
+[REPL §0.8](../repl/spec/00-cli-invocation.md#08-environment-files-and-linked-parameters).
+
+Missing optional files are silent. An unreadable or malformed file stops startup
+and names its location, including when the malformed line uses an ignored key.
+A chosen file value containing a NUL byte is rejected with the file, line and
+key, without printing the value.
+
+Set loader controls in the **process environment**, not in an environment file:
+
+| Control | Effect |
+|---|---|
+| `CRANELISP_ENV_FILE=<path>` | Replace the project-file location. |
+| `CRANELISP_USER_ENV_FILE=<path>` | Replace the user-file location. |
+| `CRANELISP_NO_ENV=1` | Disable both files. Only exactly `1` disables loading. |
+
+### Linking fixes runtime switches
+
+A linked executable retains the applicable non-agent `CRANELISP_*` switches
+that were effective during `--link`. Launch-time environment changes do not
+replace them, including diagnostic switches. Agent settings and secrets are
+excluded; compile-only settings need no runtime payload. The linked worker pool
+uses the machine's available core count. A linked program reads environment
+values only through a platform operation.
+
+For example, in a directory containing this complete `app.cl`:
+
+<!-- sample: {"kind":"definition"} -->
+```clojure
+;; app.cl
+(defn main [] (primitives/Pure 7))
+```
+
+`CRANELISP_RC_STATS=1 cranelisp --link -o app-bin app` produces an executable
+that exits `7` and prints `[RC_STATS]` counters on stderr even when launched
+with a cleared environment. Linking with that switch unset and setting it only
+when launching does not enable the counters. To change it, relink. This binding
+also applies to the scheduling and memory-diagnostic switches below.
+
+### Scheduling switches
+
 A few environment variables tune behaviour outside the flag set. The path-related
 ones (`CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH`) are covered inline above and in
 [`getting-started.md`](getting-started.md); this is their consolidated home.
@@ -424,8 +523,10 @@ ones (`CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH`) are covered inline above and i
 parallel evaluation described in
 [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation); because
 that parallelism is semantically invisible, neither variable changes what a program
-computes — only how it is scheduled. They apply identically in **REPL, `--run`, and
-`--link`** modes, and each is read **once per process**. Their normative home — exact
+computes — only how it is scheduled. They apply in **REPL, `--run`, `--test`,
+and `--link`**, with the [linked binding](#linking-fixes-runtime-switches) above.
+Each is read once per compiler process, so changing a file during a REPL
+session does not retune that session. Their normative home — exact
 effect, defaults, and scope — is
 [`repl/spec/00-cli-invocation.md` §0.7](../repl/spec/00-cli-invocation.md)
 (Execution Environment Variables); the rows above re-present that contract for
@@ -438,7 +539,8 @@ you are chasing a suspected use-after-free, double-free, or leak — for example
 narrowing down a compiler or platform bug — a set of **env-gated allocator modes**
 makes such faults deterministic. They are **all off by default**: with every variable
 unset the runtime behaves exactly as normal (byte-for-byte identical output), and
-they apply identically in **REPL, `--run`, and `--link`** modes. They add cost and
+they apply in **REPL, `--run`, `--test`, and `--link`**, subject to
+[link-time binding](#linking-fixes-runtime-switches). They add cost and
 retain memory, so leave them off for normal use.
 
 | Variable | Effect |

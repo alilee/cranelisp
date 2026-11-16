@@ -8,6 +8,7 @@ named definition `defn`. They differ in one place that trips up newcomers —
 
 A lambda takes **exactly one** parameter list and one body:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (fn [x] (+ x 1))
 (fn [:Int x :Bool y] (if y x 0))
@@ -23,6 +24,7 @@ multi-clause `fn`. If you try to write one — several `([params] body)` clauses
 inside a single `fn` — you get a parse error that tells you exactly what to reach
 for instead:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (fn ([x] x) ([x y] y))
 Error: parse error at 0..22: fn is single-arity: it takes one [params] bracket and a body. The parenthesised multi-arity clause form `(fn ([p] …) ([p q] …))` is defn-only — use defn for multiple arities (spec §4.5)
@@ -39,12 +41,17 @@ A `defn` may provide several **variants**, each a parenthesised `([params] body)
 clause with a different parameter list. The compiler dispatches to the matching
 variant by the argument types at each call site:
 
+<!-- sample: {"kind":"definition","group":"rp"} -->
 ```clojure
+(deftype Position [:Int x])
+(deftype Rotation [:Int angle])
+
 (defn rp
   ([:Position p :Rotation rot]          (rp p rot 0))
   ([:Position p :Rotation rot :Int idx] idx))
 ```
 
+<!-- sample: {"kind":"repl","group":"rp"} -->
 ```
 user> (defn rp ([:Position p :Rotation rot] (rp p rot 0)) ([:Position p :Rotation rot :Int idx] idx))
 :(Fn [user/Position user/Rotation] primitives/Int) user/rp ; defn
@@ -58,6 +65,7 @@ reports. A constrained parameter is written with a trait annotation — `:Num x`
 one parameter `x` bound to `Num` (the `:Num` annotation binds the single following
 form). Both signatures echo the constraint:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (defn h ([:Num x] (+ x x)) ([:Num x :Num y] (+ x y)))
 :(Fn [:num.num/Num a] a) user/h ; defn
@@ -79,7 +87,10 @@ delegating call from one clause into another carries the callee clause's
 parameter types back into the caller. You do **not** have to re-annotate a
 parameter that a sibling self-call already pins.
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
+(import [primitives [add-i64]])
+
 (defn rp4
   ([p rot]     (let [q (rp4 p rot 0)] p))        ; => (Fn [Int Int] Int)
   ([p rot idx] (add-i64 p (add-i64 rot idx))))   ; => (Fn [Int Int Int] Int)

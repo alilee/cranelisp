@@ -223,14 +223,14 @@ const SPRINT61_SRC: &str = "(import [primitives [*]])\n\
     \x20   (add-i64 (str-len e) (str-len (vec-get w 0)))))\n\
     (defn main [] (Pure (probe)))\n";
 
-// spec: design/backend/uniform-counting.md §1 — An independently owned projection keeps its old value across root COW.
+// spec: spec/12-runtime.md §12.3.1 — An independently owned projection keeps its old value across root COW.
 #[test]
 fn sprint61_read_projection_cow_release_root_then_use() {
     let out = assert_output_matches_ownership_off(SPRINT61_SRC, "sprint61 cow-release");
     assert_exit_value(out, 2 + 4);
 }
 
-// spec: design/backend/uniform-counting.md §1 — The pre-COW element survives even when freed memory is poisoned.
+// spec: spec/12-runtime.md §12.3.1 — The pre-COW element survives even when freed memory is poisoned.
 #[test]
 fn sprint61_read_projection_cow_release_under_malloc_perturb() {
     Cranelisp::new()

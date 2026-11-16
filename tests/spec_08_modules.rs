@@ -4807,3 +4807,228 @@ fn failed_import_location_belongs_to_named_file_neg() {
         combined(&out)
     );
 }
+
+// K-7 / ACT-1055 and K-8 / ACT-1056; allocation: plan/s123-evidence-delta.md §8.10.
+fn member_import_fixture() -> Cranelisp {
+    Cranelisp::new().file(
+        "mathx.cl",
+        "(deftype Shade Red Blue)\n\
+         (deftrait Seven (seven [x] primitives/Int))\n\
+         (impl Seven primitives/Int (defn seven [x] 7))\n\
+         (defn square [x] (primitives/mul-i64 x x))\n\
+         (defn cube [x] (primitives/mul-i64 x (primitives/mul-i64 x x)))",
+    )
+}
+
+fn assert_member_import_result(import: &str, body: &str, expected: i32) {
+    let out = member_import_fixture()
+        .file(
+            "app.cl",
+            &format!("{import}\n(defn main [] (primitives/Pure {body}))"),
+        )
+        .run("app.cl")
+        .output();
+    if out.status.code() != Some(expected) {
+        let diagnostic = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            diagnostic.contains("undefined variable")
+                || diagnostic.contains("unknown constructor in pattern"),
+            "member-import RED must be armed at name resolution: {diagnostic}"
+        );
+    }
+    out.assert_exit(expected);
+}
+
+// spec: spec/08-modules.md §8.3.11 — selective members enter bare scope
+// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev
+#[test]
+fn selective_member_ctor_binds_bare_value_and_pattern() {
+    assert_member_import_result(
+        "(import [mathx [Shade.Blue]])",
+        "(match Blue [Blue 7 _ 0])",
+        7,
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — selective members enter bare scope
+// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev
+#[test]
+fn selective_member_trait_method_binds_bare_name() {
+    assert_member_import_result("(import [mathx [Seven.seven]])", "(seven 1)", 7);
+}
+
+// spec: spec/08-modules.md §8.3.11 — a selective member does not bind its parent or siblings
+#[test]
+fn selective_member_does_not_bind_sibling_neg() {
+    let out = member_import_fixture()
+        .file(
+            "app.cl",
+            "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/Pure (match Red [_ 0])))",
+        )
+        .run("app.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "unexpected acceptance: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    let diagnostic = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diagnostic.contains("undefined variable: Red"),
+        "wrong refusal: {diagnostic}"
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — a selective member does not bind its parent or siblings
+#[test]
+fn selective_member_does_not_bind_parent_dotted_member_neg() {
+    let out = member_import_fixture()
+        .file("app.cl", "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/Pure (match Shade.Blue [_ 0])))")
+        .run("app.cl").output();
+    assert!(
+        !out.status.success(),
+        "unexpected acceptance: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    let diagnostic = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diagnostic.contains("undefined variable: Shade.Blue"),
+        "wrong refusal: {diagnostic}"
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — a selective member does not bind its parent or siblings
+#[test]
+fn selective_member_does_not_bind_parent_type_neg() {
+    let out = member_import_fixture()
+        .file("app.cl", "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/Pure (let [x :Shade mathx/Shade.Blue] 0)))")
+        .run("app.cl").output();
+    assert!(
+        !out.status.success(),
+        "unexpected acceptance: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    let diagnostic = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diagnostic.contains("unknown type `Shade`"),
+        "wrong refusal: {diagnostic}"
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — member glob control for selective imports
+#[test]
+fn selective_member_glob_control() {
+    assert_member_import_result("(import [mathx [Shade.*]])", "(match Blue [Blue 7 _ 0])", 7);
+}
+
+// spec: spec/08-modules.md §8.3.11 — each names-list entry contributes its bindings
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev
+#[test]
+fn mixed_parent_and_member_glob_keeps_both() {
+    assert_member_import_result(
+        "(import [mathx [Shade Shade.*]])",
+        "(match Shade.Blue [Blue 7 _ 0])",
+        7,
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — each names-list entry contributes its bindings
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev
+#[test]
+fn mixed_member_glob_and_function_keeps_both() {
+    assert_member_import_result(
+        "(import [mathx [Shade.* square]])",
+        "(match Blue [Blue (square 7) _ 0])",
+        49,
+    );
+}
+
+// spec: spec/08-modules.md §8.3.11 — each names-list entry contributes its bindings
+#[test]
+fn mixed_member_glob_two_specs_control() {
+    assert_member_import_result(
+        "(import [mathx [Shade] mathx [Shade.*]])",
+        "(match Shade.Blue [Blue 7 _ 0])",
+        7,
+    );
+}
+
+fn export_fixture(export: &str, body: &str) -> helpers::e2e::CrOutput {
+    member_import_fixture()
+        .file("api.cl", &format!("{export}\n(defn marker [] 1)"))
+        .file(
+            "app.cl",
+            &format!("(import [api [*]])\n(defn main [] (primitives/Pure {body}))"),
+        )
+        .run("app.cl")
+        .output()
+}
+
+fn assert_export_result(export: &str, body: &str, expected: i32) {
+    let out = export_fixture(export, body);
+    if out.status.code() != Some(expected) {
+        let diagnostic = format!("{}{}", out.stdout, out.stderr);
+        assert!(
+            diagnostic.contains("expected symbol for export module path")
+                || diagnostic.contains("undefined variable"),
+            "export RED must be armed at mount parsing or name resolution: {diagnostic}"
+        );
+    }
+    out.assert_exit(expected);
+}
+
+// spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev
+#[test]
+fn export_mount_reexports_and_exposes_unlisted_member() {
+    assert_export_result(
+        "(export [(mathx math) [square]])",
+        "(primitives/add-i64 (square 3) (api.math/cube 2))",
+        17,
+    );
+}
+
+// spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev
+#[test]
+fn export_mount_only_exposes_qualified_member() {
+    assert_export_result("(export [(mathx math) []])", "(api.math/square 7)", 49);
+}
+
+// spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev
+#[test]
+fn export_mixed_member_glob_keeps_function() {
+    assert_export_result(
+        "(export [mathx [Shade.* square]])",
+        "(match Blue [Blue (square 7) _ 0])",
+        49,
+    );
+}
+
+// spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
+#[test]
+fn export_unmounted_control() {
+    assert_export_result("(export [mathx [square]])", "(square 7)", 49);
+}
+
+// spec: spec/08-modules.md §8.4.4 — mount-only export adds no bare names
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev
+#[test]
+fn export_mount_only_does_not_reexport_bare_names_neg() {
+    let out = export_fixture("(export [(mathx math) []])", "(square 7)");
+    assert!(
+        !out.status.success(),
+        "unexpected bare re-export: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    let diagnostic = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diagnostic.contains("undefined variable: square"),
+        "must load the mount and reject only the bare name: {diagnostic}"
+    );
+}

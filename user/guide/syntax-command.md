@@ -4,6 +4,7 @@ Use `/syntax` at the REPL when you need to recall a language form without
 leaving the session. The command is available with or without the optional
 agent feature.
 
+<!-- sample: {"kind":"illustrative","reason":"Abbreviated /syntax topic listings; ellipses are explanatory"} -->
 ```
 user> /syntax
 ; core-language syntax topics:
@@ -43,6 +44,7 @@ This is a standard-library macro-authoring API, not a `/syntax` topic and not a
 prelude export. A macro receives `:Type form` as one reader-folded value. Import
 the helpers explicitly when the macro needs to inspect or discard that wrapper:
 
+<!-- sample: {"kind":"definition","group":"syntax"} -->
 ```clojure
 (import [core.syntax [annotated? annotation unannotate]])
 (import [primitives [Some None]])
@@ -62,6 +64,7 @@ the helpers explicitly when the macro needs to inspect or discard that wrapper:
 type form as an `(Option Sexp)`, and `unannotate` returns the subject (or an
 ordinary input unchanged). When you need both pieces, match the raw node instead:
 
+<!-- sample: {"kind":"definition","group":"syntax"} -->
 ```clojure
 (defmacro keep-subject-raw [form]
   (match form

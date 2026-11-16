@@ -3,6 +3,7 @@
 When you define a type with named fields, Cranelisp generates an **accessor
 function** for each field — a function that pulls that field out of a value.
 
+<!-- sample: {"kind":"definition","group":"fields"} -->
 ```clojure
 (deftype Point [:Int x :Int y])
 ```
@@ -16,6 +17,7 @@ The accessor's real, canonical name is the **qualified** `Type.field` form —
 `Point.x`, `Point.y`. This is the name the language displays when it reports an
 accessor, and it is **always** valid wherever the type is in scope:
 
+<!-- sample: {"kind":"repl","group":"fields"} -->
 ```
 user> (Point.x (Point 3 4))
 :primitives/Int 3
@@ -31,6 +33,7 @@ Writing the bare field name — `x` — is a convenience shorthand for the canon
 `Point.x`. It resolves to the same accessor, and it is the natural way to write code
 when there is no ambiguity:
 
+<!-- sample: {"kind":"repl","group":"fields"} -->
 ```
 user> (x (Point 3 4))
 :primitives/Int 3
@@ -43,6 +46,7 @@ reach for the qualified form when you need it.
 
 Two product types may use the same field name:
 
+<!-- sample: {"kind":"definition","group":"fields"} -->
 ```clojure
 (deftype Box [:Int v])
 (deftype Cup [:Int v])
@@ -52,6 +56,7 @@ Their canonical accessors `Box.v` and `Cup.v` are distinct functions, and each
 always works. Bare `v` now has two candidates, and Cranelisp picks one from the
 types at each use. Here the argument decides:
 
+<!-- sample: {"kind":"repl","group":"fields"} -->
 ```
 user> (v (Box 5))
 :primitives/Int 5
@@ -65,6 +70,7 @@ compiler reports an ambiguity error that lists both canonical names, and never
 picks one by declaration or import order. **Use the qualified `Type.field` form**
 to say which one you mean:
 
+<!-- sample: {"kind":"repl","group":"fields"} -->
 ```
 user> (Box.v (Box 5))
 :primitives/Int 5
@@ -83,9 +89,15 @@ same name as the type. You can write its fields at the `deftype` level, as every
 example above does, or in an arm named after the type. Either spelling mints
 `Pair.fst`, `Pair.snd` and their bare forms:
 
+<!-- sample: {"kind":"definition"} -->
 ```clojure
 (deftype (Pair a b) [:a fst :b snd])
-; or, equivalently
+```
+
+Or, equivalently:
+
+<!-- sample: {"kind":"definition"} -->
+```clojure
 (deftype (Pair a b) (Pair [:a fst :b snd]))
 ```
 
@@ -94,8 +106,12 @@ only arm. The labels in a sum arm document its positional payloads and mint no
 accessor, bare or dotted. A sum value might hold a different variant at runtime,
 so a total accessor cannot exist. Extract the payload with `match`:
 
+<!-- sample: {"kind":"repl"} -->
 ```
 user> (deftype Trio (MkTrio [:primitives/Int t1 :primitives/Int t2]))
+:user/Trio ; deftype
+; match:
+;  MkTrio
 user> (match (MkTrio 1 2) [(MkTrio a _) a])
 :primitives/Int 1
 ```

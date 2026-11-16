@@ -102,6 +102,59 @@ Keep each beside the artifacts it governs:
 - [checking-allocator fence lane](scripts/asan/README.md) —
   `scripts/asan/run_fences_checked.sh`.
 
+## User-documentation sample harness
+
+`user_samples.rs` invokes `scripts/user_samples.py` to check `user/**/*.md`
+with the default prelude (the named exception in root guidance). This is M-3's
+maintenance check, not language authority. Run the checker directly with
+`python3 tests/scripts/user_samples.py --binary target/debug/cranelisp`;
+`--census-only` classifies without executing. `--docs PATH` selects a disposable
+fixture corpus instead of `user/`.
+
+Every fenced block, regardless of language tag, has a one-line JSON comment
+immediately before its opening fence:
+
+    <!-- sample: {"kind":"repl","group":"double"} -->
+    ```text
+    > (double 21)
+    :primitives/Int 42
+    ```
+
+- `kind` is exactly `repl`, `definition`, or `illustrative`.
+- `definition` contains source that must load without diagnostics. Definition
+  feedback is checked for errors but is not an exact-output claim.
+- `repl` contains input prefixed by `> ` (also accepts a displayed timing/module
+  prompt), followed by exact expected response lines, including expected
+  diagnostics. Prefix continuation input with `... `. Empty responses are
+  meaningful. Inline explanatory comments in expected output are literal;
+  move explanations into surrounding prose. Source comments remain source.
+- `group` shares definitions and REPL state in document order within one file.
+  Omit it for an independent block. Each group gets a fresh temporary directory
+  and compiler process; there is no implicit setup from another group or file.
+- Optional `files` maps named relative fixture paths to complete UTF-8 source
+  strings, for example `"files":{"math.cl":"(defn value [] 10)\n"}`.
+  Files are installed before the group starts; duplicate paths must agree.
+  Use REPL `/sh` saves for external edits, as in the live-reload demo. Paths
+  cannot escape the group's directory or replace its default prelude/config.
+- Text before the first input in a `repl` block is an exact startup expectation;
+  it is allowed only at the start of a group. Otherwise startup is ignored.
+  Prompt timing and ANSI escapes are removed; no result/diagnostic lines are
+  discarded. `{{ROOT}}` represents the temporary directory in expected output.
+- Ellipses are never wildcards. Shortened output, output-only fragments, shell
+  walkthroughs, schematic source and unsupported procedures use `illustrative`
+  with a nonempty `reason`, for example
+  `<!-- sample: {"kind":"illustrative","reason":"Abbreviated /syntax output"} -->`.
+  Prefer repairing an exact transcript over exempting it. A classified fragment
+  does not establish that its surrounding procedure was executed.
+- Terminal panics, interactive stdin and session restart are outside this small
+  checker; cite focused executable evidence and explain the exemption. `/quit`
+  cannot be used to continue a group. File-save transcripts can run through
+  `/sh`; no editor action is inferred from prose.
+
+The fixture detection proof in `user_samples.rs` runs a sound corpus, plants a
+wrong expected value and an unclassified block separately, then restores the
+sound corpus. Missing metadata fails the census before any group executes.
+
 ## Test helpers
 
 Two sanctioned helper APIs, and no others: the `Cranelisp` builder in
@@ -199,8 +252,8 @@ Worked callsites: `tests/ms_p8_conj_leak.rs`,
 Tests MUST NOT depend on `stdlib/` (root `CLAUDE.md` §"Design Principles" —
 Stdlib separation). The suite uses its own QA-owned fixtures under
 `tests/fixtures/` to validate language features independently of stdlib
-evolution. The single named exception among suite tests is stdlib
-conformance, gated behind the verbosely-named
+evolution. The named exceptions are the [user-documentation sample harness](#user-documentation-sample-harness)
+and stdlib conformance, gated behind the verbosely-named
 `.use_workspace_stdlib_for_stdlib_conformance_only()` so misuse is visible in
 review and `git grep`. Outside the suite, the REPL-agent eval runner copies
 `stdlib/` into each run under QA's

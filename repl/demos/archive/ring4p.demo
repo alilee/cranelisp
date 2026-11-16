@@ -4,13 +4,13 @@
 ; `Arc<Jit>` lives on `ModuleEntry::Def.code`; redefinition drops the prior
 ; clone; `Drop` calls `unsafe free_memory()`. /mem reports the RC heap.
 
-(defn f [:Int x] x)
+(defn f [:Int x] (+ x 1))
 
 /sig f
 
 /mem
 
-(defn f [:Int x] (+ x 1))
+(defn f [:Int x] (+ x 2))
 
 (f 41)
 

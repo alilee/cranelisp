@@ -790,6 +790,9 @@ control.
 | K-4 ACT-1001 P-3 | An `impl` of an ambiguous trait spelling is rejected as ambiguous, naming both | An unknown trait spelling is `unknown trait` | No |
 | K-5 ACT-0973 | A platform declaration in a root-level non-entry module, and in a nested one, is a compile-time error | The entry placement loads the platform | No |
 | K-6 ACT-1052 | A cached importer of a module whose slots moved in a REPL session, under unchanged text, gives the uncached result in every mode (below) | The ABI-preserving edit and revert; `--no-cache` | Not scheduled |
+| K-7 ACT-1055 | `(import [m [Shade.Blue]])` binds bare `Blue`, and nothing else (§8.10) | `[Shade.*]` | Candidate (small, `src/` only) |
+| K-8 ACT-1056 | An export mount re-exports and mounts; a member glob in a mixed list keeps its neighbours (§8.10) | The unmounted export; two separate module specs | No (`arch` gate with ACT-0997) |
+| K-9 ACT-1057 | A macro clause with no fixed parameter and a non-`Sexp` body is rejected at its `defmacro` form (§8.10) | The quoted body; the `[x]` shape | Candidate (frontend) |
 
 *Class:* acceptance (safety fence once fixed). *Owner:* `test`.
 
@@ -1659,3 +1662,174 @@ plus the uncommitted 6a change). `test`'s report and logs are under
   The rewrite belongs in Phase 6b, with the owned demo guide's borrow-elision
   wording. `test` re-reads every narrated IR claim against `/clif` and does
   not pin block or function numbers.
+
+### 8.9 Phase 6b attributions of the archive replay
+
+QA attributed two archive-demo observations from `test`'s 6a replay on
+2026-11-16, probing `target/debug/cranelisp` at `640d2ec7` in scratch
+projects. Neither is a 6a change: both match the W5 logs.
+
+- **`ring4p`'s ownership-ABI refusal: spec-conformant; the demo is stale.**
+  - Replacing `(defn f [:Int x] x)` with `(defn f [:Int x] (+ x 1))` leaves
+    the language type unchanged and moves the `ModeSummary` result from
+    `AliasOf(0)` to `Fresh`. [§18.1.2](../../repl/spec/18-redefinition.md#1812-interim-ownership-abi-compatibility-gate)
+    requires that refusal even without callers, with the old body kept live.
+    The diagnostic carries all three required items, and `(f 41)` stays 41.
+  - Control: `(+ x 1)` to `(+ x 2)` (`Fresh` to `Fresh`) is accepted and
+    late-binds to 43. A doc-only edit is accepted. The reverse,
+    `(+ x 1)` to `x`, is refused with the modes swapped. Only the
+    ABI-bearing mode separates the outcomes. The refusal comes from
+    `src/redefine.rs` through `ModeSummary::abi_eq_opt`.
+  - This is the gate that [Principle 27](../../design/arch/principles/27-dev-tier-optimises-only-against-blow-up.md)
+    schedules for retirement in S124 with its spec ruling and API packet
+    ([ACT-0953](../../sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md)).
+    Until then the behaviour is conformant, so no defect RED is owed.
+    `tests/repl_redefinition.rs::same_type_ownership_abi_change_is_rejected_before_slot_patch`
+    already covers the gate on a parameter-mode change.
+  - The demo dates from Sprint 58, before the S121 gate. *Handoff to
+    `test`:* make step 5c's replacement ABI-preserving, such as `(+ x 1)` to
+    `(+ x 2)`. That form holds both before and after the S124 retirement.
+- **`ring4s`'s `then` segment: FIXME 0907's refusal is fixed, not masked.**
+  - The segment compiles in the REPL, `--run` and `--link`, and evaluates to
+    50 (`999` is discarded, then `42 + 8`). It returns nothing named 42.
+  - The release is requested. The linked program defines the canonical
+    `IO Int` drop glue for its module, and that glue calls through the GOT
+    on the last release. `DropGlueRegistry::shape` classifies
+    `primitives/IO` as `GlueShape::Io` before `ctor_shapes`, which holds the
+    only `disagrees on declared parameter identity` site. `Bind` is the only
+    seeded constructor, so no other type reaches that site with independent
+    variables.
+  - Four REPL calls leave `/mem` balanced at 0 live bytes. IO values dropped
+    unrun, inside `Option`, `Vec` and a closure capture, and as an unrun
+    `bind` all compile in `--run` and `--link` and exit 57 with
+    `CRANELISP_RC_DEC_CHECK` set. The seven S118 cells and the balance cell
+    pass in `.local/s123-w5/full-suite.log`.
+  - *What would refute this:* any `IO T` release that reaches
+    `ctor_shapes`, or a new seeded constructor with independent type
+    variables.
+  - *FIXME 0907's owner (`qa`) closes it after these legs:*
+    - `test`: remove the stale `// defect: … ctor_shapes … S118` notation
+      from `spec_10_io` (`pure_pattern_accepted`, `match_arms_all_io_pure`,
+      `io_internal_ctors_stay_excluded_from_exhaustiveness_neg`) and
+      `ctor_as_value` (the two `bare_ctor_*_map_io_*` cells).
+    - `test`: rewrite `ring4s`'s attributed-red narration as a working
+      segment and correct `repl/demos/CLAUDE.md`'s 0907 reference.
+    - `dev` on `stdlib/`: the six `core.io` self-tests in
+      [`plan-stdlib.md` §6.2](../../stdlib/plan-stdlib.md), which this
+      acceptance opens.
+    - `spec` on `repl/`: obligation 3. `/info Bind` and `/info IO` still
+      report unknown symbols while `/info Pure` introspects.
+
+### 8.10 Phase 6b intake from docs
+
+QA classified three observations from `docs`'s modules and macros guides on
+2026-11-16 (`target/debug/cranelisp` at `640d2ec7`, scratch projects; the
+`docs` fixtures are in `.local/s123-6b/docs-scratch/`). All three are
+defects against unambiguous requirements. No spec question arises. None has
+a committed RED, so each gets a cell below, listed in §3.7. *Class:*
+acceptance (safety fence once fixed). *Owner:* `test` for the cells; `dev`
+for the unit rows when each fix is dispatched.
+
+**K-7 — a selective member entry binds its member
+([ACT-1055](../../sprints/actions/ACT-1055-selective-member-import-binds-nothing-intake.md);
+[§8.3.11](../../spec/08-modules.md#8311-accessibility-after-import))**
+
+- *Harm:* a documented import form does nothing, and the only workaround,
+  the member glob, imports names the user did not ask for.
+- *Wrong implementations:* the current one, which binds nothing bare; a fix
+  that also binds the parent `Shade`; a fix with glob semantics, which also
+  binds `Red`; a fix for constructors only, not trait methods; a fix for
+  value position only, not patterns.
+- *Fixture:* `mathx.cl` holds `(deftype Shade Red Blue)`,
+  `(deftrait Seven (seven [x] primitives/Int))` and
+  `(impl Seven primitives/Int (defn seven [x] 7))`. No prelude.
+- *Cells* (`--run`; the REPL shares the import path, and its parity was
+  observed):
+  1. After `(import [mathx [Shade.Blue]])`, `(match Blue [Blue 7 _ 0])`
+     exits 7. The bare value and the bare pattern are both required. Red today.
+  2. After `(import [mathx [Seven.seven]])`, `(seven 1)` exits 7. Red today.
+  3. Negatives after `[Shade.Blue]`, each a compile-time error: bare `Red`;
+     dotted `Shade.Blue`; the annotation `:Shade`. The first two pass today
+     and are guards against the glob and parent-binding fixes.
+  4. Control: `[Shade.*]` with the cell 1 body exits 7.
+- *Arming:* cells 1 and 2 must fail on `undefined variable` or
+  `unknown constructor in pattern` for the member. A module-load or parse
+  failure is a fixture error.
+- *Unit row (`dev`, `src/imports/tests.rs`):* a dotted specific entry
+  yields one exposure whose local name is the bare member and whose source
+  is `mathx/Shade.Blue`, and no exposure named `Shade`.
+- *Notation:* `// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev`.
+
+**K-8 — export mounts and mixed member-glob lists
+([ACT-1056](../../sprints/actions/ACT-1056-export-mount-and-member-glob-union-rejected-intake.md);
+§8.4, §8.4.4, §8.3.11; audit R2)**
+
+- *Harm:* a specified re-export pattern cannot be written, and a mixed
+  names list silently drops entries, so a name the user listed is missing.
+- *Wrong implementations:* the current parse rejection; a mount that parses
+  but registers no alias; a mount that reaches only the re-exported subset;
+  a mount-only form that re-exports names bare; a union that keeps only the
+  first or only the last classification.
+- *Fixture:* `mathx.cl` defines `square`, `cube` and `(deftype Shade Red Blue)`.
+  `api.cl` holds the export under test. `app.cl` imports from `api` and
+  returns the exit code.
+- *Cells* (`--run`):
+  1. `(export [(mathx math) [square]])`: bare `square` and qualified
+     `api.math/cube` both resolve through `api`. Red today.
+  2. Mount-only `(export [(mathx math) []])`, with `api` also defining one
+     function and `app` importing `[api [*]]`: `api.math/square` resolves,
+     and bare `square` in `app` is a compile-time error. The glob import is
+     what lets the negative detect a bare re-export. Red today.
+  3. `(import [mathx [Shade Shade.*]])`: `Shade.Blue` and bare `Blue` both
+     resolve. Red today.
+  4. `(import [mathx [Shade.* square]])`: bare `Blue` and `square` both
+     resolve. Red today.
+  5. Export symmetry: `api` holds `(export [mathx [Shade.* square]])`, and
+     `app` imports `[api [*]]` and uses `square`. Red today.
+  6. Controls: `(export [mathx [square]])`; the two-spec import
+     `[mathx [Shade] mathx [Shade.*]]`.
+- *Arming:* the mount cells must fail on the module-path rejection or an
+  unresolved name, not on a missing fixture module.
+- *Named residual:* §8.4.4's two mount-collision negatives belong to the
+  correction's dispatch, once a mount can be represented.
+- *Notation:* `// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev`
+  on the mount cells, and `…::parse_names_list` on the union cells,
+  provisional until `arch` frames the carrier.
+
+**K-9 — a macro without fixed parameters is held to `Sexp`
+([ACT-1057](../../sprints/actions/ACT-1057-macro-without-fixed-params-escapes-sexp-return-check-intake.md);
+[§9.2.3](../../spec/09-macros.md#923-return-type-constraint), §9.9.1)**
+
+- *Harm:* an ill-typed macro is accepted, and invoking it aborts the
+  compiler or the REPL process (`src/marshal.rs` misaligned dereference,
+  exit 134).
+- *Wrong implementations:* the current one; a check only at invocation,
+  where §9.9.1 requires the error at the definition even when unused; a fix
+  for the nullary shape that leaves rest-only or a nullary clause of a
+  multi-clause macro open; a rejection at a synthetic location; a marshal
+  guard that converts the abort but still accepts the definition.
+- *Cells* (`--run`, no prelude; each `main` is `(primitives/Pure 0)` and
+  never invokes the macro):
+  1. `(defmacro bad [] 3.14)`, `(defmacro bad [& xs] 3.14)` and
+     `(defmacro bad ([] 42) ([x] (quote 1)))` each exit non-zero with a
+     diagnostic naming `Sexp`. Red today.
+  2. Location: `(defmacro bad [x] 42)` on line 1 of a two-line file reports
+     line 1. Red today: it reports `app.cl:3:1`.
+  3. REPL: `(defmacro bad [] 3.14)` gives an error and no `; defmacro`
+     echo, and a following `42` evaluates. Red today.
+  4. Control: `(defmacro good [] (quote 7))` invoked in `main` exits 7.
+- *Maintenance (`test`):* `tests/spec_09_macros.rs::macro_body_non_sexp_int_rejected_neg`
+  and `::macro_body_non_sexp_bool_rejected_neg` accept any output that
+  contains `Sexp`, which the success echo also contains. Assert the
+  mismatch diagnostic and the absence of the `; defmacro` echo instead.
+- *Not allocated:* a separate marshal guard. Rejecting the definition makes
+  the abort unreachable.
+- *Unit row (`dev`, frontend `defmacro` tests):* the synthesized clause
+  constrains its body to `macros/Sexp` for nullary, rest-only and fixed
+  clauses, located at the clause.
+- *Notation:* `// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev`.
+
+*Fix recommendation.* K-7 is small and confined to `src/`, so it could
+enter S123 with the user's approval. K-9 is small but needs frontend
+`design` because it moves a diagnostic location. K-8 waits for the `arch`
+gate with ACT-0997.
