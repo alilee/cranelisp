@@ -284,7 +284,7 @@ established_by = "tests/CLAUDE.md"
 
 [[document_class]]
 name = "sprint-delivery-documents"
-patterns = ["sprints/SPRINT.md", "sprints/SPRINT_TEMPLATE.md", "sprints/METHOD.md", "sprints/ROADMAP.md", "sprints/s123-*.md"]
+patterns = ["sprints/SPRINT.md", "sprints/SPRINT_TEMPLATE.md", "sprints/METHOD.md", "sprints/ROADMAP.md", "sprints/s123-*.md", "sprints/s124-*.md"]
 owner = "sprint"
 purpose = "Current sprint coordination, delivery method and roadmap documents under `sprints/`."
 established_by = "CLAUDE.md"
