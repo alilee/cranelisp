@@ -1593,7 +1593,7 @@ The user decides each of the three rows Phase 5 added to §5:
 | [ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
 | [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
-| [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells need a same-child premise before any stamp |
+| [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
 | ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
 | §8.4 maintenance items | The projection-guard re-citation if S123 does not close it; the §17.4 combination cell |
 
@@ -1618,3 +1618,44 @@ The user decides each of the three rows Phase 5 added to §5:
   planted faults M-3 names.
 - **Audit on `cranelisp-frontend`.** Nothing in this evidence constrains
   it.
+
+### 8.8 Phase 6a acceptance of `test`'s maintenance
+
+QA accepted the following against §8.4 and §8.7 on 2026-11-16 (`f091a8f3`
+plus the uncommitted 6a change). `test`'s report and logs are under
+`.local/s123-6a/`; QA's focused runs are in `.local/s123-6a/qa/`.
+
+- **Player early-exit check — accepted.** Maintenance check for
+  `repl/demos/`. `repl/demos/test_demo_player.py` drives the real player
+  against a stub PTY REPL.
+  - *Positive leg:* an exit at startup and an exit after the first of two
+    inputs both returned 0 before the change, and both fail after it.
+  - *Negative leg:* complete playback, an exit on the final input, and a
+    `/quit` restart all return 0.
+  - *Limit:* exit 0 proves playback reached the last script line. It does
+    not prove expected values or a clean final input. That is the accepted
+    allocation, not a demo-output oracle.
+- **`ring4i` and `ring4d` — accepted.** Each ends on its intentional panic,
+  with no segment after it, and plays under the strict player.
+- **ACT-1038 premise — accepted.** Every run without a worker-executed
+  traced call fails as `PREMISE LOST`; the action records the predicate and
+  its limits. Both guards fail on their clause at peak 2: 288 frames, and a
+  residual of 354. The three controls pass. The sparks-disabled control
+  proves the premise refuses a serial run.
+- **Projection-guard re-citations — accepted with one return to `test`.**
+  The fixtures and assertions are unchanged. The eleven retired anchors now
+  cite [uniform counting](../../design/backend/uniform-counting.md) §1, §2.1
+  and §3.3, and each section states what its cell asserts.
+  - *Returned:* the two `sprint61_*` cells moved from
+    `spec/12-runtime.md` §12.3.1 to a design-only citation. That drops the
+    file's only trace to a normative requirement. Restore §12.3.1, and add
+    the design section if wanted.
+  - *Returned:* `tests/trace.rs`'s `untraced_fib_12_spawns` and its no-spawns
+    control lost their consumer when the premise moved. Delete them or give
+    them a consumer.
+- **`optimization.demo` narration — 6b demo maintenance.** It is narration
+  debt under intended U′, not a defect. The nine IR blocks equal W5's byte
+  for byte after ANSI stripping (`.local/s123-6a/test-demos-final/w5-ir-comparison.txt`).
+  The rewrite belongs in Phase 6b, with the owned demo guide's borrow-elision
+  wording. `test` re-reads every narrated IR claim against `/clif` and does
+  not pin block or function numbers.

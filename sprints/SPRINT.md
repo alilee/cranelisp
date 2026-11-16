@@ -1,6 +1,6 @@
 # Sprint 123: One ownership answer, contained panics, agent on by default
 
-**Status**: PHASE 5 LANGUAGE — W3
+**Status**: PHASE 6a USER-FACING ASSESSMENT
 
 **Goal**: Decide the ownership stratum's shape on a measured number and fix
 the observed memory-unsafe faults under it; make a callee's runtime panic a
@@ -31,7 +31,7 @@ tree):
 | Phase 2 → Phase 3 | Architecture review, carry triage, both option-2 pre-checks, and the Phase 3 proposal | 2026-11-15, conversation: "accept the panics / accept the scope changes. approved to move to phase 3" | approved |
 | Phase 3 → Phase 4 | Designs, API packet P11–P13, QA readiness with one gap, decisions 1–10 and the Phase 4 proposal | 2026-11-15, conversation: "approved" | approved |
 | Phase 4 → Phase 5 | Wave plan W0–W5, audit choice, and the checkpoint commit | 2026-11-15, conversation: "yes"; checkpoint commit `b35bfb87` | approved |
-| Phase 5 → Phase 6a | — | — | pending |
+| Phase 5 → Phase 6a | W5 gate, Phase 5 adequacy, residuals and carries item by item, public-API phase diff (intrinsics +7/−28, types +1/−30, backend −1, others +0) | 2026-11-16, conversation: "confirming public api, and approved to move to 6a" | approved |
 
 ## Scope
 
@@ -341,6 +341,11 @@ separate approval.
 | 5 W4 | `dev` | `src/`: P15 safety comment | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; rustdoc states P15's safety grounds with the falsifier; comments only |
 | 5 W4 | `qa` | W4 adequacy, full suite, traceability | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate; suite 6,969 pass / 31 fail (30 filed guards; `role_wiring` principle count from Principle 27); seven guards green; ACT-1047, ACT-1020, ACT-1035 closable after stamps; ACT-1052 carries; spec band regraded; coordinator repaired the Appendix D anchor mechanically |
 | 5 W4 | `test` | stamp seven green guards `fixed=S123/91acf712`; four behaviour renames | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `14d0a119`; 7/7 pass; coordinator applied the four renames to spec, plan and design citations mechanically (both citation checkers clean) |
+| 6a | `audit` | `cranelisp-frontend` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `2b59eb3c`; fulfilment partial, maintenance economy C; R1–R5 (macro syntax rejects, module grammar, operator/digit asymmetry, obsolete adapter, stale guidance) pending S124 Phase 1; 432 frontend tests pass |
+| 6a | `docs` | assess `user/` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `bcff593b`; accuracy fails on S123 changes (removed catcher, agent default, env files, dotted paths, persistence) plus two older trait inaccuracies; proposed 6b: two guides, seven page repairs, 133-fence classification (`.local/s123-6a/docs-assessment.md`) |
+| 6a | `training` | assess `examples/` | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `4f749a55`; 38 entries pass all four cells; one S123 contradiction (example 30 says linked switches are launch-time); proposed 6b: five files, ~40–80 lines (`.local/s123-6a/training-assessment.md`) |
+| 6a | `test` | demo player, archive demos, anchors, ACT-1038 premise, demo assessment | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `a47a4b57`; player fails on early REPL exit (5/5 proof); panic demos end at the panic; 39/39 replay; anchors re-cited (spec links pass); ACT-1038 premise added, both guards red; `optimization.demo` narration stale; proposed `11-live-reload.demo` (`.local/s123-6a/test-report.md`) |
+| 6a | `qa` | accept 6a test maintenance; ACT-1038 record | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; accepted; returned to `test`: restore the runtime-spec citation on the two `sprint61_*` projection guards, and drop the unused `untraced_fib_12_spawns` helper; `optimization.demo` narration is 6b demo work; `ring4p` refusal awaits `qa` attribution |
 | 5 W5 | `qa` | ACT-1052 probe and allocation | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; reproduces: SIGSEGV in cached `--run`, linked exe and REPL after an ABI-changing edit is reverted to identical text; sibling control green; cache keys dependencies on source hash only (`artifact-underkey`); K-6 allocated; priority high |
 | 5 W5 | `test` | K-6 failing test for ACT-1052 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `7c013b2d`; `cache_restored_text_after_abi_change_preserves_importer_calls_across_modes` RED (SIGSEGV at legs 4–6); ABI-preserving sibling control green |
 | 5 W5 | `sprint` | integrated gate on `b89cc7cc` | — | — | primary | 2026-11-16; suite 6,972/7,001 (29 filed guards); agent lanes 91/91 and 23+10 skip; exemplar 0/41/41 and server 200; 39 demos exit 0; document and coverage checks 0; spec links 11 stale anchors; public API matches approved rows (`.local/s123-w5/gate-summary.md`) |
@@ -970,3 +975,4 @@ judges adequacy for the Phase 5 → 6a checkpoint.
 - W4 build committed 2026-11-16 as `91acf712`; guard stamps and action closure follow in a close-out commit.
 - W4 closed 2026-11-16: build `91acf712`, close-out (guard stamps, three actions closed, citation repairs) in the following commit.
 - W5 gate run 2026-11-16 on `b89cc7cc`; Phase 5 adequacy recorded. Phase 5 → 6a checkpoint put to the user.
+- Phase 6a assessments delivered 2026-11-16 (`docs`, `training`, `audit`, `test`); 6a → 6b checkpoint put to the user.

@@ -21,6 +21,7 @@ Environment:
     DEMO_FAST             if set, all delays are zero (CI mode)
 """
 
+import errno
 import os
 import pty
 import re
@@ -159,7 +160,12 @@ class KeyboardController:
             time.sleep(min(0.05, max(0, remaining)))
 
 
-def drain_output(master_fd, timeout=0.5, wait_for_prompt=False, prompt_timeout=15.0):
+class PlaybackError(RuntimeError):
+    pass
+
+
+def drain_output(master_fd, timeout=0.5, wait_for_prompt=False, prompt_timeout=15.0,
+                 allow_terminal_exit=False):
     """Read and display REPL output.
 
     Two modes:
@@ -170,6 +176,9 @@ def drain_output(master_fd, timeout=0.5, wait_for_prompt=False, prompt_timeout=1
       prompt (see at_definitive_prompt). This is the quiescence gate that keeps
       the caller from typing into a busy REPL. `prompt_timeout` is an absolute
       safety cap so a wedged REPL cannot hang playback forever.
+
+    Missing prompts fail playback. Only the final script line may end the
+    process instead, so a terminal panic can be shown without implying recovery.
     """
     output = []
     idle_deadline = time.monotonic() + timeout
@@ -180,7 +189,7 @@ def drain_output(master_fd, timeout=0.5, wait_for_prompt=False, prompt_timeout=1
         now = time.monotonic()
         if wait_for_prompt:
             if now > hard_deadline:
-                break
+                raise PlaybackError("timed out waiting for the REPL prompt")
             wait_time = 0.1
         else:
             remaining = idle_deadline - now
@@ -192,9 +201,15 @@ def drain_output(master_fd, timeout=0.5, wait_for_prompt=False, prompt_timeout=1
             continue
         try:
             data = os.read(master_fd, 4096)
-        except OSError:
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            if wait_for_prompt and not allow_terminal_exit:
+                raise PlaybackError("REPL exited before the demo ended")
             break
         if not data:
+            if wait_for_prompt and not allow_terminal_exit:
+                raise PlaybackError("REPL exited before the demo ended")
             break
         text = data.decode(errors="replace")
         output.append(text)
@@ -324,16 +339,16 @@ def play_demo(demo_path, repl_binary, run_dir=None):
             # Wait for the initial prompt (banner + prompt).
             drain_output(master_fd, timeout=2.0, wait_for_prompt=True)
 
-            for line in lines:
+            for index, line in enumerate(lines):
                 kb.check()
                 if kb.quit_requested:
-                    break
+                    raise PlaybackError("playback cancelled")
 
                 if line.strip() in ("/quit", "/q"):
                     # Trampoline: send /quit, wait for exit, start fresh REPL.
                     type_slowly(line, master_fd, kb)
                     if kb.quit_requested:
-                        break
+                        raise PlaybackError("playback cancelled")
                     drain_output(master_fd, timeout=1.0)
                     kb.wait(LINE_PAUSE)
                     stop_repl(master_fd, pid)
@@ -345,7 +360,7 @@ def play_demo(demo_path, repl_binary, run_dir=None):
                     if kb.quit_requested:
                         # Don't start a new REPL if quitting.
                         master_fd, pid = None, None
-                        break
+                        raise PlaybackError("playback cancelled")
 
                     # Start a new REPL in the same run directory.
                     master_fd, pid = start_repl(repl_binary, run_dir)
@@ -366,11 +381,18 @@ def play_demo(demo_path, repl_binary, run_dir=None):
                     # REPL input — type slowly, then show response + prompt.
                     type_slowly(line, master_fd, kb)
                     if kb.quit_requested:
-                        break
-                    drain_output(master_fd, timeout=1.0, wait_for_prompt=True)
+                        raise PlaybackError("playback cancelled")
+                    try:
+                        drain_output(master_fd, timeout=1.0, wait_for_prompt=True,
+                                     allow_terminal_exit=index == len(lines) - 1)
+                    except PlaybackError as error:
+                        raise PlaybackError(f"{demo_path}: line {index + 1}: {error}") from error
                     kb.wait(LINE_PAUSE)
 
             # Clean exit.
+            kb.check()
+            if kb.quit_requested:
+                raise PlaybackError("playback cancelled")
             sys.stdout.write(f"\n{DIM}; [demo complete]{RESET}\n")
             sys.stdout.flush()
 
@@ -403,7 +425,11 @@ def main():
         print(f"Error: {demo_path} not found")
         sys.exit(1)
 
-    play_demo(demo_path, repl_binary, run_dir=run_dir)
+    try:
+        play_demo(demo_path, repl_binary, run_dir=run_dir)
+    except (PlaybackError, OSError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

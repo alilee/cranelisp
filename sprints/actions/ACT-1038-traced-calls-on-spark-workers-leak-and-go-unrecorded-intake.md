@@ -79,17 +79,34 @@ correction (finding 2). QA reproduced it on 2026-09-30 with
   writes the process-global GOT, spark workers read it, and the recorded tree
   varies by interleaving. Both cells class that mechanism; `test` drops the
   "provisional" suffix.
-- **Premise leg (QA, 2026-09-30).** The cells discriminate only while `fib`
-  is spark-admitted outside a trace. The lenient-eval design expects spark
-  admission to change. `test` adds a premise to the frame-count cell: an
-  untraced `(fib 12)` REPL child under `CRANELISP_SPARK_STATS=1` prints
-  `[SPARK_STATS] spawns=N` with N > 0. A lost premise fails with its own
-  message, never as the defect.
-  - The premise stays true under either correction, because it observes the
-    untraced run.
-  - Measured: `spawns=14` in 3 of 3 runs. `CRANELISP_NO_LENIENT=1` prints no
-    stats line (`.local/qa-s122-6b/sentinel/sparks.py`).
-  - The leak cell shares the program, so it needs no second premise.
+- **Premise (QA, 2026-11-16).** Each cell checks, in its own traced subject
+  child, that a worker ran a traced call before any defect assertion. The
+  subject runs under `CRANELISP_SPARK_STATS=1`, `CRANELISP_SPARK_MAX_DEPTH=1`
+  and `CRANELISP_HIER_DECLINE=1`.
+  - At depth one a thread cannot nest spark bodies, so
+    `[SPARK_STATS] peak_executing` above 1 requires two threads executing
+    `fib` thunks at once. Only `fib` sparks in the subject, and every thunk
+    calls it through the traced GOT entry.
+  - A missing stats line or a peak of 1 or less fails as `PREMISE LOST`. A
+    run in which no worker ran a traced call therefore cannot pass.
+  - The premise is sufficient, not necessary: a worker run that never
+    overlaps another thunk is refused too. Under load that shows as
+    `PREMISE LOST`, never as green.
+  - The frame count is read from the rendered tree in Rust, so no
+    language-level counter adds sparks.
+  - **Detection proof.** The sparks-disabled frame-count control records 465
+    frames and asserts the premise panics on its serial run.
+  - **Measured on `f091a8f3` plus the uncommitted S123 6a change.** Both
+    cells reach peak 2 and fail on their clause: 288 frames rather than 465,
+    and a marginal residual of 354. That is (465 − 288) × 2, the two-blocks-per-call
+    arithmetic. The three controls pass
+    (`.local/s123-6a/test-trace-final.log`, `.local/s123-6a/qa/nextest.log`).
+  - **Reallocation trigger.** A correction that suppresses sparks for the
+    trace's dynamic extent leaves the premise permanently lost. QA then
+    reallocates the cells to observe that correction. A deliberate absence of
+    worker calls must not be credited as this worker-path guard going green.
+  - The earlier untraced-child `spawns=N` premise is retired: it observed a
+    different child from the subject.
 - **`test` (allocated now):** failing, un-ignored cells in `tests/trace.rs`
   citing `// spec: spec/04-expressions.md §4.12.2`, with
   `class=shared-state-write-race`,
@@ -105,17 +122,10 @@ correction (finding 2). QA reproduced it on 2026-09-30 with
   evaluation"), or record worker frames. Either way, no wrapper allocates
   without a consumer. `dev` adds the unit row at the chosen seam.
 - **`arch`:** qualify the two named-intrinsic rows, per review finding 2.
-
-- **Both cells can pass by interleaving (QA, 2026-11-16, `b89cc7cc`).**
-  `traced_spark_admitted_callee_releases_every_formatted_string` passed in
-  the S123 W5 full suite and failed in the W4 one. On the W5 binary it fails
-  20 of 20 isolated runs at residual 926, and passes 2 of 10 runs with every
-  core busy. A pass therefore means no worker ran a traced call; it is not a
-  fix. Neither cell observes, in its own subject child, that a worker ran a
-  traced call, so a green run is not flip evidence. `test` gives each
-  subject a same-child premise, for example a count of sparks a worker ran,
-  taken from the traced run, before either cell is stamped. A fix is credited only by green runs
-  under load and in isolation.
+- **Crediting a correction.** Interleaving previously let the leak cell pass
+  when no worker ran a traced call (2 of 10 runs with every core busy, on the
+  W5 binary). The premise now refuses those runs. A fix is credited only by
+  green runs, with the premise satisfied, both in isolation and under load.
 
 ## Disposition
 

@@ -695,12 +695,13 @@ const FIB_AND_FRAMES: &str = "(import [primitives [add-i64 sub-i64 lt-i64 Int Pu
      (defn fib [n] (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n\
      (defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))\n";
 
-const TRACED_FIB_12_FRAMES: &str = "(match (trace (fib 12)) [(TraceCall n p r c ns) (frames c)])\n";
-
-fn traced_fib_12_frames_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
+fn traced_fib_12_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
     let cr = Cranelisp::new()
         .repl()
-        .stdin(&format!("{FIB_AND_FRAMES}{TRACED_FIB_12_FRAMES}"));
+        .env("CRANELISP_SPARK_STATS", "1")
+        .env("CRANELISP_SPARK_MAX_DEPTH", "1")
+        .env("CRANELISP_HIER_DECLINE", "1")
+        .stdin(&format!("{FIB_AND_FRAMES}(trace (fib 12))\n"));
     let cr = if no_lenient {
         cr.env("CRANELISP_NO_LENIENT", "1")
     } else {
@@ -715,16 +716,11 @@ fn traced_fib_12_frames_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
 // defect: class=shared-state-write-race locus=design/backend/lenient-eval.md §2.3 trace-body exclusion is lexical, so a callee sparks during the trace's dynamic extent found=S122 owner=/dev (ACT-1038)
 #[test]
 fn trace_records_every_call_of_spark_admitted_callee() {
-    let (spawns, premise) = untraced_fib_12_spawns(false);
-    assert!(
-        spawns.is_some_and(|n| n > 0),
-        "PREMISE LOST (not the ACT-1038 defect): this cell discriminates only while an \
-         untraced `(fib 12)` sparks, and `CRANELISP_SPARK_STATS=1` reported {spawns:?} spawns. \
-         Spark admission changed; re-derive a spark-admitted callee for this cell\n{premise}"
-    );
-    let out = traced_fib_12_frames_repl(false);
-    assert!(
-        out.stdout.contains(":primitives/Int 465"),
+    let out = traced_fib_12_repl(false);
+    assert_traced_fib_worker_ran(&out.stdout, &out.stderr);
+    assert_eq!(
+        out.stdout.matches("Trace.TraceCall \"user/fib\"").count(),
+        465,
         "`(trace (fib 12))` MUST record all 465 `fib` calls\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
         out.status,
         out.stdout,
@@ -736,7 +732,43 @@ fn trace_records_every_call_of_spark_admitted_callee() {
 // same trace records all 465 calls.
 #[test]
 fn trace_records_every_call_with_sparks_disabled_control() {
-    traced_fib_12_frames_repl(true).assert_stdout_contains(":primitives/Int 465");
+    let out = traced_fib_12_repl(true);
+    assert_eq!(
+        out.stdout.matches("Trace.TraceCall \"user/fib\"").count(),
+        465
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_traced_fib_worker_ran(&out.stdout, &out.stderr);
+        })
+        .is_err(),
+        "the same-child premise must reject a serial traced run"
+    );
+}
+
+// With hierarchical depth capped at one, a single thread can execute only one
+// spark body at a time. A peak above one proves concurrent execution. The only
+// executed sparks in these children are fib's two recursive operands: inspect
+// the rendered tree in Rust so a language-level frame counter cannot add sparks.
+fn traced_fib_worker_ran(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .find(|line| line.starts_with("[SPARK_STATS]"))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("peak_executing="))
+        })
+        .and_then(|n| n.parse::<u64>().ok())
+        .is_some_and(|peak| peak > 1)
+}
+
+fn assert_traced_fib_worker_ran(stdout: &str, stderr: &str) {
+    assert!(
+        traced_fib_worker_ran(stderr),
+        "PREMISE LOST (not the ACT-1038 defect): the traced subject must execute \
+         fib sparks concurrently at depth one; no worker-executed traced call \
+         was established\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 /// The `spawns=N` an untraced `(fib 12)` REPL child reports on stderr under
@@ -780,7 +812,10 @@ fn untraced_fib_spark_premise_reports_no_spawns_with_sparks_disabled_control() {
 
 fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
     let child = |last_turn: &str| {
-        let c = Child::repl(&format!("{FIB_AND_FRAMES}{last_turn}"));
+        let c = Child::repl(&format!("{FIB_AND_FRAMES}{last_turn}"))
+            .env("CRANELISP_SPARK_STATS", "1")
+            .env("CRANELISP_SPARK_MAX_DEPTH", "1")
+            .env("CRANELISP_HIER_DECLINE", "1");
         if no_lenient {
             c.env("CRANELISP_NO_LENIENT", "1")
         } else {
@@ -790,7 +825,7 @@ fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
     MarginalPair::new(
         "(trace (fib 12)) against an untraced (fib 12)",
         child("(fib 12)\n"),
-        child(TRACED_FIB_12_FRAMES),
+        child("(trace (fib 12))\n"),
     )
 }
 
@@ -801,9 +836,9 @@ fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
 // defect: class=shared-state-write-race locus=crates/cranelisp-intrinsics/src/trace.rs::cranelisp_trace_enter returns on a thread without TRACE_THREAD_ID without storing or releasing the formatted Strings found=S122 owner=/dev (ACT-1038)
 #[test]
 fn traced_spark_admitted_callee_releases_every_formatted_string() {
-    traced_vs_untraced_fib_12(false)
-        .measure()
-        .assert_balanced("the formatted Strings of every traced fib call");
+    let pair = traced_vs_untraced_fib_12(false).measure();
+    assert_traced_fib_worker_ran(&pair.subject().stdout, &pair.subject().stderr);
+    pair.assert_balanced("the formatted Strings of every traced fib call");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — control: with sparks disabled the

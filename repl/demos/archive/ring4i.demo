@@ -40,15 +40,6 @@
 ; Terminal styling: head position bold, types cyan, literals yellow, strings green
 ; Use --no-color or set NO_COLOR=1 to disable
 
-; Checked division — division by zero panics safely
-
-(/ 10 3)
-(/ 10 0)
-
-; The REPL recovers — the session is still alive
-
-(fmap (+ 100) (Some 0))
-
 ; Verify the sprint
 
 (defn test-fmap-some [] (if (= (match (fmap (+ 1) (Some 41)) [(Some v) v None 0]) 42) None (Some "fmap Some")))
@@ -61,3 +52,8 @@
 /source test-fmap-some
 
 /run-tests
+
+; Checked division — division by zero reports a panic and exits the REPL.
+
+(/ 10 3)
+(/ 10 0)

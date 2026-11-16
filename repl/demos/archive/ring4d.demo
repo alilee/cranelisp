@@ -1,4 +1,4 @@
-; Cranelisp Ring 4D — Developer Tools & Panic Recovery
+; Cranelisp Ring 4D — Developer Tools & Panic Exit
 
 (import [primitives [div-i64]])
 
@@ -14,11 +14,11 @@
 
 /clif factorial
 
-; Runtime errors are now recoverable — no more crashes
-
-(div-i64 1 0)
-
-; The session continues normally after the error
+; The inspected function runs normally.
 
 (factorial 6)
 (+ 1 2)
+
+; Division by zero reports a panic and exits the REPL.
+
+(div-i64 1 0)
