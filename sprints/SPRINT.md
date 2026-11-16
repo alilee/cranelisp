@@ -341,6 +341,8 @@ separate approval.
 | 5 W4 | `dev` | `src/`: P15 safety comment | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; rustdoc states P15's safety grounds with the falsifier; comments only |
 | 5 W4 | `qa` | W4 adequacy, full suite, traceability | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate; suite 6,969 pass / 31 fail (30 filed guards; `role_wiring` principle count from Principle 27); seven guards green; ACT-1047, ACT-1020, ACT-1035 closable after stamps; ACT-1052 carries; spec band regraded; coordinator repaired the Appendix D anchor mechanically |
 | 5 W4 | `test` | stamp seven green guards `fixed=S123/91acf712`; four behaviour renames | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `14d0a119`; 7/7 pass; coordinator applied the four renames to spec, plan and design citations mechanically (both citation checkers clean) |
+| 5 W5 | `qa` | ACT-1052 probe and allocation | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; reproduces: SIGSEGV in cached `--run`, linked exe and REPL after an ABI-changing edit is reverted to identical text; sibling control green; cache keys dependencies on source hash only (`artifact-underkey`); K-6 allocated; priority high |
+| 5 W5 | `test` | K-6 failing test for ACT-1052 | gpt-6.1-sol | medium | `codex_role.py` | delivered 2026-11-16; session `7c013b2d`; `cache_restored_text_after_abi_change_preserves_importer_calls_across_modes` RED (SIGSEGV at legs 4–6); ABI-preserving sibling control green |
 | 5 W5 | `sprint` | integrated gate on `b89cc7cc` | — | — | primary | 2026-11-16; suite 6,972/7,001 (29 filed guards); agent lanes 91/91 and 23+10 skip; exemplar 0/41/41 and server 200; 39 demos exit 0; document and coverage checks 0; spec links 11 stale anchors; public API matches approved rows (`.local/s123-w5/gate-summary.md`) |
 | 5 W5 | `qa` | Phase 5 adequacy from the integrated gate | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; adequate with named residuals (recorded in the evidence delta); no unclassified RED; ACT-1038 missing cell passes only by thread timing; demo player blind to early REPL exit; ACT-1053 filed then deleted as a duplicate of resolved ACT-1051 |
 | 5 W4 | `qa` | close ACT-1047, ACT-1020, ACT-1035 | claude-opus-5-5 | medium | primary (Claude Code subagent) | delivered 2026-11-16; all three verified at source and deleted; ACT-1035's C1 REPL leg moved to ACT-1034 |
@@ -591,6 +593,37 @@ accepting every recommendation presented with it:
   stdlib's `Num Int` treats overflow, and whether it offers an unchecked
   variant, is that stdlib's choice. `spec` removes the prescription from
   §7.7.1 and §7.7.1a and replaces §7.5's `Unchecked` examples.
+
+- **Phase 5 → 6a checkpoint residuals and carries (2026-11-16, item by item).**
+  - P-15 (a `runtime/panic` emitter outside the raise helper): accepted at its
+    asserted grade for S123; hardened in S124 through an `arch` packet row
+    that makes bypassing the helper uncompilable.
+  - Primitive arithmetic direction (deferred, ACT-1054): checked primitives
+    return `Result`; `unchecked-` twins have undefined behaviour (wrap or
+    trap); functions that can panic declare their undefined behaviour.
+  - P-14 (one report under concurrent panics): accepted for now; the pure
+    claim-transition row is the evidence, the two-raiser cell a diagnostic.
+  - FIXME 0903 families 1 and 2, and face 5 (the user: "a gaping hole"): an
+    S124 priority. Root cause: trait-method instances, synthetic accessors and
+    the lenient view are exempt from monomorphisation, so codegen meets
+    residual type variables. S124 runs the armed category census first, then
+    typecheck's producer obligations
+    (`design/typecheck/non-concrete-producer-obligations.md`), then the
+    backend R-1 structural close that deletes the guarded arm.
+  - ACT-1050 (inline `bind` continuation leaks an unused heap argument):
+    carried to S124 and grouped with the 0903 type-concreteness work; its first
+    act observes the parameter type reaching `compile_lambda`.
+  - ACT-1049 (armed release check stops on stack-placed values): resolved by
+    stack placement's S124 retirement under Principle 27; it closes when armed
+    cells may again contain NoEscape constructors.
+  - ACT-1018 (warm solve retains 2, one per `print`): carried; the exemplar
+    cell guards only the symptom, so S124's first act is a `test` minimal
+    failing pair per `print` in each mode, then grouping with ACT-1050 if the
+    mechanism matches.
+  - The user: carries with a committed failing test carry without a ruling.
+  - ACT-1052: the user asked for its failing test now. `qa` reproduced it
+    (SIGSEGV across modes) and `test` committed K-6 RED; its fix is put to the
+    user.
 
 ## Waves (Phase 4 proposal)
 

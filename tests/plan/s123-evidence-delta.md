@@ -24,7 +24,8 @@
 > 2026-11-16; §3.4 E-0 against nextest 0.9.140 on 2026-11-16; §3.6 R-2
 > against the 2026-11-16 deletion ruling at `bc57cbf1`; §3.6 R-5 and the W4
 > adequacy against the W4 working tree on 2026-11-16; §8 against the W5
-> integrated gate at `b89cc7cc` on 2026-11-16.
+> integrated gate at `b89cc7cc` on 2026-11-16; §3.7 K-6 against `390201c3` on
+> 2026-11-16.
 
 Each design's "evidence conditions for `qa`" is a proposal; this record is the
 allocation. Condition IDs are local to this record.
@@ -788,8 +789,69 @@ control.
 | K-3 ACT-1017 | Prefix: a failed-import refusal repeats no category-and-span prefix, under `--link` and in the reload notice. Location: the refusal is located in the failed module's file and never at its offset in the dependent; this face passes and is a regression guard | A refusal of a non-failed import | Prefix only |
 | K-4 ACT-1001 P-3 | An `impl` of an ambiguous trait spelling is rejected as ambiguous, naming both | An unknown trait spelling is `unknown trait` | No |
 | K-5 ACT-0973 | A platform declaration in a root-level non-entry module, and in a nested one, is a compile-time error | The entry placement loads the platform | No |
+| K-6 ACT-1052 | A cached importer of a module whose slots moved in a REPL session, under unchanged text, gives the uncached result in every mode (below) | The ABI-preserving edit and revert; `--no-cache` | Not scheduled |
 
 *Class:* acceptance (safety fence once fixed). *Owner:* `test`.
+
+**K-6 — a cached importer embeds a slot its dependency moved**
+([int §7.6](../../design/int/int.md#76-dependency-record-and-validity): an
+importer's `.o` embeds its dependencies' GOT slot indices, and a cached module
+restores only if every source its artefact derives from is unchanged;
+[session transaction §7.1](../../design/int/session-transaction.md#71-the-commit-gate-is-the-single-slot-policy-authority):
+an `AbiChanging` commit mints a fresh slot; §0.6 `--no-cache` bypasses an
+acceleration).
+
+- *Harm:* a program that runs correctly crashes in `--run`, in a linked
+  executable and in the REPL after its developer edits a definition and
+  reverts it. Only `--no-cache` or deleting the cache recovers it, and
+  `--link` cannot take `--no-cache`.
+- *Observed* (HEAD `390201c3`, `target/debug/cranelisp`, 2026-11-16): SIGSEGV
+  (exit 139) in `--run`, in the linked executable, and at the REPL call
+  through a `/mod`-loaded module. Seam: the restored `lib.o`'s `g` loads
+  `__cranelisp_got_user` at offset 0, which is slot 0. `user.meta.json`
+  holds `f` at slot 2 with slots 0 and 1 retired, and the manifest's
+  recorded `user` hash equals the current one.
+- *Wrong implementations:*
+  - validation by dependency source hash alone (current);
+  - a correction confined to the entry preload: the failing launch's `user`
+    is a cache-restored dependency, not the entry;
+  - a correction that covers `--run` but not the linked executable or a
+    transitive restore under `/mod`;
+  - a refusal or diagnostic where the uncached result is 41.
+- *Fixture* (one project): `user.cl` holds `(defn f [] 41)`; `lib.cl`
+  holds `(import [user [f]])` and `(defn g [] (f))`; `app.cl` holds
+  `(import [primitives [Pure]])`, `(import [lib [g]])` and
+  `(defn main [] (Pure (g)))`. `app` is the batch entry, so `lib` restores
+  from cache without recompiling. `/mod lib` would recompile `lib` and mask
+  the defect.
+- *Legs, in order on one project:*
+  1. Cold `--run app.cl` exits 41 and writes `lib.o`.
+  2. Piped REPL on the default entry: `(defn f [] "s")` echoes
+     `(Fn [] primitives/String) user/f`, then `(defn f [] 41)` echoes
+     `(Fn [] primitives/Int) user/f`. `lib` is not loaded, so §18 admits
+     both edits. `user.cl` is byte-identical to the fixture afterwards.
+  3. `--no-cache --run app.cl` exits 41 (control).
+  4. `--run app.cl` exits 41.
+  5. `--link app.cl`; the executable exits 41.
+  6. Piped REPL: `/mod app`, then `(g)` gives `:primitives/Int 41`.
+- *Sibling control* (a second project, differing only in whether the slot
+  moves): leg 2 enters `(defn f [] 42)` then `(defn f [] 41)`. The slot
+  stays, and legs 4 to 6 give 41 on the current binary.
+- *Arming:* each leg asserts its exit status and output separately and
+  shows stderr. Collect the failing legs instead of stopping at the first,
+  so all three faces report. The red must fail at legs 4 to 6 on a signal
+  exit or a missing `41`. A failure at legs 1 to 3, a refused edit at leg
+  2, a `user.cl` that differs from the fixture, or a missing `lib.o` is a
+  fixture error, not the red.
+- *Not asserted:* whether `lib` restores or recompiles. That is
+  cache-internal; the correction's unit row owns it.
+- *Notation:* `// defect: class=artifact-underkey
+  locus=src/cache/dependency_record.rs::DependencyRecord found=S123
+  owner=/dev`, with prose after the token: provisional until `design`(int)
+  places the fix.
+- *Class:* acceptance (safety fence once fixed). *Owner:* `test` (cell);
+  `dev`'s unit row is allocated when `design` places the correction.
+  Required now as a committed RED; the fix is not scheduled.
 
 ### 3.8 Maintenance and diagnostics
 
@@ -1364,7 +1426,7 @@ checkpoint (§8.5).
 - **`test`, now (Phase 5, test-first):** E-0's declaration and detection
   proof with the loader change-set; the C-1, C-2, C-3, C-5 and C-9 re-points;
   every **RED now** cell; U-1 to U-5; P-1 to P-12, P-18 and P-19; T-1 to
-  T-5, T-7; E-1 to E-6; B-1 to B-4; A-1 to A-6; R-1 to R-5 with R-2a; K-1 to K-5; M-1; M-7. Then
+  T-5, T-7; E-1 to E-6; B-1 to B-4; A-1 to A-6; R-1 to R-5 with R-2a; K-1 to K-6; M-1; M-7. Then
   C-6 and C-7 in their change-sets, M-3 with `docs`, M-4 and M-5 in Phase 6b.
 - **`dev`, with each surface:** U-6, U-7's structure, U-9; P-10's unit rows,
   P-13 to P-17, P-18's guard rows; T-6; T-8; E-7; B-5; A-5's flag function;
@@ -1530,7 +1592,7 @@ The user decides each of the three rows Phase 5 added to §5:
 | [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md) | Unbounded leak in a loop, not memory-unsafe. It predates U′ and was found after W2's first review, so the correction-loop stop rule applies. Twelve REDs stand |
 | [ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
-| [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Unmeasured and advisory. No Phase 5 cell reaches the path. Its first act is a `qa` probe of the candidate on the final binary |
+| [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
 | [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells need a same-child premise before any stamp |
 | ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
 | §8.4 maintenance items | The projection-guard re-citation if S123 does not close it; the §17.4 combination cell |

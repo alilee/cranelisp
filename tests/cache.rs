@@ -27,6 +27,141 @@ use std::time::{Duration, SystemTime};
 
 use helpers::e2e::Cranelisp;
 
+// spec: design/int/int.md §7.6; design/int/session-transaction.md §7.1;
+// repl/spec/00-cli-invocation.md §0.6 — K-6 in tests/plan/s123-evidence-delta.md §3.7.
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::DependencyRecord found=S123 owner=/dev
+// ACT-1052: provisional until design(int) places the fix.
+#[test]
+fn cache_restored_text_after_abi_change_preserves_importer_calls_across_modes() {
+    cache_edit_and_revert_importer_calls("(defn f [] \"s\")", "primitives/String");
+}
+
+// spec: design/int/int.md §7.6; design/int/session-transaction.md §7.1;
+// repl/spec/00-cli-invocation.md §0.6 — K-6 sibling control, ABI-preserving edit.
+#[test]
+fn cache_restored_text_after_abi_preserving_edit_preserves_importer_calls_across_modes() {
+    cache_edit_and_revert_importer_calls("(defn f [] 42)", "primitives/Int");
+}
+
+fn cache_edit_and_revert_importer_calls(edit: &str, edited_type: &str) {
+    const USER: &str = "(defn f [] 41)\n";
+    let cold = Cranelisp::new()
+        .user(USER)
+        .file("lib.cl", "(import [user [f]])\n(defn g [] (f))\n")
+        .file(
+            "app.cl",
+            "(import [primitives [Pure]])\n(import [lib [g]])\n(defn main [] (Pure (g)))\n",
+        )
+        .run("app.cl")
+        .output();
+    let mut failures = Vec::new();
+    check_cache_edit_leg(&cold, "1: cold --run", 41, &[""], &mut failures);
+    assert!(
+        failures.is_empty(),
+        "fixture error: {}",
+        failures.join("\n")
+    );
+    assert!(
+        cold.tmp_exists(".cranelisp-cache/lib.o"),
+        "fixture error: leg 1 did not write lib.o; stderr:\n{}",
+        cold.stderr
+    );
+
+    let edited = cold
+        .run_again()
+        .repl()
+        .stdin(&format!("{edit}\n(defn f [] 41)\n"))
+        .output();
+    check_cache_edit_leg(
+        &edited,
+        "2: REPL edit and revert",
+        0,
+        &[
+            &format!("(Fn [] {edited_type}) user/f"),
+            "(Fn [] primitives/Int) user/f",
+        ],
+        &mut failures,
+    );
+    assert!(
+        failures.is_empty(),
+        "fixture error: {}",
+        failures.join("\n")
+    );
+    assert_eq!(
+        fs::read(edited.tmpdir.join("user.cl")).expect("read reverted user.cl"),
+        USER.as_bytes(),
+        "fixture error: leg 2 must restore byte-identical user.cl; stderr:\n{}",
+        edited.stderr
+    );
+
+    let uncached = edited
+        .run_again()
+        .run("app.cl")
+        .cli_flag("--no-cache")
+        .output();
+    check_cache_edit_leg(&uncached, "3: --no-cache --run", 41, &[""], &mut failures);
+    assert!(
+        failures.is_empty(),
+        "fixture error: {}",
+        failures.join("\n")
+    );
+
+    let cached = uncached.run_again().run("app.cl").output();
+    check_cache_edit_leg(&cached, "4: cached --run", 41, &[""], &mut failures);
+
+    let linked = cached.run_again().link_then_run("app.cl").output();
+    if linked.linked_execution_elapsed.is_none() {
+        failures.push(format!("5: --link failed; stderr:\n{}", linked.stderr));
+    }
+    check_cache_edit_leg(&linked, "5: linked executable", 41, &[""], &mut failures);
+
+    let repl = linked.run_again().repl().stdin("/mod app\n(g)\n").output();
+    check_cache_edit_leg(
+        &repl,
+        "6: REPL /mod app then (g)",
+        0,
+        &[":primitives/Int 41"],
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "K-6:\n{}", failures.join("\n"));
+}
+
+fn check_cache_edit_leg(
+    out: &helpers::e2e::CrOutput,
+    leg: &str,
+    exit: i32,
+    expected_stdout: &[&str],
+    failures: &mut Vec<String>,
+) {
+    eprintln!(
+        "K-6 {leg}: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
+    if out.status.code() != Some(exit) {
+        failures.push(format!(
+            "{leg}: expected exit {exit}, got {:?}; stderr:\n{}",
+            out.status, out.stderr
+        ));
+    }
+    let mut remaining_stdout = out.stdout.as_str();
+    for expected in expected_stdout {
+        let matches = if expected.is_empty() {
+            out.stdout.is_empty()
+        } else if let Some(at) = remaining_stdout.find(expected) {
+            remaining_stdout = &remaining_stdout[at + expected.len()..];
+            true
+        } else {
+            false
+        };
+        if !matches {
+            failures.push(format!(
+                "{leg}: expected stdout {expected:?}; stdout:\n{}\nstderr:\n{}",
+                out.stdout, out.stderr
+            ));
+        }
+    }
+}
+
 // spec: design/int/session-transaction.md §7.5, §8.2 — restarting an unchanged
 // cached entry consumes no GOT capacity; repl/spec/00-cli-invocation.md §0.6.
 // defect: class=wrong-reject locus=src/session_v4/lifecycle.rs::retire_bodies_the_recompile_restages found=S123 owner=/dev fixed=S123/91acf712
