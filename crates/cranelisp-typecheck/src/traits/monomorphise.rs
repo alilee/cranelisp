@@ -1574,7 +1574,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } => Some(ImplementationInstantiation {
                 shell: shell.clone(),
                 receiver: (!self.is_higher_kinded_trait(trait_name))
-                    .then(|| receiver_in(signature, impl_type))
+                    .then(|| self.implementing_type_at(trait_name, impl_type, &template, signature))
                     .flatten(),
             }),
             _ => None,
@@ -1595,6 +1595,45 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             implementation,
             counts,
         }
+    }
+
+    /// The type `self` takes in an instance of the implementation method
+    /// `template`, read by matching the trait member's declared scheme against
+    /// the instance's concrete `signature` (§3.10.3). The member is the one
+    /// whose mangled implementation entry is `template`.
+    fn implementing_type_at(
+        &self,
+        trait_name: &cranelisp_types::FQTraitName,
+        impl_type: &FQTypeName,
+        template: &FQSymbol,
+        signature: &Type,
+    ) -> Option<Type> {
+        let Some(cranelisp_types::Decl::Trait(trait_record)) = self
+            .probe_module_entry_owned(&trait_name.module, trait_name.name.as_ref())
+            .map(|binding| binding.declaration)
+        else {
+            return None;
+        };
+        let member = trait_record.info.methods.iter().find(|method| {
+            crate::traits::mangle_trait_method(
+                trait_name.name.as_ref(),
+                method.name.as_ref(),
+                impl_type,
+            ) == template.symbol.as_ref()
+        })?;
+        let key = cranelisp_types::member_key(trait_name.name.as_ref(), member.name.as_ref());
+        let Some(cranelisp_types::Decl::TraitMethod(record)) = self
+            .probe_module_entry_owned(&trait_name.module, key.as_ref())
+            .map(|binding| binding.declaration)
+        else {
+            return None;
+        };
+        let self_var = record
+            .scheme
+            .constraints
+            .iter()
+            .find_map(|(var, traits)| traits.contains(trait_name).then_some(*var))?;
+        binding_of(self_var, &record.scheme.ty, signature)
     }
 
     fn is_higher_kinded_trait(&self, trait_name: &cranelisp_types::FQTraitName) -> bool {
@@ -1808,26 +1847,28 @@ fn collect_apply_sites(expr: &Expr, out: &mut Vec<(Vec<Span>, Span)>) {
     crate::program::for_each_child_expr(expr, |child| collect_apply_sites(child, out));
 }
 
-/// The concrete type a dispatch selected `impl_type`'s implementation by:
-/// the first type in the signature, parameters then result, whose head is
-/// the implementing type.
-fn receiver_in(signature: &Type, impl_type: &FQTypeName) -> Option<Type> {
-    fn find(ty: &Type, impl_type: &FQTypeName) -> Option<Type> {
-        if receiver_identity(ty).as_ref() == Some(impl_type) {
-            return Some(ty.clone());
-        }
-        match ty {
-            Type::Fn(params, ret) => params
+/// The concrete type at `var`'s first occurrence in `declared`, read from
+/// the structurally matching position of `concrete`.
+fn binding_of(var: cranelisp_types::TypeId, declared: &Type, concrete: &Type) -> Option<Type> {
+    match (declared, concrete) {
+        (Type::Var(id), _) if *id == var => Some(concrete.clone()),
+        (Type::Fn(declared_params, declared_ret), Type::Fn(params, ret))
+            if declared_params.len() == params.len() =>
+        {
+            declared_params
                 .iter()
-                .chain(std::iter::once(ret.as_ref()))
-                .find_map(|ty| find(ty, impl_type)),
-            Type::ADT(_, args) | Type::TyConApp(_, args) => {
-                args.iter().find_map(|ty| find(ty, impl_type))
-            }
-            _ => None,
+                .zip(params)
+                .chain(std::iter::once((declared_ret.as_ref(), ret.as_ref())))
+                .find_map(|(declared, concrete)| binding_of(var, declared, concrete))
         }
+        (Type::ADT(_, declared_args), Type::ADT(_, args)) if declared_args.len() == args.len() => {
+            declared_args
+                .iter()
+                .zip(args)
+                .find_map(|(declared, concrete)| binding_of(var, declared, concrete))
+        }
+        _ => None,
     }
-    find(signature, impl_type)
 }
 
 /// The chain's depth: its elements that count (§3.10.3).

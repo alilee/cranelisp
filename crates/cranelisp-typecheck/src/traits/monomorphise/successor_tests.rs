@@ -2,7 +2,7 @@
 //! (`design/typecheck/monomorphisation.md` §3.10.5 module rows).
 
 use cranelisp_types::{
-    ApplyRef, FQSymbol, Life, ModuleFullPath, MonoDefnVariant, MonoExpr, TemplateBody, VarRef,
+    ApplyRef, CallableOrigin, FQSymbol, Life, ModuleFullPath, MonoDefnVariant, MonoExpr, VarRef,
 };
 
 use crate::checker::TestFixture;
@@ -16,9 +16,12 @@ fn checked(src: &str) -> TestFixture {
     tc
 }
 
-/// Every authored template a concrete body's codegen view calls or names as a
-/// value: the condition the backend refuses as `undefined function`. An
-/// `Apply` with a `Dispatch` verdict is read by that verdict, not its callee.
+/// Every target a concrete body's codegen view calls or names as a value that
+/// is not an installed concrete callable, whether a template or no table entry
+/// at all: the condition the backend refuses as `undefined function`. A
+/// nullary constructor is lowered from its constructor metadata, not called,
+/// so it is not reported. An `Apply` with a `Dispatch` verdict is read by that
+/// verdict, not its callee.
 fn template_references(tc: &TestFixture) -> Vec<String> {
     let views: Vec<(String, MonoDefnVariant)> = tc
         .symbol_table()
@@ -38,18 +41,16 @@ fn template_references(tc: &TestFixture) -> Vec<String> {
     targets
         .into_iter()
         .filter(|(_, target)| {
-            tc.modules.get(&target.module).is_some_and(|table| {
+            !tc.modules.get(&target.module).is_some_and(|table| {
                 table
                     .get(target.symbol.as_ref())
                     .and_then(|binding| binding.callable())
                     .is_some_and(|callable| {
-                        matches!(
-                            callable.arm.life,
-                            Life::Template {
-                                body: TemplateBody::Ast(_),
-                                ..
-                            }
-                        )
+                        matches!(callable.arm.life, Life::Concrete { .. })
+                            || matches!(
+                                callable.origin,
+                                CallableOrigin::Ctor { field_count: 0, .. }
+                            )
                     })
             })
         })
@@ -332,10 +333,7 @@ fn growing_reentry_is_refused_by_every_route_with_one_diagnostic() {
          (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))\n\
          (defn main [] (size (Yep 3)))"
     );
-    let helper_message = match check(&helper) {
-        Ok(_) => panic!("the helper route must be refused"),
-        Err(error) => error.to_string(),
-    };
+    let helper_message = assert_depth_refusal(&helper, "(size (Yep x))", "wrap");
 
     let two_impls = format!(
         "{OPT_SIZE}{SIZE_INT}(deftype (Box a) (MkBox [:a v]))\n\
@@ -343,20 +341,11 @@ fn growing_reentry_is_refused_by_every_route_with_one_diagnostic() {
          (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (size (Yep b))])))\n\
          (defn main [] (size (Yep 3)))"
     );
-    let two_message = match check(&two_impls) {
-        Ok(_) => panic!("the two-implementation route must be refused"),
-        Err(error) => error.to_string(),
-    };
+    let two_message = assert_depth_refusal(&two_impls, "(size (Yep b))", "Size.size$test/Box");
 
     for message in [&direct_message, &helper_message, &two_message] {
-        assert!(
-            message.contains("instantiation depth limit of 64"),
-            "{message}"
-        );
         assert!(message.contains("first instantiated at"), "{message}");
     }
-    let tc = check(&direct).err().map(|_| ());
-    assert!(tc.is_some());
 }
 
 // spec: 03-types §3.10; monomorphisation.md §3.10.3 row 6 controls — a
@@ -441,6 +430,53 @@ fn depth_counts_implementation_instantiations_not_method_instances() {
                 .to_string()
                 .contains("instantiation depth limit of 64")
         );
+    });
+}
+
+// spec: 03-types §3.10; 07-traits §7.1.4; monomorphisation.md §3.10.3 — the
+// implementation instantiation is the type `self` takes, not the first type
+// with the implementing type's head: 65 sibling members whose earlier
+// parameters are `(Opt Mi)` chain at the one instantiation `(Opt Int)` and
+// mint (ACT-1072).
+#[test]
+fn siblings_differing_in_an_earlier_parameter_of_the_implementing_head_count_once() {
+    let members = 65;
+    let types: String = (0..members)
+        .map(|i| format!("(deftype M{i} MkM{i})\n"))
+        .collect();
+    let sigs: String = (0..members)
+        .map(|i| format!(" (m{i} [:(Opt M{i}) d self] Int)"))
+        .collect();
+    let bodies: String = (0..members)
+        .map(|i| match i + 1 {
+            next if next < members => format!(" (defn m{i} [d o] (m{next} Nope o))"),
+            _ => format!(" (defn m{i} [d o] 7)"),
+        })
+        .collect();
+    let src = format!(
+        "(deftype (Opt a) Nope (Yep [:a v]))\n{types}\
+         (deftrait Size{sigs})\n\
+         (impl Size (Opt a){bodies})\n\
+         (defn main [] (m0 Nope (Yep 3)))"
+    );
+    // The same earlier parameter, fixed, before a growing `self` still counts.
+    let growing = format!(
+        "{OPT_SIZE}(deftrait G (g [:(Opt Int) d self] Int))\n\
+         (impl G Int (defn g [d n] n))\n\
+         (impl G (Opt :G a) (defn g [d o] (g d (Yep o))))\n\
+         (defn main [] (g Nope (Yep 3)))"
+    );
+    on_worker_stack(move || {
+        let tc = check(&src).unwrap_or_else(|e| panic!("one instantiation is refused: {e}"));
+        assert_eq!(template_references(&tc), Vec::<String>::new());
+        for i in [0, 64] {
+            assert_eq!(
+                instances_of(&tc, &format!("test/Size.m{i}$test/Opt")).len(),
+                1,
+                "m{i}"
+            );
+        }
+        assert_depth_refusal(&growing, "(g d (Yep o))", "G.g$test/Opt");
     });
 }
 

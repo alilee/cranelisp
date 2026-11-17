@@ -1540,8 +1540,17 @@ fn impl_body_dispatch_with_no_impl_in_cluster_is_still_refused() {
     let src = format!(
         "{SIZE_OPT_HEADER}(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size true)])))\n"
     );
-    let err = check_cluster(&src).expect_err("no `Size Bool` exists in the cluster");
+    let mut tc = tc_with_prims();
+    let sexps = cranelisp_frontend::parse(&src).expect("parse");
+    let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+    let err = tc
+        .check_program_self(&program)
+        .expect_err("no `Size Bool` exists in the cluster");
     assert!(err.message().contains("no impl of trait"), "{err:?}");
+    assert!(
+        !tc.has_impl(&TraitName::from("Size"), &TypeName::from("Opt")),
+        "the refused implementation's shell is left registered"
+    );
 }
 
 // spec: 03-types §3.10 — a dispatch from an implementation's body to the same
