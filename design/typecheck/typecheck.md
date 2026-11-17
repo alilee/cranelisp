@@ -1380,7 +1380,7 @@ section when it is empty.
 | T1 | An ambiguous `impl` head reports the resolver's ambiguity, naming the candidates | [traits §3](traits.md#registration-pipeline) step 1; [qualified trait impl §5](qualified-trait-impl.md#5-errors) | ACT-1001 P-3 | none |
 | T2 | The impl-body sweep: every implementation is registered before any implementation body is checked | §5; [traits §3](traits.md#registration-pipeline) steps 7–9 | ACT-0985 | none |
 | T3 | Same-cluster templates are the window's, keyed by identity | [monomorphisation §3.10.2](monomorphisation.md#3102-same-cluster-templates-are-the-windows) | ACT-1034 (A3) | none |
-| T4 | The dispatch hop inside an instance, including a dispatch to the enclosing implementation at its own or another instantiation, and the in-progress chain with its recurrence bound and one non-termination diagnostic (spec §3.10, S124-Q7) | [monomorphisation §3.10.1](monomorphisation.md#3101-the-dispatch-hop), [§3.10.3](monomorphisation.md#3103-recursion-through-dispatch) | ACT-1034 (A1, A2, C3, T-1034-d, T-1034-e); F-PR, F-PR-2 | none |
+| T4 | The dispatch hop inside an instance, including a dispatch to the enclosing implementation at its own or another instantiation, and the in-progress chain with its instantiation depth limit and one depth diagnostic (spec §3.10, S124-Q7) | [monomorphisation §3.10.1](monomorphisation.md#3101-the-dispatch-hop), [§3.10.3](monomorphisation.md#3103-recursion-through-dispatch) | ACT-1034 (A1, A2, C3, T-1034-d, T-1034-e); F-PR, F-PR-2 | none |
 | T5 | A trait reference's identity is its declaration's | §7.3.2 | ACT-0997 (renamed-trait lead) | none |
 | T6 | The annotation-location commitment is pinned | [inference §4.5](inference.md#45-value-position-annotations) | ACT-1057 | none; a module row only |
 | T7 | The writer record carries its `impl` form's authored label | below; [traits §3.0.1](traits.md#301-the-writer-side-record) | ACT-0997 (impl identity) | none here; row D10 in `cranelisp-types` |
@@ -1461,7 +1461,7 @@ checked, so it would have no result to read.
 - **Construction sites.** Twelve `WrittenTraitImpl::new` calls, all re-read at
   `4b58ab93`: the producer above; in this crate's tests `infer/tests.rs`,
   `checker/tests.rs` and `traits/dispatch/tests.rs` (two); in the types crate's tests
-  `module/tests.rs` (three) and `tests/lifecycle_facade.rs`; in the binary's tests
+  `module/tests.rs` (three) and `crates/cranelisp-types/tests/lifecycle_facade.rs`; in the binary's tests
   `src/save.rs` (two) and `src/repl/mod.rs`'s test support. Each test site writes the
   label its fixture's form would produce; one with no form writes the
   `Trait.Type` spelling of its names.

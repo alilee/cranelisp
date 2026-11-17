@@ -387,9 +387,15 @@ A1, A2 and C3 publish the outer instance and no inner one. The source agrees.
   that template. The outer instance is published: by a caller, or, for a site that is
   already concrete in the template (`(size (Yep 7))`), by the cluster scan of the
   template body, whose redirect lands in the cluster's map and never in an instance's.
-  The instance's own site is then skipped by the presence test above and stays named
-  as the template. This is not a third mechanism: the dispatch hop below follows it,
-  and §3.10.3 decides whether the demand redirects (its key is the instance's own or
+  The instance's own site then stays named as the template, by a third skip
+  (confirmed by source reading at `ae011366`, S124 W1). A call spelled as the
+  method's own name never reaches the presence test above:
+  `collect_apply_var_calls` excludes the own spelling and leaves it to the
+  self-recursion step, `record_self_recursion_dispatch`. That step has the same
+  `resolved_calls` presence skip, so T-1034-d's `(len t)` is never redirected. A
+  sibling member's site (T-1034-e) has another spelling and is lost at the first
+  skip. This is not a further mechanism: the dispatch hop below follows both, and
+  §3.10.3 decides whether the demand redirects (its key is the instance's own or
   already on the chain), mints, or is refused.
 
 The design:
@@ -399,7 +405,11 @@ The design:
   successor, and a concrete target is already settled. Only a site whose verdict is
   `ApplyRef::ViaCallee` is classified by its callee's `var_refs` verdict, as today. The
   `resolved_calls` presence skip is replaced by this split, which keeps every exclusion
-  the skip made for a settled dispatch. `resolved_calls` is supplementary metadata, not
+  the skip made for a settled dispatch. The own-spelling exclusion applies to the
+  `ViaCallee` arm only: a `Dispatch` site spelled as the method's own name is a
+  dispatch-hop successor like any other. The self-recursion step keeps the free
+  function's own-key redirect, and its presence skip then excludes a dispatch site
+  that the instance step has already redirected. `resolved_calls` is supplementary metadata, not
   the keyed carrier ([interfaces, method resolutions](../arch/interfaces.md#method-resolutions)),
   and a sidecar's presence or absence is not an identity (Principle 24 corollary).
 - **One template-target predicate.** "This `Dispatch` target is an AST-bodied
@@ -484,16 +494,39 @@ not terminate is a type error. Monomorphic recursion for functions is unchanged
   whose finalize demands it, which in the REPL can be a later turn than the `impl`.
 
 **The in-progress chain.** The engine carries the chain of demands being minted (§3.9
-channel 5) and checks each successor against it before minting. The chain's **depth**
-is the number of implementation-method instances on it; free-function instances ride
-on the chain but do not count. The limit is spec §3.10's instantiation depth limit
-(ruled 2026-11-17: a chain of implementation instantiations exceeding a limit of at
-least 64 is a type error), set at 64 as one named constant in the engine.
+channel 5) and checks each successor against it before minting. The limit is spec
+§3.10's instantiation depth limit (ruled 2026-11-17: a chain of implementation
+instantiations exceeding a limit of at least 64 is a type error), set at 64 as one
+named constant in the engine.
+
+**The counting unit is spec's: the implementation instantiation**, one implementation
+at one concrete implementing type (the type, or for a higher-kinded implementation the
+constructor, the dispatch selected the implementation by). The constant counts
+implementation instantiations, not method instances. Every member minted at one
+implementation instantiation belongs to it, so two members that call each other at
+each level of a type nested 64 deep make a chain of 64 implementation instantiations
+and 128 method instances, and it mints.
+
+- **Depth.** An implementation-method demand adds one to the chain's depth when its
+  implementation instantiation is not yet on the chain, and when its own member is
+  already on the chain at that instantiation. A sibling member's first entry at an
+  instantiation already on the chain adds nothing. Free-function instances ride on the
+  chain and add nothing.
+- **The second clause is the method-level re-entry.** An equal key redirects (below),
+  so a member already on the chain at its own implementation instantiation can recur
+  only at a different instantiation of its method-level type variables (spec §7.1.4,
+  §7.3.6). `(impl Functor Opt …)`'s `fmap` dispatching to itself at `(Opt (Opt b))` is
+  one: its implementing constructor `Opt` never changes. Counting it is what makes such a chain finite.
+  Whether spec's text counts it is not settled (§13); every S124 cell has members
+  without method-level variables, where the two clauses reduce to spec's count exactly.
+- **A non-parametric implementation whose members are concrete is never on the chain:**
+  nothing is minted for it. One whose member has method-level variables is minted and
+  counts once per instantiation under the rule above.
 
 | The successor's demand | Disposition |
 |---|---|
 | Its key is on the chain | Redirect the site to that key's instance and do not mint. The instance is installed when its own mint completes. T-1034-d's own-key self-dispatch is this case |
-| An implementation method's, and the chain's depth is already 64 | The depth refusal at the successor's site. No instance on the chain is installed |
+| An implementation method's that would add one to a depth already at 64 | The depth refusal at the successor's site. No instance on the chain is installed |
 | Otherwise | Mint |
 
 - Reuse before minting (§3.10.1) is checked first, so an installed instance is
@@ -503,18 +536,26 @@ least 64 is a type error), set at 64 as one named constant in the engine.
   chain is finite: a function's recursive call uses the instantiation in force (§3.4)
   and a free function cannot reach a later cluster, so such a run is shorter than the
   program's free-function templates. An infinite chain therefore holds unboundedly many
-  implementation instances and reaches the depth limit. Every chain is finite.
+  implementation-method instances, all with distinct keys. Its depth is then
+  unbounded: either it holds unboundedly many implementation instantiations, or one
+  member recurs unboundedly at one of them, and each occurrence adds one. Every chain
+  is finite.
 - **Exact detection is not available.** Trait selection by a type's head lets
   instantiation simulate a two-counter machine (one trait per state, Peano types as the
   counters), so whether instantiation terminates is undecidable in general, and any
   rule that always terminates refuses some terminating program. The depth count is the
-  least mechanism with that property: one integer for the chain, no type measure. Its
-  false refusals are the terminating chains holding more than 64 implementation
-  instances: a type nested that deep through a constrained implementation (A1's shape
-  at `(Opt` nested past the limit `Int)`), or that many distinct implementations each
-  dispatching to the next. Spec §3.10 states the limit, so these are refusals the
-  language admits, not defects.
-- Considered: a per-template recurrence count. Rejected: it is not spec's unit (two
+  least mechanism with that property: one count for the chain, read from the chain's
+  own elements, no type measure. Its false refusals are the terminating chains deeper
+  than 64: a type nested that deep through a constrained implementation (A1's shape at
+  `(Opt` nested past the limit `Int)`), that many distinct implementations each
+  dispatching to the next, or a member recurring that often at its own implementation
+  instantiation. Spec §3.10 states the limit, so the first two are refusals the
+  language admits, not defects; the third waits on the §13 question.
+- Considered: counting implementation-method instances. Rejected: two members per
+  level are refused at 33 implementation instantiations, below spec's floor.
+  Considered: counting distinct implementation instantiations only. Rejected: a
+  method-level re-entry never grows it, so the `fmap` chain above would not terminate.
+  Considered: a per-template recurrence count. Rejected: it is not spec's unit (two
   alternating implementations would reach 128 instances before refusal) and it keeps an
   integer per template where one suffices. Considered: refusing a recurrence at a key no
   smaller than the template's previous occurrence (the size rule). Rejected: it refuses
@@ -533,11 +574,19 @@ least 64 is a type error), set at 64 as one named constant in the engine.
   holds about 2^n constructor nodes at depth n, so the chain reaches depth 64 only after
   building types of about 2^64 nodes; in practice the compiler exhausts memory or time
   first. No counting unit or key encoding inside this crate removes the cost, since the
-  backend consumes the instance at that type. Bounded refusal needs a second limit, on
-  the size of an instance's type, which spec does not state (§13). Until it is ruled the
-  doubling shape is a consciously unprotected risk: the program is non-terminating under
-  spec §3.10 either way, so the residual is a hang or exhaustion in place of a located
-  type error, never an accepted or miscompiled program.
+  backend consumes the instance at that type. Bounded refusal would need a second
+  limit, on the size of an instance's type. **The user declined it (2026-11-17): the
+  doubling shape is an accepted named risk and no second limit is added** (§13). The
+  program is non-terminating under spec §3.10 either way, so the residual is a hang or
+  exhaustion in place of a located type error, never an accepted or miscompiled
+  program.
+- **The chain is host recursion.** Each mint recurses once on the compile worker's
+  stack, so a chain at the limit is 64 implementation instantiations deep plus their
+  sibling and free-function elements. That this fits the worker's stack in the debug
+  build is asserted, not measured. Falsifier: T-DEPTH-a, on the worker's stack in
+  every mode (`qa` reports that stack exhausted today by a source expression about 56
+  forms deep, ACT-1067). If it falsifies, the remedy in this crate is to cut the
+  per-mint frame cost; a larger worker stack is `int`'s, through `sprint`.
 
 **The diagnostic.** One constructor, so the class cannot differ by route (Principle 7). It
 is a located `TypeError`, raised by typecheck before any instance on the chain is
@@ -592,10 +641,16 @@ installed or any code is emitted, and identical in the REPL, `--run` and `--link
      installed; controls that mint: the shrinking A1 shape, a constant re-entry
      (`(size (Yep 0))` demanded at `(Opt Bool)` mints `(Opt Int)` once and redirects to
      it), and a chain that grows once then settles (the `(P b (Opt Int))` shape);
-     boundary, both legs: a chain holding exactly 64 implementation instances mints,
-     one more is refused; unit twin, two implementations alternating on one chain are
-     refused at 65 instances in all, not at 64 of either (a per-template count admits
-     it); a free-function instance on the chain does not count toward the depth;
+     boundary, both legs: a chain of exactly 64 implementation instantiations mints,
+     one more is refused; unit twins: two implementations alternating on one chain are
+     refused at 65 instantiations in all, not at 64 of either (a per-template count
+     admits it); two sibling members calling each other at each level mint at 64
+     levels (128 method instances) and are refused at 65 (a method-instance count
+     refuses at 33; T-DEPTH-c); a member recurring at its own implementation
+     instantiation through a method-level type variable is refused at 65 recurrences
+     (a distinct-instantiation count never refuses it); a free-function instance on
+     the chain does not count toward the depth. Run the boundary rows on a thread
+     with the compile worker's stack size (§3.10.3);
   7. the replaced skip keeps its exclusions: inside an instance, a dispatch already
      redirected to a concrete instance, a built-in intercept and an auto-curried partial
      application each mint nothing new and keep their recorded verdicts;
@@ -611,8 +666,9 @@ installed or any code is emitted, and identical in the REPL, `--run` and `--link
 and F-PR-2 are refused by the chain when `main` demands them: a type error at the
 successor's line, not at codegen and not when the `impl` form is checked. A
 template-resolved re-entry at a shrinking or constant type runs. `qa` re-allocates T-Q7-a and T-Q7-b, written
-for the superseded ruling A. F-PR-3's timeout clause is not met by the depth limit alone
-(§3.10.3); it waits on the type-size ruling (§13).
+for the superseded ruling A. T-DEPTH-c's shape mints at 64 levels under this unit.
+F-PR-3 has no condition: the doubling shape is an accepted risk with no second limit
+(§13).
 
 ---
 
@@ -973,7 +1029,9 @@ arguments with that clause's parameters, pinning them. There is no independence 
 | Textual self-call tag (§11.3.1) | Documented limitation. Trigger: a real definition named `{base}__v{n}` |
 | Qualified imported-base re-derivation (§11.8.9) | Tripwired. Trigger: a storage entry that is not bare-mangled |
 | The depth limit's refusals of terminating programs (§3.10.3) | Admitted by spec §3.10 (ruled 2026-11-17). Trigger: a real program refused at 64, which raises the constant rather than adding a measure |
-| Time to refusal for a re-entry whose type grows exponentially (§3.10.3) | Unprotected; needs a user ruling through `spec`. The depth limit is reached only after types of about 2^64 nodes. Proposed least mechanism: a second limit, on the constructor-node count of a demand's concrete type arguments, checked before the key is derived, refused by the same diagnostic constructor with its own text. Every minted instance is then under the size limit, so each successor costs at most its site's type size times that limit, and a chain costs at most 64 such steps. Precedent: rustc's type-length limit beside its recursion limit. Spec would state it as "an implementation MAY refuse an instantiation whose type exceeds a size limit", with a floor for the user to set. No public item and no `cranelisp-types` change. Trigger: the ruling |
+| Time to refusal for a re-entry whose type grows exponentially (§3.10.3) | **Accepted named risk** (user decision, 2026-11-17): no second limit is added. The depth limit is reached only after types of about 2^64 nodes, so the compiler exhausts memory or time instead of reporting a located type error; it never accepts or miscompiles the program. The extension, if ever wanted, is a limit on the constructor-node count of a demand's concrete type arguments, checked before the key is derived and refused by the same diagnostic constructor; it needs a spec obligation first. Trigger: a real program, not a constructed one, observed to hang or exhaust memory on this shape |
+| Method-level re-entry and the depth unit (§3.10.3) | Open question for `spec`, through `sprint`. When a member dispatches to itself at its own implementation instantiation but at a different instantiation of its method-level type variables, is that another implementation instantiation for spec §3.10's depth? The design counts it, which keeps such a chain finite. If spec says it is not counted and not otherwise refused, a growing chain of that shape exceeds no limit and §3.10's finiteness cannot hold. If spec makes it polymorphic recursion, refused at template check, the design's second depth clause becomes unreachable. No S124 cell has this shape. Trigger: the ruling |
+| Worker stack at the depth limit (§3.10.3) | Asserted with a falsifier, T-DEPTH-a. Trigger: T-DEPTH-a exhausting the compile worker's stack |
 | A new settlement window (§3.3) | Not to be added. Trigger: any need for one, which files to `arch` |
 | Stale concurrency note | `crates/cranelisp-typecheck/src/checker.rs`'s `new_with_staging` rustdoc says the environment is not `Sync`, but the type keeps `Send + Sync` through its unsafe implementation, with single-cluster non-sharing as the precondition. A `dev` documentation repair |
 

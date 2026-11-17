@@ -208,7 +208,7 @@ waits for a later shell.
    `*NotFound` variants, whatever entry kind they name) becomes `unknown trait: <as
    written>`, and so, unchanged, does an unloaded qualifier's module (the open item in
    `typecheck.md` §11). An `Ambiguous` result propagates as the resolver's error, which names every
-   surviving canonical candidate (spec §8.6.5), as `PrivateInaccessible` already does
+   surviving canonical candidate ([spec 8.6.5](../../spec/08-modules.md#865-use-site-selection-and-ambiguity)), as `PrivateInaccessible` already does
    (S124 target, ACT-1001 P-3; at `4b58ab93` every error except `PrivateInaccessible`
    becomes `unknown trait`).
 2. **Kind check** (`hkt.md` §5.4). Slot 1 must echo the declared head shape and,
