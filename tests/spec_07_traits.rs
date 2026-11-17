@@ -3678,8 +3678,7 @@ fn s124_q7_d_box_first_repl() {
         "Q7-d",
         &format!(
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
-(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
-(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(begin (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))]))) (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))]))))
 (defn main [] (Pure (size (Yep 3))))
 "
         ),
@@ -3732,8 +3731,7 @@ fn s124_q7_d_opt_first_repl() {
         "Q7-d",
         &format!(
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
-(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
-(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(begin (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))]))) (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))]))))
 (defn main [] (Pure (size (Yep 3))))
 "
         ),
@@ -3922,6 +3920,13 @@ fn s124_1034_c_imported_repl() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
 #[test]
 fn s124_1034_a_begin_repl() {
+    repl_prims("(begin (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)]))) (size (Yep 3)))\n")
+      .assert_stdout_contains(":primitives/Int 7").assert_stdout_does_not_contain("undefined function");
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-a, later-cluster control
+#[test]
+fn s124_1034_a_begin_later_call_control_repl() {
     repl_prims("(begin (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)]))))\n(size (Yep 3))\n")
       .assert_stdout_contains(":primitives/Int 7").assert_stdout_does_not_contain("undefined function");
 }
@@ -4207,9 +4212,9 @@ fn s124_f_pr_helper_uncalled_control_repl() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Size (size [self] Int))
 (impl Size Int (defn size [n] n))
-(defn wrap [:Size x] (size (Yep x)))
+(begin (defn wrap [:Size x] (size (Yep x)))
 (impl Size (Opt :Size a)
- (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
+ (defn size [o] (match o [Nope 0 (Yep x) (wrap o)]))))
 (defn main [] (Pure 5))"#,
         5,
         &[REPL],
@@ -4442,7 +4447,7 @@ fn s124_sibling_nonparametric_control_link() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
 #[test]
 fn s124_f_pr_helper_repl_demand() {
-    let out=Cranelisp::new().stdin("(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (impl Size Int (defn size [n] n)) (defn wrap [:Size x] (size (Yep x))) (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))\n(size (Yep 3))\n(size 4)\n").output().assert_ok();
+    let out=Cranelisp::new().stdin("(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (impl Size Int (defn size [n] n)) (begin (defn wrap [:Size x] (size (Yep x))) (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (wrap o)]))))\n(size (Yep 3))\n(size 4)\n").output().assert_ok();
     let turns: Vec<_> = out.stdout.split("user> ").collect();
     assert!(
         !turns[1].contains("Error"),
@@ -4459,6 +4464,7 @@ fn s124_f_pr_helper_repl_demand() {
         "{}",
         out.stdout
     );
+    assert!(turns[2].contains("at ") && !turns[2].contains("0..0"), "located demand error: {}", out.stdout);
     out.assert_stdout_contains(":primitives/Int 4");
 }
 
@@ -4475,6 +4481,90 @@ fn s124_depth_65_repl() {
     assert!(
         diag.contains("type error") && diag.contains("p.cl:6:"),
         "{diag}"
+    );
+    assert!(
+        !diag.contains("codegen error")
+            && !diag.contains("undefined function")
+            && !diag.contains("0..0"),
+        "{diag}"
+    );
+}
+
+fn s124_two_member_depth_program(depth: usize) -> String {
+    s124_depth_program(depth)
+        .replace("(deftrait Size (size [self] Int))", "(deftrait Size (sa [self] Int) (sb [self] Int))")
+        .replace("(impl Size Int (defn size [n] n))", "(impl Size Int (defn sa [n] n) (defn sb [n] n))")
+        .replace(S124_DEPTH_IMPL, "(impl Size (Opt :Size a)\n (defn sa [o] (sb o))\n (defn sb [o] (match o [Nope 0 (Yep x) (add-i64 1 (sa x))])))\n")
+        .replace("(size v", "(sa v")
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-c, implementation count at 64
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_two_member_depth_64_run() {
+    assert_main_value_in_modes(
+        "two members, depth 64",
+        &s124_two_member_depth_program(64),
+        64,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-c, implementation count at 64
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_two_member_depth_64_link() {
+    assert_main_value_in_modes(
+        "two members, depth 64",
+        &s124_two_member_depth_program(64),
+        64,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-c, implementation count at 64
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_two_member_depth_64_repl() {
+    assert_main_value_in_modes(
+        "two members, depth 64",
+        &s124_two_member_depth_program(64),
+        64,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-c, implementation count at 65
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_two_member_depth_65_run() {
+    s124_type_refusal(&s124_two_member_depth_program(65), &[6, 7], "run");
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-c, implementation count at 65
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_two_member_depth_65_link() {
+    s124_type_refusal(&s124_two_member_depth_program(65), &[6, 7], "link");
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-c, implementation count at 65
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_two_member_depth_65_repl() {
+    let out = Cranelisp::new()
+        .file("p.cl", &s124_two_member_depth_program(65))
+        .cli_flag("p.cl")
+        .stdin("5\n")
+        .output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error"),
+        "type-error category required: {diag}"
+    );
+    assert!(
+        diag.contains("p.cl:6:") || diag.contains("p.cl:7:"),
+        "inner-call location: {diag}"
     );
     assert!(
         !diag.contains("codegen error")

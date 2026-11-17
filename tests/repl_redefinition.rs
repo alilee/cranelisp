@@ -1227,6 +1227,11 @@ fn s124_mode_redefinition(kind: &str, moves_off: bool) {
         cr
     };
     let out = cr.stdin(&turns).output().assert_ok();
+    assert!(
+        !out.stdout.contains("Error:"),
+        "redefinition must publish without errors: {}",
+        out.stdout
+    );
     let witness = if moves_off {
         Some(
             Cranelisp::new()

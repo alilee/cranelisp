@@ -5890,7 +5890,7 @@ fn s124_modules_dotted_source_not_local_name() {
 
 // spec: spec/08-modules.md §8.4.4 — T-MNT-b, idempotent mount across turns
 #[test]
-fn s124_modules_same_mount_later_turn_control() {
+fn s124_modules_same_mount_later_turn() {
     let out = s124_alias_fixture()
         .stdin("(export [(lib s) [x]])\n(export [(lib s) [x]])\n(s/y)\n")
         .output()
@@ -5901,7 +5901,7 @@ fn s124_modules_same_mount_later_turn_control() {
 
 // spec: spec/08-modules.md §8.4.4 — T-MNT-b, idempotent mount in one form
 #[test]
-fn s124_modules_same_mount_same_form_control() {
+fn s124_modules_same_mount_same_form() {
     let out = s124_alias_fixture()
         .stdin("(export [(lib s) [x] (lib s) [x]])\n(s/y)\n")
         .output()

@@ -665,10 +665,14 @@ fn s124_0973_cached_entry_run() {
         first.tmp_exists(".cranelisp-cache/helper.o"),
         "entry must be cached"
     );
-    let cr = first.run_again().env("CRANELISP_MODULE_TRACE", "1").file(
-        "app.cl",
-        "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
-    );
+    let cr = first
+        .run_again()
+        .use_workspace_platforms()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .file(
+            "app.cl",
+            "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
+        );
     let out = cr.run("app.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -699,10 +703,14 @@ fn s124_0973_cached_entry_link() {
         first.tmp_exists(".cranelisp-cache/helper.o"),
         "entry must be cached"
     );
-    let cr = first.run_again().env("CRANELISP_MODULE_TRACE", "1").file(
-        "app.cl",
-        "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
-    );
+    let cr = first
+        .run_again()
+        .use_workspace_platforms()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .file(
+            "app.cl",
+            "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
+        );
     let out = cr.link("app.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -733,10 +741,14 @@ fn s124_0973_cached_entry_repl() {
         first.tmp_exists(".cranelisp-cache/helper.o"),
         "entry must be cached"
     );
-    let cr = first.run_again().env("CRANELISP_MODULE_TRACE", "1").file(
-        "app.cl",
-        "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
-    );
+    let cr = first
+        .run_again()
+        .use_workspace_platforms()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .file(
+            "app.cl",
+            "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
+        );
     let out = cr.cli_flag("app.cl").stdin("5\n").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
     assert!(
