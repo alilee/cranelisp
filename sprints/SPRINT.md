@@ -1,12 +1,13 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 4 — WAVE ORGANIZATION
+**Status**: PHASE 5 LANGUAGE — W0
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
 frontend carries behind it.
 
-**Audit**: selected at Phase 4 from the [rotation](METHOD.md#27-rolling-whole-context-audit).
+**Audit**: `cranelisp-typecheck` (approved 2026-11-17: longest unassessed, last
+audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7 window.
 
 ## Phase approvals
 
@@ -16,7 +17,7 @@ frontend carries behind it.
 | Phase 1 → Phase 2 | scope draft with seven included items | 2026-11-16, "advance to phase 2" | approved |
 | Phase 2 → Phase 3 | `arch` review, API packet D1–D8, six decisions | 2026-11-16, "advance to phase 3" | approved |
 | Phase 3 → Phase 4 | designs, packet rows D1–D12/R10-9/R10-10, S124-Q2..Q9, `qa` readiness | 2026-11-17, "approved to advance" | approved |
-| Phase 4 → Phase 5 | — | — | pending |
+| Phase 4 → Phase 5 | wave plan W0–W9, audit choice, two decisions | 2026-11-17, "approved" | approved |
 | Phase 5 → Phase 6a | — | — | pending |
 | Phase 6a → Phase 6b | — | — | pending |
 | Phase 6b → Phase 7 | — | — | pending |
@@ -150,8 +151,7 @@ boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
 ## Phase 3 outcome
 
 - **Spec:** REPL §18.1.2 removed; §4.12.2 strict tracing; REPL §1.5 and
-  §12.1.1 after flattening. S124-Q2..Q9 ruled 2026-11-17 (Notes). Open with the user: a type-size
-  limit for instantiation (Notes).
+  §12.1.1 after flattening. S124-Q2..Q9 ruled 2026-11-17 (Notes). The type-size question is an accepted risk (Notes).
 - **Architecture:** `design/arch/` carries the S124 targets; the
   [packet](s124-api-packet.md) holds every row approved: D1–D12, R10-9 and
   R10-10.
@@ -182,6 +182,116 @@ boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
   wider than filed: partial `(bind io)` aborts on a misaligned pointer and
   `(race a)` panics the compile worker.
 
+## Waves (Phase 4)
+
+Source-editing agents run one at a time; only the wave's `dev` runs the suite.
+Each source wave is `dev` → `review` (fresh subagent) → `qa` adequacy, with
+module rows from the [delta](../tests/plan/s124-evidence-delta.md) §6 RED
+before their correction. Change-set order inside a wave is the owning design's
+order section ([backend §9](../design/backend/backend.md#9-s124-open-work-and-its-order),
+[typecheck §12](../design/typecheck/typecheck.md#12-designed-changes-not-yet-in-source-s124),
+[int §16.0](../design/int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
+[heap layout §5](../design/intrinsics/heap-layout.md#5-order)). A public-API
+delta outside the approved packet stops the wave and returns to the user.
+
+### W0 — Package convergence (item 6), alone on the tree
+
+- **Agent:** `arch`, then `test` for the `tests/CLAUDE.md` listing of the delta
+  and the REPRO-1067 vocabulary class `qa` names.
+- **Scope:** the `AGENTS.md` repository-memory convention across the 103
+  memories, `standing-documents.toml`, `.codex/config.toml`; `ux` declared not
+  dispatched; shared-tree guard adopted.
+- **Exit:** the document checker inspects (exit 0 or 1, not 2) and its
+  findings are repaired or disposed; the three `citation_drift` tests pass;
+  `check_consumer.py` reports conformant.
+
+### W1 — Evidence, with document alignment alongside
+
+- **Agent:** `test` against the delta §6 first row, REPRO-1062 first; `qa`
+  accepts the returned clause map before any correction starts.
+- **Alongside (document-only, disjoint files):** `spec` and
+  `design`(typecheck) settle the depth counting unit and clear appendix D's
+  stale paragraph and typecheck §12 row T4's wording; `design`(backend) and
+  `design`(int) take their delta §6 rows.
+- **Exit:** each RED fails on its stated assertion, each control and fence
+  passes, nothing in the delta §10 "Held" column is written.
+
+### W2 — Stack-placement retirement and the census
+
+- **Agents:** `dev`(intrinsics), then `dev`(backend).
+- **Scope:** B1 with row D5 (closes ACT-1049 and ACT-1066); B2, the armed
+  category census with both detection legs.
+- **Exit:** REPRO-1066 green; census readings recorded for `qa`.
+
+### W3 — Typecheck producers
+
+- **Agent:** `dev`(typecheck).
+- **Scope:** T1 (ACT-1001), T2 (ACT-0985), T3 and T4 with the depth chain
+  (ACT-1034, S124-Q7), T6, and the producer obligations that do not wait on
+  census output.
+- **Exit:** the ACT-1034, ACT-0985 and ACT-1001 guards and the T-Q7, F-PR and
+  T-DEPTH cells green; Q7-S read on the T4 tree. The type-size question, if
+  still open, leaves as a named risk.
+
+### W4 — Bind-chain rewrite
+
+- **Agent:** `dev`(`src/`).
+- **Scope:** ACT-1050 and ACT-1065 as one change-set
+  ([bind-chain analysis](../design/int/bind-chain-analysis.md)).
+- **Exit:** the twelve `bind_unused_heap_argument` guards and the REPRO-1065
+  cells green in every mode.
+
+### W5 — The structural close
+
+- **Agents:** `qa` reads the census; `dev`(typecheck) for census-attributed
+  corrections (row C); `arch` for the `cranelisp-types` half of rows D1 and
+  D4; `dev`(backend) for B3, B4, B5; `dev`(`src/`) for the D4 display arm.
+- **Gate inside the wave:** B4 starts only on a census reading of zero.
+- **Exit:** the non-concrete release and retain arms do not compile; census
+  zero on the suite; REPRO-1062 green; ACT-1018 re-measured.
+
+### W6 — Backend and intrinsics changes independent of the close
+
+- **Agents:** `dev`(intrinsics), `dev`(backend), `dev`(`src/`) for readers,
+  serially, callee first.
+- **Scope:** B6 (row D2, then the panic handle, item 3); B7 (R10-1, -2, -3,
+  -5, -7); B8 (rows D6, D9); B9; B10 with row D8 (ACT-1038, ACT-1039); B11
+  with rows R10-9 and R10-10; B12 (ACT-1063); row D11 (ACT-1033). Each
+  emission-affecting change-set carries its own scoped re-baseline.
+- **Exit:** the trace guards and REPRO-1063 cells green; a raise-helper bypass
+  does not compile.
+
+### W7 — Frontend and the entry carrier
+
+- **Agents:** `arch` (types half of D3 and D10), `dev`(frontend),
+  `dev`(typecheck) for T5 and T7, `dev`(`src/`) for the consumers.
+- **Scope:** row D3 with ACT-0997, ACT-1055, ACT-1056; ACT-1057; ACT-1059;
+  ACT-1064; frontend audit R1–R5; S124-Q2, Q3, Q4.
+- **Exit:** their guards and delta §9.5 cells green.
+
+### W8 — Session and batch entry
+
+- **Agents:** `arch` (types half of D7), `dev`(`src/`), `dev`(backend) for the
+  schema constant and the `dependency_hashes` rustdoc.
+- **Scope:** ACT-1052; row D7 with ACT-0953; ACT-1016; ACT-0973; ACT-1036 with
+  row D12, S124-Q8 and Q9 as one change-set; ACT-1061; ACT-1060.
+- **Exit:** their guards and cells green in every mode.
+
+### W9 — Baseline format and the integrated gate
+
+- **Scope:** rows K11-b, -c, -d land with the waves that touch their crates;
+  K11-a lands here, alone and last. Then one fresh build of the final tree:
+  full suite, census, document checker, `public-api.txt` regenerated once and
+  compared with the packet, `review` of the integrated diff, `qa` adequacy and
+  the traceability band.
+- **Exit (the settling target):** zero failures, or each remaining RED
+  carried on recorded evidence; any baseline line outside the packet returns
+  to the user.
+
+### Carried with a committed reproduction, not corrected
+
+The third-deferral groups and ACT-1067 (Notes).
+
 ## Dispatch log
 
 | Wave | Agent | Surface | Model | Effort | Harness |
@@ -206,6 +316,12 @@ boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
 | Phase 3 | `design` | `src/` — confirm row D10, alias collision | claude-opus-5-5 | medium | primary (native subagent) |
 | Phase 3 | `arch` | finalise row D10 | claude-fable-5-2 | medium | primary (native subagent) |
 | Phase 3 | `design` | `src/` — ACT-1050 placement | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `spec` | §3.10 — S124-Q7 re-ruling; frame Q9 | gpt-6.1-sol | medium | cross-harness (`codex_role.py`) |
+| Phase 3 | `design` | typecheck — conform to Q7-B | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `qa` | evidence delta — Q7-B, D12, ACT-1066 | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `spec` | depth limit, reporting turn, Q9 closed | gpt-6.1-sol | medium | cross-harness (`codex_role.py`) |
+| Phase 3 | `design` | typecheck — depth limit unit | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `qa` | closing pass, traceability band, ACT-1067 | claude-fable-5-2 | medium | primary (native subagent) |
 
 ## Notes
 
@@ -286,17 +402,18 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   when an instance is demanded.
 - **S124-Q9 ruled no (2026-11-17):** a trait method named `main` does not
   define `main`; a multi-arity `main` stays refused.
-- **Open with the user: type-size limit.** By `design`(typecheck)'s analysis a
+- **Type-size limit: accepted as a named risk (user, 2026-11-17).** A
   re-entry whose type doubles each step exhausts time or memory before depth
-  64. Unanswered at the typecheck wave's exit, it is a named unprotected risk
-  (a hang on a non-terminating program, never a miscompile).
+  64 (by `design`(typecheck)'s analysis): a hang on a program the spec
+  refuses, never a miscompile. No second limit is added; F-PR-3 is not
+  written. Falsifier: a non-contrived program that hits it.
 - **Open inside the increment: depth counting unit.** `qa` reads the design
   as counting method instances, which could refuse a chain shallower than the
   spec floor when members call each other. `spec` and `design`(typecheck)
   settle it in Phase 4; appendix D's Q7 gap paragraph is stale.
-- **ACT-1067 filed (2026-11-17), unscheduled:** an expression nested about 56
-  forms deep overflows the compile worker's stack (exit 134). Scope decision
-  goes to the user with the wave plan.
+- **ACT-1067 carried (user, 2026-11-17):** an expression nested about 56
+  forms deep overflows the compile worker's stack (exit 134). Its
+  reproduction lands in W1 and stays RED past S124.
 - **ACT-1065 and ACT-1063 are in S124 scope (2026-11-17).** ACT-1063 returns
   to the user as a named carry if attribution shows its correction crosses
   more than one surface.
