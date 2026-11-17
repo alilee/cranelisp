@@ -712,15 +712,25 @@ fn elided_proof_not_taken_on_aliased_value_neg() {
     assert_exit_value(out, 10 + 99);
 }
 
-const S124_D4_HEADER: &str = "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(deftype Box [:Int value])\n(deftype Wrap [:Box box :Int guard])\n(defn unbox [b] (match b [(Box n) n]))\n(defn observe [:Box b] (add-i64 1 (unbox b)))\n(defn scalar [:Int n] (add-i64 n 1))\n";
+const S124_D4_HEADER: &str = "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(deftype Box [:Int value])\n(deftype Wrap [:Box box :Int guard])\n(defn unbox [b] (match b [(Box n) n]))\n(defn observe [:Box b] (add-i64 1 (unbox b)))\n(defn scalar [:Int n] (add-i64 n 1))\n(deftype Two [:Int a :Int b])\n(defn observe2 [:Two t] (match t [(Two a b) (add-i64 a b)]))\n";
 
 fn s124_d4(position: &str, mode: &str) {
     let expr = match position {
         "vec" => "(vec-get [(Box 2000) (Box 17)] 0)",
         "field" => "(match (Wrap (Box 2000) 17) [(Wrap b guard) b])",
         "capture" => "(let [b (Box 2000) f (fn [n] (if (eq-i64 n 0) b (Box n)))] (f 0))",
-        "trace" => "(match (trace (observe (Box 2000))) [(TraceCall root rp rr children rn) (match children [SNil (Box -4) (SCons frame rest) (match frame [(TraceCall n p r c ns) (match p [SNil (Box -1) (SCons h t) (if (str-eq h \"(Box 2000)\") (if (str-eq r \"2001\") (Box 2000) (Box -2)) (Box -3))])])])])",
-        "trace_control" => "(match (trace (scalar 2000)) [(TraceCall root rp rr children rn) (match children [SNil (Box -4) (SCons frame rest) (match frame [(TraceCall n p r c ns) (if (str-eq r \"2001\") (Box 2000) (Box -1))])])])",
+        "trace" => {
+            "(match (trace (observe (Box 2000))) [(TraceCall n p r c ns) (check-trace c \"shapes/observe\" \"(Box 2000)\" \"2001\")])"
+        }
+        "trace_small" => {
+            "(match (trace (observe (Box 3))) [(TraceCall n p r c ns) (check-trace c \"shapes/observe\" \"(Box 3)\" \"4\")])"
+        }
+        "trace_two_control" => {
+            "(match (trace (observe2 (Two 2000 17))) [(TraceCall n p r c ns) (check-trace c \"shapes/observe2\" \"(Two 2000 17)\" \"2017\")])"
+        }
+        "trace_control" => {
+            "(match (trace (scalar 2000)) [(TraceCall n p r c ns) (check-trace c \"shapes/scalar\" \"2000\" \"2001\")])"
+        }
         "result" => "(Box 2000)",
         _ => unreachable!(),
     };
@@ -729,7 +739,20 @@ fn s124_d4(position: &str, mode: &str) {
     } else {
         format!("(unbox {expr})")
     };
-    let program = format!("(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n(defn main [] (Pure {body}))\n");
+    let checker = if position.starts_with("trace") {
+        r#"(defn check-trace [frames expected-name argument result]
+          (match frames [SNil (Box -4) (SCons frame rest)
+            (match frame [(TraceCall n p r c ns)
+              (if (str-eq n expected-name)
+                (match p [SNil (Box -1) (SCons h t)
+                  (if (str-eq h argument) (if (str-eq r result) (Box 2000) (Box -2)) (Box -3))])
+                (check-trace rest expected-name argument result))])]))"#
+    } else {
+        ""
+    };
+    let program = format!(
+        "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n{checker}\n(defn main [] (Pure {body}))\n"
+    );
     // Import the traced callee to avoid ACT-1039's same-module omission.
     let cr = Cranelisp::new()
         .file("shapes.cl", S124_D4_HEADER)
@@ -835,19 +858,22 @@ fn s124_d4_capture_repl() {
     s124_d4("capture", "repl");
 }
 
-// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 trace, run
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t trace, run
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
 #[test]
 fn s124_d4_trace_run() {
     s124_d4("trace", "run");
 }
 
-// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 trace, link
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t trace, link
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
 #[test]
 fn s124_d4_trace_link() {
     s124_d4("trace", "link");
 }
 
-// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 trace, repl
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t trace, repl
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
 #[test]
 fn s124_d4_trace_repl() {
     s124_d4("trace", "repl");
@@ -887,4 +913,43 @@ fn s124_d4_trace_control_link() {
 #[test]
 fn s124_d4_trace_control_repl() {
     s124_d4("trace_control", "repl");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t small
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+#[test]
+fn s124_d4_trace_small_run() {
+    s124_d4("trace_small", "run");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t small
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+#[test]
+fn s124_d4_trace_small_link() {
+    s124_d4("trace_small", "link");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t small
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+#[test]
+fn s124_d4_trace_small_repl() {
+    s124_d4("trace_small", "repl");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t two_control
+#[test]
+fn s124_d4_trace_two_control_run() {
+    s124_d4("trace_two_control", "run");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t two_control
+#[test]
+fn s124_d4_trace_two_control_link() {
+    s124_d4("trace_two_control", "link");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t two_control
+#[test]
+fn s124_d4_trace_two_control_repl() {
+    s124_d4("trace_two_control", "repl");
 }
