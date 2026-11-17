@@ -22,7 +22,7 @@ use super::{FnCompiler, MatchContext};
 /// which keeps a scalar field out of every counting site.
 fn heap_field_type<M: Module, C, L>(
     compiler: &FnCompiler<'_, M, C, L>,
-    field_types: &[cranelisp_types::Type],
+    field_types: &[cranelisp_types::ConcreteType],
     slot: usize,
 ) -> Option<cranelisp_types::Type>
 where
@@ -31,8 +31,8 @@ where
 {
     field_types
         .get(slot)
+        .map(cranelisp_types::ConcreteType::to_type)
         .filter(|ty| compiler.is_heap_type(ty))
-        .cloned()
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -51,7 +51,6 @@ where
         node: &MonoExpr,
         scrutinee: &MonoExpr,
         arms: &[MonoMatchArm],
-        span: Span,
     ) -> Result<Value, CranelispError> {
         let key = crate::compiler::ownership_plan::node_key(node);
         let saved_tail = self.in_tail_position;
@@ -111,7 +110,11 @@ where
                     self.pop_scope();
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
-                Pattern::Constructor { name, bindings, .. } => {
+                Pattern::Constructor {
+                    name,
+                    bindings,
+                    span: pattern_span,
+                } => {
                     let match_ctx = MatchContext {
                         scrut_val,
                         scrut_type: Some(scrut_ty.clone()),
@@ -128,7 +131,7 @@ where
                         arm.resolved_ctor.as_ref(),
                         &match_ctx,
                         &arm.body,
-                        span,
+                        *pattern_span,
                     )?;
                 }
             }
@@ -228,19 +231,30 @@ where
         );
 
         if is_nullary && bindings.is_empty() {
-            self.compile_nullary_pattern(tag, is_mixed, match_ctx, body)
-        } else if !is_nullary && bindings.len() == ctor_info.fields.len() {
-            self.compile_data_pattern(fq, tag, is_mixed, is_value, bindings, match_ctx, body)
-        } else {
-            Err(CranelispError::CodegenError {
+            return self.compile_nullary_pattern(tag, is_mixed, match_ctx, body);
+        }
+        let field_types =
+            self.ctx
+                .ctor_field_types(fq, match_ctx.scrut_type.as_ref(), span, &self.census)?;
+        if field_types.is_empty() || bindings.len() != field_types.len() {
+            return Err(CranelispError::CodegenError {
                 message: format!(
                     "constructor '{name}' has {} fields but pattern has {} bindings",
-                    ctor_info.fields.len(),
+                    field_types.len(),
                     bindings.len()
                 ),
                 location: ErrorLocation::from_span(span),
-            })
+            });
         }
+        self.compile_data_pattern(
+            tag,
+            is_mixed,
+            is_value,
+            bindings,
+            &field_types,
+            match_ctx,
+            body,
+        )
     }
 
     /// Compile a nullary constructor pattern (bare tag comparison).
@@ -308,11 +322,11 @@ where
     #[allow(clippy::too_many_arguments)] // +1 for the R5 `is_value` flatten hint
     fn compile_data_pattern(
         &mut self,
-        resolved_ctor: &cranelisp_types::FQSymbol,
         tag: usize,
         is_mixed: bool,
         is_value: bool,
         bindings: &[Symbol],
+        field_types: &[cranelisp_types::ConcreteType],
         match_ctx: &MatchContext,
         body: &MonoExpr,
     ) -> Result<(), CranelispError> {
@@ -332,9 +346,6 @@ where
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
 
-        // Concrete field types from the scrutinee's type and the ctor's fields.
-        let field_types = self.concrete_field_types(resolved_ctor, match_ctx)?;
-
         // Duplicate each used heap field out of the scrutinee, then drop the
         // scrutinee: the arm's binders now own their fields (§4).
         let field_vals = self.load_data_pattern_fields(is_value, bindings, match_ctx);
@@ -346,7 +357,7 @@ where
                     slot,
                 };
                 if self.field_is_used(intro) {
-                    let ty = heap_field_type(self, &field_types, slot);
+                    let ty = heap_field_type(self, field_types, slot);
                     self.emit_dup(field_val, ty.as_ref());
                 }
             }
@@ -358,7 +369,7 @@ where
 
         self.push_scope();
         for (slot, (binding_name, field_val)) in bindings.iter().zip(field_vals).enumerate() {
-            let ty = heap_field_type(self, &field_types, slot);
+            let ty = heap_field_type(self, field_types, slot);
             self.bind_field_binder(
                 Intro::Arm {
                     node: match_ctx.match_node,
@@ -449,18 +460,6 @@ where
                 }
             })
             .collect()
-    }
-
-    /// The concrete field types of the pattern constructor `resolved_ctor`
-    /// under this match's scrutinee type — a keyed read that fails loudly on a
-    /// miss ([`CompileContext::ctor_field_types`]).
-    fn concrete_field_types(
-        &self,
-        resolved_ctor: &cranelisp_types::FQSymbol,
-        match_ctx: &MatchContext,
-    ) -> Result<Vec<cranelisp_types::Type>, CranelispError> {
-        self.ctx
-            .ctor_field_types(resolved_ctor, match_ctx.scrut_type.as_ref(), &self.census)
     }
 
     /// Raise `"match failed"`: every arm's test failed.

@@ -9,8 +9,8 @@ use dashmap::DashMap;
 
 use cranelisp_types::{
     CallableOrigin, CodeStore, ConcreteType, CranelispError, ErrorLocation, FQTypeName,
-    LinkerStore, LinkerSymbol, ModuleFullPath, Span, SymbolTable, Type, TypeId,
-    drop_glue_symbol_name, member_key,
+    LinkerStore, LinkerSymbol, ModuleFullPath, Span, SymbolTable, Type, drop_glue_symbol_name,
+    member_key,
 };
 
 use crate::heap::{self, HeapAdt, HeapCategory};
@@ -490,16 +490,22 @@ impl DropGlueRegistry {
                 info.type_params.len()
             )));
         }
-        let mut subst: Option<HashMap<TypeId, ConcreteType>> = None;
-        let mut raw = Vec::new();
+        // Every constructor must spell its result over the declared parameters,
+        // in declared order and identically: the instantiation is one fact of
+        // the type, so the constructors cannot disagree about it.
+        let mut declared: Option<&[Type]> = None;
+        let mut shapes = Vec::new();
         for ctor_name in &info.constructors {
-            let key = member_key(&info.name.name, ctor_name.as_ref());
-            let entry = table
-                .get(key.as_ref())
-                .or_else(|| table.get(ctor_name.as_ref()))
-                .ok_or_else(|| {
-                    self.error(format!("missing constructor '{ctor_name}' of '{name}'"))
-                })?;
+            let canonical = member_key(&info.name.name, ctor_name.as_ref());
+            let (key, entry) = match table.get(canonical.as_ref()) {
+                Some(entry) => (canonical, entry),
+                None => (
+                    ctor_name.clone(),
+                    table.get(ctor_name.as_ref()).ok_or_else(|| {
+                        self.error(format!("missing constructor '{ctor_name}' of '{name}'"))
+                    })?,
+                ),
+            };
             let Some(callable) = entry.callable() else {
                 return Err(self.error(format!("constructor '{ctor_name}' is not a definition")));
             };
@@ -509,17 +515,9 @@ impl DropGlueRegistry {
             else {
                 return Err(self.error(format!("'{ctor_name}' is not a constructor")));
             };
-            let (fields, result_ty) = match &callable.arm.scheme.ty {
-                Type::Fn(params, result) => {
-                    let fields = params.get(..*field_count).ok_or_else(|| {
-                        self.error(format!(
-                            "constructor '{ctor_name}' declares {field_count} fields but its scheme has {} parameters",
-                            params.len()
-                        ))
-                    })?;
-                    (fields.to_vec(), result.as_ref())
-                }
-                result => (vec![], result),
+            let result_ty = match &callable.arm.scheme.ty {
+                Type::Fn(_, result) => result.as_ref(),
+                result => result,
             };
             let Type::ADT(result_name, declared_args) = result_ty else {
                 return Err(self.error(format!(
@@ -531,37 +529,34 @@ impl DropGlueRegistry {
                     "constructor '{ctor_name}' result does not preserve declared parameter order for '{name}'"
                 )));
             }
-            let ctor_subst = declared_args
-                .iter()
-                .zip(args.iter().cloned())
-                .map(|(declared, concrete)| match declared {
-                    Type::Var(id) => Ok((*id, concrete)),
-                    _ => Err(self.error(format!(
-                        "constructor '{ctor_name}' result parameter is not a declared type variable"
-                    ))),
-                })
-                .collect::<Result<HashMap<_, _>, _>>()?;
-            if let Some(existing) = &subst {
-                if existing != &ctor_subst {
+            if !declared_args.iter().all(|arg| matches!(arg, Type::Var(_))) {
+                return Err(self.error(format!(
+                    "constructor '{ctor_name}' result parameter is not a declared type variable"
+                )));
+            }
+            match declared {
+                Some(existing) if existing != declared_args.as_slice() => {
                     return Err(self.error(format!(
                         "constructor '{ctor_name}' disagrees on declared parameter identity for '{name}'"
                     )));
                 }
-            } else {
-                subst = Some(ctor_subst);
+                _ => declared = Some(declared_args.as_slice()),
             }
-            raw.push((*tag, fields));
+            let fields = cranelisp_types::ctor_field_types_at(&table, &key, args)
+                .map_err(|refusal| {
+                    self.error(format!(
+                        "constructor '{ctor_name}' of '{name}' has no field types at this instantiation: {refusal}"
+                    ))
+                })?;
+            if fields.len() != *field_count {
+                return Err(self.error(format!(
+                    "constructor '{ctor_name}' declares {field_count} fields but its scheme has {} parameters",
+                    fields.len()
+                )));
+            }
+            shapes.push(CtorShape { tag: *tag, fields });
         }
-        let subst = subst.unwrap_or_default();
-        raw.into_iter()
-            .map(|(tag, fields)| {
-                fields
-                    .into_iter()
-                    .map(|f| substitute(&f, &subst))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|fields| CtorShape { tag, fields })
-            })
-            .collect()
+        Ok(shapes)
     }
 
     pub(crate) fn finish(
@@ -623,40 +618,6 @@ fn is_vec(name: &FQTypeName) -> bool {
 
 fn is_io(name: &FQTypeName) -> bool {
     name.module.as_ref() == "primitives" && name.name.as_ref() == "IO"
-}
-fn substitute(
-    ty: &Type,
-    subst: &HashMap<TypeId, ConcreteType>,
-) -> Result<ConcreteType, CranelispError> {
-    match ty {
-        Type::Var(id) => subst
-            .get(id)
-            .cloned()
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: format!("unresolved field substitution t{id} in drop glue"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }),
-        Type::TyConApp(id, _) => Err(CranelispError::CodegenError {
-            message: format!("unresolved type-constructor t{id} in drop glue"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }),
-        Type::Int => Ok(ConcreteType::Int),
-        Type::Bool => Ok(ConcreteType::Bool),
-        Type::String => Ok(ConcreteType::String),
-        Type::Float => Ok(ConcreteType::Float),
-        Type::Fn(ps, r) => Ok(ConcreteType::Fn(
-            ps.iter()
-                .map(|p| substitute(p, subst))
-                .collect::<Result<_, _>>()?,
-            Box::new(substitute(r, subst)?),
-        )),
-        Type::ADT(n, as_) => Ok(ConcreteType::ADT(
-            n.clone(),
-            as_.iter()
-                .map(|a| substitute(a, subst))
-                .collect::<Result<_, _>>()?,
-        )),
-    }
 }
 
 /// S118 W3 (FIXME 0892) — the `GlueShape::Vec` arm's rc gate, pinned by running
@@ -1162,11 +1123,109 @@ mod tests {
     }
 
     // spec: appendix-c-nfr §C.1.4 — per-type glue requires a concrete field
-    // layout; unresolved field parameters cannot be emitted.
+    // layout; a field over a variable that is not a declared parameter cannot
+    // be emitted.
     #[test]
-    fn substitution_rejects_an_unbound_recursive_parameter() {
-        let err = substitute(&Type::Var(7), &HashMap::new()).unwrap_err();
-        assert!(err.to_string().contains("unresolved field substitution t7"));
+    fn a_field_over_an_undeclared_variable_is_refused() {
+        let module_path = ModuleFullPath::from("user");
+        let tables = DashMap::new();
+        let mut table = SymbolTable::new(module_path.clone());
+        let fq = insert_type(
+            &mut table,
+            &module_path,
+            "Stray",
+            &["a"],
+            vec![("MkStray", 0, vec![Type::Var(7)], vec![Type::Var(0)])],
+        );
+        tables.insert(module_path.clone(), table);
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let registry = DropGlueRegistry::new(module_path, dealloc, None);
+        let err = registry
+            .ctor_shapes(&tables, &fq, &[ConcreteType::Int])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("has no field types at this instantiation"),
+            "{err}"
+        );
+    }
+
+    // spec: design/backend/non-concrete-release-contract.md §7.4 step 1 — glue
+    // reads field types through the one types projection, so a field that
+    // mentions the parameters out of declaration order takes its own
+    // parameter's argument.
+    #[test]
+    fn glue_fields_out_of_declaration_order_take_their_own_parameters() {
+        let module_path = ModuleFullPath::from("user");
+        let tables = DashMap::new();
+        let mut table = SymbolTable::new(module_path.clone());
+        let fq = insert_type(
+            &mut table,
+            &module_path,
+            "P",
+            &["a", "b"],
+            vec![(
+                "MkP",
+                0,
+                vec![Type::Var(1), Type::Var(0)],
+                vec![Type::Var(0), Type::Var(1)],
+            )],
+        );
+        tables.insert(module_path.clone(), table);
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let registry = DropGlueRegistry::new(module_path, dealloc, None);
+        let shapes = registry
+            .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::String])
+            .unwrap();
+        assert_eq!(
+            shapes[0].fields,
+            vec![ConcreteType::String, ConcreteType::Int]
+        );
+    }
+
+    // spec: design/backend/non-concrete-release-contract.md §7.4 step 1
+    // (NEGATIVE) — the cross-constructor agreement check stays a precondition
+    // with its diagnostic: constructors whose result parameters disagree are
+    // refused even though each alone would read.
+    #[test]
+    fn constructors_whose_result_parameters_disagree_are_refused_neg() {
+        let module_path = ModuleFullPath::from("user");
+        let tables = DashMap::new();
+        let mut table = SymbolTable::new(module_path.clone());
+        let fq = insert_type(
+            &mut table,
+            &module_path,
+            "Twist",
+            &["a", "b"],
+            vec![
+                (
+                    "Fwd",
+                    0,
+                    vec![Type::Var(0)],
+                    vec![Type::Var(0), Type::Var(1)],
+                ),
+                (
+                    "Rev",
+                    1,
+                    vec![Type::Var(0)],
+                    vec![Type::Var(1), Type::Var(0)],
+                ),
+            ],
+        );
+        tables.insert(module_path.clone(), table);
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let registry = DropGlueRegistry::new(module_path, dealloc, None);
+        let err = registry
+            .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::Int])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("disagrees on declared parameter identity"),
+            "{err}"
+        );
     }
 
     // spec: appendix-c-nfr §C.1.4 — one named drop function per concrete owning

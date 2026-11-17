@@ -391,11 +391,8 @@ where
                 )
             }
             MonoExpr::Match {
-                scrutinee,
-                arms,
-                span,
-                ..
-            } => self.compile_match(expr, scrutinee, arms, *span),
+                scrutinee, arms, ..
+            } => self.compile_match(expr, scrutinee, arms),
             MonoExpr::VecLit { span, .. } => self.compile_vec_lit(expr, *span),
             MonoExpr::Trace {
                 modules,

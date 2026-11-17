@@ -556,16 +556,16 @@ fn try_match_frame(
     try_compile(&tables, &defn(name, &["b"], body), &pattern_ctors, &no_edit)
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — a match on a
-// generic product whose scrutinee carries no arguments records one field read
-// in the absent class. The frame is then refused by the scrutinee's release,
-// whose glue needs the arguments: this traffic cannot reach emission.
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 step 1 — a
+// match on a generic product whose scrutinee carries no arguments records one
+// field read in the absent class, and the read then refuses it as a keying
+// error: this traffic cannot reach emission.
 #[test]
 fn a_generic_product_matched_without_arguments_records_an_absent_field_read() {
     let refused = try_match_frame("census_field_absent", &bx(), Type::ADT(bx(), vec![]), false)
-        .expect_err("glue for an argument-less generic product refuses");
+        .expect_err("a field read without the type's arguments refuses");
     assert!(
-        refused.to_string().contains("concrete arguments"),
+        refused.to_string().contains("expected 1 type argument"),
         "{refused}"
     );
     assert_eq!(
@@ -603,22 +603,26 @@ fn a_non_parametric_products_field_read_is_concrete() {
     );
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — a constructor
-// whose scheme supplies fewer field types than its field count is recorded in
-// the field record's shape.
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 step 1 — a
+// constructor whose scheme supplies fewer field types than its field count is
+// recorded in the field record's shape, and then refused.
 #[test]
 fn a_short_constructor_declaration_is_recorded_in_the_shape() {
-    match_frame("census_field_short", &pt(), Type::ADT(pt(), vec![]), true);
+    let refused = try_match_frame("census_field_short", &pt(), Type::ADT(pt(), vec![]), true)
+        .expect_err("a short declaration refuses");
+    assert!(refused.to_string().contains("keying drift"), "{refused}");
     assert_eq!(
         point(&tally_of("census_field_short"), "field"),
         expect(&[("field Plain short concrete", 1)])
     );
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — the residual
-// class, at the read itself: the match lowering hands the read its
-// scrutinee's counted type, which is concrete by construction, so this class
-// is planted at the seam (see the next cell).
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 step 1 —
+// the residual class, at the read itself: the match lowering hands the read
+// its scrutinee's counted type, which is concrete by construction, so this
+// class is planted at the seam (see the next cell). The residual read is
+// refused at the reference and the argument-less one as a keying error; each
+// records first.
 #[test]
 fn a_field_read_at_a_residual_instantiation_records_the_residual_class() {
     let tables = tables_with(product_table(false));
@@ -641,22 +645,33 @@ fn a_field_read_at_a_residual_instantiation_records_the_residual_class() {
         symbol: Symbol::from("Bx"),
     };
     let frame = |name: &str| Frame::new(Partition::Accessor, &user(), &Symbol::from(name));
+    let reference = Span::new(7, 9);
     let residual = Type::ADT(bx(), vec![Type::Var(0)]);
-    ctx.ctor_field_types(&key, Some(&residual), &frame("census_seam_residual"))
-        .expect("Bx resolves");
+    let refused = ctx
+        .ctor_field_types(
+            &key,
+            Some(&residual),
+            reference,
+            &frame("census_seam_residual"),
+        )
+        .expect_err("a residual instantiation refuses");
+    let CranelispError::CodegenError { location, .. } = &refused else {
+        panic!("expected a codegen refusal, got {refused:?}");
+    };
+    assert_eq!(location.span, reference);
     assert_eq!(
         tally_of("census_seam_residual"),
         expect(&[("field Accessor full residual", 1)])
     );
     let concrete = Type::ADT(bx(), vec![Type::String]);
-    ctx.ctor_field_types(&key, Some(&concrete), &frame("census_seam_twin"))
+    ctx.ctor_field_types(&key, Some(&concrete), reference, &frame("census_seam_twin"))
         .expect("Bx resolves");
     assert_eq!(
         tally_of("census_seam_twin"),
         expect(&[("field Accessor full concrete", 1)])
     );
-    ctx.ctor_field_types(&key, None, &frame("census_seam_none"))
-        .expect("Bx resolves");
+    ctx.ctor_field_types(&key, None, reference, &frame("census_seam_none"))
+        .expect_err("a parametric constructor without arguments refuses");
     assert_eq!(
         tally_of("census_seam_none"),
         expect(&[("field Accessor full absent", 1)])
@@ -666,15 +681,22 @@ fn a_field_read_at_a_residual_instantiation_records_the_residual_class() {
 // spec: design/backend/non-concrete-release-contract.md §7.3 — the F1 shape:
 // an accessor of a generic product matching its own residual parameter. The
 // binder's type is not concrete, so the match reads the scrutinee node's
-// placeholder, and the read lands in the absent class, not the residual one.
+// placeholder, and the read lands in the absent class, not the residual one,
+// where it is refused (§7.4 step 1).
 #[test]
 fn a_match_on_a_residual_parameter_reads_in_the_absent_class() {
-    match_frame(
+    let refused = try_match_frame(
         "census_field_f1",
         &bx(),
         Type::ADT(bx(), vec![Type::Var(0)]),
         false,
-    );
+    )
+    .expect_err("an absent-class field read refuses");
+    // Located at the pattern constructor, the reference that made the read.
+    let CranelispError::CodegenError { location, .. } = &refused else {
+        panic!("expected a codegen refusal, got {refused:?}");
+    };
+    assert_eq!(location.span, Span::new(20, 25), "{refused}");
     assert_eq!(
         point(&tally_of("census_field_f1"), "field"),
         expect(&[("field Plain full absent", 1)])
@@ -868,8 +890,10 @@ fn compiling_n_targets_records_n_frames_each_in_its_partition() {
 
 const CENSUS_VAR: &str = "CRANELISP_CATEGORY_CENSUS";
 
-/// Child body: compile a frame that plants every point, and write its CLIF to
-/// the path the parent names.
+/// Child body: compile a frame that plants the retain and release arms, plant
+/// an absent field read under that frame at the read itself (a frame making
+/// one no longer compiles, §7.4 step 1), and write the CLIF to the path the
+/// parent names.
 #[test]
 fn census_file_child() {
     if !crate::test_child::selected("census_file_child") {
@@ -881,7 +905,7 @@ fn census_file_child() {
         "census_child",
         &["x", "b"],
         Type::Fn(
-            vec![Type::Var(0), Type::ADT(bx(), vec![Type::Var(0)])],
+            vec![Type::Var(0), Type::ADT(bx(), vec![Type::Int])],
             Box::new(Type::Int),
         ),
         Partition::TraitMethod,
@@ -916,6 +940,34 @@ fn census_file_child() {
         &pattern_ctors,
         &no_edit,
     );
+    let func_ids = HashMap::new();
+    let func_arities = HashMap::new();
+    let ctx = CompileContext {
+        func_ids: &func_ids,
+        func_arities: &func_arities,
+        symbol_tables: &tables,
+        current_module: user(),
+        alloc_func_id: None,
+        dealloc_func_id: cranelift_module::FuncId::from_u32(0),
+        alloc_string_func_id: None,
+        panic_func_id: None,
+        vec_new_func_id: None,
+        vec_drop_func_id: None,
+    };
+    ctx.ctor_field_types(
+        &FQSymbol {
+            module: user(),
+            symbol: Symbol::from("Bx"),
+        },
+        None,
+        Span::SYNTHETIC,
+        &Frame::new(
+            Partition::TraitMethod,
+            &user(),
+            &Symbol::from("census_child"),
+        ),
+    )
+    .expect_err("an absent field read refuses");
     let out: String = crate::test_child::arg("CENSUS_CHILD_CLIF");
     std::fs::write(out, clif).expect("write the child's CLIF");
 }

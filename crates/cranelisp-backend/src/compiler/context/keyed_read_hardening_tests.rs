@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use cranelift_module::FuncId;
-use cranelisp_types::{FQSymbol, FQTypeName, ModuleFullPath, Symbol, Type, TypeDefInfo, TypeName};
+use cranelisp_types::{FQSymbol, FQTypeName, ModuleFullPath, Symbol, TypeDefInfo, TypeName};
 
 use super::CompileContext;
 use crate::test_support::option_type_tables;
@@ -79,10 +79,14 @@ fn a_resolvable_pattern_constructor_yields_its_field_types() {
         ctx.ctor_field_types(
             &main_key("Some"),
             None,
+            cranelisp_types::Span::SYNTHETIC,
             &crate::compiler::census::Frame::for_test(),
         )
     });
-    assert_eq!(fields.expect("Some resolves"), vec![Type::Int]);
+    assert_eq!(
+        fields.expect("Some resolves"),
+        vec![cranelisp_types::ConcreteType::Int]
+    );
 }
 
 // spec: design/backend/backend.md §2 "Keyed type and constructor reads fail in every profile" — a
@@ -94,6 +98,7 @@ fn a_missed_pattern_constructor_key_is_an_error_not_no_fields() {
         ctx.ctor_field_types(
             &main_key("Ghost"),
             None,
+            cranelisp_types::Span::SYNTHETIC,
             &crate::compiler::census::Frame::for_test(),
         )
     })

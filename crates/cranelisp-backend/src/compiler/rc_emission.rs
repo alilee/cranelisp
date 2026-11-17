@@ -3,8 +3,8 @@
 //! This is the single home for the heap-class match (`signature_heap_category`)
 //! that the plan's duplicates and drops and the match seam's field typing read,
 //! and of [`FnCompiler::emit_typed_rc_dec`], the ONE canonical glue-call
-//! emitter every concrete release goes through. The pure type helpers (`collect_var_ids_from_type`,
-//! `substitute_type_inline`, `find_var_type_in_expr`) live here too.
+//! emitter every concrete release goes through. The pure type helper
+//! `find_var_type_in_expr` lives here too.
 
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
@@ -191,53 +191,6 @@ pub(crate) fn release_site_type_error(fn_name: Option<&Symbol>, ty: &Type) -> Cr
 // `drop_glue::tests::a_vec_shape_is_not_classified_as_a_plain_adt`.
 
 // --- Free helper functions for type variable resolution ---
-
-/// Collect all unique Var ids from a type, in order of first appearance.
-pub(crate) fn collect_var_ids_from_type(ty: &Type, ids: &mut Vec<cranelisp_types::TypeId>) {
-    match ty {
-        Type::Var(id) if !ids.contains(id) => {
-            ids.push(*id);
-        }
-        Type::ADT(_, args) => {
-            for a in args {
-                collect_var_ids_from_type(a, ids);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_var_ids_from_type(p, ids);
-            }
-            collect_var_ids_from_type(ret, ids);
-        }
-        _ => {}
-    }
-}
-
-/// Substitute type variables in a type using a Var id -> Type mapping.
-pub(crate) fn substitute_type_inline(
-    ty: &Type,
-    subst: &std::collections::HashMap<cranelisp_types::TypeId, Type>,
-) -> Type {
-    match ty {
-        Type::Var(id) => subst.get(id).cloned().unwrap_or_else(|| ty.clone()),
-        Type::ADT(name, args) => {
-            let new_args = args
-                .iter()
-                .map(|a| substitute_type_inline(a, subst))
-                .collect();
-            Type::ADT(name.clone(), new_args)
-        }
-        Type::Fn(params, ret) => {
-            let new_params = params
-                .iter()
-                .map(|p| substitute_type_inline(p, subst))
-                .collect();
-            let new_ret = Box::new(substitute_type_inline(ret, subst));
-            Type::Fn(new_params, new_ret)
-        }
-        _ => ty.clone(),
-    }
-}
 
 /// Find the inferred type of a Var reference with the given name in an expression tree.
 ///

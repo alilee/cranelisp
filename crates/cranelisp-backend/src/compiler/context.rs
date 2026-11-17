@@ -12,8 +12,8 @@ use cranelift_module::FuncId;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTypeName, Life,
-    ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
+    Binding, CallableOrigin, ConcreteType, CranelispError, CtorFieldsAtError, Decl, ErrorLocation,
+    FQSymbol, FQTypeName, Life, ModuleFullPath, Span, Symbol, SymbolTable, Type, TypeDefInfo,
 };
 
 /// A single field of a constructor, as reconstructed for backend codegen.
@@ -40,10 +40,12 @@ pub(crate) struct CtorField {
 #[derive(Debug, Clone)]
 pub(crate) struct CtorMeta {
     pub tag: usize,
+    /// The field types the constructor's scheme supplies, at most one per
+    /// declared field. None is defaulted.
     pub fields: Vec<CtorField>,
-    /// The scheme supplies fewer field types than the constructor has fields;
-    /// the missing ones are defaulted to `Int` (release contract §7.4 step 1
-    /// deletes the default).
+    /// The scheme supplies fewer field types than the constructor declares
+    /// fields, so `fields` is shorter than the declaration. The field-type read
+    /// refuses such a constructor ([`CompileContext::ctor_field_types`]).
     pub short_declaration: bool,
 }
 
@@ -316,10 +318,10 @@ where
                     Type::Fn(params, _) => params.as_slice(),
                     _ => &[],
                 };
-                let fields: Vec<CtorField> = (0..*field_count)
-                    .map(|i| CtorField {
-                        ty: field_types.get(i).cloned().unwrap_or(Type::Int),
-                    })
+                let fields: Vec<CtorField> = field_types
+                    .iter()
+                    .take(*field_count)
+                    .map(|ty| CtorField { ty: ty.clone() })
                     .collect();
                 Some((
                     type_name.clone(),
@@ -384,24 +386,34 @@ where
             .collect()
     }
 
-    /// The field types of the pattern constructor stored at `resolved_ctor`,
-    /// with the type parameters substituted from `scrut_type` when it is an
-    /// instantiated ADT. A missed keyed read is keying drift and an error in
-    /// every profile, never an empty field list (ACT-0964 item 1).
+    /// The field types of the pattern constructor stored at `resolved_ctor`, at
+    /// the scrutinee's instantiation: the one backend read of field types that
+    /// feeds classification and release. It delegates to
+    /// [`cranelisp_types::ctor_field_types_at`], which pairs each argument with
+    /// the declared parameter in its position, so a field takes the argument of
+    /// the parameter it mentions (ACT-1062).
+    ///
+    /// The arguments are the scrutinee's when it is an ADT, and none otherwise.
+    /// A residual instantiation is refused. A missed key, a parametric
+    /// constructor reached without its arguments, an argument that disagrees
+    /// with the declaration and a short declaration are keying errors. Every
+    /// error is located at `reference`.
     pub(crate) fn ctor_field_types(
         &self,
         resolved_ctor: &FQSymbol,
         scrut_type: Option<&Type>,
+        reference: Span,
         census: &super::census::Frame,
-    ) -> Result<Vec<Type>, CranelispError> {
+    ) -> Result<Vec<ConcreteType>, CranelispError> {
         let (fqtn, ctor) = self.ctor_meta_at(resolved_ctor).ok_or_else(|| {
-            keying_drift(format!(
-                "pattern constructor '{resolved_ctor}' has no constructor Def"
-            ))
+            keying_drift_at(
+                reference,
+                format!("pattern constructor '{resolved_ctor}' has no constructor Def"),
+            )
         })?;
-        let type_def = self
-            .lookup_type_def(&fqtn)
-            .ok_or_else(|| keying_drift(format!("type '{fqtn}' has no type definition")))?;
+        let type_def = self.lookup_type_def(&fqtn).ok_or_else(|| {
+            keying_drift_at(reference, format!("type '{fqtn}' has no type definition"))
+        })?;
         super::census::record(census, || super::census::Record::Field {
             class: super::census::FieldClass::of(type_def.type_params.len(), scrut_type),
             declaration: if ctor.short_declaration {
@@ -410,34 +422,58 @@ where
                 super::census::Declaration::Full
             },
         });
+        if ctor.short_declaration {
+            return Err(keying_drift_at(
+                reference,
+                format!(
+                    "constructor '{resolved_ctor}' declares more fields than its scheme supplies types for"
+                ),
+            ));
+        }
 
-        let concrete_type_args: Vec<Type> = match scrut_type {
-            Some(Type::ADT(_, args)) => args.clone(),
+        let args: Vec<ConcreteType> = match scrut_type {
+            Some(Type::ADT(_, args)) => args
+                .iter()
+                .map(ConcreteType::from_type)
+                .collect::<Result<_, _>>()
+                .map_err(|residual| residual_instantiation(resolved_ctor, &residual, reference))?,
             _ => Vec::new(),
         };
-        if type_def.type_params.is_empty() || concrete_type_args.is_empty() {
-            // Monomorphic, or no concrete instantiation to substitute.
-            return Ok(ctor.fields.iter().map(|f| f.ty.clone()).collect());
+        let table = self
+            .symbol_tables
+            .get(&resolved_ctor.module)
+            .ok_or_else(|| {
+                keying_drift_at(
+                    reference,
+                    format!(
+                        "pattern constructor '{resolved_ctor}' has no symbol table for its module"
+                    ),
+                )
+            })?;
+        let fields = cranelisp_types::ctor_field_types_at(&table, &resolved_ctor.symbol, &args)
+            .map_err(|refusal| match refusal {
+                CtorFieldsAtError::NotConcrete(residual) => {
+                    residual_instantiation(resolved_ctor, &residual, reference)
+                }
+                keying => keying_drift_at(
+                    reference,
+                    format!(
+                        "pattern constructor '{resolved_ctor}' at {} type argument(s): {keying}",
+                        args.len()
+                    ),
+                ),
+            })?;
+        if fields.len() != ctor.fields.len() {
+            return Err(keying_drift_at(
+                reference,
+                format!(
+                    "constructor '{resolved_ctor}' declares {} fields but its scheme supplies {}",
+                    ctor.fields.len(),
+                    fields.len()
+                ),
+            ));
         }
-
-        // The type's Var ids in order of first appearance across its
-        // constructors correspond positionally to its type parameters.
-        let mut unique_var_ids: Vec<cranelisp_types::TypeId> = Vec::new();
-        for c in &self.constructor_metas(&type_def)? {
-            for field in &c.fields {
-                super::collect_var_ids_from_type(&field.ty, &mut unique_var_ids);
-            }
-        }
-        let subst: HashMap<cranelisp_types::TypeId, Type> = unique_var_ids
-            .iter()
-            .zip(concrete_type_args.iter())
-            .map(|(&id, arg)| (id, arg.clone()))
-            .collect();
-        Ok(ctor
-            .fields
-            .iter()
-            .map(|field| super::substitute_type_inline(&field.ty, &subst))
-            .collect())
+        Ok(fields)
     }
 
     /// Look up a TypeDefInfo by FQTypeName from the symbol tables.
@@ -461,10 +497,33 @@ mod ctor_value_shape_tests;
 #[cfg(test)]
 mod keyed_read_hardening_tests;
 
-/// The located error for a keyed type or constructor read that missed.
+#[cfg(test)]
+mod ctor_field_channel_tests;
+
+/// The refusal of a constructor field read at an instantiation that is not
+/// concrete, located at the reference that made it.
+fn residual_instantiation(
+    resolved_ctor: &FQSymbol,
+    residual: &cranelisp_types::NotConcrete,
+    reference: Span,
+) -> CranelispError {
+    CranelispError::CodegenError {
+        message: format!(
+            "constructor '{resolved_ctor}' is matched at an instantiation that is not concrete ({residual:?})"
+        ),
+        location: ErrorLocation::from_span(reference),
+    }
+}
+
+/// The error for a keyed type or constructor read that missed.
 fn keying_drift(detail: String) -> CranelispError {
+    keying_drift_at(Span::SYNTHETIC, detail)
+}
+
+/// [`keying_drift`] located at the reference that made the read.
+fn keying_drift_at(reference: Span, detail: String) -> CranelispError {
     CranelispError::CodegenError {
         message: format!("internal invariant violation (keying drift): {detail}"),
-        location: cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
+        location: ErrorLocation::from_span(reference),
     }
 }
