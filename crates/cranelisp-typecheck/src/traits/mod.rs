@@ -34,6 +34,7 @@ mod type_resolve;
 // sibling test modules reach the production items through `use super::*`.
 // NONE are `pub` — `mod traits` is private, so `public-api.txt` is unaffected.
 pub(crate) use dispatch::TraitSatisfaction;
+pub(crate) use impl_check::PendingTraitImpls;
 pub(crate) use monomorphise::*;
 pub(crate) use registry::*;
 pub(crate) use type_resolve::*;

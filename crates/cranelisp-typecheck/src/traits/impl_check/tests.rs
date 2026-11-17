@@ -1491,3 +1491,55 @@ fn arity_var_suggestion_is_arity_aware() {
     assert_eq!(arity_var_suggestion("Pair", 2), "(Pair a b)");
     assert_eq!(arity_var_suggestion("Tri", 3), "(Tri a b c)");
 }
+
+/// Check one cluster from source in a fresh `test` module with primitives.
+fn check_cluster(src: &str) -> Result<crate::result::CheckResult, cranelisp_types::CranelispError> {
+    let mut tc = tc_with_prims();
+    let sexps = cranelisp_frontend::parse(src).expect("parse");
+    let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+    tc.check_program_self(&program)
+}
+
+const SIZE_OPT_HEADER: &str = "(deftype (Opt a) Nope (Yep [:a v]))\n\
+                               (deftrait Size (size [self] Int))\n";
+
+// spec: 05-definitions §5.13.1 — every implementation in a cluster is
+// registered before any implementation body is checked, so a body may dispatch
+// to an implementation declared later (ACT-0985), in either order.
+#[test]
+fn impl_body_dispatches_to_impl_declared_later_in_either_order() {
+    let opt = "(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size 42)])))\n";
+    let int = "(impl Size Int (defn size [n] n))\n";
+    for (order, src) in [
+        ("Int first", format!("{SIZE_OPT_HEADER}{int}{opt}")),
+        ("Opt first", format!("{SIZE_OPT_HEADER}{opt}{int}")),
+    ] {
+        check_cluster(&src).unwrap_or_else(|e| panic!("{order}: {e}"));
+    }
+}
+
+// spec: 05-definitions §5.13.1 — an implementation body may call a definition
+// declared later in its cluster, in either order.
+#[test]
+fn impl_body_calls_definition_declared_later_in_either_order() {
+    let helper = "(defn helper [n] (add-i64 n 1))\n";
+    let int = "(impl Size Int (defn size [n] (helper n)))\n";
+    for (order, src) in [
+        ("defn first", format!("{SIZE_OPT_HEADER}{helper}{int}")),
+        ("impl first", format!("{SIZE_OPT_HEADER}{int}{helper}")),
+    ] {
+        check_cluster(&src).unwrap_or_else(|e| panic!("{order}: {e}"));
+    }
+}
+
+// spec: 05-definitions §5.13.1 — the sweep does not weaken conformance: a body
+// that dispatches at a type with no implementation anywhere in the cluster is
+// still refused, and the refused implementation is not left visible.
+#[test]
+fn impl_body_dispatch_with_no_impl_in_cluster_is_still_refused() {
+    let src = format!(
+        "{SIZE_OPT_HEADER}(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size true)])))\n"
+    );
+    let err = check_cluster(&src).expect_err("no `Size Bool` exists in the cluster");
+    assert!(err.message().contains("no impl of trait"), "{err:?}");
+}

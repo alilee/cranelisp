@@ -92,12 +92,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         })
     }
 
-    /// Register and validate a trait implementation.
+    /// Register, check and commit one trait implementation on its own: Pass 1's
+    /// steps and the impl-body sweep's step for a cluster of one
+    /// (`design/typecheck/traits.md` §3).
     pub(crate) fn register_trait_impl(
         &self,
         state: &mut CheckState,
         impl_: &TraitImpl,
     ) -> Result<Vec<Defn>, CranelispError> {
+        let prepared = self.prepare_trait_impl(state, impl_)?;
+        let staged = self.stage_trait_impl(prepared)?;
+        self.check_staged_trait_impl(state, staged)
+    }
+
+    /// Registration steps 1–6: resolve, kind-check, completeness, target
+    /// identity and default synthesis. Writes nothing.
+    fn prepare_trait_impl(
+        &self,
+        state: &mut CheckState,
+        impl_: &TraitImpl,
+    ) -> Result<PreparedTraitImpl, CranelispError> {
         // Look up the trait declaration via SymbolTables. The `impl` form's
         // `trait_name` is a REFERENCE to resolve, so it routes through the ONE
         // scope resolve (`resolve_trait_decl` → `resolve_terminal_entry_scoped`),
@@ -108,7 +122,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let resolved_trait = self.resolve_impl_trait_ref(state, &impl_.trait_name, impl_.span)?;
         let decl = resolved_trait.decl.clone();
         let fq_trait_name = resolved_trait.fq.clone();
-        let trait_home = fq_trait_name.module.clone();
 
         // §7.3.5 Case-3 kind-check seam — ONE deterministic path
         // (`design/typecheck/hkt.md` §5.4). The trait's DECLARATION is
@@ -380,7 +393,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // carries in its `$Type` suffix, kept in lock-step with the dispatch
         // site (S102 4th lossy-head cure). It reads the EFFECTIVE (post-rewrite)
         // `impl_.target`, so for an HK impl it resolves the bare constructor
-        // (`Option`), not the pairing. `fq_trait_name`/`trait_home` are resolved
+        // (`Option`), not the pairing. `fq_trait_name` is resolved
         // ONCE at the top of this function (Principle 24 — the sole minting site,
         // reused by the B1 pairing-head compare and the registry key below).
         let head_spelling = impl_target_head_spelling(&impl_.target, &state.current_module);
@@ -388,55 +401,77 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .resolve_type(state, &head_spelling, impl_.span)
             .map_err(|failure| failure.into_form_error(state))?;
 
-        // Generate default method implementations for missing methods
         let default_defns =
             self.generate_default_methods(state, &decl, impl_, &fq_trait_name, &fq_impl_type)?;
 
-        // Register the impl as a ModuleEntry::TraitImpl in the trait's
-        // **defining module** (Decision 45 / Pattern B). The write target is
-        // resolved by chain-following the trait reference from the writer's
-        // current module back to its home — not the writer's lexical module.
-        //
-        // For builtin trait impls (trait declared in `primitives`, written
-        // from `primitives`), the chain is length-zero, and the write target
-        // coincides with `state.current_module`. For user-mode impls
-        // (trait imported into the writer's module), the chain follows the
-        // per-symbol `ModuleEntry::Import` binding back to the trait's home,
-        // and the write lands there — not in the writer's table.
-        // Trait reachability was just validated by `resolve_trait_decl`
-        // above (prelude-fallback aware; `resolve_trait` below hops the
-        // same way to find `trait_home`); the chain-follow must succeed. Treat
-        // absence as a typecheck
-        // invariant violation (post-FIXME 0192 method 6 deletion: no
-        // `defining_module_for` fallback).
-        // (`trait_home` / `fq_trait_name` / `fq_impl_type` resolved above — the
-        // single-source-of-truth for both the impl registry key and every
-        // impl-method mangle in this impl.)
         // The settled implementation surface includes generated defaults as
         // well as explicitly written bodies. This one list feeds both the
         // staged shell and its writer-side cache record.
         let method_names: Vec<Symbol> = decl.methods.iter().map(|m| m.name.clone()).collect();
-
-        let writer_module = state.current_module.clone();
         let written_impl = WrittenTraitImpl::new(
             fq_trait_name.clone(),
             fq_impl_type.clone(),
-            writer_module.clone(),
+            state.current_module.clone(),
             method_names,
             Visibility::Public,
         );
 
-        // Default bodies are checked as concrete impl methods below. A default
-        // may call a required sibling (`bump` calling `size`), and that dispatch
-        // must resolve against the candidate impl while its methods are being
-        // validated. Stage the impl shell now, but retain the prior shell so the
-        // method-check transaction can restore it on any failure. This makes the
-        // candidate visible to conformance checking without publishing a failed
-        // first impl or partially replacing a settled re-impl (§7.1.5, §5.4.5).
+        Ok(PreparedTraitImpl {
+            impl_: impl_.clone(),
+            decl,
+            fq_trait_name,
+            fq_impl_type,
+            default_defns,
+            written_impl,
+        })
+    }
+
+    /// Registration step 7: stage the shell in the trait's home (Decision 45),
+    /// retaining its prior value. The shell is what makes the implementation
+    /// visible to every body's dispatch, so it is staged before any body of
+    /// the cluster is checked (`traits.md` §3).
+    fn stage_trait_impl(
+        &self,
+        prepared: PreparedTraitImpl,
+    ) -> Result<StagedTraitImpl<C>, CranelispError> {
+        let shell = self
+            .symbol_table_mut_in(&prepared.fq_trait_name.module)
+            .stage_trait_impl_shell(&prepared.written_impl)?;
+        Ok(StagedTraitImpl { prepared, shell })
+    }
+
+    /// Restore the shell a staged implementation displaced, without checking
+    /// its bodies.
+    fn abandon_staged_trait_impl(&self, staged: StagedTraitImpl<C>) -> Result<(), CranelispError> {
+        self.symbol_table_mut_in(&staged.prepared.fq_trait_name.module)
+            .rollback_trait_impl_shell(staged.shell)
+    }
+
+    /// Registration steps 8–9: check the default and written method bodies,
+    /// then commit the shell, the method entries and the writer-side record
+    /// together. A body error restores the shell and every method entry and
+    /// writes no record.
+    fn check_staged_trait_impl(
+        &self,
+        state: &mut CheckState,
+        staged: StagedTraitImpl<C>,
+    ) -> Result<Vec<Defn>, CranelispError> {
+        let StagedTraitImpl { prepared, shell } = staged;
+        let PreparedTraitImpl {
+            impl_,
+            decl,
+            fq_trait_name,
+            fq_impl_type,
+            default_defns,
+            written_impl,
+        } = prepared;
+        let trait_home = fq_trait_name.module.clone();
+        debug_assert_eq!(state.current_module, written_impl.impl_module);
+
         // Method checking writes each settled mangled `Def` at its normal
-        // seam. Snapshot the complete method grain so a later sibling failure
-        // can restore the prior enrollment (or remove first-impl writes).
-        // This covers first impl and re-impl with the same transaction path.
+        // seam. Retain the complete method grain so a failure can restore the
+        // prior enrollment (or remove first-impl writes), for first impl and
+        // re-impl alike (§7.1.5, §5.4.5).
         let method_symbols: Vec<Symbol> = decl
             .methods
             .iter()
@@ -451,13 +486,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 )
             })
             .collect();
-        let retained_methods = self
+        let retained_methods = match self
             .current_symbol_table_mut(state)
             .retain_callables(&method_symbols)
-            .map_err(crate::result::lifecycle_error)?;
-        let staged_shell = {
-            let mut table = self.symbol_table_mut_in(&trait_home);
-            table.stage_trait_impl_shell(&written_impl)?
+        {
+            Ok(retained) => retained,
+            Err(error) => {
+                self.symbol_table_mut_in(&trait_home)
+                    .rollback_trait_impl_shell(shell)?;
+                return Err(crate::result::lifecycle_error(error));
+            }
         };
 
         // Type-check each impl method body and generate mangled-name Defns.
@@ -505,7 +543,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 let annotated = self.check_impl_method_with_sig(
                     state,
                     &decl,
-                    impl_,
+                    &impl_,
                     default_defn,
                     method_sig,
                     true,
@@ -522,7 +560,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 let annotated = self.check_impl_method(
                     state,
                     &decl,
-                    impl_,
+                    &impl_,
                     method_defn,
                     &fq_trait_name,
                     &fq_impl_type,
@@ -536,12 +574,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let all_defns = match checked {
             Ok(defns) => defns,
             Err(err) => {
-                debug_assert_eq!(state.current_module, writer_module);
+                debug_assert_eq!(state.current_module, written_impl.impl_module);
                 self.current_symbol_table_mut(state)
                     .rollback_callables(retained_methods)
                     .map_err(crate::result::lifecycle_error)?;
                 self.symbol_table_mut_in(&trait_home)
-                    .rollback_trait_impl_shell(staged_shell)?;
+                    .rollback_trait_impl_shell(shell)?;
                 return Err(err);
             }
         };
@@ -549,11 +587,111 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.current_symbol_table_mut(state)
             .upsert_written_trait_impl(written_impl)?;
         retained_methods.commit();
-        staged_shell.commit();
+        shell.commit();
 
         Ok(all_defns)
     }
 
+    /// Pass 1 for an `impl` form: steps 1–7, deferring the bodies to the
+    /// impl-body sweep ([`Self::check_pending_trait_impls`]).
+    ///
+    /// A second `impl` of a `(trait, type)` pair still pending in this cluster
+    /// cannot stage beside the first (one staging token per shell key), so the
+    /// first is checked and committed before the second stages, and the later
+    /// form replaces it as a same-key re-impl does across clusters (§5.4.5).
+    pub(crate) fn stage_pending_trait_impl(
+        &self,
+        state: &mut CheckState,
+        impl_: &TraitImpl,
+        pending: &mut PendingTraitImpls<C>,
+        checked: &mut Vec<Defn>,
+    ) -> Result<(), CranelispError> {
+        let prepared = self.prepare_trait_impl(state, impl_)?;
+        if let Some(position) = pending.staged.iter().position(|staged| {
+            staged.prepared.fq_trait_name == prepared.fq_trait_name
+                && staged.prepared.fq_impl_type == prepared.fq_impl_type
+        }) {
+            let earlier = pending.staged.remove(position);
+            checked.extend(self.check_staged_trait_impl(state, earlier)?);
+        }
+        pending.staged.push(self.stage_trait_impl(prepared)?);
+        Ok(())
+    }
+
+    /// The impl-body sweep (`traits.md` §3 steps 8–9): check every staged
+    /// implementation's bodies in form order, each from `constraints`, the
+    /// post-Pass-1 constraint snapshot. On the first failure the failing
+    /// implementation is restored and every later one is abandoned.
+    pub(crate) fn check_pending_trait_impls(
+        &self,
+        state: &mut CheckState,
+        pending: PendingTraitImpls<C>,
+        constraints: &ActiveConstraints,
+        checked: &mut Vec<Defn>,
+    ) -> Result<(), CranelispError> {
+        let mut staged = pending.staged.into_iter();
+        while let Some(next) = staged.next() {
+            state.active_constraints = constraints.clone();
+            match self.check_staged_trait_impl(state, next) {
+                Ok(defns) => checked.extend(defns),
+                Err(error) => {
+                    self.abandon_pending_trait_impls(PendingTraitImpls {
+                        staged: staged.collect(),
+                    })?;
+                    return Err(error);
+                }
+            }
+        }
+        state.active_constraints = constraints.clone();
+        Ok(())
+    }
+
+    /// Restore every staged shell, latest first. Used when the cluster fails
+    /// before its bodies are checked.
+    pub(crate) fn abandon_pending_trait_impls(
+        &self,
+        pending: PendingTraitImpls<C>,
+    ) -> Result<(), CranelispError> {
+        for staged in pending.staged.into_iter().rev() {
+            self.abandon_staged_trait_impl(staged)?;
+        }
+        Ok(())
+    }
+}
+
+/// An `impl` form after registration steps 1–6: resolved, validated and with
+/// its defaults synthesised; nothing written.
+struct PreparedTraitImpl {
+    /// The effective form: for a higher-kinded impl, slot 2 is the bare
+    /// constructor (step 2's normalisation).
+    impl_: TraitImpl,
+    decl: TraitDeclInfo,
+    fq_trait_name: FQTraitName,
+    fq_impl_type: FQTypeName,
+    default_defns: Vec<Defn>,
+    written_impl: WrittenTraitImpl,
+}
+
+/// A prepared implementation whose shell is staged and whose bodies wait for
+/// the impl-body sweep.
+struct StagedTraitImpl<C: cranelisp_types::CodeStore> {
+    prepared: PreparedTraitImpl,
+    shell: cranelisp_types::StagedImplShell<C>,
+}
+
+/// The cluster's staged implementations, in form order, between Pass 1 and
+/// the impl-body sweep. Consumed by the sweep or by abandonment.
+pub(crate) struct PendingTraitImpls<C: cranelisp_types::CodeStore> {
+    staged: Vec<StagedTraitImpl<C>>,
+}
+
+impl<C: cranelisp_types::CodeStore> Default for PendingTraitImpls<C> {
+    fn default() -> Self {
+        PendingTraitImpls { staged: Vec::new() }
+    }
+}
+
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Check that all required methods are provided in the impl.
     fn check_impl_methods_present(
         &self,

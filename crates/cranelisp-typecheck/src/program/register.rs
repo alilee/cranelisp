@@ -9,6 +9,52 @@ type ResolvedVariant = (Vec<Type>, Type, Symbol, usize);
 type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
+    /// Pass 1 over a cluster, then the impl-body sweep, then registration of
+    /// the method definitions the implementations produced
+    /// (`design/typecheck/typecheck.md` §5 item 1, §5.2 items 1–2).
+    ///
+    /// An `impl` form is staged in form order and its bodies are checked only
+    /// after every form has registered, so a body may use any implementation
+    /// or definition of the cluster (spec §5.13.1). If Pass 1 fails, every
+    /// staged shell is restored.
+    pub(crate) fn register_cluster(
+        &self,
+        state: &mut CheckState,
+        forms: &[TopLevel],
+        accumulator: &mut ModuleCheckAccumulator,
+    ) -> Result<(), CranelispError> {
+        let mut pending = crate::traits::PendingTraitImpls::default();
+        let mut impl_defns = Vec::new();
+        let registered = (|| {
+            for form in forms {
+                if let TopLevel::TraitImpl(impl_) = form {
+                    self.stage_pending_trait_impl(state, impl_, &mut pending, &mut impl_defns)?;
+                    continue;
+                }
+                let result = self.check_form_register(state, form, accumulator)?;
+                self.merge_form_result_inner(state, accumulator, result);
+            }
+            Ok(())
+        })();
+        if let Err(error) = registered {
+            self.abandon_pending_trait_impls(pending)?;
+            return Err(error);
+        }
+
+        let pass1_constraints = state.active_constraints.clone();
+        self.check_pending_trait_impls(state, pending, &pass1_constraints, &mut impl_defns)?;
+
+        accumulator.default_method_defns.extend(impl_defns);
+        let defns = std::mem::take(&mut accumulator.default_method_defns);
+        for defn in &defns {
+            let form = TopLevel::Defn(defn.clone());
+            let result = self.check_form_register(state, &form, accumulator)?;
+            self.merge_form_result_inner(state, accumulator, result);
+        }
+        accumulator.default_method_defns = defns;
+        Ok(())
+    }
+
     /// Pass 1 (Register) dispatch: register type defs, trait decls/impls, signatures.
     pub(super) fn check_form_register(
         &self,

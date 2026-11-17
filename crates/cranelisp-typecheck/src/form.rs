@@ -274,39 +274,11 @@ where
     let working_program: Vec<TopLevel> =
         parsed.into_iter().filter_map(parsed_to_top_level).collect();
 
-    // Pass 1: register all forms in source order. The accumulator captures
-    // body signature/scope records and default-method-defn deferrals for Pass 2.
-    for form in &working_program {
-        let result = env
-            .check_form(
-                &current_module,
-                form,
-                CheckPass::Register,
-                &mut state,
-                &mut accumulator,
-            )
-            .map_err(|e| lift_error(e, &state))?;
-        env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
-    }
-
-    // Register default method defns generated during Pass 1 TraitImpl
-    // processing. These need Pass 1 signature registration too.
-    let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
-    for defn in &defaults {
-        let form = TopLevel::Defn(defn.clone());
-        let result = env
-            .check_form(
-                &current_module,
-                &form,
-                CheckPass::Register,
-                &mut state,
-                &mut accumulator,
-            )
-            .map_err(|e| lift_error(e, &state))?;
-        env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
-    }
-    // Put defaults back so finalize knows about them.
-    accumulator.default_method_defns = defaults;
+    // Pass 1, the impl-body sweep, and registration of the implementations'
+    // method definitions. The accumulator captures body signature/scope
+    // records for Pass 2.
+    env.register_cluster(&mut state, &working_program, &mut accumulator)
+        .map_err(|e| lift_error(e, &state))?;
 
     // Pass 2: check bodies for all forms. The accumulator carries Pass 1's
     // exact registered-body records into Pass 2 — closing pre-S66's

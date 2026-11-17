@@ -36,22 +36,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Create per-module accumulator
         let mut accumulator = ModuleCheckAccumulator::new();
 
-        // Pass 1: Register all forms in source order
-        for form in &working_program {
-            let result = self.check_form_register(state, form, &mut accumulator)?;
-            self.merge_form_result_inner(state, &mut accumulator, result);
-        }
-
-        // Register default method defns generated during Pass 1 TraitImpl processing.
-        // These need Pass 1 signature registration too.
-        let defaults: Vec<Defn> = std::mem::take(&mut accumulator.default_method_defns);
-        for defn in &defaults {
-            let form = TopLevel::Defn(defn.clone());
-            let result = self.check_form_register(state, &form, &mut accumulator)?;
-            self.merge_form_result_inner(state, &mut accumulator, result);
-        }
-        // Put defaults back so finalize knows about them
-        accumulator.default_method_defns = defaults;
+        self.register_cluster(state, &working_program, &mut accumulator)?;
 
         // Pass 2: Check bodies for all forms.
         // FIXME 0354 Bug A: mirror `check_forms`' production path — restore the
