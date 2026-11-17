@@ -350,6 +350,9 @@ on:
   type (§7.3).
 - **Consumers outside the crate** are the binary's `result_owner.rs` and
   `display.rs` (row D4).
+- **Closes ACT-1069** (§7.5): its trace cells pass on this tree with no change
+  made for them. A cell still RED there refutes the attribution and returns
+  to `qa`.
 - **`CACHE_SCHEMA_VERSION` is bumped** in the change-set (§7.4).
 - §7.1–§7.6 then describe a mechanism that does not exist, and reduce to a
   stub for their cited numbers.
@@ -378,9 +381,10 @@ unchanged. Multi-constructor types (which need a tag word) and types wider than
 one word stay heap-represented and RC-shared — sound, just unflattened.
 **Trigger for multi-word flattening:** a fixture whose hot type is Copy-eligible
 but wider than one word; its shape (element stride, multi-slot returns, boxing
-at word-sized edges) is designed then. A flattened value never meets the nullary
-tag guard as tag-or-pointer: classification is total post-mono and a `Value`
-type classifies `Value` at every site.
+at word-sized edges) is designed then. In emitted code a flattened value never
+meets the nullary tag guard as tag-or-pointer: classification is total
+post-mono and a `Value` type classifies `Value` at every site. The trace
+formatter is the exception (§7.5).
 
 ### 7.3 Vec of values
 
@@ -400,9 +404,18 @@ predicate or bound must bump it again.
 
 ### 7.5 Trace and display descriptors
 
-The descriptor baker reads the same classification and renders a flattened value
-from its raw word with its constructor name. No platform-visible type flattens;
-platform ABI edges stay boxed.
+The binary's value display renders a flattened value from its raw word with its
+constructor name. The trace path does not: the descriptor baker describes the
+type as an ordinary ADT, and the intrinsics formatter reads the word as a
+nullary tag below `NULLARY_TAG_THRESHOLD` and as a heap pointer at or above
+it. A one-word value traced as an argument prints the wrong text or ends the
+process
+([ACT-1069](../../sprints/actions/ACT-1069-trace-formats-one-word-adt-argument-as-tag-or-pointer-intake.md),
+memory-unsafe). It is not corrected in place: the retirement makes every such
+type a heap value, for which the formatter is right as written, so ACT-1069's
+cells passing on the retirement tree with no change made for them is part of
+its acceptance. No platform-visible type flattens; platform ABI edges stay
+boxed.
 
 ### 7.6 Compatibility rules
 

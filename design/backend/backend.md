@@ -80,13 +80,12 @@ with a resolving control (`compiler/context/keyed_read_hardening_tests.rs`).
 This supersedes the release-build skip that
 `design/arch/dotted-ctor-canonical-keys.md` §10.5 accepted.
 
-- **Residual, asserted with a falsifier.** `ctor_field_types` returns a
-  parametric constructor's declared field types unsubstituted when the
-  scrutinee carries no type arguments. The match lowering always supplies the
-  scrutinee's concrete type, so the arm is believed unreachable from
-  production. Falsifier: a field type containing a type variable reaching
-  heap classification from a match arm. S124 makes it a `ParamArity` keying
-  error ([release contract](non-concrete-release-contract.md) §7.4 step 1).
+- **Field types are read at the instantiation.** `ctor_field_types` delegates
+  to `cranelisp_types::ctor_field_types_at` and yields `ConcreteType`s. A
+  parametric constructor reached without type arguments is a `ParamArity`
+  keying error, a residual instantiation and a short declaration are located
+  refusals ([release contract](non-concrete-release-contract.md) §7.4 step 1),
+  and each refusal is measured by `compiler/context/ctor_field_channel_tests.rs`.
 
 ## 3. Internal shape
 
@@ -358,7 +357,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | RC discipline | `ring2-rc.md` | The calling convention as emitted, extern consumption, the IO extern's balance and the RC emission primitives. |
 | Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count, and each one's disposition under Principle 27 (§0): confined atomicity retired at S123 W4 and stack placement at S124 B1; value flattening, the spark density axis and the borrowed-sibling carrier retire in S124, each with its change-set designed. Also the reuse counters, the redefinition slots and the supporting contracts. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
-| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the census (built) and its frame record, the constructor field channel, concrete binder types (§7.3–§7.4, order §7.7). The lifecycle disposition and refusal frame stay open. |
+| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the census with its frame record and the constructor field channel (built), concrete binder types (open) (§7.3–§7.4, order §7.7). The lifecycle disposition and refusal frame stay open. |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | Retired (S123 W2); a stub kept for cited section numbers until those citations move. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
@@ -376,21 +375,19 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
 
 | # | Change-set | Design | Waits on |
 |---|---|---|---|
-| B2′ | The census frame record, the liveness signal a zero reading is read against | [release contract](non-concrete-release-contract.md) §7.3 | — (B1 and B2 landed at `8f44040e` and `1a3ab46e`) |
-| B3 | Close step 1: constructor field channel, row D1 | release contract §7.4 | nothing further: the first census reading had no residual or absent field reads and no short declaration (release contract §7.3) |
-| B4 | Close step 2: concrete binder types, the three arms deleted | release contract §7.4 | the zero read under the §7.3 flip criterion, taken after B2′, B3, typecheck's producer corrections (ACT-1034 through row T4, and the attributed absent-arm traffic), and ACT-1050's producer |
-| B5 | Value-flattening retirement, row D4 | [ownership codegen](ownership-codegen.md) §7 | B4 |
+| B4 | Close step 2: concrete binder types, the three arms deleted, the hand-built lambda fixture given a typed node | [release contract](non-concrete-release-contract.md) §7.4 | — : the §7.3 flip criterion is met by CEN-4 (B1, B2, B2′ and B3 landed; release contract §7.7) |
+| B5 | Value-flattening retirement, row D4; closes ACT-1069 | [ownership codegen](ownership-codegen.md) §7 | B4 |
 | B6 | Row D2, then the panic handle (P-15) | §7 above | — ; the handle follows D2 |
 | B7 | Rows R10-1, -2, -3, -5, -7 as one contraction (R10-6 is superseded by R10-9, B11) | [BC §3](../arch/bounded-contexts.md#3-backend-cratescranelisp-backend) | B6's D2 |
 | B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | the types change of D6, in the same change-set |
 | B9 | Spark density retirement | [ownership codegen](ownership-codegen.md) §13.4 | — |
-| B10 | Trace: claim-based traced set (ACT-1039); `in_trace_body` deleted (ACT-1038) | [trace codegen](trace-codegen.md) | the claim-based set: — . The deletion: intrinsics' row D8 change with this crate's descriptor-test adaptation ([trace codegen](trace-codegen.md) §2) |
+| B10 | Trace: claim-based traced set (ACT-1039); `in_trace_body` deleted (ACT-1038); the descriptor baker's and schema walk's shared substitution pairs by declared parameter (ACT-1062's backend reader; [release contract](non-concrete-release-contract.md) §7.4 step 1) | [trace codegen](trace-codegen.md) | the claim-based set: — . The deletion: intrinsics' row D8 change with this crate's descriptor-test adaptation ([trace codegen](trace-codegen.md) §2) |
 | B11 | Heap layouts read from intrinsics, rows R10-9 and R10-10 | §9.1 below | intrinsics' additions ([heap layout owners](../intrinsics/heap-layout.md) §5) |
 | B12 | A host-promised primitive as a value or partially applied (value uses refused; a partial `bind` aborts; a partial `race` panics the worker), closing ACT-1063 | [compile-to-module](compile-to-module.md) §12.1 | REPRO-1063 and REPRO-1063-p committed RED ([evidence delta](../../tests/plan/s124-evidence-delta.md) §3.9) |
 
 - B6 to B10 and B12 have no dependency on the close; `sprint` places them. Each
   emission-affecting one carries its own scoped re-baseline, so keep them out
-  of the B2′–B5 change-sets.
+  of the B4 and B5 change-sets.
 - `CACHE_SCHEMA_VERSION` is bumped by B5 and B8, and by two change-sets that
   land on other surfaces but must edit this crate's constant: row D3's and
   ACT-1052's ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache
@@ -402,9 +399,9 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
   by `dev`(backend) in int's change-set.
 - The approved baseline-format row K11-a lands last, alone, after every other
   row.
-- ACT-1018 has no backend item. Its remaining residual is one block per
-  `print` on the standard-library prelude path; it is re-measured after
-  ACT-1050.
+- ACT-1018 has no backend item. Its residual measured 2 blocks after
+  ACT-1050's correction, unchanged by it (O-1018 at `8667a868`,
+  [evidence delta](../../tests/plan/s124-evidence-delta.md) §14.4).
 
 ### 9.1 Rows R10-9 and R10-10 — the backend half
 
