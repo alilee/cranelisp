@@ -398,10 +398,9 @@ where
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
             if ty.is_none() {
-                crate::compiler::census::record(
-                    &inner_compiler.census,
-                    crate::compiler::census::Record::Absent,
-                );
+                crate::compiler::census::record(&inner_compiler.census, || {
+                    crate::compiler::census::Record::Absent
+                });
             }
             inner_compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
         }

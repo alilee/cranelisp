@@ -3,8 +3,10 @@
 //!
 //! Each positive fixture plants one arm through the production per-body
 //! function and observes the in-process tally of its own frame; each negative
-//! twin is the same frame at a concrete type. Frames are named per test, so
-//! the tally of one test is not disturbed by another running in the process.
+//! twin is the same frame at a concrete type. Every fixture compiled as a
+//! codegen target also tallies its one frame record, so a twin's tally is that
+//! record alone. Frames are named per test, so the tally of one test is not
+//! disturbed by another running in the process.
 
 use std::collections::BTreeMap;
 
@@ -228,7 +230,7 @@ fn a_duplicated_residual_parameter_records_one_retain() {
     );
     assert_eq!(
         tally_of("census_retain"),
-        expect(&[("retain Plain var -", 1)])
+        expect(&[("frame Plain - -", 1), ("retain Plain var -", 1)])
     );
 }
 
@@ -242,7 +244,10 @@ fn a_duplicated_concrete_parameter_records_nothing_neg() {
         duplicated(1),
         Partition::Plain,
     );
-    assert_eq!(tally_of("census_retain_twin"), expect(&[]));
+    assert_eq!(
+        tally_of("census_retain_twin"),
+        expect(&[("frame Plain - -", 1)])
+    );
 }
 
 // spec: design/backend/non-concrete-release-contract.md §7.3 — an unused
@@ -262,6 +267,7 @@ fn a_dropped_residual_parameter_records_one_release_in_each_partition() {
         assert_eq!(
             tally_of(&frame),
             expect(&[
+                (&format!("frame {name} - -"), 1),
                 (&format!("release {name} var -"), 1),
                 (&format!("retain {name} var -"), 1),
             ]),
@@ -281,7 +287,11 @@ fn a_dropped_residual_adt_parameter_records_the_adt_shape() {
     one_param_frame("census_release_adt", bx_var, int(0, 1), Partition::Accessor);
     assert_eq!(
         tally_of("census_release_adt"),
-        expect(&[("release Accessor adt -", 1), ("retain Accessor adt -", 1)])
+        expect(&[
+            ("frame Accessor - -", 1),
+            ("release Accessor adt -", 1),
+            ("retain Accessor adt -", 1),
+        ])
     );
 }
 
@@ -295,7 +305,10 @@ fn a_dropped_concrete_parameter_records_nothing_neg() {
         int(0, 1),
         Partition::Plain,
     );
-    assert_eq!(tally_of("census_release_twin"), expect(&[]));
+    assert_eq!(
+        tally_of("census_release_twin"),
+        expect(&[("frame Plain - -", 1)])
+    );
 }
 
 // --- Absent ---
@@ -335,7 +348,7 @@ fn an_untyped_lambda_parameter_records_one_absent_in_its_frames_partition() {
     lambda_frame("census_absent_lambda", ConcreteType::Int, Partition::Plain);
     assert_eq!(
         tally_of("census_absent_lambda"),
-        expect(&[("absent Plain absent -", 1)])
+        expect(&[("absent Plain absent -", 1), ("frame Plain - -", 1)])
     );
     lambda_frame(
         "census_absent_inner",
@@ -344,7 +357,10 @@ fn an_untyped_lambda_parameter_records_one_absent_in_its_frames_partition() {
     );
     assert_eq!(
         tally_of("census_absent_inner"),
-        expect(&[("absent TraitMethod absent -", 1)])
+        expect(&[
+            ("absent TraitMethod absent -", 1),
+            ("frame TraitMethod - -", 1),
+        ])
     );
 }
 
@@ -359,13 +375,19 @@ fn a_function_typed_lambda_parameter_records_nothing_neg() {
         fn_of(ConcreteType::Int),
         Partition::Plain,
     );
-    assert_eq!(tally_of("census_absent_twin_int"), expect(&[]));
+    assert_eq!(
+        tally_of("census_absent_twin_int"),
+        expect(&[("frame Plain - -", 1)])
+    );
     lambda_frame(
         "census_absent_twin_str",
         fn_of(ConcreteType::String),
         Partition::Plain,
     );
-    assert_eq!(tally_of("census_absent_twin_str"), expect(&[]));
+    assert_eq!(
+        tally_of("census_absent_twin_str"),
+        expect(&[("frame Plain - -", 1)])
+    );
 }
 
 // spec: design/backend/non-concrete-release-contract.md §7.3 — a defn
@@ -390,7 +412,7 @@ fn a_defn_parameter_the_scheme_does_not_type_records_one_absent() {
     );
     assert_eq!(
         tally_of("census_absent_defn"),
-        expect(&[("absent Plain absent -", 1)])
+        expect(&[("absent Plain absent -", 1), ("frame Plain - -", 1)])
     );
 }
 
@@ -404,7 +426,10 @@ fn a_scheme_typed_scalar_parameter_records_nothing_neg() {
         int(0, 1),
         Partition::Plain,
     );
-    assert_eq!(tally_of("census_absent_defn_twin"), expect(&[]));
+    assert_eq!(
+        tally_of("census_absent_defn_twin"),
+        expect(&[("frame Plain - -", 1)])
+    );
 }
 
 // --- Field reads ---
@@ -562,7 +587,7 @@ fn a_generic_product_matched_at_a_concrete_instantiation_reads_concrete_neg() {
     );
     assert_eq!(
         tally_of("census_field_twin"),
-        expect(&[("field Plain full concrete", 1)])
+        expect(&[("field Plain full concrete", 1), ("frame Plain - -", 1)])
     );
 }
 
@@ -574,7 +599,7 @@ fn a_non_parametric_products_field_read_is_concrete() {
     match_frame("census_field_pt", &pt(), Type::ADT(pt(), vec![]), false);
     assert_eq!(
         tally_of("census_field_pt"),
-        expect(&[("field Plain full concrete", 1)])
+        expect(&[("field Plain full concrete", 1), ("frame Plain - -", 1)])
     );
 }
 
@@ -731,8 +756,112 @@ fn compile_to_module_attributes_records_to_the_targets_partition() {
     .expect("compile accessor");
     assert_eq!(
         tally(&format!("user/{name}")),
-        expect(&[("field Accessor full concrete", 1)])
+        expect(&[
+            ("field Accessor full concrete", 1),
+            ("frame Accessor - -", 1)
+        ])
     );
+}
+
+/// Install `(defn name [] body)` as a concrete codegen target whose binding
+/// carries `partition`'s origin.
+fn install_target(table: &mut SymbolTable, name: &str, partition: Partition, body: Expr) {
+    let name = Symbol::from(name);
+    let ast = DefnVariant {
+        params: vec![],
+        body,
+        span: Span::SYNTHETIC,
+    };
+    let view = cranelisp_types::MonoDefnVariant {
+        name: name.clone(),
+        params: vec![],
+        body: MonoExpr::synthetic_local_from_expr(&ast.body, &HashMap::new()),
+        span: Span::SYNTHETIC,
+        mode_summary: None,
+    };
+    table
+        .install_concrete(
+            name,
+            scheme(Type::Fn(vec![], Box::new(Type::Int))),
+            vec![],
+            None,
+            0,
+            origin(partition),
+            cranelisp_types::Realization::Body { view, code: None },
+            Some(ast),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .expect("install census target");
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.3 "The frame
+// record" — compiling N targets through `compile_to_module` records N frames,
+// one per target, each in its target's partition. An inner compiler (the
+// lambda) records no frame of its own, and a binding that is not a target
+// records none (NEGATIVE).
+#[test]
+fn compiling_n_targets_records_n_frames_each_in_its_partition() {
+    let mut table = SymbolTable::new(user());
+    let targets = [
+        ("census_frames_plain", Partition::Plain, "Plain"),
+        ("census_frames_accessor", Partition::Accessor, "Accessor"),
+        (
+            "census_frames_method",
+            Partition::TraitMethod,
+            "TraitMethod",
+        ),
+    ];
+    // A synthesized body carries only synthetic spans.
+    let zero = || Expr::IntLit {
+        value: 0,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    for (name, partition, _) in targets {
+        install_target(&mut table, name, partition, zero());
+    }
+    let lambda = Expr::Lambda {
+        params: vec![],
+        body: Box::new(zero()),
+        span: Span::SYNTHETIC,
+        inferred_type: None,
+    };
+    install_target(&mut table, "census_frames_lambda", Partition::Plain, lambda);
+    install_target(
+        &mut table,
+        "census_frames_unselected",
+        Partition::Plain,
+        zero(),
+    );
+    let tables = tables_with(table);
+    let names: Vec<Symbol> = targets
+        .iter()
+        .map(|(name, ..)| *name)
+        .chain(["census_frames_lambda"])
+        .map(Symbol::from)
+        .collect();
+    let mut jit = Jit::new(&tables).unwrap();
+    compile_to_module(
+        user(),
+        &binding_targets(&user(), &names),
+        &tables,
+        jit.jit_module(),
+        false,
+    )
+    .expect("compile census targets");
+    for (name, _, partition) in targets {
+        assert_eq!(
+            tally_of(name),
+            expect(&[(&format!("frame {partition} - -"), 1)]),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        point(&tally_of("census_frames_lambda"), "frame"),
+        expect(&[("frame Plain - -", 1)])
+    );
+    assert_eq!(tally_of("census_frames_unselected"), expect(&[]));
 }
 
 // --- The census file and emission (CEN-2) ---
@@ -824,6 +953,7 @@ fn the_census_file_is_written_only_when_set_and_emission_is_unchanged() {
         distinct,
         [
             "field\tTraitMethod\tfull\tabsent\tuser/census_child",
+            "frame\tTraitMethod\t-\t-\tuser/census_child",
             "release\tTraitMethod\tvar\t-\tuser/census_child",
             "retain\tTraitMethod\tvar\t-\tuser/census_child",
         ]
@@ -831,12 +961,29 @@ fn the_census_file_is_written_only_when_set_and_emission_is_unchanged() {
         .collect(),
         "the frame's reported records, and only those:\n{lines}"
     );
-    for ending in [&unset, &set] {
+    assert_eq!(
+        lines
+            .lines()
+            .filter(|line| line.starts_with("frame\t"))
+            .count(),
+        1,
+        "one frame compiled, one frame line:\n{lines}"
+    );
+    // Both streams carry libtest's own lines and nothing else, in either run,
+    // so census output of any form on either stream fails here.
+    let libtest_line = |line: &str| {
+        line.is_empty()
+            || line == "running 1 test"
+            || line == format!("test {path} ... ok")
+            || line.starts_with("test result: ok. 1 passed; 0 failed;")
+    };
+    for (run, ending) in [("unset", &unset), ("set", &set)] {
+        assert_eq!(ending.stderr, "", "{run}: the child wrote to stderr");
+        let foreign: Vec<&str> = ending.stdout.lines().filter(|l| !libtest_line(l)).collect();
         assert!(
-            !ending.stdout.contains("census_child") && !ending.stderr.contains("census_child"),
-            "the census wrote to a stream:\n{}\n{}",
-            ending.stdout,
-            ending.stderr
+            foreign.is_empty(),
+            "{run}: the child wrote to stdout:\n{}",
+            ending.stdout
         );
     }
     assert_eq!(

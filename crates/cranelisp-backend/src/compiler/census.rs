@@ -1,15 +1,17 @@
 //! The category census (`design/backend/non-concrete-release-contract.md`
 //! §7.3): a count of every point at which codegen emits, or silently skips, an
 //! RC operation on a word whose heap category it cannot name, and of every
-//! constructor field read, keyed by the frame being compiled.
+//! constructor field read, keyed by the frame being compiled. Each codegen
+//! target also records one frame, the denominator a zero reading is read
+//! against.
 //!
-//! Debug builds only. In a release build [`record`] is empty and neither the
-//! tally nor the environment variable exists. Every record point is host
-//! code, so emitted CLIF does not depend on the census. Nothing here writes to
-//! a standard stream: the in-process tally is read by unit tests, and
-//! `CRANELISP_CATEGORY_CENSUS=<path>` appends one line per reported record to
-//! that file, so a suite run aggregates across every process it spawns.
-#![cfg_attr(not(debug_assertions), allow(dead_code))]
+//! Debug builds only. In a release build [`record`] neither builds its record
+//! nor keeps a tally, and the environment variable is never read. Every record
+//! point is host code, so emitted CLIF does not depend on the census. Nothing
+//! here writes to a standard stream: the in-process tally is read by unit
+//! tests, and `CRANELISP_CATEGORY_CENSUS=<path>` appends one line per reported
+//! record to that file, so a suite run aggregates across every process it
+//! spawns.
 
 use cranelisp_types::{CallableOrigin, CodeStore, Decl, ModuleFullPath, Symbol, Type};
 
@@ -39,6 +41,7 @@ impl Partition {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn name(self) -> &'static str {
         match self {
             Partition::Ctor => "Ctor",
@@ -77,6 +80,7 @@ impl Shape {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn name(self) -> &'static str {
         match self {
             Shape::Var => "var",
@@ -122,6 +126,7 @@ impl FieldClass {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn name(self) -> &'static str {
         match self {
             FieldClass::Concrete => "concrete",
@@ -140,6 +145,7 @@ pub(crate) enum Declaration {
 }
 
 impl Declaration {
+    #[cfg(debug_assertions)]
     fn name(self) -> &'static str {
         match self {
             Declaration::Full => "full",
@@ -162,8 +168,11 @@ pub(crate) enum Record {
         class: FieldClass,
         declaration: Declaration,
     },
+    /// One codegen target compiled under the census.
+    Frame,
 }
 
+#[cfg(debug_assertions)]
 impl Record {
     /// Whether the record is written to the census file. A concrete read of a
     /// fully declared constructor is counted in the tally only.
@@ -184,6 +193,7 @@ impl Record {
             Record::Release(shape) => ["release", shape.name(), "-"],
             Record::Absent => ["absent", "absent", "-"],
             Record::Field { class, declaration } => ["field", declaration.name(), class.name()],
+            Record::Frame => ["frame", "-", "-"],
         }
     }
 }
@@ -211,13 +221,15 @@ impl Frame {
     }
 
     /// The frame for codegen target `symbol` of `module`, whose binding
-    /// carries `declaration`.
+    /// carries `declaration`. Selecting the target records its frame.
     pub(crate) fn of_target<C: CodeStore>(
         declaration: Option<&Decl<C>>,
         module: &ModuleFullPath,
         symbol: &Symbol,
     ) -> Self {
-        Frame::new(Partition::of(declaration), module, symbol)
+        let frame = Frame::new(Partition::of(declaration), module, symbol);
+        record(&frame, || Record::Frame);
+        frame
     }
 
     /// A `Plain` frame for a fixture that builds a compiler by hand.
@@ -231,13 +243,14 @@ impl Frame {
     }
 }
 
-/// Count `record` against `frame`.
+/// Count the record `observe` builds against `frame`. A release build never
+/// calls `observe`, so no classification work runs outside the census.
 #[inline]
-pub(crate) fn record(frame: &Frame, record: Record) {
+pub(crate) fn record(frame: &Frame, observe: impl FnOnce() -> Record) {
     #[cfg(debug_assertions)]
-    sink::record(frame, record);
+    sink::record(frame, observe());
     #[cfg(not(debug_assertions))]
-    let _ = (frame, record);
+    let _ = (frame, observe);
 }
 
 #[cfg(debug_assertions)]

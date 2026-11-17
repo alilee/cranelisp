@@ -380,7 +380,7 @@ where
         // representation → `Mixed` (the guarded RC path).
         // `design/backend/transitive-drop-glue.md` §4.1 + FIXME 0903.
         Err(_) => {
-            census::record(census_frame, Record::Retain(Shape::of_residual(ty)));
+            census::record(census_frame, || Record::Retain(Shape::of_residual(ty)));
             HeapCategory::Mixed
         }
     }

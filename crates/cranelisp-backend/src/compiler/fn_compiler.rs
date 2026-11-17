@@ -289,7 +289,7 @@ where
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
             if ty.is_none() {
-                census::record(&compiler.census, Record::Absent);
+                census::record(&compiler.census, || Record::Absent);
             }
             compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
         }
@@ -592,10 +592,9 @@ where
             return Ok(());
         }
         if cranelisp_types::ConcreteType::from_type(ty).is_err() {
-            census::record(
-                &self.census,
-                Record::Release(census::Shape::of_residual(ty)),
-            );
+            census::record(&self.census, || {
+                Record::Release(census::Shape::of_residual(ty))
+            });
             let dealloc = self.ctx.dealloc_func_id;
             heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
             return Ok(());

@@ -402,17 +402,14 @@ where
         let type_def = self
             .lookup_type_def(&fqtn)
             .ok_or_else(|| keying_drift(format!("type '{fqtn}' has no type definition")))?;
-        super::census::record(
-            census,
-            super::census::Record::Field {
-                class: super::census::FieldClass::of(type_def.type_params.len(), scrut_type),
-                declaration: if ctor.short_declaration {
-                    super::census::Declaration::Short
-                } else {
-                    super::census::Declaration::Full
-                },
+        super::census::record(census, || super::census::Record::Field {
+            class: super::census::FieldClass::of(type_def.type_params.len(), scrut_type),
+            declaration: if ctor.short_declaration {
+                super::census::Declaration::Short
+            } else {
+                super::census::Declaration::Full
             },
-        );
+        });
 
         let concrete_type_args: Vec<Type> = match scrut_type {
             Some(Type::ADT(_, args)) => args.clone(),
