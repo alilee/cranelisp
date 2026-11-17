@@ -1,6 +1,6 @@
 ---
 id: ACT-1062
-title: A match on a type whose fields mention its parameters out of declaration order binds each field with another parameter's type
+title: Consumers that pair a type's arguments with its field variables by first appearance give each field another parameter's type
 status: open
 priority: blocking
 from: qa
@@ -11,6 +11,8 @@ refers_to:
   - spec/06-pattern-matching.md
   - spec/12-runtime.md
   - crates/cranelisp-backend/src/compiler/context.rs::ctor_field_types
+  - src/display.rs::build_adt_subst
+  - crates/cranelisp-backend/src/compiler/trace_codegen.rs
   - design/backend/non-concrete-release-contract.md
   - tests/plan/s124-evidence-delta.md
 ---
@@ -58,6 +60,53 @@ controls and the full table are §8.2 of the
 - **Why coverage missed it:** no corpus type mentions its parameters out of
   declaration order.
 
+## Two consumers remain after row D1 (qa, 2026-11-18)
+
+`target/debug/cranelisp` built from `24c42430`. The twelve REPRO-1062
+subjects pass: the match and accessor legs are corrected by row D1
+(`dab46869`, `3deee350`, `24c42430`). The accessor leg went green on D1
+alone, and `design`(typecheck) confirms no accessor producer correction is
+owed.
+
+`shapes.cl`, imported at the REPL:
+
+```clojure
+(import [primitives [*]])
+(deftype (P a b) (MkP [:b y :a x]))
+(deftype (Q a b) (MkQ [:a x :b y]))
+(defn obsp [:(P Int String) p] (match p [(MkP y x) (add-i64 1 x)]))
+(defn obsq [:(Q Int String) q] (match q [(MkQ x y) (add-i64 1 x)]))
+(defn obsps [:(P Int Int) p] (match p [(MkP y x) (add-i64 y x)]))
+```
+
+| Leg | Required | Observed |
+|---|---|---|
+| Display subject: `(MkP "s" 2000)` | `:(shapes/P primitives/Int primitives/String) (P.MkP "s" 2000)` | signal 11 in `display::push_field_value`, reading 2000 as a string |
+| Display control: `(MkQ 2000 "s")`; `(MkP 7 2000)` | their values | as required |
+| Trace subject: `(trace (obsp (MkP "s" 2000)))` | a frame whose argument is `(P.MkP "s" 2000)` and result `2001` | signal 11 |
+| Trace control: `(trace (obsq (MkQ 2000 "s")))`; `(trace (obsps (MkP 7 2000)))` | their frames | as required |
+| Untraced: `(obsp (MkP "s" 2000))` | 2001 | as required |
+
+- **Mechanism, read at each seam and consistent with every leg.**
+  `src/display.rs::build_adt_subst` and the backend's
+  `schema::subst_for_ctor_fields`, which the trace descriptor baker in
+  `compiler/trace_codegen.rs` calls, pair type arguments with field
+  variables in order of first appearance. Found by `review` of B3 (trace)
+  and by `qa` (display).
+- **Predates S124.** The release build of 00:11 on 2026-11-18 faults on both
+  subjects.
+- **Lead, not executed:** the backend's schema generator
+  (`schema.rs`, the helper's other caller) uses the same pairing. `dev`(backend)
+  corrects the helper once for both callers or reports why the generator
+  differs.
+- **Owners:** `dev`(`src/`) for the display reader; `dev`(backend) for the
+  descriptor baker, with row B10 and
+  [ACT-1069](ACT-1069-trace-formats-one-word-adt-argument-as-tag-or-pointer-intake.md),
+  which correct the same baker's one-word case.
+- **Cells (`test`), REPRO-1062-e and REPRO-1062-f** of the evidence delta
+  §9.1, in `tests/match_field_parameter_order.rs`, with this filing's
+  `// defect:` class and the locus of each reader.
+
 ## Request
 
 1. `test` commits REPRO-1062-a to REPRO-1062-d of the
@@ -74,7 +123,8 @@ controls and the full table are §8.2 of the
 
 - Each REPRO-1062 subject fails by signal before step 1 and passes after it;
   every control passes throughout.
-- The accessor leg passes after step 1 and after the accessor producer
-  correction.
+- The accessor leg passes after step 1. Met.
+- REPRO-1062-e and REPRO-1062-f fail by signal before their corrections and
+  pass after them; their controls pass throughout.
 - `qa` adds the parameter-order axis to the definition-variants audit in
   `tests/plan/PLAN.md` and deletes this action.

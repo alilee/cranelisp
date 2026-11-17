@@ -30,8 +30,10 @@ ACT-1000. The adequacy record is
 [S122 evidence](../../tests/plan/s122-evidence-delta.md#act-1001-basket--classification-2026-09-27).
 
 - **P-1** is corrected and accepted by QA; see
-  [P-1 final adequacy](#p-1-final-adequacy--2026-09-28). What remains open
-  here is P-2 and P-3.
+  [P-1 final adequacy](#p-1-final-adequacy--2026-09-28).
+- **P-3** is corrected by S124 T1 (`a49bc340`) and accepted:
+  `spec_08_modules::impl_ambiguous_trait_names_both_candidates_neg` failed
+  before it and passes on `24c42430`. What remains open here is P-2.
 - **P-2** did not reproduce. `design` owes a ruling on the index source, and
   the user decides whether the §7.4.2a selection gap gets cells.
 
@@ -128,7 +130,7 @@ One cell in `tests/spec_08_modules.rs`, failing and not ignored:
 
 - P-1: met, with the conditions listed under
   [P-1 final adequacy](#p-1-final-adequacy--2026-09-28).
-- P-3: the user rules fix or defer.
+- P-3: met (S124 T1).
 - P-2: `design`'s ruling on the index source is recorded, and the user
   rules on §7.4.2a selection cells.
 

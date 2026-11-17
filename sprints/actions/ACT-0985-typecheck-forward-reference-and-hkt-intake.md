@@ -76,6 +76,38 @@ bodies each dispatch to the other.
   this refusal. Row T2's completion includes them reaching their value
   clause.
 
+## Corrected by T2; one shape held on a requirement question (qa, 2026-11-18)
+
+`target/debug/cranelisp` built from `24c42430`. The batch guard
+`spec_05_definitions::impl_body_uses_impl_declared_later_in_cluster` and
+T-Q7-d's REPL and `Opt`-first legs pass.
+
+One shape is still refused. With a second form for the same pair between the
+two implementations, the first body is checked before `Size Int` registers:
+
+```clojure
+(impl Size (Opt a) (defn size [o] (add-i64 1 (size 42))))
+(impl Size (Opt a) (defn size [o] (add-i64 2 (size 42))))
+(impl Size Int (defn size [n] n))
+(defn main [] (Pure (size (Yep 3))))
+```
+
+| Leg | Observed |
+|---|---|
+| Subject | refused at the first form: `no impl of trait p/Size for type primitives/Int` |
+| Control: the first form removed | 44 |
+| Control: `impl Size Int` first | 44 |
+| Control: a first form whose body dispatches nowhere | 44 |
+
+- **No cell is allocated.** The specification states replacement for an
+  `impl` re-entered in a later input (§5.4.5) and does not say whether two
+  forms for one pair in one cluster are a replacement or an error. Under
+  replacement the subject is a wrong reject; under an error it is refused
+  with another message. The question is with `spec`.
+- `design`(typecheck) records the shape as an
+  [open item](../../design/typecheck/traits.md#11-open-items), to repair on a
+  failing cell.
+
 ## Request
 
 Classify three source-read leads from the typecheck design reconciliation before
