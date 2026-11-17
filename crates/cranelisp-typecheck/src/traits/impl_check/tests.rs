@@ -1543,3 +1543,39 @@ fn impl_body_dispatch_with_no_impl_in_cluster_is_still_refused() {
     let err = check_cluster(&src).expect_err("no `Size Bool` exists in the cluster");
     assert!(err.message().contains("no impl of trait"), "{err:?}");
 }
+
+// spec: 03-types §3.10 — a dispatch from an implementation's body to the same
+// implementation at another instantiation is an ordinary dispatch; template
+// check runs no recursion judgment (monomorphisation.md §3.10.5 row 8). Each
+// re-entry shape checks and the implementation registers; with no caller, the
+// growing shape finalizes without error.
+#[test]
+fn reentry_shapes_check_at_template_time_without_a_caller() {
+    let header = "(deftype (Opt a) Nope (Yep [:a v]))\n\
+                  (deftrait Size (size [self] Int) (scale [self :Int k] Int) (deep [x] (size (Yep x))))\n\
+                  (defn ap [f v] (f v))\n\
+                  (impl Size Int (defn size [n] n) (defn scale [n k] k))\n";
+    for (shape, body) in [
+        ("growing", "(size (Yep o))"),
+        ("constant", "(size (Yep 0))"),
+        ("value", "(ap size (Yep 0))"),
+        ("partial application", "(ap (scale (Yep 0)) 2)"),
+        ("sibling at a nested type", "(scale (Yep o) 1)"),
+        ("default method", "(deep o)"),
+    ] {
+        let mut tc = tc_with_prims();
+        let src = format!(
+            "{header}(impl Size (Opt :Size a)\n\
+               (defn size [o] (match o [Nope 0 (Yep x) {body}]))\n\
+               (defn scale [o k] k))\n"
+        );
+        let sexps = cranelisp_frontend::parse(&src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program)
+            .unwrap_or_else(|e| panic!("{shape}: {e}"));
+        assert!(
+            tc.has_impl(&TraitName::from("Size"), &TypeName::from("Opt")),
+            "{shape}"
+        );
+    }
+}

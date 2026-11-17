@@ -615,7 +615,7 @@ fn forward_reference_polymorphic_call_creates_mono_variant() {
 //   mono-completeness: the fold helper mints ONLY the genuine concrete
 //   `reduce-loop$Int+Vec+Int+Int` instance, NOT the spurious partial
 //   `reduce-loop$Vec+Int+Int`. The spurious partial was minted by
-//   `monomorphise_inner_parametric_hops` recursing into `reduce`'s body
+//   `parametric_hop_successors` recursing into `reduce`'s body
 //   while `reduce` is still generic (`f`/`acc`/element are `reduce`'s own
 //   scheme vars), bypassing the all-args-concrete gate via the bare-var-
 //   result trigger. After part A's all-args-concrete guard + trigger collapse,

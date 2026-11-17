@@ -308,6 +308,9 @@ pub struct CheckState {
     /// cannot say they are templates; this set does. Installed by the window,
     /// read by every successor step, keyed by canonical identity.
     pub(crate) mono_window: Option<crate::traits::MonoWindow>,
+    /// The demands being minted, outermost first (§3.10.3). The mint pushes
+    /// its demand before its recheck and pops it after, on every arm.
+    pub(crate) mono_chain: Vec<crate::traits::ChainLink>,
     /// Per bare field spelling → the product types whose accessors were
     /// synthesised under it in this cluster. When a bare use of the spelling
     /// stays ambiguous, these supply the canonical alternatives (`Box.v`,
@@ -341,6 +344,7 @@ impl CheckState {
             deferred_self_call_dispatch: Vec::new(),
             mono_recheck_self: None,
             mono_window: None,
+            mono_chain: Vec::new(),
             accessor_owning_types: HashMap::new(),
             current_module: module,
         }

@@ -935,12 +935,12 @@ fn polymorphic_result_hops_monomorphise_with_concrete_result_type() {
 // module, the top-level pass (`collect_imported_constrained_calls`) collects
 // `(h1 neg)` and monomorphises `h1` re-checking its body in `h1`'s DEFINING
 // module (`hop`). The inner hop `(h2 f)` only becomes concrete during that
-// recheck, so `monomorphise_inner_parametric_hops` must follow the import
+// recheck, so `parametric_hop_successors` must follow the import
 // chain and re-monomorphise `h2` IN ITS DEFINING SCOPE (`hop`) — NOT in the
 // caller's module, where `h2` is not even imported.
 //
 // The bug this guards: `recheck_body_for_mono` restores `state.current_module`
-// to the caller (`caller`) BEFORE `monomorphise_inner_parametric_hops` runs.
+// to the caller (`caller`) BEFORE `parametric_hop_successors` runs.
 // The pre-fix gate computed `inner_home` against `recheck_module` (`hop`), so
 // a same-`recheck_module` inner hop got `None`, which made the recursive
 // `monomorphise_call` look `h2` up in the (restored) caller module — where it

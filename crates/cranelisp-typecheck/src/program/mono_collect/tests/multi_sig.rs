@@ -786,7 +786,7 @@ fn shadowed_parametric_in_concrete_caller_no_mint_fix_b() {
 
 // Fix B / FIXME 0653 — site 4 (mono-recheck epilogue, parametric hop). Inside a
 // monomorphised `poly$Int` body, a let-shadowed parametric `(tgt p)` MUST
-// resolve to the LOCAL — `monomorphise_inner_parametric_hops` MUST NOT record a
+// resolve to the LOCAL — `parametric_hop_successors` MUST NOT record a
 // `tgt$…` dispatch. Control: the unshadowed twin.
 #[test]
 fn shadowed_parametric_in_mono_body_no_record_fix_b() {

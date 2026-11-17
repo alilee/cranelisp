@@ -24,7 +24,7 @@ use cranelisp_types::Scheme;
 /// The ONE shared guard (P7): consumed by `collect_local_parametric_calls`,
 /// `collect_imported_constrained_calls`, `collect_constrained_calls_excluding_self`
 /// (pass-4 top-level collectors, reading `state.method_resolutions.var_refs`),
-/// and `resolve_inner_constrained_calls` / `monomorphise_inner_parametric_hops`
+/// and `resolve_inner_constrained_calls` / `parametric_hop_successors`
 /// (mono-recheck epilogue, reading the harvested `resolutions.var_refs`).
 pub(crate) fn callee_has_keyed_carrier(
     var_refs: &HashMap<Span, cranelisp_types::VarRef>,

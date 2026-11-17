@@ -54,6 +54,94 @@ impl MonoWindow {
     }
 }
 
+/// Spec §3.10's instantiation depth limit: a chain of implementation
+/// instantiations deeper than this is a type error. Spec admits any limit of
+/// at least 64.
+pub(crate) const INSTANTIATION_DEPTH_LIMIT: usize = 64;
+
+/// One implementation at one concrete implementing type: the counting unit
+/// of the depth limit (`monomorphisation.md` §3.10.3).
+#[derive(Clone, PartialEq)]
+struct ImplementationInstantiation {
+    shell: FQSymbol,
+    /// The concrete type the dispatch selected the implementation by; `None`
+    /// for a higher-kinded implementation, whose constructor is the shell's.
+    receiver: Option<Type>,
+}
+
+/// A successor demand found inside a rechecked instance (§3.10).
+struct Successor {
+    fn_name: Symbol,
+    demand: MonoDemand,
+    home: Option<ModuleFullPath>,
+    template: TemplateFn,
+    site: SuccessorSite,
+}
+
+/// A successor after its out-of-line preparation. Moved once, never stored.
+#[allow(clippy::large_enum_variant)]
+enum SuccessorStep {
+    /// The site is redirected to this key: installed, on the chain, or
+    /// settled without a recheck.
+    Redirect(Symbol),
+    /// No mono target: the site keeps its verdict.
+    Unsettled,
+    Mint(Box<MintInProgress>, ChainLink, Option<ModuleFullPath>),
+}
+
+/// Successor demands, boxed so the settling loop, live across the recursion,
+/// holds a pointer each.
+#[allow(clippy::vec_box)]
+type Successors = Vec<Box<Successor>>;
+
+/// A rechecked instance body's harvest: its own resolutions and expression
+/// types, and the successor demands still to settle.
+struct RecheckHarvest {
+    resolutions: MethodResolutions,
+    mono_expr_types: HashMap<Span, Type>,
+    successors: Successors,
+}
+
+/// Where a successor's instance is recorded: a call's dispatch, or a value
+/// reference.
+#[derive(Clone, Copy)]
+enum SuccessorSite {
+    Call(Span),
+    Value(Span),
+}
+
+/// What preparing a mint yields: an instance settled without a recheck (or
+/// no mono target), or an authored body to recheck with its chain element.
+enum PreparedMint {
+    Settled(Option<MonoDefn>),
+    Recheck(Box<MintInProgress>, ChainLink),
+}
+
+/// A mint between its preparation and completion.
+struct MintInProgress {
+    fn_name: Symbol,
+    scheme: Scheme,
+    origin: CallableOrigin,
+    link: InstanceLink,
+    instance_key: Symbol,
+    mangled_name: String,
+    concrete_param_types: Vec<Type>,
+    concrete_ret_ty: Type,
+    defn: DefnVariant,
+    wrap_defn: Defn,
+}
+
+/// A demand being minted: one element of the in-progress chain
+/// (`monomorphisation.md` §3.9 channel 5).
+pub(crate) struct ChainLink {
+    key: Symbol,
+    template: FQSymbol,
+    signature: Type,
+    implementation: Option<ImplementationInstantiation>,
+    /// Whether this element adds one to the chain's depth.
+    counts: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Constrained Instantiation
 // ---------------------------------------------------------------------------
@@ -191,31 +279,53 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         origin_base: Option<&Symbol>,
         local_template: Option<TemplateFn>,
     ) -> Result<Option<MonoDefn>, CranelispError> {
-        let call_span = demand.site;
-        // === P0 — lookup ===
-        // Look up the constrained fn (in its defining module when imported).
-        // `home` selects the lookup module; early `None` is the "not a mono
-        // target" signal callers depend on (`Ok(None)` vs `Ok(Some)`).
-        let constrained_fn =
-            match local_template.or_else(|| self.get_constrained_fn(state, fn_name, home)) {
-                Some(cf) => cf,
-                None => return Ok(None),
-            };
+        match self.prepare_mint(state, fn_name, demand, home, local_template)? {
+            PreparedMint::Settled(instance) => Ok(instance),
+            PreparedMint::Recheck(mint, link) => {
+                self.recheck_mint(state, mint, link, home, origin_base)
+            }
+        }
+    }
 
-        let scheme = constrained_fn.core.scheme.clone();
-        let template_body = constrained_fn.core.body.clone();
-        let origin = constrained_fn.core.origin.clone();
+    /// P0–P2: look up the template, reconstruct the signature from the demand
+    /// and check its key, verify constraints, and settle a synthesised
+    /// template directly. An authored body comes back boxed for its recheck,
+    /// with its chain element; a demand past the depth limit is refused here.
+    ///
+    /// Kept out of line so its locals are not live across the successor
+    /// recursion (`monomorphisation.md` §3.10.3, the chain is host recursion).
+    #[inline(never)]
+    fn prepare_mint(
+        &self,
+        state: &mut CheckState,
+        fn_name: &Symbol,
+        demand: &MonoDemand,
+        home: Option<&ModuleFullPath>,
+        local_template: Option<TemplateFn>,
+    ) -> Result<PreparedMint, CranelispError> {
+        let call_span = demand.site;
+        // `home` selects the lookup module; `None` is the "not a mono target"
+        // signal callers depend on (`Ok(None)` vs `Ok(Some)`).
+        let Some(constrained_fn) =
+            local_template.or_else(|| self.get_constrained_fn(state, fn_name, home))
+        else {
+            return Ok(PreparedMint::Settled(None));
+        };
+        let TemplateCore {
+            body: template_body,
+            scheme,
+            origin,
+        } = constrained_fn.core;
 
         // Reconstruct the complete signature from the demand before allocating an identity.
         // The fresh-variable mapping also owns constraint verification across modules.
         let (resolved, var_mapping) =
             self.instantiate_and_resolve(state, &scheme, &demand.type_args, call_span)?;
-
-        let concrete_param_types = if let Type::Fn(pts, _) = &resolved {
-            pts.clone()
-        } else {
-            return Ok(None);
+        let Type::Fn(concrete_param_types, concrete_ret_ty) = &resolved else {
+            return Ok(PreparedMint::Settled(None));
         };
+        let concrete_param_types = concrete_param_types.clone();
+        let concrete_ret_ty = (**concrete_ret_ty).clone();
 
         // Reject malformed template signatures before publication.
         if !concrete_param_types.iter().all(Type::is_concrete) {
@@ -244,70 +354,154 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
         let mangled_name = String::from(instance_key.as_ref());
 
-        // === P2 — verify constraints (module-switched) ===
         self.verify_mono_constraints(state, &scheme, &var_mapping, home, call_span)?;
-
-        let concrete_ret_ty = if let Type::Fn(_, ret) = &resolved {
-            *ret.clone()
-        } else {
-            return Ok(None);
-        };
 
         // Synthesized templates have no authored body or span-keyed check-run
         // sidecars.  Re-run their derivation at the concrete signature and
         // settle the ordinary instance directly (A-MINT); never send them
         // through the source-body recheck path below.
-        if let TemplateBody::Synth(synth) = template_body {
-            return self.monomorphise_synth(
-                state,
-                fn_name,
-                synth,
-                link,
-                &instance_key,
-                origin,
-                &mangled_name,
-                &concrete_param_types,
-                &concrete_ret_ty,
-            );
-        }
-        let TemplateBody::Ast(defn) = template_body else {
+        let defn = match template_body {
+            TemplateBody::Synth(synth) => {
+                return self
+                    .monomorphise_synth(
+                        state,
+                        fn_name,
+                        synth,
+                        link,
+                        &instance_key,
+                        origin,
+                        &mangled_name,
+                        &concrete_param_types,
+                        &concrete_ret_ty,
+                    )
+                    .map(PreparedMint::Settled);
+            }
+            TemplateBody::Ast(defn) => defn,
             // Uniform Rust templates are served through facades and do not
             // acquire a source/body instance in this engine.
-            return Ok(None);
+            _ => return Ok(PreparedMint::Settled(None)),
         };
 
-        // === P4 — recheck body + harvest ===
+        // The in-progress chain (§3.10.3): refuse a demand that would take the
+        // chain past the depth limit.
+        let chain_link = self.chain_link(state, &link, instance_key.clone(), &origin, &resolved);
+        if chain_link.counts && chain_depth(&state.mono_chain) >= INSTANTIATION_DEPTH_LIMIT {
+            return Err(depth_refusal(
+                &state.mono_chain,
+                &chain_link,
+                &origin,
+                call_span,
+            ));
+        }
+
         // `defn: DefnVariant` (S70 ConstrainedFn narrowing). Wrap in a
         // temporary single-variant `Defn` for the recheck helpers which
         // still take `&mut Defn`. The post-passes annotate THIS clone.
-        let mut wrap_defn = Defn {
+        let wrap_defn = Defn {
             name: fn_name.clone(),
             docstring: None,
             variants: vec![defn.clone()],
             visibility: Visibility::Public,
             span: defn.span,
         };
-        // For a multi-signature clause, carry the concrete self-recursion
-        // identity into this recheck only. The previous context is restored
-        // unconditionally so nested rechecks do not inherit it.
-        let saved_mono_recheck_self = std::mem::replace(
+        Ok(PreparedMint::Recheck(
+            Box::new(MintInProgress {
+                fn_name: fn_name.clone(),
+                scheme,
+                origin,
+                link,
+                instance_key,
+                mangled_name,
+                concrete_param_types,
+                concrete_ret_ty,
+                defn,
+                wrap_defn,
+            }),
+            chain_link,
+        ))
+    }
+
+    /// P4: recheck the body with the demand held on the chain, then settle
+    /// its successors. This frame and the settling frames are the ones live
+    /// across the successor recursion (§3.10.3: the chain is host recursion),
+    /// so they hold only boxes; the work is done out of line.
+    fn recheck_mint(
+        &self,
+        state: &mut CheckState,
+        mut mint: Box<MintInProgress>,
+        chain_link: ChainLink,
+        home: Option<&ModuleFullPath>,
+        origin_base: Option<&Symbol>,
+    ) -> Result<Option<MonoDefn>, CranelispError> {
+        let saved_recursion = self.enter_mint(state, &mint, chain_link, origin_base);
+        let harvest = self.recheck_and_resolve_inner(
+            state,
+            &mut mint.wrap_defn,
+            &mint.concrete_param_types,
+            &mint.concrete_ret_ty,
+            home,
+        );
+        let settled = match harvest {
+            Ok(mut harvest) => self
+                .settle_successors(state, &mut harvest)
+                .map(|()| harvest),
+            Err(error) => Err(error),
+        };
+        state.mono_chain.pop();
+        state.mono_recheck_self = saved_recursion;
+        self.complete_mint(state, mint, settled?, home).map(Some)
+    }
+
+    /// Hold the demand on the chain and, for a multi-signature clause, carry
+    /// its concrete self-recursion identity into this recheck only. Returns
+    /// the context to restore, unconditionally, when the recheck ends.
+    #[inline(never)]
+    fn enter_mint(
+        &self,
+        state: &mut CheckState,
+        mint: &MintInProgress,
+        chain_link: ChainLink,
+        origin_base: Option<&Symbol>,
+    ) -> Option<crate::checker::MonoRecursionContext> {
+        state.mono_chain.push(chain_link);
+        std::mem::replace(
             &mut state.mono_recheck_self,
             origin_base.map(|base| crate::checker::MonoRecursionContext {
                 base: base.clone(),
-                instance: JitSymbol::from(mangled_name.as_str()),
-                params: concrete_param_types.clone(),
-                ret: concrete_ret_ty.clone(),
+                instance: JitSymbol::from(mint.mangled_name.as_str()),
+                params: mint.concrete_param_types.clone(),
+                ret: mint.concrete_ret_ty.clone(),
             }),
-        );
-        let recheck_result = self.recheck_and_resolve_inner(
-            state,
-            &mut wrap_defn,
-            &concrete_param_types,
-            &concrete_ret_ty,
-            home,
-        );
-        state.mono_recheck_self = saved_mono_recheck_self;
-        let (mut resolutions, mono_expr_types) = recheck_result?;
+        )
+    }
+
+    /// P5–P7: self-recursion dispatch, the annotated instance, its codegen
+    /// view and its installation.
+    #[inline(never)]
+    fn complete_mint(
+        &self,
+        state: &mut CheckState,
+        mint: Box<MintInProgress>,
+        harvest: Box<RecheckHarvest>,
+        home: Option<&ModuleFullPath>,
+    ) -> Result<MonoDefn, CranelispError> {
+        let RecheckHarvest {
+            mut resolutions,
+            mono_expr_types,
+            ..
+        } = *harvest;
+        let MintInProgress {
+            fn_name,
+            scheme,
+            origin,
+            link,
+            instance_key,
+            mangled_name,
+            concrete_param_types,
+            concrete_ret_ty,
+            defn,
+            wrap_defn,
+        } = *mint;
 
         // === P5 — self-recursion dispatch (0374) ===
         self.record_self_recursion_dispatch(
@@ -315,7 +509,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state,
             &scheme,
             &link,
-            fn_name,
+            &fn_name,
             &mangled_name,
             &mono_expr_types,
             &mut resolutions,
@@ -325,7 +519,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // === P6 — build annotated mono defn ===
         let mono_defn_ast = self.build_annotated_mono_defn(
             state,
-            fn_name,
+            &fn_name,
             &mangled_name,
             &defn,
             &mono_expr_types,
@@ -334,7 +528,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
 
         // === P7 — concrete-boundary view + register ===
-        let mono_defn = self.finalize_mono_codegen_view(
+        self.finalize_mono_codegen_view(
             state,
             mono_defn_ast,
             link,
@@ -345,9 +539,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &concrete_ret_ty,
             defn.span,
             &resolutions,
-        )?;
-
-        Ok(Some(mono_defn))
+        )
     }
 
     /// Re-synthesise a constructor/accessor template at concrete arguments.
@@ -496,8 +688,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         verify_result
     }
 
-    /// P4 — re-check the mono body with concrete types and harvest resolutions,
-    /// then propagate the concrete instantiation through inner hops.
+    /// P4 — re-check the mono body with concrete types and harvest its
+    /// resolutions and its successor demands, which the caller settles.
     ///
     /// `recheck_body_for_mono` saves/restores `method_resolutions`/`expr_types`/
     /// `pending_auto_curry`/`current_module` itself, and the post-passes
@@ -513,11 +705,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// saw it with concrete types. Without monomorphising `h2` HERE, `h2`'s
     /// result stays `Type::Var` → the same RC-guard SIGSEGV one hop deeper.
     ///
-    /// So after re-checking this hop's body we recursively monomorphise the
-    /// inner polymorphic-result hops it reached, using the concrete types now
-    /// pinned in `mono_expr_types`. `monomorphise_inner_parametric_hops`
-    /// isolates `state.subst` around EACH inner recursion (0344) — that
-    /// isolation stays inside that fn; do NOT lift it to this driver.
+    /// So after re-checking this hop's body we collect the inner
+    /// polymorphic-result hops it reached, using the concrete types now pinned
+    /// in `mono_expr_types`. `settle_successor` isolates `state.subst` around
+    /// EACH inner recursion (0344) — that isolation stays there; do NOT lift
+    /// it to this driver.
+    #[inline(never)]
     fn recheck_and_resolve_inner(
         &self,
         state: &mut CheckState,
@@ -525,35 +718,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
         home: Option<&ModuleFullPath>,
-    ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {
-        let (mut resolutions, mono_expr_types) = self.recheck_body_for_mono(
+    ) -> Result<Box<RecheckHarvest>, CranelispError> {
+        let (resolutions, mono_expr_types) = self.recheck_body_for_mono(
             state,
             wrap_defn,
             concrete_param_types,
             concrete_ret_ty,
             home,
         )?;
-
-        self.monomorphise_inner_parametric_hops(
-            state,
-            wrap_defn,
-            &mono_expr_types,
-            &mut resolutions,
-            home,
-        )?;
-        self.monomorphise_inner_function_values(
-            state,
-            wrap_defn,
-            &mono_expr_types,
-            &mut resolutions,
-        )?;
-
-        // §11.8.3 leg R2 — overloaded-base dispatch calls (`(h 1)→h$Int`) inside
-        // the minted body are now resolved by the SCOPED DRAIN inside
-        // `recheck_body_for_mono` (the ONE drain, full bifurcation + ret unify),
-        // so their carriers already ride `resolutions` here — no separate scan.
-
-        Ok((resolutions, mono_expr_types))
+        let successors =
+            self.instance_successors(state, wrap_defn, &mono_expr_types, &resolutions, home);
+        Ok(Box::new(RecheckHarvest {
+            resolutions,
+            mono_expr_types,
+            successors,
+        }))
     }
 
     /// P5 — record SigDispatch for monomorphic self-recursion (FIXME 0374).
@@ -623,26 +802,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             };
             if demand.instance_link() == *link {
-                resolutions.resolved_calls.insert(
+                record_instance_dispatch(
+                    resolutions,
+                    current_module,
                     *self_span,
-                    ResolvedCall::SigDispatch {
-                        target: CallableTarget::Binding(FQSymbol {
-                            module: current_module.clone(),
-                            symbol: Symbol::from(mangled_name),
-                        }),
-                    },
-                );
-                // S110 0583 leg 1 (mono self-recursion carrier, FIXME 0616):
-                // the mono variant is registered in the caller's current module
-                // (`register_mono_entry`), so the storage FQ is
-                // `{current_module, mangled_name}`. Apply-span dispatch verdict
-                // (S114 carrier flip).
-                resolutions.apply_refs.insert(
-                    *self_span,
-                    ApplyRef::Dispatch(FQSymbol {
-                        module: current_module.clone(),
-                        symbol: Symbol::from(mangled_name),
-                    }),
+                    &Symbol::from(mangled_name),
                 );
             }
         }
@@ -722,7 +886,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// instance (`reduce-loop$Vec+Int+Int`, the 0344 fold) whose body retained
     /// scheme-quantified vars, and an `allowed_vars` carve-out admitted it with
     /// no `MonoExpr`. Part A suppresses that mint at the collection gate
-    /// (`local_parametric_call_triggers` + `monomorphise_inner_parametric_hops`
+    /// (`local_parametric_call_triggers` + `parametric_hop_successors`
     /// now require ALL ARGS CONCRETE). With no partial instance minted, every
     /// instance reaching this seam is fully concrete ⇒ `from_expr` succeeds on
     /// EVERY one ⇒ the carve-out is dead code, deleted. The deletion IS the
@@ -1101,39 +1265,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok((resolutions, mono_expr_types))
     }
 
-    /// Recursively monomorphise the polymorphic-result hops a just-rechecked
-    /// mono body reached (FIXME 0373, Tier 1 — multi-hop concrete-type
-    /// propagation; /arch ruling (A)).
+    /// The free-function hops a just-rechecked mono body reached (FIXME 0373,
+    /// Tier 1 — multi-hop concrete-type propagation; /arch ruling (A)).
     ///
-    /// A nested hop can settle only during its parent's recheck. Derive its
-    /// complete demand from that recheck's captured maps before minting it.
+    /// A nested hop can settle only during its parent's recheck, so its
+    /// complete demand is derived from that recheck's captured maps.
     ///
-    /// For each inner `Apply`-of-bare-`Var` call whose callee chain-resolves to a
-    /// monomorphisable polymorphic `Def` (constrained OR pure-parametric), with
-    /// its full use type settled in `mono_expr_types`, this recursively
-    /// invokes [`Self::monomorphise_call`] (which itself recurses into deeper
-    /// hops and registers the inner mono entry + slot via `register_mono_entry`),
-    /// then records the inner call site's SigDispatch. The recheck module is the
-    /// callee's HOME: an inner hop reached from an imported hop lives in `home`;
-    /// a local hop lives in `current_module`. A callee that resolves to a
-    /// different module than the recheck scope is handed `Some(its_home)` so its
-    /// own body re-checks in the right import context (the 0355 module switch).
-    fn monomorphise_inner_parametric_hops(
+    /// For each inner `Apply`-of-bare-`Var` call read through its callee whose
+    /// callee resolves to a monomorphisable polymorphic `Def` (constrained OR
+    /// pure-parametric) or to a template of the window, with its full use type
+    /// settled in `mono_expr_types`, the demand is collected. The callee's
+    /// HOME is the recheck module for an inner hop reached from an imported
+    /// hop; a callee in a different module than the recheck scope gets
+    /// `Some(its_home)` so its own body re-checks in the right import context
+    /// (the 0355 module switch).
+    fn parametric_hop_successors(
         &self,
-        state: &mut CheckState,
+        state: &CheckState,
         defn: &Defn,
         mono_expr_types: &HashMap<Span, Type>,
-        resolutions: &mut MethodResolutions,
+        resolutions: &MethodResolutions,
         home: Option<&ModuleFullPath>,
-    ) -> Result<(), CranelispError> {
+        successors: &mut Successors,
+    ) {
         // The scope the body was re-checked in: `home` for an imported hop, else
         // the caller's current module.
         let recheck_module = home
             .cloned()
             .unwrap_or_else(|| state.current_module.clone());
 
-        // Collect inner Apply-of-bare-Var call sites first (immutable walk), then
-        // monomorphise (mutable) — avoids borrowing `self`/`state` across the walk.
         let mut inner_sites: Vec<(Symbol, Vec<Span>, Span)> = Vec::new();
         // FIXME 0653 — gate the name-scan on the recheck's carriers: a §4.6 local
         // shadow of a parametric hop carries `VarRef::Local`, not the
@@ -1147,8 +1307,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         );
 
         for (inner_name, arg_spans, inner_span) in &inner_sites {
-            if resolutions.resolved_calls.contains_key(inner_span) {
-                continue; // already resolved (trait method / inner constrained self-rec)
+            // A `Dispatch` verdict classifies the site by itself: a template
+            // target is the dispatch hop's, a concrete one is settled. Only a
+            // site read through its callee is a free-function hop.
+            if matches!(
+                resolutions.apply_refs.get(inner_span),
+                Some(ApplyRef::Dispatch(_))
+            ) || resolutions.resolved_calls.contains_key(inner_span)
+            {
+                continue;
             }
             // Resolve the inner callee's terminal entry + its home, rooted in the
             // module the body was re-checked in.
@@ -1173,23 +1340,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             } else {
                 Some(callee.module.clone())
             };
-            // Isolate `state.subst` around the inner-mono recursion (FIXME 0373,
-            // preserves 0344). The sole obligation of this recursion is to CREATE
-            // the inner hop's concrete mono entry (`register_mono_entry`, with its
-            // own GOT slot) so its result type is concrete at codegen. We must NOT
-            // let the recursion's call-result unification (the FIXME 0349
-            // propagation in `monomorphise_call` ~line 1339) leak back into the
-            // PARENT's substitution: when the inner callee is a recursive helper
-            // sharing the parent's accumulator var (the 0344 `reduce`/`reduce-loop`
-            // fold), that leak pins the accumulator and re-collapses the
-            // polymorphic scheme 0344 deliberately keeps. The inner entry is built
-            // from `inner_arg_types` (already concrete, captured before this) +
-            // the isolated subst, so isolation does not affect what gets created.
-            let local_template = local_core.map(|core| TemplateFn {
-                core,
-                template_target: Some(CallableTarget::Binding(callee.clone())),
-            });
-            let template = local_template
+            let template = local_core
+                .map(|core| TemplateFn {
+                    core,
+                    template_target: Some(CallableTarget::Binding(callee.clone())),
+                })
                 .or_else(|| self.get_constrained_fn(state, &callee.symbol, Some(&callee.module)));
             let Some(template) = template else {
                 continue;
@@ -1208,51 +1363,257 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ) else {
                 continue;
             };
-            let saved_subst = state.subst.clone();
-            let inner_mono = self.monomorphise_call(
+            successors.push(Box::new(Successor {
+                fn_name: callee.symbol.clone(),
+                demand,
+                home: inner_home,
+                template,
+                site: SuccessorSite::Call(*inner_span),
+            }));
+        }
+    }
+
+    /// The dispatch hops (`monomorphisation.md` §3.10.1): each site whose
+    /// `Dispatch` verdict names an AST-bodied template, every argument
+    /// concrete in this instance's own expression types, is demanded at its
+    /// use type. A call spelled as the enclosing method's own name is such a
+    /// site like any other.
+    fn dispatch_hop_successors(
+        &self,
+        state: &CheckState,
+        defn: &Defn,
+        mono_expr_types: &HashMap<Span, Type>,
+        resolutions: &MethodResolutions,
+        successors: &mut Successors,
+    ) {
+        let mut sites = Vec::new();
+        collect_apply_sites(defn.body(), &mut sites);
+        for (arg_spans, site) in sites {
+            let Some(ApplyRef::Dispatch(target)) = resolutions.apply_refs.get(&site).cloned()
+            else {
+                continue;
+            };
+            let admitted = arg_spans.iter().all(|span| {
+                mono_expr_types
+                    .get(span)
+                    .is_some_and(|ty| apply(&state.subst, ty).is_concrete())
+            });
+            if !admitted {
+                continue;
+            }
+            let Some(template) = self.dispatch_template(state, &target) else {
+                continue;
+            };
+            let Some(use_type) =
+                Self::mono_call_type(state, mono_expr_types, resolutions, &arg_spans, site)
+            else {
+                continue;
+            };
+            let Some(demand) = self.derive_mono_demand(
                 state,
-                &callee.symbol,
-                &demand,
-                inner_home.as_ref(),
-                None,
-                Some(template),
-            );
-            state.subst = saved_subst;
-            if let Some(mono) = inner_mono? {
-                resolutions.resolved_calls.insert(
-                    *inner_span,
-                    ResolvedCall::SigDispatch {
-                        target: CallableTarget::Binding(FQSymbol {
-                            module: state.current_module.clone(),
-                            symbol: mono.defn.name.clone(),
-                        }),
-                    },
-                );
-                // S110 0583 leg 1 (inner parametric-hop carrier, FIXME 0616):
-                // `register_mono_entry` stored this instance in the caller's
-                // current module — key its carrier there. Apply-span dispatch
-                // verdict (S114 carrier flip).
-                resolutions.apply_refs.insert(
-                    *inner_span,
-                    ApplyRef::Dispatch(FQSymbol {
-                        module: state.current_module.clone(),
-                        symbol: Symbol::from(mono.defn.name.as_ref()),
-                    }),
-                );
+                CallableTarget::Binding(target.clone()),
+                &template.core.scheme,
+                &use_type,
+                site,
+            ) else {
+                continue;
+            };
+            let home = (target.module != state.current_module).then(|| target.module.clone());
+            successors.push(Box::new(Successor {
+                fn_name: target.symbol.clone(),
+                demand,
+                home,
+                template,
+                site: SuccessorSite::Call(site),
+            }));
+        }
+    }
+
+    /// The template a `Dispatch` verdict names, when it is an AST-bodied
+    /// template (an implementation-method template). The one predicate the
+    /// cluster scan and the instance step share.
+    pub(crate) fn dispatch_template(
+        &self,
+        state: &CheckState,
+        target: &FQSymbol,
+    ) -> Option<TemplateFn> {
+        let template = self.get_constrained_fn(state, &target.symbol, Some(&target.module))?;
+        matches!(template.core.body, TemplateBody::Ast(_)).then_some(template)
+    }
+
+    /// Every successor demand of a rechecked instance body, in step order:
+    /// free-function hops, function values, dispatch hops
+    /// (`monomorphisation.md` §3.10). Derived before any is minted; each mint
+    /// restores the substitution, so the order of derivation is immaterial.
+    /// Out of line so its locals are not live across the recursion.
+    #[inline(never)]
+    fn instance_successors(
+        &self,
+        state: &CheckState,
+        defn: &Defn,
+        mono_expr_types: &HashMap<Span, Type>,
+        resolutions: &MethodResolutions,
+        home: Option<&ModuleFullPath>,
+    ) -> Successors {
+        let mut successors = Vec::new();
+        self.parametric_hop_successors(
+            state,
+            defn,
+            mono_expr_types,
+            resolutions,
+            home,
+            &mut successors,
+        );
+        self.function_value_successors(state, defn, mono_expr_types, resolutions, &mut successors);
+        self.dispatch_hop_successors(state, defn, mono_expr_types, resolutions, &mut successors);
+        successors
+    }
+
+    /// Settle each successor and redirect its site to the instance.
+    fn settle_successors(
+        &self,
+        state: &mut CheckState,
+        harvest: &mut RecheckHarvest,
+    ) -> Result<(), CranelispError> {
+        for successor in std::mem::take(&mut harvest.successors) {
+            let site = successor.site;
+            if let Some(instance) = self.settle_successor(state, successor)? {
+                record_successor(state, &mut harvest.resolutions, site, instance);
             }
         }
         Ok(())
     }
 
-    /// Mint concrete instances for bare function references used as values in a
-    /// rechecked mono body. Apply callees keep their existing dispatch path.
-    fn monomorphise_inner_function_values(
+    /// Settle one successor demand (`monomorphisation.md` §3.10.1, §3.10.3):
+    /// reuse an installed instance, redirect to one still being minted on the
+    /// chain, or mint. Returns the instance key the site is redirected to.
+    ///
+    /// `state.subst` is isolated around the mint (FIXME 0373, preserves
+    /// 0344): the inner recursion's call-result unification must not leak
+    /// into the parent's substitution and re-collapse a fold accumulator.
+    fn settle_successor(
         &self,
         state: &mut CheckState,
+        successor: Box<Successor>,
+    ) -> Result<Option<Symbol>, CranelispError> {
+        let saved_subst = state.subst.clone();
+        let settled = match self.prepare_successor(state, successor) {
+            Ok(SuccessorStep::Redirect(key)) => Ok(Some(key)),
+            Ok(SuccessorStep::Unsettled) => Ok(None),
+            Ok(SuccessorStep::Mint(mint, link, home)) => self
+                .recheck_mint(state, mint, link, home.as_ref(), None)
+                .map(|mono| mono.map(|mono| mono.defn.name)),
+            Err(error) => Err(error),
+        };
+        state.subst = saved_subst;
+        settled
+    }
+
+    /// Everything a successor's settlement does before its recheck, out of
+    /// line: the redirect checks, then the mint's preparation.
+    #[inline(never)]
+    fn prepare_successor(
+        &self,
+        state: &mut CheckState,
+        successor: Box<Successor>,
+    ) -> Result<SuccessorStep, CranelispError> {
+        let Successor {
+            fn_name,
+            demand,
+            home,
+            template,
+            ..
+        } = *successor;
+        let key = Self::demand_instance_key(&demand, &template.core.scheme)?;
+        if self.instance_installed(state, &key) || state.mono_chain.iter().any(|l| l.key == key) {
+            return Ok(SuccessorStep::Redirect(key));
+        }
+        Ok(
+            match self.prepare_mint(state, &fn_name, &demand, home.as_ref(), Some(template))? {
+                PreparedMint::Settled(instance) => SuccessorStep::Redirect(match instance {
+                    Some(mono) => mono.defn.name,
+                    None => return Ok(SuccessorStep::Unsettled),
+                }),
+                PreparedMint::Recheck(mint, link) => SuccessorStep::Mint(mint, link, home),
+            },
+        )
+    }
+
+    #[inline(never)]
+    fn instance_installed(&self, state: &CheckState, key: &Symbol) -> bool {
+        self.current_symbol_table(state)
+            .view()
+            .lookup(key)
+            .and_then(cranelisp_types::Binding::callable)
+            .is_some_and(|callable| matches!(callable.arm.life, Life::Concrete { .. }))
+    }
+
+    /// The chain element for a demand about to be minted.
+    fn chain_link(
+        &self,
+        state: &CheckState,
+        link: &InstanceLink,
+        key: Symbol,
+        origin: &CallableOrigin,
+        signature: &Type,
+    ) -> ChainLink {
+        let template = match &link.template {
+            CallableTarget::Binding(owner) | CallableTarget::OverloadArm { owner, .. } => {
+                owner.clone()
+            }
+            _ => FQSymbol {
+                module: state.current_module.clone(),
+                symbol: key.clone(),
+            },
+        };
+        let implementation = match origin {
+            CallableOrigin::TraitMethod {
+                shell,
+                trait_name,
+                impl_type,
+            } => Some(ImplementationInstantiation {
+                shell: shell.clone(),
+                receiver: (!self.is_higher_kinded_trait(trait_name))
+                    .then(|| receiver_in(signature, impl_type))
+                    .flatten(),
+            }),
+            _ => None,
+        };
+        let counts = implementation.as_ref().is_some_and(|instantiation| {
+            let mut at_instantiation = state
+                .mono_chain
+                .iter()
+                .filter(|element| element.implementation.as_ref() == Some(instantiation))
+                .peekable();
+            at_instantiation.peek().is_none()
+                || at_instantiation.any(|element| element.template == template)
+        });
+        ChainLink {
+            key,
+            template,
+            signature: signature.clone(),
+            implementation,
+            counts,
+        }
+    }
+
+    fn is_higher_kinded_trait(&self, trait_name: &cranelisp_types::FQTraitName) -> bool {
+        self.probe_module_entry_owned(&trait_name.module, trait_name.name.as_ref())
+            .is_some_and(|binding| {
+                matches!(&binding.declaration, cranelisp_types::Decl::Trait(record)
+                    if !record.info.type_params.is_empty())
+            })
+    }
+
+    /// Bare function references used as values in a rechecked mono body. Apply callees keep their existing dispatch path.
+    fn function_value_successors(
+        &self,
+        state: &CheckState,
         defn: &Defn,
         mono_expr_types: &HashMap<Span, Type>,
-        resolutions: &mut MethodResolutions,
-    ) -> Result<(), CranelispError> {
+        resolutions: &MethodResolutions,
+        successors: &mut Successors,
+    ) {
         let mut sites = Vec::new();
         collect_non_callee_var_values(defn.body(), &mut sites);
 
@@ -1296,29 +1657,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             ) else {
                 continue;
             };
-            let instance_key = Self::demand_instance_key(&demand, &template.core.scheme)?;
-
-            let saved_subst = state.subst.clone();
-            let mono = self.monomorphise_call(
-                state,
-                &callee.symbol,
-                &demand,
-                (callee.module != state.current_module).then_some(&callee.module),
-                None,
-                Some(template),
-            );
-            state.subst = saved_subst;
-            if mono?.is_some() {
-                resolutions.var_refs.insert(
-                    span,
-                    VarRef::Global(FQSymbol {
-                        module: state.current_module.clone(),
-                        symbol: instance_key,
-                    }),
-                );
-            }
+            let home = (callee.module != state.current_module).then(|| callee.module.clone());
+            successors.push(Box::new(Successor {
+                fn_name: callee.symbol.clone(),
+                demand,
+                home,
+                template,
+                site: SuccessorSite::Value(span),
+            }));
         }
-        Ok(())
     }
 
     /// Look up a constrained function by name.
@@ -1366,7 +1713,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 /// calls a fn makes to ITSELF (generic self-recursion is not a concrete mono
 /// site — its arg types are the defn's own generic vars). Records
 /// `(callee_name, arg_spans, call_span)`. Used by
-/// `monomorphise_inner_parametric_hops` (FIXME 0373) to find inner hops to
+/// `parametric_hop_successors` (FIXME 0373) to find inner hops to
 /// recursively monomorphise after a parent hop's body re-check.
 pub(super) fn collect_apply_var_calls(
     expr: &Expr,
@@ -1387,6 +1734,158 @@ pub(super) fn collect_apply_var_calls(
     crate::program::for_each_child_expr(expr, |child| {
         collect_apply_var_calls(child, self_name, var_refs, out)
     });
+}
+
+/// Record that the call at `span` dispatches to the concrete `instance`
+/// installed in `module`: the one redirect writer of the cluster scan and of
+/// every successor step inside an instance (`monomorphisation.md` §3.10.1).
+/// A partial application keeps its auto-curry shape with the instance as its
+/// target.
+pub(crate) fn record_instance_dispatch(
+    resolutions: &mut MethodResolutions,
+    module: &ModuleFullPath,
+    span: Span,
+    instance: &Symbol,
+) {
+    if span == Span::SYNTHETIC {
+        return;
+    }
+    let target = FQSymbol {
+        module: module.clone(),
+        symbol: instance.clone(),
+    };
+    let resolution = match resolutions.resolved_calls.get(&span) {
+        Some(ResolvedCall::AutoCurry {
+            applied_count,
+            total_count,
+            trait_resolution,
+            ..
+        }) => ResolvedCall::AutoCurry {
+            target_name: instance.clone(),
+            applied_count: *applied_count,
+            total_count: *total_count,
+            trait_resolution: trait_resolution.clone(),
+        },
+        _ => ResolvedCall::SigDispatch {
+            target: CallableTarget::Binding(target.clone()),
+        },
+    };
+    resolutions.resolved_calls.insert(span, resolution);
+    resolutions
+        .apply_refs
+        .insert(span, ApplyRef::Dispatch(target));
+}
+
+/// Redirect a successor's site to its instance, installed in the caller's
+/// current module (`register_mono_entry`).
+#[inline(never)]
+fn record_successor(
+    state: &CheckState,
+    resolutions: &mut MethodResolutions,
+    site: SuccessorSite,
+    instance: Symbol,
+) {
+    let module = &state.current_module;
+    match site {
+        SuccessorSite::Call(span) => record_instance_dispatch(resolutions, module, span, &instance),
+        SuccessorSite::Value(span) => {
+            resolutions.var_refs.insert(
+                span,
+                VarRef::Global(FQSymbol {
+                    module: module.clone(),
+                    symbol: instance,
+                }),
+            );
+        }
+    }
+}
+
+/// Collect every `Apply` site with its argument spans.
+fn collect_apply_sites(expr: &Expr, out: &mut Vec<(Vec<Span>, Span)>) {
+    if let Expr::Apply { args, span, .. } = expr {
+        out.push((args.iter().map(Expr::span).collect(), *span));
+    }
+    crate::program::for_each_child_expr(expr, |child| collect_apply_sites(child, out));
+}
+
+/// The concrete type a dispatch selected `impl_type`'s implementation by:
+/// the first type in the signature, parameters then result, whose head is
+/// the implementing type.
+fn receiver_in(signature: &Type, impl_type: &FQTypeName) -> Option<Type> {
+    fn find(ty: &Type, impl_type: &FQTypeName) -> Option<Type> {
+        if receiver_identity(ty).as_ref() == Some(impl_type) {
+            return Some(ty.clone());
+        }
+        match ty {
+            Type::Fn(params, ret) => params
+                .iter()
+                .chain(std::iter::once(ret.as_ref()))
+                .find_map(|ty| find(ty, impl_type)),
+            Type::ADT(_, args) | Type::TyConApp(_, args) => {
+                args.iter().find_map(|ty| find(ty, impl_type))
+            }
+            _ => None,
+        }
+    }
+    find(signature, impl_type)
+}
+
+/// The chain's depth: its elements that count (§3.10.3).
+fn chain_depth(chain: &[ChainLink]) -> usize {
+    chain.iter().filter(|link| link.counts).count()
+}
+
+/// The one depth diagnostic (`monomorphisation.md` §3.10.3): located at the
+/// successor's site, with the definition identity of the template whose
+/// instance body holds it.
+fn depth_refusal(
+    chain: &[ChainLink],
+    refused: &ChainLink,
+    origin: &CallableOrigin,
+    site: Span,
+) -> CranelispError {
+    let render = |ty: &Type| {
+        cranelisp_types::render_type(
+            ty,
+            cranelisp_types::PrimitiveNaming::Qualified,
+            cranelisp_types::VarNaming::Numbered,
+        )
+    };
+    let named = match origin {
+        CallableOrigin::TraitMethod {
+            trait_name,
+            impl_type,
+            ..
+        } => {
+            let member = refused
+                .template
+                .symbol
+                .as_ref()
+                .split_once('.')
+                .and_then(|(_, rest)| rest.split_once('$'))
+                .map_or(refused.template.symbol.as_ref(), |(member, _)| member);
+            format!("`{member}` of the implementation of `{trait_name}` for `{impl_type}`")
+        }
+        _ => format!("`{}`", refused.template),
+    };
+    let first = chain
+        .iter()
+        .find(|link| link.template == refused.template)
+        .or_else(|| chain.first())
+        .map_or_else(
+            || render(&refused.signature),
+            |link| render(&link.signature),
+        );
+    let mut location = ErrorLocation::from_span(site);
+    location.fq = chain.last().map(|holder| holder.template.clone());
+    CranelispError::TypeError {
+        message: format!(
+            "the instantiation of {named} exceeds the instantiation depth limit of \
+             {INSTANTIATION_DEPTH_LIMIT}: first instantiated at `{first}`, refused at `{}`",
+            render(&refused.signature)
+        ),
+        location,
+    }
 }
 
 /// Collect bare `Var` references in value positions. An `Apply` callee is a

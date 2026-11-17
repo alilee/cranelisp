@@ -214,45 +214,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     fn record_mono_dispatch(&self, state: &mut CheckState, span: Span, mangled: JitSymbol) {
-        if span == Span::SYNTHETIC {
-            return;
-        }
-        let resolution = match state.method_resolutions.resolved_calls.get(&span).cloned() {
-            Some(ResolvedCall::AutoCurry {
-                applied_count,
-                total_count,
-                trait_resolution,
-                ..
-            }) => {
-                state.method_resolutions.apply_refs.insert(
-                    span,
-                    ApplyRef::Dispatch(FQSymbol {
-                        module: state.current_module.clone(),
-                        symbol: Symbol::from(mangled.as_ref()),
-                    }),
-                );
-                ResolvedCall::AutoCurry {
-                    target_name: Symbol::from(mangled.as_ref()),
-                    applied_count,
-                    total_count,
-                    trait_resolution,
-                }
-            }
-            _ => {
-                let resolution = ResolvedCall::SigDispatch {
-                    target: CallableTarget::Binding(FQSymbol {
-                        module: state.current_module.clone(),
-                        symbol: Symbol::from(mangled.as_ref()),
-                    }),
-                };
-                self.record_dispatch_target(state, span, &resolution);
-                resolution
-            }
-        };
-        state
-            .method_resolutions
-            .resolved_calls
-            .insert(span, resolution);
+        let module = state.current_module.clone();
+        crate::traits::record_instance_dispatch(
+            &mut state.method_resolutions,
+            &module,
+            span,
+            &Symbol::from(mangled.as_ref()),
+        );
     }
 
     /// Seed the existing pass-4 driver from typed demands captured for a
@@ -939,17 +907,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && Self::local_parametric_call_triggers(state, span, args)
             && let Some(ApplyRef::Dispatch(template)) =
                 state.method_resolutions.apply_refs.get(span)
-            && let Some(binding) =
-                self.probe_module_entry_owned(&template.module, template.symbol.as_ref())
-            && binding.callable().is_some_and(|callable| {
-                matches!(
-                    callable.arm.life,
-                    Life::Template {
-                        body: TemplateBody::Ast(_),
-                        ..
-                    }
-                )
-            })
+            && self.dispatch_template(state, template).is_some()
         {
             let arg_spans: Vec<Span> = args.iter().map(Expr::span).collect();
             if let Some(demand) =
@@ -1038,7 +996,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// (FIXME 0374 — the `(Box a)`-field-carrying-`Type::Var`-through-HOF gap).
     ///
     /// The result-hop collectors ([`Self::collect_local_parametric_calls`] +
-    /// [`Self::monomorphise_inner_parametric_hops`]) trigger on a bare-`Var`
+    /// [`Self::parametric_hop_successors`]) trigger on a bare-`Var`
     /// *call result* or an `Apply`-of-bare-`Var`. They do NOT cover a polymorphic
     /// fn passed as an argument value (`(thru mk x)` — `mk` is a fn-value
     /// argument, never a callee here, and the HOF call's result `(Box Int)` is
