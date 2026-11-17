@@ -397,20 +397,22 @@ and was refused.
   by ABI name, and every other host-promised entry imports its entry key by
   name. Both apply to the fn-as-value wrapper and to the auto-curry wrapper's
   builtin arm.
-- **Partial application.** Of the family, only `bind` and `race` take two
-  operands, so only they have a partial face; `sconcat`'s partial works
+- **Partial application.** Of the family, `bind`, `race` and `sconcat` take
+  two operands, so only they have a partial face; `sconcat`'s partial works
   today because its shim symbol exists. The curry builtin arm's last resort
   imports any unlisted builtin by its bare name. A bare import resolves
-  against whatever the host process exports, not against an entry. `bind`
-  therefore links to the C library's socket `bind`, and its integer result is
-  read as an IO node (source reading; `qa` observed only the abort). `race`
-  resolves to nothing, so JIT finalisation panics the compile worker. Rule 4
+  against whatever the host process exports, not against an entry. A partial
+  `bind` therefore does not fail at finalisation: it links, and aborts at run
+  time on a misaligned pointer (observed by `qa`). That it links to the C
+  library's socket `bind`, whose integer result is read as an IO node, is a
+  source reading. `race` resolves to nothing, so JIT finalisation panics the
+  compile worker. Rule 4
   removes both faces for this family. The curry builtin arm also loses the
   bare-name fallback. Its rules are inline Vec primitive, host-promised
   (rule 4), extern shim, then GOT slot (rule 5). A name that none of them
   claims is a located internal error, not a symbol lookup. That makes a
   collision with a host-process symbol unconstructable for every name, not
-  just avoided for these four.
+  just avoided for this family.
 - **One lowering per primitive** (Principle 07). The combinator
   classification (`IoCombinator`), the IO node layouts, the disposer
   derivation and the Trace accessor ABI mapping each keep one home. Both the

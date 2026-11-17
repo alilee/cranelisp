@@ -376,7 +376,7 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
 
 | # | Change-set | Design | Waits on |
 |---|---|---|---|
-| B1 | Stack-placement retirement with row D5, closing ACT-1049 | [ownership codegen](ownership-codegen.md) §4 | — (first backend change-set); its intrinsics half lands with it |
+| B1 | Stack-placement retirement with row D5, closing ACT-1049 and ACT-1066 | [ownership codegen](ownership-codegen.md) §4 | — (first backend change-set); its intrinsics half lands with it |
 | B2 | Category census, three arms | [release contract](non-concrete-release-contract.md) §7.3 | B1 |
 | B3 | Close step 1: constructor field channel, row D1 | release contract §7.4 | B2, and the census reading zero residual and absent field reads (release contract §7.3). Expected: after typecheck's accessor monomorphisation, which removes the measured accessor traffic |
 | B4 | Close step 2: concrete binder types, the three arms deleted | release contract §7.4 | the zero read: B3, typecheck's producer corrections including ACT-1034, and ACT-1050's producer |

@@ -175,6 +175,13 @@ lands, this section is the current design. The retirement is one change-set:
 - **ACT-1049 closes by subtraction.** No stack-placed value reaches the armed
   decrement check, so the check needs no exemption for immortal headers; the
   exemption the action requested of intrinsics is not needed.
+- **ACT-1066 closes by the same subtraction.** A direct `quote-sexp` call on
+  a stack-placed scalar `Sexp` operand stops the debug build at drop glue's
+  liveness assertion, which needs no environment variable: the shim releases
+  its immortal operand harmlessly, but a stack slot is not a tracked
+  allocation. No change outside this retirement is owed. *Refuted if*
+  REPRO-1066 ([evidence delta](../../tests/plan/s124-evidence-delta.md)
+  §3.10) is still RED on the B1 tree; the attribution then returns to `qa`.
 - **Evidence shape:** emission changes at every eligible construction, so the
   golden corpus is re-baselined once, with attribution, before the category
   census and the R-1 close claim their own scoped diffs

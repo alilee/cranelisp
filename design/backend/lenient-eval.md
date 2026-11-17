@@ -225,7 +225,8 @@ It is not part of default admission. The reason is recorded in §2.8.5. It is
 a tuning mechanism rather than parallel evaluation itself, so it retires in
 S124 under Principle 27 (`ownership-codegen.md` §0, §13.4); parallel
 evaluation and its admission heuristic stay. After the retirement the
-syntactic predicate admits on compute-worthiness alone, §2.8.5's opt-in row
+syntactic predicate admits on compute-worthiness alone, the opt-in row of
+[§2.8.5](#285-b4-is-off-by-default)
 no longer exists, and the description below is the record of what was
 removed until its section numbers stop being cited.
 
