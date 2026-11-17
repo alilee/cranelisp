@@ -17,7 +17,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 |---|---|
 | [Architecture overview](overview.md) | System vocabulary and orientation. |
 | [Bounded contexts](bounded-contexts.md) | Responsibilities, dependency direction and shared guarantees, including process-ending panics, the environment supply and baked link-time switches. |
-| [Boundary types](interfaces.md) | Narrative companion to the types crate and its rustdoc. |
+| [Boundary types](interfaces.md) | Narrative companion to the types crate and its rustdoc; its last section lists approved public changes not yet in source. |
 | [Architectural principles](principles.md) | Sole membership index for principle bodies. |
 | [Symbol-table lifecycle](symbol-table-lifecycle.md) | Declaration ownership, slot conservation and atomic publication. |
 | [Concrete codegen boundary](concrete-boundary-type.md) | Concrete-only typed body contract. |

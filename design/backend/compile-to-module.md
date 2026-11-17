@@ -1,7 +1,8 @@
 # The compilation entry — `compile_to_module`
 
 > **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
-> **Status**: current design, verified against source 2026-09-25.
+> **Status**: current design, verified against source 2026-09-25; §12 at
+> `4b58ab93`, 2026-11-17, with §12.1 designed and not yet landed.
 > **Authority**: `design/arch/bounded-contexts.md` §3 owns the boundary and its
 > invariants; the rustdoc in `crates/cranelisp-backend/src/lib.rs` owns the exact
 > signatures. This document explains how the one entry is organised and why.
@@ -360,7 +361,9 @@ wrapper's call follows the first applicable rule:
 1. **target in this compilation** — a direct call;
 2. **constructor** — construct inline (§2.6.2);
 3. **inline Vec primitive** — emit the operation inline, since it has no slot;
-4. **otherwise** — a GOT-indirect call through the uniform reference (§5.1).
+4. **host-promised primitive** — lower the call exactly as direct application
+   of that primitive does (§12.1), since it has no slot by construction;
+5. **otherwise** — a GOT-indirect call through the uniform reference (§5.1).
    A target with no GOT carrier is a located error, never a name search.
 
 Every wrapper parameter arrives owned and the wrapper's call consumes it, so
@@ -369,6 +372,97 @@ convention ([RC discipline](ring2-rc.md) §3.1). No callee borrows, so there is
 nothing to adapt. The wrapper body's counts, including the auto-curry
 wrapper's captured arguments, are the forwarding template of
 [uniform counting](uniform-counting.md) §3.3.
+
+### 12.1 Host-promised primitives as values (ACT-1063, S124)
+
+Spec §3.2.1 makes every function a first-class value, and the host-promised
+primitives are functions: the IO combinators `bind`, `race`, `select` and
+`sleep`; the Trace field accessors; `sconcat`; and `discover-tests`. Each is a
+`RustPrimitive` entry whose life is `HostPromised`, which carries no GOT slot
+by construction ([BC §7](../arch/bounded-contexts.md#7-cross-crate-types--cratescranelisp-types),
+"callability is structural"). Direct application lowers each without a slot. The wrapper had no such rule, so a value use fell through to the GOT rule
+and was refused.
+
+- **Who owes it: this crate alone.** Read at `4b58ab93`: a value-position
+  `bind` reaches the GOT rule with its carrier intact. The `Var`'s
+  `VarRef::Global` storage key fetched the entry, since the callable gate and
+  the arity read both answered from it, and the `Var`'s type is a
+  `ConcreteType` by representation. The refusal asks for a GOT slot that the
+  entry's life rules out. No producer owes a carrier, and typecheck's
+  `ResolvedCall` is not needed: the storage key already names the entry
+  (Principle 24).
+- **Rule.** A wrapper whose target is a host-promised primitive lowers its one
+  saturated call through the same lowering direct application uses. An IO
+  combinator mints its IO node inline. A Trace accessor imports its intrinsic
+  by ABI name, and every other host-promised entry imports its entry key by
+  name. Both apply to the fn-as-value wrapper and to the auto-curry wrapper's
+  builtin arm.
+- **Partial application.** Of the family, only `bind` and `race` take two
+  operands, so only they have a partial face; `sconcat`'s partial works
+  today because its shim symbol exists. The curry builtin arm's last resort
+  imports any unlisted builtin by its bare name. A bare import resolves
+  against whatever the host process exports, not against an entry. `bind`
+  therefore links to the C library's socket `bind`, and its integer result is
+  read as an IO node (source reading; `qa` observed only the abort). `race`
+  resolves to nothing, so JIT finalisation panics the compile worker. Rule 4
+  removes both faces for this family. The curry builtin arm also loses the
+  bare-name fallback. Its rules are inline Vec primitive, host-promised
+  (rule 4), extern shim, then GOT slot (rule 5). A name that none of them
+  claims is a located internal error, not a symbol lookup. That makes a
+  collision with a host-process symbol unconstructable for every name, not
+  just avoided for these four.
+- **One lowering per primitive** (Principle 07). The combinator
+  classification (`IoCombinator`), the IO node layouts, the disposer
+  derivation and the Trace accessor ABI mapping each keep one home. Both the
+  direct call and the wrapper reach them; the wrapper holds no copy. The
+  combinator classifier is asked of the wrapper target's resolved storage
+  symbol, under the same rule as the `BuiltinFn` carrier's name: identity
+  comes from resolution, never from the written spelling. A local `bind` is a
+  scope-stack value and never reaches this rule. A user `bind` resolves to its
+  own entry.
+- **The wrapper's builder.** The lowering emits into the wrapper's function,
+  not the enclosing body. `dev` chooses between two realisations: an inner
+  body compiler over the wrapper's builder, as lambda bodies have, which
+  compiles no expression and consults no plan; or lowering cores parameterised
+  by the builder. A copy of a lowering written for the wrapper is not
+  admissible. That is how the curry arm's private list of extern primitives,
+  `is_extern_primitive_in_wrapper`, drifted from `is_extern_primitive`.
+- **Disposer type.** An IO combinator's result disposer is derived from its
+  first operand's concrete type. Direct application reads that operand's
+  expression type. The fn-as-value wrapper reads the first parameter of the
+  value site's concrete `Fn` type. The curry wrapper reads its first applied
+  argument's type. All three are `ConcreteType`s already, so no derivation
+  meets a type variable.
+- **Counts unchanged.** Host-promised primitives consume every argument (BC §3
+  invariant 2). An IO combinator's node takes its owned operands, and a race
+  takes both through its branch Vec. The forwarding template therefore stays
+  the wrapper body's only RC emission
+  ([uniform counting](uniform-counting.md) §3.3).
+- **Totality, structural.** Rule 4 is selected by matching the fetched entry's
+  life exhaustively. A new slot-less life or host-promised lowering then fails
+  to compile until the wrapper decides its rule, instead of reaching rule 5.
+  After this, rule 5's refusal is reachable only when a slot-carrying entry
+  has lost its slot. That is an internal invariant failure, and its text is
+  worded as one rather than naming a carrier
+  ([REPL §5.5](../../repl/spec/05-error-presentation.md)).
+- **Extent, observed by `qa`** ([evidence delta](../../tests/plan/s124-evidence-delta.md)
+  §3.9, REPRO-1063 and REPRO-1063-p). As values, `bind`, `race`, `select`,
+  `sleep`, `nanos`, `name`, `sconcat` and `discover-tests` are refused at
+  rule 5. The other three Trace accessors are refused by source reading only.
+  A partial `(bind io)` compiles, links and aborts on a misaligned pointer in
+  `--run`, the REPL and the linked executable. A partial `(race a)` panics the
+  compile worker. `quote-sexp` carries a slot, so it is outside this family
+  and works as a value.
+- **Not covered.** The direct call's unrecognised-builtin arm
+  (`compile_platform_or_direct_extern_call`) keeps its by-name extern
+  fallback, and no program is known to reach it. A host promise that int
+  fails to keep still panics at finalisation instead of returning a located
+  error. Neither has been observed. The trigger for designing either is a
+  program that reaches it.
+- **Falsifier.** The design is falsified if any REPRO-1063 or REPRO-1063-p
+  leg fails once rule 4 lands. It is also falsified if a value use or partial
+  application emits an IO node whose tag, fields or disposer differ from the
+  direct application's (T-1063-b, M-1063).
 
 ## 13. Evidence
 

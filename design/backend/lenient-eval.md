@@ -98,9 +98,37 @@ It remains as the comparison row for measurement.
 
 ### 2.3 Trace-body exclusion
 
-Inside a `(trace …)` body no site sparks, because interleaved traced execution
-would make trace output non-deterministic. Both sites test `in_trace_body`
-before admission.
+**Rule (spec §4.12.2 item 2; [tracing §7](../arch/tracing.md#7-strict-evaluation-within-the-trace-extent)
+rule 1):** no spark is admitted anywhere in a trace's dynamic extent, including
+code compiled outside the `(trace …)` form.
+
+- **As built, the exclusion is lexical and too narrow.** Both sites test
+  `in_trace_body`, which is set only while the trace form's own body compiles.
+  A callee compiled elsewhere still sparks during the trace, its workers run
+  through the installed wrappers, and they neither record nor release
+  (ACT-1038).
+- **The decision is the runtime's, at the one admission point.** Every
+  admitted site reaches a spark only through the create-gate's
+  `cranelisp_spark_budget_try_reserve` (§3.6.2); no other emission path
+  creates or sparks an IVar. That intrinsic declines (returns 0) while the
+  calling thread holds the trace role, so the gate takes its direct arm, the
+  site's sequential lowering. Its signature does not change. The predicate and
+  its unit evidence are `design`(intrinsics)'s (§3.6.1).
+- **`in_trace_body` is deleted** with the change, together with its two
+  admission tests and the save and restore in `compile_trace`. It answers the
+  same question as the runtime decline for a subset of sites. A trace body's
+  sites therefore gain a create-gate, which is a scoped golden diff confined to
+  trace forms.
+- **Order.** The decline changes the documented contract of an intrinsic
+  export, which is S124 packet row D8, approved 2026-11-17. The intrinsics
+  decline lands first, and the flag's deletion follows it; otherwise a trace
+  form's own body would spark.
+- **Evidence.** The ACT-1038 cells' premise (a worker ran a traced call)
+  becomes permanently unsatisfiable, so `qa` reallocates them to observe the
+  decline, as the action states; intrinsics' `trace_declines` statistic tells
+  a trace decline from a budget or depth decline
+  ([trace runtime](../intrinsics/trace-runtime.md) §2). A backend module row
+  shows a trace-form site emitting the gate.
 
 ### 2.4 Opt-out and suppression
 
@@ -196,7 +224,10 @@ predicate (§2.2) and **disabled by default** (`SPARK_DENSITY_MAX_DEFAULT = 0`).
 It is not part of default admission. The reason is recorded in §2.8.5. It is
 a tuning mechanism rather than parallel evaluation itself, so it retires in
 S124 under Principle 27 (`ownership-codegen.md` §0, §13.4); parallel
-evaluation and its admission heuristic stay.
+evaluation and its admission heuristic stay. After the retirement the
+syntactic predicate admits on compute-worthiness alone, §2.8.5's opt-in row
+no longer exists, and the description below is the record of what was
+removed until its section numbers stop being cited.
 
 **Score.** `spark_density` walks the candidate subtree and reads only the
 per-site ownership facts pass 5 already annotated (`ownership-codegen.md`
@@ -554,6 +585,8 @@ wrapping and wedging the budget permanently to direct.
 
 `cranelisp_spark_budget_try_reserve(n) -> {0,1}`:
 
+0. **Trace extent** (§2.3, designed for S124): return 0 while the calling
+   thread holds the trace role. The predicate is intrinsics'.
 1. **Depth check** (§2.8.4): return 0 if `SPARK_DEPTH ≥ MAX_DEPTH` and decline
    is on.
 2. **Fast reject:** return 0 if a single load shows `cur + n > cap`. The
@@ -668,7 +701,7 @@ budget, so an ungated wide `let` inside a recursion could re-explode.
 ### 4.1 `compile_let` decision point
 
 ```
-if !NO_LENIENT && !in_trace_body && !suppress_spark_gate {
+if !NO_LENIENT && !in_trace_body && !suppress_spark_gate {   // in_trace_body leaves with §2.3
     sparkable = find_sparkable_bindings_with(bindings, predicate)   // §2.1, §2.6
     if sparkable.len() >= 2 {
         return emit_create_gate(n,

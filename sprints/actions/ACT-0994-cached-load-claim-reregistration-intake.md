@@ -20,6 +20,23 @@ Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#fi
 
 - **Carried to S123 (K8, P8).** First deferral.
 
+## S124: no public reproduction (qa, 2026-11-16, at `4b58ab93`)
+
+- **Source claim re-verified.** `CachedLoadClaim::complete_loaded` in
+  `src/scheduler.rs` notifies in-memory completion by module name, with no
+  binding to the registration the claim was granted for.
+- **Not reproducible through the compiler process.** The window is one pool
+  worker's in-flight object load, which lasts milliseconds and has no hold
+  seam. A prompt-gated save lands after it closes, and an injected delay is a
+  source change. No harm has been observed, so this stays a mechanism lead,
+  not a confirmed defect.
+- **Allocation.** The discriminating observation is a scheduler module test,
+  owned by `dev`(src) with `design`(int): grant a claim, re-register the
+  module, complete the claim as loaded, and assert that the fresh
+  registration is not in memory. It lands with the binding decision, not as
+  a standalone RED. Record:
+  [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#42-act-0994--no-public-reproduction).
+
 ## Request
 
 Retain S122 review FA-1 as QA intake. It is an unobserved, pre-existing lead,

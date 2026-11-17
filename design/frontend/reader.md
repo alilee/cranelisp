@@ -34,6 +34,23 @@ dispatch realises the spec §1.7 precedence. The load-bearing cases:
 3. `true` and `false` are booleans only at a symbol boundary, so `trueness` is a
    symbol.
 
+### One operator tail
+
+An operator run is entered three ways: by a leading `-`, by a leading `+`, or by
+another operator character. Case 2 above is decided first: a sign immediately
+followed by a digit is a number. Otherwise every entry consumes the rest of the
+run and finishes through **one operator tail**, which applies the §1.4.2 rule —
+an operator run immediately followed by a digit is a located error — and the
+empty-module-half guard (`enforcement-matrices.md` §3.2). The three entries
+differ only in how the run began.
+
+This is the S124 target (audit R3). At `4b58ab93` the signed entries return
+their own symbol, so `+*1` and `-*1` read as an operator and then a separate `1`,
+while `*1` rejects.
+The guard keys on operator text exactly `"/"`, which a signed run never is, so
+routing the signed entries through the tail changes nothing but the digit rule.
+`-3`, `+3`, `-`, `->` and `+=` are unchanged; `->3` and `+*1` reject at the run.
+
 Strings take the spec §1.3.4 escapes; an unknown escape or an unterminated string
 is a located parse error. `(` … `)` reads as `Sexp::List` and `[` … `]` as
 `Sexp::Bracket`. Commas are whitespace (Clojure convention) and `;` runs to end of
@@ -124,7 +141,7 @@ the stream.
 
 ## Cross-references
 
-- `spec/01-lexical.md` §1.4.5, §1.7 — colon-prefixed symbols and atom precedence.
+- `spec/01-lexical.md` §1.4.2, §1.4.5, §1.7 — operator symbols, colon-prefixed symbols and atom precedence.
 - `design/arch/interfaces.md` §"Reader Output" — the `Sexp` carrier and its variants.
 - `design/frontend/enforcement-matrices.md` §3 — the dangling-qualifier rejects.
 - `design/frontend/annotation-and-declaration-shape.md` §2 — the read-time annotation fold.

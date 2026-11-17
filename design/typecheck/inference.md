@@ -90,7 +90,10 @@ Lookup follows the substitution transitively until it reaches a non-variable.
   self-reference polymorphic to relieve the over-restriction above. Rejected:
   polymorphic recursion is undecidable in HM, and the spec generalises at the
   binding-group boundary. Any generalisation-order fix acts on cross-definition
-  references, never on self-reference.
+  references, never on self-reference. An implementation method's call to itself is a
+  trait dispatch, not a self-reference: it instantiates the member's scheme freshly
+  (spec §3.10, S124-Q7; [monomorphisation §3.10.3](monomorphisation.md#3103-recursion-through-dispatch)). It holds at `4b58ab93`: `(size (Yep 7))` inside
+  `(impl Size (Opt :Size a) …)` passes typecheck and fails only at codegen (ACT-1034).
 
 ## 4. Written type variables
 
@@ -162,6 +165,16 @@ are enforced elsewhere:
   non-nominal type such as a function is rejected, because impls are keyed by
   a nominal type's identity (`typecheck.md` §9.1.1). A still-variable type is
   left for the ambiguity backstop.
+- **Location.** A mismatch between the annotation and the expression's type, and a
+  failed satisfaction check, are reported at the `Annotate` node's own span. An error
+  raised while inferring the inner expression keeps that expression's location.
+  `design`(frontend) relies on this: the synthesised `:macros/Sexp` annotation on a macro
+  clause body carries the body's source span, so a non-`Sexp` body is located inside its
+  `defmacro` form ([defmacro synthesis §2.2](../frontend/defmacro-synthesis.md#22-the-body-is-constrained-to-sexp-in-every-clause-shape),
+  ACT-1057). It holds at `4b58ab93` (`infer.rs::infer_annotate` unifies at that span).
+  Changing it moves that diagnostic, so `dev` pins it with a module row: an `Annotate`
+  node with a real span over an expression of another type is rejected at exactly that
+  span.
 
 ## 5. Expression types
 

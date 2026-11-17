@@ -194,9 +194,23 @@ re-resolves the bare name.
 
 ### Registration pipeline
 
-`register_trait_impl` runs in Pass 1 (`typecheck.md` §5.1):
+**Target (S124, ACT-0985; not in source at `4b58ab93`).** Registration and body checking
+are two phases. Steps 1–7 run in Pass 1 for every `impl` form of the cluster, in form
+order. Steps 8–9 run in the impl-body sweep (`typecheck.md` §5), after every Pass-1
+registration and before any definition body. At `4b58ab93` all nine steps run inside one
+Pass-1 call, so an implementation body is checked before a later form's implementation is
+registered. Spec §5.13.1 lets a body in one cluster use an implementation declared later
+in it; `qa` confirmed the batch refusal (ACT-0985). Restoring
+`typecheck.md` §5.2 invariant 1 for implementations is the correction, not a lookup that
+waits for a later shell.
 
-1. **Resolve the trait** from slot 1 (above).
+1. **Resolve the trait** from slot 1 (above). The not-found class (the resolver's
+   `*NotFound` variants, whatever entry kind they name) becomes `unknown trait: <as
+   written>`, and so, unchanged, does an unloaded qualifier's module (the open item in
+   `typecheck.md` §11). An `Ambiguous` result propagates as the resolver's error, which names every
+   surviving canonical candidate (spec §8.6.5), as `PrivateInaccessible` already does
+   (S124 target, ACT-1001 P-3; at `4b58ab93` every error except `PrivateInaccessible`
+   becomes `unknown trait`).
 2. **Kind check** (`hkt.md` §5.4). Slot 1 must echo the declared head shape and,
    for a higher-kinded trait, the constructor-variable spelling. For a
    conventional trait over an ADT, the target must be applied to exactly the
@@ -212,20 +226,42 @@ re-resolves the bare name.
    `FQTypeName`, which every impl-method symbol below uses. For a higher-kinded
    impl this is the bare constructor.
 6. **Default methods** (§4).
-7. **Stage the carriers** (§3.0.1).
-8. **Check method bodies.**
+7. **Stage the carriers** (§3.0.1). The shell is what makes the implementation visible
+   to every body's dispatch (§7 step 4), so staging it here, before any body, is what
+   lets an earlier implementation's body use a later one.
+8. **Check method bodies** (the impl-body sweep). The sweep visits implementations in
+   form order, immediately after the Pass-1 sweep and before the checked definitions are
+   registered (`typecheck.md` §5.2 item 2). Everything after it runs as today, so the
+   relative order of implementation bodies and definition bodies is unchanged. Each
+   implementation starts from the post-Pass-1 constraint snapshot, as each Pass-2 body
+   does, so one body's instantiation residue cannot reach the next (`typecheck.md` §5.2
+   item 3).
    - Each trait reference in the target's constraint slot (`(Box :Disp a)`)
      resolves through `resolve_trait`. An unknown trait is `TraitNotFound`, for
      every impl kind.
    - `Self` is seeded to the concrete target and each signature resolves against
      it. Arguments of a polymorphic target bind as variables (§3.2).
    - The body is checked by `check_defn_body_with_types` (`inference.md` §4.3).
+   - A dispatch in the body to this same implementation, to any member, at another
+     instantiation is an ordinary dispatch; the sweep runs no recursion judgment.
+     Non-termination is refused when instantiated (spec §3.10, S124-Q7;
+     [monomorphisation §3.10.3](monomorphisation.md#3103-recursion-through-dispatch)).
    - The mangled method definition is written back through
      `finalize_impl_method_writeback`, the tail shared by the conventional and
      HKT paths.
-   - A body error restores both staged carriers.
-9. **Return** the generated default definitions to Pass 1 (`typecheck.md` §5.2
-   item 2).
+   - A body error restores the shell and method entries step 7 staged; the record has
+     not been written (§3.0.1).
+9. **Return** the checked explicit and generated definitions to the accumulator, which
+   registers them after the sweep exactly as it registers today's Pass-1 return
+   (`typecheck.md` §5.2 item 2; [qualified trait impl §3](qualified-trait-impl.md#3-canonical-identity-consumption)).
+
+The split keeps every identity decision in Pass 1 and adds no lookup: step 8 reads only
+what steps 1–7 resolved. A cluster that fails anywhere is discarded whole by `int`, so the
+per-implementation restore matters for the snapshot it protects, not for ordering.
+Evidence: the committed ACT-0985 cell, with the implementation-first order as its control;
+`dev` module rows in `traits/impl_check/tests.rs` for an implementation body that
+dispatches to an implementation declared later in the cluster, and for one that calls a
+definition declared later, each in both orders.
 
 ### 3.0.1 The writer-side record
 
@@ -235,12 +271,18 @@ crate decides only where the record is staged: exactly where the shell is.
 - **Values.** The record clones the trait, target, writer module and method names
   that the shell is built from. They are resolved once and nothing is re-parsed:
   one derivation feeds two carriers (Principle 24).
+- **Authored label (S124 target, approved row D10; not in source at `4b58ab93`).** The record
+  also carries its form's authored label, from `TraitImpl::authored_label` on the form
+  as received. It is an opaque association key back to that form, never an identity
+  source, and the shell does not carry it. Its definition is
+  [`typecheck.md` §12, T7](typecheck.md#12-designed-changes-not-yet-in-source-s124).
 - **Tables.** The shell lands in the trait's home; the record lands in the
   writer's own table (`state.current_module` at that point).
-- **Transaction.** Both carriers are staged at the same point, both retain their
-  prior value, and both are restored on the method-check error arm. A record
-  without its shell breaks the bijection that enrolment hard-errors on
-  (Principle 26).
+- **Transaction.** The shell is staged at step 7, retaining its prior value. The
+  record is upserted only after every method body has settled, as the last fallible
+  act before the method and shell tokens commit; on a body error the shell and method
+  entries are restored and the prior record is untouched. A record without its shell
+  breaks the bijection that enrolment hard-errors on (Principle 26).
 - **Identity.** A re-impl of the same `(type, trait)` (spec §5.4.5) replaces its
   record and never appends a second one.
 - **Funnels.** Staging and restoration use the lifecycle funnel vocabulary
@@ -344,7 +386,12 @@ which case resolution is deferred.
 1. **Owning trait and home.** Resolve the method's record (§1.4). A name that is
    not a trait method is not dispatched here.
 2. **Dispatch argument.** Use the method's `hkt_param_index` (`hkt.md`), otherwise
-   argument 0. With no argument at that position, a method whose signature
+   argument 0. The index is read only from the resolved method's canonical declaration;
+   `None` there means argument 0. At `4b58ab93` a `None` instead falls through to
+   `hkt_param_idx_for_method`, which scans visible trait declarations for the first method
+   of the same bare name, so a same-named higher-kinded method could set a conventional
+   call's dispatch argument. That scan is not part of the design (ACT-1001 P-2, ruled
+   here; §11). With no argument at that position, a method whose signature
    returns `self` dispatches on the call's recorded return type. Any other
    signature defers.
 3. **Receiver identity.** Take the identity of the resolved dispatch type
@@ -520,6 +567,11 @@ Violating any of these is an implementation bug.
   a source-read lead that has not been executed. `qa` takes intake and decides on
   a discriminating repro. If it is confirmed, `dev` (typecheck) keys the table on
   the canonical trait and on the receiver identity from typecheck §9.1.1.
+- **The bare-name dispatch-index scan** (§7 step 2; ACT-1001 P-2). Ruled: delete
+  `hkt_param_idx_for_method` and read the index from the canonical declaration. Its
+  precondition is that every higher-kinded method's canonical signature carries its
+  index; `dev` pins that with a module row before deleting the scan. Not reproduced and
+  not scheduled in S124; scheduling is `sprint`'s.
 - **Constraint rigidity in impl-method bodies:** `inference.md` §6.
 
 ## 12. Cross-references

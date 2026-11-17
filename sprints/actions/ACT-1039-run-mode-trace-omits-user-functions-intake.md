@@ -49,18 +49,18 @@ fresh directory with `CRANELISP_NO_LENIENT=1`, so no spark was involved.
 
 ## Attribution
 
-- **Status: provisional.** The symptom and its mode discriminator are
-  established; the mechanism is not observed.
-- **Hypothesis.** Under `--run`, the trace's wrapper set omits the user
-  module's slots. In the `--run` CLIF, `main` is compiled before the module's
-  other functions, so a wrapper set fixed at `main`'s codegen would not
-  include them. The primitives group is swapped.
-- **Refuted if** `CRANELISP_GOT_TRACE` shows the user slots swapped during
-  the `--run` trace, or the frame count changes when the user functions come
-  from an imported module that is already compiled.
-- **Coverage gap.** `tests/trace.rs` observes user-function frames only in the
-  REPL and `--link`. The `--run` cells consume a trace without counting
-  its user frames.
+- **Status: confirmed by a control, 2026-11-16 at `4b58ab93`**
+  ([S124 evidence delta §8.3](../../tests/plan/s124-evidence-delta.md#83-act-1039--the-traced-set-depends-on-slot-contents-at-codegen)).
+- **Mechanism.** Trace discovery skips an entry whose GOT slot reads zero
+  when the trace form is compiled. A batch compiles the entry module before
+  publishing it, so its own functions are dropped from the traced set.
+- **Control.** With `fib` in an imported module, published before the
+  entry's codegen, the same `--run` records 5 frames; in the entry module it
+  records 0. This refutes the earlier variant, that compilation order within
+  the wrapper set decides it.
+- **Owner: backend,** [trace codegen §1](../../design/backend/trace-codegen.md#1-the-traced-set-is-fixed-by-slot-claims-not-by-slot-contents).
+- **Coverage gap.** `tests/trace.rs` observed user-function frames only in
+  the REPL and `--link`.
 
 ## Evidence allocation
 
@@ -69,8 +69,9 @@ fresh directory with `CRANELISP_NO_LENIENT=1`, so no spark was involved.
   `// spec: spec/04-expressions.md §4.12.9` and use `class=mode-divergence`
   with `locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs` and
   `found=S122`. The REPL leg is the passing control.
-- **`design`(backend)** observes the swap set under `--run` and decides the
-  fix. **`dev`** adds the unit row.
+- **`test`:** add the imported-module leg as the control (T-1039 of the
+  [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#96-get-to-green-item-7)).
+- **`dev`(backend)** adds the selection row of trace codegen §1.
 
 ## Disposition
 

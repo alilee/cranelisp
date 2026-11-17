@@ -347,9 +347,12 @@ bodies and trait-method instances.
    unrecorded type is admissible only for a binder that owns no heap
    reference.
    - A missing signature type in a synthetic frame becomes a located error,
-     but only after `dev` has measured that none reaches the fallback over the
+     but only after it is measured that none reaches the fallback over the
      corpus. Until then a reaching frame is a producer gap for `arch`, not
-     a refusal to add.
+     a refusal to add. S124 builds both halves: the census's absent arm is
+     the measurement, and concrete binder types make the fallback
+     unrepresentable ([release contract](non-concrete-release-contract.md)
+     §7.3, §7.4 step 2).
 2. **A counted node agrees with its binder.** A scrutinee, operand or result
    occurrence carries the same concrete type as its binder's record. The
    scrutinee release reads the node and a drop reads the binder, so both must

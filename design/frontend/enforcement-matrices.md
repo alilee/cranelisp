@@ -16,14 +16,26 @@ a hole is a routing failure rather than a missing check.
 
 ## 1. The operand-position body seam
 
-**Every single-body operand position routes through one `build_body_to_end`
-seam.** It builds the trailing body expression through the one-expression
-primitive `build_one_expr_at`, then requires that the body consumed everything
-left, rejecting any remaining form at its own span.
+**Every expression position is exactly one `Sexp`.** The reader folds an
+annotation and its subject into one `Sexp::Annotated` node
+(`annotation-and-declaration-shape.md` §2), so an annotated operand never spans
+two children. Builders therefore address operands by fixed index and build each
+with `build_expr`; a multi-operand position builds every element. No builder
+computes or advances by a consumed width.
 
-The positions it serves: the `let` body, the impl-method body, the trait
-default-method body, and the `trace` operand. Multi-operand positions route
-through `build_args_with_annotations` instead.
+**Every single-body operand position routes through one `build_body_to_end`
+seam.** It builds the body at its index and requires it to be the last child,
+rejecting the next form at that form's own span. The positions it serves: the
+`let` body, the impl-method body, and the `trace` operand. A trait method's
+tail is not one of them: `build_method_sig` preserves exactly one raw trailing
+element for typecheck's §7.1 judgment and builds no body
+(`annotation-and-declaration-shape.md` §4).
+
+**Status.** At `4b58ab93` a width-returning one-expression helper still returns
+a constant width of one and about a dozen call sites do the arithmetic on it
+(audit R4). Removing it is the S124 target: each site keeps its present arity
+check, diagnostic and span, written as an index or length comparison. Remove
+this paragraph when it lands.
 
 **A raw `build_expr` call plus a hand-rolled or missing tail check is the defect
 shape.** Where the position is not arity-locked it silently drops trailing forms,

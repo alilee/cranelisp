@@ -198,6 +198,15 @@ not admit ACT-0953's stronger same-language-type ownership-ABI change. A
 language-type-changing base with a named blocking dependent rejects before
 rematerialization. Neither path recompiles dependents.
 
+**S124 amendment.** The ownership-ABI comparisons in this section retire with
+REPL §18.1.2 (user ruling 2026-11-16): a realization's slot decision reads its
+key and `RedefKind` only, and a same-language-type edit whose inferred modes
+differ publishes ([session transaction §2.4](session-transaction.md#24-ownership-modes-are-not-compared)).
+Until that lands, the text above describes source. The unit and end-to-end
+controls below that reject a same-language-type ownership-ABI change invert
+with it: they become rows showing that such an edit publishes and keeps the
+old body's callers balanced.
+
 An unchanged overload clause may move from old arm `i` to staged arm `j`, but
 the approved executable identity is the canonical authored family plus its full
 concrete function signature. After semantic arm correspondence, the staged

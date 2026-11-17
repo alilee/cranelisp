@@ -122,8 +122,9 @@ types at a concrete instantiation for category and glue purposes.
   exact signature.
 - Open: the backend's declaration-scheme walk in
   `crates/cranelisp-backend/src/compiler/context.rs` still fills a missing field type with
-  `Type::Int`; safety-register rows R17 and R18 and FIXME 0929 own its retirement onto this
-  projection.
+  `Type::Int`, and the function has no consumer outside its crate. S124 retires the walk onto
+  this projection; the backend consumer edge is approved (S124 packet row D1). Contract:
+  [the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
 
 ## 3. Populations
 

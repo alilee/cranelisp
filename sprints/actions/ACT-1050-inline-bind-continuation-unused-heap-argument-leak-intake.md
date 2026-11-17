@@ -1,7 +1,7 @@
 ---
 id: ACT-1050
 title: An inline bind continuation that ignores a heap argument leaks it
-status: deferred
+status: open
 priority: required
 from: qa
 to: qa
@@ -12,6 +12,8 @@ refers_to:
   - crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda
   - crates/cranelisp-backend/src/compiler/fn_compiler.rs::emit_release
   - tests/plan/s123-evidence-delta.md
+  - src/bind_chain_analysis.rs::make_bind
+  - tests/plan/s124-evidence-delta.md
 ---
 
 ## Observation
@@ -37,39 +39,43 @@ release check stays silent, so this is a leak, not a memory-safety fault.
 
 ## Attribution
 
-Provisional. The mechanism was not observed at its seam:
-`CRANELISP_CODEGEN_DUMP` does not print lambda bodies.
+**Observed 2026-11-16 at `4b58ab93`; the producer is the binary's bind-chain
+rewrite.** Evidence and controls:
+[S124 evidence delta §8.1](../../tests/plan/s124-evidence-delta.md#81-act-1050--the-producer-is-the-binarys-bind-chain-rewrite).
 
-- **Hypothesis:** the inline continuation reaches `compile_lambda` without
-  a heap type for its parameter. The planned drop at introduction then
-  emits nothing, because `FnCompiler::emit_release` returns early for an
-  absent or non-heap type (source read 2026-11-16).
-- **Supporting control:** the let-bound twin differs only in where the
-  lambda is written, and it balances. A source annotation `(Vec Int)` on
-  the parameter does not cure the subject.
-- **Candidate producers:** typecheck's recorded type for a lambda in a
-  builtin's argument, or the backend's reading of it.
-- **Refuted if** the subject lambda's CLIF releases its parameter.
+- `src/bind_chain_analysis.rs::make_bind` rebuilds every inline
+  `(bind io (fn [x] …))` and gives the callee, the `Lambda` and the `Apply`
+  the application's span. Typecheck records expression types by span
+  (`CheckState::expr_types`), so the `Lambda` does not keep a function type
+  and its parameter is introduced untyped.
+- **Seam:** the subject's lambda is emitted under the `bind` form's span and
+  never reads its parameter. The control's lambda carries the `fn`'s span and
+  calls the `(Vec Int)` drop glue.
+- **Controls:** an inline continuation the rewrite does not match (wrapped
+  in `if` or `let`) balances. A parameter used twice under the rewrite
+  balances under the armed check, which refutes a wrong scalar type.
+- **Not observed:** the type value that reaches `compile_lambda`. The
+  span-keyed table is a source reading.
+- **Refuted if** the category census records no absent-arm entry for the
+  subject's frame, or a rebuilt `Lambda` that keeps the written span still
+  leaks.
 
 ## Request
 
-1. `dev`(backend) observes the parameter type that reaches `compile_lambda`
-   for the subject and for the let-bound control before choosing a fix, and
-   reports the producer. If the producer is typecheck, the coordinator
-   routes it there.
+1. `design`(int), with `design`(typecheck) for the span-keyed table, places
+   the correction. It precedes close step 2, which would refuse the subject.
 2. The correction must not:
    - release in the `bind` node or its disposer, which double-releases
      the used-argument control;
    - cover only `Vec` payloads (the nested cells guard this);
-   - cover only `bind` when the type is lost for every inline lambda
-     argument to a builtin.
+   - cover only the first step of a rebuilt chain (cell T-1050-a);
+   - type the parameter in the backend, which would fabricate a category.
 3. `dev` adds a module row at the seam that owns the fix.
-4. `qa` then decides whether other builtins that take an inline lambda need
-   independent evidence.
 
 ## Completion evidence
 
-- All 18 tests in `tests/bind_unused_heap_argument.rs` pass, with no change
-  to their assertions.
+- All 18 tests in `tests/bind_unused_heap_argument.rs` and T-1050-a pass,
+  with no change to the committed assertions.
 - The module row fails without the fix and passes with it.
-- `test` adds `fixed=` to the cells' `// defect:` lines.
+- `test` sets the cells' `locus=` to `src/bind_chain_analysis.rs::make_bind`,
+  their class to `node-span-collision`, and adds `fixed=`.

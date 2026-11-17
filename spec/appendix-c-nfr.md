@@ -111,9 +111,9 @@ The standard library SHOULD be able to provide alternative collection implementa
 
 ## C.3 Evaluation Properties [S11]
 
-### C.3.1 Lenient Evaluation [S11]
+### C.3.1 Lenient Evaluation [Uncovered S124 — was S11]
 
-An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial. This is normatively specified in [§12.4.3](12-runtime.md#1243-lenient-evaluation).
+The parallel evaluation of independent `let` bindings, including the strict-trace exception, is governed by [§12.4.3](12-runtime.md#1243-lenient-evaluation).
 
 **Design constraint for architecture**: The implementation MUST design the function calling convention and stack layout to support spawning lightweight evaluation tasks for independent bindings. This does not require OS threads — lightweight tasks (green threads, work-stealing, or continuation-passing) are sufficient. The cost heuristic is implementation-defined but MUST exist (to avoid parallelizing trivially cheap operations).
 

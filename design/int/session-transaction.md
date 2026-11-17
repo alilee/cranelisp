@@ -16,9 +16,9 @@ Redefinition is a guarded publication inside the ordinary prepared transaction:
 1. The proposed cluster checks into unpublished staging.
 2. Before any live change, the guard rejects a structurally different
    redeclaration of a live nominal type (§2.6). `redefine::validate_guarded_redefinition`
-   then rejects a declaration-class change, a visibility change, a callable
-   language-type change with a blocking dependent (§3) and a
-   same-language-type replacement whose ABI-bearing `ModeSummary` differs.
+   then rejects a declaration-class change, a visibility change and a callable
+   language-type change with a blocking dependent (§3). Inferred ownership
+   modes are not compared (§2.4).
 3. An admitted generic base or overload family rematerializes its prior
    concrete instances into the same candidate (`design/int/s122-closure.md` §2).
 4. The commit gate classifies each published callable (§2) and applies the slot
@@ -87,14 +87,37 @@ A same-language-type redefinition pays one comparison and the in-place slot
 patch. Existing callers and captured callable values reach the new body at
 their next call through the slot they already embed.
 
-### 2.4 The ownership-ABI half
+### 2.4 Ownership modes are not compared
 
-`ModeSummary`'s ABI-bearing modes are not part of the language type, but they are
-the ABI of an existing live slot. The guard therefore rejects a same-type
-replacement whose ABI-bearing modes differ (`ModeSummary::abi_eq_opt`;
-REPL §18.1.2). A caller-free language-type change takes a fresh slot and may
-change modes. ACT-0953 carries the future decoupling of slot ABI from ownership
-inference.
+A same-language-type replacement publishes in place whatever its inferred
+ownership modes (REPL §18.1, user ruling 2026-11-16). Under uniform counting
+every call position consumes its arguments whatever the callee's summary, so a
+compiled slot's contract is the same for every mode summary
+([ownership inference §5](../arch/ownership-inference.md#5-mode-summaries-module-caching-and-the-r3-redefinition-model-part-4),
+"Modes are not slot ABI"). `RedefKind` is decided by the language type alone
+(§2.1), and "ABI" in this document means the language type.
+
+**S124 (packet row D7; not in source at `4b58ab93`).** Two binary sites still
+compare summaries, and both delete:
+
+- the guard's same-type arm in `redefine::validate_guarded_redefinition`,
+  with its diagnostic and the summary formatter that serves only it;
+- the rematerialization decision in `worker.rs`, whose "ABI compatible" test
+  becomes `RedefKind` alone: a realization keeps its slot when its key is
+  unchanged and its kind is not `AbiChanging`.
+
+The binary deletes both consumers in the change-set that removes
+`ModeSummary::{abi_eq, abi_eq_opt, is_abi_conservative}` from the types crate,
+after `qa` has allocated the mode-change redefinition cell.
+
+- **Grade.** Asserted with a named falsifier until that cell runs
+  ([safety invariants](../arch/safety-invariants.md) row R12): a same-type
+  redefinition that changes the inferred modes, with live callers and a
+  captured callable value, must balance under the armed check in the REPL,
+  and a restart on the saved source must agree. A backend emission read of a
+  mode summary would refute the premise.
+- **What stays.** Inference, the summaries on bindings and their persistence
+  are untouched; only the comparison leaves. ACT-0953 is discharged with it.
 
 ### 2.5 Trait-implementation redefinition
 
@@ -105,8 +128,7 @@ admission or commit path (Principles 7 and 11).
 
 - Trait conformance, checked before anything publishes, fixes each method's
   language type for an unchanged trait. A conforming re-impl therefore
-  classifies `AbiPreserving`, subject to the §2.4 ownership-ABI check, and its
-  bodies patch the existing slots. A non-conforming body is rejected with the
+  classifies `AbiPreserving` and its bodies patch the existing slots. A non-conforming body is rejected with the
   prior implementation still live.
 - **The codegen batch is the staged body set** (ACT-1035, as built S123).
   `worker::derive_codegen_batch` returns exactly the staging table's codegen

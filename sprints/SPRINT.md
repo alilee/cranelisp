@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 3 DESIGN
+**Status**: PHASE 4 — WAVE ORGANIZATION
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -15,7 +15,7 @@ frontend carries behind it.
 | Start → Phase 1 | "let's plan the next sprint" | 2026-11-16 | approved |
 | Phase 1 → Phase 2 | scope draft with seven included items | 2026-11-16, "advance to phase 2" | approved |
 | Phase 2 → Phase 3 | `arch` review, API packet D1–D8, six decisions | 2026-11-16, "advance to phase 3" | approved |
-| Phase 3 → Phase 4 | — | — | pending |
+| Phase 3 → Phase 4 | designs, packet rows D1–D12/R10-9/R10-10, S124-Q2..Q9, `qa` readiness | 2026-11-17, "approved to advance" | approved |
 | Phase 4 → Phase 5 | — | — | pending |
 | Phase 5 → Phase 6a | — | — | pending |
 | Phase 6a → Phase 6b | — | — | pending |
@@ -34,11 +34,13 @@ frontend carries behind it.
   - three `citation_drift` tests fail because the converged document checker
     requires `inventory.root_memory = "AGENTS.md"`; the documented checker
     invocation exits 2 for the same reason;
-  - `user_samples::sample_checker_detects_wrong_output_and_unclassified_fences_then_clears`
-    failed once in the full run (10.4 s) and passed alone (8.7 s) — an
-    unclassified lead for `qa`.
-- **Lead for `qa`:** the suite run left an untracked `ctx.txt` (an agent
-  context dump) in the repository root.
+  - one `user_samples` test failed once in the full run and passed alone.
+- **`qa` classification (Phase 3, [evidence delta](../tests/plan/s124-evidence-delta.md)):**
+  the stable failing set is 47 — the 44 guards and the three `citation_drift`
+  maintenance checks. Two `user_samples` tests fail run-dependently under
+  load (ACT-1061). No genuine regression.
+- The suite leaves an untracked `ctx.txt` in the repository root; a module
+  test writes it (ACT-1060, to `dev` on `src/`).
 - **Lead for `sprint`:** `sprints/s123-api-packet.md` and
   `sprints/s123-architecture-review.md` remain in the standing tree after the
   S123 close.
@@ -142,8 +144,43 @@ separate request.
 ## Architecture review (Phase 2)
 
 `arch`'s [review](s124-architecture-review.md) and [API packet](s124-api-packet.md)
-(rows D1–D8) carry the outcome. Verdict: the scope fits the existing crate
+(rows D1–D11) carry the outcome. Verdict: the scope fits the existing crate
 boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
+
+## Phase 3 outcome
+
+- **Spec:** REPL §18.1.2 removed; §4.12.2 strict tracing; REPL §1.5 and
+  §12.1.1 after flattening. S124-Q2..Q9 ruled 2026-11-17 (Notes). Open with the user: a type-size
+  limit for instantiation (Notes).
+- **Architecture:** `design/arch/` carries the S124 targets; the
+  [packet](s124-api-packet.md) holds every row approved: D1–D12, R10-9 and
+  R10-10.
+- **Designs:** backend, intrinsics, typecheck, frontend and `src/` are
+  written, each with its own order section.
+- **Evidence:** `qa`'s [delta](../tests/plan/s124-evidence-delta.md) is the
+  single handoff for `test`; readiness (restated 2026-11-17) is "ready with
+  two conditions": the evidence wave runs before D1 with REPRO-1062 first;
+  `spec` and `design`(typecheck) settle what the depth integer counts before
+  `dev`(typecheck) fixes it in T4. Held: F-PR-3 (type-size question) and
+  T-DEPTH-c (counting unit).
+- **Attribution changes:** ACT-1034 is typecheck's; ACT-1050 is the binary's
+  bind-chain rewrite; ACT-1039 is the backend's.
+- **New defect:** ACT-1062, a match on a type whose fields are out of
+  parameter order corrupts memory; corrected by row D1.
+- **Defects confirmed from Phase 3 leads:** ACT-1064 (two impls for
+  same-named types collapse at save; corrected by row D10's design),
+  ACT-1065 (a user function named `bind` is rewritten as the primitive;
+  wrong value) and ACT-1063 (`bind` as a value refused at codegen). ACT-1065
+  and ACT-1063 are in scope by the user's 2026-11-17 decision (Notes).
+- **Found by `qa` on 2026-11-17:** ACT-1066, a direct `quote-sexp` call
+  aborts on a stale reference-count release (spec §9.11.1's own example);
+  `design`(backend) attributes it to stack placement meeting the debug
+  release check, and the control confirms: with `CRANELISP_NO_STACK_ALLOC=1`
+  the subject exits 5 (coordinator probe, 2026-11-17). It is expected to
+  close with the stack-placement retirement already in scope (row D5);
+  `qa` re-attributes the action. ACT-1063's extent is
+  wider than filed: partial `(bind io)` aborts on a misaligned pointer and
+  `(race a)` panics the compile worker.
 
 ## Dispatch log
 
@@ -151,6 +188,24 @@ boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
 |---|---|---|---|---|---|
 | Phase 2 | `arch` | S124 scope, cross-crate | claude-fable-5-2 | medium | primary (native subagent) |
 | Phase 2 | `arch` | Rust context standard evaluation | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `spec` | `spec/`, `repl/` — S124 rulings | gpt-6.1-sol | medium | cross-harness (`codex_role.py`) |
+| Phase 3 | `arch` | `design/arch/` contracts | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `qa` | intake, attribution, reproduction allocation | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `design` | backend | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `design` | frontend | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `spec` | REPL §1.5, §12.1.1 — S124-Q1 | gpt-6.1-sol | medium | cross-harness (`codex_role.py`) |
+| Phase 3 | `design` | `src/` (`design/int/`) | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `design` | intrinsics | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `arch` | answers to backend and frontend design questions | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `design` | backend (revision) | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `design` | typecheck | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `spec` | frame seven open questions (appendix D) | gpt-6.1-sol | medium | cross-harness (`codex_role.py`) |
+| Phase 3 | `arch` | remaining gate rows (R10-9, T7, D8 final) | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `qa` | evidence plan, readiness, two observations | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `design` | typecheck — confirm row D10 | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `design` | `src/` — confirm row D10, alias collision | claude-opus-5-5 | medium | primary (native subagent) |
+| Phase 3 | `arch` | finalise row D10 | claude-fable-5-2 | medium | primary (native subagent) |
+| Phase 3 | `design` | `src/` — ACT-1050 placement | claude-opus-5-5 | medium | primary (native subagent) |
 
 ## Notes
 
@@ -191,6 +246,63 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   [ACT-1058](actions/ACT-1058-measure-declared-crate-dependency-edges.md).
 - **Public-API gate: rows D1–D7 approved** as written in the
   [packet](s124-api-packet.md). D8 returns when its designs list it.
+- **Row D9 approved (2026-11-16):** remove the backend
+  `CacheStale::SiblingSlotOutOfRange` variant; it lands with D6.
+- **S124-Q1 ruled (2026-11-16):** REPL §1.5 drops the claim that the value is
+  stored flattened and keeps its display guarantees as ordinary requirements;
+  language §12.1.1's description follows. `spec` scribes it in Phase 3.
+- **Rows D8, R10-9, D10 and D11 approved (2026-11-17)** as written in the
+  [packet](s124-api-packet.md) Part B. R10-9 supersedes S123 row R10-6. D10's
+  schema bump rides D3's.
+- **S124-Q2 to Q6 ruled (2026-11-17)**, each as candidate recorded in
+  [appendix D](../spec/appendix-d-open-questions.md); `spec` scribes them.
+  - **Q2 — A:** a macro rest parameter binds a symbol only; `[& [a b]]` is
+    rejected.
+  - **Q3 — A:** a macro return mismatch is located at the offending clause
+    body.
+  - **Q4 — B:** an import alias and an export mount sharing a spelling are
+    refused only when their targets differ; equal targets form one public
+    route. An empty export list is a definite no-op.
+  - **Q5 — A:** persistence moves a redefined function after a macro it newly
+    depends on; macro availability stays source-ordered.
+  - **Q6 — A:** a watched save completed by a turn's own `/sh` is rebuilt and
+    reported before the next prompt. ACT-1061 is therefore a defect in S124
+    scope.
+- **Row R10-10 approved (2026-11-17)** as written in the
+  [packet](s124-api-packet.md): the backend and the binary read the existing
+  `vec_runtime` offset constants.
+- **S124-Q7 ruled B (2026-11-17), superseding an A ruling of the same day:**
+  a trait dispatch from an implementation's body to that implementation at
+  another instantiation is an ordinary dispatch, whether direct, through a
+  helper or through another implementation. A program whose instantiation of
+  implementations does not terminate is a type error. The rule for functions
+  is unchanged. No impl-body check is added.
+- **S124-Q8 ruled B (2026-11-17):** a "no `main`" refusal names the entry
+  file and the missing `main` with no form span, as a stated exception to
+  REPL §5.5.
+- **Instantiation depth limit ruled (2026-11-17):** spec §3.10 states a limit
+  of at least 64 on a chain of implementation instantiations, refused as a
+  type error; a growing implementation is accepted when declared and refused
+  when an instance is demanded.
+- **S124-Q9 ruled no (2026-11-17):** a trait method named `main` does not
+  define `main`; a multi-arity `main` stays refused.
+- **Open with the user: type-size limit.** By `design`(typecheck)'s analysis a
+  re-entry whose type doubles each step exhausts time or memory before depth
+  64. Unanswered at the typecheck wave's exit, it is a named unprotected risk
+  (a hang on a non-terminating program, never a miscompile).
+- **Open inside the increment: depth counting unit.** `qa` reads the design
+  as counting method instances, which could refuse a chain shallower than the
+  spec floor when members call each other. `spec` and `design`(typecheck)
+  settle it in Phase 4; appendix D's Q7 gap paragraph is stale.
+- **ACT-1067 filed (2026-11-17), unscheduled:** an expression nested about 56
+  forms deep overflows the compile worker's stack (exit 134). Scope decision
+  goes to the user with the wave plan.
+- **ACT-1065 and ACT-1063 are in S124 scope (2026-11-17).** ACT-1063 returns
+  to the user as a named carry if attribution shows its correction crosses
+  more than one surface.
+- **Row D12 approved (2026-11-17)** as written in the
+  [packet](s124-api-packet.md), with the refusal keeping its error category:
+  the S124-Q8 exception lifts the location only (REPL §5.1 item 1).
 - **Third deferrals confirmed, with reproductions owed this sprint.** The
   runtime-concurrency (ACT-0977, ACT-0975, ACT-0981, FIXME 0934), persistence
   (ACT-1005, ACT-0994), diagnostics and discovery (FIXME 0915, ACT-0986) and

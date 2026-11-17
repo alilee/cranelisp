@@ -20,6 +20,18 @@ Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#fi
 
 - **Carried to S123 (K7, R1).** First deferral. Any public or schema change follows the API gate.
 
+## S124: reproduced (qa, 2026-11-16, at `4b58ab93`)
+
+- **Defect confirmed.** Strands launched by a `race` or `select` branch run
+  to completion after that branch loses, and the process waits for them.
+  Spec §10.12.7 item 5 and §10.12.9 require them to stop.
+- **Control.** The same effect run inline in the losing branch is cancelled;
+  the same strands launched by the winning branch complete, as required.
+- **Allocation.** `test` commits REPRO-0977 of the
+  [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#31-repro-0977--launched-work-outlives-its-cancelled-branch),
+  class `cancellation-scope-escape`. The realization stays carried past S124
+  (user, 2026-11-16).
+
 ## Approved requirement and current limit
 
 The user approved launched work inheriting the cancellation context of enclosing

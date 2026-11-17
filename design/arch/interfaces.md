@@ -80,6 +80,55 @@ remaining forms. The extracted `ImportSpec`, `ExportSpec`, platform and submodul
 declarations live on the module's `SymbolTable` in its public structural vectors. Those
 vectors are the append contract: direct push, source order, no deduplication.
 
+### Import and export entries (S124 target)
+
+**Status:** approved, not in source at `4b58ab93`.
+
+At the checkpoint `ImportNames` classifies a whole list (`Specific(Vec<Symbol>)`, `Glob`,
+`MemberGlob(Symbol)`, `None`), the names parser returns at the first `.*` entry and drops the
+rest, and `ExportSpec` has no alias. Spec §8.3 and §8.3.11 require each entry to be classified
+independently, and §8.4 applies the same grammar to exports with a mount alias. The approved
+carrier (user ruling 2026-11-16; S124 packet row D3):
+
+- **One entry type serves imports and exports.**
+  `#[non_exhaustive] pub enum ImportEntry { Name { source: Symbol, local: Symbol }, MemberGlob(Symbol) }`.
+  `ImportNames::Specific` holds `Vec<ImportEntry>`; the list-level `ImportNames::MemberGlob`
+  variant is removed. A mixed list is therefore representable and a list-level member glob is
+  not.
+- **`source`** is the name in the source module and may be dotted. **`local`** is the bare
+  name the entry binds and is always present: the written name of a plain entry, the member
+  of a dotted entry, or the second symbol of a rename.
+- **The frontend derives `local` once; no consumer re-derives it**
+  ([Principle 24](principles/24-resolve-once.md)). The installer binds `local` to `source`
+  and never reads a written spelling, so binding a dotted entry under its dotted spelling
+  (ACT-1055) has no representation. ACT-0997 (renamed entries), ACT-1055 and ACT-1056 (mixed
+  lists and mounts) are corrected by this one change, not separately.
+- **The member of a dotted entry is read by the frontend's own dotted splitter.** The
+  frontend must split a written entry to classify and validate it, so the member falls out
+  of that one read. `cranelisp_types::bare_member_name` is not called there: it also strips
+  a `/` qualifier, which an entry source may not carry, and a second read of the same
+  spelling would add a consumer edge without removing a derivation. The installer's
+  member-glob projection keeps `bare_member_name`, over canonical member keys. *Falsifier:*
+  a dotted entry and the member glob of its parent binding different local names for one
+  member.
+- **`ExportSpec` gains `alias: Option<ModuleName>`**, the §8.4.4 mount, mirroring
+  `ImportSpec::alias`. Its storage, writer and lookup are the
+  [alias contract](module-alias-scoped-lookup.md) §2.1 and §5.1; no lookup mechanism is added.
+- **`ImportNames` stays without `#[non_exhaustive]`.** Its consumers match it exhaustively on
+  purpose, so a new list shape forces every installer, regenerator and selector to be
+  revisited.
+- **Persistence.** `SymbolTable::imports` and `exports` are persisted, so the change takes a
+  `CACHE_SCHEMA_VERSION` bump in its own change-set. The correction carries ACT-0997's
+  impl-identity evidence: an impl written through a renamed type import and through a renamed
+  trait import, each persisted with a later definition, plus a cold restart.
+- **Rejected:** S123 row N1 (a rename pair inside `Specific` only), which cannot carry a
+  mixed list; and merging `ImportSpec` and `ExportSpec` into one type with a visibility
+  field, which churns two persisted table fields and their readers for no added guard.
+- **Surfaces.** Types carries the type; the frontend's module extraction is the only
+  producer; the binary's import installation, source regeneration, dependency recording,
+  cache restore, indexing, lifecycle and test selection are the consumers. Typecheck does not
+  read the carrier.
+
 ---
 
 ## AST
@@ -231,13 +280,22 @@ not a backend input and no function converts it into one. The backend's input is
   carrier. A summary rides `Life::Concrete` or `Life::Inline` and is read through
   `Binding::mode_summary`; absence reads as the conservative top.
 - A summary on a `Realization::ExternShim` callable is analysis input only: the primary entry
-  follows the uniform consuming convention, and statically-resolved call sites adapt to the
-  declared facts ([ownership inference §3.1](ownership-inference.md#31-class-a--abi-bearing-the-per-param-mode-vector)).
+  follows the uniform consuming convention and no call site adapts to the declared facts
+  ([safety invariants](safety-invariants.md) row R22).
+- No dev-tier emission reads a summary: every call position consumes its arguments whatever
+  the callee's summary ([safety invariants](safety-invariants.md) rows R1 and R22). The facts
+  stay produced, published and persisted for the release tier
+  ([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)).
 - `ResultMode` is a closed sum without `#[non_exhaustive]`, so a new variant forces each
-  consumer match to be revisited. Two equality reads against `Fresh` — the backend's
-  fresh-return test and `ModeSummary::is_abi_conservative` — escape that forcing by design
-  and fail safe: any non-`Fresh` value is treated as non-fresh and non-conservative. Re-run
-  the wildcard and equality census when adding a variant.
+  consumer match to be revisited. One equality read against `Fresh` escapes that forcing and
+  fails safe: `ModeSummary::is_abi_conservative`, reached only by the live-redefinition gate.
+  Re-run the wildcard and equality census when adding a variant.
+- **Approved S124 removal (packet row D7):** `ModeSummary::{abi_eq, abi_eq_opt,
+  is_abi_conservative}` leave the surface with their only consumer, the binary's
+  mode-difference refusal, which the user retired with REPL §18.1.2 on 2026-11-16
+  ([ownership inference §5](ownership-inference.md#5-mode-summaries-module-caching-and-the-r3-redefinition-model-part-4)).
+  A same-type live redefinition then publishes whatever its inferred modes. This is a
+  semantic change the baseline cannot show.
 - Every variant is serde-visible on persisted summaries, so a change takes a
   `CACHE_SCHEMA_VERSION` bump.
 - Ruling and semantics: [ownership inference](ownership-inference.md).
@@ -383,10 +441,9 @@ ownership, slot conservation and atomic publication. This section maps the facad
   `crates/cranelisp-types/tests/lifecycle_facade.rs` exercises them, because an in-crate test
   cannot detect a constructor missing from such a record.
 
-**Proposed, not presented for approval.** `settle_template` and `settle_concrete` have no
-cross-crate production caller (source census, 2026-09-21), so they would become
-types-private. This is an inter-crate public-API removal and needs the user's approval
-before any change.
+**Approved, not in source at `4b58ab93`.** `settle_template` and `settle_concrete` have no
+cross-crate production caller; production settles through the `settle_checked_*` pair. They
+become `pub(crate)` in S124 (S123 packet row K11-c).
 
 ### Checked-registration transaction facade
 
@@ -583,13 +640,26 @@ state of `Realization::Body`, and heap classification is total over `ConcreteTyp
 ## Heap Classification
 
 `HeapCategory` is backend-owned (`crates/cranelisp-backend/src/heap.rs`); `classify` is its
-single source of truth and takes `&ConcreteType`.
+single source of truth and takes `&ConcreteType`. It is public because the binary's result
+exit (`src/result_owner.rs`) classifies through it.
+
+**Approved S124 removal (packet row D4):** the variant `HeapCategory::Value` and the
+flattened lowering behind it retire
+([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)). A one-word
+single-constructor value then classifies as a heap value. The binary's two matches lose the
+arm, and its display walk (`src/display.rs`), which renders by the same layout, follows the
+backend's classification; compiled layout changes, so `CACHE_SCHEMA_VERSION` is bumped.
 
 ## Heap Object Layouts
 
 - `HeapHeader` lives in `cranelisp-types` and is shared by every heap object. `HeapString`
   lives in `cranelisp-intrinsics`; `HeapAdt`, `HeapClosure` and `HeapVec` live in the
-  backend. Offsets are associated constants beside each `#[repr(C)]` layout
+  backend at `4b58ab93`. Approved row R10-9 moves the ADT and closure layouts to
+  `cranelisp_intrinsics::alloc` and deletes the backend's three structs
+  ([approved changes](#approved-changes-not-yet-in-source-s124)). The Vec layout's
+  offsets are `cranelisp_intrinsics::vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`,
+  which no other crate reads at `4b58ab93`; approved row R10-10 makes
+  the backend and the binary their readers. Offsets are associated constants beside each `#[repr(C)]` layout
   ([Principle 14](principles/14-ffi-layout-discipline.md)).
 - Spec §12.1 describes these layouts as the current reference representation, not as a
   mandate.
@@ -600,6 +670,10 @@ single source of truth and takes `&ConcreteType`.
   typecheck's copy and uniqueness classification and by the backend's value lowering. A
   disagreement could bit-copy a heap pointer without retaining it, so neither consumer
   derives eligibility independently.
+- After the approved removal above the backend reads the predicate nowhere. It stays public,
+  typecheck keeps classifying through it, and its producer tests stay: it is a retained
+  release-tier fact. The coupling hazard returns with any future backend reader, which must
+  delegate to it.
 - `value_layout` yields a layout for a scalar, or for a single-constructor ADT with exactly
   one transitively value-eligible field, within `VALUE_LAYOUT_MAX_WORDS`. Multiple
   constructors, heap collections, non-concrete stored field types and cycles are ineligible.
@@ -649,3 +723,78 @@ single source of truth and takes `&ConcreteType`.
   only legal glue-word write is `0`; the backend is the sole stamp authority.
 - Contract: [total concreteness](total-concreteness.md) (the payload-glue section) and
   [safety invariants](safety-invariants.md) rows R19 and R20.
+
+---
+
+## Approved changes not yet in source (S124)
+
+Navigation for the S124 designs. Every row is absent from source at `4b58ab93` and approved
+by the user. The exact delta, consumer list and expected baseline effect of each row are in
+the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and R10-10) and the
+[S123 packet](../../sprints/s123-api-packet.md) Part B (K11 rows and R10-1 to R10-8); this
+table does not restate them. S123 row R10-6 is superseded by R10-9 and does not land. A
+design that needs a public change outside these rows stops and returns to `arch`. Remove a row when its change lands; remove the section when it is empty.
+
+| Row | Change | Owning surface | Other surfaces that change | Contract |
+|---|---|---|---|---|
+| D1 | Backend becomes a consumer of `ctor_field_types_at` | backend | — | [the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category) |
+| D2 (R10-4) | Backend `compiler` module and `compiler::CompileContext` become crate-private | backend | — | [safety invariants](safety-invariants.md) row R13 |
+| D3 | `ImportEntry`; `ImportNames::Specific` payload; `ImportNames::MemberGlob` removed; `ExportSpec::alias` | types | frontend (producer); binary (consumers); `tests/cache.rs` | [import and export entries](#import-and-export-entries-s124-target) |
+| D4 | `HeapCategory::Value` removed | backend | binary (`result_owner.rs`, `display.rs`) | [heap classification](#heap-classification) |
+| D5 | `rc::stack_slot_hits` and `rc::tally_stack_slot` removed, with the `[RC_STATS]` `stack_slot` field | intrinsics | backend (sole caller; same change-set as the stack-placement deletion); test helpers that read the field | [ownership inference §3.4](ownership-inference.md#34-tier-statement--oracle-r7) |
+| D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed | types | backend cache validation; typecheck and solution tests | [safety invariants](safety-invariants.md) row R5 |
+| D7 | `ModeSummary::{abi_eq, abi_eq_opt, is_abi_conservative}` removed | types | binary (`redefine.rs`, `worker.rs`) | [ownership-inference carriers](#ownership-inference-carriers) |
+| D8 | Contract of `cranelisp_spark_budget_try_reserve` and `cranelisp_trace_format` changes for tracing (ACT-1038); signatures unchanged | intrinsics | backend (descriptor round-trip tests; `in_trace_body` deletion) | [tracing §7](tracing.md#7-strict-evaluation-within-the-trace-extent) |
+| D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | [safety invariants](safety-invariants.md) row R5 |
+| D10 | `WrittenTraitImpl::authored_label` and `TraitImpl::authored_label` added; `WrittenTraitImpl::new` gains the parameter (ACT-0997) | types | typecheck (producer); binary (live turn and rehydration; its own label derivation deleted); test call sites of `new` | [the authored label](trait-impl-cache-carrier.md#21-the-authored-label-s124-target) |
+| D11 | `rc::rc_underflow_check` and its catalog row removed; `runtime/string_read` leaves the catalog, its function stays public (ACT-1033) | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 1 |
+| D12 | `session_v4::BatchError` added; `CompilerSession::trampoline` and `link_by_name` return it. A missing `main` is rendered with its error category and no location (S124-Q8) | binary (root library) | — (sole consumer is the binary target `src/main.rs`) | [BC §6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle), known architectural constraints |
+| R10-1 | Backend root `load_object` removed | backend | — | [BC §3](bounded-contexts.md#3-backend-cratescranelisp-backend) |
+| R10-2 | `artefact` module, `LinkerArtefact`, `ObjectArtefact` become crate-private | backend | — | BC §3 |
+| R10-3 | The cache-packet family becomes crate-private or is deleted; the dormant `src/cache_writer.rs` is deleted | backend | binary (the deleted module) | BC §3 |
+| R10-5 | `primitives_inline` module becomes crate-private | backend | — | BC §3 |
+| R10-7 | `NULLARY_THRESHOLD_I64`, `jit_free_memory_call_count`, `got_observer::emit`, `serialise_meta`, `deserialise_meta`, `CACHE_FORMAT_VERSION` become crate-private | backend | — | BC §3 |
+| R10-9 | ADT and closure layouts published from `cranelisp_intrinsics::alloc`; `vec_runtime::PAYLOAD_SIZE` added; backend `HeapAdt`, `HeapClosure` and `HeapVec` deleted | intrinsics | backend (deletion; reads intrinsics' constants); binary (`display.rs`, test runner); primitives (`marshal.rs`, edge approved, convergence not designed) | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 2 |
+| R10-10 | New consumer edges to the existing `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`; no item changes | intrinsics (rustdoc only) | backend (`heap.rs`, Vec codegen); binary (`display.rs`, test runner) | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 2 |
+| K11-b | `IntrinsicEntry::is_runtime` removed | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 11 |
+| K11-c | `SymbolTable::{settle_template, settle_concrete}` become `pub(crate)` | types | — | [lifecycle authoring facade](#lifecycle-authoring-facade) |
+| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`, re-exported under `test_support` | types | binary and backend test code and their dev-dependencies | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
+| K11-a | Baseline format omits auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/CLAUDE.md` | [baseline-diff discipline](CLAUDE.md#baseline-diff-discipline-sprint-67-close) |
+
+One factual rustdoc correction needs no row: the frontend crate root says `trace` fails when
+linked, which contradicts spec §4.12.9 and [tracing §2.5](tracing.md#25-build-modes). The
+promise is false and no policy changes; `dev`(frontend) corrects it with audit R5.
+
+Order between rows that the designs respect:
+
+- D5 lands in the stack-placement change-set, the first backend change-set of S124, before
+  the category census.
+- D1 lands after the census instrument and before the census's zero is read. While the
+  backend's own field-type substitution stands, a constructor field can reach classification
+  as a type variable and record on the retain arm, so the zero is unreachable without D1
+  ([safety invariants](safety-invariants.md) row R17). D1's refusals obey the rule of every
+  refusal in the close: [the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category),
+  order.
+- D4 follows the close: it changes classification and compiled layout, and the census and
+  the close claim diffs scoped against the layout they were measured on.
+- D7 follows `spec`'s removal of REPL §18.1.2 and `qa`'s allocation of the mode-change
+  redefinition cell.
+- D2, D6 and D7 have no architectural dependency on the close; their place is `sprint`'s.
+  D9 lands in D6's change-set.
+- D3 is types first, then the frontend producer, then the binary's consumers, as one
+  callee-first migration.
+- D3, D4 and D6 each bump `CACHE_SCHEMA_VERSION` in their own change-set.
+- D10 lands in D3's migration and shares its schema bump: types, then typecheck's producer,
+  then the binary's two readers.
+- D8 is intrinsics' change with the backend's descriptor-test adaptation, then the backend's
+  `in_trace_body` deletion.
+- R10-9 is intrinsics' additions, then the backend's deletion and the binary's readers. No
+  layout value changes, so it has no order against the close. R10-10's edges
+  land in that same migration: the backend's and the binary's Vec offset readers move to
+  `vec_runtime` in the change-set that deletes `HeapVec`.
+- D11 and D12 have no order against another row.
+- R10-1, R10-2, R10-3, R10-5 and R10-7 land as one backend change-set (user ruling
+  2026-11-16), after D2 so the `compiler` module's visibility is settled first.
+- K11-a lands last, alone, after every other row, so its regenerated contraction is not mixed
+  with a functional delta.
+

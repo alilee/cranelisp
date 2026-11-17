@@ -44,7 +44,7 @@ deliberately leave already-generated definitions at their materialized bodies
 until an explicit recompilation boundary; those definitions are neither stale
 nor broken.
 
-### 18.1 Callable Redefinition [Uncovered S121]
+### 18.1 Callable Redefinition [Uncovered S124 — was Uncovered S121]
 
 Declaration visibility is immutable during live redefinition of an existing
 canonical callable. Changing `defn` to `defn-`, or `defn-` to `defn`, MUST be
@@ -57,12 +57,12 @@ With visibility unchanged, legality is determined by the callable's
 alpha-renaming of bound type variables. Documentation and compiler-internal
 realization details are not part of that language type.
 
-- A replacement with the same language type and an ownership ABI compatible
-  under §18.1.2 is legal with or without callers. It replaces the body and
+- A replacement with the same language type is legal with or without callers,
+  regardless of inferred ownership modes. It replaces the body and
   documentation and patches the callable's existing slot. Calls and callable
   values that already refer through that slot reach the replacement body on
   their next invocation. No dependent is re-typechecked and no redefinition
-  report is printed beyond the ordinary definition confirmation. [Tested+Neg
+  report is printed beyond the ordinary definition confirmation. [Uncovered S124 — was Tested+Neg
   `tests/repl_redefinition.rs::redefine_body_only_stale_closure_late_binds_new_body`,
   `tests/repl_redefinition.rs::redefine_body_only_neg_no_cascade_report_no_dependent_recompiles`]
 - A replacement with a different language type is legal only when the existing
@@ -97,36 +97,6 @@ every existing realization slot is patched and future concrete demands use the
 new generic template. No dependent caller is re-typechecked or recompiled. If
 any part of the candidate fails, the complete prior base or family and all its
 prior realizations remain live.
-
-#### 18.1.2 Interim Ownership-ABI Compatibility Gate [S124 — partial: tests/repl_redefinition::same_type_ownership_abi_change_is_rejected_before_slot_patch evidences the ordinary-slot parameter-mode rejection without callers, its diagnostic and old-body retention; tests/repl_redefinition::caller_free_type_change_publishes evidences the caller-free language-type change; tests/cache::cache_restored_sum_field_projection_keeps_ownership_abi and src/worker/tests.rs::cache_preloaded_sum_projection_recheck_preserves_ownership evidence unconstrained restart reconstruction; a result-mode change, the overload-member, generic-realization and impl-method slots, whole-unit non-publication and source retention are unevidenced, and the gate's S124 retirement (ACT-0953) decides whether they are owed]
-
-Ownership modes and `ModeSummary` remain compiler-internal information and are
-not part of a callable's language type. They nevertheless form the ownership
-ABI of an existing live Cranelisp callable slot. As an interim compatibility
-gate, a live redefinition that would patch such a slot MUST preserve the
-`ModeSummary`'s ABI-bearing ownership modes. Caller absence does not waive this
-gate for a same-language-type replacement.
-
-The gate applies to an ordinary function slot, each existing overload-member
-slot, every existing concrete realization rematerialized with a generic base,
-and every existing materialized impl-method slot. If any such slot would change
-ownership ABI, the complete candidate unit MUST be rejected before publication;
-the complete old unit, bodies, and slots remain live, and the backing source is
-retained. No subset of an overload family, base-plus-realizations candidate, or
-whole-pair impl is published.
-
-The rejection diagnostic MUST state that the language type is unchanged,
-identify the old and proposed ABI-bearing ownership modes from `ModeSummary`
-that differ, and explain that the proposed replacement changes the ownership
-ABI. This information is normative; diagnostic layout is
-implementation-defined.
-
-A caller-free language-type-changing replacement uses a fresh slot and MAY
-change ownership mode. Reload or restart likewise recompiles persisted source
-as one coherent unit and MAY accept a mode change; this live-slot compatibility
-gate does not constrain that reconstruction. Compiler-private macro-clause
-callables are excluded because their expansion entry point has the separate,
-fixed `MacroClauseAbi`.
 
 ### 18.2 Blocking Dependents and Caller Discovery [Uncovered S121]
 
@@ -267,7 +237,7 @@ impls and dispatch remain live. A different interface requires a new trait
 name; the implementation MUST NOT reinterpret existing impls or checked trait
 constraints under an unversioned changed interface.
 
-### 18.7 Impl Redefinition — Re-entering an `impl` [S115]
+### 18.7 Impl Redefinition — Re-entering an `impl` [Uncovered S124 — was S115]
 
 A trait implementation is replaced at whole `(trait, target-type)` pair grain.
 A re-`impl` MUST conform completely to the committed trait interface. Once the
@@ -280,9 +250,7 @@ current default template. [Tested+Neg
 
 A conforming re-`impl` preserves every materialized method's language type. A
 candidate that would change one of those types is rejected as non-conforming;
-it does not enter the ordinary-callable no-dependent path. Each existing
-materialized method remains subject to the interim ownership-ABI compatibility
-gate in §18.1.2.
+it does not enter the ordinary-callable no-dependent path.
 
 Replacement uses the turn/publication atomicity defined above. The complete
 impl candidate is validated and compiled before publication. If any method

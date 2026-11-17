@@ -20,6 +20,106 @@ contract is `design/arch/platform-interface.md`.
   return-type-polymorphic dispatch in `main`'s body. `--run` and `--link`
   share this gate. A missing entry source file must not reach it: batch entry
   registration refuses that first ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
+  - **What "the entry defines `main`" means.** The entry module's table binds
+    `main`. Every refusal about that binding is located (below); an entry
+    whose table binds no `main` takes the unlocated refusal (S124-Q8).
+  - **Location (S124, ACT-1036; not in source at `4b58ab93`).** Every
+    refusal the gate raises about an existing `main` is located at the
+    written top-level form that declared it (REPL §5.5, §5.1): the wrong
+    shape, and a `main` that is not a function. The refusal stays at this
+    gate: the REPL is exempt from the requirement (`spec/10-io.md` §10.6.2),
+    so typecheck cannot own it. Its message and category are unchanged.
+    - *Why not the declaration's own span.* Read from source and probed on
+      2026-11-17: a declaration carries a span of the written form only when
+      the user wrote the definition directly. A `main` produced by a macro,
+      including the prelude's `def` and `const`, which expand to a
+      `defmacro`, carries the expansion's synthetic span on its
+      `DefnVariant` and on its macro form (`(mk main)` with
+      `(defmacro mk [n] `(defn ~n [x] …))` renders at `1:1`, `0..0`). REPL
+      §5.5 requires the triggering user form there. An overloaded `main` has
+      no single definition span either. A types-owned declaration span would
+      be a public-API row; the root already holds the fact, so none is
+      needed.
+    - *The definition-origin span.* The form processor already attributes
+      every definition, direct or produced by expansion, to the written
+      top-level form it came from: each built definition and each macro
+      checkpoint carries that form (`process_form`'s `authored_origin`).
+      Today only the REPL's introspection record keeps it. The session also
+      keeps that form's span for every published definition, in every mode
+      ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)),
+      and publishes it with the definition: an ordinary definition's span
+      rides the prepared turn's staged records, and a macro's is written at
+      its checkpoint's publication, so a refused turn leaves none.
+      The gate reads `main`'s span from it. The introspection record keeps
+      its REPL-only fields; the span is the one fact both readers share,
+      taken from one attribution
+      ([Principle 7](../arch/principles/07-single-source-of-truth.md)).
+    - *No synthetic fallback.* A bound `main` with no recorded span is an
+      invariant violation, not a refusal. The entry is never cache-restored
+      ([result owner §3.2.1](result-owner.md#321-reach-in-production)), so
+      the record exists for it. A change that restores the entry must carry
+      the span with it; the located-refusal cells are its falsifier.
+  - **A `main` that is not a function.** The entry binds `main` to a
+    declaration that is not a single callable: a macro (`defmacro`, or
+    `def`/`const`) or an overloaded definition. It takes the located
+    refusal above. Nothing else is needed for it.
+    - *Not read to a cause.* An entry whose only `main` is a trait method
+      is answered "no `main`" by the gate today (probed 2026-11-17), although
+      typecheck resolves a bare `main` to the method. It therefore takes
+      the unlocated refusal. Whether a trait method named `main` counts as
+      defining `main` for §10.6 is a spec reading this design does not
+      decide; *trigger:* a ruling that it does makes it a located refusal,
+      and then the form processor must attribute trait methods to their
+      `deftrait` form, which it does not do today.
+  - **An entry with no `main` (S124-Q8, ruled B; row D12).** REPL §5.5's
+    missing-`main` exception applies: the refusal names the entry file and
+    the missing `main`, and carries no form span. That means no line and
+    column and no `at 0..0`. It keeps its error category (REPL §5.1 item 1;
+    the exception lifts the location only).
+    - *One producer.* Four sites raise this refusal today, with three texts
+      and two categories: `validate_main`; `read_main_entry`, which is
+      reached when `trampoline` skips the gate because the entry table is
+      absent; `link_by_name`'s absent-table arm; and `entry_main_got_slot`.
+      The gate becomes the only producer. It runs in `--run` and `--link`
+      whether or not the entry table exists, and an absent table counts as
+      an entry with no `main`. After the gate, a missing `main` in the other
+      three sites is an invariant violation, not a user refusal.
+    - *The file.* The gate receives the entry module's source path, which
+      registration already holds. A missing entry file never reaches the
+      gate ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
+    - *The value.* The gate returns the root's
+      `session_v4::BatchError::MissingMain { entry_file }`, and
+      `trampoline` and `link_by_name` return `BatchError`
+      ([bounded contexts §6](../arch/bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle),
+      known architectural constraints). Every other refusal, including the
+      located ones above, is `BatchError::Compiler`. `CranelispError` and
+      `ErrorLocation` do not change.
+    - *Rendering.* `src/main.rs` matches the outcome once. `Compiler` goes
+      through the existing formatter unchanged. `MissingMain` renders as
+      `<file>: error: module error: <message>`: the formatter's own shape
+      with the `:line:col` and the `at <span>` removed. The file is
+      displayed by the formatter's rule, the file name alone when it is in
+      the working directory, so the two renderings name a file the same way
+      and share that helper. The message names `main` and the form batch
+      mode requires; its words are `dev`'s.
+    - *The category is `module error`.* Today the refusal shows `codegen
+      error` or `module error` by site. Of the two, `module error` names
+      the subject the refusal is about, the entry module's contents. `codegen
+      error` names a stage that has not failed, which REPL §5.5 keeps out of
+      the user's vocabulary. The category is the renderer's constant for
+      this one case, not a field of the sum. It restates the label
+      `CranelispError`'s `Display` prints for the same category; the label
+      is presentation text, and a drift would show in the T-Q8 cell, so a
+      shared constant across the crate boundary is not worth a row.
+    - *Evidence, for `qa`.* In `--run` and `--link`, an existing entry file
+      with no `main` exits non-zero. Its one stderr line names the file,
+      `module error` and `main`, and contains no `:line:col`, `0..0` or
+      `codegen error`. Controls: a `main` with the wrong shape keeps its
+      location at its definition form, and a macro-produced `main` is
+      located at the written macro call, not at `1:1`. `(defmacro main []
+      …)` is a non-function `main` written in core forms only; probed
+      2026-11-17, it is refused today at `1:1` and `0..0`. Under ACT-1019's
+      rule, an unreadable entry is still refused before the gate.
 - **Exit code.** An `Int` inner result is the exit code, and any other inner
   result exits 0. The rule has one predicate
   (`result_owner::result_is_exit_code`), which the linked stub bakes in as
@@ -132,8 +232,35 @@ never sees a panic, chooses no panic status and formats no panic text.
 ### 2.1 Form routing
 
 The frontend extracts `(platform …)` forms, and `process_form` routes each one
-to `handle_platform` (`src/process_form/platform.rs`). A platform form in a
-module whose path contains `.` returns without loading anything (§3, gap 1).
+to `handle_platform` (`src/process_form/platform.rs`).
+
+**Entry only (S124, ACT-0973; not in source at `4b58ab93`).** A `platform`
+form in any module other than the session's entry module is a compile-time
+error located at the form (`spec/10-io.md` §10.9.1). The handler decides it by
+comparing the compiling module with the session's entry module, never by the
+shape of the module's name
+([BC](../arch/bounded-contexts.md) §6; Principle 19).
+
+- **The fact.** The entry module is fixed at session construction and never
+  changes. It moves onto the shared session state beside the other
+  session-wide facts, so the dependency handler reaches it through the
+  compiling context's shared-state handle, as it reaches every other session
+  fact. `/mod` changes the REPL's current module, not the entry.
+- **Order.** The refusal precedes the DLL load and the platform's recording
+  on the table, so a refused form loads nothing and is not persisted.
+- **Replaces** the source's skip of any module whose path contains `.`. That
+  skip ignored a nested non-entry form without a diagnostic and loaded a
+  root-level non-entry one. Both now refuse.
+- **Restore parity (§2.6).** A table restored for a module that is not the
+  entry and that records a platform declaration is a cache miss, so the fresh
+  build reports the error. Such a table is reachable: a module cached while it
+  was the entry of an earlier session is a dependency in this one. Restoring
+  it would load a platform that a fresh build refuses (Principle 11).
+- **Evidence (for `qa`).** A child declaring the platform, nested and
+  root-level, refuses in `--run`, `--link` and the REPL; the entry placement
+  control loads. A cached former entry imported as a dependency refuses
+  rather than restoring. A non-entry module that imports `platform.<name>`
+  after the entry declared it still works.
 
 ### 2.2 Search order
 
@@ -189,9 +316,5 @@ from the persisted declarations, and a failure is a cache miss
 
 ## 3. Open gaps
 
-These were read from source on 2026-09-25. Evidence status is stated per gap;
-`qa` owns attribution.
-
-1. **A non-entry platform form is silently ignored.** `spec/10-io.md` §10.9.1
-   makes a `platform` form in a non-entry module a compile-time error. The
-   source skips it with no diagnostic, and the test for the rule is missing.
+None is open here. The non-entry platform form, the one gap read from source
+on 2026-09-25, is designed in §2.1 and carried by ACT-0973 until it lands.

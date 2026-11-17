@@ -503,7 +503,7 @@ disposition = "established"
 
 [[document_class]]
 name = "qa-support-documents"
-patterns = ["tests/plan/0488-isolation.md", "tests/plan/agent-context-tuning.md", "tests/plan/agent-testing-strategy.md", "tests/plan/helpers.md", "tests/plan/helpers-api.md", "tests/plan/memory-safety-coverage.md", "tests/plan/risks.md", "tests/plan/s122-evidence-delta.md", "tests/plan/s123-carry-triage.md", "tests/plan/s123-evidence-delta.md", "tests/plan/s122-document-checker-reconciliation/README.md"]
+patterns = ["tests/plan/0488-isolation.md", "tests/plan/agent-context-tuning.md", "tests/plan/agent-testing-strategy.md", "tests/plan/helpers.md", "tests/plan/helpers-api.md", "tests/plan/memory-safety-coverage.md", "tests/plan/risks.md", "tests/plan/s122-evidence-delta.md", "tests/plan/s123-carry-triage.md", "tests/plan/s123-evidence-delta.md", "tests/plan/s124-evidence-delta.md", "tests/plan/s122-document-checker-reconciliation/README.md"]
 owner = "qa"
 purpose = "Current QA support contracts, active evidence and retained checker reconciliation."
 established_by = "tests/CLAUDE.md"

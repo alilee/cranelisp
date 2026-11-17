@@ -31,7 +31,24 @@ entry unconditionally.
 | `ptr: *const u8` | the registered function pointer |
 | `param_count: usize` | the `i64` parameter count driving the Cranelift signature loop |
 | `has_return: bool` | whether the function returns an `i64` |
-| `is_runtime: bool` | classificatory: `runtime/`-prefixed infrastructure vs a user-visible-named target. No dispatch consumer |
+
+**`is_runtime` leaves (S123 packet row K11-b, ACT-0963).** At `4b58ab93`
+(read 2026-11-16) source still carries a fourth field,
+`is_runtime: bool`, which labels an infrastructure row against a
+user-visible-named one. Its only reader is the catalog's own classification
+test, and the name prefix already carries the distinction. The removal is
+approved and lands in S124 in one change-set:
+
+- the field, and the `runtime:` argument of both row constructors and of every
+  row;
+- the classification test, the `is_runtime` assertion in the poll-leaf row's
+  test, and the field in the compile-fail cells' stand-in `IntrinsicEntry`;
+- the field's mentions in the `catalog.rs` and `lib.rs` module documentation.
+  The backend's `jit.rs` comment that names it is `dev`(backend)'s.
+
+Expected intrinsics `public-api.txt` effect: −2 (the field at its module path
+and at the root re-export). There is no consumer outside the crate, so no other
+surface changes.
 
 **The "signature" half is the `(param_count, has_return)` pair, and must not
 become a `cranelisp-types` `Type`.** Invariant 10 forbids `FQTypeName`/`TypeName`
@@ -69,10 +86,10 @@ and `runtime/string_read`.
   associated constants of concrete types, and the pointer is the same
   function-to-pointer cast the rows use today.
 - **The compile-time agreement replaces the old arity test**, which pinned
-  copies rather than functions. A module test pins the three corrected rows'
-  derived values:
-  `runtime/panic` has no return, `rc_underflow_check` takes 2 parameters and
-  `string_read` takes 3 and returns nothing.
+  copies rather than functions. A module test pins the corrected rows' derived
+  values. After D11 (below) the one remaining is `runtime/panic`, which has no
+  return; the pins for `rc_underflow_check` and `string_read` leave with their
+  rows.
 - **Structural.** The stable toolchain accepts both the promoted associated
   constants and the implementation for a `-> !` pointer type, so
   `runtime_panic`'s divergence is part of its type.
@@ -80,9 +97,37 @@ and `runtime/string_read`.
   mismatched rows for arity, return and narrow-word parameters, and each must
   be refused with the expected error class. A matched control must compile.
 
-Retiring the entries that have no emitter (`rc_underflow_check`,
-`string_read`) is a separate public-API decision and is not part of this
-derivation.
+### 2.1a Rows without an emitter leave (ACT-1033, row D11)
+
+**Status: designed for S124;**
+[S124 packet](../../sprints/s124-api-packet.md) row D11, approved by the user
+on 2026-11-17. At `4b58ab93` (read 2026-11-17) no backend, root or primitives
+source emits `runtime/rc_underflow_check` or `runtime/string_read`; JIT
+registration and the generic import declaration are their only paths into
+codegen. The catalog holds targets of emitted calls (BC §4b invariant 1), so
+both rows leave in one change-set:
+
+- **`runtime/rc_underflow_check` is retired:** the public function
+  `rc::rc_underflow_check`, its export attribute, its catalog row and its
+  module tests. The emitted inline decrement is checked before it runs by
+  `runtime/rc_dec_check` under the backend's codegen gate, and the Rust-path
+  decrement funnels by the A2 and A3 seam checks
+  ([diagnostic modes](diagnostic-modes.md) §5). An emitted post-decrement
+  check would be a new backend design, not a use of the row.
+- **`runtime/string_read` leaves the catalog, not the crate.** Its catalog row
+  and the `#[export_name = "runtime/string_read"]` attribute go;
+  `heap_string::string_read` stays a public Rust function with its signature.
+  Its one cross-crate consumer is the binary's Rust-path call in
+  `src/marshal.rs`, which is unchanged. Its rustdoc states that it is a
+  Rust-path operation and no emitted call target.
+- **The closed-set guard (§3) loses both names** in the same change-set.
+- **No emitted code, cached object or linked executable names either
+  symbol**, because nothing ever emitted one. No schema effect. Expected
+  intrinsics `public-api.txt` effect: −1, 1 changed (the `string_read` line
+  loses its attribute).
+- **A future emitter of either operation** adds its row back through the
+  inter-crate API gate, with its emitting site and module test
+  ([Principle 8](../arch/principles/08-no-interim-implementations.md)).
 
 ### 2.2 Address-only rows: the runtime poll leaf (S123 ruling)
 

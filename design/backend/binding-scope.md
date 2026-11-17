@@ -22,7 +22,9 @@ any public facade, persisted schema, or cross-crate edge.
 ## Binding environment
 
 `ScopeChain` is a stack of ordered frames. Each `BinderSlot` owns one binder's
-Cranelift `Variable`, optional type, and name for resolution. The latest
+Cranelift `Variable`, type, and name for resolution. The type is optional as
+built; S124 makes it a `ConcreteType` for every slot and capture
+([release contract](non-concrete-release-contract.md) §7.4 step 2). The latest
 matching slot in the innermost applicable frame denotes a name. Leaving a scope
 pops its frame and releases nothing; every binder was already dropped where it
 died.
@@ -32,7 +34,7 @@ compiler and is owned by the closure environment's drop glue, rather than by a
 body frame. Resolution consults a live local slot before a capture, so a local
 shadow does not overwrite its capture, and a use of a capture duplicates.
 
-`bind_local` publishes a local's value and optional type together after its
+`bind_local` publishes a local's value and type together after its
 initializer has compiled. A repeated binder's initializer therefore observes
 the preceding binder's complete facts. `fresh_variable` is private and its only
 construction paths are `bind_local` and `bind_capture`; slots consequently get

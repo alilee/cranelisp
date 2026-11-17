@@ -380,7 +380,7 @@ Re-exports all public names from `core` through the current module.
          primitives [vec-len vec-get vec-set]])
 ```
 
-### 8.4.4 Module Mounting on Export [S124 — mounting is rejected at parse (ACT-1056; RED tests/spec_08_modules::export_mount_reexports_and_exposes_unlisted_member, tests/spec_08_modules::export_mount_only_exposes_qualified_member, tests/spec_08_modules::export_mount_only_does_not_reexport_bare_names_neg); the mount-collision negatives are owed with the correction; tests/spec_08_modules::export_transitive_reexport_chain and tests/spec_08_modules::export_private_name_not_reexported cite this section but observe unmounted re-export]
+### 8.4.4 Module Mounting on Export [Uncovered S124 — was S124 — mounting is rejected at parse (ACT-1056; RED tests/spec_08_modules::export_mount_reexports_and_exposes_unlisted_member, tests/spec_08_modules::export_mount_only_exposes_qualified_member, tests/spec_08_modules::export_mount_only_does_not_reexport_bare_names_neg); the mount-collision negatives are owed with the correction; tests/spec_08_modules::export_transitive_reexport_chain and tests/spec_08_modules::export_private_name_not_reexported cite this section but observe unmounted re-export]
 
 ```clojure
 (export [(core.string str) [concat join]])
@@ -429,7 +429,9 @@ Resolution proceeds as follows:
 
 Mounts `core.string` at `current-module.str` WITHOUT re-exporting any names as bare. Useful when the bare-name pollution is undesired but the mount is wanted.
 
-A bare-form mount without an alias (e.g. `(export [m []])`) re-exports no names and registers no mount. An implementation MAY treat this as a no-op or MAY reject it as a vacuous declaration; either is conforming.
+A bare-form mount without an alias (e.g. `(export [m []])`) re-exports no names and registers no mount. It MUST be accepted as a no-op, loading nothing.
+
+**Import alias and export mount sharing a spelling.** Within one declaring module, an import alias and an export mount with the same spelling MUST form one public route when they target the same canonical module. If their targets differ, the combination MUST be rejected as a compile-time error. This rule applies in either declaration order.
 
 **Negative cases** (compile-time errors):
 
@@ -658,7 +660,7 @@ Local bindings shadow module-scope names:
 
 This is permitted without error -- local bindings are lexically scoped and always take priority through the local environment layer.
 
-### 8.6.4 Module-Scope Candidate Registration [Tested+Neg tests/spec_08_name_shadowing::def_over_import_repl_rejected, tests/spec_08_name_shadowing::deftrait_over_prelude_mode_parity_all_modes, tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides, tests/spec_06_pattern_matching::type_named_like_other_types_ctor_matches_its_own_ctors]
+### 8.6.4 Module-Scope Candidate Registration [Uncovered S124 — was tests/spec_08_name_shadowing::def_over_import_repl_rejected, tests/spec_08_name_shadowing::deftrait_over_prelude_mode_parity_all_modes, tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides, tests/spec_06_pattern_matching::type_named_like_other_types_ctor_matches_its_own_ctors]
 
 A module-local declaration, an `import` or `export`, an implicit-prelude binding, and a derived type or trait member MAY expose the same unqualified spelling when they have distinct canonical identities. Registering the later declaration is not an ambiguity error, does not shadow an earlier module-scope declaration, and does not depend on textual order or compilation mode. Instead, the spelling denotes all such canonical candidates and is resolved separately at each use under §8.6.5.
 
@@ -685,7 +687,7 @@ The spelling `convert` denotes up to three distinct canonical declarations. A us
 
 Glob and selective imports are peers. Neither import shape, visibility, prelude origin, local-definition origin, nor arrival order gives a candidate precedence.
 
-This permission concerns declarations in language namespaces. **Module-routing names are not candidate sets.** Two import aliases binding the same local module alias, two export mounts binding the same path segment, or a mount colliding with an actual submodule remain compile-time errors because a path walk must select one route before it can reach a declaration (§8.3.4, §8.4.4). Lexical bindings remain ordinary shadowing layers under §8.6.3.
+This permission concerns declarations in language namespaces. **Module-routing names are not candidate sets.** Two import aliases binding the same local module alias, two export mounts binding the same path segment, or a mount colliding with an actual submodule remain compile-time errors because a path walk must select one route before it can reach a declaration (§8.3.4, §8.4.4). An import alias and an export mount sharing a spelling follow §8.4.4's target-equality rule. Lexical bindings remain ordinary shadowing layers under §8.6.3.
 
 ### 8.6.5 Use-Site Selection and Ambiguity [Uncovered S121 — partial: accessor and trait-method members tests/spec_05_definitions::impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg; rule 1 for a qualified return-dispatched trait method tests/spec_07_traits::trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_pinned_dispatches; ambiguous dotted parent lists only its surviving type/trait canonicals tests/spec_08_modules::dotted_member_under_ambiguous_trait_parent_is_rejected_neg, crates/cranelisp-typecheck/src/checker/tests.rs::dotted_member_ambiguity_lists_only_parent_candidates; the remaining rules not assessed]
 

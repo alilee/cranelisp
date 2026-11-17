@@ -14,8 +14,10 @@ pass (`crates/cranelisp-typecheck/src/ownership/`) and backend consumption of pu
 summaries exist in source. This document states the contract; it does not grade how much of
 each increment (§7) is delivered — the interior designs and the verification plan own that.
 Guarded redefinition governs §5, which also records the superseded R3 dependent-recompilation
-ruling; the interim live-redefinition restriction is tracked by
-[ACT-0953](../../sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md).
+ruling. The interim live-redefinition restriction on mode changes is retired by user ruling
+(2026-11-16) and leaves source in S124 (§5, "Modes are not slot ABI"). §3.4 states which
+mechanisms the dev lowering keeps; sections that describe a mechanism outside that list record
+the release-tier design, not the dev lowering.
 **Provenance / measured basis:** the S99 ablation settlement (`sprints/archive/sprint-99.md`;
 `effect-concurrency.md` §3.1; `tests/plan/s99-measurement.md`) —
 the parallel slowdown is essentially all contention, dominated on release by **(b) atomic-RC
@@ -502,7 +504,22 @@ change a program's growth rate. Every other mechanism, and every codegen-engine 
 M1 direct calls, M2 LTO, M3 IR-level RC fusion), belongs to the release tier
 (`release-llvm-backend.md`). This replaces the S100 placement of all memory-model mechanisms in the
 shared lowering. The current disposition of each built mechanism is
-[ownership codegen](../backend/ownership-codegen.md) §0. **The conservative all-Owned / all-atomic /
+[ownership codegen](../backend/ownership-codegen.md) §0.
+
+**S124 retirements (approved; in source at `4b58ab93` until they land).** Each fails
+Principle 27's acid test — removing it changes a constant, not a growth rate:
+
+| Mechanism | What leaves the dev lowering | What stays produced for the release tier |
+|---|---|---|
+| Stack placement (Q2 consumer, §3.6) | The stack slot, the immortal header, the eligibility gates and their switch; the intrinsics emission tally (S124 packet row D5). No stack-placed value then reaches the armed decrement check, which closes ACT-1049 | The `escapes` site fact on `MonoExpr` |
+| Value flattening (Q5 consumer, §6.3) | `HeapCategory::Value` and the inline lowering (row D4) | The types-owned `value_layout` predicate and typecheck's `Copy` classification |
+| Spark density (§8.3) | The density axis of the spark gate; it has no public item | The `escapes` and `confined` site facts |
+| Borrow-elision carrier | `Realization::ExternShim::borrowed_sibling`, unproduced since ACT-0974 (row D6) | Declared extern modes, as analysis input |
+| Mode-ABI redefinition gate (§5) | The binary's mode comparison and the three `ModeSummary` predicates it used (row D7) | Inference, `ModeSummary` and the persisted summaries |
+
+After them the dev lowering reads no summary and no site fact; U1 and U2
+([uniform counting](../backend/uniform-counting.md)) are the only memory-model rules it applies.
+Parallel evaluation is Principle 27's carve-out and is unaffected by the density retirement. **The conservative all-Owned / all-atomic /
 all-heap lowering remains reachable via the analysis-off toggle** and is the standing differential
 baseline and correctness oracle for `/qa`'s harness (part 17). `--release` consumes the *same*
 facts through the same `MonoExpr` boundary: two tiers, one input, one analysis (Principle 7).
@@ -845,6 +862,19 @@ fresh-slot, freeze and retention rules describe the current system. §5.2–§5.
 its dependent-recompilation transaction, which the guard replaced; they are not
 the current system.
 
+**Modes are not slot ABI (user ruling 2026-11-16).** Under uniform counting every call
+position consumes its arguments whatever the callee's summary, so a compiled slot's contract
+is the same for every mode summary. "ABI-changing" in §5.5 and §5.6 therefore means a change of
+language type. A same-type redefinition publishes in place whatever its inferred modes, and
+ACT-0953, which asked for an adaptation that preserves old callers across a mode change, is
+discharged by having nothing to adapt. REPL §18.1.2, its diagnostic and the binary's
+mode-difference refusal are removed in S124; at `4b58ab93` the refusal is still in
+`src/redefine.rs` and `src/worker.rs`. The premise's grade and falsifier are
+[safety invariants](safety-invariants.md) row R12. A release tier that specialises a slot by
+mode needs its own rule; Principle 27 places such specialisation outside the tiers that
+redefine live. Text in §3 that calls the mode vector ABI-bearing records the pre-uniform
+design.
+
 ### 5.1 Batch (`--run`/`--link`): summaries persist; invalidation is the cache's dependency record
 
 The `.meta.json` **is** a serialised `SymbolTable`
@@ -1105,6 +1135,13 @@ with the newly-green shape in the fix change-set (extension, not re-baseline —
 existing entries is untouched). Corpus-construction pin routed to the qa plan as FIXME 0503.
 
 ### 6.3 The `Copy` row's mechanism (R5) — named, routed to the backend proposal
+
+**Tier.** This mechanism is delivered in the dev lowering at `4b58ab93` and retires from it in
+S124 (§3.4). The single-sourced eligibility predicate below stays; its backend reader returns
+only with a release-tier lowering. Typecheck keeps placing eligible types at the `Copy` point
+while the dev lowering counts them as heap values. That is sound only because no dev emission
+reads a mode (safety-register row R1); a dev-tier emission that elides a count on a `Copy` mode
+after the retirement is the missing-increment hazard described below, and is the falsifier.
 
 For an ADT that stays heap-allocated, "bit-copy" is vacuous — copying the pointer still bumps the
 refcount. The `Copy` row pays only when the **representation is a value** (unboxed/inline). The

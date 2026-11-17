@@ -707,7 +707,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 
 The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`bind!`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. Concurrent panic reporting follows [§12.4.3](12-runtime.md#1243-lenient-evaluation) (user ruling, 2026-11-15). [S92]
 
-## 4.12 Trace Expression [S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.2, §4.12.3 and §4.12.9 are partial (ACT-1038, ACT-1039) and §4.12.6 is untested]
+## 4.12 Trace Expression [Uncovered S124 — was S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.2, §4.12.3 and §4.12.9 are partial (ACT-1038, ACT-1039) and §4.12.6 is untested]
 
 ```clojure
 (trace expr)
@@ -727,12 +727,16 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [S122 — partial. Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4. Items 2–3 are defective when a traced callee sparks: calls on a worker are not recorded and leak (ACT-1038; RED tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string)]
+### 4.12.2 Semantics [Uncovered S124 — was S122 — partial. Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4. Items 2–3 are defective when a traced callee sparks: calls on a worker are not recorded and leak (ACT-1038; RED tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string)]
 
 Evaluation proceeds as follows:
 
 1. The implementation activates instrumentation for function calls reachable from `expr`.
-2. `expr` is evaluated in the current environment using normal strict evaluation.
+2. `expr` MUST be evaluated strictly and sequentially for the whole dynamic
+   extent of the trace, including evaluation inside functions called from
+   `expr`. The lenient parallel-evaluation permission in
+   [§12.4.3](12-runtime.md#1243-lenient-evaluation) does not apply within that
+   extent.
 3. Every call to an instrumented function during the evaluation of `expr` is recorded: the function name, the arguments formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)), the return value formatted using the same format, the child calls made within that function, and the wall-clock elapsed time in nanoseconds.
 4. On completion, a `Trace` value is constructed from the recorded call tree and returned.
 

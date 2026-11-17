@@ -90,6 +90,12 @@ and Principle 26, **Record from settled state**.
    failure, restore exactly the shell and method-symbol set snapshotted at step 7.
 10. Finalization refreshes only those settled names.
 
+Steps 1–7 are registration and steps 8–9 the body check. The S124 target
+([traits §3](traits.md#registration-pipeline), ACT-0985) runs steps 1–7 for every
+`impl` of the cluster in Pass 1 and steps 8–9 in the impl-body sweep that follows it, so
+the order within one implementation is unchanged and every shell is staged before any
+body is checked.
+
 No provisional as-written mangle is published and repaired later. For HKT, the
 target rewrite extracts the constructor only after the slot-1 and pairing-head
 identities have settled, and it does not replace the resolved trait carrier.
@@ -99,9 +105,14 @@ identities have settled, and it does not replace the resolved trait carrier.
 Resolution failures are located at the impl span and keep the written reference:
 
 - unknown module or name, or a terminal that is not a trait: `unknown trait:
-  <as-written-reference>`;
+  <as-written-reference>` (an unloaded module is the open item in
+  [typecheck §11](typecheck.md#11-open-design-items));
 - a qualified reference to a private trait: the ordinary resolver's visibility
   error at the impl span;
+- a reference that remains ambiguous: the ordinary resolver's ambiguity error at
+  the impl span, listing the surviving canonical traits (spec §8.6.5). S124 target
+  (ACT-1001 P-3); at `4b58ab93` it is reported as `unknown trait`, which drops the
+  candidates;
 - an HKT pairing head that fails to resolve or resolves to another trait: the
   bad-pairing diagnostic;
 - a slot-1 shape or `con_var` mismatch: the declaration-driven diagnostic, after
@@ -109,7 +120,9 @@ Resolution failures are located at the impl span and keep the written reference:
 
 A failed qualified resolution never falls back to the bare name and never scans
 other modules, so an invalid qualifier cannot bind an in-scope trait of the same
-name. Errors occur before the shell or any method entry is staged.
+name. Errors occur before the shell or any method entry is staged. The not-found
+class is recognised by its variants, never by the entry kind a variant names (the
+resolver's generic miss is `TypeNotFound`-shaped whatever was sought).
 
 ## 6. Evidence
 
@@ -123,7 +136,10 @@ name. Errors occur before the shell or any method entry is staged.
   `_neg_does_not_mint_written_qualifier_into_method_name` twin,
   `qualified_hkt_impl_trait_reference_resolves_canonical_home_and_dispatches`, and
   the `hkt_impl_pairing_head_qualified_*` and `deftrait_qualified_*` binder
-  negatives. Coverage status is the spec-side annotation band, which `qa`
+  negatives. For the ambiguity arm, `tests/spec_08_modules.rs::impl_ambiguous_trait_names_both_candidates_neg`
+  with `impl_unknown_trait_diagnostic_control`; `dev` adds a module row that an
+  ambiguous head names both canonical traits and a missing head still reads
+  `unknown trait`. Coverage status is the spec-side annotation band, which `qa`
   maintains.
 
 ## 7. Open item — an unreachable builtin default arm

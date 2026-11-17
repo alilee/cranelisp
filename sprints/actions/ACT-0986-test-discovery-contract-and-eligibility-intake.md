@@ -1,7 +1,7 @@
 ---
 id: ACT-0986
 title: Resolve the remaining test-discovery contract discrepancies
-status: open
+status: resolved
 priority: required
 from: arch
 to: qa
@@ -15,6 +15,20 @@ refers_to:
   - src/session_v4/test_runner.rs
   - crates/cranelisp-frontend/src/ast_builder/tests.rs
 ---
+
+## Resolution (qa, 2026-11-16, S124 Phase 3, at `4b58ab93`)
+
+Neither item is a defect on the current tree, so no reproduction is allocated.
+
+- **Item 1: settled by user ruling.** `repl/spec/16-test-discovery.md` §16.1
+  records the 2026-11-15 ruling: only the compiler runners warn about a
+  mistyped `test-` function; in-language `discover-tests` excludes it
+  silently. The silent exclusion is evidenced by
+  `tests/spec_12_runtime.rs::discover_tests_excludes_mistyped_test_neg`.
+- **Item 2: done.** §16.5 no longer carries the non-conforming example, and
+  `test_discover_tests_no_arg_builds_as_apply` cites REPL §16.
+- Delete this action once `sprints/actions/ACT-0988-project-regression-discovery.md`
+  and `tests/plan/s122-evidence-delta.md` no longer link it.
 
 ## S122 disposition (user-approved 2026-09-30)
 

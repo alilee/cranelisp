@@ -60,6 +60,21 @@ The lead came from `training`'s Phase-6a assessment (F2).
 - **`design`(int)** chooses the span source; **`dev`(src)** adds the unit row
   with the fix.
 
+## S124: two sibling raise sites (qa, 2026-11-16, at `4b58ab93`)
+
+Both are batch refusals the specification requires, reported at `1:1` and
+`0..0` with the subject on line 3. `test` commits them as REPRO-0915-loc of
+the [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#34-repro-0915-loc--batch-refusals-located-at-00).
+
+- **The arity arm of the same function.** `(defn main [x] …)` is refused
+  with `main must be a zero-argument function returning IO _`. The committed
+  cell covers only the non-`IO` arm.
+- **The `discover-tests` refusal** (`src/exe.rs::refuse_dev_session_externs`,
+  REPL §16.6): `` `p/main` references `discover-tests` `` is not located at
+  the referencing function. Unlike ACT-1034's refusal, this diagnostic is
+  required, so it is a durable public witness of FIXME 0915's location
+  requirement.
+
 ## Disposition
 
 Fix or carry is the user's decision under METHOD §2.4. QA retains this intake.

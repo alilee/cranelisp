@@ -12,7 +12,7 @@ refers_to: design/backend/non-concrete-release-contract.md §2, §4, §7;
   tests/fixtures/clif_baseline/MANIFEST.md
 status: open
 ruled_at: design/backend/non-concrete-release-contract.md (S119 Phase 3)
-blocked_on: typecheck producer obligations for faces 2 and 3
+blocked_on: the census readings (S124), then the producer corrections they attribute — typecheck accessor monomorphisation and ACT-1034 — and ACT-1050's producer
 ---
 
 # Retire the non-concrete release and retain arms for the whole measured class
@@ -64,32 +64,45 @@ the leaks does not apply here.
   constructor frame reaches `emit_release` with a residual-typed parameter.
   The residual reaches 0903's families through the constructor declaration
   channel instead (contract §7.4). 0891's two tails are below: the arm deletion
-  (item 3), and the `Ctor` census partition, whose zero reading reconciles with
+  (item 5), and the `Ctor` census partition, whose zero reading reconciles with
   FIXME 0931's constructor witness.
 
 ## Remaining obligation
 
-The contract's open backend work, in its order (§7.7):
+Scheduled in S124; designed in Phase 3 and not in source at `4b58ab93`. The
+order is the contract's §7.7 and is not restated here;
+the cross-surface rules it must respect are
+[the S124 close](../concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
+What this filing still owes:
 
-1. the refusal frame (§7.2, shared with FIXME 0915);
-2. the armed category census, with both detection legs (§7.3). It now
-   instruments `emit_release` and `emit_dup`;
-3. the R-1 structural close (§7.4). Constructor field types become an
-   instantiation fact, `Err ⇒ Mixed` becomes a located error, and the
-   shallow-dec arm in `emit_release` is deleted rather than re-keyed. The
-   close is census-gated on zero licences in the `Ctor`, `Accessor` and
-   `TraitMethod` partitions.
+1. the armed category census over three arms (retain, release, absent type),
+   with both detection legs for each (§7.3);
+2. the constructor field channel (§7.4 step 1, S124 packet row D1): field
+   types become an instantiation fact;
+3. the producer corrections the census attributes
+   ([the S124 close](../concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category),
+   attribution): typecheck designs ACT-1034 now and predicts no other traffic of
+   its own, so the accessor correction and ACT-1050's producer are scoped from
+   the readings and `qa`'s reductions;
+4. the census reading zero in **every** partition and arm, `Plain` included;
+5. the arm deletion (§7.4 step 2): binder types are concrete, and the retain,
+   release and absent-type arms are deleted rather than re-keyed.
 
-Faces 2 and 3 also need typecheck's producer obligations: monomorphised
-accessors and trait-method instances.
+The refusal frame (§7.2, FIXME 0915) is no longer a precondition: it carries
+past S124 by the user's ruling, and the close adds a refusal only where the
+census measured zero traffic.
 
-The structural close must carry a scoped, attributed re-baseline of the
-`f4_sudoku` `user::Grid.cells` accessor frame as its static witness. That frame
-is uncalled in the corpus and the exemplar, so it is not a runtime witness.
+The accessor correction's change-set (item 3) carries a scoped, attributed
+re-baseline of the `f4_sudoku` `user::Grid.cells` accessor frame as the static
+witness. It cannot ride the field-channel change-set (item 2): that change-set
+lands only once the census reads zero residual and absent field reads, which
+is after the accessor traffic is gone. That frame is uncalled in the corpus
+and the exemplar, so it is not a runtime witness.
 
 Register rows: [safety invariants](../safety-invariants.md) R15, R17 and R18.
 
 ## Closure
 
-The shallow-dec arm and the `Err ⇒ Mixed` arm are gone, the census reads zero
-in the three partitions, and the `Grid.cells` re-baseline is recorded.
+The shallow-dec arm, the `Err ⇒ Mixed` arm and the absent-type early returns
+are gone, the census reads zero in every partition and arm, and the
+`Grid.cells` re-baseline is recorded.

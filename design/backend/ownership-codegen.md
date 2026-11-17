@@ -43,15 +43,15 @@ spec rulings). A retiring mechanism's typecheck facts keep being produced.
 |---|---|---|---|
 | Master analysis-off toggle and cache key | §2 | Built | Stays: the differential oracle, not an optimisation |
 | Borrow elision | §3 | Retired (uniform counting) | — |
-| Stack placement for `NoEscape` | §4 | Built for scalar-payload ADT constructor calls; closures and Vec literals decline | Constant factor: retires in S124 (§4). The region arena (§4.4) is release-tier |
+| Stack placement for `NoEscape` | §4 | Built for scalar-payload ADT constructor calls; closures and Vec literals decline | Constant factor: retires in S124 as the first backend change-set, with packet row D5 (§4). The region arena (§4.4) is release-tier |
 | Non-atomic RC for `Confined` | §5 | Retired at S123 W4: no classifier or census; every emitted RC operation is atomic unless the probe is set | Constant factor: release tier (§5). The unsound measurement probe stays |
 | Dynamic Vec COW check and reuse counters | §6 | Built | Stays: rule U2 holds an update loop linear ([uniform counting](uniform-counting.md) §2). The counters are instrumentation |
 | General drop-guided reuse | §6.1 | Not built | Release tier |
-| One-word value flattening | §7 | Built | Constant factor: retires in S124 (§7). The value-layout predicate stays a published fact |
+| One-word value flattening | §7 | Built | Constant factor: retires in S124 after the R-1 close, with packet row D4 (§7). The value-layout predicate stays a published fact |
 | Redefinition machinery (backend half) | §8 | Fresh slots built; the trap stub retired at S123 W4 (P13) | Not an optimisation |
-| Dual-symbol extern convention | §9 | Retired: no position borrows | The carrier's removal is `arch`'s, scheduled for S124 |
+| Dual-symbol extern convention | §9 | Retired: no position borrows | The carrier leaves in S124 with packet row D6 (§9) |
 | Vec-query trio in value position | §12.7 | Built | A required lowering, not an optimisation |
-| Spark density axis | §13.4 | Built, disabled by default | Retires in S124. Parallel evaluation itself stays (Principle 27's carve-out) |
+| Spark density axis | §13.4 | Built, disabled by default | Retires in S124 (§13.4). Parallel evaluation itself stays (Principle 27's carve-out) |
 | Supporting contracts (golden oracle, counters, wrapper contracts, unit scenarios, producer pins) | §13 | Current | — |
 | RC/alloc seam assertion density | §15 | Row 6 built; rows 2 and 5 retired; rows 1, 3 and 4 open | — |
 
@@ -112,7 +112,7 @@ unchanged, so the backend is shaped to make it so:
 ### 2.3 The toggle is a cache invalidation key
 
 Code compiled analysis-on and analysis-off differs: moves on or off, stack
-placement, and the facts the cache persists. Loading one polarity's cache under
+placement until its S124 retirement, and the facts the cache persists. Loading one polarity's cache under
 the other would make the differential compare a mixture. The toggle's polarity
 is therefore one of the manifest's global invalidation dimensions alongside the
 compiler fingerprint, target and format: flipping it invalidates the whole
@@ -154,21 +154,37 @@ Without it a `NoEscape` construction allocates on the RC heap, which costs a
 constant per construction and changes no growth rate. Until the S124 change
 lands, this section is the current design. The retirement is one change-set:
 
-- **Deleted:** `emit_stack_alloc` and `IMMORTAL_RC` (`heap.rs`), the
-  eligibility verdict and its five gates (§4.1), the spark-relocation flag
-  (§4.3) where the gate is its only reader, the `CRANELISP_NO_STACK_ALLOC`
-  oracle (§13.2.2 N4) and the `stack_slot` tally push.
+- **Deleted, backend:** `emit_stack_alloc` and `IMMORTAL_RC` (`heap.rs`); the
+  stack-eligible constructor path in `compiler/apply.rs`;
+  `FnCompiler::constructor_call_stack_eligible` with its five gates (§4.1) and
+  `STACK_ALLOC_ESCAPE_FACT_SOUND`; the `CRANELISP_NO_STACK_ALLOC` oracle
+  (§13.2.2 N4); the `tally_stack_slot` push.
+- **Deleted because the gates were their only readers:**
+  `FnCompiler::fn_has_self_call` and the whole-body walk `body_has_self_call`
+  that sets it (gate 3), and `FnCompiler::in_spark_thunk` with
+  its propagation into lambda bodies and the dependent-spark thunk (gate 5).
+  The shared self-call predicate `is_self_call` stays: the TCO back-edge
+  decision and the spark classifier still consume it.
+- **`node_escapes`** loses its stack reader. It goes with whichever of this
+  change-set and the density retirement (§13.4) lands second.
+- **Deleted, intrinsics, in the same change-set** (packet row D5):
+  `rc::stack_slot_hits`, `rc::tally_stack_slot` and the `[RC_STATS]`
+  `stack_slot` field (§13.2.1). The backend is their only caller, so the two
+  surfaces' halves cannot land apart without a broken build.
 - **Kept:** typecheck's escape fact, produced and tested where it is computed.
-  With stack placement gone the backend has no escape reader except the spark
-  density scorer, which retires in the same sprint (§13.4).
+- **ACT-1049 closes by subtraction.** No stack-placed value reaches the armed
+  decrement check, so the check needs no exemption for immortal headers; the
+  exemption the action requested of intrinsics is not needed.
 - **Evidence shape:** emission changes at every eligible construction, so the
-  golden corpus is re-baselined with attribution, and the analysis-on and
-  analysis-off lowerings agree on allocation placement. `BUILD_ID` invalidates
-  cached objects, so no schema bump is needed for placement alone.
-- **Other owners:** the `[RC_STATS]` `stack_slot` field belongs to intrinsics'
-  print surface; whether it stays as a zero or leaves is `design`(intrinsics)'s
-  and `arch`'s. Spec §12.1's descriptive layouts should not describe stack
-  placement after S124 (`spec`).
+  golden corpus is re-baselined once, with attribution, before the category
+  census and the R-1 close claim their own scoped diffs
+  ([release contract](non-concrete-release-contract.md) §7.7). The analysis-on
+  and analysis-off lowerings then agree on allocation placement. `BUILD_ID`
+  invalidates cached objects, so no schema bump is needed for placement alone.
+- **Other owners:** the readers of the `stack_slot` field are test helpers
+  (`test`); the gate's row in the crate's environment table is `dev`'s. Spec
+  §12.1's descriptive layouts should not describe stack placement after S124
+  (`spec`).
 
 ### 4.1 Eligibility
 
@@ -372,6 +388,29 @@ current design. What the retirement must respect:
 - Spec §12.1's descriptive layouts should not describe flattening after S124
   (`spec`).
 
+The retirement is one change-set, after the R-1 close
+([release contract](non-concrete-release-contract.md) §7.7), because the
+census and the close claim diffs scoped against the layout they were measured
+on:
+
+- **Classification.** `HeapCategory::classify` stops delegating to
+  `value_layout`. A one-word single-constructor ADT then classifies like any
+  other single-data-constructor ADT, as a heap value (packet row D4).
+- **Deleted:** the `Value` variant (public, row D4) and every arm naming it,
+  which the exhaustive matches enumerate (§7.6): the match lowering's
+  inline field read, the identity-move construction in `compiler/apply.rs`,
+  and the `Value` alternatives in capture, glue, Vec, dependent-spark, trace
+  and duplicate classification. Removing the variant makes the broken build the
+  checklist.
+- **Gained, with no new code:** a Vec of these types gets element functions,
+  and a field of this type inside another ADT gets its glue, like any heap
+  type (§7.3).
+- **Consumers outside the crate** are the binary's `result_owner.rs` and
+  `display.rs` (row D4).
+- **`CACHE_SCHEMA_VERSION` is bumped** in the change-set (§7.4).
+- §7.1–§7.6 then describe a mechanism that does not exist, and reduce to a
+  stub for their cited numbers.
+
 ### 7.1 `HeapCategory::Value` and its single source
 
 `HeapCategory::Value` marks a concrete type represented inline: no header, no
@@ -471,9 +510,18 @@ is int's session pool.
 Retired at S123 W2 with §9.1–§9.4. A borrowed-convention extern sibling has no
 position to serve, because no position borrows
 ([uniform counting](uniform-counting.md) §1). The carrier
-`Realization::ExternShim { borrowed_sibling }` and its cache validation remain
-in `cranelisp-types` and the cache loader with no selector; whether to remove
-the carrier is `arch`'s.
+`Realization::ExternShim { borrowed_sibling }` has had no producer since
+ACT-0974 and leaves `cranelisp-types` in S124 (packet row D6). The backend's
+half, in the same change-set:
+
+- the cache loader's validation of the persisted sibling slot
+  (`cache/serialize.rs`) is deleted with the field, and with it the module cell
+  that plants an out-of-range sibling slot;
+- `CACHE_SCHEMA_VERSION` is bumped, because `Realization` is persisted;
+- the public variant `CacheStale::SiblingSlotOutOfRange` is removed with its
+  only producer (packet row D9, approved 2026-11-16), together with its
+  diagnostic tag arm, its display arm and its row in the `cache/serialize.rs`
+  module table. Backend `public-api.txt` loses three lines.
 
 ---
 
@@ -579,7 +627,9 @@ working:
 
 The counter state and the print surface live in `cranelisp-intrinsics::rc`; the
 backend is the sole writer, pushing (`tally_stack_slot`, `tally_rc_emit`) from
-host code during compilation. The pushes emit no IR.
+host code during compilation. The pushes emit no IR. The `stack_slot` field
+and its push leave with stack placement (§4, packet row D5), which moves every
+later field one position left; readers that parse by name are unaffected.
 
 #### 13.2.2 Finer measurement seams
 
@@ -596,7 +646,8 @@ changes a public API, a `cranelisp-types` item or a C-ABI symbol:
   W4 with the confined classifier, its only record site (§5.1).
 - **N4 — fine stack oracle** — `CRANELISP_NO_STACK_ALLOC=1`, read once at codegen
   and ANDed with `STACK_ALLOC_ESCAPE_FACT_SOUND`, declines stack placement only
-  while every other mechanism stays live. Built.
+  while every other mechanism stays live. Built; retires with stack placement
+  (§4).
 
 ### 13.3 Wrapper contracts
 
@@ -644,6 +695,16 @@ under-counts; removing it is `dev`'s, and the axis ships disabled. A subtree
 carrying no ownership fact returns `None`, so the axis is inert and admission
 unchanged whenever analysis did not run.
 
+**The retirement** deletes the scorer (`spark_density` and its accumulator),
+the decline verdict, the threshold and trace statics with their
+`CRANELISP_SPARK_DENSITY_MAX` and `CRANELISP_SPARK_DENSITY_TRACE` variables,
+and `node_confined`; `node_escapes` goes as §4 states. The admission predicate
+becomes the compute-worthiness test alone
+([lenient evaluation](lenient-eval.md) §2.7). The axis is disabled by default,
+so the default configuration's emission is byte-identical; only the opt-in
+comparison row disappears. It has no public item and no dependency on the
+other S124 change-sets.
+
 ### 13.5 Unit scenario spaces
 
 `dev` derives unit scenarios per submodule and scenario class, and `qa` audits
@@ -657,8 +718,8 @@ oracle.
 | Wrappers (`fn_as_value.rs`) | dispatch kind {user function, extern, inline primitive, constructor, trait method, operator} × use {HOF argument, partial application, returned, stored, bound} × instantiation count {1, 2 same op, 2 different ops, n} × mode {REPL, `--run`} |
 | COW cores (`vec_codegen.rs`) | branch {mutate, copy, grow} × source count {1, >1} × call site {static, wrapper, curry} → the source is always owned; mutate and grow forward its reference, copy releases it; the result owns exactly one reference on every branch. Counting scenarios are the ownership plan's ([uniform counting](uniform-counting.md) §8) |
 | Vec literal element move-in | element {fresh temporary, COW-aliased result} × escape |
-| Stack placement | the five gates × `escapes` × site kind → stack slot or unchanged heap; sentinel behaviour |
-| Spark density (`sparkability.rs`) | facts {present, absent} × body {allocation-dense, compute-dense, mixed} × threshold boundary → admitted, declined, inert |
+| Stack placement — retires with §4 | the five gates × `escapes` × site kind → stack slot or unchanged heap; sentinel behaviour |
+| Spark density (`sparkability.rs`) — retires with §13.4 | facts {present, absent} × body {allocation-dense, compute-dense, mixed} × threshold boundary → admitted, declined, inert |
 | GOT | exhaustion, freeze, in-place patch |
 
 ### 13.6 Producer pins

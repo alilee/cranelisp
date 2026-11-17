@@ -22,11 +22,9 @@ form and rejects at the introducer span with `annotation missing expression` (sp
 §7.1.1). The enforcement is **structural** — the shape does not survive reading —
 so no predicate, position table or corpus discipline has to keep holding it.
 
-One residue would otherwise read as design intent. `build_one_expr_at` still
-returns `(Expr, usize)` and its callers still do `consumed` arithmetic, but it
-always consumes exactly one item: the width belonged to a sibling-scanning
-annotation mirror that no longer exists. Collapsing the pair to a plain `Expr` is
-an available simplification; it is not a variable-width contract.
+An annotated form is one node, so every expression position consumes exactly
+one item (`enforcement-matrices.md` §1). A consumed-width protocol belonged to a
+sibling-scanning annotation mirror that no longer exists and is not a contract.
 
 ## 2. Read-time annotation fold
 

@@ -15,6 +15,39 @@ refers_to:
   - tests/s76_macro_availability.rs
 ---
 
+## S124: classified and reproduced (qa, 2026-11-16, at `4b58ab93`)
+
+Observations, fixtures and controls are in the
+[S124 evidence delta](../../tests/plan/s124-evidence-delta.md#33-act-1005--regeneration).
+The correction stays carried past S124 (user, 2026-11-16).
+
+- **P6 confirmed, and it breaks the cold load.** After
+  `(begin (defn f [] 1) (defn g [] 10))` then `(defn g [] 20)`, the
+  regenerated file holds the whole `begin` and the new `g`. A restart
+  reports `illegal redefinition of g in one compilation cluster` and starts
+  locked; `--run` on the file fails the same way. A macro call that expands
+  to two definitions behaves identically. Controls: no redefinition, a
+  redefined plain `defn`, and both members redefined all restart cleanly.
+  `test` commits REPRO-1005-a, class `partial-record-update`.
+- **Rules 2 and 4 reproduced.** Definitions entered `z`, `y`, `x` are written
+  `x`, `y`, `z`; forms entered `import`, `export`, `mod`, `import` are written
+  `mod`, `import`, `export`, with the two imports merged. `test` commits
+  REPRO-1005-b and REPRO-1005-c, class `authored-order-loss`.
+- **The macro-order claim is falsified for the current regenerator.** It
+  writes every macro before every function, so no regenerated file put a
+  macro use before its definition in seven shapes, including redefinition
+  and a macro that expands to another macro's call.
+- **Two questions for `spec`, both blocking the correction's design, neither
+  blocking the reproductions.**
+  1. Rule 2 against macro availability. With `(defn f [] 1)`,
+     `(defmacro two [] (quote 2))`, `(defn f [] (two))`, rule 2 keeps `f`
+     first, ahead of the macro it now uses, and spec §9.3.4 admits only
+     earlier macros.
+  2. Rule 1 against REPL §18.4. After a macro is redefined, an
+     already-expanded definition keeps its old body in the session (3) and
+     takes the new one after a restart (21). §18.4 states the second;
+     rule 1 requires the restart to produce the session's values.
+
 ## Disposition
 
 User-deferred from S122 for one or two sprints: revisit in S123 or S124.

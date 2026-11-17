@@ -13,9 +13,9 @@ document and either disagrees, they govern.
 [ownership codegen](../backend/ownership-codegen.md).
 
 The pass infers, for every concrete callable in a cluster, how each parameter's
-reference is used and where the result may point, so the backend can omit reference
+reference is used and where the result may point, so that a lowering can omit reference
 counting operations it can prove unnecessary. Everything it publishes is a claim that a
-consumer acts on. Absence is always the safe reading.
+consumer may act on. Absence is always the safe reading.
 
 - §1 Purpose, placement and components
 - §2 Call classification, the summary and site facts
@@ -37,9 +37,18 @@ consumer acts on. Absence is always the safe reading.
 
 ### 1.1 Soundness frame
 
-- A published fact is a claim a consumer may elide an operation on. For example, the
-  backend omits a callee's return protect exactly when a summary is present and says
+- A published fact is a claim a consumer may elide an operation on. For example, a
+  lowering may omit a callee's return protect exactly when a summary is present and says
   `ResultMode::Fresh`.
+- **Consumers.** Under uniform counting no dev-tier emission reads a summary: every call
+  position consumes its arguments ([interfaces, ownership-inference carriers](../arch/interfaces.md#ownership-inference-carriers)).
+  At `4b58ab93` the dev lowering's remaining readers of published facts are stack
+  placement and spark density, which read the `escapes` and `confined` site facts; value
+  flattening reads no fact but shares the layout predicate behind `Copy` (§2.2). S124
+  retires all three under Principle 27 ([spine §3.4](../arch/ownership-inference.md#34-tier-statement--oracle-r7)).
+  After them nothing in the dev tier reads a published fact. The facts keep being
+  produced, published, persisted and producer-tested for the release tier, so nothing in
+  this document changes when they land except the consumer lists that cite them.
 - Every fact is monotone-sound on its own. Widening toward `Owned`, `Retained`, escaping,
   crossing, not-unique or may-alias only loses precision.
 - **`Fresh` is the exception.** It is the result axis's strongest claim, not its
@@ -127,9 +136,13 @@ One `ModeSummary` per callable, defined in `cranelisp-types`:
 | `spark_ops` | advisory | may the callee run a reference-count operation on the parameter off the calling strand (§5) |
 | `result_unique` | advisory | is the result a proven unique root (§7) |
 
-- `ModeSummary::abi_eq` compares exactly the ABI half. The live-redefinition gate compares
-  `abi_eq_opt`, and a same-type redefinition that changes the ABI half is currently
-  rejected (`repl/spec/18-redefinition.md` §18.1.2; `sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md`).
+- The ABI and advisory halves name the pre-uniform contract; modes are not slot ABI
+  ([spine §5](../arch/ownership-inference.md#5-mode-summaries-module-caching-and-the-r3-redefinition-model-part-4)).
+  At `4b58ab93` the binary's live-redefinition gate still refuses a same-type
+  redefinition whose ABI half differs, through `ModeSummary::abi_eq_opt`. The user
+  retired that gate with REPL §18.1.2 on 2026-11-16, and packet row D7 removes
+  `abi_eq`, `abi_eq_opt` and `is_abi_conservative` with it. This crate calls none of
+  them; inference and the summary are unchanged.
 - `param_flow` makes escape interprocedural: `(defn keep [x] (Some x))` has `x`
   `IntoResult`, while a string length primitive has its argument `Consumed`. `spark_ops`
   does the same for confinement, and `result` for projection and aliasing. The summary
@@ -157,9 +170,11 @@ One `ModeSummary` per callable, defined in `cranelisp-types`:
 
 **`Copy` classification.** A type is `Copy` exactly when the shared value-layout algorithm
 admits it (`cranelisp_types::value_layout_with_lookup`, looked up through checked
-declarations by `fixpoint.rs::checked_value_layout`). Agreement with backend flattening is
-safety-critical: bit-copying an unflattened heap object omits its required increment.
-Typecheck therefore does not reproduce any layout rule.
+declarations by `fixpoint.rs::checked_value_layout`). Agreement with any lowering that
+flattens is safety-critical: bit-copying an unflattened heap object omits its required
+increment. Typecheck therefore does not reproduce any layout rule. The dev tier stops
+flattening with packet row D4; the agreement then binds the release tier, and the shared
+predicate stays the one verdict.
 
 - A present staged binding takes precedence even when its layout is ineligible. Only an
   absent staged key falls through to published metadata, and nested types in other
@@ -392,8 +407,7 @@ summary says `ProjectionOf(i)`, or a vector element read (`vec-get`, declared
   as a temporary, which is a double free against a still-owned field. A caller compiled
   against `ProjectionOf` emits no decrement, which leaks if the callee actually returned a
   fresh value.
-- The result therefore sits in the ABI half, participates in `abi_eq`, and reads `Fresh`
-  when absent (§10.4).
+- The result therefore sits in the ABI half and reads `Fresh` when absent (§10.4).
 - A caller roots the call's result at its own argument's root (rule 6).
 - Generated accessor bodies are outside the analysed universe (§1.2), so an accessor call
   reads an absent summary.
@@ -415,8 +429,8 @@ carry and union the set.
 - **No consumer requires the force.** The backend retains every borrowed copy-on-write
   source whatever the escape fact says
   ([ownership codegen §13.7](../backend/ownership-codegen.md#137-cow-mutate-and-grow-branches--the-settled-contract)),
-  so the force balances no release. The escape fact's other readers do not depend on it
-  at a link span:
+  so the force balances no release. The escape fact's other readers, both retired from
+  the dev tier in S124 (§1.1), do not depend on it at a link span:
   - stack placement acts only on a data-constructor call
     ([ownership codegen §4.1](../backend/ownership-codegen.md#41-eligibility)), and a
     link span is always a call to a callee with a may-alias result;
@@ -647,9 +661,11 @@ path.
   over a product accessor publishes `Fresh`.
 - **Falsifier:** a callable reachable at an absent summary that returns a parameter's
   reference without materialising it.
-- **Considered: reading absence as ⊤ on the result axis.** Rejected: it contradicts
-  `ModeSummary::is_abi_conservative`'s published equivalence (absent ≡ all-`Owned` /
-  `Fresh`). That is a `cranelisp-types` semantic change and is the user's decision.
+- **Considered: reading absence as ⊤ on the result axis.** Rejected: it contradicts the
+  carrier's published equivalence (absent ≡ all-`Owned` / `Fresh`;
+  `crates/cranelisp-types/src/ownership.rs` rustdoc §Monotone defaults), which
+  `ModeSummary::is_abi_conservative` also states until row D7 removes it. That is a
+  `cranelisp-types` semantic change and is the user's decision.
 
 ### 10.5 Persisted meaning
 
@@ -703,7 +719,7 @@ path.
 | Symbol-keyed escape list (§3.5) | Precision residual on the advisory half: `(let [a (Some x)] (let [a a] a))` leaves `x` `Consumed`. Trigger for correctness review: an escape drained by a scope that did not bind it, observable as a lost or duplicated allocation escape fact under a shadow |
 | Symbol-keyed provenance (§2.3, §3.4) | Retained as the safe direction; consumers test presence only. Falsifier: a backend site that binds the symbol, or any reader of `MonoMatchArm.provenance`, which would call for binder identities instead of names |
 | Mutual-import cycles | Accepted precision loss: an importee whose pass has not run reads absent |
-| Rule 6 link force and link set (§4.5) | Retained with no consumer that requires it. Retiring both simplifies the rule table and changes only spark-density scoring at link spans; not scheduled. Trigger: the next change to rule 6 or the link set, reviewed as a rule-table change (safety invariants §3c) with `arch`'s R1 text |
+| Rule 6 link force and link set (§4.5) | Retained with no consumer that requires it. Retiring both simplifies the rule table; at `4b58ab93` it changes only spark-density scoring at link spans, and nothing in the dev tier once density retires (§1.1); not scheduled. Trigger: the next change to rule 6 or the link set, reviewed as a rule-table change (safety invariants §3c) with `arch`'s R1 text |
 | Absent-callee `Fresh` premise (§10.4) | Asserted; falsifier stated there. Attributing the two populations is `qa`'s |
 
 ---

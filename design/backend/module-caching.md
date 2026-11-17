@@ -45,7 +45,7 @@ Non-goals:
 
 | Question | Canonical home |
 |---|---|
-| Cache-hit flow, restoration parity, writer scheduling, dependency-record construction and the current-hash lookup | [integration cache design](../int/int.md#7-cache--linker-orchestration-decisions-34-37) |
+| Cache-hit flow, restoration parity, writer scheduling, dependency-record construction and the current-hash lookup | [integration cache design](../int/int.md#7-cache-linker-orchestration-decisions-34-37) |
 | Symbol-table shape, slot authority and lifecycle legality of a decoded table | [slot and cache authority](../arch/interfaces.md#slot-and-cache-authority), [symbol-table lifecycle](../arch/symbol-table-lifecycle.md) |
 | Cache interior invariants and the persisted-index census | module rustdoc in `crates/cranelisp-backend/src/cache/mod.rs` and `crates/cranelisp-backend/src/cache/serialize.rs` |
 | The emitted GOT shape and its two resolvers | [per-module GOT](per-module-got.md), [compile to module](compile-to-module.md) |
@@ -238,7 +238,7 @@ addresses; they never see relocation types.
 ### Why scheduling lives in int
 
 Deciding when to write, and coordinating writes with sessions and shutdown, is
-pipeline orchestration ([BC 6](../arch/bounded-contexts.md#6-binary--int--src--cratescranelisp-exe-bundle)).
+pipeline orchestration ([BC 6](../arch/bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle)).
 The backend exposes functions and holds no cadence.
 
 ## 10. Edge Cases
@@ -537,7 +537,7 @@ scheduling (§7).
   scope.
 - **Different lifetime root.** A fresh build's entries hold `Code::Jit` and are
   reclaimed per batch; a restore's entries hold `Code::Linker` and are
-  reclaimed per object ([Code lifecycle](../int/int.md#5-code-enum--lifecycle-decisions-31-35-41)).
+  reclaimed per object ([Code lifecycle](../int/int.md#5-code-enum-lifecycle-decisions-31-35-41)).
   In both cases the callable address lives in the GOT, not in `Code`.
 - **Mixed sessions are normal.** Restored and fresh entries coexist in one
   session.

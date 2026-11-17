@@ -42,7 +42,7 @@ as the spark exclusion and the interceptor classifier.
 
 The rule is [backend.md §7](backend.md#7-runtime-failure), "One Vec index
 guard". `qa`'s
-[closure record](../../tests/plan/s122-evidence-delta.md#act-1037--vec-set-bounds-check-closed)
+[closure record](../../tests/plan/s122-evidence-delta.md#act-1037-vec-set-bounds-check-closed)
 holds the evidence, including the `--link` limit.
 
 ### 9.2 Correction

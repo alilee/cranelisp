@@ -40,6 +40,18 @@ The signature half of this action is closed; the retirement decision for
   backend calls it after an inline decrement. The completion evidence below
   stands, except its last bullet, which is met.
 
+## Disposition proposed (arch, 2026-11-16, S124 Phase 3)
+
+Source opened at `4b58ab93`: `catalog.rs` holds both rows; no backend, root or
+primitives source names `rc_underflow_check`; `string_read`'s only caller is
+`src/marshal.rs`, a Rust-path call.
+
+- **Retire `runtime/rc_underflow_check`**, function and row.
+- **Take `runtime/string_read` out of the catalog** and drop its export name;
+  the function stays public for the binary.
+- Both are [S124 packet](../s124-api-packet.md) row D11, approved by the user
+  on 2026-11-17. This action closes when D11 lands.
+
 ## Request
 
 Decide whether `runtime/rc_underflow_check` is retired or kept, then have

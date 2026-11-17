@@ -61,7 +61,18 @@ The cancellation face has no executing balance observation. The 0907/0934 row of
 losing branch that holds a heap-payload `Pure`. Its control is the same
 program with a scalar payload.
 
+## S124 observation: not a defect (qa, 2026-11-16, at `4b58ab93`)
+
+- **The face balances.** With `CRANELISP_RC_TRACE=1` under `--run`, a
+  `select` and a `race` whose losing branch is a `Pure` holding a
+  `str-concat` result each read 13 allocations and 13 frees. Their scalar
+  controls read 7/7 and 4/4. Four suspended-loser shapes over `poll-pool`
+  balance as well (11/11 to 19/19).
+- **Limit.** These were scratch probes without `CRANELISP_RC_DEC_CHECK`.
+- **Allocation.** `test` commits the pair as fence F-0934 of the
+  [S124 evidence delta](../../../tests/plan/s124-evidence-delta.md#43-fixme-0934--the-cancellation-face-balances),
+  armed, in every mode. It is expected to pass on arrival.
+
 ## Closure
 
-An executing balance observation of a losing heap-payload branch passes, or
-`qa` records the evidence that already discriminates it.
+F-0934 is committed and passes; `qa` then deletes this filing.

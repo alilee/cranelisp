@@ -71,9 +71,12 @@ to the `/` rule. Three structural constraints hold it:
    delegate to; widening it to `.` would corrupt legitimate dotted references
    such as `Maybe.Some` and `core.io/pure`.
 2. **One sibling dotted splitter, `split_dotted_name`,** with the same
-   both-halves-non-empty discipline, consumed *only* inside the reject helper.
-   There is no second `.`-checking predicate anywhere — no scattered
-   `name.contains('.')`, no per-position dotted gate.
+   both-halves-non-empty discipline. Its one binder consumer is the reject
+   helper; its one other consumer is module extraction, which derives a dotted
+   import or export entry's bound member from it (`modules.md` §2.2) — a
+   reference decomposition, not a binder check. There is no second `.`-checking
+   predicate anywhere — no scattered `name.contains('.')`, no per-position
+   dotted gate.
 3. **The helper fires on either split**, checking `/` first so a `module/…`
    binder reports the qualifier fault.
 
@@ -100,6 +103,8 @@ forms.
 | deftype field names (§5.2.6) | `build_field_list`, both arms |
 | deftype type parameters (§5.2) | `build_type_head` parameter map |
 | value-level locals (params, `let`, `match`) | `build_annotated_params` (covering `defn`, `fn` and `defmacro` parameters), `build_let_bindings`, `build_pattern` var and constructor-binding arms |
+| `import`/`export` module alias and export mount (§8.3.4, §8.4.4) | the shared module-specifier parser (`modules.md` §2.1) |
+| renamed import or export local name (§8.3.4, §8.3.5) | the shared names-list parser (`modules.md` §2.1) |
 | `mod`/`mod-` name (§5.8) | **not this seam** — a module-phase declaration. `module_extract` enforces its own simple-symbol rule, rejecting `/` and `.` because either would corrupt the composed module path |
 | `platform` name (§5.10) | **not this seam** — same module-phase rule as `mod` |
 

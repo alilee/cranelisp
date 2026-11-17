@@ -84,7 +84,7 @@ per-extern cost of releasing its own arguments is small and enumerable.
 ### 3.3 Extern consumption
 
 Every extern primary entry takes ownership of every heap argument, with no
-exception ([BC §4a invariant 8](../arch/bounded-contexts.md#4a-primitives--cratescranelisp-primitives)).
+exception ([BC §4a invariant 8](../arch/bounded-contexts.md#4a-primitives-cratescranelisp-primitives)).
 For each heap parameter an extern author decides exactly one of:
 
 | Parameter fate | Extern obligation | Declared ownership fact |

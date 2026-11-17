@@ -1,6 +1,8 @@
 # Monomorphisation — typecheck interior
 
-**Status:** current design, verified against source on 2026-09-21.
+**Status:** current design, verified against source on 2026-09-21. §3.10, and the parts
+of §3.1, §3.4 and §3.9 that cite it, are the S124 target, designed against `main` at
+`4b58ab93` and not yet in source ([typecheck §12](typecheck.md#12-designed-changes-not-yet-in-source-s124)).
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
 **Subordinate to:** [`typecheck.md`](typecheck.md) §9.3.
 **Governed by:**
@@ -95,7 +97,7 @@ generalisation the fold accumulator depends on (§5).
 | `collect_mono_call_sites` and its collectors | same file | find use sites (local parametric calls, imported constrained calls, dispatch to a template) and derive a complete `MonoDemand` for each |
 | `monomorphise_call` | `crates/cranelisp-typecheck/src/traits/monomorphise.rs` | instantiate a template from a demand, verify constraints, recheck the body in its defining scope, and install the instance |
 | `monomorphise_synth` | same file | derive an instance of a synthesised template from its recipe, with no body recheck |
-| `monomorphise_inner_parametric_hops` | same file | successor discovery inside a rechecked body |
+| `monomorphise_inner_parametric_hops` and its sibling successor steps | same file | successor discovery inside a rechecked body (§3.10) |
 | `record_self_recursion_dispatch` | same file | a self-call inside an instance dispatches to that instance |
 | `register_mono_entry` | same file | publish through `install_instance` with the demand's `InstanceLink` |
 | `instantiate_demands` | `crates/cranelisp-typecheck/src/form.rs` | map-free replay entry (§3.8) |
@@ -160,6 +162,12 @@ the driver:
   (`record_self_recursion_dispatch`).
 - From a finite root set the reachable demand set is finite, and deduplication makes each
   distinct demand mint once.
+- Monomorphic recursion binds functions only. A trait dispatch, including one from an
+  implementation's body to that same implementation at another instantiation, is an
+  ordinary dispatch (spec §3.10), so a chain through dispatch can grow: an
+  implementation body can dispatch to its own template at a growing type. The
+  in-progress chain refuses a chain that does not settle (§3.10.3), so termination does
+  not rest on the program being well-formed.
 
 ### 3.5 Instance identity — complete generic substitution
 
@@ -299,7 +307,7 @@ type, cache-schema or ABI effect. Its approval and binding contract are in
 signature from the demand and check that its key equals the demand's key, verify
 constraints, recheck the body, record self-recursion dispatch, build the annotated
 instance, then build its codegen view and install it. The phase helpers' rustdoc
-states each phase's local contract. The driver threads four mutable channels through
+states each phase's local contract. The driver threads five mutable channels through
 `CheckState`, and a helper extracted, merged or reordered without honouring them
 mis-monomorphises. The symptom is a spurious `no impl of trait T for type X`, a wrong
 ambiguity refusal on a valid program, or a crash one instantiation hop deeper.
@@ -326,12 +334,285 @@ ambiguity refusal on a valid program, or a crash one instantiation hop deeper.
 4. **The recheck context** (`mono_recheck_self`). The driver installs the same-cluster
    template set and, for a multi-signature clause, the concrete self-recursion
    identity, and restores the previous context unconditionally so nested rechecks do
-   not inherit either fact (§11.3.4).
+   not inherit either fact (§11.3.4). The same-cluster set is the window's, not the
+   selected template's (§3.10.2); only the self-recursion identity is per mint.
+5. **The in-progress chain** (§3.10.3). The driver pushes the demand before the
+   recheck and pops it unconditionally after, on the error arm too. A helper that
+   returns early without popping makes a later, unrelated demand read as recursion.
 
 Evidence: `crates/cranelisp-typecheck/src/traits/monomorphise/tests.rs` (distinct
 instances of one template, annotations on the instance AST, rechecked constructor
 values in the caller's module) and the cross-module, collector and multi-signature
 cells in §12.
+
+### 3.10 Successor discovery inside an instance
+
+**Status:** S124 target; corrects ACT-1034. Required behaviour: `spec/07-traits.md`
+§7.3.3 and `spec/05-definitions.md` §5.4.3 (an implementation body discharges its
+constraint on its payload); `spec/03-types.md` §3.10 as ruled at S124-Q7 (a dispatch to
+the enclosing implementation at another instantiation is an ordinary dispatch, and a
+program whose instantiation of implementations does not terminate is a type error;
+§3.10.3).
+
+A rechecked instance body is a check run of its own (§3.9 channel 2), so the demands it
+reaches are found from its own carriers, not by the cluster scan. The rule is that an
+instance discovers exactly the successor kinds the cluster scan discovers, from the same
+carriers, under the same admission predicate.
+
+| Successor kind | Cluster scan (§3.1) | Inside an instance |
+|---|---|---|
+| A call whose `var_refs` verdict names a monomorphisable template | local, imported and fn-value collectors | `monomorphise_inner_parametric_hops`, `monomorphise_inner_function_values` |
+| A call whose `apply_refs` verdict is `Dispatch` to an AST-bodied template (an implementation-method template) | `collect_dispatch_template_calls` | **missing at `4b58ab93`**: the dispatch hop of §3.10.1 |
+
+Admission is [concrete boundary §4-A](../arch/concrete-boundary-type.md#4-a-mono-completeness--only-all-args-concrete-instances-are-minted)'s
+one predicate in both columns: every argument type concrete, read from the run's own
+expression types (the instance's `mono_expr_types`, the cluster's settled `expr_types`).
+
+#### 3.10.1 The dispatch hop
+
+`qa` observed it ([evidence delta §2.2](../../tests/plan/s124-evidence-delta.md#22-the-producer-omits-the-inner-instance)):
+A1, A2 and C3 publish the outer instance and no inner one. The source agrees.
+
+- `monomorphise_inner_parametric_hops` skips any site that already has a
+  `resolved_calls` entry. A trait-dispatched call has one (`ResolvedCall::TraitMethod`),
+  so a dispatch to a template is skipped without a demand.
+- `collect_dispatch_template_calls`, the only reader of a template-valued `Dispatch`,
+  walks only the cluster's definitions with the cluster's resolutions. It never sees an
+  instance body.
+- **The same omission at the enclosing implementation** (T-1034-d, T-1034-e; the S124
+  lead that `(size (Yep 7))` and `(size (Yep o))` inside `(impl Size (Opt :Size a) …)`
+  both fail at codegen with `undefined function: Size.size$…/Opt`). The receiver's
+  head is nominal, so the dispatch is resolved at template check to the enclosing
+  implementation's own template, and every rechecked instance re-resolves the site to
+  that template. The outer instance is published: by a caller, or, for a site that is
+  already concrete in the template (`(size (Yep 7))`), by the cluster scan of the
+  template body, whose redirect lands in the cluster's map and never in an instance's.
+  The instance's own site is then skipped by the presence test above and stays named
+  as the template. This is not a third mechanism: the dispatch hop below follows it,
+  and §3.10.3 decides whether the demand redirects (its key is the instance's own or
+  already on the chain), mints, or is refused.
+
+The design:
+
+- **Classification reads the keyed carrier.** A site whose `apply_refs` verdict is
+  `Dispatch` is classified by that verdict alone: a template target is a dispatch-hop
+  successor, and a concrete target is already settled. Only a site whose verdict is
+  `ApplyRef::ViaCallee` is classified by its callee's `var_refs` verdict, as today. The
+  `resolved_calls` presence skip is replaced by this split, which keeps every exclusion
+  the skip made for a settled dispatch. `resolved_calls` is supplementary metadata, not
+  the keyed carrier ([interfaces, method resolutions](../arch/interfaces.md#method-resolutions)),
+  and a sidecar's presence or absence is not an identity (Principle 24 corollary).
+- **One template-target predicate.** "This `Dispatch` target is an AST-bodied
+  `Life::Template`" is one predicate, shared by `collect_dispatch_template_calls` and the
+  instance step. A second copy is the divergence §3.1 rejects.
+- **The instance step** runs in `recheck_and_resolve_inner` after the two existing
+  successor steps, over the instance body, its own `resolutions.apply_refs` and its
+  `mono_expr_types`. For each admitted site it derives the demand through
+  `derive_mono_demand` from the site's use type, selects the template at the target's
+  home, mints through `monomorphise_call` with the substitution saved and restored around
+  the call (§3.9 channel 3), and redirects the site.
+- **One redirect writer.** The site's `ApplyRef::Dispatch` is rewritten to the instance
+  key and its `resolved_calls` entry to the matching `SigDispatch` (or the `AutoCurry`
+  target, for a partial application), keyed in the module the instance is installed in.
+  That is what `record_mono_dispatch` does for the cluster's map. The two writers become
+  one step parameterised by the `MethodResolutions` it writes, so the cluster scan and
+  the instance step cannot record a dispatch differently. The instance's codegen view is
+  built after this step from the same `resolutions`, so the redirect reaches the view by
+  construction (§3.9 channel 2; [producer obligations §2.2](non-concrete-producer-obligations.md#22-p-2--one-instance-identity)).
+- **Reuse before minting.** As the drivers do, the step first reads the table for a
+  concrete instance at the demand's key and redirects to it.
+
+#### 3.10.2 Same-cluster templates are the window's
+
+`qa` observed the free-function hop (A3): an implementation-method instance does not
+demand a generic function of the same cluster, and does when an earlier cluster
+published it.
+
+- Same-cluster templates stay `Life::Declared` until final settlement, so the table
+  cannot answer "is this a template". `MonoRecheckContext.local_templates` answers it.
+- The set is built only by `checked_body_template`, which selects ledger bodies. An
+  implementation-method template is not a ledger body (it is checked and written back by
+  the impl seam, [traits §3](traits.md#3-trait-implementation)), so it is selected through
+  `get_constrained_fn`, which returns an empty set. Its recheck therefore runs with no
+  context, and the same-cluster callee fails `entry_is_monomorphisable_polymorphic`.
+- **Design.** The same-cluster template set is a fact of the finalize window. It is
+  derived once per `pass4_monomorphise` invocation from the body ledger, as
+  `checked_body_template`'s companion snapshot is today, and installed for every mint in
+  that window whose recheck module is the cluster's module, whatever selected the
+  template: a ledger body, a table template or a dispatch target. `TemplateFn` stops
+  carrying a per-template copy.
+- **Keyed by identity.** The recheck consults the set by the resolved callee's canonical
+  symbol, and only when the callee's home is the cluster's module. Today it reads the set
+  by the written inner name before checking the home, which could select a same-cluster
+  template for a same-spelled callee of an imported body.
+- **Every successor step reads it.** The function-value step
+  (`monomorphise_inner_function_values`) has the same table-lifecycle gate and is
+  predicted to have the same omission for a same-cluster template passed as a value from
+  an implementation-method instance. It reads the window set too.
+- Replay (§3.8) has no body ledger, so its window set is empty, which is correct: replayed
+  templates are published.
+
+#### 3.10.3 Recursion through dispatch
+
+Without §3.10.1 the engine never followed a dispatch inside an instance, so nothing
+exercised its termination there. With it, an implementation body that dispatches to its
+own template at a growing type (`(size (Yep o))` inside `(impl Size (Opt :Size a) …)`)
+would mint for ever, turning today's located codegen refusal into a compiler hang.
+
+**The rule (spec §3.10; S124-Q7, ruled B, 2026-11-17).** A trait dispatch from an
+implementation's body to that same implementation at another instantiation is an
+ordinary dispatch, whether the re-entry is direct, through a constrained helper or
+through another implementation. A program whose instantiation of implementations does
+not terminate is a type error. Monomorphic recursion for functions is unchanged
+([inference §3](inference.md#3-generalisation-and-instantiation)).
+
+- **Template check adds nothing.** An implementation method's call to itself or to a
+  sibling member is a trait dispatch, not a reference to a recursion binding, so it
+  instantiates the member's scheme freshly at the site. `(size (Yep 0))`,
+  `(size (Yep o))`, a sibling at `(Opt Int)`, a default method's re-entry, a method used
+  as a value and a partial application all check as any other dispatch does. The
+  impl-body sweep ([traits §3](traits.md#registration-pipeline) step 8) runs no
+  recursion judgment.
+- **Termination is a property of instantiation, so it is judged where instantiation
+  happens:** in the finalize window that mints the demand, by the in-progress chain
+  below. Considered: a template-time judgment over the cluster's dispatch graph;
+  rejected because a constraint-mediated dispatch's target is chosen by the instantiating
+  type, so no template-time graph decides termination without refusing terminating
+  programs, and it would be a second detector beside the chain the engine needs anyway.
+- **Consequence: an undemanded implementation is not refused.** A growing
+  implementation compiles until a root reaches it; the refusal is raised by the cluster
+  whose finalize demands it, which in the REPL can be a later turn than the `impl`.
+
+**The in-progress chain.** The engine carries the chain of demands being minted (§3.9
+channel 5) and checks each successor against it before minting. The chain's **depth**
+is the number of implementation-method instances on it; free-function instances ride
+on the chain but do not count. The limit is spec §3.10's instantiation depth limit
+(ruled 2026-11-17: a chain of implementation instantiations exceeding a limit of at
+least 64 is a type error), set at 64 as one named constant in the engine.
+
+| The successor's demand | Disposition |
+|---|---|
+| Its key is on the chain | Redirect the site to that key's instance and do not mint. The instance is installed when its own mint completes. T-1034-d's own-key self-dispatch is this case |
+| An implementation method's, and the chain's depth is already 64 | The depth refusal at the successor's site. No instance on the chain is installed |
+| Otherwise | Mint |
+
+- Reuse before minting (§3.10.1) is checked first, so an installed instance is
+  redirected to without consulting the chain.
+- **Why it terminates.** Each demand has finitely many successors, so a reachable set
+  that never settles has an infinite chain (König). A run of free-function demands on a
+  chain is finite: a function's recursive call uses the instantiation in force (§3.4)
+  and a free function cannot reach a later cluster, so such a run is shorter than the
+  program's free-function templates. An infinite chain therefore holds unboundedly many
+  implementation instances and reaches the depth limit. Every chain is finite.
+- **Exact detection is not available.** Trait selection by a type's head lets
+  instantiation simulate a two-counter machine (one trait per state, Peano types as the
+  counters), so whether instantiation terminates is undecidable in general, and any
+  rule that always terminates refuses some terminating program. The depth count is the
+  least mechanism with that property: one integer for the chain, no type measure. Its
+  false refusals are the terminating chains holding more than 64 implementation
+  instances: a type nested that deep through a constrained implementation (A1's shape
+  at `(Opt` nested past the limit `Int)`), or that many distinct implementations each
+  dispatching to the next. Spec §3.10 states the limit, so these are refusals the
+  language admits, not defects.
+- Considered: a per-template recurrence count. Rejected: it is not spec's unit (two
+  alternating implementations would reach 128 instances before refusal) and it keeps an
+  integer per template where one suffices. Considered: refusing a recurrence at a key no
+  smaller than the template's previous occurrence (the size rule). Rejected: it refuses
+  constant re-entry, which spec accepts (`(size (Yep 0))` reached from `(Opt Bool)` mints
+  `(Opt Int)` once, then redirects to it), and a chain that grows once then settles (an
+  `(impl F (P a b) …)` body dispatching at `(P b (Opt Int))` reaches
+  `(P (Opt Int) (Opt Int))` and stops). Homeomorphic embedding refuses the second shape
+  too, with more mechanism.
+- The rule covers both successor arms: a growing chain through a constrained helper
+  (F-PR-2's `wrap`) or through two implementations holds an implementation instance per
+  cycle and is the same refusal as a direct one.
+- **The depth limit does not bound the time to refusal.** Each mint costs at least the
+  size of its instance's type: the key is a rendered symbol, the signature is
+  substituted and the body rechecked at that type. A re-entry whose type doubles at each
+  step (F-PR-3: `(impl Size (Two :Size a :Size b) …)` dispatching at `(MkTwo t t)`)
+  holds about 2^n constructor nodes at depth n, so the chain reaches depth 64 only after
+  building types of about 2^64 nodes; in practice the compiler exhausts memory or time
+  first. No counting unit or key encoding inside this crate removes the cost, since the
+  backend consumes the instance at that type. Bounded refusal needs a second limit, on
+  the size of an instance's type, which spec does not state (§13). Until it is ruled the
+  doubling shape is a consciously unprotected risk: the program is non-terminating under
+  spec §3.10 either way, so the residual is a hang or exhaustion in place of a located
+  type error, never an accepted or miscompiled program.
+
+**The diagnostic.** One constructor, so the class cannot differ by route (Principle 7). It
+is a located `TypeError`, raised by typecheck before any instance on the chain is
+installed or any code is emitted, and identical in the REPL, `--run` and `--link`.
+
+- **Location:** the span of the successor site whose demand exceeded the limit (the
+  call, the value `Var` or the partial application), with the error location's
+  definition identity set to the template whose instance body holds that site. The site
+  can lie in an imported or earlier-cluster body; the identity names its home. The
+  instance AST carries its template's spans, so the span is never synthetic.
+- **Text:** the instantiation of the named definition exceeds the instantiation depth
+  limit, naming the limit; it renders the template's first instantiation on the chain
+  and the refused one through `render_type` (`typecheck.md` §8.3).
+- It fails the cluster being finalized, which `int` discards whole.
+
+#### 3.10.4 What does not change
+
+- No mode parameter: `qa` showed the REPL/batch difference is cluster shape (evidence
+  delta §2.1), and §3.10.1 and §3.10.2 make demand a function of the program alone
+  ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
+- No new settlement window (§3.3 standing rule): the instance step runs inside the mint
+  that the existing windows already drive.
+- No public item, no `cranelisp-types` change, no cache-schema change. An instance
+  recheck records no `callees` edge (`crates/cranelisp-typecheck/CLAUDE.md`
+  §"`callees` completeness"), so `.meta.json` meaning is unchanged.
+
+#### 3.10.5 Evidence
+
+- **Solution tier** (`qa`): the committed A1, A2, A3 and C3 cells and T-1034-a to
+  T-1034-c (evidence delta §2.3), with C1 and C2 as controls.
+- **Module tier** (`dev`, `crates/cranelisp-typecheck/src/traits/monomorphise/tests.rs`
+  and `program/mono_collect/tests/`). Rows 1–6 are observed RED before the fix (row 6's
+  controls because no inner instance is minted, its refusals because typecheck raises
+  none); rows 7 and 8
+  are guards that pass before and after:
+  1. dispatch hop: a constrained implementation whose instance dispatches to the same
+     template at a nested type mints the inner instance and redirects the site; twin, a
+     different implementation's template (A2);
+  2. dispatch hop from a free-function instance published by an earlier run (C3,
+     imported shape);
+  3. free-function hop: an implementation-method instance calling a generic function of
+     the same cluster mints it (A3, one-cluster shape); twin, the same callee used as a
+     value;
+  4. the window set is keyed by identity: an imported template whose body names a
+     spelling the cluster also defines does not select the cluster's template;
+  5. chain, equal key: a dispatch to the instance's own key redirects to it and mints
+     nothing further (T-1034-d's `len`); twin, a sibling member at the implementation's
+     instantiation mints the sibling and redirects (T-1034-e), in both member orders;
+  6. chain, the refusal: a direct growing re-entry (`(size (Yep o))`), one through a
+     constrained helper (F-PR-2's `wrap`) and one through two implementations are each
+     refused at the successor's span with the template's identity, with nothing
+     installed; controls that mint: the shrinking A1 shape, a constant re-entry
+     (`(size (Yep 0))` demanded at `(Opt Bool)` mints `(Opt Int)` once and redirects to
+     it), and a chain that grows once then settles (the `(P b (Opt Int))` shape);
+     boundary, both legs: a chain holding exactly 64 implementation instances mints,
+     one more is refused; unit twin, two implementations alternating on one chain are
+     refused at 65 instances in all, not at 64 of either (a per-template count admits
+     it); a free-function instance on the chain does not count toward the depth;
+  7. the replaced skip keeps its exclusions: inside an instance, a dispatch already
+     redirected to a concrete instance, a built-in intercept and an auto-curried partial
+     application each mint nothing new and keep their recorded verdicts;
+  8. template check accepts, `traits/impl_check/tests.rs`: inside
+     `(impl Size (Opt :Size a) …)`, `(size (Yep o))`, `(size (Yep 0))`, `size` as a
+     value and as a partial application at `(Opt Int)`, a sibling member at
+     `(Opt (Opt a))`, and a default method's re-entry each check with no error and
+     write the record; the growing body with no caller finalizes with no error;
+  9. one diagnostic: row 6's three routes produce the same error class and wording
+     shape.
+
+**Solution tier.** F-PR ([evidence delta §9.1](../../tests/plan/s124-evidence-delta.md#91-type-concreteness-item-1))
+and F-PR-2 are refused by the chain when `main` demands them: a type error at the
+successor's line, not at codegen and not when the `impl` form is checked. A
+template-resolved re-entry at a shrinking or constant type runs. `qa` re-allocates T-Q7-a and T-Q7-b, written
+for the superseded ruling A. F-PR-3's timeout clause is not met by the depth limit alone
+(§3.10.3); it waits on the type-size ruling (§13).
 
 ---
 
@@ -673,6 +954,7 @@ arguments with that clause's parameters, pinning them. There is no independence 
 - **Cross-module scoping.**
   `program::mono_collect::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`.
 - **Replay.** `crates/cranelisp-typecheck/src/form/tests.rs` (§3.8).
+- **Successor discovery inside an instance.** §3.10.5 (S124 target).
 - **Solution tier.** `tests/multi_arity_clause_param_51_2.rs` (back-flow, recursive
   polymorphic clauses against their standalone twins), `tests/multi_sig_base_mono_carrier_loss.rs`,
   `tests/multi_sig_poly_callee_cross_arity_mono.rs`, `tests/shadowing_scope_lookup.rs`,
@@ -690,6 +972,8 @@ arguments with that clause's parameters, pinning them. There is no independence 
 | Generalisation-order debt (§5.1) | Compensated. A test pinning a reverse-order under-tie as a known boundary is `qa`'s to allocate. Trigger for the linear cure: the next change opening the generalisation seam |
 | Textual self-call tag (§11.3.1) | Documented limitation. Trigger: a real definition named `{base}__v{n}` |
 | Qualified imported-base re-derivation (§11.8.9) | Tripwired. Trigger: a storage entry that is not bare-mangled |
+| The depth limit's refusals of terminating programs (§3.10.3) | Admitted by spec §3.10 (ruled 2026-11-17). Trigger: a real program refused at 64, which raises the constant rather than adding a measure |
+| Time to refusal for a re-entry whose type grows exponentially (§3.10.3) | Unprotected; needs a user ruling through `spec`. The depth limit is reached only after types of about 2^64 nodes. Proposed least mechanism: a second limit, on the constructor-node count of a demand's concrete type arguments, checked before the key is derived, refused by the same diagnostic constructor with its own text. Every minted instance is then under the size limit, so each successor costs at most its site's type size times that limit, and a chain costs at most 64 such steps. Precedent: rustc's type-length limit beside its recursion limit. Spec would state it as "an implementation MAY refuse an instantiation whose type exceeds a size limit", with a floor for the user to set. No public item and no `cranelisp-types` change. Trigger: the ruling |
 | A new settlement window (§3.3) | Not to be added. Trigger: any need for one, which files to `arch` |
 | Stale concurrency note | `crates/cranelisp-typecheck/src/checker.rs`'s `new_with_staging` rustdoc says the environment is not `Sync`, but the type keeps `Send + Sync` through its unsafe implementation, with single-cluster non-sharing as the precondition. A `dev` documentation repair |
 

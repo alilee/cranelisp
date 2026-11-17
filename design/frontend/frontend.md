@@ -3,7 +3,7 @@
 > Interior design for `crates/cranelisp-frontend/`. Owned by `design`, narrow-deployed to this surface.
 >
 > **Contract sources** (canonical, normative — this document does not restate them):
-> - `design/arch/bounded-contexts.md` §1 — the Frontend bounded context and its invariants 1–10.
+> - `design/arch/bounded-contexts.md` §1 — the Frontend bounded context and its invariants.
 > - `crates/cranelisp-frontend/src/lib.rs` `//!` preamble and per-item rustdoc — the public surface. There is no separate facade document.
 > - `crates/cranelisp-frontend/public-api.txt` — the as-built enumeration, gated at PR time.
 >
@@ -22,18 +22,21 @@ operations and nothing else.
 2. **Quasiquote desugar** — `` ` `` / `~` / `~@` / `(quote …)` → `macros/`-qualified
    constructor applications (`quasiquote.rs`). Pure `Sexp → Sexp`, no execution.
 3. **Build** — desugared `Sexp` → `ParsedEntry` / `Expr` / `TypeExpr`
-   (`ast_builder.rs`), plus module-identity normalisation with `super` resolution
+   (`ast_builder.rs`), plus structural-declaration extraction: import and export
+   entry classification, bound-name derivation and `super` resolution
    (`module_extract.rs`).
 
 It performs **no macro recognition and no macro execution** (BC §1 invariant 2).
 Recognition is `cranelisp_types::ResolutionScope::resolve_macro_head`, driven by
-typecheck's within-form descent and int's Pass-1 loop; execution is int's, behind
-the `cranelisp_types::MacroExpander` callback. Quasiquote desugaring is the
+the binary; execution is the binary's, behind the
+`cranelisp_types::MacroExpander` callback. Quasiquote desugaring is the
 entirety of the frontend's remaining macro-adjacent role, and it is syntactic.
 
 The frontend is the only crate that touches raw source bytes, names no `Type`,
 `Scheme` or `TypeId`, and depends only on `cranelisp-types` (Principle 3 —
-dependency flows toward stability). Public functions borrow their input
+dependency flows toward stability). Its manifest's direct `dashmap` dependency is
+unused — no frontend source names it, and the type alias its comment cites is not
+exported — so `dev` removes it rather than re-justifying it (audit R5). Public functions borrow their input
 immutably — `flatten_begin` alone consumes its `Sexp` — and return owned values,
 so nothing the frontend returns aliases caller state.
 
@@ -62,13 +65,17 @@ it.
 
 `build_form` and `build_expr` are **mode-agnostic**: they take no
 `CodegenBehaviour` and behave identically under REPL, `--run` and `--link`. A
-mode-conditional rejection at the build layer would be a defect; `--link`'s
-`(trace …)` refusal is the linker's natural missing-symbol detection.
+mode-conditional rejection at the build layer would be a defect. `(trace …)` is
+available in every mode (spec §4.12.9; [tracing §2.5](../arch/tracing.md#25-build-modes));
+nothing in the frontend or the link refuses it. The crate root's claim that it
+fails at link time is false and is corrected by `dev` (audit R5).
 
-The frontend originates no public type of its own. `ExtractedDeclarations` is its
-one public DTO — structural sugar over `cranelisp-types` items, `#[non_exhaustive]`
-so a new declaration category is additive. Nothing from `cranelisp-types` is
-re-exported here; consumers import it directly (Principle 15).
+`ExtractedDeclarations` is the frontend's one public DTO — structural sugar over
+`cranelisp-types` items, `#[non_exhaustive]` so a new declaration category is
+additive. Consumers import types-owned items from `cranelisp-types` directly
+(Principle 15), with one exception: `DefmacroInfo` and `MacroClause` are
+re-exported beside the `defmacro` helpers that take and return them, so the
+binary's macro pipeline names the helper family and its carriers from one place.
 
 ### 2.1 Interior modules
 
@@ -77,7 +84,7 @@ re-exported here; consumers import it directly (Principle 15).
 | `lib.rs` | Public re-exports, the `parse` wrappers, and the surface narrative |
 | `reader.rs` | Hand-written recursive descent: bytes → `Vec<Sexp>`, spans, comment mode |
 | `ast_builder.rs` | `Sexp` → AST: head classification, form lowering, type expressions, patterns, traits and impls |
-| `module_extract.rs` | Peels `mod`/`mod-`/`import`/`export`/`platform`; resolves `super` |
+| `module_extract.rs` | Peels `mod`/`mod-`/`import`/`export`/`platform`; classifies each import and export entry and derives its bound name; resolves `super` |
 | `defmacro.rs` | `defmacro` shape parse → `DefmacroInfo`; per-clause `Defn` synthesis |
 | `quasiquote.rs` | Quote-family desugaring; the monotonic synthetic-span counter |
 | `preamble.rs` | Leading `;;` comment-block capture (spec §8.16) |
@@ -138,8 +145,9 @@ Four interior judgments elaborate this chain, each in its own document:
   `quasiquote-fold.md`.
 - **Binder heads** — the one shared reject for a qualified or dotted spelling in
   any binder position: `binder-head-reject.md`.
-- **Operand-position and annotation lexing** — the one body seam and the reader's
-  dangling-qualifier rejects: `enforcement-matrices.md`.
+- **Operand-position and annotation lexing** — one item per expression position,
+  the one body seam and the reader's dangling-qualifier rejects:
+  `enforcement-matrices.md`.
 
 Two shapes carry their own documents because their grammar is settled
 independently: `trait-impl-head-parse.md` (the echo-the-head `impl` slot-1 form)

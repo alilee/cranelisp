@@ -61,6 +61,20 @@ After a whole-file rebuild, these fields hold exactly the saved source's forms
 - Records that share one authored form are emitted once, at its first
   position. A macro expansion or a literal `(begin …)` records the same outer
   form under several names.
+- **Macro before use survives authorship order** (REPL
+  [§15.4](../../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+  rule 2; user ruling S124-Q5, 2026-11-17). Grouping macros first is the
+  interim nonconformance ACT-1005 carries past S124; it satisfies the
+  macro-before-use constraint for every shape, because no function precedes
+  any macro. The carried correction restores authorship order and must keep
+  one exception: a redefined function that newly depends on a macro
+  following its original position moves after that macro, and macro
+  availability stays source-ordered (language §9.3.4). Nothing else moves for
+  a function's sake, since ordinary forward references need no ordering. The
+  correction's design owes the carrier of a definition's macro uses, which
+  must not be inferred from emitted syntax (ACT-1005, Question and
+  evidence); that carrier is designed with the
+  correction, not now.
 
 ## 2. What is persisted — definition-like inputs only
 
@@ -158,9 +172,12 @@ A cache hit requires the file's hash to equal the manifest
   (§1.4). Structural forms are excluded.
 - **Key.** A form's key is the one a live turn records for it, so the two
   paths share one derivation. A name-slot form keys by its name. An `impl`
-  keys by the live-turn projection (`definition_result_symbol`) over its
-  trait and target slots; no second rule derives impl identity from surface
-  spelling. A form that cannot be keyed is skipped, and §2.4.3 reports it.
+  today keys by the live-turn projection (`definition_result_symbol`) over
+  its written trait and target slots. Designed for S124 (not in source), an
+  `impl` keys by its module's written-impl record whose authored label equals
+  the form's, and takes that record's settled pair
+  ([int §6.13](int.md#613-import-and-export-entries-and-export-mounts-s124)).
+  A form that cannot be keyed is skipped, and §2.4.3 reports it.
 - **Liveness.** A keyed form is rehydrated only if the key names a live
   entry. For an ordinary entry, the key is in the module's table. For an
   `impl`, it is in the table's `written_trait_impls`, which also covers impls
@@ -393,7 +410,13 @@ language has no type synonyms, and renamed import and export entries
 Accepting renames breaks that premise, and impl identity must then come from
 one determinant; otherwise every regeneration of a module holding such an
 impl is refused. A disagreement surfaces as a §2.4.3 refusal, never as a
-silent drop.
+silent drop. The S124 design (not in source) makes the module's written-impl
+records that determinant. The design keys every row by the settled pair, held
+injectively, and so enumerates from row 3 alone and removes rows 1 and 2
+([int §6.13](int.md#613-import-and-export-entries-and-export-mounts-s124)).
+The bare `Trait.Type` key does not separate two impls of one trait, written in
+one module, for two same-named types from different modules. With the bare
+key, those two impls collapse into one set entry.
 
 ### 12.3.1 Completeness guard
 

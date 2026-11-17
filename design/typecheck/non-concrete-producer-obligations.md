@@ -1,6 +1,8 @@
 # Non-concrete producer obligations — typecheck's half of the release contract
 
-**Status:** current design, verified against source on 2026-09-22.
+**Status:** current design. §1–§4 verified against source on 2026-09-22 and re-read at
+`4b58ab93` on 2026-11-16: every route in §1 is in source. §5 is the S124 design for
+typecheck's part of [the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
 **Reader:** anyone changing how this crate settles callables, mints generic
 instances or builds a concrete frame's codegen view.
@@ -32,7 +34,7 @@ Values meet it by a narrowly licensed defaulting step that carries its own check
 - §2 Callables: the funnel, one identity, and accessor instances
 - §3 Values: residual-parameter defaulting
 - §4 The product/sum accessor boundary
-- §5 Observations
+- §5 The S124 close: what typecheck owns
 - §6 Evidence and residuals
 
 ---
@@ -260,13 +262,96 @@ reaches this seam.
 
 ---
 
-## 5. Observations
+## 5. The S124 close: what typecheck owns
 
-- **The backend owns the release criterion.** Its category census, partitioned by
-  callable origin, is the release contract's measure
-  ([§7.3 there](../backend/non-concrete-release-contract.md)). That census is open
-  backend work; until it is armed and reads zero, this crate's producer routes are
-  graded by their structure (§2) and the self-check (§3.3), not by a measured count.
+The backend owns the release criterion: its category census, partitioned by callable
+origin, and the arm deletion it gates
+([release contract §7.3–§7.4](../backend/non-concrete-release-contract.md#73-the-category-census-armed-open)).
+This section states which census traffic is this crate's, what is designed before the
+census runs, and how the rest is scoped once it has.
+
+### 5.1 What the representation already excludes
+
+The routes of §1 are in source. The S123 close described the same populations as
+exempt from monomorphisation; that description is superseded by §1 and §2, and the
+census, not either text, decides what remains (the `arch` review's scope rule). Read
+against source at `4b58ab93`:
+
+- **A compiled frame's body cannot carry a residual from this crate.** Every node of a
+  strict view is a `ConcreteType`, `Lambda` included, so a type read from the view is
+  concrete by construction. A `Life::Concrete` callable's scheme passed the funnel's
+  concreteness check (§2.1), so the parameter channel is concrete too.
+- **A template is never compiled.** A use of a template with no instance is the backend's
+  located refusal, before emission. It contributes no census traffic.
+- **Synthetic views are the one exception, and it is invisible to the census.**
+  `MonoExpr::synthetic_local_from_expr` fills a non-concrete node type with the `Int`
+  placeholder ([concrete boundary §3.1.1](../arch/concrete-boundary-type.md#311-signature-driven-targets)).
+  That is a wrong concrete type (rule R-2, safety register R18 instance 3), not a residual,
+  so no census arm records it. Its typecheck call sites are the constructor and accessor
+  syntheses in `adt.rs` and `monomorphise_synth`. Its retirement is FIXME 0931's, not
+  S124's.
+
+The predicted census contribution of this crate is therefore **zero records in every
+partition and arm**. *Falsifier:* a census record whose classified type was read from a
+typecheck carrier (a selected arm's scheme, or a view node's type). That is a funnel or
+view-builder breach, routed to `arch` with the record, because it means the
+representation claim above is false.
+
+### 5.2 Designed now
+
+| Item | Where | Why it is not census-gated |
+|---|---|---|
+| ACT-1034, the dispatch hop and the free-function hop | [monomorphisation §3.10](monomorphisation.md#310-successor-discovery-inside-an-instance) | Observed by `qa` at the producer seam. Its programs are refused before emission, so the census cannot see them; its correction is the precondition of a non-vacuous `TraitMethod` zero ([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category)) |
+| The in-progress chain's refusal of an instantiation that does not terminate | [monomorphisation §3.10.3](monomorphisation.md#3103-recursion-through-dispatch) | Required by the ACT-1034 correction itself |
+
+### 5.3 Waiting on census output, and the rule that scopes it
+
+Nothing else in this crate is scheduled for item 1 before the census reads. When it
+does, each record is attributed by where the backend read the type it could not
+classify, then by partition:
+
+| Record | Owner |
+|---|---|
+| A field read whose type came from a constructor declaration (`ADT(<concrete>, [Var…])` on the field channel) | backend, row D1 (release contract §7.4 step 1) |
+| A type read from a selected arm's scheme or a view node | this crate: the §5.1 falsifier |
+| Absent arm, lambda parameter, where the `Lambda` node's recorded type is not a function type | this crate: the inference or annotation of that lambda. §5.1 predicts none |
+| Absent arm, defn parameter, where the selected scheme supplies no parameter type | this crate: the arm's scheme arity |
+| Any other source | the reading component's owner; this crate is not the default owner |
+
+- The partition names this crate's population when a record is its: `TraitMethod`
+  is the implementation-method route (§2.4), `Accessor` A-MINT (§2.3), `Ctor` the ADT
+  split, `Plain` an ordinary or minted body.
+- **Each attributed record becomes an ordinary defect:** `qa` reduces it to a minimal
+  program with a concrete twin, and the correction is designed here against that program
+  before `dev` builds it. No correction is designed from a record alone.
+- **A zero is read only with traffic.** `qa`'s census condition (evidence delta §2.4)
+  applies: the `TraitMethod` zero counts once A1, A2 and T-1034-b pass with non-zero
+  traffic.
+- The record key does not carry where the type was read, and `arch` ruled (S124) that it
+  need not. The first column is therefore read from `qa`'s reduction of each record, not
+  from the record.
+
+### 5.4 ACT-1050 — typecheck's reading
+
+The release contract's discriminator is the type that reaches `compile_lambda`
+([§7.4 there](../backend/non-concrete-release-contract.md#74-the-r-1-structural-close-open)).
+`qa` has not reported that observation; this is a source reading, not an observation.
+
+- The continuation in `(bind (Pure [49]) (fn [v] (Pure 49)))` is a `Lambda` node of a
+  strict view, so its type is a `ConcreteType`. Its argument position is unified with
+  `bind`'s instantiated scheme, so it is `Fn [(Vec Int)] (IO Int)`. A written
+  `(Vec Int)` on the parameter, which the filing reports does not cure the leak, makes
+  the same type explicit.
+- **Prediction:** the parameter arrives typed with its heap type. That refutes both of
+  the contract's typecheck readings, and ACT-1050 returns to `design`(backend).
+- *Refuted if* the observed `Lambda` node type is not a function type (the absent arm's
+  typecheck branch: correct the lambda's recorded type at its inference site) or the
+  parameter arrives as a scalar (a wrong concrete type, R-2: correct the unification
+  that produced it). Either is designed here against `qa`'s observation; neither is
+  designed in advance.
+
+### 5.5 Standing observations
+
 - **Typecheck keeps one keyed observation:** the ownership pass's set of
   residual-parameter frames, which took its conservative seed
   ([ownership inference](ownership-inference.md) §10.3). It explains which frames took
@@ -298,8 +383,9 @@ Coverage status is the spec-side annotation band, which `qa` maintains.
 
 | Item | Owner and trigger |
 |---|---|
-| The backend fallback arms that faces 2 and 3 once relied on are still in source | `design`/`dev` (backend), release contract §7.4, gated on its §7.2 and §7.3 |
-| `MonoExpr::lenient_from_expr` has no production caller. Its callers are test support: backend `crates/cranelisp-backend/src/test_support.rs` and Binary/int test modules | `arch` (a `cranelisp-types` public item). Deletion needs its own complete consumer case; this design neither licenses nor blocks it |
+| The backend fallback arms that faces 2 and 3 once relied on are still in source | `design`/`dev` (backend), release contract §7.4, gated on its §7.3 zero read; built in S124 |
+| `MonoExpr::lenient_from_expr` has no production caller. Its callers are test support: backend `crates/cranelisp-backend/src/test_support.rs` and Binary/int test modules | `arch` (a `cranelisp-types` public item). Its narrowing to `pub(crate)` (S123 packet row K11-d) lands in S124; this crate is not a consumer and needs no change. Deletion needs its own complete consumer case |
+| The synthetic builder's `Int` placeholder (§5.1) | FIXME 0931 and safety register R18 instance 3. Census-invisible; closed when synthesised bodies carry real node types and `from_expr` is the sole builder |
 | Distinct-instantiation code size | A performance characteristic, not a correctness gate. The expected multiplier for accessors is near one |
 
 ## Former section numbers
@@ -311,7 +397,7 @@ Coverage status is the spec-side annotation band, which `qa` maintains.
 - §3.1–§3.5 → §3.1–§3.4
 - §3.6 (`lenient_from_expr`) → §6 residuals
 - §4, §4.4 → §4
-- §5 → §5
+- §5 (observations) → §5.5; the backend-census bullet → §5 introduction
 - §6, §6.1 (public API and schema) → no public item or schema change remains owed; the lifecycle's schema window was `CACHE_SCHEMA_VERSION` 24→25
 - §7 (change-sets), §8 (as-built disposition) → §1, §6
 - §9, §10 → §2.1, the header

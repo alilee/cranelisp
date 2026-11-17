@@ -242,26 +242,21 @@ render through the one canonical envelope (§1.1). [Tested tests/repl_introspect
 
 ADT fields MUST be recursively formatted according to this table.
 
-**Representation-flattening is invisible to display (R5).** A single-constructor ADT whose
-sole field is a scalar (`Int`, `Bool`, `Float`, or another such value) is **value-representation
-flattened** by the compiler — the value is stored as a bare unboxed word, with no heap object
-or tag word. This is a codegen optimisation (`design/arch/ownership-inference.md` §6.3 R5); it
-MUST have **no effect on display**. Such a value MUST render as the ordinary single-ctor
-constructor form `(Ctor value)` — identical to its non-flattened sibling — with the scalar
-field formatted per its own row above. The display MUST NOT leak the flattened representation
-(a raw `<tag:N>` sentinel is a non-conformance) and MUST NOT crash (a `Float` field's bit
-pattern MUST NOT be dereferenced as a pointer). A flattened ADT nested as a field of an outer
-ADT MUST likewise recurse to its constructor form.
+**Single-constructor, single-scalar-field ADT display.** A single-constructor ADT whose
+sole field is a scalar (`Int`, `Bool`, `Float`, or another such value) MUST render as the
+ordinary single-ctor constructor form `(Ctor value)`, with the scalar field formatted per
+its own row above. The display MUST NOT expose a raw `<tag:N>` sentinel and MUST NOT crash
+(a `Float` field's bit pattern MUST NOT be dereferenced as a pointer). Such an ADT nested
+as a field of an outer ADT MUST likewise recurse to its constructor form.
 
 | Value | Display | Ring | Test |
 |---|---|---|---|
-| Single-ctor single-scalar-field ADT (R5-flattened), `Int` field, e.g. `(Box 99)` | `(Box 99)` — never `<tag:99>` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_int_shows_constructor_form] |
+| Single-ctor single-scalar-field ADT, `Int` field, e.g. `(Box 99)` | `(Box 99)` — never `<tag:99>` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_int_shows_constructor_form] |
 | … `Bool` field, e.g. `(B true)` | `(B true)` — never `<tag:1>` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_bool_shows_constructor_form] |
 | … `Float` field, e.g. `(F 3.14)` | `(F 3.14)` — MUST NOT crash | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_float_does_not_crash] |
-| R5-flattened ADT nested as a field of an outer ADT | recurses to `(Ctor value)`, e.g. `(Wrap (Box 5) 7)` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_nested_field_shows_constructor_form] |
+| Single-ctor single-scalar-field ADT nested as a field of an outer ADT | recurses to `(Ctor value)`, e.g. `(Wrap (Box 5) 7)` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_nested_field_shows_constructor_form] |
 
-Value semantics (construct / match / extract) are unaffected by flattening and were always
-correct — this note pins the **display** invariant so the representation stays invisible
+Value semantics (construct / match / extract) are independent of representation
 [Tested tests/display_exact.rs::r5_value_layout_construct_match_extract_is_sound].
 
 ### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [Tested+Neg tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata]

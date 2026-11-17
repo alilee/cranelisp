@@ -79,12 +79,32 @@ Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md
 - **Every member now carries to S123 in K10.** Class II, Class III, the
   inverse-polarity member and the reactor panic were carried with the final
   disposition. Class I joined them when the user approved the Phase-5
-  checkpoint on 2026-09-30, beside the related worker observation
-  [ACT-1025](../../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md)
+  checkpoint on 2026-09-30, beside the related worker observation ACT-1025
   ([checkpoint carries](../../../tests/plan/s122-evidence-delta.md#phase-5-checkpoint-carries-approved-2026-09-30)).
   The prior deferral count is not recorded; the filing has been open since
   S114. If `sprint`'s history shows two prior deferrals, METHOD §2.4.5
   sign-off applies at S123.
+
+## S124 Phase 3 (qa, 2026-11-16, at `4b58ab93`)
+
+The user carried every member past S124 and asked for reproductions of those
+that are defects. Record: [S124 evidence delta](../../../tests/plan/s124-evidence-delta.md#46-fixme-0694--run-dependent-members).
+
+- **Class II, the nullary member: no longer reproduces.** 40 of 40 stress
+  iterations passed under fourteen busy workers on fourteen CPUs. S121's rate
+  under that load shape was 53 of 200. No correction is attributed: the S123
+  fused source-pass transition changed the publication ordering this member
+  rested on, and nothing shows it is the cause. *Refuted if* the member
+  fails again with `undefined function: z`.
+- **No other member can be reproduced.** Each is one occurrence with no
+  captured condition, so no reproduction is allocated for Class I, the
+  `multi_sig_module_locality` candidate, Class III, the inverse-polarity
+  member or the reactor panic. The Class I faces still owed above are
+  unchanged.
+- **A run-dependent maintenance check is attributed separately**:
+  [ACT-1061](../../../sprints/actions/ACT-1061-sh-save-notice-arrives-after-the-next-prompt-intake.md).
+- ACT-1025 was a fixture assumption, corrected at S123; its filing is
+  deleted and it is not a member of this record.
 
 ## Closure
 

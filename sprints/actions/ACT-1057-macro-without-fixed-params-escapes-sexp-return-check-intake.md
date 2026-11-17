@@ -69,7 +69,25 @@ and cells are K-9 in the
   successful declaration echo also contains. They are green for the right
   reason today, but would not detect acceptance.
 - **Related, not duplicate.** Audit R1 (shape losses in the same file) is a
-  separate defect family pending S124 Phase 1.
+  separate defect family. The user accepted it at S124 Phase 1 and it joins
+  this action; see below.
+
+## Audit R1: declaration shapes accepted (qa, 2026-11-16, at `4b58ab93`)
+
+Executed with no prelude under `--run`; fixtures and controls are REPRO-R1 of
+the [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#35-frontend-audit-r1-r2-r3).
+
+- **Accepted, exit 0, where spec §9.2.1 and §9.2.2 require a rejection:** a
+  second form after the shorthand body (`(defmacro m [] (quote 7) (quote 9))`,
+  which expands to 7 and drops the 9); a fixed parameter after the rest
+  parameter (`[&r x]`, `[& r x]`); two rest parameters (`[&r &s]`); and both
+  again inside a bracket pattern (`[[&r x]]`, `[[&r &s]]`).
+- **Controls reject or accept correctly:** the explicit clause
+  `(defmacro m ([] (quote 1) 2))` is rejected; `[x &]` is rejected;
+  `[x &r]` and `[[x &r]]` are accepted.
+- **Class:** `silent-accept`. **Locus:** `crates/cranelisp-frontend/src/defmacro.rs`,
+  the shorthand clause and `parse_param_items`, as the audit traced.
+- **Owner:** frontend `design` then `dev`; no public type changes.
 
 ## Next
 

@@ -74,7 +74,7 @@ The heap layout of marshalled values follows the standard ADT representation def
 
 ## 9.2 Macro Definition [S124 — partial: Tested+Neg tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/annotation_fold_macro_arg_0708.rs::macro_two_arg_call_without_annotation_control_green; §9.2.3 fails for a clause without a fixed parameter]
 
-### 9.2.1 Syntax
+### 9.2.1 Syntax [Uncovered S124 — was no annotation; S124 cell REPRO-R1 with its two S124-Q2 controls]
 
 ```ebnf
 defmacro_form  = '(' 'defmacro' name docstring? clause+ ')'
@@ -85,11 +85,13 @@ clause         = params body                    ;; single-clause shorthand
 
 name           = symbol
 docstring      = string
-params         = '[' param* ('&' param)? ']'
+params         = '[' param* ('&' symbol)? ']'
 param          = symbol | bracket_pattern
 bracket_pattern = '[' symbol* ('&' symbol)? ']'
 body           = expr
 ```
+
+A macro rest parameter MUST be a simple symbol; `[& [a b]]` MUST be rejected. Fixed bracket parameters and rest capture inside a bracket pattern remain permitted.
 
 The `defmacro` form defines a named compile-time macro. The `defmacro-` variant defines a module-private macro.
 
@@ -576,9 +578,9 @@ For cases where auto-gensym is not sufficient, macro authors MAY also use:
 
 ## 9.9 Macro Errors [S124 — partial: Tested tests/spec_09_macros::defmacro_malformed_no_params; §9.9.1 fails]
 
-### 9.9.1 Return Type Mismatch [S124 — the mismatch is reported at a synthetic location, not the `defmacro` form, and a clause without a fixed parameter is not rejected (ACT-1057; RED tests/spec_09_macros::macro_return_mismatch_located_at_definition_neg and the §9.2.3 cells)]
+### 9.9.1 Return Type Mismatch [Uncovered S124 — was tests/spec_09_macros::macro_return_mismatch_located_at_definition_neg and the §9.2.3 cells (RED, ACT-1057); the former S124 annotation reports synthetic attribution and missing rejection for a clause without a fixed parameter]
 
-If a macro body's inferred type is not `Sexp`, the implementation MUST report a compile-time error at the `defmacro` form.
+If a macro body's inferred type is not `Sexp`, the implementation MUST report a compile-time error at the offending clause body within the `defmacro` form.
 
 ```clojure
 (defmacro bad [] 42)

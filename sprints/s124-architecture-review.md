@@ -1,8 +1,13 @@
 # S124 Phase 2 architecture review
 
 **Owner:** `arch`. **Reader:** the user and `sprint`, at the Phase 2 → 3
-checkpoint. **Status:** proposal, 2026-11-16. It approves nothing; the exact
-public-API deltas are in the [S124 API packet](s124-api-packet.md).
+checkpoint. **Status:** proposal of 2026-11-16, since decided: the user's
+rulings on §8 are in [the sprint plan](SPRINT.md#user-rulings-on-the-phase-2-decisions-2026-11-16),
+and §8.6 was decided differently from its recommendation (all unlanded S123
+rows land in S124). The accepted results are stated in `design/arch/`;
+[boundary types](../design/arch/interfaces.md#approved-changes-not-yet-in-source-s124)
+indexes them. Designs start from those documents, not from this review. The
+exact public-API deltas are in the [S124 API packet](s124-api-packet.md).
 **Checkpoint:** `main` at `3155f47f` plus the uncommitted `SPRINT.md` edit.
 **Retention:** working document; fold its accepted results into the owning
 carriers and retire it at the S124 close.
@@ -285,13 +290,22 @@ choices are the user's (§8.5).
   directory; this session relied on that. Whether it loads `AGENTS.md` the
   same way is unverified here. `sprint` owns host-entry guidance and should
   measure it on one directory before renaming the rest.
-- **Rust context standard: stay unadopted.** It assumes service-shaped
-  contexts (facade, adapters, authority values) and a `DESIGN.md` per crate.
-  Cranelisp already holds the same properties: one design home per crate
-  under `design/`, the bounded-context statement, and seven generated
-  baselines under a failing guard. Its mechanical check would add a second
-  public-API inventory beside `public-api.txt`
-  ([Principle 7](../design/arch/principles/07-single-source-of-truth.md)).
+- **Rust context standard: stay unadopted.** Corrected 2026-11-16 by the
+  [evaluation](s124-rust-context-standard-evaluation.md) §7, which tested
+  this paragraph's original reasons against the standard and its checker.
+  - The standard's mandatory elements are a `Facade` trait and a free `init`
+    in every context crate, and a `DESIGN.md` at each crate root. Six context
+    crates have no state to initialise, and each already has one design home
+    under `design/`. The conclusion rests on those three elements.
+  - Cranelisp already holds the standard's other properties: the
+    bounded-context statement and seven generated baselines under a failing
+    guard. One exception: the crate dependency graph is asserted for more
+    edges than are measured. The standard's dependency-edge check would
+    measure it; that part is taken separately as
+    [ACT-1058](actions/ACT-1058-measure-declared-crate-dependency-edges.md).
+  - Withdrawn: the claim that the mechanical check would add a second
+    public-API inventory beside `public-api.txt`. The tool reads the
+    committed `public-api.txt` files as they are.
 - **Rust build standard: decline for now.** It gives each role its own
   build tree. `target/` is 72 GB today; twelve roles would multiply it. The
   repository already runs source-editing work serially and allows one test
@@ -448,7 +462,8 @@ needed, and the label outlived the question.
   `qa`'s and `spec`'s assessment. Declare `ux` as not dispatched.
 - **Tradeoffs.** Declining the build standard keeps one 72 GB build tree and
   today's lock contention. Declining the context standard keeps cranelisp's
-  own layout, which the package's check does not understand.
+  own layout and leaves the crate graph asserted more widely than measured
+  until ACT-1058 (§6, as corrected).
 
 ### 8.6 Third deferrals and approved rows that never landed
 

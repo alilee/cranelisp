@@ -153,13 +153,29 @@ can only be trait bounds and becomes `TypeExpr::Bounds`.
 
 ## 5. Operand positions and bodies
 
-Every single-body operand position — `let` body, impl-method body, trait-default
-body, `trace` operand — routes through one `build_body_to_end` seam, which pairs
-the body via `build_one_expr_at` and rejects any form left after it.
-Multi-operand positions route through `build_args_with_annotations`. A body built
+Every expression position is exactly one `Sexp`, because an annotated operand is
+one node. Every single-body operand position — `let` body, impl-method body,
+`trace` operand — routes through one `build_body_to_end` seam, which builds the
+body and rejects any form left after it. A trait method's tail is preserved raw
+for typecheck instead (`annotation-and-declaration-shape.md` §4). A body built
 without that tail check silently drops trailing forms, so the routing is the
 invariant, not a convention; `enforcement-matrices.md` §1 states it and the
 acceptance criterion.
+
+### 5.1 Module tests drive the production entries
+
+Tests in `ast_builder/tests.rs` observe one of two things, and each goes through
+the production entry that owns it:
+
+- **a single form's shape** — call `build_form` or `build_expr` and assert the
+  returned `ParsedEntry` or `Expr`;
+- **sequence routing** — top-level annotation pairing, comment skipping, the
+  bare-expression route, and dropping `Macro` and `Constructor` entries — call
+  `build_forms` on the reader's output and assert the `TopLevel` values.
+
+A test-local `ParsedEntry`-to-`TopLevel` conversion or per-form routing loop is a
+second copy of `build_forms` that tests pass through instead of production (audit
+R4). The helpers that remain only parse and call one of the entries above.
 
 ## 6. Docstrings
 

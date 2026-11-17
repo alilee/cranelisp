@@ -166,7 +166,7 @@ The two structural facts that dominate the tree today:
 | Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
 | Display / pretty-print | `display.rs` (`display::envelope` + value render); `pretty.rs` (`pretty_print`/`pretty_print_plain`); `styled.rs` (the `Role`/`StyledDoc` vocabulary + `styled::render`, the sole style-table site); `style.rs` (raw style helpers); `syntax.rs` |
 | Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §"Regeneration source") |
-| Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `callee_edges.rs` (the one callee enumeration, shared with `redefine.rs`, §7.6.1); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller |
+| Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `callee_edges.rs` (the one callee enumeration, shared with `redefine.rs`, §7.6.1); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller and deletes in S124 (§16.0) |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
 | Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` / `LaunchContinue` transform (`bind-chain-analysis.md`) |
@@ -645,9 +645,8 @@ Status: **designed 2026-11-15 (S123 W1); revised the same day to a
 structural form after `qa`'s grade ruling (M-2,
 [S123 evidence delta](../../tests/plan/s123-evidence-delta.md)); built by
 `dev`(src) in S123 W1 and checked against source by `design` (int) on
-2026-11-15, with independent review and the suite run still to come.** The residual that `dev` found beside
-[ACT-1025](../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md)
-was routed here by `qa`. Private to `src/`: no public item, carrier, schema
+2026-11-15, with independent review and the suite run still to come.** The residual that `dev` found beside the
+refused-requeue intake was routed here by `qa`. Private to `src/`: no public item, carrier, schema
 or ABI change.
 
 **Rule.** Every path that hands the entry to the eval thread waits until the
@@ -666,7 +665,7 @@ module has in-memory completion and is still `TypecheckWorking`. So
 mid-pass, and so can startup recovery's wait for the entry's in-memory
 outcome. Only `restart_entry_empty` also waits for the pass to settle. In
 that window a requeue of the entry is refused and silently lost,
-which is the ACT-1025 symptom and the S82 reload race. `qa` pinned the
+which is the refused-requeue symptom and the S82 reload race. `qa` pinned the
 scheduler cause in
 `scheduler::tests::inmem_wait_returns_before_the_terminal_pool_so_a_requeue_waits_for_settling`.
 The fix makes that state impossible to build, so the fix removed the test
@@ -1519,9 +1518,42 @@ a pool cluster fails its module, and a rebuild fails and locks it.
     dependent only after its dependency is fully processed.
   - Like the qualified fail-fast, it does not consult unsettled members. The
     error may therefore come from a later member's earlier attempt.
-- **Not covered:** an `export` of a module that is still in flight at a fresh
-  load (ACT-1016 Face 2). That module is not `Failed`, so this rule does not
-  apply to it.
+- **Not covered by this rule:** an `export` of a module that is still in
+  flight at a fresh load (ACT-1016 Face 2). That module is not `Failed`; the
+  export's readiness gate below answers it.
+
+**An `export` waits like an `import`** (ACT-1016 Face 2; designed S124, not in
+source at `4b58ab93`).
+
+- **Rule.** `handle_export` installs from a source table only when that module
+  has reached a terminal typecheck, through the same readiness predicate
+  `handle_import` uses. Otherwise it takes the dependency path: register the
+  module if it is not registered, then wait on it through the ordinary
+  dependency wait. The two handlers share one predicate (Principle 7).
+- **Why.** The export fast path tests only that a table exists. A module that
+  is still typechecking has a seeded table, so an export of it installs from
+  an incomplete table and reports `'g' not found in module 'b'`. That is the
+  Round 4 shape `handle_import` was corrected for (Sprint 60), here without a
+  race: on Face 2's fixture `b` is waiting on `a` when `a` exports `b`, so the
+  incomplete table is certain, not timing-dependent.
+- **Effect.** The export becomes a wait edge, so at a fresh load the
+  scheduler's acyclicity check reports `a -> b -> a` before either installs
+  from the other. Spec §8.10.1 puts `export` in the dependency graph, and this
+  makes the §6.12 premise ("every other dependency edge is a wait at a fresh
+  load") true for exports. The reload leg is already answered by the
+  publication check (ACT-1016 record, 2026-11-15).
+- **Not changed.** The signature barrier's members still exclude export
+  targets (§6.12, *Not taken*). The wait is the body-free dependency wait an
+  import already takes.
+- **Falsifier.** After the change, any leg of Face 2 that reports a name not
+  found in `a` or `b`, or that completes without naming the cycle.
+- **Evidence (for `qa`).** The two committed Face 2 cells and the acyclic
+  re-export control. A `dev` unit row shows the export handler blocking on a
+  registered, non-terminal module instead of installing from it.
+
+**Face 1 status.** The failed-dependency refusal above (*The check*, *Failed
+dependency*) is designed and carried by ACT-1016 Face 1. It lands in S124
+with its session row pair; the design is unchanged.
 - **As implemented.** Both Pass-0 handlers in `src/process_form/dependency.rs`
   call one table check before they install or wait. `handle_import` calls it
   after the private-submodule check, and `handle_export` calls it before it
@@ -1531,8 +1563,7 @@ a pool cluster fails its module, and a rebuild fails and locks it.
   and one site that records a failure dependency. A failed module with no
   table takes the load path instead: its wait fails fast with the same error
   or, on the eval path, retries after the purge (review N2).
-- **Diagnostic** ([ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md)).
-  The Pass-0 fail-fast, the qualified fail-fast and `block_for_typecheck`
+- **Diagnostic.** The Pass-0 fail-fast, the qualified fail-fast and `block_for_typecheck`
   share one builder, `refuse_failed_dependency_locked` in
   `src/scheduler.rs`. The failed-module wait report
   (`module_failed_error`) uses the same wrapped text, so the rules below
@@ -1802,9 +1833,8 @@ asks, for a module `A` with the bit on, whether the prelude reaches `A`:
   edge is a wait at a fresh load, so the scheduler reports its cycle before
   one member compiles against the other (§6.11). The prelude edge is the one
   no module waits on (the barrier bullet above). QA falsified the premise for
-  an `export` of an in-flight module (ACT-1016 Face 2). Whether cycle
-  precedence or a wait answers that face is decided in the S123 carry of
-  ACT-1016.
+  an `export` of an in-flight module (ACT-1016 Face 2). A wait answers it:
+  §6.11's export readiness gate makes an export a wait edge (S124).
 - **It changes a diagnostic, never an outcome.** The attempt has already
   failed, so an edge the walk over-approximates can mislabel a failure but
   cannot reject a program. The reader-quote shield, `cranelisp_types::quote_head`
@@ -1964,6 +1994,241 @@ End to end:
 - face C's fresh-load witness, the repaired
   `tests/repl_watch.rs::watch_errors_block_evaluation_no_last_known_good`.
   Whether it also gets a cell in every mode is `qa`'s decision.
+
+### 6.13 Import and export entries and export mounts (S124)
+
+**Status: designed S124; not in source at `4b58ab93`.** The carrier is packet
+row D3 ([import and export entries](../arch/interfaces.md#import-and-export-entries-s124-target)):
+a names list is `None`, `Glob` or `Specific` of `ImportEntry` values, each a
+`Name { source, local }` or a `MemberGlob(parent)`, and `ExportSpec` gains its
+mount `alias`. The frontend is the only producer and derives `local`
+([frontend modules §2.2](../frontend/modules.md#22-the-bound-name-is-derived-here-once)).
+This section is the binary's side. It lands as the consumer step of D3's
+callee-first migration, with D3's cache-schema bump, and corrects ACT-0997,
+ACT-1055 and ACT-1056 together.
+
+**Installation (`src/imports.rs`).**
+
+- **Per entry.** A specific list installs each entry in source order. A `Name`
+  entry reaches the candidates of `source` in the source module, with the
+  existing existence, visibility and subtree checks, and binds each under
+  `local`. A `MemberGlob` entry projects the parent's public members as today
+  and binds each under its bare member name. The exposures of one list are the
+  union of its entries' exposures; duplicates deduplicate in
+  `expose_candidate` and distinct sources coexist (§8.6.4).
+- **No written spelling is read.** The installer never binds `source`, and
+  never derives a bare name from it. Binding a dotted entry under its dotted
+  spelling (ACT-1055) therefore has no code path.
+- **Import and export share it.** The same per-entry collection serves both;
+  they differ only in visibility and in the export's declared-export record,
+  which records each entry's `local` (§6.7).
+- **Locations.** The carrier holds no per-entry span, so an installer error
+  (not found, not public) is located at the spec. The frontend's own entry
+  errors are located at the element.
+
+**Name-less specs are one rule for both forms.** `(import [m []])` loads
+nothing and registers only its alias (spec §8.3.6, §8.3.7). `(export [m []])`
+and `(export [(m a) []])` follow the same rule (§8.4.0): the export handler
+registers the mount, if any, and loads nothing. A bare `(export [m []])` is
+therefore a definite no-op: it re-exports nothing, registers no mount, loads
+nothing and is not refused (spec §8.4.4, as ruled under S124-Q4). Every predicate that asks
+whether a spec loads (the handlers, the reload edges and test selection) reads
+one helper over either spec, so imports and exports cannot answer
+differently. A qualified reference through a mount auto-loads its
+target (spec §8.5.4), as one through an import alias does. The dependency
+record still keys every export target, as it keys every import (§7.6).
+
+**Export mounts — the writer** ([alias contract](../arch/module-alias-scoped-lookup.md)
+§5.1; `arch` names the binary as its owner).
+
+- **One function, two routes.** One crate-private function installs a
+  module's mount: a `Public` alias entry under
+  `cranelisp_types::module_alias_key(<exporting module>, <alias>)`, targeting
+  the module the spec resolves to through §6.9's resolver. The fresh route
+  calls it from the export handler, before any load decision. The restore
+  route calls it from the declared-alias installer, which now reads the
+  restored table's `exports` beside its `imports` and `submodules`. A
+  whole-file rebuild's session-state reset removes the module's mount keys
+  with its import-alias and submodule keys.
+- **Declaration errors are raised here.** This writer is the declaration
+  seam §5.1 names. It refuses, located at the spec:
+  - a mount alias equal to a child the module declares (`mod` or `mod-`),
+    read from the declared children, so the order of the `mod` and `export`
+    forms does not matter;
+  - a mount alias already held by a mount of the same module to a different
+    target, in this form, an earlier form or an earlier REPL turn.
+
+  A repeated mount to the same target is idempotent. Each refusal is a
+  §8.6.4-family error and fails the attempt like any other Pass-0 error.
+- **One key mint.** The import-alias writer's private `alias_key` helper
+  deletes in this change-set, so both alias writers key through the
+  types-owned mint (§12.1 reject 4, §16.0).
+- **The index path writes no mount.** Its isolated tables never write live
+  session state ([index-worker isolation](index-worker-isolation.md)).
+- **Lookup is unchanged.** No probe, precedence or visibility rule is added.
+
+**Other consumers.**
+
+- *Regeneration (`src/save.rs`).* A `Name` entry renders as its `source` when
+  `local` equals `cranelisp_types::bare_member_name(source)`, and as
+  `(source local)` otherwise, so `Shade.Blue` and `Some` keep their written
+  form and a rename keeps its rename. A `MemberGlob` renders as `Parent.*`.
+  Merging two specs for one module concatenates their entries with equal
+  entries removed; `Glob` absorbs. An export with a mount renders
+  `(m alias)` as its specifier.
+- *Restore (`process_form/cache_restore.rs`).* The re-export dependencies it
+  derives from `exports` carry the entries unchanged, and the mounts install
+  through the writer above.
+- *`/imports` (`session_v4/lifecycle.rs`).* Each binding's synthesised spec
+  holds one `Name` entry whose `source` is the binding's source symbol and
+  whose `local` is the bound name.
+- *Test selection.* A specific list is an edge exactly when it has an entry;
+  the list-level member glob it matched is gone.
+- *Dependency record and reload edges.* Unchanged apart from the name-less
+  rule above.
+
+**An import alias and a mount sharing a spelling** (spec
+[§8.4.4](../../spec/08-modules.md#844-module-mounting-on-export), "Import
+alias and export mount sharing a spelling", and §8.6.4; user ruling S124-Q4,
+candidate B, 2026-11-17). An import alias and an export mount of one module
+are stored under the same key, `module_alias_key(<module>, <alias>)`, and the
+lookup holds at most one entry per key
+([alias contract](../arch/module-alias-scoped-lookup.md) §2.1–§2.2). The two
+writers enforce the mixed pair together:
+
+- **Different targets refuse.** Each writer reads the other family's
+  declarations from the module's records (`imports` and `exports`), so the
+  refusal does not depend on form order, the REPL turn or the route. Targets
+  are compared as the modules §6.9's resolver yields, never as spellings. The
+  refusal is a §8.6.4-family error located at the second declaration, and it
+  fails the attempt like the mount refusals above.
+- **Equal targets form one public route.** The key holds one entry, and its
+  visibility is a function of the declarations, not of write order: it is
+  `Public` exactly when the module mounts the spelling. The mount writer
+  writes `Public` over an equal-target import alias; the import-alias writer
+  never lowers a `Public` entry. The restore route therefore yields the same
+  entry as the fresh route whichever family its installer reads first, and a
+  whole-file rebuild reinstalls whatever the saved source declares.
+- **Regeneration keeps both forms.** The import and the export are separate
+  records in `imports` and `exports`, and each re-emits in its own section
+  (§1.3 of [session persistence](session-persistence.md#13-section-order)),
+  so the pair round-trips as written.
+- **Prerequisite.** The import-alias writer's own duplicate-alias refusal
+  (`qa` lead R-A2; spec §8.6.4, two import aliases binding one alias) lands
+  in the same change-set, because the mixed-pair branch reads the import
+  family as a set of single routes.
+
+The mount writer does not land without the mixed-pair branch: without it, the
+later writer replaces the earlier entry under the shared key, and the alias is
+silently rerouted. Two private routes and one public route under one spelling
+were not chosen (candidate C) and have no shape here.
+
+**Impl identity under a renamed import (ACT-0997; packet row D10, approved 2026-11-17).**
+Today, regeneration labels an impl from its settled trait and type names, but
+the live turn and rehydration label it from the head as written. Under a
+renamed import the two labels differ, so every later regeneration of the
+module would be refused. The fix is that every route reads the identity from
+one record.
+
+- **Determinant.** The writer's `WrittenTraitImpl` is the determinant. It
+  holds the settled pair and, under D10, the head's `authored_label`. It is
+  the one carrier present on every path, including a cache-restored table
+  that nothing typechecked. A route first gets the form's label from
+  `TraitImpl::authored_label()`. It then makes one keyed read of the module's
+  records by that label, and takes the identity from the matching record's
+  settled pair. No route resolves a head name again
+  ([Principle 24](../arch/principles/24-resolve-once.md)), and none reads
+  `CheckResult`. The label is the head as written, each reference with its
+  written qualifier, taken before the higher-kinded rewrite; it is compared
+  for equality only and is never an identity or display source
+  ([approved changes, D10](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
+  The binary's own derivation (`definition_result_symbol`'s `impl` arm with
+  `impl_echo_type_name`) drops both qualifiers and is deleted, not moved.
+- **Routes.**
+
+  | Route | Form | Record | Paths served |
+  |---|---|---|---|
+  | Live turn: the staged introspection record, the turn receipt and the definition result | the turn's built `impl` | the staging table's record, which typecheck upserts on success | REPL turn, fresh file load, whole-file rebuild on reload |
+  | Rehydration (`save.rs::rehydrate_introspection_from_source`) | the backing file's `impl` forms, built as today | the table's persisted records, which carry the label | cache restore, fresh declaration load |
+  | Regeneration (`save.rs::generate_impls`) | — | the module's records, enumerated | every path |
+  | Definition echo and impl lookup (`repl/format.rs`) | — | the record named by the result's identity | every path |
+
+  The rebuild prologue and the redefinition gate already key records by
+  `trait_impl_key` over the settled pair, and they do not change.
+- **A form matches exactly one record, or none.** This is `arch`'s rule for
+  D10 ([approved changes](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)):
+  the label is not part of a record's key and nothing makes it unique within
+  a writer, so a form matches only when exactly one of the writer's records
+  carries its label. None or several is no match, reported, and never a pick.
+  The keyed read therefore returns one of three answers (one record, none,
+  several), and each route maps the last two to the same outcome:
+  - *Rehydration* leaves the form unkeyed, skips it, and §2.4.3 reports what
+    is then unrendered.
+  - *The live turn* raises its located invariant error at publication, like
+    the turn receipt's existing one.
+
+  No fixed file scope should produce several: §8.6.5 rejects a second impl
+  under one head as ambiguous, and §8.6.4 forbids re-pointing an alias. That
+  argument is asserted, not measured; its falsifier is either report firing.
+  No uniqueness check is added at `upsert_written_trait_impl` (rejected in
+  the row: a restored sidecar bypasses upsert, so the read needs the rule
+  anyway).
+- **Live-turn timing.** The record exists only once the cluster has checked.
+  The build stage therefore keeps the form's label for each staged impl
+  record. Publication derives the key from the staging table's record, which
+  is the defer shape of
+  [Principle 26](../arch/principles/26-record-from-settled-state.md), under
+  the exactly-one rule above.
+- **The identity is the settled pair, held injectively.** The bare
+  `Trait.Type` rendering drops each name's module. It is therefore already
+  shared by `(impl Show Box)` for a local `Box` and `(impl Show lib/Box)`
+  written in the same module, and a rename makes that case ordinary:
+  `(import [lib [(Box B)]])` beside a local `Box`. The introspection key, the
+  receipt and the result therefore hold the settled pair through an injective
+  rendering, and the types crate already mints one (`trait_impl_key`).
+- **Human-facing output.** The `impl <trait> for <type>` echo and the §2.4.3
+  refusal render each half, qualified by its own module (REPL §1.1
+  canonical-home qualification), from the record's settled names. They do not
+  parse the key. The echo's current re-resolution of each bare half in the
+  asking scope is removed for impls. Under a rename it misnames the type, or
+  finds a different same-named one.
+- **Regeneration enumerates the records alone.** Rows 1 and 2 of
+  [session persistence §12.3](session-persistence.md#123-enumeration) add no
+  identity that row 3 lacks. A shell written in the module has its record
+  there, and an impl has an introspection record only once it has published,
+  which writes its record. Both rows are therefore removed, with row 2's
+  form-head discriminator
+  ([Principle 7](../arch/principles/07-single-source-of-truth.md)). A
+  record-less impl found while building is a defect to report, not a reason
+  to keep them.
+
+**Evidence (for `qa`).** The committed REDs of ACT-0997, ACT-1055 and
+ACT-1056, the mount-collision negatives §8.4.4 owes, the S124-Q4 mixed-pair
+cells (equal targets compose, different targets refuse) in both declaration
+orders, and ACT-0997's impl-identity cells. The impl-identity cells are a
+renamed type import and a renamed trait import, each persisted with a later
+definition and then cold-restarted. Each cell also shows the definition echo
+naming the canonical type. `dev` unit rows:
+
+- impl identity: a local `Box` and an imported `Box` renamed to `B` are two
+  impls in one module, and both regenerate;
+- a qualified head and a bare head of the same spelling are kept distinct;
+- an impl whose form has no matching record is not rehydrated;
+- two records carrying one label are no match on both routes: rehydration
+  leaves the form unkeyed and reports it, the live turn raises its located
+  invariant error, and neither record is picked. The records are planted
+  directly in the table, because no fixed source produces them; the
+  one-record control keys the form.
+
+Further unit rows: a
+mixed list installs every entry; a dotted entry binds its member and not its
+dotted spelling; a rename binds `local` only; a mount installs on both routes
+and is removed by a rebuild; each collision refuses regardless of form order;
+an import alias and a mount to one target leave one `Public` entry in both
+orders and on both routes, and to different targets refuse in both orders; a
+second import alias for one spelling refuses (R-A2); a name-less export loads
+nothing and a bare `(export [m []])` is accepted with no mount; regeneration
+round-trips each entry shape and the equal-target pair.
 
 ---
 
@@ -2159,7 +2424,11 @@ Step that runs compiled code (REPL expression turn, /run-tests, /run-all-tests;
   dependency's table need not exist when the hold releases. `M`'s load can then
   fail with an unresolved GOT symbol although the program is valid. `M.o` also
   embeds slot indices from the build that wrote it, and nothing yet shows that
-  a fresh rebuild of unchanged source assigns the same ones.
+  a fresh rebuild of unchanged source assigns the same ones. The slot half
+  closes with the slot-layout key
+  ([§7.6.3](#763-slot-layout-identity-act-1052)): a dependency that will be
+  built fresh has no layout to match, so `M` misses. The table-existence half
+  stays open.
   - Not observed. Falsifier: after a cold run, delete only `c`'s cache entry,
     then restore `a` warm in the REPL and under `--run`, and compare with
     `--no-cache`.
@@ -2275,8 +2544,10 @@ through the dependency. Any of these can change when a module deeper in the
 graph changes, even though the direct dependency's own source does not.
 
 - **The record is the transitive closure.** A module M's manifest entry maps
-  every module reachable from M through its edges to the source hash of the
-  version M was compiled against. M itself is excluded.
+  every module reachable from M through its edges to the identity of the
+  version M was compiled against: its source hash and, from S124, its
+  authored slot layout ([§7.6.3](#763-slot-layout-identity-act-1052)). M
+  itself is excluded.
   - Direct-import hashes alone are insufficient. In `c → a → b`, an edit to `b`
     can change `a`'s published types or slot layout while `a`'s source stays the
     same, so a restored `c` would use the stale interface.
@@ -2797,6 +3068,96 @@ passed its finding-scoped re-review.
   - *Synthesise a placeholder form for an empty expansion.* This invents
     source the program does not contain.
 
+#### 7.6.3 Slot-layout identity (ACT-1052)
+
+**Status: designed S124; not in source at `4b58ab93`.** Private to `src/`. No
+public API change: `CachedModuleRef::dependency_hashes` stays a map of opaque
+strings and `check_manifest` is unchanged ([BC](../arch/bounded-contexts.md)
+§6, the cached object's validity record). It changes what a persisted value
+means, so `CACHE_SCHEMA_VERSION` is bumped in the same change-set.
+
+**The fault.** An importer's object embeds the GOT slot index of each
+callable it calls in a dependency. A REPL language-type change with no caller
+gives the callable a fresh slot and retires the old one
+([session transaction §7](session-transaction.md#71-the-commit-gate-is-the-single-slot-policy-authority)),
+and the faithful write persists the moved layout (§8.2 there). A later edit
+that restores the text leaves the dependency's source hash unchanged, so an
+importer compiled against the old layout validates and calls a retired slot.
+`qa` confirmed the mechanism with a control that differs only in whether the
+slot moves (ACT-1052, K-6).
+
+**The rule.** Each member of a record is keyed by its *derivation key*: its
+source hash together with a fingerprint of its authored slot layout.
+
+- **Authored slot layout.** The map from each codegen target of the member's
+  table to its slot index, excluding minted instances (`minted_from:
+  Some(_)`) and the synthetic `__expr`. This is the set another module's
+  object can embed. The exclusion is the same ground on which the entry
+  preload releases those slots
+  ([session transaction §8.2](session-transaction.md#82-faithful-writes),
+  "Why a release is safe"): one ground, two readers. Retired slots are not
+  part of it; only live assignments are.
+- **Writing.** The record builder keys each walked member, fresh or restored,
+  by its stashed source hash and the layout of its live table when the entry
+  is written. An inherited member keeps the key its restored record holds.
+- **Validating.** The current key of a member is its current source hash
+  (as today) and the layout of the version the session will link the
+  importer against:
+  1. the member's live table, when the session holds one: a terminal table,
+     a restored table, or the entry after its slot preload;
+  2. otherwise the authored layout of the member's stored `.meta`;
+  3. otherwise none, which is a miss.
+
+  A member still being built fresh holds an empty or prior-generation live
+  table, so its key does not match and the importer misses. That is the
+  sound answer, because fresh numbering is not shown to reproduce a stored
+  layout (§7.1, fresh-dependency residual).
+- **One current-key source.** Today's current-hash source becomes the
+  current-key source, and every validity query goes through it: the
+  dependency handlers' restore check, the index worker and the lifecycle's
+  own query. No caller compares layouts itself (Principle 7).
+
+**Why not the alternatives.**
+
+- *Make slot layout a function of source.* Not possible without renumbering
+  live slots, which cached objects and frozen code embed (§8.1 there).
+- *Invalidate importers when a module's layout moves.* A sweep of the
+  manifest at write time would cover this face, but it is a second mechanism
+  beside validation, it acts only at the next flush, and it cannot see a
+  dependency rebuilt fresh with different numbering.
+- *A typed layout field on the manifest.* Returns to `arch`'s gate and buys
+  nothing the opaque key does not.
+
+**Cost.** Validating a module whose members are not yet loaded decodes each
+such member's `.meta` once. `dev` measures a warm start of the exemplar before
+and after; a per-session memo of decoded layouts is added only if that
+measurement shows a material cost.
+
+**Constraints for `dev`.**
+
+- A live-table read during validation takes a read guard on the member's
+  table only, and never while the caller holds a mutable guard on the same
+  map shard.
+- The key's string form is private. It must not be equal to any
+  source-hash-only string, so a record written before the change is a miss
+  even without the schema bump.
+- The backend's rustdoc on `dependency_hashes` says "source hashes"; it is
+  corrected with the change (a factual correction, no API change), routed
+  to `dev`(backend) through `sprint`.
+
+**Gaps it does not close.** §7.6's gaps 2 and 3 apply to the layout half as to
+the hash half: a write-time read can record a layout the importer was not
+compiled against. *Falsifier for the rule as a whole:* another derived fact
+that a REPL increment can change while the source text returns to an earlier
+version, observed as a stale restore whose members' keys all match.
+
+**Evidence (for `qa`).** K-6 and its control in `--run`, `--link` and the REPL
+`/mod` leg. Unit rows: a layout move with an unchanged hash makes a record
+stale; an unchanged layout and hash keeps it valid; a minted instance or
+`__expr` slot change does not invalidate; a member with no live table and no
+stored `.meta` is a miss; a member being built fresh is a miss; an S123-era
+record is a miss.
+
 ---
 
 ## 8. REPL flow
@@ -3050,9 +3411,9 @@ and compiled before live state changes, and an ordinary callable redefinition
 never recompiles a dependent, marks a symbol broken or installs a trap. Int
 realizes it inside the ordinary prepared transaction:
 
-- the guard rejects a declaration-class or visibility change, a
-  language-type change with a blocking dependent, and a same-type replacement
-  whose ownership ABI differs;
+- the guard rejects a declaration-class or visibility change and a
+  language-type change with a blocking dependent; inferred ownership modes are
+  not compared ([session transaction §2.4](session-transaction.md#24-ownership-modes-are-not-compared));
 - an admitted generic base or overload family rematerializes its prior
   concrete instances into the same candidate (`design/int/s122-closure.md` §2);
 - the commit gate's `RedefKind` decides slot reuse versus a fresh slot, and
@@ -3268,6 +3629,10 @@ carries the rule; this list is the review checklist.
     or form order. Reading a persisted spelling as an absolute module outside
     the one resolver is also rejected
     ([§6.9](#69-bare-module-names-in-import-and-export)).
+19. **A pre-typecheck rewrite that mints or shares a span** — a node built by
+    an int AST transform whose span is not that of the written node it
+    replaces in the same role, or one span on two output nodes
+    ([bind-chain analysis §3.6](bind-chain-analysis.md#36-reconstruction)).
 
 ---
 
@@ -3321,6 +3686,172 @@ dispositions never executed, and on files since deleted.
 The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
 
+- **S124 (designed 2026-11-16, Phase 3).** Designed to the user's Phase 2
+  rulings and the 2026-11-17 approvals of rows D8, R10-9, D10 and D11 and
+  rulings on S124-Q4 to Q6, and the 2026-11-17 approval of row R10-10, the
+  S124-Q8 ruling, the scoping of ACT-1063 and ACT-1065, and row D12 with
+  its category condition (`sprints/SPRINT.md`, Notes), and to `arch`'s S124 contracts
+  ([approved changes](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
+  None is in source at `4b58ab93`.
+  - *Cached-object validity (ACT-1052):* [§7.6.3](#763-slot-layout-identity-act-1052).
+    The record keys each member by source hash and authored slot layout.
+  - *Import and export entries and mounts (D3; ACT-0997, ACT-1055,
+    ACT-1056):* [§6.13](#613-import-and-export-entries-and-export-mounts-s124).
+  - *Export cycles (ACT-1016):* Face 2 is the export readiness gate and Face 1
+    the designed failed-dependency refusal, both in [§6.11](#611-module-cycles-at-publication).
+  - *Mode-ABI gate removed (D7; ACT-0953):*
+    [session transaction §2.4](session-transaction.md#24-ownership-modes-are-not-compared).
+  - *Platform forms outside the entry (ACT-0973):*
+    [io-integration §2.1](io-integration.md#21-form-routing).
+  - *`main` refusal location (ACT-1036), including a `main` that is not a
+    function:* [io-integration §1](io-integration.md#1-running-a-program).
+    Each refusal about an existing `main` is located at the written form
+    that declared it, read from a definition-origin span the session keeps
+    in every mode. The declaration's own span is synthetic for a
+    macro-produced `main`.
+  - *`HeapCategory::Value` removed (D4).* The result owner's two `Value` arms
+    delete ([result owner §1.1](result-owner.md#11-classification-is-a-shared-predicate-not-an-absence-test)).
+    The value display's flattened-word arm deletes in the same change-set:
+    after D4 such a value is a heap object, and a display that still read the
+    word as the field would print a pointer as `(Box <address>)`. The display
+    then renders it through its ordinary nullary-or-heap branch, and asks no
+    layout predicate of its own. Its four flattened-word module rows become
+    heap-shaped rows of the same displays; REPL §1.5's guarantees are
+    unchanged.
+  - *Mount and import-alias sharing a spelling (S124-Q4, ruled B):*
+    [§6.13](#613-import-and-export-entries-and-export-mounts-s124). Equal
+    targets form one `Public` entry; different targets refuse in either order.
+  - *A `/sh` save is reported before the next prompt (ACT-1061, S124-Q6
+    ruled A):* [REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload),
+    Poll points. The post-turn poll after a `/sh` turn compares every
+    recorded source, so recognition does not wait on notification delivery.
+  - *Macro-before-use in regeneration order (S124-Q5, ruled A):* the
+    constraint the carried ACT-1005 correction must keep is recorded in
+    [session persistence §1.4](session-persistence.md#14-dependency-ordering).
+    Nothing is built in S124; the present grouping already satisfies it.
+  - *An inline `bind` continuation loses its type (ACT-1050):*
+    [bind-chain analysis §3.6](bind-chain-analysis.md#36-reconstruction).
+    The rewrite rebuilds each sequential step from the spans of the nodes it
+    consumed, so no span names two nodes. No published type changes, and
+    nothing is asked of typecheck.
+  - *A user function spelled `bind` is taken for the primitive (ACT-1065):*
+    [bind-chain analysis §3.1](bind-chain-analysis.md#31-pattern-recognition).
+    The pass resolves each callee once, through the committed
+    `ResolutionScope` behind a lexical layer and the cluster's own
+    declarations. A step is the primitive only when that resolution reaches
+    the one identity bootstrap installs. The same answer supplies the
+    platform-effect class and the timer leaf, so the pass's split-spelling
+    lookups delete. The root already consumes `ResolutionScope`: no public
+    API changes.
+  - *A "no `main`" refusal (S124-Q8, ruled B):*
+    [io-integration §1](io-integration.md#1-running-a-program). One gate
+    produces it as row D12's `BatchError::MissingMain`, and `src/main.rs`
+    renders it as the formatter's line without a position, keeping the
+    `module error` category.
+  - *An inline primitive as a value (ACT-1063): no correction belongs to
+    this surface* (read 2026-11-17). Typecheck accepts `(let [b bind] …)`
+    and records the value reference: the backend passes its arity and
+    known-function reads and refuses at its GOT-slot read
+    (`fn_as_value.rs`, `emit_wrapper_call`). The wrapper already has an
+    inline-primitive arm for the Vec primitives. It has none for the four IO
+    combinators, whose lowering is the backend's (`IoCombinator`). The
+    backend's wrapper arm is the correction, and it needs nothing from int.
+    - *A latent representation fault int owns, not part of the correction.*
+      `src/bootstrap.rs` installs `bind`, `race`, `select` and `sleep` as
+      host-promised callables, which claims a host symbol imported by name.
+      None exists, because the backend lowers each one inline. Their
+      truthful state is `Life::Inline`. If the backend keys its wrapper arm
+      on that state, int's bootstrap change joins the correction and ACT-1063
+      crosses two surfaces: the user's named-carry condition. Keyed on the
+      `IoCombinator` classification of the resolved entry, as the Vec arm is
+      keyed on the entry's kind, it stays one surface. That choice is
+      `design`(backend)'s. Changing the bootstrap state alone would send
+      these combinators down the wrapper's Vec arm, so it must not land
+      alone. After ACT-1065 the pass no longer reads this state (§3.7).
+  - *Unlanded S123 rows in `src/`.* R10-3 deletes `src/cache_writer.rs`, the
+    only consumer of the backend's cache-packet family, in the backend's
+    R10 change-set. K11-d moves the root's test-only `lenient_from_expr`
+    calls to the types `test_support` path; the root's dev-dependency on
+    `cranelisp-types` enables `test-support`. D2, D5, D6, D9, R10-1, R10-2,
+    R10-5 to R10-7 and K11-a to K11-c have no consumer in `src/` (read
+    2026-11-16).
+  - *Rows approved 2026-11-17, in `src/`.* R10-9 (superseding R10-6) and
+    R10-10 move every root reader and writer of a heap layout to the
+    intrinsics definitions, so no layout value is restated in `src/` (read
+    2026-11-17):
+    - `src/display.rs` reads the backend's `heap::{HeapAdt, HeapVec}`; it
+      moves to `cranelisp_intrinsics::alloc::HeapAdt` and
+      `vec_runtime::{LEN_OFFSET, DATA_PTR_OFFSET}`.
+    - `src/session_v4/test_runner/run.rs` reads the backend's
+      `HeapAdt::field_offset` for a failed test's reason; it moves to
+      `alloc::HeapAdt`.
+    - `src/session_v4/test_runner.rs` names no backend struct. It writes and
+      reads all three layouts as literal offsets. Its ADT allocator writes
+      the tag and fields and sizes the payload, and moves to
+      `alloc::HeapAdt`'s offsets and payload size. Its test-wrapper closure
+      is written and its capture read, and both move to
+      `alloc::HeapClosure`. Its Vec reader of module paths and its Vec
+      builder read the data pointer, and they read and write the length; both
+      move to `vec_runtime::{LEN_OFFSET, DATA_PTR_OFFSET}`. Writing the length
+      uses the same constant as reading it, so R10-10's two root edges cover
+      the writes.
+    - Not taken: the module-path reader could use the published
+      `vec_runtime::with_vec_strings` and stop reading the Vec layout. That is
+      a new root consumer edge no packet row names; it goes to `arch` if
+      wanted.
+    D8 and D11 have no consumer change in `src/`: nothing
+    in the root calls the spark or trace exports, and `src/marshal.rs` calls
+    `heap_string::string_read` by Rust path, which D11 keeps (read
+    2026-11-17). D10 is the impl-identity part of §6.13.
+  - **Order and dependencies.**
+    1. Independent of the other surfaces, in any order: ACT-1036, ACT-0973,
+       ACT-1016 (Face 2 then Face 1), ACT-1052. ACT-1052 carries a
+       cache-schema bump; ACT-1016 lands before D3 because both edit the
+       export handler.
+    2. D3: after the types carrier and the frontend producer, as one
+       callee-first migration with its own schema bump. The impl-identity
+       part (row D10) lands in D3's migration and shares D3's bump. The mount
+       writer lands only with its mixed-pair branch (§6.13) and the
+       import-alias writer's duplicate refusal.
+    3. D7: with the types removal, after `qa` allocates the mode-change
+       redefinition cell.
+    4. D4: in the backend's D4 change-set, after the structural close.
+    5. R10-3: in the backend's R10 change-set, after D2. K11-d: with the
+       types change-set.
+    6. ACT-1050: in the producer-correction row of the backend's order
+       ([release contract §7.7](../backend/non-concrete-release-contract.md#77-order)).
+       It lands after the census's first reading, which is `qa`'s named
+       refuter of the attribution and would lose its subject if the fix came
+       first. It lands before the zero read, and so before close step 2,
+       which would refuse the subject. It is independent of items 1 to 5 and
+       needs no cache-schema bump, because a build-id change already
+       invalidates cached objects (§7.3). Emission acceptance: an attributed
+       re-baseline limited to functions with a rewritten sequential step.
+       Each such continuation's symbol takes the `fn` form's span, and an
+       unused heap parameter gains its release. Any other diff is a defect.
+       ACT-1065 lands in the same change-set, because both edit chain
+       collection and reconstruction. Its acceptance is in
+       [bind-chain analysis §7](bind-chain-analysis.md#7-open-obligations).
+    7. R10-9 and R10-10's root readers and writers: in the same callee-first
+       migration as the backend's deletion, after intrinsics' additions and
+       before K11-a.
+    8. ACT-1061: independent of items 1 to 7; a `dev` change in the watcher
+       and the `/sh` dispatch, with its unit test at the poll seam.
+    9. ACT-1036 and S124-Q8 (row D12): one change-set, because both edit
+       the gate. The definition-origin span lands first in it, with its
+       unit test at the attribution seam; then the located refusals, the
+       single producer and `BatchError`, and the renderer last.
+  - **Found while reading, routed elsewhere.**
+    - ACT-1039 is not int's. Trace discovery skips a slot whose GOT word is
+      0 at codegen (`trace_codegen.rs`, `discover_traced_fns_from_tables`).
+      `--run` compiles the entry as one batch and fills its slots at
+      publication, after codegen; the REPL published `fib` in an earlier
+      turn, and `--link` compiles after publication. The mode divergence
+      follows from discovery reading run-time slot contents at compile time.
+      Int's batching is the prepared turn every mode shares and should not
+      change to serve it. `qa`'s refuter (`CRANELISP_GOT_TRACE`) confirms or
+      refutes this before `design`(backend) places the fix.
+
 - **S123 (designed 2026-11-15, Phase 3).** Designed to the
   user's Phase 3 rulings (`sprints/archive/sprint-123.md`) and arch's
   [panic and environment contract](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (bounded contexts §4b invariants 13 and 18, and §6).
@@ -3344,7 +3875,7 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     (Absent is a recorded state; A deleted backing file needs nothing) and
     [§6](repl-lifecycle.md#6-project-root-resolution).
   - *Entry settled at publication (W1):* [§6.1.2](#612-the-entry-is-settled-before-the-eval-thread-owns-it).
-  - *ACT-1017 prefix (W1):* [§6.11](#611-module-cycles-at-publication),
+  - *Failed-dependency refusal prefix (W1):* [§6.11](#611-module-cycles-at-publication),
     Diagnostic.
   - *ACT-1035:* [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition);
     built in W4.
@@ -3519,7 +4050,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `src/imports.rs::install_import_alias`, still keys through the private
   `alias_key` helper. The key value equals
   `cranelisp_types::module_alias_key`'s, but the private mint must delete so the
-  one types-owned mint is the only key source (§12.1 reject 4).
+  one types-owned mint is the only key source (§12.1 reject 4). It deletes in
+  the S124 D3 change-set, which adds the second alias writer (§6.13).
 - **Located platform-signature refusal (FIXME 0933).** A manifest signature
   whose checked type retains a free type variable is refused structurally:
   `SymbolTable::install_platform` requires a concrete type, and

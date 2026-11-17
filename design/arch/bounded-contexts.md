@@ -73,8 +73,12 @@ recognition and execution live elsewhere.
 2. **No code generation, no macro recognition or execution.** The frontend never
    names backend, primitives or intrinsics, looks up no macro entry and calls no
    compiled clause.
-3. **`super` is resolved at parse.** `ImportSpec.module_path` never contains a
-   literal `super` after parsing; resolution uses the parsing module's own path.
+3. **`super` is resolved at parse.** Neither `ImportSpec.module_path` nor
+   `ExportSpec.module_path` contains a literal `super` after parsing;
+   resolution uses the parsing module's own path. Spec §8.4 gives exports the
+   import grammar, so one specifier parser serves both. At `4b58ab93` an
+   export's `super` passes through unrewritten; the correction lands with
+   invariant 11.
 4. **Synthetic spans are unique** within a session (`next_synthetic_span` is
    monotonic).
 5. Retired — the expansion fixpoint bound is the binary's expand loop
@@ -100,6 +104,13 @@ recognition and execution live elsewhere.
     quasiquote form. The rewrite is idempotent. The structural reader-quote
     classifier is the single types-owned `quote_head`; the frontend fold and the
     binary's expansion shield both consume it.
+11. **Import and export entries are classified one by one, and the bound name
+    is derived here.** Approved S124 target, not in source at `4b58ab93`, where
+    the names parser classifies a whole list. Each entry of a names list is
+    classified independently (spec §8.3.11), imports and exports share one
+    grammar and one entry type, and the frontend derives each entry's bound
+    local name once so that no consumer reads a written spelling
+    ([import and export entries](interfaces.md#import-and-export-entries-s124-target)).
 
 ---
 
@@ -244,7 +255,16 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
   artefacts (IR text, code size, duration, per-type drop-glue addresses). On a
   cache hit, the binary calls `cache::load_cached_object` with its linker and
   cached module to obtain target addresses. The separate `load_object` entry
-  returns a linker artefact only and has no production caller.
+  returns a linker artefact only and has no production caller; its removal is
+  approved.
+- **The public surface is what a consumer outside the crate uses.** S124
+  removes or narrows the public items that have none: the `compiler` module
+  with its `CompileContext`, the artefact types, the cache-packet family,
+  `primitives_inline` and the items listed with them. It also deletes the
+  backend's three heap layout structs, whose readers take the layouts from
+  intrinsics (§4b invariant 2)
+  ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
+  `HeapCategory` and `classify` stay public for the binary's result exit.
 - The **caller composes the lifecycle owner**: backend names `Code` but never
   constructs it; the binary builds it from the `Jit` or linker artefact it owns
   and publishes it through the types table.
@@ -292,9 +312,14 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
    concrete types reach codegen.** Heap classification is total over
    `ConcreteType`; there is no type-variable arm and no runtime representation
    guess. A concrete body realization carries its codegen view by
-   construction. Constructor and accessor templates are signature-driven
-   and may classify a residual declared field conservatively. Open residuals:
-   FIXME 0903, FIXME 0931 and FIXME 0934 under `design/arch/fixmes/`.
+   construction. At `4b58ab93` constructor and accessor templates are
+   signature-driven and classify a residual declared field conservatively,
+   and a word with no recorded type skips its RC operation. S124 removes
+   both: a binder's stored type is concrete by representation and a residual
+   is a located error owed by its producer
+   ([the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category)).
+   Open residuals: FIXME 0903 (closed by that work), FIXME 0931 and FIXME
+   0934 under `design/arch/fixmes/`.
    Representation freedom beyond the one-word value model is a user-arbitrated
    language question raised in the
    [release-backend proposal](release-llvm-backend.md).
@@ -455,9 +480,9 @@ populations, each with one source of its call convention:
 
 | Entry | Convention |
 |---|---|
-| `cranelisp_trace_format` | Borrows the value; returns a fresh String |
-| `cranelisp_trace_enter` | Takes each formatted parameter String. On the thread holding the trace role it stores them in the trace frame; on any other thread it returns without storing or releasing them |
-| `cranelisp_trace_exit` | Returns `result` unchanged and takes the result String. On the thread holding the trace role it stores it in the trace frame; on any other thread it returns without storing or releasing it |
+| `cranelisp_trace_format` | Borrows the value; returns a fresh String. **S124 target (packet row D8, approved, not in source):** it returns a fresh String only on the thread holding the trace role; on any other thread it returns `0` and allocates nothing |
+| `cranelisp_trace_enter` | Takes each formatted parameter String. On the thread holding the trace role it stores them in the trace frame; on any other thread it returns without storing or releasing them. Under the D8 target every argument on such a thread is `0`, so nothing is left unreleased |
+| `cranelisp_trace_exit` | Returns `result` unchanged and takes the result String. On the thread holding the trace role it stores it in the trace frame; on any other thread it returns without storing or releasing it. Under the D8 target that argument is `0` |
 | `cranelisp_trace_first_child_nanos` | Consumes the Trace; returns an Int |
 | `runtime/run_io` | Consumes the caller's tree; the trampoline it drives borrows that tree |
 | `cranelisp_ivar_create` | Takes the thunk into the new cell. Only the force that claims the cell releases the thunk, after evaluation; the cell's teardown does not. The emitting site therefore sparks every cell it creates |
@@ -473,6 +498,10 @@ The first is a dead catalog entry
 ([ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md));
 the second is a Rust-path operation the binary calls, writing a String's bytes
 pointer and length through two out-pointers without an ownership effect.
+Neither belongs in the catalog under invariant 1. S124 packet row D11
+(approved, not in source) removes the first with its function and takes the
+second out of the catalog, keeping `heap_string::string_read` as a public
+Rust function.
 `runtime/sleep_pollfn` is a poll function the reactor calls. The remaining
 entries take no counted heap argument.
 
@@ -481,10 +510,19 @@ entries take no counted heap argument.
 1. **Runtime substrate only.** The dominant surface is emitted-call targets and
    trampoline operations. A Rust-path operation is admissible only with a named
    cross-crate consumer and `arch` approval of the public delta.
-2. **Representation containment.** Layout constants are defined only in the
-   allocator, string and vector modules. Backend reads layout through named
-   externs and blessed constants; primitives read blessed constants and never
-   re-derive offsets.
+2. **Representation containment: one defining module per layout.** Each
+   runtime heap layout is defined once, in its owning module of this crate;
+   the two-word header is `cranelisp_types::HeapHeader`'s. A layout read
+   outside its module is published there as named constants, and every
+   reader, in this crate, the backend, primitives and the binary, reads those
+   constants and writes no offset of its own. A layout with no outside reader
+   stays private to its module. Backend otherwise reads layout through named
+   externs. [Heap layout owners](../intrinsics/heap-layout.md) lists each
+   layout's owner and readers. **Not yet true of the ADT and closure
+   layouts:** the backend defines them again, as do primitives' marshalling
+   and the binary's test runner. S124 packet row R10-9 (approved, not in
+   source) publishes them from the allocator module and deletes the
+   backend's copies.
 3. **Atomic reference counting.** Every increment and decrement is atomic, with
    an acquire fence on the free path before glue reads fields. Every Rust-path
    increment routes through `rc::rc_inc` (release ordering, the NFR floor)
@@ -532,11 +570,15 @@ entries take no counted heap argument.
     function rather than a static to avoid an `unsafe impl Sync` over raw
     pointers. The catalog's own name-set test owns the entry list; no count is
     restated here. `IntrinsicEntry::is_runtime` is documentation metadata with
-    no dispatch consumer. Host-promised externs (§7) are not catalog entries.
+    no dispatch consumer; its removal is approved and lands in S124
+    ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
+    Host-promised externs (§7) are not catalog entries.
 12. **The `(trace …)` runtime is an intrinsic family** published through the
     catalog and working in every mode, including linked executables. The value
     formatter is a pure walk of a backend-baked descriptor and the heap value,
-    with no symbol-table access. Discovery and baking are backend's; the binary
+    with no symbol-table access. Under the D8 target the walk stays pure and
+    the exported entry in front of it reads the trace role to decide whether
+    to format at all. Discovery and baking are backend's; the binary
     hosts no trace runtime ([tracing](tracing.md)).
 13. **A runtime panic ends the process.** `runtime/panic` and every other
     fault kind enter one crate-private terminator, which claims termination
@@ -903,6 +945,27 @@ and primitives (§4b, §4a); the platform ABI (§5).
   program's result word. A fault during the run ends the process through the
   terminator (§4b invariant 13), so a return is always a completed run and no
   mode carries an error branch of its own.
+- **A missing `main` is the batch entry operations' own outcome, not a
+  compiler diagnostic** (REPL §5.5, missing-`main` exception; S124-Q8).
+  The root-library change is
+  [packet row D12](../../sprints/s124-api-packet.md), approved by the user on
+  2026-11-17. Not in source at `4b58ab93`.
+  - `CompilerSession::trampoline` and `CompilerSession::link_by_name` return a
+    root-owned closed sum: the entry file exists and defines no `main`,
+    carrying that file's path, or a `CranelispError`. The batch driver matches
+    it once and renders the first case as a line naming the file and `main`,
+    with an error category and with no position and no span: the exception
+    lifts the location only, and REPL §5.1 item 1 still binds. The category
+    is the renderer's constant for this one case, not a field of the sum.
+    The return type states the refusal, so neither mode can omit it or
+    report it through another route.
+  - The refusal has one producer and one renderer, both in this context. No
+    other context produces, forwards or renders it, and the REPL never
+    reaches it (`spec/10-io.md` §10.6.2), so it is not a types-crate value
+    ([Principle 15](principles/15-facade-types-live-with-behavior.md)).
+  - `CranelispError` and `ErrorLocation` do not change (§7, error locations).
+    A refusal about an existing `main` stays a `CranelispError` located at
+    that definition.
 - **Linked executables carry the parameters effective at `--link`**
   (`repl/spec/00-cli-invocation.md` §0.8). Compile-time switches, such as the
   ownership toggle or a codegen dump, are fixed by compilation; runtime
@@ -915,6 +978,27 @@ and primitives (§4b, §4a); the platform ABI (§5).
   thread can end the process while another writes, such as a background
   cache write, as `SIGKILL` already can. Named falsifier: a truncated or
   partial artifact readable after an exit mid-write.
+- **A cached object's validity record identifies everything the object was
+  derived from.** An importer's object embeds its dependencies' slot indices
+  ([symbol-table lifecycle §4.3](symbol-table-lifecycle.md#43-slot-identity)),
+  and after an ABI-changing REPL edit followed by a textual revert a
+  dependency's slot layout is not a function of its source. The dependency
+  record therefore identifies each dependency's published slot layout, not
+  only its source text
+  ([Principle 7](principles/07-single-source-of-truth.md)). Not in source at
+  `4b58ab93`, where the record maps each module to a source hash (ACT-1052).
+  The backend's manifest compares opaque strings the binary supplies on both
+  sides, so the correction is the binary's and changes no backend surface. It
+  changes the meaning of a persisted value, so `CACHE_SCHEMA_VERSION` is
+  bumped with it. A typed field on `CachedModuleRef` or `CacheManifest`, or a
+  change to `check_manifest`, is a public change that returns to `arch`.
+- **A module's role is read from the session, never from the shape of its
+  name ([Principle 19](principles/19-no-module-privileged-by-name.md)).** Spec
+  §10.9.1 makes a `platform` form outside the entry module a compile-time
+  error. The check keys on the session's entry module. At `4b58ab93` the
+  binary instead skips the form when the module path contains a dot, which
+  treats a root-level non-entry module differently from a nested one
+  (ACT-0973).
 - **Mutual imports are a cycle error, not a deadlock.** All signatures of a
   module's import closure register, in topological order, before any body
   checks; a cyclic closure has no order and is diagnosed at the import.
@@ -996,6 +1080,37 @@ newtypes; spans, errors and warnings; shared constants. Narrative companion:
   Cross-module hops always land in committed modules
   ([prelude and explicit imports](prelude-import-convergence.md),
   [resolve home before enumeration](resolve-home-enumeration.md)).
+- **A pass that needs an identity before typecheck resolves it through this
+  query and carries the verdict as structure.** Macro-head recognition does
+  so today; the bind-chain pass does so once
+  [its callee resolution](../int/bind-chain-analysis.md#31-pattern-recognition)
+  lands (not in source at `4b58ab93`).
+  [Principle 24](principles/24-resolve-once.md) fixes one derivation stage
+  per identity; it does not make typecheck that stage. Such a pass conforms
+  on four terms:
+  - Its verdict leaves the tree as structure: an expansion, or a `ParBind` or
+    `LaunchContinue` node whose consumed callee is removed. No later stage
+    resolves that name again.
+  - A node the pass leaves in place is resolved by typecheck alone, and the
+    pass's answer for it has no effect.
+  - The pass adds no resolution rule. It calls this query over the one
+    committed-scope construction macro recognition uses. What it knows beyond
+    the committed scope, such as lexical binders and the cluster's unpublished
+    declarations, may only withhold the rewrite, never grant it
+    ([Principle 25](principles/25-narrowing-carries-its-check.md): the
+    unrewritten program is the conservative fallback).
+  - The residual is a name the committed scope and typecheck's staged view
+    resolve differently. A wrong grant there is silent, because the callee is
+    gone. The pass's design names each such case with its falsifier, and the
+    claim stays asserted until each falsifier runs as a committed test.
+- **An error location has no "file, no position" value.** Every
+  `CranelispError` carries an `ErrorLocation` whose span is always present;
+  `Span::SYNTHETIC` (`0..0`) means the producer had none. REPL §5.5 makes that
+  a defect for a compiler-stage diagnostic, and the rendered `0..0` is what
+  the solution tests observe to detect it. A location that rendered cleanly
+  without a position would let any producer exempt itself and pass those
+  guards unlocated. The one refusal the spec exempts is carried outside the
+  type (§6, known architectural constraints).
 - **Trait implementations split by placement.** The discovery shell lives in the
   trait's defining module under a keyed name and points at the writer's module,
   which holds the method bodies and their slots. Importers follow the trait
@@ -1013,7 +1128,9 @@ newtypes; spans, errors and warnings; shared constants. Narrative companion:
 - **Soundness-coupled predicates are single-sourced here.** Value-layout
   eligibility, concreteness, the IO result-root rule and the
   ownership-analysis toggle each have one definition that typecheck and backend
-  both delegate to, because two copies could disagree unsoundly.
+  both delegate to, because two copies could disagree unsoundly. Value-layout
+  eligibility loses its backend reader in S124 and stays published as a
+  release-tier fact ([heap classification](interfaces.md#heap-classification)).
 - **Registration funnels.** ADT registration derives its complete entry set
   through one builder shared by typecheck and the binary's bootstrap. No generic
   "module table from a source" abstraction exists, because no consumer

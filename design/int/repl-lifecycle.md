@@ -44,7 +44,37 @@ that save by atomic rename would lose a per-file watch.
   A poll with no queued event costs one `try_recv`, so the extra point is
   cheap. It cannot see a save whose event is not yet delivered, or one that
   lands during the turn; the write chokepoint covers those
-  ([§1.3.1](#131-session-lock), Write chokepoint).
+  ([§1.3.1](#131-session-lock), Write chokepoint), with one exception below.
+- **A `/sh` turn's own save is compared, not awaited** (ACT-1061;
+  `14-file-watching.md` [§14.2](../../repl/spec/14-file-watching.md#142-eager-recompilation),
+  user ruling S124-Q6, 2026-11-17). A save the turn's own shell command
+  completed must be rebuilt and reported before the next prompt, whether or
+  not the operating system has delivered its notification. The completed
+  `/sh` turn therefore arms one full comparison for the post-turn poll: that
+  poll's candidates are every path in `recorded_sources`, beside the queued
+  events and first-sight files, and each is compared with its record as
+  usual.
+  - *Why a comparison and not a wait.* The record already says what the
+    session last saw, and the child has exited, so its writes are visible to the session.
+    Comparing reaches the answer deterministically; a settle delay would only
+    make the late case rarer.
+  - *No double report.* The rebuild's own read updates the record, so the
+    late notification for the same save matches it at the next poll and does
+    nothing.
+  - *Scope.* Only a `/sh` turn arms it. A save by another process during any
+    turn, or by a descendant the command left running, is delivered by events
+    as today; the ruling covers saves the turn itself completed. An
+    unchanged file, a never-recorded file and a missing file are not changes,
+    by the comparison's existing rules, so the sweep cannot report more than
+    events would.
+  - *Cost.* One read and hash of each recorded source per `/sh` turn, against
+    a process spawn the user already waited for. Every other turn's poll is
+    unchanged.
+  - *Evidence (`dev` unit, at the poll seam).* With the notification withheld,
+    an armed poll reports a recorded file changed on disk and an unarmed poll
+    does not (the control); a later event for the same save, after the
+    rebuild, reports nothing. `qa` owns the loaded end-to-end runs ACT-1061
+    names.
 - **Filter.** The watcher keeps only create and modify events on `.cl` files,
   excluding `.cl.tmp`, with canonical paths.
 - **Content hash: one record of what the session last saw** (review N2;
@@ -1042,7 +1072,8 @@ exempt from paren-balance accumulation.
 | Spawn failure | `error: <e>` |
 
 Environment and working-directory changes in the child do not affect the
-session.
+session. A watched file the command saved is rebuilt and reported before the
+next prompt ([§1.2](#12-poll-and-reload), A `/sh` turn's own save).
 
 ## 4. REPL cache integration
 

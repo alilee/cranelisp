@@ -203,7 +203,7 @@ follow the rule above: "unknown" means no count was recorded.
 |---|---|---|---|---|---|
 | Cancellation face: a losing `select` or `race` branch holding a `Pure` with a heap payload | E | K7 | [0934](../../design/arch/fixmes/0934-bind-payload-glue-word-dissolves-the-face4-residual.md) | `test`: one armed executing balance observation of the losing heap-payload branch. `concurrency_fanout::fresh_select_in_continuation_rc_balanced` covers a scalar payload only | This face: first. The filing, open since S119: unknown |
 | 0694 Class I, beside the K10 members | E | K10 | [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) | Bounded attribution: the scrub mode, a single-threaded run at identical load, and the `--link` and REPL faces; otherwise an explicit user residual disposition | Unknown; open since S114 |
-| Worker requeue refused once | L | K10 | [ACT-1025](../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md) | `dev`(src): the source read and the self-attributing pool assertion; QA classifies | First |
+| Worker requeue refused once | L | K10 | ACT-1025 (resolved S123) | `dev`(src): the source read and the self-attributing pool assertion; QA classifies | First |
 | Exemplar warm solve retains 51 | D, ordinary leak | K7 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The ordinary-leak rule's use is confirmed. The RED stays committed and un-ignored; `test` reduces it to a stranded type and site | First |
 | Match-arm branch push reads +2 | L, ordinary leak | K7 | [ACT-1022](../../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) | `test` commits the `MarginalPair` the filing names; QA attributes | First |
 | Unreadable entry file | L | — | [ACT-1019](#act-1019--unreadable-entry-file-closed) | `spec` locates or asks for the requirement; `test` then reduces | First |
@@ -290,7 +290,7 @@ with no source edits since. Every probe ran in a fresh scratch directory under
       and MC-TB24b cells;
     - the "RED today" framing of `spec_10_io.rs::batch_main_pure_int_return_is_rejected`.
 - **F2 (training), entry-module prefix: widens
-  [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md).**
+  ACT-1017 (resolved S123; filing in Git history).**
   - The entry-module wrapper repeats the span under `module error` and
     `type error`.
   - Whether §5.5 governs module-load wrappers is still `spec`'s reading, so
@@ -2168,7 +2168,7 @@ drift, not behaviour.**
   landing with K1.
 
 **Worker RED, once: intake.** See
-[ACT-1025](../../sprints/actions/ACT-1025-worker-requeue-refused-once-intake.md).
+ACT-1025 (resolved S123).
 
 ### Acceptance verification T1–T4 (2026-09-27)
 
@@ -10753,7 +10753,7 @@ Pass-0 fail-fast and §6.12's helper-end outcome.
 ### Review dispositions
 
 - **N1: the fail-fast's location and stutter.** Classified as intake
-  [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md).
+  ACT-1017 (resolved S123; filing in Git history).
   It does not gate ACT-1014: every ACT-1014 condition holds, and the outcome
   is correct. The reused builder places the failed dependency's span, with
   no file, under the dependent's file header. It also repeats the
@@ -11016,7 +11016,7 @@ Cargo command.
     - A locked entry that fails to parse exits 0.
     - A locked dependency whose failure does not reach the entry exits 0.
   - The reprinted line's location and prefix widen
-    [ACT-1017](../../sprints/actions/ACT-1017-failed-dependency-refusal-location-and-prefix-intake.md).
+    ACT-1017 (resolved S123; filing in Git history).
 - **(3) FIXME 0907 obligation 2, docs leg:** already recorded as satisfied
   on 2026-09-30. QA re-checked `user/` for refusal-era text and found none.
 - **Traceability.** The REPL §14.5 heading and item 2 cite ACT-1044.

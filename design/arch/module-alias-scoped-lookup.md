@@ -3,8 +3,9 @@
 **Status: current contract, implemented.** `arch` ruled it at S121 Phase 3; it
 is realized in `cranelisp-types`, `cranelisp-typecheck` and the binary.
 Alias-only import registration (spec §8.3.6), the last functional gap, was
-repaired in `bc675d86`. One realization obligation remains: the import-alias
-writer still keys through a private mint (§5).
+repaired in `bc675d86`. Two realization obligations remain: the import-alias
+writer still keys through a private mint (§5), and export mounts have a
+lookup but no carrier or writer (§5.1, built in S124).
 
 This document states how module aliases are keyed, written and looked up across
 crates. Exact signatures and caller obligations are the rustdoc of
@@ -38,9 +39,10 @@ The contract below states that model as keyed reads.
 - `cranelisp_types::module_alias_key` is the one key mint. An empty owner yields
   the bare alias.
 - `ModuleAliases` is the session-level map. It is derived state: the same
-  writers rebuild it at restore from the persisted `imports` and `submodules`
-  table fields. It is **not serialized**, so aliases have no cache-schema
-  contact.
+  writers rebuild it at restore from the persisted table fields that record
+  the declarations. Those are `imports` and `submodules` today, and `exports`
+  once mounts have a carrier (§5.1). The map is **not serialized**, so aliases
+  themselves have no cache-schema contact.
 - A `ModuleAliases` newtype with a private interior was declined (Principle 6).
   It is the named successor if a writer ever appears outside the writer
   families in §3.
@@ -75,7 +77,9 @@ Precedence follows the spec:
 - An alias declared by the referring module shadows a same-named real module,
   because §8.6.6 substitutes aliases before module lookup.
 - Duplicate-alias, duplicate-mount and mount-vs-submodule collisions are
-  declaration-time §8.6.4-family errors owned by the definition seam. At most
+  declaration-time §8.6.4-family errors owned by the definition seam: the
+  binary's writer for that alias family (§3), which alone sees every
+  declaration across forms and REPL turns. At most
   one entry per key therefore reaches the lookup, and the lookup carries no
   ambiguity arm. A re-run declaration upserts its own key as ordinary session
   redefinition.
@@ -111,6 +115,7 @@ Verified against source on 2026-09-25.
 `qa` owns allocation and adequacy. The alias-only correction's adequacy record
 is [alias-only import registration](../../tests/plan/s122-evidence-delta.md#alias-only-import-registration-fixme-0798--correction-adequacy-2026-09-25).
 
+- **Export mounts** have types-tier walk evidence only, until §5.1 lands.
 - **Types unit tier** (`crates/cranelisp-types/src/resolve/tests.rs`):
   - `module_alias_key_is_owner_scoped`;
   - `scoped_alias_exact_and_undeclared_passthrough`;
@@ -156,6 +161,40 @@ is [alias-only import registration](../../tests/plan/s122-evidence-delta.md#alia
   mint and contains a broken sentence. `arch` owns that source-rustdoc repair
   and schedules it with the int deletion. It needs no public-API signature
   change.
+
+### 5.1 Outstanding obligation — export mounts (S124)
+
+- §2.1 stores a §8.4.4 export mount as a public alias entry and §2.2 walks
+  it; `public_submodule_mount_walks_by_resolved_prefix` pins the walk. No
+  mount reaches the map from an `export` form: `ExportSpec` has no alias
+  field and the export parser accepts only a plain module symbol (ACT-1056).
+- **Carrier (approved, S124 packet row D3):** `ExportSpec::alias`, stated at
+  [import and export entries](interfaces.md#import-and-export-entries-s124-target).
+- **Writer.** The binary installs one `Public` entry per aliased export under
+  `module_alias_key(<exporting module>, <alias>)`, targeting the exported
+  module. It is a third writer family in §3, in two routes: fresh, when the
+  export form is processed, and restore, from the persisted `exports` field.
+  Both routes call one function, as the import-alias routes do.
+- **Lookup is unchanged.** No probe, visibility rule or precedence is added.
+- **Declaration-time errors stay at the definition seam, which is the
+  binary's mount writer.** A duplicate mount and a mount that collides with a
+  submodule short name are §8.6.4-family errors raised by that one function,
+  on both routes, so the walk still meets at most one entry per key (§2.2).
+  The frontend raises neither, even within one form: it sees one form and no
+  table, and a second check there would be a partial copy of the rule.
+- **An import alias and a mount of one spelling share a key** (user ruling
+  S124-Q4, 2026-11-17; `spec` scribes it into §8.4.4 and §8.6.4).
+  - Different targets: the second declaration is refused, in either order, by
+    whichever of the two writers meets the occupied key.
+  - Equal canonical targets: the pair is one route, and the key holds one
+    `Public` entry in either order. The mount writer raises an existing
+    private entry to public; the import-alias writer leaves an existing
+    public entry as it is.
+  - §2.1's one entry per key, §2.2's walk and the public `ModuleAliases` type
+    are unchanged, so no API row follows.
+  - An export with an empty name list and no alias installs nothing and is
+    not an error.
+- `design`(int) owns the writer; `design`(frontend) owns the parser.
 
 ## 6. Falsifiers
 

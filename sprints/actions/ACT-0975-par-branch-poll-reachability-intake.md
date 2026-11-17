@@ -1,7 +1,7 @@
 ---
 id: ACT-0975
 title: Investigate poll and combinator nodes reached inside synchronous Par branches
-status: deferred
+status: resolved
 priority: normal
 from: design
 to: qa
@@ -10,8 +10,25 @@ filed_at: 2026-09-21
 refers_to:
   - spec/10-io.md
   - crates/cranelisp-intrinsics/src/io.rs
+  - src/bind_chain_analysis.rs
   - design/intrinsics/reactor.md
 ---
+
+## Resolution (qa, 2026-11-16, S124 Phase 3, at `4b58ab93`)
+
+- **Not a defect: the shape is excluded.** `src/bind_chain_analysis.rs::classify_expr`
+  classes every bind step that is not a direct call to a platform effect as
+  `Sequential`, so only a platform-effect leaf becomes a `Par` branch. A
+  branch that continues through a `Bind` to a poll, launch or select node is
+  never built.
+- **Observed.** Nine independent-pair programs whose steps are a user
+  function, an inline `bind`, a `race`, a `select` or a launching loop each
+  returned the right value and ran serially; the direct-leaf control
+  overlapped. Record: [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#41-act-0975--excluded).
+- **Refuted if** the scheduling pass admits a non-leaf step into a `Par`
+  group. Fence F-0975 of that delta fails then.
+- Delete this action once F-0975 is committed and
+  `tests/plan/s122-evidence-delta.md` no longer links it.
 
 ## S122 disposition (user-approved 2026-09-30)
 

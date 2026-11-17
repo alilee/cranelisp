@@ -55,14 +55,23 @@ mode parameters**).
 
 ### 1.1 Classification is a shared predicate, not an absence test
 
-Backend emits no glue row for a `NeverHeap | Value` type, so absence of a row
+Backend emits no glue row for a `NeverHeap` type, so absence of a row
 alone cannot distinguish "needs no release" from "artifact missing". Int
 therefore asks backend's own question before any keyed lookup:
 
 1. obtain the release key (§1.1.1);
 2. classify it with the public `cranelisp_backend::heap::HeapCategory::classify`;
-3. `NeverHeap | Value` ⇒ the inert arm; no keyed lookup is attempted;
+3. `NeverHeap` ⇒ the inert arm; no keyed lookup is attempted;
 4. `AlwaysHeap | Mixed` ⇒ the owning arm; a keyed miss is a hard error (§5).
+
+**S124 (packet row D4, approved; not in source at `4b58ab93`).** Source still
+has a fourth variant, `HeapCategory::Value`, which int matches with `NeverHeap`
+in both classification sites (the fresh and cached owner, and the linked
+startup). D4 removes it: a one-word single-constructor value then classifies
+`AlwaysHeap` or `Mixed` and owns. Int deletes its `Value` arms in the backend's
+D4 change-set, so the match stays exhaustive and no int arm outlives the
+variant. The result owner needs nothing else: the owning arm already serves
+these types once the backend emits their glue.
 
 - `Mixed` (a nullary-or-boxed ADT) owns: its glue exists and handles the bare
   tag internally. Int does not replicate that guard.
@@ -212,7 +221,7 @@ entry. From that same read it:
 
 1. takes the inner result type and its release key (§1.1.1), and classifies it
    (§1.1);
-2. for a `NeverHeap | Value` result, passes no release symbol, and the stub is
+2. for a `NeverHeap` result, passes no release symbol, and the stub is
    unchanged;
 3. for an owning result, passes `drop_glue_symbol_name(entry_module, key)` to
    `generate_startup_object`, which imports it with signature `(i64) -> ()`;

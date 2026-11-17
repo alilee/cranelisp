@@ -26,8 +26,8 @@ the judgments that hold it, not the migration that produced it.
   name lexing, comment preservation.
 - [ast-builder.md](ast-builder.md) — `Sexp` to AST: entry points, `build_form`,
   head classification, type expressions, `deftype`, patterns.
-- [modules.md](modules.md) — structural-declaration extraction and `super`
-  normalisation.
+- [modules.md](modules.md) — structural-declaration extraction, import and
+  export entry classification, and `super` normalisation.
 - [module-preamble.md](module-preamble.md) — leading comment-block capture and
   its round-trip contract.
 - [defmacro-synthesis.md](defmacro-synthesis.md) — `defmacro` shape parse and
@@ -39,8 +39,8 @@ the judgments that hold it, not the migration that produced it.
   the §7.1 trait-method tail.
 - [binder-head-reject.md](binder-head-reject.md) — the one reject for a
   qualified or dotted spelling in any binder position.
-- [enforcement-matrices.md](enforcement-matrices.md) — the operand-position body
-  seam and the reader's dangling-qualifier rejects.
+- [enforcement-matrices.md](enforcement-matrices.md) — one item per expression
+  position, the body seam and the reader's dangling-qualifier rejects.
 - [trait-impl-head-parse.md](trait-impl-head-parse.md) — the `deftrait` and
   `impl` head grammar.
 

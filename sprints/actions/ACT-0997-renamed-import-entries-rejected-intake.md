@@ -68,3 +68,14 @@ These are latent now only because no rename reaches the compiler:
    of a type, with the unrenamed sibling as control.
 2. `arch` frames the `ImportNames` change for the user gate.
 3. Scheduling is the user's decision.
+
+## S124 (qa, 2026-11-16, at `4b58ab93`)
+
+- **Step 1 is done.** `tests/spec_08_modules.rs::box_import_renamed_binds_canonical_type`
+  and `::box_import_self_rename_is_accepted` are committed and fail for the
+  parse rejection.
+- **Two variants are added**, T-R2-b and T-R2-c of the
+  [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#35-frontend-audit-r1-r2-r3):
+  a renamed function import, and a renamed export. Both are rejected today
+  with the same message; the export's says `import name`. Row D3 gives
+  imports and exports one entry type, so the export is the equivalence twin.

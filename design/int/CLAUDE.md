@@ -50,8 +50,8 @@ surface; every other doc is subordinate.
 
 **Current entry point.** `s122-closure.md` — the selected S122 Binary/int
 closure and the continuous Phase-5 source reservation. Open Binary/int
-obligations are listed in `int.md` §16.0 and the standing review rejects in
-`int.md` §12.1.
+obligations, including the index of the S124 designs and their order, are
+listed in `int.md` §16.0, and the standing review rejects in `int.md` §12.1.
 
 ### Subsystem designs
 

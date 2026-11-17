@@ -8,6 +8,7 @@ functions; typecheck produces the record; int restores it. Exact API promises
 are the rustdoc on `WrittenTraitImpl` and the functions below
 (`crates/cranelisp-types/src/module.rs`). The executing discriminator is
 `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
+One approved addition is not in source: the authored label (§2.1).
 
 ## 1. Why the trait home cannot be the durable home
 
@@ -44,6 +45,49 @@ resolver ([Principle 24](principles/24-resolve-once.md)).
   enrolment seam int calls; definition-seam operations over shared tables
   belong to the types crate. Backend persists it through the generic sidecar
   serialisation and takes no surface change.
+
+### 2.1 The authored label (S124 target)
+
+**Status: approved by the user 2026-11-17, not in source at `4b58ab93`.** The
+exact delta is [S124 packet](../../sprints/s124-api-packet.md) row D10.
+
+A form's `impl` head, as written, can name its trait or type through a renamed
+import, so the spelling differs from the settled pair and the form cannot be
+matched to its record by spelling the key again (ACT-0997). The record
+therefore carries the head's spelling, and a consumer holding a form reaches
+the settled pair by one keyed read
+([Principle 24](principles/24-resolve-once.md)).
+
+- **Field.** `WrittenTraitImpl::authored_label: Symbol` is the label of the
+  `impl` head as its writer spelled it: unresolved, each reference with its
+  written qualifier.
+- **One derivation.** `TraitImpl::authored_label` is the only derivation of
+  the label from a form. The form as built and the form after typecheck's
+  higher-kinded rewrite yield one label. The binary derives no label of its
+  own.
+- **Opaque.** The label is compared for equality only. It is never split,
+  resolved or displayed, and never an identity source. Identity and display
+  come from the record's settled `trait_name` and `impl_type`.
+- **Producer.** Typecheck fills it at the §3 seam from the form as received,
+  beside the pair it resolved.
+- **Consumers.** The binary's live turn and its backing-file rehydration key
+  an `impl` form by reading the writer's records for the form's label. Save
+  and the definition echo read the settled pair and never the label.
+- **Match rule.** A form matches only when exactly one of the writer's records
+  carries its label. None or several is no match and is reported, never a
+  pick: rehydration leaves the form unkeyed and reports it, and the live turn
+  raises its located invariant error.
+- **Not a key.** The label is not part of `trait_impl_key`, upsert does not
+  enforce its uniqueness, and restore enrolment (§4) does not read it.
+  Qualified and imported-bare heads of one implementation still enrol the
+  same shell (§5); their records differ only in the label.
+- **Uniqueness is asserted, with a named falsifier.** In one file scope a
+  spelling resolves to one identity or is rejected as ambiguous (spec §8.6.4,
+  §8.6.5), so two records of one writer should not share a label. Nothing
+  measures that; the falsifier is either report above firing.
+- **Persistence.** The field is serde-mandatory like the record (§6): an
+  empty default would silently match nothing. It lands in the import-entry
+  migration (row D3) and shares that `CACHE_SCHEMA_VERSION` bump.
 
 ## 3. Producer seam — recorded once, from settled state
 
@@ -106,7 +150,7 @@ provisionally exposes a same-key re-implementation.
 - The restored state has one canonical discovery shell in the trait home,
   the writer's own methods and slots, and the same dispatch as a fresh run.
   Qualified and imported-bare implementation heads produce the same canonical
-  record, so restore cannot distinguish them.
+  pair, so restore cannot distinguish them.
 
 ## 6. Schema window
 

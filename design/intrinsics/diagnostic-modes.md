@@ -150,6 +150,12 @@ tag is not a heap pointer.
 - The post-RMW gates stay. The precheck covers the planted single-threaded
   case; the post-RMW check covers a concurrent race.
 - Both faces emit the prefix `[CRANELISP RC/ALLOC SEAM VIOLATION]`.
+- **The backend's pre-decrement check `runtime/rc_dec_check` judges every
+  word at or above the nullary threshold that is not a live tracked
+  allocation as stale.** It has no exemption for an immortal header. Its one
+  false stop, a stack-placed value's release (ACT-1049), leaves with stack
+  placement in S124 ([ownership codegen](../backend/ownership-codegen.md) §4),
+  so the check keeps a single verdict and no value class it must skip.
 
 ## 6. What the modes detect
 
@@ -403,8 +409,10 @@ for each fact:
   (`crates/cranelisp-intrinsics/src/drop/tests.rs` guards it).
 - **`vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`** is the Vec
   layout authority; `drop.rs` imports it rather than copying it (same guard).
-- **`drop.rs`** owns the ADT field offsets and `CLOSURE_DROP_GLUE_OFFSET`,
-  derived from `HeapHeader::SIZE`; `ivar.rs` imports the closure offset.
+- **The layout owners are [heap layout](heap-layout.md) §1.** At `4b58ab93`
+  `drop.rs` still defines the ADT field offsets and
+  `CLOSURE_DROP_GLUE_OFFSET`, derived from `HeapHeader::SIZE`, and `ivar.rs`
+  imports the closure offset; heap layout §3 moves both to `alloc`.
 - **There is no counter-reset seam.** `reset_counts` and `bytes_peak` are gone,
   because a reset would erase M3's only evidence. The counters are
   process-lifetime (bounded-context §4b, invariant 8). `alloc/tests.rs` guards

@@ -3,10 +3,8 @@
 Owner: `/design` (intrinsics). How the runtime gets its configuration when a
 process starts, and how it ends the process when a panic is raised.
 
-**Status: S123 design, ruled.** §1, termination, is built (packet rows P1–P7
-and P11). §2, runtime switches (P8), is approved and not yet built: until it
-lands, the crate's modules read the process environment directly, as the §2.1
-census records.
+**Status: S123 design, ruled and built** (packet rows P1–P8 and P11; P8 read
+in source at `4b58ab93`, 2026-11-16).
 
 The boundary contract is `arch`'s
 [process-ending panics and the environment supply](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) (bounded contexts §4b invariants 13 and 18).
@@ -212,6 +210,12 @@ thread while other threads may still be running.
 
 - **`[RC_STATS]` and `[SPARK_STATS]` still print.** They read atomic counters;
   under concurrent workers the counts are approximate, as for any exit.
+- **`[RC_STATS]` loses its `stack_slot` field** with stack placement (S124
+  packet row D5, in one change-set with the backend's deletion,
+  [ownership codegen](../backend/ownership-codegen.md) §4). The two Rust-path
+  items that fed it, `rc::tally_stack_slot` and `rc::stack_slot_hits`, and
+  their counter go with it; later fields move one position left. The line's
+  grammar is ownership codegen §13.2.
 - **M3 parity stands down after a fault termination.** A panic leaks
   frame-owned values by permission, so an imbalance after one is expected, not
   an invariant breach. The hard check reads the termination claim. When the
@@ -399,7 +403,7 @@ The exact rows, consumers and `public-api.txt` effects are `arch`'s
 | P8 | add `runtime_switches` with `capture_runtime_switches() -> Vec<u8>` and export `cranelisp_install_runtime_switches(ptr: *const u8, len: usize)` | approved |
 | P11 | add `panic::PANIC_REPORT_PREFIX` and `panic::PANIC_EXIT_STATUS` (§1.1) | approved |
 
-P1–P7 and P11 are built; P8 is not yet built.
+All nine rows are built.
 
 - **Consequence outside this crate:** P9 removed
   `PlatformError::DispatchError` from `cranelisp-types`, because §1.1 left
@@ -409,6 +413,4 @@ P1–P7 and P11 are built; P8 is not yet built.
   crate with no baseline.
 - **Cache.** No sidecar shape changes. Build identity invalidates stale
   objects that import the removed `catch-runtime-error`.
-- **Owed, not settled here:** packet row R10-9 needs the closure, ADT and Vec
-  layout constants that intrinsics will own listed jointly with
-  `design`(backend) before it can return to the gate.
+- Packet row R10-9's intrinsics listing is [heap layout](heap-layout.md) §2.

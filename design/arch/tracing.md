@@ -5,7 +5,10 @@
 descriptors; swap every symbol table; nested trace is a runtime error; every
 build mode including `--link`); S76–S82 delivered it. Owner `arch`. Decision
 40's trace half is withdrawn ([label index](decisions/README.md) row 40); this
-document is the sole architecture authority for tracing.
+document is the sole architecture authority for tracing. Two contracts are
+not yet in source at `4b58ab93`: strict evaluation within the trace extent (§7)
+and the mode-independent traced set (§5). §3.3 and §5 state the target and mark
+where source differs.
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -77,9 +80,9 @@ REPL `/run-tests` handler (`src/repl/commands.rs`) re-runs a failing test as
 ### 2.4 What is traced
 
 Spec §4.12.3 is the normative list. The architectural rule behind it is
-**completeness by construction**: every callable holding a GOT slot with a real
-code pointer is instrumented, whichever module defines it and however the call
-reaches it (§3.5, §5). Structurally invisible: inline-CLIF primitives (no
+**completeness by construction**: every callable whose GOT slot holds a real
+code pointer when the trace begins is instrumented, whichever module defines it
+and however the call reaches it (§3.5, §5). Structurally invisible: inline-CLIF primitives (no
 callable entry), host-promised externs and intrinsic-backed `primitives`
 entries (no slot of their own), anonymous lambdas (no named slot; their effects
 appear inside the enclosing traced call), and overloaded or constrained-poly
@@ -131,10 +134,14 @@ for one `(trace body)`:
    symbol; a read-only `slots` buffer; writable `wrappers` and `originals`
    buffers; then, per traced function, a load of the pre-swap slot contents
    into `originals[i]` and a `compile_trace_wrapper_fn` whose address is
-   stored into `wrappers[i]`; then `cranelisp_trace_swap_got(got_base, n,
-   slots, wrappers)`.
-3. The body, compiled with `in_trace_body = true` (no lenient sparking, so the
-   tree is complete and deterministic) and `in_tail_position = false`.
+   stored into `wrappers[i]` when that original is non-zero, and zero
+   otherwise (§5); then `cranelisp_trace_swap_got(got_base, n, slots,
+   wrappers)`.
+3. The body, compiled with `in_tail_position = false` and otherwise as any
+   expression. Codegen does not mark the body: the runtime declines sparks
+   for the trace's dynamic extent (§7). At `4b58ab93` a compile-time
+   `in_trace_body` flag stops sparking in the form's lexical body only; it is
+   deleted when the runtime decline lands, and not before.
 4. `emit_body_discard` — a category-driven RC release of the body value.
 5. `cranelisp_trace_restore_got` per group in reverse order.
 6. `cranelisp_collect_trace`, emitted exactly once and last — its result is
@@ -256,7 +263,10 @@ module does not reference it, so relocating it created no coupling.
   call stack while the body runs: enter pushes a frame; exit pops it, stamps
   `nanos`, builds the `TraceCall` and appends it to the new top's children;
   `cranelisp_collect_trace` pops the root and marshals the tree.
-- `TRACE_THREAD_ID` holds the trace role. Role acquire is a CAS from 0; a
+- `TRACE_THREAD_ID` holds the trace role, and a thread records exactly when
+  it holds it. Under §7 one crate-private predicate in `trace` answers that
+  question for every reader: the formatting entry, enter, exit and spark
+  admission. Role acquire is a CAS from 0; a
   second thread swapping concurrently pushes a `::skipped::` sentinel and
   returns a sentinel saved-GOT, so it evaluates normally and yields an empty
   trace (spec §4.12.6). Enter/exit are no-ops on a thread that does not own the
@@ -276,19 +286,33 @@ family; its placement is [test discovery](test-discovery.md).
 `discover_traced_fns_from_tables` runs at trace-codegen time over every module
 in `symbol_tables`, with no project-root filter and no reachability set:
 
-1. For every entry with a callable GOT slot (`callable_got_slot()`; overloaded
-   and constrained-poly base names answer `None` structurally), read the
-   callable address **from the GOT slot** — the single source of truth for
-   callable addresses (BC §3) — and skip a zero.
+1. Select every entry with a callable GOT slot (`callable_got_slot()`;
+   overloaded and constrained-poly base names answer `None` structurally).
+   Selection reads the slot **claim**, never the slot's contents.
 2. Take arity, parameter types and result type from the entry's `Type::Fn`
    scheme; skip anything else.
 3. Emit a backend-internal `TracedFnInfo { name, module_path, got_slot,
    arity, param_types, result_type }`; descriptors are baked from it at
    wrapper-compile time.
 
-Reading the address from the slot rather than from a code marker is what
-includes extern primitives (whose entries carry no code but whose pointers
-live in the primitives GOT) without a special case.
+**The traced set is a function of the program, not of compilation order**
+([Principle 11](principles/11-single-pipeline-mode-parameters.md)). Slot claims
+are fixed before codegen in every mode. Slot contents are not: a batch
+compiles a module's functions before it publishes any of them, while the REPL
+published them in an earlier input. Whether a slot holds code is therefore
+decided when the trace begins, by the emitted sequence, from the pre-swap
+contents it already loads (§3.3 step 2). A slot that is empty then stays empty
+and gets no wrapper, so no wrapper calls through a null original.
+
+**Not in source at `4b58ab93`**, where step 1 reads the slot at codegen and
+skips a zero. That makes the set depend on compilation order, and it is the
+provisional mechanism of ACT-1039 (`--run` records no user function);
+attribution is `qa`'s. The contract above binds whatever that attribution
+finds. Interior: [trace codegen §1](../backend/trace-codegen.md#1-the-traced-set-is-fixed-by-slot-claims-not-by-slot-contents).
+
+The callable address comes from the slot rather than from a code marker. That
+is what includes extern primitives (whose entries carry no code but whose
+pointers live in the primitives GOT) without a special case.
 
 ## 6. Nested-trace guard
 
@@ -321,3 +345,80 @@ runs and the guard needs no panic cleanup.
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
 and emits `cranelisp_collect_trace` exactly once per form, last (§3.3).
+
+## 7. Strict evaluation within the trace extent
+
+**Status:** ruled by the user on 2026-11-16 and stated by spec §4.12.2 item 2;
+not in source at `4b58ab93`. ACT-1038 carries the two failing guards in
+`tests/trace.rs`.
+
+**The fault.** Wrappers are installed in the process-wide GOT (§3.5), so a
+traced callee that sparks runs its calls through wrappers on worker threads.
+A wrapper formats its arguments before the runtime knows whether the calling
+thread records, and enter and exit are no-ops off the role thread (§4.2).
+Worker calls are therefore unrecorded and their formatted strings are never
+released ([BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics),
+the `cranelisp_trace_enter` and `cranelisp_trace_exit` convention rows).
+
+**The contract.**
+
+1. **No spark is admitted inside a trace's dynamic extent.** From role acquire
+   to `cranelisp_collect_trace`, every evaluation reached from the body is
+   strict and sequential on the role thread, including code compiled outside
+   the form. The extent is dynamic, so the decision is the runtime's: emitted
+   code cannot know at compile time whether it will run under a trace. The
+   compile-time `in_trace_body` flag (§3.3 step 3) is not the mechanism and
+   is deleted with this rule's landing.
+2. **No wrapper allocates before it has a consumer.** A wrapper that will not
+   record formats nothing. With rule 1 no wrapper runs off the role thread
+   during a trace, but the rule stands alone: it is what makes a wrapper
+   reached by any other route leak-free.
+3. **The recorded tree is a function of the program**, not of scheduling. A
+   trace does not show how the program parallelises and its timings are
+   sequential. Recording worker frames was rejected for now: it needs a
+   cross-thread merge in the trace runtime and makes the tree depend on
+   scheduling. It is revisited when a need arises.
+4. **Cross-thread trace forms are unchanged.** A second thread that evaluates
+   its own `(trace …)` concurrently still takes the §4.2 skip (spec §4.12.6).
+
+**Ownership.** Both rules cross the backend/intrinsics seam: spark admission
+is an intrinsics gate (BC §4b in scope) reached from backend-emitted spark
+sites, and the wrapper's call sequence is backend-emitted (§3.3) against
+intrinsics-owned role state (§4.2). The two interior designs place each rule.
+The binary contributes nothing (§4.3).
+
+**Placement.** Both rules live in existing intrinsics and change no emitted
+call sequence. `design`(backend) proposed it
+([trace codegen §2](../backend/trace-codegen.md#2-the-trace-extent-and-the-wrappers-allocation))
+and `design`(intrinsics), which owns both bodies, confirms it
+([trace runtime](../intrinsics/trace-runtime.md)):
+
+- Rule 1: `cranelisp_spark_budget_try_reserve`, the gate every lenient spark
+  passes, declines while the calling thread holds the trace role.
+- Rule 2: `cranelisp_trace_format` returns no string (`0`) on a thread that
+  does not record. `cranelisp_trace_enter` and `cranelisp_trace_exit` already
+  ignore their string arguments on such a thread.
+- The backend does not branch on recording state. That would need a query
+  export and a second reading of a fact intrinsics owns.
+- Rule 1 is decided per thread, not while any trace is active: evaluation on
+  other threads is outside the extent and keeps its parallelism.
+- **Residual (asserted, with a named falsifier).** An IVar created before the
+  trace began and forced inside it runs on whichever thread claims the cell.
+  If a worker claims it, its calls are unrecorded and the tree depends on
+  scheduling, against rule 3; nothing leaks. The falsifier of "nothing leaks" is the backend's
+  ([trace codegen §2](../backend/trace-codegen.md#2-the-trace-extent-and-the-wrappers-allocation)).
+  Closing the scheduling dependence is not scheduled.
+
+**Public surface — approved, not in source (S124 packet row D8).**
+No signature changes and no export is added, so the baselines read +0. The
+documented contract of the two exports changes, which a baseline cannot show;
+the row carries it. Any changed or added export returns the row.
+The convention rows of BC §4b carry the target. With spark statistics on, a
+trace decline is counted in its own `trace_declines` field, so evidence can
+tell it from a budget or depth decline.
+
+**Mode parity.** ACT-1039 records that a `--run` trace omits user functions
+that the REPL trace records. §2.5 already requires identical behaviour in every
+mode, so that is a defect against this contract. §5 states the rule it
+violates.
+

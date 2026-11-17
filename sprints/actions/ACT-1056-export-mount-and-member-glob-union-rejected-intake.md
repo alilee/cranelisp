@@ -65,3 +65,8 @@ R2's third case, renamed entries, stays with
    the user gate. This is not an S123 fix.
 3. `docs` revisits the modules guide's statement of the mount limit when it
    lands.
+4. **S124 (qa, 2026-11-16):** the six cells cover audit R2's two cases. One
+   variant is added, T-R2-a of the
+   [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#35-frontend-audit-r1-r2-r3):
+   `[mathx [Shade.* Hue.*]]` drops the second member glob, a loss no
+   committed cell reaches.

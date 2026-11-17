@@ -263,9 +263,11 @@ the fine-grained forward/back trace; this plan does not duplicate every name.
 
 ## Active allocation and unresolved evidence
 
-[S123 evidence](s123-evidence-delta.md) owns the current sprint's allocation,
-including the evidence the S123 panic, agent and environment rulings
-re-point. [S122 evidence](s122-evidence-delta.md) owns the prior per-stream
+[S124 evidence](s124-evidence-delta.md) owns the current sprint's allocation:
+the opening failing set, the ACT-1034 attribution and the reproductions for
+the carried defects and the frontend audit. [S123 evidence](s123-evidence-delta.md)
+owns the previous sprint's allocation, including the evidence the S123 panic,
+agent and environment rulings re-point. [S122 evidence](s122-evidence-delta.md) owns the prior per-stream
 allocation, executing checkpoints, bounded closures and remaining gates; its
 [acceptance reconciliation](s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)
 is the current gate disposition. The [active sprint](../../sprints/SPRINT.md)
