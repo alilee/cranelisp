@@ -4798,3 +4798,119 @@ fn s124_1070_jit_call_range_subject() {
 fn s124_1070_jit_call_range_arena_control() {
     s124_jit_call_range(true);
 }
+
+fn s124_sibling_members(count: usize, self_first: bool, mode: &str) {
+    let mut program = "(import [primitives [*]])\n(deftype (Opt a) Nope (Yep [:a v]))\n".to_owned();
+    for i in 0..count {
+        program.push_str(&format!("(deftype M{i} MkM{i})\n"));
+    }
+    program.push_str("(deftrait Size\n");
+    for i in 0..count {
+        let params = if self_first {
+            format!("self :(Opt M{i}) d")
+        } else {
+            format!(":(Opt M{i}) d self")
+        };
+        program.push_str(&format!("(m{i} [{params}] Int)\n"));
+    }
+    program.push_str(")\n(impl Size (Opt a)\n");
+    for i in 0..count {
+        let params = if self_first { "o d" } else { "d o" };
+        let body = if i + 1 == count {
+            "7".to_owned()
+        } else if self_first {
+            format!("(m{} o Nope)", i + 1)
+        } else {
+            format!("(m{} Nope o)", i + 1)
+        };
+        program.push_str(&format!("(defn m{i} [{params}] {body})\n"));
+    }
+    program.push_str(")\n");
+    let call = if self_first {
+        "(m0 (Yep 3) Nope)"
+    } else {
+        "(m0 Nope (Yep 3))"
+    };
+    let cr = Cranelisp::new();
+    let out = match mode {
+        "run" => cr
+            .file("p.cl", &format!("{program}(defn main [] (Pure {call}))\n"))
+            .run("p.cl")
+            .output(),
+        "link" => cr
+            .file("p.cl", &format!("{program}(defn main [] (Pure {call}))\n"))
+            .link_then_run("p.cl")
+            .output(),
+        "repl" => cr
+            .stdin(&format!(
+                "(import [primitives [*]])\n(begin {})\n{call}\n",
+                program.strip_prefix("(import [primitives [*]])\n").unwrap()
+            ))
+            .output(),
+        _ => unreachable!(),
+    };
+    if mode == "repl" {
+        out.assert_ok()
+            .assert_stdout_contains(":primitives/Int 7")
+            .assert_stdout_does_not_contain("error:");
+    } else {
+        out.assert_exit(7);
+    }
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 subject
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev
+#[test]
+fn s124_1072_subject_run() {
+    s124_sibling_members(65, false, "run");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 subject
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev
+#[test]
+fn s124_1072_subject_link() {
+    s124_sibling_members(65, false, "link");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 subject
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev
+#[test]
+fn s124_1072_subject_repl() {
+    s124_sibling_members(65, false, "repl");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 boundary_control
+#[test]
+fn s124_1072_boundary_control_run() {
+    s124_sibling_members(64, false, "run");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 boundary_control
+#[test]
+fn s124_1072_boundary_control_link() {
+    s124_sibling_members(64, false, "link");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 boundary_control
+#[test]
+fn s124_1072_boundary_control_repl() {
+    s124_sibling_members(64, false, "repl");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 parameter_order_control
+#[test]
+fn s124_1072_parameter_order_control_run() {
+    s124_sibling_members(65, true, "run");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 parameter_order_control
+#[test]
+fn s124_1072_parameter_order_control_link() {
+    s124_sibling_members(65, true, "link");
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1072 parameter_order_control
+#[test]
+fn s124_1072_parameter_order_control_repl() {
+    s124_sibling_members(65, true, "repl");
+}
