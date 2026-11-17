@@ -15,7 +15,7 @@
 use std::mem::{self, offset_of};
 
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{AtomicRmwOp, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::AtomicRmwOp;
 use cranelift_module::{FuncId, Module};
 
 use dashmap::DashMap;
@@ -486,95 +486,6 @@ pub(crate) fn emit_alloc<M: Module>(
     let alloc_ref = module.declare_func_in_func(alloc_func_id, builder.func);
     let call = builder.ins().call(alloc_ref, &[size_val]);
     builder.inst_results(call)[0]
-}
-
-// ---------------------------------------------------------------------------
-// Stack-slot allocation (B3.4 — NoEscape, statically-sized, scalar-payload)
-// ---------------------------------------------------------------------------
-
-/// The immortal-RC sentinel (`design/backend/ownership-codegen.md` §4.2). A
-/// stack-slot allocation initialises its 16-byte [`HeapHeader`]'s `rc` field to
-/// this value instead of 1, so **the entire existing RC/COW machinery composes
-/// untouched** on a stack pointer:
-///
-/// - inc/dec are harmless drifts on a frame-local cell (`rc` never returns to a
-///   small value under any bounded op count);
-/// - the RC-dec free path (`old == 1`) is **unreachable**, so `runtime/dealloc`
-///   is never called on a stack pointer;
-/// - the inline-COW unique check (`rc == 1`) is never satisfied, so
-///   `vec-push-grow` (which frees the old buffer — lethal on a stack buffer) is
-///   unreachable; writes to a stack aggregate take the copy path to a fresh heap
-///   allocation, which is correct and conservative.
-///
-/// `1 << 62` is far above any op count a single frame can emit and stays well
-/// clear of `i64` overflow under `+1` drift, so `old == 1` (the free trigger)
-/// and `rc == 1` (the COW unique trigger) are both unreachable. (The nullary-tag
-/// guard discriminates on the *pointer* value, not the `rc` sentinel — a stack
-/// address is always well above `NULLARY_TAG_THRESHOLD`, so guarded RC paths
-/// treat a stack pointer as the real pointer it is.)
-pub(crate) const IMMORTAL_RC: i64 = 1 << 62;
-
-// B3.4 codegen-time stack-slot-hit counter (`design/backend/ownership-codegen.md`
-// §11 — the designed `/dev` per-mechanism stat, alongside `rc_emit_counts`; H2).
-// The counter STATE lives in `cranelisp-intrinsics::rc` (single source of truth
-// — it owns the process-exit `[RC_STATS]` print surface). This crate is the sole
-// WRITER, pushing at EMISSION time via `tally_stack_slot` in `emit_stack_alloc`,
-// counting how many backend-emitted allocations were placed on a Cranelift stack
-// slot (NoEscape + all five eligibility gates) instead of the RC heap. Codegen-
-// time push ⇒ no emitted IR ⇒ byte-identical off is untouched.
-
-/// Codegen-time stack-slot-hit tally: the number of allocations lowered to a
-/// stack slot (B3.4). Reads back the single source of truth owned by
-/// `cranelisp-intrinsics::rc` so this crate's unit matrix (`stack_slot_tests`)
-/// and the process-exit print agree by construction. The print surface
-/// (`cranelisp-intrinsics::rc::print_rc_stats`) reads the same count to emit
-/// `stack_slot=…` (the H2 counter FAMILY needle).
-#[allow(dead_code)]
-pub(crate) fn stack_slot_hits() -> u64 {
-    cranelisp_intrinsics::rc::stack_slot_hits()
-}
-
-/// Emit a Cranelift **stack slot** for a statically-sized, all-scalar-payload,
-/// NoEscape backend-emitted allocation (B3.4, §4.1/§4.2). Returns the base
-/// pointer (`stack_addr`) to a slot laid out **byte-identically to a heap
-/// allocation** — a 16-byte [`HeapHeader`] followed by `payload_size` bytes — so
-/// every downstream field/tag store and every RC/COW/drop path that runs against
-/// a heap pointer runs identically against this address. No call-site anywhere
-/// changes for stack-ness.
-///
-/// The header is initialised exactly as `alloc_with_rc` does, EXCEPT `rc` is the
-/// [`IMMORTAL_RC`] sentinel instead of 1:
-/// - `alloc_size` at offset 0 = `HeapHeader::SIZE + payload_size` (what a heap
-///   dealloc would read — it is never actually read, since dealloc is
-///   unreachable, but the layout is kept faithful);
-/// - `rc` at [`HeapHeader::RC_OFFSET`] = `IMMORTAL_RC` (§4.2).
-///
-/// Alignment is 8 bytes (`align_shift = 3`), matching the `HeapHeader` i64
-/// fields and every heap allocation.
-pub(crate) fn emit_stack_alloc(builder: &mut FunctionBuilder, payload_size: i64) -> Value {
-    let total_size = HeapHeader::SIZE as i64 + payload_size;
-    let slot = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total_size as u32,
-        3, // 2^3 = 8-byte alignment (HeapHeader i64 fields)
-    ));
-    let base = builder.ins().stack_addr(types::I64, slot, 0);
-
-    // Header init — byte-identical to `alloc_with_rc`, with the immortal sentinel.
-    let size_val = builder.ins().iconst(types::I64, total_size);
-    builder.ins().store(
-        MemFlags::trusted(),
-        size_val,
-        base,
-        HeapHeader::ALLOC_SIZE_OFFSET,
-    );
-    let rc_val = builder.ins().iconst(types::I64, IMMORTAL_RC);
-    builder
-        .ins()
-        .store(MemFlags::trusted(), rc_val, base, HeapHeader::RC_OFFSET);
-
-    cranelisp_intrinsics::rc::tally_stack_slot();
-    base
 }
 
 // ---------------------------------------------------------------------------

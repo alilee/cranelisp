@@ -224,15 +224,6 @@ where
         // Seed the discriminator so any inner functions emitted within the RHS
         // (nested lambdas, etc.) get uniquely-prefixed names (as `lambda.rs`).
         inner.current_fn_name = Some(Symbol::from(inner_name));
-        // Gate 5 (`design/backend/ownership-codegen.md` §4.3; FIXME 0525): this
-        // whole inner compiler IS a spark-thunk body — the backend relocated the
-        // dependent binding's RHS here, and this thunk frame pops at the join while
-        // the parent consumes the forced value. Decline stack allocation for every
-        // construction in the RHS (its slot would dangle — hard UAF). The
-        // dependent thunk is built here rather than by `compile_spark_thunk`,
-        // so gate 5 is set directly.
-        inner.in_spark_thunk = true;
-
         // Load ordinary captures from the env into the CAPTURE ENVIRONMENT
         // (`binding-scope.md` §3.2): their type is recorded, so every use
         // duplicates them (`uniform-counting.md` §3), and the env's drop glue

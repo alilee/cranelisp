@@ -549,8 +549,6 @@ where
                 ctor_info.tag,
                 &adt_ty,
                 user_params,
-                false,
-                span,
             )?;
             return emit_adt_construct_into(
                 builder,

@@ -381,7 +381,7 @@ fn is_fact_bearing(node: &MonoExpr) -> bool {
 /// (`design/backend/lenient-eval.md` §2.7). Consumes **only** the per-site
 /// `escapes` / `confined` facts pass5 already annotated (zero new analysis,
 /// Principle 7 — reusing the `node_escapes` / `node_confined` single-source
-/// readers B3.3/B3.4 use).
+/// readers).
 ///
 /// Returns:
 /// - `None` — **axis inert**: the subtree carries no `Some` ownership fact, so
@@ -399,9 +399,8 @@ fn is_fact_bearing(node: &MonoExpr) -> bool {
 ///       `provenance` root, whose op is elided entirely). Fact-absent counts
 ///       dense.
 ///   A `NoEscape` site (`escapes == Some(false)`) contributes **0** to both
-///   axes: it is stack/region-served with an immortal-RC header, so neither its
-///   allocation nor its RC ops are real contention (§4.2). A scalar-returning
-///   site (not [`result_is_heap`]) is not scored at all.
+///   axes (§2.7). A scalar-returning site (not [`result_is_heap`]) is not
+///   scored at all.
 pub(crate) fn spark_density(expr: &MonoExpr) -> Option<usize> {
     let mut engaged = false;
     let mut score = 0usize;
@@ -426,8 +425,7 @@ fn accumulate_density(node: &MonoExpr, engaged: &mut bool, score: &mut usize) {
     // admitted (§9). The four non-`Apply` alloc variants are always heap.
     if is_fact_bearing(node) && result_is_heap(node.ty()) {
         match esc {
-            // NoEscape: stack/region-served + immortal-RC header ⇒ no allocator
-            // contention and no surviving RC traffic (§4.2). Contributes 0.
+            // NoEscape contributes 0 (§2.7).
             Some(false) => {}
             _ => {
                 *score += 1; // heap-pressure axis

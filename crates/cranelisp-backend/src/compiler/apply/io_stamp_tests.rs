@@ -17,10 +17,7 @@ fn concrete_io(payload: ConcreteType) -> ConcreteType {
 
 /// Emit only the central field-selection seam. Both returned values are used so
 /// the CLIF text retains the hidden witness definition for inspection.
-fn stamp_clif(
-    payload: ConcreteType,
-    stack: bool,
-) -> Result<String, cranelisp_types::CranelispError> {
+fn stamp_clif(payload: ConcreteType) -> Result<String, cranelisp_types::CranelispError> {
     let mut module = make_object_module();
     let mut dealloc_sig = module.make_signature();
     dealloc_sig.params.push(AbiParam::new(types::I64));
@@ -50,8 +47,6 @@ fn stamp_clif(
         cranelisp_platform::IO_TAG_PURE as usize,
         &concrete_io(payload),
         &[payload_value],
-        stack,
-        cranelisp_types::Span::SYNTHETIC,
     )?;
     assert_eq!(
         fields.len(),
@@ -113,10 +108,10 @@ fn only_canonical_io_pure_requests_a_hidden_payload_witness() {
 }
 
 // spec: design/backend/non-concrete-release-contract.md §5.3 — owning payloads carry the
-// canonical registry function address; scalars and stack-placed Pure carry 0.
+// canonical registry function address; scalars carry 0.
 #[test]
 fn pure_witness_is_canonical_glue_for_heap_and_zero_for_scalar() {
-    let heap = stamp_clif(ConcreteType::String, false).expect("heap Pure stamp");
+    let heap = stamp_clif(ConcreteType::String).expect("heap Pure stamp");
     assert!(
         heap.contains("func_addr.i64"),
         "heap payload needs glue:\n{heap}"
@@ -126,7 +121,7 @@ fn pure_witness_is_canonical_glue_for_heap_and_zero_for_scalar() {
         "construction never emits Claimed(1):\n{heap}"
     );
 
-    let scalar = stamp_clif(ConcreteType::Int, false).expect("scalar Pure stamp");
+    let scalar = stamp_clif(ConcreteType::Int).expect("scalar Pure stamp");
     assert!(
         scalar.contains("iconst.i64 0"),
         "scalar payload stamps 0:\n{scalar}"
@@ -135,11 +130,6 @@ fn pure_witness_is_canonical_glue_for_heap_and_zero_for_scalar() {
         !scalar.contains("func_addr"),
         "scalar payload owns no glue:\n{scalar}"
     );
-
-    let stack_scalar = stamp_clif(ConcreteType::Int, true).expect("stack scalar Pure stamp");
-    assert!(stack_scalar.contains("iconst.i64 0"));
-    let err = stamp_clif(ConcreteType::String, true).expect_err("owning stack Pure must refuse");
-    assert!(err.to_string().contains("stack-placed Pure"), "{err}");
 }
 
 // spec: design/backend/non-concrete-release-contract.md §5.3 — exactly three compiled-code

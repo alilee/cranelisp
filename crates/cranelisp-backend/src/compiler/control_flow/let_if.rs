@@ -206,14 +206,11 @@ where
                     escapes: None,
                     unique_static: None,
                 };
-                // The thunk duplicates its captures (`compile_spark_thunk`); the
-                // construction it relocates declines stack placement (gate 5,
-                // FIXME 0525), because its slot would dangle at the join.
+                // The thunk duplicates its captures (`compile_spark_thunk`).
                 self.compile_spark_thunk(&thunk_expr)?
             } else {
                 // Dependent binding: build the thunk manually with a force
                 // prologue that forces each dependency IVar on demand (§4.5).
-                // Its inner compiler sets gate 5 itself (`dependent_spark.rs`).
                 self.compile_dependent_thunk(val_expr, &deps, span)?
             };
 

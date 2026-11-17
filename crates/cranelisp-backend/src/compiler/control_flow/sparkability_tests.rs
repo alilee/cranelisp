@@ -541,11 +541,10 @@ fn density_confined_heap_scores_one() {
     );
 }
 
-// spec: design/backend/lenient-eval.md §2.7 — NoEscape ⇒ score 0 (stack/immortal RC)
+// spec: design/backend/lenient-eval.md §2.7 — NoEscape ⇒ score 0
 //
-// `escapes = Some(false)` (a B3.4 stack-slot site) contributes 0 to BOTH axes:
-// stack/region-served with an immortal-RC header, no allocator contention and
-// no surviving RC traffic (§4.2). Engaged (a `Some` fact) but score 0.
+// `escapes = Some(false)` contributes 0 to BOTH axes. Engaged (a `Some` fact)
+// but score 0.
 #[test]
 fn density_noescape_scores_zero() {
     assert_eq!(

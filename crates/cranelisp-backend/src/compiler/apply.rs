@@ -141,8 +141,6 @@ pub(crate) fn append_runtime_ctor_fields<M, C, L>(
     tag: usize,
     constructed_type: &ConcreteType,
     authored_fields: &[Value],
-    stack: bool,
-    span: Span,
 ) -> Result<Vec<Value>, CranelispError>
 where
     M: Module,
@@ -156,12 +154,6 @@ where
     };
 
     let glue_id = glue.request_if_owning(module, symbol_tables, payload_type.clone())?;
-    if stack && glue_id.is_some() {
-        return Err(CranelispError::CodegenError {
-            message: "a stack-placed Pure node cannot carry a heap-owning payload".into(),
-            location: ErrorLocation::from_span(span),
-        });
-    }
     let glue_value = if let Some(glue_id) = glue_id {
         let glue_ref = module.declare_func_in_func(glue_id, builder.func);
         builder.ins().func_addr(types::I64, glue_ref)
@@ -196,11 +188,6 @@ where
         // `compile_var_apply`).
         apply_target: Option<&FQSymbol>,
         apply_type: Option<&cranelisp_types::Type>,
-        // B3.4 (§4.1): the NoEscape + eligibility verdict for a use-site
-        // data-constructor call, computed at the `Apply` dispatch (the sole node
-        // carrying the escape fact). Consumed only by `compile_var_apply`'s
-        // constructor arm; `false` everywhere else ⇒ today's heap path verbatim.
-        stack: bool,
     ) -> Result<Value, CranelispError> {
         // An ordinary Apply must never lower a macro's private clause body.
         // Check the exact typecheck-selected storage key before TCO, sparking,
@@ -242,11 +229,8 @@ where
         //   mangle embeds the module, so a cross-module same-signature dispatch
         //   fails to match by construction.
         //
-        // The same predicate is consumed by the B3.4 stack-alloc gate 3
-        // (`body_has_self_call`) and the spark SCC classifier
-        // (`classify_spark_callee`) — one source of truth, so the TCO back-edge
-        // set and the stack-alloc decline can never diverge (FIXME 0654; the
-        // divergence was a latent loop-carried stack-slot UAF).
+        // The same predicate is consumed by the spark SCC classifier
+        // (`classify_spark_callee`) — one source of truth (FIXME 0654).
         // A callee the plan evaluates is a local closure value, never this
         // function, so a shadowing local wins over a self-recursion carrier.
         if self.in_tail_position
@@ -357,10 +341,6 @@ where
                         // makes a nested apply / constructor incapable of
                         // consulting this map.
                         let saved_spark = this.sparked_args.replace((args.as_ptr(), map));
-                        // B3.4: the lenient/sparked arm keeps constructions on the
-                        // heap (`stack = false`) — the sparked-arg interplay is out
-                        // of the increment-I stack scope (§4.3). Sound: declining is
-                        // always correct.
                         let result = this.dispatch_apply(
                             node,
                             callee,
@@ -370,7 +350,6 @@ where
                             apply_target,
                             apply_type,
                             saved_tail,
-                            false,
                         );
                         this.sparked_args = saved_spark;
                         result
@@ -388,7 +367,6 @@ where
                             apply_target,
                             apply_type,
                             saved_tail,
-                            false,
                         )
                     },
                 );
@@ -408,7 +386,6 @@ where
             apply_target,
             apply_type,
             saved_tail,
-            stack,
         )
     }
 
@@ -416,7 +393,7 @@ where
     /// call / var-apply / closure-call lowering. Shared by the sequential and
     /// lenient apply paths so the lenient pre-pass reuses the *unchanged* apply
     /// lowering (lenient-eval.md §4.4 Phase 3) rather than forking it.
-    #[allow(clippy::too_many_arguments)] // +1 for the B3.4 stack-eligibility hint
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_apply(
         &mut self,
         node: &MonoExpr,
@@ -429,9 +406,6 @@ where
         apply_target: Option<&FQSymbol>,
         apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
-        // B3.4 (§4.1): stack-eligibility hint for a use-site constructor call;
-        // consumed by `compile_var_apply`.
-        stack: bool,
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
@@ -455,7 +429,7 @@ where
         } = callee
         {
             return self.compile_var_apply(
-                node, name, *var_span, callee, args, span, apply_type, saved_tail, stack,
+                node, name, *var_span, callee, args, span, apply_type, saved_tail,
             );
         }
 
@@ -1029,7 +1003,7 @@ where
 
     /// Compile a function application where the callee is a Var.
     /// Dispatches between data constructor, local closure, and direct call.
-    #[allow(clippy::too_many_arguments)] // +1 for the B3.4 stack-eligibility hint
+    #[allow(clippy::too_many_arguments)]
     fn compile_var_apply(
         &mut self,
         node: &MonoExpr,
@@ -1040,9 +1014,6 @@ where
         span: Span,
         apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
-        // B3.4 (§4.1): stack-eligibility hint for this call IF it is a data
-        // constructor. `false` ⇒ heap. Ignored for non-constructor callees.
-        stack: bool,
     ) -> Result<Value, CranelispError> {
         // === Locals-BEFORE-keyed-read (S110 W1, FIXME 0619 item 2 — the §1.1
         // pinned invariant). ===
@@ -1111,7 +1082,7 @@ where
             // bare-word move of its single field (no alloc/header/tag). Classify
             // by the ctor's parent type (`value_layout` ignores the ADT's type
             // args, so `ADT(fqtn, [])` classifies exactly). `None` off-toggle /
-            // non-`Value` ⇒ the heap/stack path below, byte-identical. `fqtn`
+            // non-`Value` ⇒ the heap path below, byte-identical. `fqtn`
             // comes off the SAME legacy lookup — no second scan.
             // The Apply result is the authoritative instantiated constructor
             // result. Older hand-built test/embedding ASTs may omit it; retain
@@ -1127,11 +1098,6 @@ where
             if let Some(v) = self.value_construct(&adt_ty, &arg_vals) {
                 return Ok(v);
             }
-            // B3.4 (§4.1/§4.2): a NoEscape, all-scalar-payload constructor call in
-            // a non-self-recursive function places its aggregate on a Cranelift
-            // stack slot (immortal-RC header) instead of the RC heap. `stack` is
-            // the verdict from `constructor_call_stack_eligible`; `false` ⇒ heap
-            // `emit_alloc`, byte-identical to pre-B3.4.
             let emitted_fields = append_runtime_ctor_fields(
                 &mut self.builder,
                 self.module,
@@ -1141,10 +1107,8 @@ where
                 meta.tag,
                 &constructed_ty,
                 &arg_vals,
-                stack,
-                span,
             )?;
-            return self.emit_adt_construct_stackable(meta.tag, &emitted_fields, span, stack);
+            return self.emit_adt_construct(meta.tag, &emitted_fields, span);
         }
 
         // S5/S7 — user function (keyed): moded consuming convention (§3.1). A bare
@@ -1988,12 +1952,6 @@ where
         // Consuming-compile fields (nullary → empty), then route through the
         // single core emitter. `emit_adt_construct` handles the nullary
         // (`iconst tag`) and data (`alloc + tag + stores`) arms.
-        //
-        // This handler compiles the SYNTHETIC constructor-function body (a
-        // `ConstrADT` node), which always returns its value to the caller ⇒
-        // heap (B3.4 §4.1 — never a stack site). The use-site construction
-        // `(Rect n n)` is an `Apply` handled by `compile_var_apply`, which is
-        // where the B3.4 stack decision is consumed.
         let field_vals = self.compile_operands(node)?.values;
         // R5 (§7.1): a value-flattened single-ctor type constructs by a bare-word
         // move of its single field — NO alloc, NO header, NO tag. Keeps the
@@ -2014,8 +1972,6 @@ where
                 tag,
                 ty,
                 &field_vals,
-                false,
-                span,
             )?
         } else {
             field_vals
@@ -2067,44 +2023,20 @@ where
         field_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
-        // Value-position / resolved-constructor-call callers reach here without an
-        // escape verdict in hand — heap verbatim (`stack = false`).
-        self.emit_adt_construct_stackable(tag, field_vals, span, false)
-    }
-
-    /// [`emit_adt_construct`] with the B3.4 (§4.1) stack-vs-heap decision made by
-    /// the caller. `stack = true` places the data-ctor aggregate on a Cranelift
-    /// stack slot with the immortal-RC header ([`heap::emit_stack_alloc`], §4.2);
-    /// `false` is today's heap `emit_alloc`, byte-identical to pre-B3.4. Only the
-    /// allocation instruction differs — the tag/field stores and the returned
-    /// pointer contract are identical (no call-site anywhere changes for
-    /// stack-ness). The nullary arm (bare tag, no allocation) ignores `stack`.
-    pub(crate) fn emit_adt_construct_stackable(
-        &mut self,
-        tag: usize,
-        field_vals: &[Value],
-        span: Span,
-        stack: bool,
-    ) -> Result<Value, CranelispError> {
         if field_vals.is_empty() {
             // Nullary constructor: bare tag, no heap allocation.
             return Ok(self.builder.ins().iconst(types::I64, tag as i64));
         }
 
         let payload_size = HeapAdt::payload_size(field_vals.len()) as i64;
-        let base_ptr = if stack {
-            // B3.4: NoEscape scalar-payload ADT → Cranelift stack slot (§4.1/§4.2).
-            heap::emit_stack_alloc(&mut self.builder, payload_size)
-        } else {
-            let alloc_id = self
-                .ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
-            heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size)
-        };
+        let alloc_id = self
+            .ctx
+            .alloc_func_id
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let base_ptr = heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size);
 
         // Store tag at HeapAdt::TAG_OFFSET (16).
         let tag_val = self.builder.ins().iconst(types::I64, tag as i64);
@@ -2496,3 +2428,6 @@ mod auto_curry_totality_tests;
 
 #[cfg(test)]
 mod io_combinator_tail_tests;
+
+#[cfg(test)]
+mod heap_placement_tests;
