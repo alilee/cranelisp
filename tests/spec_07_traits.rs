@@ -4476,22 +4476,7 @@ fn s124_f_pr_helper_repl_demand() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
 #[test]
 fn s124_depth_65_repl() {
-    let out = Cranelisp::new()
-        .file("p.cl", &s124_depth_program(65))
-        .cli_flag("p.cl")
-        .stdin("5\n")
-        .output();
-    let diag = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        diag.contains("type error") && diag.contains("p.cl:6:"),
-        "{diag}"
-    );
-    assert!(
-        !diag.contains("codegen error")
-            && !diag.contains("undefined function")
-            && !diag.contains("0..0"),
-        "{diag}"
-    );
+    s124_repl_depth_refusal(&s124_depth_program(65), &[6]);
 }
 
 fn s124_two_member_depth_program(depth: usize) -> String {
@@ -4556,26 +4541,7 @@ fn s124_two_member_depth_65_link() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
 #[test]
 fn s124_two_member_depth_65_repl() {
-    let out = Cranelisp::new()
-        .file("p.cl", &s124_two_member_depth_program(65))
-        .cli_flag("p.cl")
-        .stdin("5\n")
-        .output();
-    let diag = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        diag.contains("type error"),
-        "type-error category required: {diag}"
-    );
-    assert!(
-        diag.contains("p.cl:6:") || diag.contains("p.cl:7:"),
-        "inner-call location: {diag}"
-    );
-    assert!(
-        !diag.contains("codegen error")
-            && !diag.contains("undefined function")
-            && !diag.contains("0..0"),
-        "{diag}"
-    );
+    s124_repl_depth_refusal(&s124_two_member_depth_program(65), &[6, 7]);
 }
 
 fn s124_imported_impl_overload(leg: &str, mode: &str) {
@@ -4913,4 +4879,175 @@ fn s124_1072_parameter_order_control_link() {
 #[test]
 fn s124_1072_parameter_order_control_repl() {
     s124_sibling_members(65, true, "repl");
+}
+
+fn s124_repl_depth_refusal(program: &str, allowed_lines: &[usize]) {
+    let out = Cranelisp::new()
+        .file("p.cl", program)
+        .cli_flag("p.cl")
+        .stdin("5\n")
+        .output()
+        .assert_ok();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("[errors: p.cl]"),
+        "{diag}"
+    );
+    let spans = regex::Regex::new(r"type error at (\d+)\.\.(\d+)").unwrap();
+    assert!(
+        spans.captures_iter(&diag).any(|span| {
+            let start: usize = span[1].parse().unwrap();
+            let end: usize = span[2].parse().unwrap();
+            start < end
+                && end <= program.len()
+                && allowed_lines
+                    .contains(&(program[..start].bytes().filter(|b| *b == b'\n').count() + 1))
+        }),
+        "a nonempty refusal span must start on {allowed_lines:?}: {diag}"
+    );
+    assert!(
+        !diag.contains("codegen error")
+            && !diag.contains("undefined function")
+            && !diag.contains("0..0"),
+        "{diag}"
+    );
+}
+
+fn s124_f_pr_two_impls(reverse: bool, uncalled: bool, mode: &str) {
+    let opt =
+        "(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (size (MkBox o))])))\n";
+    let boxed = "(impl Size (Box :Size a) (defn size [b] (size (Yep b))))\n";
+    let definitions = format!(
+        "{}(deftype (Box a) (MkBox [:a v]))\n{}",
+        S124_DEPTH_HEADER,
+        if reverse {
+            format!("{boxed}{opt}")
+        } else {
+            format!("{opt}{boxed}")
+        }
+    );
+    let body = if uncalled { "5" } else { "(size (Yep 3))" };
+    let program = format!("{definitions}(defn main [] (Pure {body}))\n");
+    if !uncalled && mode != "repl" {
+        s124_type_refusal(&program, &[6, 7], mode);
+        return;
+    }
+    let cr = Cranelisp::new();
+    let out = match mode {
+        "run" => cr.file("p.cl", &program).run("p.cl").output(),
+        "link" => cr.file("p.cl", &program).link_then_run("p.cl").output(),
+        "repl" => cr
+            .stdin(&format!(
+                "(import [primitives [*]])\n(begin {})\n{body}\n(size 4)\n",
+                definitions
+                    .strip_prefix("(import [primitives [*]])\n")
+                    .unwrap()
+            ))
+            .output()
+            .assert_ok(),
+        _ => unreachable!(),
+    };
+    if mode != "repl" {
+        out.assert_exit(5);
+        return;
+    }
+    let turns: Vec<_> = out.stdout.split("user> ").collect();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !turns[2].contains("error") && !turns[2].contains("Error"),
+        "impl cluster must be accepted: {diag}"
+    );
+    if uncalled {
+        assert!(turns[3].contains(":primitives/Int 5"), "{diag}");
+    } else {
+        assert!(
+            turns[3].contains("type error at "),
+            "demand must report a located type error: {diag}"
+        );
+        let span = regex::Regex::new(r"type error at (\d+)\.\.(\d+)").unwrap();
+        assert!(
+            span.captures_iter(turns[3])
+                .any(|c| c[1].parse::<usize>().unwrap() < c[2].parse::<usize>().unwrap()),
+            "{diag}"
+        );
+    }
+    assert!(
+        !diag.contains("codegen error")
+            && !diag.contains("undefined function")
+            && !diag.contains("0..0"),
+        "{diag}"
+    );
+    assert!(turns[4].contains(":primitives/Int 4"), "recovery: {diag}");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 opt_first, demand
+#[test]
+fn s124_f_pr_4_opt_first_demand_run() {
+    s124_f_pr_two_impls(false, false, "run");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 opt_first, demand
+#[test]
+fn s124_f_pr_4_opt_first_demand_link() {
+    s124_f_pr_two_impls(false, false, "link");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 opt_first, demand
+#[test]
+fn s124_f_pr_4_opt_first_demand_repl() {
+    s124_f_pr_two_impls(false, false, "repl");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 opt_first, uncalled_control
+#[test]
+fn s124_f_pr_4_opt_first_uncalled_control_run() {
+    s124_f_pr_two_impls(false, true, "run");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 opt_first, uncalled_control
+#[test]
+fn s124_f_pr_4_opt_first_uncalled_control_link() {
+    s124_f_pr_two_impls(false, true, "link");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 opt_first, uncalled_control
+#[test]
+fn s124_f_pr_4_opt_first_uncalled_control_repl() {
+    s124_f_pr_two_impls(false, true, "repl");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 box_first, demand
+#[test]
+fn s124_f_pr_4_box_first_demand_run() {
+    s124_f_pr_two_impls(true, false, "run");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 box_first, demand
+#[test]
+fn s124_f_pr_4_box_first_demand_link() {
+    s124_f_pr_two_impls(true, false, "link");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 box_first, demand
+#[test]
+fn s124_f_pr_4_box_first_demand_repl() {
+    s124_f_pr_two_impls(true, false, "repl");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 box_first, uncalled_control
+#[test]
+fn s124_f_pr_4_box_first_uncalled_control_run() {
+    s124_f_pr_two_impls(true, true, "run");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 box_first, uncalled_control
+#[test]
+fn s124_f_pr_4_box_first_uncalled_control_link() {
+    s124_f_pr_two_impls(true, true, "link");
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-4 box_first, uncalled_control
+#[test]
+fn s124_f_pr_4_box_first_uncalled_control_repl() {
+    s124_f_pr_two_impls(true, true, "repl");
 }
