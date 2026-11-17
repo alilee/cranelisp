@@ -4464,7 +4464,11 @@ fn s124_f_pr_helper_repl_demand() {
         "{}",
         out.stdout
     );
-    assert!(turns[2].contains("at ") && !turns[2].contains("0..0"), "located demand error: {}", out.stdout);
+    assert!(
+        turns[2].contains("at ") && !turns[2].contains("0..0"),
+        "located demand error: {}",
+        out.stdout
+    );
     out.assert_stdout_contains(":primitives/Int 4");
 }
 
@@ -4572,4 +4576,168 @@ fn s124_two_member_depth_65_repl() {
             && !diag.contains("0..0"),
         "{diag}"
     );
+}
+
+fn s124_imported_impl_overload(leg: &str, mode: &str) {
+    let base = "(import [primitives [*]])\n(export [primitives [*]])\n(deftype (Opt a) Nope (Yep [:a v]))\n(deftrait Size (size [self] Int))\n(impl Size Int (defn size [n] n))\n";
+    let dispatching = matches!(leg, "dispatch" | "back_edge");
+    let helper = if dispatching {
+        "(defn helper ([x] 7) ([x k] (add-i64 k (size x))))\n"
+    } else if leg == "single_control" {
+        "(defn helper [x k] (add-i64 k 41))\n"
+    } else {
+        "(defn helper ([x] 7) ([x k] (add-i64 k 41)))\n"
+    };
+    let call = if leg == "back_edge" {
+        "(helper (if false o Nope) 0)"
+    } else {
+        "(helper x 1)"
+    };
+    let implementation =
+        format!("(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) {call}])))\n");
+    let h = if dispatching {
+        format!("(import [base [*]])\n(export [base [*]])\n{helper}")
+    } else {
+        format!("{base}{helper}")
+    };
+    let lib = format!(
+        "(import [h [*]])\n(export [h [*]])\n{}",
+        if leg == "local_control" {
+            ""
+        } else {
+            &implementation
+        }
+    );
+    let entry = format!(
+        "(import [lib [*]])\n{}(defn main [] (Pure (size (Yep 41))))\n",
+        if leg == "local_control" {
+            &implementation
+        } else {
+            ""
+        }
+    );
+    let cr = Cranelisp::new()
+        .file("base.cl", base)
+        .file("h.cl", &h)
+        .file("lib.cl", &lib);
+    let out = match mode {
+        "run" => cr.file("p.cl", &entry).run("p.cl").output(),
+        "link" => cr.file("p.cl", &entry).link_then_run("p.cl").output(),
+        "repl" => cr.stdin(&format!("{entry}(main)\n")).output(),
+        _ => unreachable!(),
+    };
+    let expected = if leg == "back_edge" { 0 } else { 42 };
+    let diag = format!(
+        "{leg}/{mode}: status={:?}\n{}{}",
+        out.status, out.stdout, out.stderr
+    );
+    if mode == "repl" {
+        assert!(out.status.success(), "{diag}");
+        assert!(
+            out.stdout.contains(&format!(":primitives/Int {expected}")),
+            "{diag}"
+        );
+    } else {
+        assert_eq!(out.status.code(), Some(expected), "{diag}");
+    }
+    assert!(!diag.contains("error:"), "{diag}");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 subject
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_subject_run() {
+    s124_imported_impl_overload("subject", "run");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 subject
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_subject_link() {
+    s124_imported_impl_overload("subject", "link");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 subject
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_subject_repl() {
+    s124_imported_impl_overload("subject", "repl");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 dispatch
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_dispatch_run() {
+    s124_imported_impl_overload("dispatch", "run");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 dispatch
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_dispatch_link() {
+    s124_imported_impl_overload("dispatch", "link");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 dispatch
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_dispatch_repl() {
+    s124_imported_impl_overload("dispatch", "repl");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 back_edge
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_back_edge_run() {
+    s124_imported_impl_overload("back_edge", "run");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 back_edge
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_back_edge_link() {
+    s124_imported_impl_overload("back_edge", "link");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 back_edge
+// defect: class=null-got-slot locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::record_successor found=S124 owner=/dev
+#[test]
+fn s124_1071_back_edge_repl() {
+    s124_imported_impl_overload("back_edge", "repl");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 single_control
+#[test]
+fn s124_1071_single_control_run() {
+    s124_imported_impl_overload("single_control", "run");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 single_control
+#[test]
+fn s124_1071_single_control_link() {
+    s124_imported_impl_overload("single_control", "link");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 single_control
+#[test]
+fn s124_1071_single_control_repl() {
+    s124_imported_impl_overload("single_control", "repl");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 local_control
+#[test]
+fn s124_1071_local_control_run() {
+    s124_imported_impl_overload("local_control", "run");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 local_control
+#[test]
+fn s124_1071_local_control_link() {
+    s124_imported_impl_overload("local_control", "link");
+}
+
+// spec: spec/07-traits.md §7.3.3 — ACT-1071 local_control
+#[test]
+fn s124_1071_local_control_repl() {
+    s124_imported_impl_overload("local_control", "repl");
 }
