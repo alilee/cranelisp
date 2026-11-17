@@ -1282,6 +1282,31 @@ fn test_infer_annotate_mismatch() {
     assert!(tc.infer_expr_for_test(&mut expr).is_err());
 }
 
+// spec: 03-types §3.9.1; inference.md §4.5 (ACT-1057) — a mismatch between an
+// annotation and its expression is located at the `Annotate` node's own span;
+// an error raised inside the annotated expression keeps that expression's.
+#[test]
+fn annotate_mismatch_is_located_at_the_annotate_span() {
+    let annotate = |inner: Expr| Expr::Annotate {
+        annotation: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Bool"))),
+        expr: Box::new(inner),
+        span: span(0, 13),
+        inferred_type: None,
+    };
+
+    let mut mismatch = annotate(Expr::IntLit {
+        value: 42,
+        span: span(6, 8),
+        inferred_type: None,
+    });
+    let error = tc().infer_expr_for_test(&mut mismatch).unwrap_err();
+    assert_eq!(error.location().span, span(0, 13), "{error:?}");
+
+    let mut inner_error = annotate(Expr::var(Symbol::from("nosuch"), span(6, 12)));
+    let error = tc().infer_expr_for_test(&mut inner_error).unwrap_err();
+    assert_eq!(error.location().span, span(6, 12), "{error:?}");
+}
+
 // --- expr_types recording tests ---
 
 // spec: 03-types §3.5.1 — expr_types map records inferred type per span
