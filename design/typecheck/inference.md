@@ -92,8 +92,8 @@ Lookup follows the substitution transitively until it reaches a non-variable.
   binding-group boundary. Any generalisation-order fix acts on cross-definition
   references, never on self-reference. An implementation method's call to itself is a
   trait dispatch, not a self-reference: it instantiates the member's scheme freshly
-  (spec §3.10, S124-Q7; [monomorphisation §3.10.3](monomorphisation.md#3103-recursion-through-dispatch)). It holds at `4b58ab93`: `(size (Yep 7))` inside
-  `(impl Size (Opt :Size a) …)` passes typecheck and fails only at codegen (ACT-1034).
+  (spec §3.10, S124-Q7; [monomorphisation §3.10.3](monomorphisation.md#3103-recursion-through-dispatch)). Template check accepts every such re-entry shape
+  (`crates/cranelisp-typecheck/src/traits/impl_check/tests.rs::reentry_shapes_check_at_template_time_without_a_caller`).
 
 ## 4. Written type variables
 
@@ -171,10 +171,8 @@ are enforced elsewhere:
   `design`(frontend) relies on this: the synthesised `:macros/Sexp` annotation on a macro
   clause body carries the body's source span, so a non-`Sexp` body is located inside its
   `defmacro` form ([defmacro synthesis §2.2](../frontend/defmacro-synthesis.md#22-the-body-is-constrained-to-sexp-in-every-clause-shape),
-  ACT-1057). It holds at `4b58ab93` (`infer.rs::infer_annotate` unifies at that span).
-  Changing it moves that diagnostic, so `dev` pins it with a module row: an `Annotate`
-  node with a real span over an expression of another type is rejected at exactly that
-  span.
+  ACT-1057). `infer.rs::infer_annotate` unifies at that span. Changing it moves that diagnostic;
+  `crates/cranelisp-typecheck/src/infer/tests.rs::annotate_mismatch_is_located_at_the_annotate_span` pins it.
 
 ## 5. Expression types
 

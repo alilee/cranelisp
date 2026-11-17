@@ -82,19 +82,18 @@ and Principle 26, **Record from settled state**.
 4. Resolve and kind-check the effective target to one `FQTypeName`.
 5. Check collisions and required-method completeness.
 6. Mint the complete canonical method-symbol set once.
-7. Stage the impl shell at the trait home and snapshot the prior shell and method
-   entries at the writer module.
-8. Check synthesised defaults and explicit methods, passing the canonical trait
+7. Stage the impl shell at the trait home, snapshotting the prior shell.
+8. Retain the prior method entries at the writer module, then check synthesised defaults and explicit methods, passing the canonical trait
    identity to every method-check and mint seam.
 9. On success, return the checked definitions, which are the enrolment record; on
-   failure, restore exactly the shell and method-symbol set snapshotted at step 7.
+   failure, restore exactly the shell snapshotted at step 7 and the method-symbol set
+   retained when the body check begins.
 10. Finalization refreshes only those settled names.
 
-Steps 1–7 are registration and steps 8–9 the body check. The S124 target
-([traits §3](traits.md#registration-pipeline), ACT-0985) runs steps 1–7 for every
-`impl` of the cluster in Pass 1 and steps 8–9 in the impl-body sweep that follows it, so
-the order within one implementation is unchanged and every shell is staged before any
-body is checked.
+Steps 1–7 are registration and steps 8–9 the body check. Steps 1–7 run for every
+`impl` of the cluster in Pass 1 and steps 8–9 in the impl-body sweep that follows it
+([traits §3](traits.md#registration-pipeline), ACT-0985), so the order within one
+implementation is unchanged and every shell is staged before any body is checked.
 
 No provisional as-written mangle is published and repaired later. For HKT, the
 target rewrite extracts the constructor only after the slot-1 and pairing-head
@@ -110,9 +109,7 @@ Resolution failures are located at the impl span and keep the written reference:
 - a qualified reference to a private trait: the ordinary resolver's visibility
   error at the impl span;
 - a reference that remains ambiguous: the ordinary resolver's ambiguity error at
-  the impl span, listing the surviving canonical traits (spec §8.6.5). S124 target
-  (ACT-1001 P-3); at `4b58ab93` it is reported as `unknown trait`, which drops the
-  candidates;
+  the impl span, listing the surviving canonical traits (spec §8.6.5; ACT-1001 P-3);
 - an HKT pairing head that fails to resolve or resolves to another trait: the
   bad-pairing diagnostic;
 - a slot-1 shape or `con_var` mismatch: the declaration-driven diagnostic, after

@@ -1,7 +1,8 @@
 # Non-concrete producer obligations — typecheck's half of the release contract
 
 **Status:** current design. §1–§4 verified against source on 2026-09-22 and re-read at
-`4b58ab93` on 2026-11-16: every route in §1 is in source. §5 is the S124 design for
+`4b58ab93` on 2026-11-16: every route in §1 is in source. §5 re-read at `616c0d0a`
+(after S124 W3). §5 is the S124 design for
 typecheck's part of [the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
 **Reader:** anyone changing how this crate settles callables, mints generic
@@ -275,7 +276,7 @@ census runs, and how the rest is scoped once it has.
 The routes of §1 are in source. The S123 close described the same populations as
 exempt from monomorphisation; that description is superseded by §1 and §2, and the
 census, not either text, decides what remains (the `arch` review's scope rule). Read
-against source at `4b58ab93`:
+against source at `4b58ab93`, unchanged at `616c0d0a`:
 
 - **A compiled frame's body cannot carry a residual from this crate.** Every node of a
   strict view is a `ConcreteType`, `Lambda` included, so a type read from the view is
@@ -297,17 +298,37 @@ typecheck carrier (a selected arm's scheme, or a view node's type). That is a fu
 view-builder breach, routed to `arch` with the record, because it means the
 representation claim above is false.
 
-### 5.2 Designed now
+### 5.2 Landed ahead of the census
 
-| Item | Where | Why it is not census-gated |
-|---|---|---|
-| ACT-1034, the dispatch hop and the free-function hop | [monomorphisation §3.10](monomorphisation.md#310-successor-discovery-inside-an-instance) | Observed by `qa` at the producer seam. Its programs are refused before emission, so the census cannot see them; its correction is the precondition of a non-vacuous `TraitMethod` zero ([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category)) |
-| The in-progress chain's refusal of an instantiation that does not terminate | [monomorphisation §3.10.3](monomorphisation.md#3103-recursion-through-dispatch) | Required by the ACT-1034 correction itself |
+Both items landed in S124 W3 (`3a2692e3`, with `c1c938c0`); their design is current in
+[monomorphisation §3.10](monomorphisation.md#310-successor-discovery-inside-an-instance):
+
+- ACT-1034, the dispatch hop and the free-function hop. Its programs were refused before
+  emission, so the census could not see them; its correction is what makes the
+  `TraitMethod` zero non-vacuous ([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category)).
+- The in-progress chain's refusal of an instantiation that does not terminate, which the
+  ACT-1034 correction requires.
+
+**No accessor correction is owed here.** A generic product's accessor is already minted
+at the demanded concrete instantiation (§2.3: `monomorphise_call` reaches
+`monomorphise_synth`), with its scrutinee and result typed from the instantiated scheme.
+The binders of its `match` take their field types from the backend's pairing, so
+ACT-1062's accessor leg (`Duo.x`, `Duo.y`) closes with the backend's row D1, as its
+product-match leg does. Refuted if the accessor leg stays RED on the D1 tree with the
+instance's scrutinee and result types correct.
 
 ### 5.3 Waiting on census output, and the rule that scopes it
 
-Nothing else in this crate is scheduled for item 1 before the census reads. When it
-does, each record is attributed by where the backend read the type it could not
+Nothing else in this crate is scheduled for item 1 before the census reads.
+
+**Reading after T4** (`dev`(typecheck), suite run on the `3a2692e3` tree; `qa`'s CEN-4
+reading is the one that gates): `TraitMethod` compiled 41,475 frames (501 distinct) with
+no non-concrete record; the only traffic is 600 absent-arm records in `Plain`, which are
+ACT-1050's (§5.4). Nothing is attributed to this crate, consistent with §5.1's
+prediction. Row C ([typecheck §12](typecheck.md#12-designed-changes-not-yet-in-source-s124))
+stays open for whatever a later reading attributes.
+
+When the census reads, each record is attributed by where the backend read the type it could not
 classify, then by partition:
 
 | Record | Owner |
@@ -331,24 +352,18 @@ classify, then by partition:
   need not. The first column is therefore read from `qa`'s reduction of each record, not
   from the record.
 
-### 5.4 ACT-1050 — typecheck's reading
+### 5.4 ACT-1050 — not this crate's
 
-The release contract's discriminator is the type that reaches `compile_lambda`
-([§7.4 there](../backend/non-concrete-release-contract.md#74-the-r-1-structural-close-open)).
-`qa` has not reported that observation; this is a source reading, not an observation.
+ACT-1050 is attributed to the binary's bind-chain rewrite
+([bind-chain analysis](../int/bind-chain-analysis.md)), corrected in its own wave. The
+source reading that excluded this crate stands as the reason:
 
 - The continuation in `(bind (Pure [49]) (fn [v] (Pure 49)))` is a `Lambda` node of a
   strict view, so its type is a `ConcreteType`. Its argument position is unified with
-  `bind`'s instantiated scheme, so it is `Fn [(Vec Int)] (IO Int)`. A written
-  `(Vec Int)` on the parameter, which the filing reports does not cure the leak, makes
-  the same type explicit.
-- **Prediction:** the parameter arrives typed with its heap type. That refutes both of
-  the contract's typecheck readings, and ACT-1050 returns to `design`(backend).
-- *Refuted if* the observed `Lambda` node type is not a function type (the absent arm's
-  typecheck branch: correct the lambda's recorded type at its inference site) or the
-  parameter arrives as a scalar (a wrong concrete type, R-2: correct the unification
-  that produced it). Either is designed here against `qa`'s observation; neither is
-  designed in advance.
+  `bind`'s instantiated scheme, so it is `Fn [(Vec Int)] (IO Int)`.
+- *Refuted if* a reduction shows the `Lambda` node's recorded type is not a function
+  type, or its parameter arrives as a scalar; either is then designed here against that
+  observation.
 
 ### 5.5 Standing observations
 

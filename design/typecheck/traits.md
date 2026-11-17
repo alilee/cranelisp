@@ -194,23 +194,22 @@ re-resolves the bare name.
 
 ### Registration pipeline
 
-**Target (S124, ACT-0985; not in source at `4b58ab93`).** Registration and body checking
-are two phases. Steps 1–7 run in Pass 1 for every `impl` form of the cluster, in form
-order. Steps 8–9 run in the impl-body sweep (`typecheck.md` §5), after every Pass-1
-registration and before any definition body. At `4b58ab93` all nine steps run inside one
-Pass-1 call, so an implementation body is checked before a later form's implementation is
-registered. Spec §5.13.1 lets a body in one cluster use an implementation declared later
-in it; `qa` confirmed the batch refusal (ACT-0985). Restoring
-`typecheck.md` §5.2 invariant 1 for implementations is the correction, not a lookup that
-waits for a later shell.
+Registration and body checking are two phases (ACT-0985, spec §5.13.1).
+`program/register.rs::register_cluster` is the one cluster driver:
+
+- Steps 1–7 run in Pass 1 for every `impl` form of the cluster, in form order, and stage
+  its shell.
+- Steps 8–9 run in the impl-body sweep (`typecheck.md` §5), after every Pass-1
+  registration and before any definition body, so an implementation body can use any
+  implementation or definition of its cluster. This restores `typecheck.md` §5.2
+  invariant 1 for implementations; no lookup waits for a later shell.
 
 1. **Resolve the trait** from slot 1 (above). The not-found class (the resolver's
    `*NotFound` variants, whatever entry kind they name) becomes `unknown trait: <as
    written>`, and so, unchanged, does an unloaded qualifier's module (the open item in
    `typecheck.md` §11). An `Ambiguous` result propagates as the resolver's error, which names every
    surviving canonical candidate ([spec 8.6.5](../../spec/08-modules.md#865-use-site-selection-and-ambiguity)), as `PrivateInaccessible` already does
-   (S124 target, ACT-1001 P-3; at `4b58ab93` every error except `PrivateInaccessible`
-   becomes `unknown trait`).
+   (ACT-1001 P-3).
 2. **Kind check** (`hkt.md` §5.4). Slot 1 must echo the declared head shape and,
    for a higher-kinded trait, the constructor-variable spelling. For a
    conventional trait over an ADT, the target must be applied to exactly the
@@ -229,13 +228,25 @@ waits for a later shell.
 7. **Stage the carriers** (§3.0.1). The shell is what makes the implementation visible
    to every body's dispatch (§7 step 4), so staging it here, before any body, is what
    lets an earlier implementation's body use a later one.
+   - **Two forms of one `(trait, type)` in one cluster.** Only one shell per key can be
+     staged at a time. When a later form's key equals a pending one, the earlier form
+     runs steps 8–9 immediately, at the later form's position, and commits; the later
+     form then stages and replaces it, as a same-key re-impl across clusters does
+     (spec §5.4.5). Considered: an unstaged earlier form checked in the sweep under the
+     later shell; not adopted, since the earlier form's only effect is its own errors.
+     Residual: that earlier body cannot use a definition or implementation declared
+     after the later form (§11).
 8. **Check method bodies** (the impl-body sweep). The sweep visits implementations in
    form order, immediately after the Pass-1 sweep and before the checked definitions are
-   registered (`typecheck.md` §5.2 item 2). Everything after it runs as today, so the
+   registered (`typecheck.md` §5.2 item 2). Everything after it is unchanged, so the
    relative order of implementation bodies and definition bodies is unchanged. Each
    implementation starts from the post-Pass-1 constraint snapshot, as each Pass-2 body
    does, so one body's instantiation residue cannot reach the next (`typecheck.md` §5.2
    item 3).
+   - The implementation's method entries are retained here, at the start of its own
+     step 8, not at step 7: another implementation's commit between the two would
+     retire a retained slot and make this one's rollback refuse. Nothing writes the
+     method entries before their own body check.
    - Each trait reference in the target's constraint slot (`(Box :Disp a)`)
      resolves through `resolve_trait`. An unknown trait is `TraitNotFound`, for
      every impl kind.
@@ -249,8 +260,9 @@ waits for a later shell.
    - The mangled method definition is written back through
      `finalize_impl_method_writeback`, the tail shared by the conventional and
      HKT paths.
-   - A body error restores the shell and method entries step 7 staged; the record has
-     not been written (§3.0.1).
+   - A body error restores this implementation's shell and method entries and writes no
+     record (§3.0.1); the later staged implementations are abandoned (shells restored).
+     A Pass-1 failure restores every staged shell.
 9. **Return** the checked explicit and generated definitions to the accumulator, which
    registers them after the sweep exactly as it registers today's Pass-1 return
    (`typecheck.md` §5.2 item 2; [qualified trait impl §3](qualified-trait-impl.md#3-canonical-identity-consumption)).
@@ -258,10 +270,12 @@ waits for a later shell.
 The split keeps every identity decision in Pass 1 and adds no lookup: step 8 reads only
 what steps 1–7 resolved. A cluster that fails anywhere is discarded whole by `int`, so the
 per-implementation restore matters for the snapshot it protects, not for ordering.
-Evidence: the committed ACT-0985 cell, with the implementation-first order as its control;
-`dev` module rows in `traits/impl_check/tests.rs` for an implementation body that
-dispatches to an implementation declared later in the cluster, and for one that calls a
-definition declared later, each in both orders.
+`register_trait_impl` runs all nine steps for one form; only the per-form `Register`
+entry reaches it, and only in-crate tests call that entry for an `impl` (`typecheck.md`
+§5.1). Evidence: the committed ACT-0985 cell, and in `traits/impl_check/tests.rs`
+`impl_body_dispatches_to_impl_declared_later_in_either_order`,
+`impl_body_calls_definition_declared_later_in_either_order` and the control
+`impl_body_dispatch_with_no_impl_in_cluster_is_still_refused`.
 
 ### 3.0.1 The writer-side record
 
@@ -271,17 +285,18 @@ crate decides only where the record is staged: exactly where the shell is.
 - **Values.** The record clones the trait, target, writer module and method names
   that the shell is built from. They are resolved once and nothing is re-parsed:
   one derivation feeds two carriers (Principle 24).
-- **Authored label (S124 target, approved row D10; not in source at `4b58ab93`).** The record
+- **Authored label (S124 target T7, approved row D10; not in source at `616c0d0a`).** The record
   also carries its form's authored label, from `TraitImpl::authored_label` on the form
   as received. It is an opaque association key back to that form, never an identity
   source, and the shell does not carry it. Its definition is
   [`typecheck.md` §12, T7](typecheck.md#12-designed-changes-not-yet-in-source-s124).
 - **Tables.** The shell lands in the trait's home; the record lands in the
   writer's own table (`state.current_module` at that point).
-- **Transaction.** The shell is staged at step 7, retaining its prior value. The
-  record is upserted only after every method body has settled, as the last fallible
-  act before the method and shell tokens commit; on a body error the shell and method
-  entries are restored and the prior record is untouched. A record without its shell
+- **Transaction.** The shell is staged at step 7 and the method entries are retained at
+  the start of step 8, each keeping its prior value. The record is upserted only after
+  every method body has settled, as the last fallible act before the method and shell
+  tokens commit; on a body error the shell and method entries are restored and the
+  prior record is untouched. A record without its shell
   breaks the bijection that enrolment hard-errors on (Principle 26).
 - **Identity.** A re-impl of the same `(type, trait)` (spec §5.4.5) replaces its
   record and never appends a second one.
@@ -326,8 +341,9 @@ polymorphic impl, and dispatch on a concrete `(Some 3)` finds it.
 - For each default the impl omits, `generate_default_methods` mints the mangled
   name (§3.1) and returns a `Defn` with that body. A method the impl provides
   wins.
-- The defaults are registered after the Pass-1 sweep and checked after the Pass-2
-  sweep (`typecheck.md` §5.2 item 2). After that they are ordinary definitions.
+- A default's body is checked in its implementation's step 8 (§3), and the generated
+  definition is registered after the impl-body sweep with the written methods
+  (`typecheck.md` §5.2 item 2). After that they are ordinary definitions.
 - Higher-kinded traits have no default methods (§2 step 3).
 
 `build_default_body`'s hard-coded `Eq`/`Ord` bodies cannot be reached from this
@@ -341,7 +357,7 @@ path; see §11.
   registration path. The optional-prelude principle holds: typecheck needs no
   trait to exist.
 - **Test world.** In-crate tests build a synthetic world through the same
-  `register_trait_decl` and `register_trait_impl` seams
+  `register_trait_decl` seam and the `register_cluster` path for `impl`
   (`checker/test_support.rs`, `program/test_support.rs`). `builtins.rs` is
   test-only.
 
@@ -387,7 +403,7 @@ which case resolution is deferred.
    not a trait method is not dispatched here.
 2. **Dispatch argument.** Use the method's `hkt_param_index` (`hkt.md`), otherwise
    argument 0. The index is read only from the resolved method's canonical declaration;
-   `None` there means argument 0. At `4b58ab93` a `None` instead falls through to
+   `None` there means argument 0. In source at `616c0d0a` a `None` instead falls through to
    `hkt_param_idx_for_method`, which scans visible trait declarations for the first method
    of the same bare name, so a same-named higher-kinded method could set a conventional
    call's dispatch argument. That scan is not part of the design (ACT-1001 P-2, ruled
@@ -548,10 +564,16 @@ Violating any of these is an implementation bug.
 **Provisioning**
 
 16. **One registration path.** Core traits and user traits use the same
-    `register_trait_decl` and `register_trait_impl` seams (§5).
+    `register_trait_decl` seam and the `register_cluster` path for `impl` (§5).
 
 ## 11. Open items
 
+- **The earlier of two same-key `impl` forms in one cluster is checked at the later
+  form's position** (§3 step 7). Its body cannot use a definition or implementation
+  declared after the later form, and sees the Pass-1 constraints in force there. The
+  form is superseded either way, so the only effect is a refusal the sweep would not
+  raise. Trigger: a failing cell of that shape. Repair: check the earlier form in the
+  sweep, unstaged, under the later form's shell.
 - **Dead default-body fallback.** `generate_default_methods` skips every method
   without a parsed default body before its hard-coded fallback runs, so
   `type_resolve::build_default_body` is reachable only from its own tests. The

@@ -492,11 +492,12 @@ export positions; its evidence and status belong to that surface.
    methods, trait impls, and signature schemes. Distinct canonical declarations
    sharing a spelling coexist; use sites select among them
    (`use-site-candidate-selection.md`). No body is checked.
-   - **The impl-body sweep** follows Pass 1 (S124 target, ACT-0985). It checks every
+   - **The impl-body sweep** follows Pass 1 (ACT-0985). It checks every
      implementation's method bodies in form order, after every implementation's shell
-     is staged ([traits §3](traits.md#registration-pipeline)). At `4b58ab93` an
-     implementation's bodies are checked inside its own Pass-1 registration, so this
-     item's "no body is checked" does not yet hold for implementations.
+     is staged ([traits §3](traits.md#registration-pipeline)).
+     `program/register.rs::register_cluster` drives Pass 1, the sweep and the
+     registration of the implementations' method definitions, for `check_forms` and
+     the test driver alike.
 2. **Pass 2 — body check** (`program/body.rs`). Algorithm W checks each body
    against its registration. The checked AST and initial canonical callees stay
    in the private body ledger (`checked-body-publication.md`); active expression
@@ -524,7 +525,7 @@ calls `finalize_check_result`. None of these is public; `check_forms` is the ent
 |---|---|---|
 | Type definition | Register the type and its constructors (`adt.md`). | Nothing. |
 | Trait declaration | Register the declaration and its methods ([trait declaration](traits.md#2-trait-declaration)). | Nothing. |
-| Trait impl | Register the impl and stage its shell ([trait implementation](traits.md#3-trait-implementation)). Its written and generated method bodies are checked in the impl-body sweep that follows Pass 1, which returns the checked definitions (S124 target; at `4b58ab93` both happen here). | Nothing. |
+| Trait impl | Register the impl and stage its shell ([trait implementation](traits.md#3-trait-implementation)). Its written and generated method bodies are checked in the impl-body sweep that follows Pass 1, which returns the checked definitions. `register_cluster` stages it directly; the per-form `Register` arm for an `impl` runs all nine steps for one form and is reached only by in-crate tests. | Nothing. |
 | Single-signature definition | Record the body's registration (fresh parameter and return variables) in the body ledger. | Check the body against that registration. An impl method already checked in Pass 1 is skipped. |
 | Multi-signature definition | Register one entry per clause (`monomorphisation.md` §11). | Check each clause body; overload settlement happens in finalize. |
 
@@ -539,11 +540,11 @@ performs the same wrapping for in-crate tests.
    definition was never registered is an error, not an implicit registration.
    This is what lets a body call a definition later in the cluster (spec §3.5.2),
    and an implementation body use an implementation declared later (spec §5.13.1).
-   Implementations meet it once the impl-body sweep lands (§5 item 1).
+   Implementations meet it through the impl-body sweep (§5 item 1), except the
+   earlier of two same-key forms in one cluster ([traits §3](traits.md#registration-pipeline) step 7).
 2. **Pass 1 is one sweep in form order.** Each form registers when it is reached;
    there is no hidden sort by form kind. The method definitions produced by impls,
-   explicit and generated, are registered after the sweep (after the impl-body sweep,
-   once it lands), and Pass 2 skips their already-checked bodies.
+   explicit and generated, are registered after the impl-body sweep, and Pass 2 skips their already-checked bodies.
    A body may refer to any definition in the cluster. A declaration-level reference
    to a type declared later in the cluster is a different matter; see the open item
    in §11.
@@ -771,8 +772,8 @@ routes decide the reading in the same three steps:
   its projection. Also unchanged: the impl constraint slot and the
   satisfaction-check rules
   ([inference §4.5](inference.md#45-value-position-annotations)).
-- **The identity is the declaration's, never the spelling's** (S124 target, with
-  packet row D3). At `4b58ab93`, `resolve_trait` returns only the home and
+- **The identity is the declaration's, never the spelling's** (S124 target T5, with
+  packet row D3; not in source at `616c0d0a`). In source, `resolve_trait` returns only the home and
   `resolve_trait_as_written` pairs it with the spelled name. Under a renamed import
   (`(import [lib [(Size Sz)]])`, spec §8.3.5) that mints `lib/Sz`, an identity that does
   not exist, so the constraint's impl lookup at the home misses. `resolve_trait` returns
@@ -877,8 +878,8 @@ do not add a local type printer.
   rollback and enrolment consume that settled product and never re-read the
   written spelling (`qualified-trait-impl.md`).
 - `impl$` storage keys are minted only by `trait_impl_key`. The written-impl
-  record is built from the values the impl shell is built from, inside
-  `register_trait_impl`'s transaction, and upserts per `(type, trait)`
+  record is built from the values the impl shell is built from, inside the
+  implementation's staged transaction, and upserts per `(type, trait)`
   ([trait implementation](traits.md#3-trait-implementation).0.1; `design/arch/trait-impl-cache-carrier.md`).
 - Impl existence is one keyed probe at the trait's resolved home, keyed by
   the receiver's canonical identity
@@ -1370,44 +1371,29 @@ are listed in `design/typecheck/AGENTS.md` §"Redirections".
 
 ## 12. Designed changes not yet in source (S124)
 
-Navigation for the S124 work that lands in this crate, designed against `main` at
-`4b58ab93`. Scope and rulings: `sprints/SPRINT.md`. Each row's design is in its home
-document; this table does not restate it. Remove a row when its change lands, and the
-section when it is empty.
+Navigation for the S124 work still to land in this crate, re-verified against `main` at
+`616c0d0a` (after wave W3). Scope and rulings: `sprints/SPRINT.md`. Each row's design is
+in its home document; this table does not restate it. Remove a row when its change
+lands, and the section when it is empty. T1, T2, T3, T4 and T6 landed in W3 and are
+described as current design in their home documents.
 
 | # | Change | Design | Filing | Public change |
 |---|---|---|---|---|
-| T1 | An ambiguous `impl` head reports the resolver's ambiguity, naming the candidates | [traits §3](traits.md#registration-pipeline) step 1; [qualified trait impl §5](qualified-trait-impl.md#5-errors) | ACT-1001 P-3 | none |
-| T2 | The impl-body sweep: every implementation is registered before any implementation body is checked | §5; [traits §3](traits.md#registration-pipeline) steps 7–9 | ACT-0985 | none |
-| T3 | Same-cluster templates are the window's, keyed by identity | [monomorphisation §3.10.2](monomorphisation.md#3102-same-cluster-templates-are-the-windows) | ACT-1034 (A3) | none |
-| T4 | The dispatch hop inside an instance, including a dispatch to the enclosing implementation at its own or another instantiation, and the in-progress chain with its instantiation depth limit and one depth diagnostic (spec §3.10, S124-Q7) | [monomorphisation §3.10.1](monomorphisation.md#3101-the-dispatch-hop), [§3.10.3](monomorphisation.md#3103-recursion-through-dispatch) | ACT-1034 (A1, A2, C3, T-1034-d, T-1034-e); F-PR, F-PR-2 | none |
 | T5 | A trait reference's identity is its declaration's | §7.3.2 | ACT-0997 (renamed-trait lead) | none |
-| T6 | The annotation-location commitment is pinned | [inference §4.5](inference.md#45-value-position-annotations) | ACT-1057 | none; a module row only |
 | T7 | The writer record carries its `impl` form's authored label | below; [traits §3.0.1](traits.md#301-the-writer-side-record) | ACT-0997 (impl identity) | none here; row D10 in `cranelisp-types` |
-| C | Census-attributed producer corrections, and ACT-1050 if it attributes here | [producer obligations §5.3–§5.4](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it) | FIXME 0903, ACT-1050 | none expected |
+| C | Census-attributed producer corrections | [producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it) | FIXME 0903 | none expected |
 
 **Order and dependencies.**
 
-- T1 and T2 depend on nothing and can land first. T2 before T3–T4 lets ACT-1034's C1
-  control (`size` at `Int` inside the parametric body, with the parametric
-  implementation declared first) be written order-independently; it is not a hard
-  dependency.
-- T3 then T4, as one or two change-sets. T4's chain lands in T4's change-set, never
-  after it: without the chain, T4 turns a located refusal into a possible compiler hang.
-- T3–T4 precede the census zero read (release contract §7.7: "the typecheck producer
-  corrections, including ACT-1034"). They do not depend on the census instrument, on
-  row D1 or on stack-placement retirement, and none of those depends on them. Once T4
-  lands, ACT-1034's programs emit and contribute `TraitMethod` traffic, which is what
-  makes that partition's zero meaningful.
 - T5 lands no later than row D3's binary consumer step, so ACT-0997's renamed-trait
   impl cells exercise it. Its module rows do not wait on D3.
-- T6 has no order.
-- T7 lands in D3's migration: types first,
-  then this crate's producer fill, then the binary's consumers (callee-first). It shares
-  D3's cache-schema bump.
-- C waits on the census readings and on `qa`'s reduction of each attributed record.
+- T7 lands in D3's migration: types first, then this crate's producer fill, then the
+  binary's consumers (callee-first). It shares D3's cache-schema bump.
+- C waits on the census readings and on `qa`'s reduction of each attributed record. On
+  the census read `dev` reported after T4, nothing is attributed here
+  ([producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it)).
 
-**Approved rows this crate consumes.** At `4b58ab93` this crate reads none of D1, D3,
+**Approved rows this crate consumes.** At `616c0d0a` this crate reads none of D1, D3,
 D7, K11-c and K11-d: no `ctor_field_types_at`, `ImportNames`, `ExportSpec`,
 `ModeSummary` ABI predicate, `settle_template`, `settle_concrete` or `lenient_from_expr`
 call. Row D6 breaks three module-test literals that name `borrowed_sibling: None`
@@ -1450,8 +1436,9 @@ checked, so it would have no result to read.
   records sharing a label, and the label is not part of a record's key. Row D10 decides
   the consumer side: a form matches only when exactly one record carries its label, and
   none or several is no match, never a pick.
-- **Producer.** `register_trait_impl` is the only non-test constructor of
-  `WrittenTraitImpl` and receives the form it records. It takes the label from that
+- **Producer.** `prepare_trait_impl` (registration steps 1–6, reached by every `impl`
+  path) is the only non-test constructor of `WrittenTraitImpl` and receives the form it
+  records. It takes the label from that
   form as received, before registration step 2's higher-kinded normalisation; the normalised form
   yields the same label, but reading the received form keeps the derivation independent
   of the rewrite. The record reaches the writer's table only on success
@@ -1459,7 +1446,7 @@ checked, so it would have no result to read.
   lands and a same-key re-impl replaces the label with its own. The shell does not carry
   the label, so restore enrolment's conflict comparison is unchanged.
 - **Construction sites.** Twelve `WrittenTraitImpl::new` calls, all re-read at
-  `4b58ab93`: the producer above; in this crate's tests `infer/tests.rs`,
+  `616c0d0a`: the producer above; in this crate's tests `infer/tests.rs`,
   `checker/tests.rs` and `traits/dispatch/tests.rs` (two); in the types crate's tests
   `module/tests.rs` (three) and `crates/cranelisp-types/tests/lifecycle_facade.rs`; in the binary's tests
   `src/save.rs` (two) and `src/repl/mod.rs`'s test support. Each test site writes the
@@ -1481,8 +1468,3 @@ primitive, which is the backend's ([backend keyed consumption](../arch/backend-k
 Recording a second carrier here, such as a `BuiltinFn` on the value `Var`, would
 duplicate the identity the `VarRef` already carries (Principle 7) and would still reach a
 wrapper arm that does not lower an IO combinator.
-
-**Open questions.**
-
-- `qa`: the ACT-1050 observation of the type reaching `compile_lambda`
-  ([producer obligations §5.4](non-concrete-producer-obligations.md#54-act-1050--typechecks-reading)).
