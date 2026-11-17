@@ -17,7 +17,7 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
+use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 
@@ -204,10 +204,10 @@ where
 
         // The captures' types, read from the ENCLOSING environment before the
         // inner compiler takes this compiler's module borrow.
-        let capture_types: Vec<Option<cranelisp_types::Type>> = captures
+        let capture_types: Vec<ConcreteType> = captures
             .iter()
-            .map(|cap_name| self.lookup_type(cap_name))
-            .collect();
+            .map(|cap_name| self.capture_type(cap_name, span))
+            .collect::<Result<_, _>>()?;
 
         let plan = Self::plan_body(continuation, &[], captures, "launch continuation")?;
         let mut inner = FnCompiler::inner(
@@ -227,7 +227,7 @@ where
             // Into the CAPTURE ENVIRONMENT (`binding-scope.md` §3.2): the
             // closure env's drop glue owns the release, so every use in the
             // continuation duplicates (FIXME 0472's serve-loop shape).
-            inner.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
+            inner.bind_capture(cap_name, cap_val, capture_types[i].clone());
         }
 
         // Compile the continuation body. It binds NO result name (the launch

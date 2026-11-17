@@ -133,7 +133,7 @@ where
                 Intro::Let { node: key, index },
                 name,
                 val,
-                Some(val_expr.ty().to_type()),
+                val_expr.ty().clone(),
             )?;
         }
         self.in_tail_position = saved_tail;
@@ -182,15 +182,14 @@ where
             // itself sparked, so any free var found in `sparked_name_to_ivar` is
             // a dependency to force on demand. Sorted for deterministic capture
             // layout.
-            let mut deps: Vec<(Symbol, Value, cranelisp_types::Type)> =
-                super::find_free_vars(val_expr, &[])
-                    .into_iter()
-                    .filter_map(|v| {
-                        let at = binder_before(bindings, idx, &v)?;
-                        let (ivar, ty) = ivar_map.get(&at)?;
-                        Some((v.clone(), *ivar, ty.to_type()))
-                    })
-                    .collect();
+            let mut deps: Vec<(Symbol, Value, ConcreteType)> = super::find_free_vars(val_expr, &[])
+                .into_iter()
+                .filter_map(|v| {
+                    let at = binder_before(bindings, idx, &v)?;
+                    let (ivar, ty) = ivar_map.get(&at)?;
+                    Some((v.clone(), *ivar, ty.clone()))
+                })
+                .collect();
             deps.sort_by(|a, b| a.0.cmp(&b.0));
 
             let thunk_val = if deps.is_empty() {
@@ -245,7 +244,7 @@ where
                 },
                 name,
                 val,
-                Some(val_expr.ty().to_type()),
+                val_expr.ty().clone(),
             )?;
         }
 

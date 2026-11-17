@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use cranelift::prelude::Variable;
-use cranelisp_types::{Symbol, Type};
+use cranelisp_types::{ConcreteType, Symbol};
 
 /// The storage facts of ONE binder.
 #[derive(Debug, Clone)]
@@ -19,12 +19,8 @@ pub(crate) struct BinderSlot {
     name: Symbol,
     /// The binder's Cranelift variable.
     var: Variable,
-    /// The binder's type, when one was recorded.
-    ///
-    /// `None` is load-bearing: a non-heap constructor-pattern field binding,
-    /// and a parameter whose type neither the signature nor use-site inference
-    /// yields, are never recorded, which keeps them out of every counting site.
-    ty: Option<Type>,
+    /// The binder's type (`non-concrete-release-contract.md` §7.4 step 2).
+    ty: ConcreteType,
 }
 
 impl BinderSlot {
@@ -32,8 +28,8 @@ impl BinderSlot {
         self.var
     }
 
-    pub(crate) fn ty(&self) -> Option<&Type> {
-        self.ty.as_ref()
+    pub(crate) fn ty(&self) -> &ConcreteType {
+        &self.ty
     }
 }
 
@@ -66,7 +62,7 @@ impl ScopeChain {
 
     /// Append a slot to the innermost frame. A repeated name appends a SECOND
     /// slot; it never overwrites the first.
-    pub(crate) fn bind(&mut self, name: Symbol, var: Variable, ty: Option<Type>) {
+    pub(crate) fn bind(&mut self, name: Symbol, var: Variable, ty: ConcreteType) {
         let frame = self
             .frames
             .last_mut()
@@ -102,7 +98,7 @@ pub(crate) struct CaptureEnv {
 #[derive(Debug, Clone)]
 pub(crate) struct CaptureSlot {
     var: Variable,
-    ty: Option<Type>,
+    ty: ConcreteType,
 }
 
 impl CaptureSlot {
@@ -110,8 +106,8 @@ impl CaptureSlot {
         self.var
     }
 
-    pub(crate) fn ty(&self) -> Option<&Type> {
-        self.ty.as_ref()
+    pub(crate) fn ty(&self) -> &ConcreteType {
+        &self.ty
     }
 }
 
@@ -122,7 +118,7 @@ impl CaptureEnv {
         }
     }
 
-    pub(crate) fn insert(&mut self, name: Symbol, var: Variable, ty: Option<Type>) {
+    pub(crate) fn insert(&mut self, name: Symbol, var: Variable, ty: ConcreteType) {
         self.entries.insert(name, CaptureSlot { var, ty });
     }
 
@@ -147,7 +143,7 @@ impl<'s> Binding<'s> {
         }
     }
 
-    pub(crate) fn ty(self) -> Option<&'s Type> {
+    pub(crate) fn ty(self) -> &'s ConcreteType {
         match self {
             Binding::Slot(slot) => slot.ty(),
             Binding::Capture(slot) => slot.ty(),

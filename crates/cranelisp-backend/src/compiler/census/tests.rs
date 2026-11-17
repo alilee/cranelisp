@@ -186,7 +186,12 @@ fn tables_with(table: SymbolTable) -> DashMap<ModuleFullPath, SymbolTable> {
 }
 
 /// `(defn name [x] body)` with `x : param`, in `partition`.
-fn one_param_frame(name: &str, param: Type, body: Expr, partition: Partition) {
+fn try_one_param_frame(
+    name: &str,
+    param: Type,
+    body: Expr,
+    partition: Partition,
+) -> Result<String, CranelispError> {
     let mut table = SymbolTable::new(user());
     declare_frame(
         &mut table,
@@ -196,18 +201,21 @@ fn one_param_frame(name: &str, param: Type, body: Expr, partition: Partition) {
         partition,
     );
     let tables = tables_with(table);
-    compile(
+    try_compile(
         &tables,
         &defn(name, &["x"], body),
         &HashMap::new(),
         &no_edit,
-    );
+    )
 }
 
-// --- Retain and release ---
+fn one_param_frame(name: &str, param: Type, body: Expr, partition: Partition) {
+    try_one_param_frame(name, param, body, partition).expect("census fixture compiles");
+}
 
-/// `(let [a x] x)`: `x` is duplicated into `a` and moved out; `a` is typed by
-/// its initializer node, so the duplicate is the frame's one categorisation.
+// --- Residual parameters ---
+
+/// `(let [a x] x)`: `x` is duplicated into `a` and moved out.
 fn duplicated(at: u32) -> Expr {
     Expr::Let {
         bindings: vec![(Symbol::from("a"), var("x", at))],
@@ -217,27 +225,47 @@ fn duplicated(at: u32) -> Expr {
     }
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — the retain arm
-// records a residual parameter's duplicate once, as a bare `Var`, in its
-// frame's partition.
+// spec: design/backend/non-concrete-release-contract.md §7.4 step 2, §9 —
+// the retain and release arms are gone: a parameter is typed once, from its
+// target's concrete scheme, so a residual one (a bare `Var` or an
+// `ADT(<concrete>, [Var…])`, in any partition) is a located invariant error
+// where the target is selected. Nothing reaches a category, a duplicate, a
+// release or a field read, so the frame is its only record.
 #[test]
-fn a_duplicated_residual_parameter_records_one_retain() {
-    one_param_frame(
-        "census_retain",
-        Type::Var(0),
-        duplicated(1),
-        Partition::Plain,
+fn a_residual_parameter_is_refused_where_its_target_is_selected() {
+    let bx_var = Type::ADT(
+        FQTypeName::new(user(), TypeName::from("Bx")),
+        vec![Type::Var(0)],
     );
-    assert_eq!(
-        tally_of("census_retain"),
-        expect(&[("frame Plain - -", 1), ("retain Plain var -", 1)])
-    );
+    for (partition, name) in [
+        (Partition::Plain, "Plain"),
+        (Partition::Ctor, "Ctor"),
+        (Partition::Accessor, "Accessor"),
+        (Partition::TraitMethod, "TraitMethod"),
+    ] {
+        for (residual, shape) in [(Type::Var(0), "var"), (bx_var.clone(), "adt")] {
+            for (body, use_) in [(duplicated(1), "duplicated"), (int(0, 1), "dropped")] {
+                let frame = format!("census_residual_{name}_{shape}_{use_}");
+                let refused = try_one_param_frame(&frame, residual.clone(), body, partition)
+                    .expect_err("a residual parameter is refused");
+                assert!(
+                    refused.to_string().contains("non-concrete parameter type"),
+                    "{frame}: {refused}"
+                );
+                assert_eq!(
+                    tally_of(&frame),
+                    expect(&[(&format!("frame {name} - -"), 1)]),
+                    "{frame}"
+                );
+            }
+        }
+    }
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 (NEGATIVE) — the
-// same duplicate at a concrete heap type records nothing.
+// spec: design/backend/non-concrete-release-contract.md §7.4 step 2 (NEGATIVE)
+// — the same frames at a concrete heap type compile and record nothing.
 #[test]
-fn a_duplicated_concrete_parameter_records_nothing_neg() {
+fn a_concrete_parameter_duplicated_or_dropped_records_nothing_neg() {
     one_param_frame(
         "census_retain_twin",
         Type::String,
@@ -248,57 +276,6 @@ fn a_duplicated_concrete_parameter_records_nothing_neg() {
         tally_of("census_retain_twin"),
         expect(&[("frame Plain - -", 1)])
     );
-}
-
-// spec: design/backend/non-concrete-release-contract.md §7.3 — an unused
-// residual parameter is released by the shallow decrement once. The release
-// is preceded by its category gate (§3.5), which is the retain arm's one
-// licence for it.
-#[test]
-fn a_dropped_residual_parameter_records_one_release_in_each_partition() {
-    for (partition, name) in [
-        (Partition::Plain, "Plain"),
-        (Partition::Ctor, "Ctor"),
-        (Partition::Accessor, "Accessor"),
-        (Partition::TraitMethod, "TraitMethod"),
-    ] {
-        let frame = format!("census_release_{name}");
-        one_param_frame(&frame, Type::Var(0), int(0, 1), partition);
-        assert_eq!(
-            tally_of(&frame),
-            expect(&[
-                (&format!("frame {name} - -"), 1),
-                (&format!("release {name} var -"), 1),
-                (&format!("retain {name} var -"), 1),
-            ]),
-            "{name}"
-        );
-    }
-}
-
-// spec: design/backend/non-concrete-release-contract.md §7.3 — a residual
-// ADT parameter records the `ADT(<concrete>, [Var…])` shape.
-#[test]
-fn a_dropped_residual_adt_parameter_records_the_adt_shape() {
-    let bx_var = Type::ADT(
-        FQTypeName::new(user(), TypeName::from("Bx")),
-        vec![Type::Var(0)],
-    );
-    one_param_frame("census_release_adt", bx_var, int(0, 1), Partition::Accessor);
-    assert_eq!(
-        tally_of("census_release_adt"),
-        expect(&[
-            ("frame Accessor - -", 1),
-            ("release Accessor adt -", 1),
-            ("retain Accessor adt -", 1),
-        ])
-    );
-}
-
-// spec: design/backend/non-concrete-release-contract.md §7.3 (NEGATIVE) — the
-// same unused parameter at a concrete heap type records nothing.
-#[test]
-fn a_dropped_concrete_parameter_records_nothing_neg() {
     one_param_frame(
         "census_release_twin",
         Type::String,
@@ -315,6 +292,19 @@ fn a_dropped_concrete_parameter_records_nothing_neg() {
 
 /// `(defn name [] (fn [p] 0))`, with the `Lambda` node given `lambda_ty`.
 fn lambda_frame(name: &str, lambda_ty: ConcreteType, partition: Partition) {
+    try_lambda_frame(name, lambda_ty, partition).expect("census fixture compiles");
+}
+
+/// The lambda's span, at which a refusal of its parameter is located.
+fn lambda_span() -> Span {
+    Span::new(1, 10)
+}
+
+fn try_lambda_frame(
+    name: &str,
+    lambda_ty: ConcreteType,
+    partition: Partition,
+) -> Result<String, CranelispError> {
     let mut table = SymbolTable::new(user());
     declare_frame(
         &mut table,
@@ -327,7 +317,7 @@ fn lambda_frame(name: &str, lambda_ty: ConcreteType, partition: Partition) {
     let body = Expr::Lambda {
         params: vec![(Symbol::from("p"), None)],
         body: Box::new(int(0, 5)),
-        span: Span::new(1, 10),
+        span: lambda_span(),
         inferred_type: None,
     };
     let retype = move |body: &mut MonoExpr| {
@@ -336,25 +326,36 @@ fn lambda_frame(name: &str, lambda_ty: ConcreteType, partition: Partition) {
         };
         *ty = lambda_ty.clone();
     };
-    compile(&tables, &defn(name, &[], body), &HashMap::new(), &retype);
+    try_compile(&tables, &defn(name, &[], body), &HashMap::new(), &retype)
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — a `Lambda`
-// node whose type is not a function type introduces its unused parameter
-// untyped: one absent record, made by the inner compiler and carried in the
-// frame's partition.
+/// A refusal located at `span`.
+fn assert_located(refused: &CranelispError, span: Span) {
+    let CranelispError::CodegenError { location, .. } = refused else {
+        panic!("expected a codegen refusal, got {refused:?}");
+    };
+    assert_eq!(location.span, span, "{refused}");
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 step 2,
+// §9 — a `Lambda` node whose type is not a function type is a producer
+// refusal located at the lambda. The absent point keeps recording there: one
+// record, made by the inner compiler and carried in the frame's partition.
 #[test]
-fn an_untyped_lambda_parameter_records_one_absent_in_its_frames_partition() {
-    lambda_frame("census_absent_lambda", ConcreteType::Int, Partition::Plain);
+fn an_untyped_lambda_parameter_is_refused_and_records_one_absent() {
+    let refused = try_lambda_frame("census_absent_lambda", ConcreteType::Int, Partition::Plain)
+        .expect_err("an untyped lambda parameter is refused");
+    assert_located(&refused, lambda_span());
     assert_eq!(
         tally_of("census_absent_lambda"),
         expect(&[("absent Plain absent -", 1), ("frame Plain - -", 1)])
     );
-    lambda_frame(
+    try_lambda_frame(
         "census_absent_inner",
         ConcreteType::Int,
         Partition::TraitMethod,
-    );
+    )
+    .expect_err("an untyped lambda parameter is refused");
     assert_eq!(
         tally_of("census_absent_inner"),
         expect(&[
@@ -390,11 +391,11 @@ fn a_function_typed_lambda_parameter_records_nothing_neg() {
     );
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — a defn
-// parameter whose selected scheme supplies no type, and whose body does not
-// mention it, records one absent.
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 step 2,
+// §9 — a defn with a parameter and a non-function scheme is a located
+// invariant error where its target is selected, and records one absent.
 #[test]
-fn a_defn_parameter_the_scheme_does_not_type_records_one_absent() {
+fn a_defn_parameter_the_scheme_does_not_type_is_refused_and_records_one_absent() {
     let mut table = SymbolTable::new(user());
     declare_frame(
         &mut table,
@@ -404,12 +405,15 @@ fn a_defn_parameter_the_scheme_does_not_type_records_one_absent() {
         Partition::Plain,
     );
     let tables = tables_with(table);
-    compile(
+    let refused = try_compile(
         &tables,
         &defn("census_absent_defn", &["x"], int(0, 1)),
         &HashMap::new(),
         &no_edit,
-    );
+    )
+    .expect_err("an untyped defn parameter is refused");
+    assert!(refused.to_string().contains("types 0"), "{refused}");
+    assert_located(&refused, Span::SYNTHETIC);
     assert_eq!(
         tally_of("census_absent_defn"),
         expect(&[("absent Plain absent -", 1), ("frame Plain - -", 1)])
@@ -678,29 +682,24 @@ fn a_field_read_at_a_residual_instantiation_records_the_residual_class() {
     );
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.3 — the F1 shape:
-// an accessor of a generic product matching its own residual parameter. The
-// binder's type is not concrete, so the match reads the scrutinee node's
-// placeholder, and the read lands in the absent class, not the residual one,
-// where it is refused (§7.4 step 1).
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 step 2 —
+// the F1 shape: an accessor of a generic product matching its own residual
+// parameter. The parameter is refused where the target is selected, so the
+// match never reads a field.
 #[test]
-fn a_match_on_a_residual_parameter_reads_in_the_absent_class() {
+fn a_match_on_a_residual_parameter_is_refused_before_its_field_read() {
     let refused = try_match_frame(
         "census_field_f1",
         &bx(),
         Type::ADT(bx(), vec![Type::Var(0)]),
         false,
     )
-    .expect_err("an absent-class field read refuses");
-    // Located at the pattern constructor, the reference that made the read.
-    let CranelispError::CodegenError { location, .. } = &refused else {
-        panic!("expected a codegen refusal, got {refused:?}");
-    };
-    assert_eq!(location.span, Span::new(20, 25), "{refused}");
-    assert_eq!(
-        point(&tally_of("census_field_f1"), "field"),
-        expect(&[("field Plain full absent", 1)])
+    .expect_err("a residual parameter is refused");
+    assert!(
+        refused.to_string().contains("non-concrete parameter type"),
+        "{refused}"
     );
+    assert_eq!(point(&tally_of("census_field_f1"), "field"), expect(&[]));
 }
 
 // --- The production target selection ---
@@ -847,7 +846,7 @@ fn compiling_n_targets_records_n_frames_each_in_its_partition() {
         params: vec![],
         body: Box::new(zero()),
         span: Span::SYNTHETIC,
-        inferred_type: None,
+        inferred_type: Some(Box::new(Type::Fn(vec![], Box::new(Type::Int)))),
     };
     install_target(&mut table, "census_frames_lambda", Partition::Plain, lambda);
     install_target(
@@ -890,9 +889,10 @@ fn compiling_n_targets_records_n_frames_each_in_its_partition() {
 
 const CENSUS_VAR: &str = "CRANELISP_CATEGORY_CENSUS";
 
-/// Child body: compile a frame that plants the retain and release arms, plant
-/// an absent field read under that frame at the read itself (a frame making
-/// one no longer compiles, §7.4 step 1), and write the CLIF to the path the
+/// Child body: compile a concrete frame, plant an absent field read under it
+/// at the read itself (a frame making one no longer compiles, §7.4 step 1),
+/// attempt a second frame whose untyped lambda parameter is refused and
+/// records an absent binder, and write the first frame's CLIF to the path the
 /// parent names.
 #[test]
 fn census_file_child() {
@@ -903,11 +903,8 @@ fn census_file_child() {
     declare_frame(
         &mut table,
         "census_child",
-        &["x", "b"],
-        Type::Fn(
-            vec![Type::Var(0), Type::ADT(bx(), vec![Type::Int])],
-            Box::new(Type::Int),
-        ),
+        &["b"],
+        Type::Fn(vec![Type::ADT(bx(), vec![Type::Int])], Box::new(Type::Int)),
         Partition::TraitMethod,
     );
     let tables = tables_with(table);
@@ -936,7 +933,7 @@ fn census_file_child() {
     )]);
     let clif = compile(
         &tables,
-        &defn("census_child", &["x", "b"], body),
+        &defn("census_child", &["b"], body),
         &pattern_ctors,
         &no_edit,
     );
@@ -968,6 +965,12 @@ fn census_file_child() {
         ),
     )
     .expect_err("an absent field read refuses");
+    try_lambda_frame(
+        "census_child_absent",
+        ConcreteType::Int,
+        Partition::TraitMethod,
+    )
+    .expect_err("an untyped lambda parameter is refused");
     let out: String = crate::test_child::arg("CENSUS_CHILD_CLIF");
     std::fs::write(out, clif).expect("write the child's CLIF");
 }
@@ -1004,10 +1007,10 @@ fn the_census_file_is_written_only_when_set_and_emission_is_unchanged() {
     assert_eq!(
         distinct,
         [
+            "absent\tTraitMethod\tabsent\t-\tuser/census_child_absent",
             "field\tTraitMethod\tfull\tabsent\tuser/census_child",
             "frame\tTraitMethod\t-\t-\tuser/census_child",
-            "release\tTraitMethod\tvar\t-\tuser/census_child",
-            "retain\tTraitMethod\tvar\t-\tuser/census_child",
+            "frame\tTraitMethod\t-\t-\tuser/census_child_absent",
         ]
         .into_iter()
         .collect(),
@@ -1018,8 +1021,8 @@ fn the_census_file_is_written_only_when_set_and_emission_is_unchanged() {
             .lines()
             .filter(|line| line.starts_with("frame\t"))
             .count(),
-        1,
-        "one frame compiled, one frame line:\n{lines}"
+        2,
+        "two frames compiled, two frame lines:\n{lines}"
     );
     // Both streams carry libtest's own lines and nothing else, in either run,
     // so census output of any form on either stream fails here.

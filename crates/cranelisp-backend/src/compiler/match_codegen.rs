@@ -18,23 +18,6 @@ use crate::heap::{self, HeapAdt};
 use super::ownership_plan::Intro;
 use super::{FnCompiler, MatchContext};
 
-/// A field binder records its type only when the field owns something heap,
-/// which keeps a scalar field out of every counting site.
-fn heap_field_type<M: Module, C, L>(
-    compiler: &FnCompiler<'_, M, C, L>,
-    field_types: &[cranelisp_types::ConcreteType],
-    slot: usize,
-) -> Option<cranelisp_types::Type>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    field_types
-        .get(slot)
-        .map(cranelisp_types::ConcreteType::to_type)
-        .filter(|ty| compiler.is_heap_type(ty))
-}
-
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -103,7 +86,7 @@ where
                         },
                         name,
                         scrut_val,
-                        Some(scrut_ty.clone()),
+                        scrut_ty.clone(),
                     )?;
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
@@ -117,7 +100,7 @@ where
                 } => {
                     let match_ctx = MatchContext {
                         scrut_val,
-                        scrut_type: Some(scrut_ty.clone()),
+                        scrut_type: scrut_ty.clone(),
                         next_block,
                         merge_block,
                         saved_tail,
@@ -194,9 +177,10 @@ where
             ),
             location: ErrorLocation::from_span(span),
         })?;
+        let scrut_type = match_ctx.scrut_type.to_type();
         let (fqtn, ctor_info) =
             self.ctx
-                .pattern_ctor_meta(fq, match_ctx.scrut_type.as_ref(), span, &self.census)?;
+                .pattern_ctor_meta(fq, Some(&scrut_type), span, &self.census)?;
         let _type_def =
             self.ctx
                 .lookup_type_def(&fqtn)
@@ -225,9 +209,9 @@ where
         if is_nullary && bindings.is_empty() {
             return self.compile_nullary_pattern(tag, is_mixed, match_ctx, body);
         }
-        let field_types =
-            self.ctx
-                .ctor_field_types(fq, match_ctx.scrut_type.as_ref(), span, &self.census)?;
+        let field_types = self
+            .ctx
+            .ctor_field_types(fq, Some(&scrut_type), span, &self.census)?;
         if field_types.is_empty() || bindings.len() != field_types.len() {
             return Err(CranelispError::CodegenError {
                 message: format!(
@@ -349,19 +333,16 @@ where
                     slot,
                 };
                 if self.field_is_used(intro) {
-                    let ty = heap_field_type(self, field_types, slot);
-                    self.emit_dup(field_val, ty.as_ref());
+                    self.emit_dup(field_val, &field_types[slot]);
                 }
             }
-            if let Some(scrut_ty) = &match_ctx.scrut_type {
-                self.emit_typed_rc_dec(match_ctx.scrut_val, scrut_ty)?;
-            }
+            self.emit_typed_rc_dec(match_ctx.scrut_val, &match_ctx.scrut_type)?;
         }
         self.enter_arm(match_ctx.match_node, match_ctx.arm)?;
 
         self.push_scope();
         for (slot, (binding_name, field_val)) in bindings.iter().zip(field_vals).enumerate() {
-            let ty = heap_field_type(self, field_types, slot);
+            let ty = field_types[slot].clone();
             self.bind_field_binder(
                 Intro::Arm {
                     node: match_ctx.match_node,

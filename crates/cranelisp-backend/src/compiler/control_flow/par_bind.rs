@@ -212,10 +212,10 @@ where
 
             // The captures' types, read from the ENCLOSING environment before
             // the inner compiler takes this compiler's module borrow.
-            let capture_types: Vec<Option<cranelisp_types::Type>> = captures
+            let capture_types: Vec<ConcreteType> = captures
                 .iter()
-                .map(|cap_name| self.lookup_type(cap_name))
-                .collect();
+                .map(|cap_name| self.capture_type(cap_name, span))
+                .collect::<Result<_, _>>()?;
 
             // The binding names are the continuation's own parameters.
             let binding_names: Vec<Symbol> = bindings.iter().map(|(n, _)| n.clone()).collect();
@@ -237,7 +237,7 @@ where
                 // The capture ENVIRONMENT, not a scope frame
                 // (`binding-scope.md` §3.2) — which is also what makes a
                 // capture ineligible for last-use transfer.
-                inner.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
+                inner.bind_capture(cap_name, cap_val, capture_types[i].clone());
             }
 
             // Load the N results from results_ptr at `HeapAdt::field_offset(i)`.
@@ -252,11 +252,11 @@ where
                     ConcreteType::ADT(fqtn, args)
                         if fqtn.name.as_ref() == "IO" && !args.is_empty() =>
                     {
-                        args[0].to_type()
+                        args[0].clone()
                     }
-                    other => other.to_type(),
+                    other => other.clone(),
                 };
-                inner.bind_binder(Intro::Param(i), name, result_val, Some(inner_ty))?;
+                inner.bind_binder(Intro::Param(i), name, result_val, inner_ty)?;
             }
 
             let result = inner.compile_expr(body)?;

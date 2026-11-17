@@ -364,22 +364,6 @@ where
             vec_new_func_id: intrinsic_ids.vec_new,
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };
-        // Production carries these types from the already-selected callable
-        // arm. Hand-built probes recover the same fixture-owned scheme here.
-        let param_types = symbol_tables
-            .get(&module_path)
-            .and_then(|table| {
-                table
-                    .get(d.name.as_ref())
-                    .and_then(cranelisp_types::Binding::callable)
-                    .and_then(|callable| match &callable.arm.scheme.ty {
-                        Type::Fn(params, _) => {
-                            Some(params.iter().cloned().map(Some).collect::<Vec<_>>())
-                        }
-                        _ => None,
-                    })
-            })
-            .unwrap_or_else(|| vec![None; d.params().len()]);
         // The frame's partition comes from its binding, as production's does.
         let census = {
             let table = symbol_tables.get(&module_path);
@@ -389,6 +373,20 @@ where
                 .map(|entry| &entry.declaration);
             crate::compiler::census::Frame::of_target(declaration, &module_path, &d.name)
         };
+        // Production carries these types from the already-selected callable
+        // arm. Hand-built probes recover the same fixture-owned scheme here; a
+        // probe with no binding has no scheme, so its parameters are untyped
+        // and refused as production's would be.
+        let scheme = symbol_tables
+            .get(&module_path)
+            .and_then(|table| {
+                table
+                    .get(d.name.as_ref())
+                    .and_then(cranelisp_types::Binding::callable)
+                    .map(|callable| callable.arm.scheme.ty.clone())
+            })
+            .unwrap_or_else(|| Type::Fn(Vec::new(), Box::new(Type::Int)));
+        let param_types = crate::compiler::defn_param_types(d, &scheme, &census)?;
         let art = crate::compile_defn_in_module(
             d,
             &body,

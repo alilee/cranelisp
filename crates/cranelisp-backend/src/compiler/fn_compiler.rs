@@ -10,8 +10,8 @@ use cranelift::prelude::*;
 use cranelift_module::Module;
 
 use cranelisp_types::{
-    ApplyRef, CranelispError, Defn, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol, Type,
-    VarRef,
+    ApplyRef, ConcreteType, CranelispError, Defn, ErrorLocation, ModuleFullPath, MonoExpr,
+    ResolvedCall, Span, Symbol, Type, VarRef,
 };
 
 use crate::heap::{self, HeapCategory};
@@ -19,17 +19,15 @@ use crate::heap::{self, HeapCategory};
 use super::census::{self, Record};
 use super::ownership_plan::{BinderId, CaptureEntry, Intro, Occurrence, OwnershipPlan, Use};
 use super::scope_chain::{Binding, CaptureEnv, ScopeChain, resolve_binding};
-use super::{
-    CompileContext, find_var_type_in_expr, inner_fn_discriminator_for, signature_heap_category,
-};
+use super::{CompileContext, inner_fn_discriminator_for};
 
 /// Match-arm-invariant data bundled to reduce parameter counts in
 /// `compile_constructor_pattern`.
 pub(crate) struct MatchContext {
     /// The compiled scrutinee value, which the match owns.
     pub scrut_val: Value,
-    /// The inferred type of the scrutinee expression (for field type resolution).
-    pub scrut_type: Option<Type>,
+    /// The scrutinee's counted type (for field type resolution).
+    pub scrut_type: ConcreteType,
     /// The block to branch to if this arm does not match.
     pub next_block: Block,
     /// The merge block where all arms converge.
@@ -46,7 +44,7 @@ pub(crate) struct MatchContext {
 #[derive(Clone, Debug)]
 struct BinderStore {
     var: Variable,
-    ty: Option<Type>,
+    ty: ConcreteType,
 }
 
 /// Per-function compilation context.
@@ -241,7 +239,7 @@ where
     pub fn compile_body(
         defn: &Defn,
         body: &MonoExpr,
-        param_types: &[Option<Type>],
+        param_types: &[ConcreteType],
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
@@ -282,16 +280,9 @@ where
         compiler.tail_loop_block = Some(loop_header);
         compiler.in_tail_position = true;
 
-        for (i, param_name) in param_names.iter().enumerate() {
+        for (i, (param_name, ty)) in param_names.iter().zip(param_types).enumerate() {
             let val = compiler.builder.block_params(loop_header)[i];
-            let ty = match param_types.get(i) {
-                Some(Some(ty)) => Some(ty.clone()),
-                _ => Self::derive_param_type_from_body(body, param_name),
-            };
-            if ty.is_none() {
-                census::record(&compiler.census, || Record::Absent);
-            }
-            compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
+            compiler.bind_binder(Intro::Param(i), param_name, val, ty.clone())?;
         }
 
         let result = compiler.compile_expr(body)?;
@@ -363,8 +354,7 @@ where
                         location: cranelisp_types::ErrorLocation::from_span(*span),
                     }
                 })?;
-                let lambda_type = ty.to_type();
-                self.compile_lambda(params, body, *span, Some(&lambda_type), &captures)
+                self.compile_lambda(params, body, *span, ty, &captures)
             }
             MonoExpr::Apply {
                 callee,
@@ -444,12 +434,12 @@ where
                             ),
                             location: cranelisp_types::ErrorLocation::from_span(span),
                         })?;
-                (capture.var(), capture.ty().cloned(), Use::Duplicate)
+                (capture.var(), capture.ty().clone(), Use::Duplicate)
             }
         };
         let val = self.builder.use_var(var);
         if use_ == Use::Duplicate {
-            self.emit_dup(val, ty.as_ref());
+            self.emit_dup(val, &ty);
         }
         Ok(val)
     }
@@ -461,24 +451,19 @@ where
     /// reads (`uniform-counting.md` §3.4 item 2). A synthetic body's nodes carry
     /// the lenient builder's `Int` placeholder while its parameters carry the
     /// signature's type (item 1), so reading the node there loses the release.
-    /// An occurrence whose binder has no recorded concrete type keeps its
-    /// node's type: an unrecorded type owns no heap, and a residual variable is
-    /// FIXME 0903's face, which item 4 leaves to the non-concrete release
-    /// contract.
-    pub(crate) fn counted_type(&self, node: &MonoExpr) -> Type {
+    pub(crate) fn counted_type(&self, node: &MonoExpr) -> ConcreteType {
         let recorded = match (self.plan.occurrence(node), node) {
-            (Some(Occurrence::Owned { binder, .. }), _) => self
-                .binders
-                .get(&binder)
-                .and_then(|store| store.ty.as_ref()),
+            (Some(Occurrence::Owned { binder, .. }), _) => {
+                self.binders.get(&binder).map(|store| &store.ty)
+            }
             (Some(Occurrence::Capture), MonoExpr::Var { name, .. }) => {
-                self.captures.get(name).and_then(|capture| capture.ty())
+                self.captures.get(name).map(|capture| capture.ty())
             }
             _ => None,
         };
         match recorded {
-            Some(ty) if cranelisp_types::ConcreteType::from_type(ty).is_ok() => ty.clone(),
-            _ => node.ty().to_type(),
+            Some(ty) => ty.clone(),
+            None => node.ty().clone(),
         }
     }
 
@@ -500,7 +485,7 @@ where
         intro: Intro,
         name: &Symbol,
         val: Value,
-        ty: Option<Type>,
+        ty: ConcreteType,
     ) -> Result<(), CranelispError> {
         let var = self.bind_local(name, val, ty.clone());
         let Some(binder) = self.plan.binder_at(intro) else {
@@ -527,7 +512,7 @@ where
         intro: Intro,
         name: &Symbol,
         val: Value,
-        ty: Option<Type>,
+        ty: ConcreteType,
     ) -> Result<(), CranelispError> {
         let var = self.bind_local(name, val, ty.clone());
         let Some(binder) = self.plan.binder_at(intro) else {
@@ -552,48 +537,24 @@ where
     }
 
     /// One increment of an owned heap value of type `ty`, guarded for a value
-    /// that may be a bare nullary tag. A scalar or untyped value is untouched.
-    pub(crate) fn emit_dup(&mut self, val: Value, ty: Option<&Type>) {
-        let Some(ty) = ty else {
-            return;
-        };
-        match signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census) {
+    /// that may be a bare nullary tag. A value of a type that owns no heap is
+    /// untouched.
+    pub(crate) fn emit_dup(&mut self, val: Value, ty: &ConcreteType) {
+        match self.heap_category(ty) {
             HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, self.module, val),
             HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, self.module, val),
             HeapCategory::NeverHeap | HeapCategory::Value => {}
         }
     }
 
-    /// Release one owned heap value of type `ty` through its canonical glue.
-    ///
-    /// # The non-concrete arm — TYPE-keyed, and known to be the wrong key
-    ///
-    /// The disposition authority is
-    /// `design/backend/non-concrete-release-contract.md` §4 and §7.4 (FIXME
-    /// 0903). No frame's parameter is residual-typed: a codegen target is a
-    /// `Life::Concrete` body, whose slot exists only for a concrete scheme. A
-    /// residual type arrives from inside a body, chiefly a constructor field
-    /// read from the declaration's scheme (contract §7.4), and takes the
-    /// shallow guarded dec below. A frame key was implemented and measured at
-    /// **+16 hard codegen refusals over the `spec_*` corpus**, so do not narrow
-    /// the key on its own (contract §8 reject list).
+    /// Release one owned value of type `ty` through its canonical glue, after
+    /// the category gate (`non-concrete-release-contract.md` §3.5).
     pub(crate) fn emit_release(
         &mut self,
         val: Value,
-        ty: Option<&Type>,
+        ty: &ConcreteType,
     ) -> Result<(), CranelispError> {
-        let Some(ty) = ty else {
-            return Ok(());
-        };
         if !self.is_heap_type(ty) {
-            return Ok(());
-        }
-        if cranelisp_types::ConcreteType::from_type(ty).is_err() {
-            census::record(&self.census, || {
-                Record::Release(census::Shape::of_residual(ty))
-            });
-            let dealloc = self.ctx.dealloc_func_id;
-            heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
             return Ok(());
         }
         self.emit_typed_rc_dec(val, ty)
@@ -603,7 +564,7 @@ where
     pub(crate) fn emit_drop_binder(&mut self, binder: BinderId) -> Result<(), CranelispError> {
         let store = self.binder_store(binder, Span::SYNTHETIC)?.clone();
         let val = self.builder.use_var(store.var);
-        self.emit_release(val, store.ty.as_ref())
+        self.emit_release(val, &store.ty)
     }
 
     fn emit_drops(&mut self, binders: &[BinderId]) -> Result<(), CranelispError> {
@@ -670,7 +631,7 @@ where
     /// `None` for a name nothing here binds.
     pub(crate) fn capture_value(&mut self, entry: &CaptureEntry) -> Option<Value> {
         let binding = self.lookup_binding(&entry.name)?;
-        let (var, ty) = (binding.var(), binding.ty().cloned());
+        let (var, ty) = (binding.var(), binding.ty().clone());
         let val = self.builder.use_var(var);
         let moves = matches!(
             entry.occurrence,
@@ -680,7 +641,7 @@ where
             }
         );
         if !moves {
-            self.emit_dup(val, ty.as_ref());
+            self.emit_dup(val, &ty);
         }
         Some(val)
     }
@@ -707,8 +668,7 @@ where
             });
         };
         let captures = self.duplicating_captures(params, body);
-        let lambda_type = ty.to_type();
-        self.compile_lambda(params, body, *span, Some(&lambda_type), &captures)
+        self.compile_lambda(params, body, *span, ty, &captures)
     }
 
     /// Allocate a fresh Cranelift Variable index.
@@ -735,7 +695,7 @@ where
     /// Bind ONE binder in the innermost frame: mint its `Variable`, define it,
     /// and publish its value and type TOGETHER, after its initializer has been
     /// compiled (`binding-scope.md` §3.3).
-    pub(crate) fn bind_local(&mut self, name: &Symbol, val: Value, ty: Option<Type>) -> Variable {
+    pub(crate) fn bind_local(&mut self, name: &Symbol, val: Value, ty: ConcreteType) -> Variable {
         let var = self.fresh_variable();
         self.builder.declare_var(var, types::I64);
         self.builder.def_var(var, val);
@@ -746,7 +706,7 @@ where
     /// Seed ONE capture into this (inner) compiler's capture environment: mint
     /// its `Variable`, define it from the loaded environment slot, and record
     /// its type (`binding-scope.md` §3.2).
-    pub(crate) fn bind_capture(&mut self, name: &Symbol, val: Value, ty: Option<Type>) {
+    pub(crate) fn bind_capture(&mut self, name: &Symbol, val: Value, ty: ConcreteType) {
         let var = self.fresh_variable();
         self.builder.declare_var(var, types::I64);
         self.builder.def_var(var, val);
@@ -759,9 +719,21 @@ where
         resolve_binding(&self.scope, &self.captures, name)
     }
 
-    /// The recorded type of the binder `name` denotes here, if one was recorded.
-    pub(crate) fn lookup_type(&self, name: &Symbol) -> Option<Type> {
-        self.lookup_binding(name).and_then(Binding::ty).cloned()
+    /// The type of the binder the capture `name` denotes here. A capture that
+    /// denotes nothing is a missing binder, a hard error (`backend.md` §2).
+    pub(crate) fn capture_type(
+        &self,
+        name: &Symbol,
+        span: Span,
+    ) -> Result<ConcreteType, CranelispError> {
+        self.lookup_binding(name)
+            .map(|binding| binding.ty().clone())
+            .ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation: capture '{name}' denotes no binder"
+                ),
+                location: ErrorLocation::from_span(span),
+            })
     }
 
     /// Is `name` a live binding (a scope slot or a capture)?
@@ -774,28 +746,65 @@ where
     /// body's `FunctionBuilder` is created. `Ok(None)` ⇒ the slot owns nothing.
     pub(crate) fn request_capture_glue(
         &mut self,
-        ty: &Type,
+        ty: &ConcreteType,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
-        let concrete = cranelisp_types::ConcreteType::from_type(ty).map_err(|_| {
-            crate::compiler::rc_emission::release_site_type_error(self.current_fn_name.as_ref(), ty)
-        })?;
         self.glue
-            .request_if_owning(self.module, self.ctx.symbol_tables, concrete)
+            .request_if_owning(self.module, self.ctx.symbol_tables, ty.clone())
+    }
+
+    /// The heap category of a value of type `ty`.
+    pub(crate) fn heap_category(&self, ty: &ConcreteType) -> HeapCategory {
+        HeapCategory::classify(ty, Some(self.ctx.symbol_tables))
     }
 
     /// Check if a type is heap-allocated and needs RC management.
-    pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
+    pub(crate) fn is_heap_type(&self, ty: &ConcreteType) -> bool {
         matches!(
-            signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census),
+            self.heap_category(ty),
             HeapCategory::AlwaysHeap | HeapCategory::Mixed
         )
     }
+}
 
-    /// Derive a function parameter's type from the first `Var` reference to it
-    /// in the body, when the signature does not supply one.
-    pub(crate) fn derive_param_type_from_body(body: &MonoExpr, name: &Symbol) -> Option<Type> {
-        find_var_type_in_expr(body, name)
+/// The parameter types of the codegen target `defn`, read once from its
+/// selected arm's `scheme` where the target is selected
+/// (`non-concrete-release-contract.md` §7.4 step 2). A `Concrete` arm's scheme
+/// is concrete, so a scheme that types no parameter, or types one with a
+/// residual type, is a located invariant error. A parameter the scheme leaves
+/// untyped records an absent binder under `census` first (§7.3).
+pub(crate) fn defn_param_types(
+    defn: &Defn,
+    scheme: &Type,
+    census: &census::Frame,
+) -> Result<Vec<ConcreteType>, CranelispError> {
+    let arity = defn.params().len();
+    let invariant = |what: String| CranelispError::CodegenError {
+        message: format!(
+            "internal invariant violation: the codegen target '{}' {what}",
+            defn.name
+        ),
+        location: ErrorLocation::from_span(defn.span),
+    };
+    let declared: &[Type] = match scheme {
+        Type::Fn(params, _) => params,
+        _ => &[],
+    };
+    if declared.len() < arity {
+        for _ in declared.len()..arity {
+            census::record(census, || Record::Absent);
+        }
+        return Err(invariant(format!(
+            "has {arity} parameter(s) but its scheme {scheme} types {}",
+            declared.len()
+        )));
     }
+    declared[..arity]
+        .iter()
+        .map(|ty| {
+            ConcreteType::from_type(ty)
+                .map_err(|_| invariant(format!("has a non-concrete parameter type {ty}")))
+        })
+        .collect()
 }
 
 /// Read the `confined` site fact off a [`MonoExpr`] node, for the spark density
@@ -901,6 +910,9 @@ pub(crate) fn is_self_call(
                     .is_some_and(|label| label.as_ref() == fn_name.as_ref())
     )
 }
+
+#[cfg(test)]
+mod binder_type_tests;
 
 #[cfg(test)]
 mod node_escapes_and_self_call_tests {

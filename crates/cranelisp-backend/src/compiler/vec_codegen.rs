@@ -11,14 +11,12 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{
-    ConcreteType, CranelispError, ErrorLocation, HeapHeader, MonoExpr, Span, Type,
-};
+use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, HeapHeader, MonoExpr, Span};
 
 use crate::heap::{self, HeapCategory, HeapVec};
 
+use super::FnCompiler;
 use super::control_flow::emit_extern_call_in_wrapper;
-use super::{FnCompiler, signature_heap_category};
 
 /// Bundled operands for [`emit_vec_set_cow_core`], shared by the static site
 /// and the §12.7 wrapper emission. The new element is an owned value the
@@ -159,9 +157,7 @@ where
             return Ok(None);
         }
         let elem_type = self.vec_elem_type(&args[0]);
-        let elem_category = elem_type
-            .as_ref()
-            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables), &self.census));
+        let elem_category = elem_type.as_ref().map(|t| self.heap_category(t));
         let vec_val = arg_vals[0];
         let result = match name {
             "vec-len" => {
@@ -224,7 +220,7 @@ where
     fn release_vec(
         &mut self,
         vec_val: Value,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         span: Span,
     ) -> Result<(), CranelispError> {
         let source = self.owned_source(elem_type, span)?;
@@ -235,7 +231,7 @@ where
     /// The teardown materials for an owned vector source.
     fn owned_source(
         &mut self,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         span: Span,
     ) -> Result<OwnedSource, CranelispError> {
         let vec_drop_func_id = self.vec_drop_id(span)?;
@@ -264,12 +260,12 @@ where
     /// `pub(crate)`: also read by `control_flow::fn_as_value::compile_auto_curry`
     /// to recover the element type from the applied Vec argument on the
     /// curried-vec-query path (§12.7).
-    pub(crate) fn vec_elem_type(&self, vec_expr: &MonoExpr) -> Option<Type> {
+    pub(crate) fn vec_elem_type(&self, vec_expr: &MonoExpr) -> Option<ConcreteType> {
         if let ConcreteType::ADT(fqtn, args) = vec_expr.ty()
             && fqtn.name.as_ref() == "Vec"
             && args.len() == 1
         {
-            return Some(args[0].to_type());
+            return Some(args[0].clone());
         }
         None
     }
@@ -280,15 +276,10 @@ where
     /// Returns a Cranelift func_addr for AlwaysHeap and Mixed types.
     fn resolve_elem_inc_fn_ptr(
         &mut self,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let Some(ty) = &elem_type else {
-            // Unknown element type: assume NeverHeap (safe default).
-            return Ok(self.builder.ins().iconst(types::I64, 0));
-        };
-
-        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census);
+        let category = self.elem_category(elem_type, span)?;
         match category {
             HeapCategory::NeverHeap | HeapCategory::Value => {
                 Ok(self.builder.ins().iconst(types::I64, 0))
@@ -312,27 +303,27 @@ where
     /// The only part that needs `&mut self` before a borrowed builder exists.
     fn request_elem_dec_adapter(
         &mut self,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         let Some(ty) = elem_type else {
-            return Err(CranelispError::CodegenError {
-                message: "Vec element release reached a missing element type; canonical drop glue requires a concrete type".into(),
-                location: ErrorLocation::from_span(span),
-            });
+            return Err(missing_element_type("release", span));
         };
-        let concrete = cranelisp_types::ConcreteType::from_type(ty).map_err(|_| {
-            CranelispError::CodegenError {
-                message: format!(
-                    "Vec element release reached a non-concrete element type {ty:?}; \
-                     canonical drop glue is keyed on the concrete type and there is no \
-                     shallow fallback (design/backend/transitive-drop-glue.md §3.4 D2)"
-                ),
-                location: ErrorLocation::from_span(span),
-            }
-        })?;
         self.glue
-            .request_vec_elem_adapter(self.module, self.ctx.symbol_tables, &concrete)
+            .request_vec_elem_adapter(self.module, self.ctx.symbol_tables, ty)
+    }
+
+    /// The heap category of the element type, which an element increment
+    /// needs; a missing element type is a located refusal.
+    fn elem_category(
+        &self,
+        elem_type: &Option<ConcreteType>,
+        span: Span,
+    ) -> Result<HeapCategory, CranelispError> {
+        let Some(ty) = elem_type else {
+            return Err(missing_element_type("increment", span));
+        };
+        Ok(self.heap_category(ty))
     }
 
     /// Build a standalone inc function: `(val: i64) -> i64`.
@@ -397,7 +388,7 @@ where
     /// whose params arrive owned (consuming-closure protocol).
     fn owned_source_into(
         &mut self,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         builder: &mut FunctionBuilder,
         span: Span,
     ) -> Result<OwnedSource, CranelispError> {
@@ -413,7 +404,7 @@ where
 
     fn resolve_elem_dec_fn_ptr_into(
         &mut self,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         builder: &mut FunctionBuilder,
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -427,15 +418,11 @@ where
     /// `resolve_elem_inc_fn_ptr`, which emits into `self.builder`).
     fn resolve_elem_inc_fn_ptr_into(
         &mut self,
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         builder: &mut FunctionBuilder,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let Some(ty) = &elem_type else {
-            return Ok(builder.ins().iconst(types::I64, 0));
-        };
-
-        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census);
+        let category = self.elem_category(elem_type, span)?;
         match category {
             HeapCategory::NeverHeap | HeapCategory::Value => {
                 Ok(builder.ins().iconst(types::I64, 0))
@@ -480,12 +467,10 @@ where
         builder: &mut FunctionBuilder,
         name: &str,
         params: &[Value],
-        elem_type: &Option<Type>,
+        elem_type: &Option<ConcreteType>,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let elem_category = elem_type
-            .as_ref()
-            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables), &self.census));
+        let elem_category = elem_type.as_ref().map(|t| self.heap_category(t));
         match (name, params.len()) {
             ("vec-len", 1) => {
                 let vec_drop_id =
@@ -576,6 +561,18 @@ where
 // ---------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------
+
+/// A Vec element operation reached with no element type: the Vec's type
+/// carries no argument, which no concrete Vec type does.
+fn missing_element_type(operation: &str, span: Span) -> CranelispError {
+    CranelispError::CodegenError {
+        message: format!(
+            "Vec element {operation} reached a missing element type; canonical drop glue \
+             requires a concrete type"
+        ),
+        location: ErrorLocation::from_span(span),
+    }
+}
 
 /// The one Vec index guard (`design/backend/backend.md` §7). Loads the length;
 /// an index below zero or not below the length raises the spec §12.7.2.1 panic.

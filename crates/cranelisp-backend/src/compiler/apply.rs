@@ -18,11 +18,11 @@ use cranelisp_types::{
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
+use super::FnCompiler;
 use super::control_flow::{
     LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args, find_sparkable_args_with,
 };
 use super::ownership_plan::OperandSlot;
-use super::{FnCompiler, signature_heap_category};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
 /// (field-3) from the node **base** pointer.
@@ -1816,18 +1816,24 @@ where
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         let dealloc_id = self.ctx.dealloc_func_id;
 
-        let heap_args: Vec<(usize, HeapCategory)> = param_types
-            .iter()
-            .enumerate()
-            .filter_map(|(i, ty)| {
-                let category =
-                    signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census);
-                match category {
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
-                    HeapCategory::NeverHeap | HeapCategory::Value => None,
+        // A platform effect's signature is concrete (`total-concreteness.md`
+        // §3.5), so a parameter type that does not convert is a located refusal.
+        let mut heap_args: Vec<(usize, HeapCategory)> = Vec::new();
+        for (i, ty) in param_types.iter().enumerate() {
+            let concrete =
+                ConcreteType::from_type(ty).map_err(|_| CranelispError::CodegenError {
+                    message: format!(
+                        "a platform poll effect's parameter {i} has the non-concrete type {ty}"
+                    ),
+                    location: ErrorLocation::from_span(span),
+                })?;
+            match self.heap_category(&concrete) {
+                category @ (HeapCategory::AlwaysHeap | HeapCategory::Mixed) => {
+                    heap_args.push((i, category));
                 }
-            })
-            .collect();
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
+            }
+        }
 
         if heap_args.is_empty() {
             return Ok(None);

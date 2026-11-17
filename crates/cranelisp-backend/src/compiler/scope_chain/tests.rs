@@ -36,9 +36,9 @@ fn pop_frame_by_name(chain: &mut ScopeChain) {
 fn check_outer_binder_survives_inner_shadow(pop: fn(&mut ScopeChain)) -> Result<(), String> {
     let mut chain = ScopeChain::new();
     chain.push_frame();
-    chain.bind(sym("b"), var(1), Some(Type::String));
+    chain.bind(sym("b"), var(1), ConcreteType::String);
     chain.push_frame();
-    chain.bind(sym("b"), var(2), Some(Type::Int));
+    chain.bind(sym("b"), var(2), ConcreteType::Int);
     pop(&mut chain);
 
     match chain.resolve(&sym("b")) {
@@ -47,7 +47,7 @@ fn check_outer_binder_survives_inner_shadow(pop: fn(&mut ScopeChain)) -> Result<
             "`b` resolves to {:?}, not the outer binder",
             slot.var()
         )),
-        Some(slot) if slot.ty() != Some(&Type::String) => Err(format!(
+        Some(slot) if slot.ty() != &ConcreteType::String => Err(format!(
             "`b`'s type is {:?}, not the outer binder's",
             slot.ty()
         )),
@@ -61,9 +61,9 @@ fn check_outer_binder_survives_inner_shadow(pop: fn(&mut ScopeChain)) -> Result<
 fn check_unshadowed_outer_binder_survives(pop: fn(&mut ScopeChain)) -> Result<(), String> {
     let mut chain = ScopeChain::new();
     chain.push_frame();
-    chain.bind(sym("b"), var(1), Some(Type::String));
+    chain.bind(sym("b"), var(1), ConcreteType::String);
     chain.push_frame();
-    chain.bind(sym("c"), var(2), Some(Type::Int));
+    chain.bind(sym("c"), var(2), ConcreteType::Int);
     pop(&mut chain);
 
     match chain.resolve(&sym("b")) {
@@ -118,12 +118,12 @@ fn the_delete_by_name_pop_is_silent_without_a_shadow() {
 fn two_binders_of_one_name_in_one_frame_are_two_slots() {
     let mut chain = ScopeChain::new();
     chain.push_frame();
-    chain.bind(sym("s"), var(1), Some(Type::String));
-    chain.bind(sym("s"), var(2), Some(Type::Int));
+    chain.bind(sym("s"), var(1), ConcreteType::String);
+    chain.bind(sym("s"), var(2), ConcreteType::Int);
 
     let resolved = chain.resolve(&sym("s")).expect("`s` is bound");
     assert_eq!(resolved.var(), var(2), "a name denotes the LATEST binder");
-    assert_eq!(resolved.ty(), Some(&Type::Int));
+    assert_eq!(resolved.ty(), &ConcreteType::Int);
 
     // The displaced binder is still a slot: popping nothing else, it is not
     // reachable by name, but the frame kept it rather than overwriting it.
@@ -136,7 +136,7 @@ fn two_binders_of_one_name_in_one_frame_are_two_slots() {
 // The capture is never a scope slot, so no body frame can release it.
 fn a_capture_is_shadowed_by_a_local_and_survives_it() {
     let mut captures = CaptureEnv::new();
-    captures.insert(sym("b"), var(9), Some(Type::String));
+    captures.insert(sym("b"), var(9), ConcreteType::String);
     let mut chain = ScopeChain::new();
 
     let denotes = |chain: &ScopeChain, captures: &CaptureEnv| {
@@ -150,7 +150,7 @@ fn a_capture_is_shadowed_by_a_local_and_survives_it() {
     );
 
     chain.push_frame();
-    chain.bind(sym("b"), var(3), Some(Type::Int));
+    chain.bind(sym("b"), var(3), ConcreteType::Int);
     assert_eq!(
         denotes(&chain, &captures),
         Some(var(3)),

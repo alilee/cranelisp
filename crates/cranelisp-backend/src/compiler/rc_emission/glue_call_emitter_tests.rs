@@ -196,27 +196,10 @@ fn the_release_emitter_takes_no_needs_guard_parameter_neg() {
         !signature.contains("dealloc"),
         "emit_typed_rc_dec regained a site-supplied dealloc id: {signature}"
     );
-}
-
-// spec: appendix-c-nfr §C.1.4 (NEGATIVE) — D2: a release site that cannot
-// supply a concrete type is a LOCATED error naming the type and the requesting
-// function, never a shallow dec. The message is the whole diagnostic value, so
-// it is pinned directly.
-#[test]
-fn a_non_concrete_release_type_produces_a_located_error_neg() {
-    let err = super::release_site_type_error(Some(&Symbol::from("user/step")), &Type::Var(7));
-    let text = err.to_string();
+    // D2 is structural: the release type is concrete, so a site without one
+    // cannot call the emitter (`non-concrete-release-contract.md` §7.4 step 2).
     assert!(
-        text.contains("user/step"),
-        "must name the requester: {text}"
+        signature.contains("ty: &ConcreteType"),
+        "emit_typed_rc_dec accepts a type that may not be concrete: {signature}"
     );
-    assert!(text.contains("Var(7)"), "must name the type: {text}");
-    assert!(
-        text.contains("no shallow fallback"),
-        "must state that no fallback exists: {text}"
-    );
-    // An anonymous inner body (lambda / continuation / glue body) still
-    // produces a located error rather than an unattributed one.
-    let anon = super::release_site_type_error(None, &Type::Var(7)).to_string();
-    assert!(anon.contains("<anonymous body>"), "{anon}");
 }

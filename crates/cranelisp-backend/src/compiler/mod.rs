@@ -53,8 +53,7 @@ use cranelisp_types::Type;
 // item under `compiler::` (verified against `public-api.txt`); it MUST re-export
 // `pub` so the public API path is preserved. Everything else is `pub(crate)`.
 pub use context::CompileContext;
-pub(crate) use fn_compiler::{FnCompiler, MatchContext, is_self_call};
-pub(crate) use rc_emission::{find_var_type_in_expr, signature_heap_category};
+pub(crate) use fn_compiler::{FnCompiler, MatchContext, defn_param_types, is_self_call};
 // S110 W3 deleted the entire `resolve_*` resolver family (`resolve_driven` +
 // `resolve_chain` + the ten entry points + `lookup_constructor`): the backend is
 // now a pure keyed-lookup consumer (`entry_at`/`ctor_meta_at`/`got_entry_at`),

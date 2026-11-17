@@ -826,7 +826,7 @@ fn collect_compile_targets<C, L>(
     (
         Vec<Defn>,
         Vec<cranelisp_types::MonoExpr>,
-        Vec<Vec<Option<cranelisp_types::Type>>>,
+        Vec<Vec<cranelisp_types::ConcreteType>>,
         Vec<compiler::census::Frame>,
     ),
     CranelispError,
@@ -847,7 +847,7 @@ where
     // `ConcreteType`), NOT reconstructed from `ast`. Carried in lockstep with
     // `defns`.
     let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(targets.len());
-    let mut param_types: Vec<Vec<Option<cranelisp_types::Type>>> =
+    let mut param_types: Vec<Vec<cranelisp_types::ConcreteType>> =
         Vec::with_capacity(targets.len());
     let mut census_frames: Vec<compiler::census::Frame> = Vec::with_capacity(targets.len());
     {
@@ -934,66 +934,22 @@ where
                 visibility: entry.visibility,
                 span: variant.span,
             };
-            // The selected arm owns the scheme. Generated overload/macro
-            // labels are executable names and are not table bindings, so a
-            // later lookup by `defn.name` cannot recover these types.
-            let selected_param_types = match &arm.scheme.ty {
-                cranelisp_types::Type::Fn(params, _) => params.iter().cloned().map(Some).collect(),
-                _ => vec![None; defn.params().len()],
-            };
 
-            // The backend codegen walk is over `MonoExpr` (concrete-boundary-type.md
-            // §3.1, FIXME 0391): every node carries a `ConcreteType`, so no
-            // `Type::Var` reaches codegen and `HeapCategory::classify` is total over
-            // `ConcreteType` (the `Var` arm is structurally deleted). The arc's
-            // payoff is delivered HERE — the body the backend walks is a `MonoExpr`,
-            // built through the `Expr → MonoExpr` choke point so `classify` can only
-            // ever see a `ConcreteType`.
-            //
-            // **Body source: the typecheck-populated `codegen_view` on the live
-            // concrete-defn path (S84, FIXME 0394/0395 — closed).** When the entry
-            // carries a populated view (ordinary concrete defns + mono instances —
-            // the body-AST-node-typed codegen targets), the body is the
-            // `MonoDefnVariant.body: MonoExpr` typecheck built POST-mono: FIXME 0394
-            // moved the `codegen_view` rebuild into the post-mono re-annotation seam
-            // (`program.rs` finalize Step-1b), so the view's call nodes carry the
-            // correct `SigDispatch{mangled}` dispatch (e.g. `(id 7)`'s `id` call →
-            // `SigDispatch{id$Int}`). The dual-source FIXME 0395 forecloses
-            // (populated-but-unread view + `ast`-rebuild) collapses to ONE source
-            // here for every entry that HAS a view (Principle 7) — the SSOT.
-            //
-            // **Lenient fallback when the view is `None`.** A small set of
-            // `Concrete{slot}` entries are body-AST-walked but legitimately carry
-            // NO view: synthesised field accessors (`(match self [(Point _ y) y])`
-            // — a synthetic `Match` whose nodes are `inferred_type: None`; the
-            // backend reads field types from the ctor signature, not body node
-            // types), and the §3.11.1-best-effort concrete-defn cases. These — plus
-            // the signature-driven / generic / REPL-`__expr` entries
-            // (`requires_codegen_view == false`) — fall through to the lenient
-            // builder, whose residual `Var`/un-annotated nodes are read only via
-            // `signature_heap_category` (Var→Mixed), never `classify`. Because the
-            // lenient builder shares the `ConcreteType::from_type` choke point with
-            // the strict view, the structural guarantee (no `Type::Var` reaches
-            // `classify`) holds on BOTH paths.
-            // **W0.b totalization flip (`backend-keyed-consumer.md` §4 W0.b /
-            // §5, Principle 18).** typecheck is the SOLE mono-view producer for
-            // EVERY codegen-reached body — ordinary concrete defns, mono
-            // instances, ctor/accessor synthetic bodies, `f$Var` multi-sig
-            // variants, `__expr`, macro-clause bodies. The `requires_codegen_view`
-            // bypass was retired from the live path at W0.b, and the backend
-            // lenient rebuild (`lenient_mono_from_expr`) was DELETED outright at
-            // W3 (only `cranelisp_types::MonoExpr::lenient_from_expr` survives,
-            // called by the `#[cfg(test)]`-only probe helper): a
-            // codegen-reached entry with NO typecheck-populated `codegen_view` is
-            // a producer gap and a HARD error, never a silent lenient rebuild
-            // (Rev-2: no soft fallback).
+            // The body is typecheck's codegen view, built post-mono: every node
+            // carries a `ConcreteType` (concrete-boundary-type.md §3.1). A
+            // codegen-reached entry without one is a producer gap, refused above.
             let body = view.body.clone();
 
-            census_frames.push(compiler::census::Frame::of_target(
+            let census = compiler::census::Frame::of_target(
                 Some(&entry.declaration),
                 module_path,
                 &defn.name,
-            ));
+            );
+            // The selected arm owns the scheme. Generated overload/macro
+            // labels are executable names and are not table bindings, so a
+            // later lookup by `defn.name` cannot recover these types.
+            let selected_param_types = compiler::defn_param_types(&defn, &arm.scheme.ty, &census)?;
+            census_frames.push(census);
             defns.push(defn);
             bodies.push(body);
             param_types.push(selected_param_types);
@@ -1047,7 +1003,7 @@ fn compile_module_bodies<M, C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     defns: &[Defn],
     bodies: &[cranelisp_types::MonoExpr],
-    param_types: &[Vec<Option<cranelisp_types::Type>>],
+    param_types: &[Vec<cranelisp_types::ConcreteType>],
     census_frames: &[compiler::census::Frame],
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
@@ -1495,7 +1451,7 @@ fn disasm_host(code_bytes: &[u8], addr: u64) -> Result<String, String> {
 fn compile_defn_in_module<M, C, L>(
     defn: &Defn,
     body: &cranelisp_types::MonoExpr,
-    param_types: &[Option<cranelisp_types::Type>],
+    param_types: &[cranelisp_types::ConcreteType],
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
@@ -1568,57 +1524,6 @@ where
         .unwrap_or(0);
 
     Ok(FunctionArtifacts { clif_ir, code_size })
-}
-
-#[cfg(test)]
-mod concrete_boundary_phase3_tests {
-    //! S84 Phase 3 (concrete-boundary-type.md §3.1/§3.1.1, FIXME 0391): the
-    //! backend consumes `MonoExpr`/`ConcreteType`. These pin the two structural
-    //! seams the migration introduced — the scoped `codegen_view` backstop
-    //! predicate and the signature-path `Type → ConcreteType` conversion.
-
-    use crate::compiler::signature_heap_category;
-    use crate::heap::HeapCategory;
-    use cranelisp_types::{ModuleFullPath, SymbolTable, Type};
-
-    // W0.b (`backend-keyed-consumer.md` §4 W0.b/§5) RETIRED the
-    //   `requires_codegen_view` bypass: typecheck now populates a `codegen_view`
-    //   for EVERY codegen-reached body (ctor/accessor synthetic bodies included),
-    //   and the backend hard-errors on a `None`. The two predicate tests that
-    //   pinned the "signature-driven kinds legitimately carry codegen_view: None"
-    //   asymmetry were deleted with the predicate.
-
-    // spec: concrete-boundary-type.md §3.1.1 (FIXME 0391 sites 1-3);
-    //   design/backend/transitive-drop-glue.md §4.1 — the signature-path heap
-    //   classification. A concrete field/binding `Type` classifies via the total
-    //   `ConcreteType` `classify`; a residual `Var` (a CTOR TEMPLATE's own field
-    //   param — `(Some [:a val])`'s `a`) maps to `Mixed` (uniform i64
-    //   representation), restoring the pre-Phase-3 ctor-`Def` behaviour WITHOUT
-    //   widening the `ConcreteType` classify.
-    #[test]
-    fn signature_path_classifies_concrete_and_var() {
-        let no_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>> = None;
-        let frame = crate::compiler::census::Frame::for_test();
-        // Concrete scalars route through the total `ConcreteType` classify.
-        assert_eq!(
-            signature_heap_category(&Type::Int, no_tables, &frame),
-            HeapCategory::NeverHeap
-        );
-        assert_eq!(
-            signature_heap_category(&Type::String, no_tables, &frame),
-            HeapCategory::AlwaysHeap
-        );
-        // A ctor-template field `Var` → `Mixed` (uniform representation),
-        // NOT a panic and NOT a widened `classify` (transitive-drop-glue.md §4.1).
-        assert_eq!(
-            signature_heap_category(&Type::Var(0), no_tables, &frame),
-            HeapCategory::Mixed
-        );
-        assert_eq!(
-            signature_heap_category(&Type::TyConApp(1, vec![Type::Int]), no_tables, &frame),
-            HeapCategory::Mixed
-        );
-    }
 }
 
 #[cfg(test)]

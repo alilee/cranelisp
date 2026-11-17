@@ -398,7 +398,11 @@ fn test_mono_defn_self_recursive_tco() {
     // (S111 R4 §1.3). The recursion is a TAIL self-call (TCO), so it never
     // reaches the keyed direct-call seam — empty carriers suffice.
     let mut jit = Jit::new_with_symbols(&[]).unwrap();
+    // The codegen target's scheme types its parameter, as production's does.
+    let mut table = SymbolTable::new(ModuleFullPath::from("test"));
+    crate::test_support::insert_user_fn_stub(&mut table, concrete_key, 1);
     let tables = empty_tables();
+    tables.insert(ModuleFullPath::from("test"), table);
     let no_targets: HashMap<Span, cranelisp_types::FQSymbol> = HashMap::new();
     crate::test_support::compile_defns_in_module(
         &[&enriched_defn],

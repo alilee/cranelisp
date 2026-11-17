@@ -22,9 +22,8 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Type};
+use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
-use crate::compiler::signature_heap_category;
 use crate::heap::{self, HeapCategory, HeapClosure};
 
 use super::{FnCompiler, find_free_vars};
@@ -52,7 +51,7 @@ where
     pub(crate) fn compile_dependent_thunk(
         &mut self,
         val_expr: &MonoExpr,
-        deps: &[(Symbol, Value, Type)],
+        deps: &[(Symbol, Value, ConcreteType)],
         span: Span,
     ) -> Result<Value, CranelispError> {
         let alloc_id = self
@@ -191,7 +190,7 @@ where
         func_id: cranelift_module::FuncId,
         inner_name: &str,
         ord_captures: &[Symbol],
-        deps: &[(Symbol, Value, Type)],
+        deps: &[(Symbol, Value, ConcreteType)],
         val_expr: &MonoExpr,
         sig: cranelift::codegen::ir::Signature,
         span: Span,
@@ -209,10 +208,10 @@ where
 
         // The captures' types, read from the ENCLOSING environment before the
         // inner compiler takes this compiler's module borrow.
-        let capture_types: Vec<Option<cranelisp_types::Type>> = ord_captures
+        let capture_types: Vec<ConcreteType> = ord_captures
             .iter()
-            .map(|cap| self.lookup_type(cap))
-            .collect();
+            .map(|cap| self.capture_type(cap, span))
+            .collect::<Result<_, _>>()?;
 
         // The dependencies are bound like captures, so the plan sees them as
         // captures too: every use duplicates.
@@ -238,7 +237,7 @@ where
         for (i, cap) in ord_captures.iter().enumerate() {
             let cap_val =
                 heap::heap_load(&mut inner.builder, env_ptr, HeapClosure::capture_offset(i));
-            inner.bind_capture(cap, cap_val, capture_types.get(i).cloned().flatten());
+            inner.bind_capture(cap, cap_val, capture_types[i].clone());
         }
 
         // Force prologue: per dependency, load its captured IVar pointer, force
@@ -254,7 +253,7 @@ where
                 HeapClosure::capture_offset(cap_idx),
             );
             let forced = inner.emit_extern_call("cranelisp_ivar_force", &[ivar_cap], span)?;
-            inner.bind_capture(dep_name, forced, Some(dep_ty.clone()));
+            inner.bind_capture(dep_name, forced, dep_ty.clone());
         }
 
         // Compile the unmodified RHS; captures and deps are NOT on a frame.
@@ -293,19 +292,14 @@ where
         let dealloc_id = self.ctx.dealloc_func_id;
 
         // Ordinary heap captures: (capture index, heap category).
-        let heap_caps: Vec<(usize, HeapCategory)> = ord_captures
-            .iter()
-            .enumerate()
-            .filter_map(|(i, cap)| {
-                let ty = self.lookup_type(cap)?;
-                let category =
-                    signature_heap_category(&ty, Some(self.ctx.symbol_tables), &self.census);
-                match category {
-                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
-                    HeapCategory::NeverHeap | HeapCategory::Value => None,
-                }
-            })
-            .collect();
+        let mut heap_caps: Vec<(usize, HeapCategory)> = Vec::new();
+        for (i, cap) in ord_captures.iter().enumerate() {
+            let category = self.heap_category(&self.capture_type(cap, span)?);
+            match category {
+                HeapCategory::AlwaysHeap | HeapCategory::Mixed => heap_caps.push((i, category)),
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
+            }
+        }
 
         // `compile_dependent_thunk` only calls this when there is ≥1 dependency
         // (a dependent binding by definition), so the IVar caps always need a

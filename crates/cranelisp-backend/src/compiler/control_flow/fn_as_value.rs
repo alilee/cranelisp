@@ -31,13 +31,16 @@ mod forwarding_template_tests;
 /// param names the element type the wrapper's RC emission needs — exactly the
 /// knowledge a primitives-crate extern body cannot have (why the entries'
 /// GOT slots are NULL and the wrapper is the fix location).
-fn vec_query_elem_from_fn_type(fn_type: Option<&Type>) -> Option<Type> {
+///
+/// The site's type is a node's, so it is concrete; an element type that does
+/// not convert is absent, which element release refuses.
+fn vec_query_elem_from_fn_type(fn_type: Option<&Type>) -> Option<ConcreteType> {
     if let Some(Type::Fn(params, _)) = fn_type
         && let Some(Type::ADT(fqtn, args)) = params.first()
         && fqtn.name.as_ref() == "Vec"
         && args.len() == 1
     {
-        return Some(args[0].clone());
+        return ConcreteType::from_type(&args[0]).ok();
     }
     None
 }
@@ -409,7 +412,7 @@ where
         target_name: &Symbol,
         arity: usize,
         span: Span,
-        vec_elem: Option<&Type>,
+        vec_elem: Option<&ConcreteType>,
         ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives `emit_wrapper_call`'s
         // S10/S15/S16/S17 keyed reads.
@@ -487,7 +490,7 @@ where
         target_name: &Symbol,
         user_params: &[Value],
         span: Span,
-        vec_elem: Option<&Type>,
+        vec_elem: Option<&ConcreteType>,
         ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives the S15 summary, S16
         // ctor-as-value, S17 vec-query, and S10 GOT-entry keyed reads. `None` for
@@ -635,7 +638,7 @@ where
         all_args: &[Value],
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
-        vec_elem: Option<&Type>,
+        vec_elem: Option<&ConcreteType>,
         // S110 W2 (§4): the plain-fn target's STORAGE key (the auto-curry Apply
         // carrier / the fn-as-value Var carrier), used for the
         // `_ =>`/no-resolution fall-throughs. The TraitMethod and BuiltinFn arms
@@ -923,7 +926,7 @@ where
         arg_categories: &[HeapCategory],
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
-        vec_elem: Option<&Type>,
+        vec_elem: Option<&ConcreteType>,
         // S110 W2 (§4; row 17): the plain-fn curry target's carrier.
         target_fq: Option<&FQSymbol>,
         // FIXME 0705: the target is a CLOSURE VALUE captured at slot
@@ -1067,7 +1070,7 @@ where
                 }
                 CaptureReleaseKind::Glue => {
                     let Some(ty) = arg_types.get(i) else { continue };
-                    if let Some(id) = self.request_capture_glue(&ty.to_type())? {
+                    if let Some(id) = self.request_capture_glue(ty)? {
                         heap_indices.push((i, CaptureRelease::Glue(id)));
                     }
                 }

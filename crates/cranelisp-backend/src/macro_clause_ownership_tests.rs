@@ -322,13 +322,13 @@ fn macro_clause_projection_carries_parameter_authority_and_one_result_owner() {
         }
     ));
     assert!(matches!(
-        crate::compiler::signature_heap_category(
-            match &arm.scheme.ty {
+        crate::heap::HeapCategory::classify(
+            &cranelisp_types::ConcreteType::from_type(match &arm.scheme.ty {
                 Type::Fn(params, _) => &params[0],
                 other => panic!("macro clause must carry a function scheme, got {other}"),
-            },
+            })
+            .expect("a macro clause's parameter type is concrete"),
             Some(&tables),
-            &crate::compiler::census::Frame::for_test(),
         ),
         crate::heap::HeapCategory::Mixed
     ));

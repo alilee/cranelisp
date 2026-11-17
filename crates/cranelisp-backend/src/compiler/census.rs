@@ -1,9 +1,10 @@
 //! The category census (`design/backend/non-concrete-release-contract.md`
-//! §7.3): a count of every point at which codegen emits, or silently skips, an
-//! RC operation on a word whose heap category it cannot name, and of every
-//! constructor field read, keyed by the frame being compiled. Each codegen
-//! target also records one frame, the denominator a zero reading is read
-//! against.
+//! §7.3): a count of every binder refused because its producer supplied no
+//! type, and of every constructor field read, keyed by the frame being
+//! compiled. Each codegen target also records one frame, the denominator a
+//! zero reading is read against. The retain and release points left with
+//! their arms at §7.4 step 2: a binder's type is concrete, so neither arm has
+//! a residual type to admit.
 //!
 //! Debug builds only. In a release build [`record`] neither builds its record
 //! nor keeps a tally, and the environment variable is never read. Every record
@@ -48,45 +49,6 @@ impl Partition {
             Partition::Accessor => "Accessor",
             Partition::TraitMethod => "TraitMethod",
             Partition::Plain => "Plain",
-        }
-    }
-}
-
-/// The outermost shape of a type that is not concrete.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Shape {
-    /// A bare type variable.
-    Var,
-    /// A named ADT with a residual argument somewhere inside it.
-    Adt,
-    /// A function type with a residual parameter or result.
-    Fn,
-    /// An unresolved higher-kinded head.
-    Hkt,
-}
-
-impl Shape {
-    /// The shape of `ty`, which the caller has found not concrete. A scalar is
-    /// always concrete, so it has no shape.
-    pub(crate) fn of_residual(ty: &Type) -> Self {
-        match ty {
-            Type::Var(_) => Shape::Var,
-            Type::ADT(..) => Shape::Adt,
-            Type::Fn(..) => Shape::Fn,
-            Type::TyConApp(..) => Shape::Hkt,
-            Type::Int | Type::Bool | Type::String | Type::Float => {
-                unreachable!("census: a scalar type is concrete and has no residual shape")
-            }
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn name(self) -> &'static str {
-        match self {
-            Shape::Var => "var",
-            Shape::Adt => "adt",
-            Shape::Fn => "fn",
-            Shape::Hkt => "hkt",
         }
     }
 }
@@ -157,11 +119,7 @@ impl Declaration {
 /// One observation at a record point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Record {
-    /// A residual type licensed as `Mixed` by `signature_heap_category`.
-    Retain(Shape),
-    /// A residual-typed value released by the shallow guarded decrement.
-    Release(Shape),
-    /// A parameter introduced with no type.
+    /// A parameter its producer supplied no type for, refused.
     Absent,
     /// A constructor's field types read by the match lowering.
     Field {
@@ -189,8 +147,6 @@ impl Record {
     /// The point, shape and class columns of the record's line.
     fn columns(self) -> [&'static str; 3] {
         match self {
-            Record::Retain(shape) => ["retain", shape.name(), "-"],
-            Record::Release(shape) => ["release", shape.name(), "-"],
             Record::Absent => ["absent", "absent", "-"],
             Record::Field { class, declaration } => ["field", declaration.name(), class.name()],
             Record::Frame => ["frame", "-", "-"],

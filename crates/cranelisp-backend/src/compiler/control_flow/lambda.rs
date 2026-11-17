@@ -9,13 +9,12 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, Span, Symbol, Type};
+use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
 use crate::heap::{self, HeapClosure};
 
 use super::{CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_dec_into};
 use crate::compiler::ownership_plan::{CaptureEntry, Intro};
-use crate::compiler::signature_heap_category;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -37,7 +36,7 @@ where
         params: &[Symbol],
         body: &MonoExpr,
         span: Span,
-        lambda_type: Option<&Type>,
+        lambda_type: &ConcreteType,
         capture_entries: &[CaptureEntry],
     ) -> Result<Value, CranelispError> {
         let alloc_id = self
@@ -168,12 +167,10 @@ where
         // before that builder exists, and the body emits only the call.
         let mut heap_captures: Vec<(usize, CaptureRelease)> = Vec::new();
         for (i, cap_name) in captures.iter().enumerate() {
-            let Some(ty) = self.lookup_type(cap_name) else {
-                continue;
-            };
-            let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables), &self.census);
+            let ty = self.capture_type(cap_name, span)?;
+            let category = self.heap_category(&ty);
             let Some(kind) =
-                CaptureReleaseKind::classify(category, matches!(ty, cranelisp_types::Type::Fn(..)))
+                CaptureReleaseKind::classify(category, matches!(ty, ConcreteType::Fn(..)))
             else {
                 continue;
             };
@@ -303,7 +300,7 @@ where
         captures: &[Symbol],
         body: &MonoExpr,
         span: Span,
-        lambda_type: Option<&Type>,
+        lambda_type: &ConcreteType,
     ) -> Result<(), CranelispError> {
         // Build the inner function using a separate codegen context.
         let mut inner_ctx = self.module.make_context();
@@ -336,10 +333,10 @@ where
 
         // The captures' types, read from the ENCLOSING environment before the
         // inner compiler takes this compiler's module borrow.
-        let capture_types: Vec<Option<Type>> = captures
+        let capture_types: Vec<ConcreteType> = captures
             .iter()
-            .map(|cap_name| self.lookup_type(cap_name))
-            .collect();
+            .map(|cap_name| self.capture_type(cap_name, span))
+            .collect::<Result<_, _>>()?;
 
         let plan = Self::plan_body(body, params, captures, inner_name)?;
         let mut inner_compiler = FnCompiler::inner(
@@ -377,32 +374,35 @@ where
                 env_ptr,
                 HeapClosure::capture_offset(i),
             ); // capture_i: i64
-            inner_compiler.bind_capture(cap_name, cap_val, capture_types.get(i).cloned().flatten());
+            inner_compiler.bind_capture(cap_name, cap_val, capture_types[i].clone());
         }
 
-        // The lambda's inferred type supplies parameter types, so an unused
-        // parameter (e.g. `_s` in `(fn [_s] 42)`) still has the type its drop
-        // at introduction needs.
-        let lambda_param_types: Vec<Option<Type>> =
-            if let Some(Type::Fn(param_types, _)) = lambda_type {
-                param_types.iter().map(|t| Some(t.clone())).collect()
-            } else {
-                vec![None; params.len()]
-            };
-
-        // Bind lambda parameters (after env_ptr): the body owns each one.
-        for (i, param_name) in params.iter().enumerate() {
-            let val = block_params[i + 1];
-            let ty = match lambda_param_types.get(i) {
-                Some(Some(ty)) => Some(ty.clone()),
-                _ => Self::derive_param_type_from_body(body, param_name),
-            };
-            if ty.is_none() {
-                crate::compiler::census::record(&inner_compiler.census, || {
-                    crate::compiler::census::Record::Absent
+        // The `Lambda` node's function type is the one source of its
+        // parameters' types (`non-concrete-release-contract.md` §7.4 step 2).
+        let param_types = match lambda_type {
+            ConcreteType::Fn(param_types, _) if param_types.len() == params.len() => param_types,
+            _ => {
+                for _ in params {
+                    crate::compiler::census::record(&inner_compiler.census, || {
+                        crate::compiler::census::Record::Absent
+                    });
+                }
+                return Err(CranelispError::CodegenError {
+                    message: format!(
+                        "a lambda with {} parameter(s) reached codegen with the non-function \
+                         type {}; its parameters have no type",
+                        params.len(),
+                        lambda_type.to_type()
+                    ),
+                    location: ErrorLocation::from_span(span),
                 });
             }
-            inner_compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
+        };
+
+        // Bind lambda parameters (after env_ptr): the body owns each one.
+        for (i, (param_name, ty)) in params.iter().zip(param_types).enumerate() {
+            let val = block_params[i + 1];
+            inner_compiler.bind_binder(Intro::Param(i), param_name, val, ty.clone())?;
         }
 
         let result = inner_compiler.compile_expr(body)?;
@@ -482,7 +482,7 @@ mod tests {
                         inferred_type: None,
                     }),
                     span: Span::new(10, 40),
-                    inferred_type: None,
+                    inferred_type: Some(Box::new(Type::Fn(vec![Type::Int], Box::new(Type::Int)))),
                 }),
                 args: vec![Expr::IntLit {
                     value: 10,
@@ -549,7 +549,11 @@ mod tests {
                         inferred_type: Some(Box::new(string_ty.clone())),
                     }),
                     span: Span::new(15, 22),
-                    inferred_type: None,
+                    // A producer types every `Lambda` node as a function.
+                    inferred_type: Some(Box::new(Type::Fn(
+                        vec![Type::Int],
+                        Box::new(string_ty.clone()),
+                    ))),
                 }),
                 args: vec![Expr::IntLit {
                     value: 0,
