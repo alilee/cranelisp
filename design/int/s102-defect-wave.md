@@ -1,7 +1,7 @@
 > **REFERENCE LINEAGE.** The S102 Block-A cluster designs as delivered. Live source and
 > tests cite §1, §2, §4.2, §5.2 and §7.3 as the contract of record for those rules, so those
 > section numbers are pinned; the surrounding wave narrative is dated. Current design is
-> `int.md` (master) plus the subsystem docs indexed in `design/int/CLAUDE.md`
+> `int.md` (master) plus the subsystem docs indexed in `design/int/AGENTS.md`
 > §"Document index"; where this record disagrees with the source or the master, they win.
 >
 > S123 deleted the redefinition transaction, the downgrade report and the T1 reload

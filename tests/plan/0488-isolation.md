@@ -6,7 +6,7 @@ three signatures attributed; NO fix authored (attribution-only wave per
 
 **Inputs:** the 3 committed guards (`tests/generic_value_use_mono.rs`), FIXME
 `design/arch/fixmes/0488-…-missing-mono.md`, the isolation plan
-(`tests/plan/s102-test-plan.md` §3), `tests/CLAUDE.md` §"Isolating Cross-Crate
+(`tests/plan/s102-test-plan.md` §3), `tests/AGENTS.md` §"Isolating Cross-Crate
 Failures". Method: fresh-tmpdir REPL probes with `/sig`/`/list` mint
 inspection between turns, `CRANELISP_CODEGEN_DUMP='*'` CLIF reads, REPL vs
 `--run` cross-mode discriminators, and code-path reading of the pass-4
@@ -192,7 +192,7 @@ the causal chain (links 1–3 each independently verified); medium on the
 ## Unit-test shapes for the fixing /dev(typecheck) agent
 
 All via `cranelisp_frontend::parse` + build + `check_forms` per
-`tests/CLAUDE.md` §"Isolating Cross-Crate Failures" step 3, in
+`tests/AGENTS.md` §"Isolating Cross-Crate Failures" step 3, in
 `crates/cranelisp-typecheck/src/program/callees/tests.rs` (where the shapes landed) beside the existing
 `callees_*` / pass-4 tests (TestFixture harness):
 

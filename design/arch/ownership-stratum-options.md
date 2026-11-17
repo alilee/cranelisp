@@ -464,7 +464,7 @@ Adopting U′ therefore changes emission for the REPL, `--run` and shipped
 - **The user fixes the threshold before the number exists**, for example "the
   stdlib direct-loop workloads keep their complexity; the exemplar warm solve
   and the suite no worse than N×". A ruling not tested by measurement does not
-  bind (root `CLAUDE.md` §Assurance), and a threshold set after the number is
+  bind (root `AGENTS.md` §Assurance), and a threshold set after the number is
   anchored by it.
 - **Measure reading R exactly** with the toggle, by the method in
   [PLAN.md](../../tests/plan/PLAN.md): exemplar warm solve wall time and RC
@@ -501,7 +501,7 @@ asserted quantity. Four baseline cells flipped GREEN **on real measurements**
 closed-form values so any drift or half-fix flips a pin. The
 load-bearing capability fact: two independent full-stdlib children report an
 *identical* ambient residual, so the subtraction is exact, not approximate.
-`tests/CLAUDE.md` already carries the rule ("allocator balance is measured
+`tests/AGENTS.md` already carries the rule ("allocator balance is measured
 MARGINALLY, never absolutely") for the e2e tier.
 
 ### 4.2 The generalization — what remains to decide and build
@@ -734,7 +734,7 @@ documented-residual to zero; the marginal instrument stays valid unchanged.
   RE-1's row), Principle 25's frame.
 - `design/arch/ownership-inference.md` + `principles/25-*.md` — the
   conservative-lowering reference semantics option 2 promotes.
-- `tests/helpers/marginal.rs` + `tests/CLAUDE.md` §"Allocator balance…" —
+- `tests/helpers/marginal.rs` + `tests/AGENTS.md` §"Allocator balance…" —
   option 3's landed first instance and its e2e-tier rule.
 - FIXMEs 0889 (leak recovery; [the 0889 routing section](#63-fixme-0889-routing-the-user-required-leak-recovery)), 0890 (threshold re-derivation),
   0867 (historical variant-coverage hypothesis; retired by the S121 ruling).

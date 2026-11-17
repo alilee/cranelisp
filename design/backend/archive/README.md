@@ -29,4 +29,4 @@ committed test and that their durable rules had a current home:
   ruling behind it are `ring2-rc.md` §5.6, and its raw logs are retained in
   [S61 dumps in Git](https://github.com/alilee/cranelisp/tree/fc49541f/tests/sprint61/race-evidence);
 - the defect-8 repro notes — the code they describe was deleted, and the rule
-  that replaced it is in `src/CLAUDE.md`.
+  that replaced it is in `src/AGENTS.md`.

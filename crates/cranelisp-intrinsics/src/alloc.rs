@@ -357,7 +357,7 @@ pub unsafe fn dealloc(base: *mut u8) {
 ///
 /// `payload_size`: bytes needed after the header.
 ///
-/// Linker symbol is `runtime/alloc` (per src/CLAUDE.md "Runtime infrastructure
+/// Linker symbol is `runtime/alloc` (per src/AGENTS.md "Runtime infrastructure
 /// uses `runtime/name`" convention) so codegen's `declare_function("runtime/alloc",
 /// Linkage::Import, ...)` in object/link mode resolves cleanly against the bundle.
 /// JIT mode is unaffected — it registers the function pointer by Rust path

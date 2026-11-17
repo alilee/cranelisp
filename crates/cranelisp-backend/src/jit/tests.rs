@@ -96,7 +96,7 @@ fn test_jit_new_with_symbols() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 — custom `Drop` on `Jit` calls
+// spec: design/arch/AGENTS.md Decision 31 — custom `Drop` on `Jit` calls
 // `unsafe JITModule::free_memory()` to reclaim mmap'd executable pages.
 // Without this, Cranelift's default `Memory::drop` leaks
 // (cranelift-jit-0.116.1/src/memory.rs:269-276 — `mem::forget`s every
@@ -111,7 +111,7 @@ fn drop_runs_without_panic() {
     // Reaching here means the drop path returned without panic.
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 — reclaim path executes on drop.
+// spec: design/arch/AGENTS.md Decision 31 — reclaim path executes on drop.
 #[test]
 fn drop_invokes_free_memory() {
     use std::sync::atomic::Ordering;
@@ -134,7 +134,7 @@ fn drop_invokes_free_memory() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 — normal compile+call+drop
+// spec: design/arch/AGENTS.md Decision 31 — normal compile+call+drop
 // flow continues to work after the reclaim machinery is in place. This
 // checks that the `Option<JITModule>` plumbing does not regress the
 // finalize/get-ptr/call path. We observe the correct return value
@@ -204,7 +204,7 @@ fn compile_call_drop_roundtrip() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 (Sprint 58 Wave 2 follow-on) —
+// spec: design/arch/AGENTS.md Decision 23 (Sprint 58 Wave 2 follow-on) —
 // unified GOT data symbol shape: the symbol address IS the per-module
 // slab base directly, with NO extra pointer-cell indirection. In JIT
 // mode this is achieved by registering `__cranelisp_got_{M}` via
@@ -324,7 +324,7 @@ fn jit_got_symbol_address_is_slab_base() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 — cross-module dispatch via
+// spec: design/arch/AGENTS.md Decision 23 — cross-module dispatch via
 // GOT-indirect call. Two synthetic modules: producer module owns a fn
 // returning 99 with its pointer placed at slot 7 of a heap-allocated
 // slab; consumer module compiles a thunk that loads slot 7 from the
@@ -794,7 +794,7 @@ fn declare_intrinsics_generic_covers_the_catalog() {
 // ── Decision 31 reclaim regression guards ──────────────────────────────
 //
 // Public session-level byte deltas and `Code` shapes belong to the binary
-// tier (`tests/CLAUDE.md` §Two tiers, no middle). These units pin the durable
+// tier (`tests/AGENTS.md` §Two tiers, no middle). These units pin the durable
 // crate-internal kernel directly: the `Arc<Jit>` reclaim discipline that
 // `Jit::drop` materialises, over the same retention root that the session
 // layers `Code::Jit` over. A regression in `Jit::drop` or the reclaim counter
@@ -808,7 +808,7 @@ fn arc_jit() -> std::sync::Arc<Jit> {
     std::sync::Arc::new(Jit::new_with_symbols(&[]).expect("Jit::new for reclaim test"))
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 Scenario 2 (headline assertion 1)
+// spec: design/arch/AGENTS.md Decision 31 Scenario 2 (headline assertion 1)
 //       — a REDEFINITION produces a NEW JIT batch, never reuses the prior
 //       batch's allocation. Kernel of the legacy
 //       `decision31_scenario2_per_redefinition_jit_pages_reclaimed`
@@ -826,7 +826,7 @@ fn jit_batches_are_distinct_allocations() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 Scenario 2 footnote
+// spec: design/arch/AGENTS.md Decision 31 Scenario 2 footnote
 //       (unbounded-growth guard) — N batches created and released drive
 //       at least N reclaims. Kernel of the legacy
 //       `decision31_scenario2_repeated_redefinition_no_unbounded_growth`
@@ -851,7 +851,7 @@ fn repeated_batch_drop_reclaims_each() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 Scenario 1 — a batch with no
+// spec: design/arch/AGENTS.md Decision 31 Scenario 1 — a batch with no
 //       surviving holder reclaims IMMEDIATELY on drop (the per-eval case:
 //       an expression eval creates no `ModuleEntry::Def`, so the eval-fn
 //       batch is the sole Arc holder and its pages reclaim at end of eval).
@@ -871,7 +871,7 @@ fn sole_holder_batch_reclaims_on_drop() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 31 Scenario 2 + Wave-3b carry-forward
+// spec: design/arch/AGENTS.md Decision 31 Scenario 2 + Wave-3b carry-forward
 //       invariant — reclaim fires ONLY when the LAST clone drops; while any
 //       other clone lives, the pages stay valid. This is the crate-internal
 //       kernel of the legacy

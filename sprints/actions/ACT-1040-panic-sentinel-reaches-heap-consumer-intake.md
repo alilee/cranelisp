@@ -34,4 +34,4 @@ makes every runtime panic end the process (`spec/12-runtime.md` §12.7.2,
   lines when W1 is committed.
 - Delete this action once `design/backend/backend.md`,
   `design/backend/s122-closure.md`, `sprints/archive/sprint-123.md`, `sprints/ROADMAP.md`
-  and `tests/CLAUDE.md` no longer link it. Git holds the intake record.
+  and `tests/AGENTS.md` no longer link it. Git holds the intake record.

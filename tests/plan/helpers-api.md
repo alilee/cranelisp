@@ -104,7 +104,7 @@ impl Cranelisp {
     /// Sets `CRANELISP_LIB` to the workspace `stdlib/` directory. Named
     /// verbosely so misuse is visible in PR review and `git grep` audits;
     /// stdlib conformance is the single named exception to the
-    /// "tests must not depend on stdlib" rule (root `CLAUDE.md`
+    /// "tests must not depend on stdlib" rule (root `AGENTS.md`
     /// §"Design Principles" — Stdlib separation).
     pub fn use_workspace_stdlib_for_stdlib_conformance_only(self) -> Self;
 

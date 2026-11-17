@@ -247,7 +247,7 @@ Common re-entry trigger: contention-aware gate design OR the Phase-H RC/allocati
 - **Origin** — FIXME 0408 · filed_by `/sprint` · target `/port` · sprint 86; narrowed 2026-06-27
   sprint 92 (the parallel-search EXPRESSION half is DONE S92; this tracks the PERF half only).
 - **`refers_to`** — `exemplar/solver.cl`, `exemplar/grid.cl`, `exemplar/plan-exemplar.md` §"Copy-per-guess
-  performance" and §"Solving", `exemplar/CLAUDE.md` §"Known Issues", `exemplar/tests.cl`;
+  performance" and §"Solving", `exemplar/AGENTS.md` §"Known Issues", `exemplar/tests.cl`;
   cross-note `design/backend/lenient-eval.md` §3.6.3 (the never-slower-than-serial floor).
 - **Pinned analysis** — the S92 reshape parallelises the backtracking search **structurally**
   (divide-and-conquer over candidate digits via `first-success` + `solve-range`; slice-1 lenient eval
@@ -434,7 +434,7 @@ Recorded here so it re-enters with the perf track.
 #### 0499 / L-M1 — reference × referent × instantiation-count e2e matrix (perf-parked half)
 - **Origin** — the **L-M1 note** within FIXME 0499 · filed_by `/sprint` · target `/qa` · sprint 101.
 - **`refers_to`** — `tests/plan/coverage-audit-s101.md` §2.4 (lanes) + §2.5 (drafting rules);
-  `tests/CLAUDE.md` §Plan documents; `tests/plan/s103-test-plan.md` §1.6 (L-M1 growth); the `fn_as_value` seam
+  `tests/AGENTS.md` §Plan documents; `tests/plan/s103-test-plan.md` §1.6 (L-M1 growth); the `fn_as_value` seam
   ([ownership codegen](../../backend/ownership-codegen.md)).
 - **Pinned analysis** — L-M1 is the **reference-shape × referent × instantiation-count** e2e matrix,
   one of the 7 named lanes from the S101 coverage audit. It **grows with the `fn_as_value` seam

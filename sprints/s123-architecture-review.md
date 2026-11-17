@@ -118,7 +118,7 @@ make are listed in §9.
 - **Default suite cost.** Every `#[cfg(feature = "agent")]` test in
   `tests/agent.rs` (91 gated items) and in `src/` joins the default suite.
   This is unmeasured. Named falsifier: the first default-suite run after the
-  change, compared with the 170 s post-build baseline in root `CLAUDE.md`.
+  change, compared with the 170 s post-build baseline in root `AGENTS.md`.
   `qa` records it.
 - **Carriers to update after approval.**
   - `arch`: [agent boundary](../design/arch/repl-embedded-agent.md) §1.2
@@ -241,7 +241,7 @@ environment; every `set_var` is in test modules.
 - **Consequence the user must accept.** With the same project directory, a
   runtime knob set only in `.env` affects `cranelisp --run` but not the linked executable run from that directory.
   Both read their own process environment, but the two environments differ.
-  Under root `CLAUDE.md`'s divergence rule this is a defined difference, not
+  Under root `AGENTS.md`'s divergence rule this is a defined difference, not
   a pipeline divergence: the compilation is identical and the supplier is
   not. `docs` must state it.
 - **Alternative.** The linked executable also loads the files. The loader

@@ -23,7 +23,7 @@
 //! before the caller reads it. Capture (I-1) and fresh-container-holding-a-
 //! COW-aliased-element (I-2) are the same family one axis over.
 //!
-//! ## Determinism handling (per `tests/CLAUDE.md` §"Forbidden dispositions" —
+//! ## Determinism handling (per `tests/AGENTS.md` §"Forbidden dispositions" —
 //! no flaky, no garbage-value assertion)
 //!
 //! For EVERY vector the DETERMINISTIC signal pinned is the `--link` face: the
@@ -52,7 +52,7 @@
 //!   increment AND the accompanying accounting/backend fix land — the repros are
 //!   the durable record + trigger for the whole class regardless.
 //!
-//! Per the failing-test rule (root `CLAUDE.md` §"Usability Findings and
+//! Per the failing-test rule (root `AGENTS.md` §"Usability Findings and
 //! Defects"): these committed failing-not-ignored repros ARE the record + the
 //! trigger; no numbered FIXME accompanies them. The design EXTENSION (add the
 //! container-element/capture provenance axis to the §15 model + the 0623 matrix

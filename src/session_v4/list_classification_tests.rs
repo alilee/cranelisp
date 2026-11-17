@@ -16,7 +16,7 @@ use std::collections::HashMap as StdHashMap;
 // surface is `CompilerSession::list_user_definitions`, which buckets a
 // module's symbols into `SymbolCategory`. This harvests the positive
 // classification AND the negatives the spec requires (repl/spec.md §3.3 /
-// tests/CLAUDE.md §Negative): a defmacro is a Macro NOT a Fn; an Import is
+// tests/AGENTS.md §Negative): a defmacro is a Macro NOT a Fn; an Import is
 // NOT listed (surfaced by `/imports`); a constructor is a Constructor.
 // The display-format + type-inference portions of repl_negative_old.rs
 // route to /backend (`display.rs`) + /typecheck (`checker.rs`), outside

@@ -151,7 +151,7 @@ states (as `fn_state` did) or attach a completeness-contract test.
 
 ### 2.1 The `callees` completeness-contract tests (SPECIFIED here; land with Wave 2)
 
-Owner: `/dev`(cranelisp-typecheck) unit tier (per `tests/CLAUDE.md` §Two tiers —
+Owner: `/dev`(cranelisp-typecheck) unit tier (per `tests/AGENTS.md` §Two tiers —
 the field is crate-internal state; e2e observability arrives only with the L-R3
 cascade report, which the `s100-ownership-verification.md` §6.1 lanes already pin). To land in the same change-set
 as the 0470 resolution:

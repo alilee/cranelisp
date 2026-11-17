@@ -1,6 +1,6 @@
 # REPL agent — assurance strategy
 
-Owner: `qa`. Established by [test ownership](../CLAUDE.md) and reached from
+Owner: `qa`. Established by [test ownership](../AGENTS.md) and reached from
 [the test plan](PLAN.md#current-coverage-navigation). This document allocates
 evidence for the embedded REPL agent: which conditions are observed, at which
 layer, with what authority, and what each layer cannot show.
@@ -17,7 +17,7 @@ layer, with what authority, and what each layer cannot show.
   through `sprint`.
 - Evidence policy, tiers, failing-test discipline, defect notation and
   traceability are stated once in [the test plan](PLAN.md) and
-  [test conventions](../CLAUDE.md) and apply here unchanged.
+  [test conventions](../AGENTS.md) and apply here unchanged.
 - Section numbers are cited by source and test comments. Retired numbers are
   not reused.
 
@@ -81,13 +81,13 @@ A request property that neither layer can observe is a testability gap for
 
 | Lane | Observes | Build and execution | Authority |
 |---|---|---|---|
-| **A** | Deterministic agent logic (§3) | `--features agent` with the stub, through the [isolated launcher](../CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir) | Acceptance |
+| **A** | Deterministic agent logic (§3) | `--features agent` with the stub, through the [isolated launcher](../AGENTS.md#the-agent-lane---features-agent--isolated-target-dir) | Acceptance |
 | **B** | Feature-off behaviour and the default-build commands (§4) | default build, default suite | Acceptance |
 | **C** | Live-model task completion (§5) | `--features agent` with a real provider, run by hand under an approved budget | Diagnostic observer; its harness self-check is a maintenance check |
 | **D** | Composed session render (§6) | as Lane A | Acceptance |
 
 - The default suite never compiles the agent feature; its time budget is
-  stated in [root testing guidance](../../CLAUDE.md#testing).
+  stated in [root testing guidance](../../AGENTS.md#testing).
 - Feature-off cells are compiled only without the feature and feature-on cells
   only with it. Neither run observes the other's conditions, so agent
   acceptance needs the default suite **and** the launcher lane.
@@ -287,7 +287,7 @@ part of an automated suite and never a language or REPL acceptance gate.
 - Policy: [REPL-agent evaluation policy](agent-context-tuning.md).
 - Current corpus, launch rules, graders, result classes and report contents:
   [runnable eval corpus and policy](s122-evidence-delta.md#runnable-eval-corpus-and-policy).
-- Runner usage: [REPL-agent evals](../CLAUDE.md#repl-agent-evals).
+- Runner usage: [REPL-agent evals](../AGENTS.md#repl-agent-evals).
 
 The runner's stub self-check is evidence about the harness, not about a model.
 A live run needs a separately approved model, disclosure and budget. An eval

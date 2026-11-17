@@ -496,7 +496,7 @@ fn test_run_io_par_with_effects() {
 // on balanced programs of varying shape.
 // ---------------------------------------------------------------------
 
-// spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern cranelisp_run_io
+// spec: design/arch/AGENTS.md Decision 24 — consuming convention, extern cranelisp_run_io
 #[test]
 fn decision24_run_io_pure_rc_balanced() {
     let allocs_before = crate::alloc::alloc_count();

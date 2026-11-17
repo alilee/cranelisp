@@ -51,7 +51,7 @@ fn stdio_dll_filename() -> String {
 /// The nextest setup-script (`tests/scripts/build-link-prereqs.sh`, wired in
 /// `.config/nextest.toml`) builds `cranelisp-stdio` into `target/debug` before
 /// any test runs, so this artifact is present without the test shelling out to
-/// `cargo build` (forbidden per `tests/CLAUDE.md`).
+/// `cargo build` (forbidden per `tests/AGENTS.md`).
 fn workspace_stdio_dll() -> PathBuf {
     // read-only on project_root: locating the prebuilt workspace cdylib.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -617,7 +617,7 @@ fn read_line_bind_print_echo() {
 
 // spec: spec/10-io.md §10.4.1 — a `do`/`bind!`-shaped print-sequence with a
 // `(Pure N)` terminator, expressed via the primitive `bind` it desugars to
-// (tests MUST NOT depend on stdlib — root CLAUDE.md "Design Principles"). The
+// (tests MUST NOT depend on stdlib — root AGENTS.md "Design Principles"). The
 // stdlib `do`/`bind!` macro desugaring is covered separately in
 // `tests/spec_11_stdlib.rs`; here the bind-chain trampoline path is the target.
 //

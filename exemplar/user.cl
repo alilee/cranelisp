@@ -14,7 +14,7 @@
 ;;     cargo run -- --run exemplar/user.cl
 ;;
 ;; The exemplar is one of the two trees permitted to depend on stdlib
-;; (root CLAUDE.md §Stdlib separation).
+;; (root AGENTS.md §Stdlib separation).
 
 (platform stdio)
 (platform web)

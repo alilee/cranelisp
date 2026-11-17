@@ -1003,7 +1003,7 @@ fn stub_repl_flags(
 // transcript**: the §17.13.3 normative acceptance is "gutter + plain prose +
 // plain-indented Lisp" with NO literal ANSI escape sequence anywhere and NO raw
 // fence markers surviving. This is the owed narrow failing-not-ignored DEFECT
-// repro (CLAUDE.md §Testing) and is RED on HEAD: today the agent render path
+// repro (AGENTS.md §Testing) and is RED on HEAD: today the agent render path
 // emits the ```lisp fence verbatim (raw fence markers survive — NOT "plain-
 // indented Lisp"), violating the §17.13.3 `--no-color`-clean contract. It flips
 // green when /dev lands the §14.6 style-once-at-the-leaf render fix (step 1d).
@@ -1832,7 +1832,7 @@ fn agent_non_streaming_provider_degrades() {
 // ---------------------------------------------------------------------------
 // BROKEN-THEN-FIXED STUB-SCRIPT DSL — the contract /dev 2d MUST implement.
 // ---------------------------------------------------------------------------
-// The existing stub-script DSL (src/CLAUDE.md, agent-testing-strategy.md §1.1)
+// The existing stub-script DSL (src/AGENTS.md, agent-testing-strategy.md §1.1)
 // is one scripted MODEL TURN-RESPONSE per line, consumed in order, one per
 // `AgentModel::complete()` call within a turn's model↔tool loop:
 //
@@ -2314,7 +2314,7 @@ fn agent_yes_with_no_agent_is_accepted_no_op() {
 // ---------------------------------------------------------------------------
 // THE set-preamble / set-doc STUB-SCRIPT DSL — the contract /dev 3d MUST
 // implement (verbatim). This EXTENDS the existing one-scripted-turn-per-line
-// DSL (src/CLAUDE.md, agent-testing-strategy.md §1.1) with the TWO Document
+// DSL (src/AGENTS.md, agent-testing-strategy.md §1.1) with the TWO Document
 // write tools, in the SAME `tool:` form. As with `submit` (Cluster B), the
 // tool NAME is the discriminator (§17.2): `submit` is code (confirm gate);
 // `set-preamble`/`set-doc` are documentation (consultative gate).
@@ -2648,7 +2648,7 @@ fn agent_document_yes_auto_accepts_preamble_edit() {
 // spec-correct shapes the primer SHOULD teach actually compile.
 // ===========================================================================
 
-/// The always-on primer asset, read-only on project_root (per `tests/CLAUDE.md`
+/// The always-on primer asset, read-only on project_root (per `tests/AGENTS.md`
 /// — locating a checked-in asset). The SAME source `include_str!`'d into
 /// `src/agent/primer.rs`; the content guards assert its shapes match the spec.
 // read-only on project_root
@@ -2741,7 +2741,7 @@ fn primer_deftrait_uses_direct_children_not_outer_bracket() {
 // through the prelude, so this needs no import. Green on HEAD (the spec shape
 // already compiles) — it pins the convergence target the corrected primer must
 // match. Paired with the RED primer-content guard above (the match-shape
-// verification step in tests/CLAUDE.md).
+// verification step in tests/AGENTS.md).
 #[test]
 fn primer_match_flat_bracket_shape_compiles_e2e() {
     let out = Cranelisp::new()

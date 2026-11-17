@@ -10,7 +10,7 @@ filed_at: 2026-09-20
 refers_to:
   - tests/plan/spec_coverage_reconcile.py
   - tests/plan/spec_link_check.py
-  - tests/CLAUDE.md
+  - tests/AGENTS.md
   - .agents/skills/qa/SKILL.md
 ---
 

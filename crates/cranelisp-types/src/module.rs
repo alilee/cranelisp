@@ -213,7 +213,7 @@ pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     /// with each line's `;;` (or `;`) marker and one following space stripped,
     /// the lines newline-joined (spec §8.16.2). A bare `String` is the correct
     /// carrier: it is documentation text — one of the explicitly-allowed
-    /// bare-`String` uses (`design/arch/CLAUDE.md` §"String Newtypes"),
+    /// bare-`String` uses (`design/arch/AGENTS.md` §"String Newtypes"),
     /// alongside docstrings / source text — so no newtype is warranted.
     ///
     /// **Populated by the frontend reader, not constructed here.** Every
@@ -2001,7 +2001,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// Iterator over entries that codegen should compile.
     ///
     /// Shared codegen-compilable predicate — see Decision 22 in
-    /// `design/arch/CLAUDE.md` and §9.5 of `design/typecheck/ast-annotation.md`.
+    /// `design/arch/AGENTS.md` and §9.5 of `design/typecheck/ast-annotation.md`.
     /// Both the backend's `compile_to_module` and the integration layer's
     /// priority worker enumerate codegen targets via this iterator so the
     /// filter lives in exactly one place.
@@ -4965,7 +4965,7 @@ pub struct ExportSpec {
 ///
 /// **Standing target narrow (S69 Submission 21; re-affirmed S119, FIXME
 /// 0919).** `name: String → name: ModuleName` per the newtype rule
-/// (`design/arch/CLAUDE.md` §"String Newtypes"). **Trigger:** rides the
+/// (`design/arch/AGENTS.md` §"String Newtypes"). **Trigger:** rides the
 /// first change-set that touches the field's construction sites. The retired-shape fields
 /// `manifest_path` and `alias` are NOT introduced — `manifest_path` is
 /// resolved data (belongs elsewhere); `alias` is excluded by spec §2.2.9
@@ -5007,7 +5007,7 @@ pub struct ModDecl {
 
 // `use crate::JitSymbol;` retired (S69 Submission 36 — the `jit_name` field
 // on the former primitive discriminator is gone; the symbol-table key IS the JIT linker
-// name uniformly per `src/CLAUDE.md` §"JIT Symbol Names"). Re-introduce
+// name uniformly per `src/AGENTS.md` §"JIT Symbol Names"). Re-introduce
 // only when another use site needs JitSymbol within this file.
 
 // --- Module map graph operations (Sprint 67 hack-back; FIXME 0192 + 0193) ---

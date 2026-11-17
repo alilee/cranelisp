@@ -41,6 +41,6 @@
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; Backing file `control/test.cl` (module `control.test`), private per
-;; stdlib/CLAUDE.md §Conventions.
+;; stdlib/AGENTS.md §Conventions.
 
 (mod- test)

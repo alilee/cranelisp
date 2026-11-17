@@ -87,9 +87,9 @@
 // figure) — 11,767 of 11,820 objects, all from `solver/eliminate` returning
 // `(Some g)` into a Face-A match. It is not a corner case.
 //
-// Stdlib-free (`PrimitivesOnly`; root CLAUDE.md §Design Principles).
+// Stdlib-free (`PrimitivesOnly`; root AGENTS.md §Design Principles).
 // `CRANELISP_NO_LENIENT=1` on every run: the loops have no sparks, and it keeps
-// the RC counts deterministic (tests/CLAUDE.md §"RC tests run serially").
+// the RC counts deterministic (tests/AGENTS.md §"RC tests run serially").
 //
 // S118 W1 BASELINE-RECONCILIATION REPAIR (`/testing`, 2026-07-25). Five of this
 // file's cells — A4, B1, B1-link, B2, B2-link — were failing on a SOURCE-ROT

@@ -72,7 +72,7 @@ value level.
   rather than by caller convention.
 - It is structural because a convention decays: the invariant was once graded
   "unconstructable" on one inspected function while other sites violated it (root
-  `CLAUDE.md` §Assurance, row R11).
+  `AGENTS.md` §Assurance, row R11).
 - [Lifecycle enforcement](../arch/symbol-table-lifecycle.md#6-enforcement) prevents
   ordinary consumers from bypassing settlement.
   [Residual responsibilities](../arch/symbol-table-lifecycle.md#7-residual-responsibilities)

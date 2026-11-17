@@ -4,7 +4,7 @@ target: /arch
 filed_by: /sprint
 filed_at: 2026-08-29
 sprint_filed: 119
-refers_to: design/CLAUDE.md §Design-doc expectations — says what design docs are
+refers_to: design/AGENTS.md §Design-doc expectations — says what design docs are
   ABOUT, not how they are structured; sprints/METHOD.md §1.4 governs only which
   home content goes to
 status: open
@@ -14,12 +14,12 @@ status: open
 
 ## S122 verified disposition (2026-09-10)
 
-Verified design/CLAUDE.md and METHOD, then the adopted maintain-documents skill. Shared guidance already requires governing outcome first, current intent, explanatory structure proportionate to the reader, and history outside active guidance. Those general claims are satisfied. The exact eight-part project design-document ordering below is not present; it must not be silently treated as adopted or discarded. Remaining owner: arch with design/sprint, to reconcile that retained user preference into one project-level design convention (including which sections are applicable), without duplicating shared writing procedure. No mandatory new template is enacted here.
+Verified design/AGENTS.md and METHOD, then the adopted maintain-documents skill. Shared guidance already requires governing outcome first, current intent, explanatory structure proportionate to the reader, and history outside active guidance. Those general claims are satisfied. The exact eight-part project design-document ordering below is not present; it must not be silently treated as adopted or discarded. Remaining owner: arch with design/sprint, to reconcile that retained user preference into one project-level design convention (including which sections are applicable), without duplicating shared writing procedure. No mandatory new template is enacted here.
 
 ## Issue
 
 There is no recorded convention for how a `design/` document is *shaped*. METHOD §1.4
-governs which home content goes to; `design/CLAUDE.md` says what design docs are about.
+governs which home content goes to; `design/AGENTS.md` says what design docs are about.
 Neither says what a reader should find in what order — so each doc's structure is
 re-invented, and the failure mode is consistent: opening with archaeology, organised as
 a list of questions and decisions, dense with reference lists.
@@ -51,10 +51,10 @@ why documents keep drifting back to the decision-log shape.
 
 Record the shape where every design-authoring skill will see it. `/arch` owns
 `design/arch/`; `/design` owns `design/{crate}/` — so the convention needs a home both
-read. Candidates: `design/CLAUDE.md` (nearest existing home, and a `CLAUDE.md` at that
+read. Candidates: `design/AGENTS.md` (nearest existing home, and a `AGENTS.md` at that
 level is auto-read by any agent working under `design/`), or a short section in
-`design/arch/CLAUDE.md` cross-referenced from `design/CLAUDE.md`. One home, not both.
+`design/arch/AGENTS.md` cross-referenced from `design/AGENTS.md`. One home, not both.
 
-If `/arch` judges `design/CLAUDE.md` to be outside its ownership, re-target this FIXME
+If `/arch` judges `design/AGENTS.md` to be outside its ownership, re-target this FIXME
 to `/design` rather than resolving it — but note the convention applies to `design/arch/`
 documents too, so a `/design`-only home would under-reach.

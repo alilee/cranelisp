@@ -162,7 +162,7 @@ fn s68_primitives_table_is_arc_symboltable_unit_unit() {
 // this grep check (it is covered by `facade_pif_rows.rs`).
 // =============================================================================
 
-// spec: design/arch/CLAUDE.md §"Baseline-diff discipline" — collapsed at S75 W5c
+// spec: design/arch/AGENTS.md §"Baseline-diff discipline" — collapsed at S75 W5c
 //       (/qa) when backend.md + backend-cache.md retired (the last two binding
 //       facades, after S74's primitives.md + intrinsics.md): facade-compliance
 //       now applies to NO crate; every retired-facade crate has source as its
@@ -260,7 +260,7 @@ fn s68_ring0_jit_symbols_free_fn_is_retired() {
 // implicit `pub use` force-link in S68 Wave 3.
 // =============================================================================
 
-// spec: crates/cranelisp-exe-bundle/CLAUDE.md §"Two force-link mechanisms" —
+// spec: crates/cranelisp-exe-bundle/AGENTS.md §"Two force-link mechanisms" —
 //       primitives are anchored by the `cranelisp_init_primitives()` startup
 //       hook, not force-link `pub use` lines. The authority is the crate
 //       rustdoc section "Startup-hook discipline — primitives" in `src/lib.rs`.

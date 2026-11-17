@@ -97,7 +97,7 @@ impl std::fmt::Display for Stratum {
 /// refused: no summary, no site fact, no value-use mark. That lands it on the
 /// `CRANELISP_NO_OWNERSHIP` shape, whose end-to-end safety the differential
 /// oracle already measures — rather than on a ⊤ literal, which is the
-/// construction that decayed (root `CLAUDE.md` §Assurance, R11 and I-CT).
+/// construction that decayed (root `AGENTS.md` §Assurance, R11 and I-CT).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Refusal {
     pub stratum: Stratum,

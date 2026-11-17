@@ -4,7 +4,7 @@
 // lone workspace-integration test /qa authors this sprint. Verifies that the Sprint 71 `cranelisp-
 // platform` surface bump is visible in BOTH the source const and the
 // committed `cargo-public-api` baseline; the two-update discipline per
-// `design/arch/CLAUDE.md` §"Baseline-diff discipline (Sprint 67 close)"
+// `design/arch/AGENTS.md` §"Baseline-diff discipline (Sprint 67 close)"
 // gates every edge change behind a single change-set that updates source
 // + baseline together.
 //
@@ -20,7 +20,7 @@
 // halves; a red test means one of the two updates was skipped.
 //
 // Test is workspace-integration (Layer 3 in the legacy four-layer model,
-// per-tier-2 "no middle" classification in `tests/CLAUDE.md` would mark
+// per-tier-2 "no middle" classification in `tests/AGENTS.md` would mark
 // it e2e-or-unit; this is one of the explicitly-justified workspace-
 // integration exceptions for facade/baseline discipline alongside
 // `facade_compliance.rs`, `facade_pif_rows.rs`, `public_api_relocations.rs`,
@@ -53,7 +53,7 @@ fn read_source(rel: &str) -> String {
 // CLInt/CLBool/CLFloat/CLString family) + §"Architecture inside
 // cranelisp-platform" item 3 (`HostCallbacks` grows by two fn-pointer
 // fields) + arbitration A4 (ABI_VERSION bump policy). Cross-ref:
-// `design/arch/CLAUDE.md` §"Baseline-diff discipline (Sprint 67 close)" —
+// `design/arch/AGENTS.md` §"Baseline-diff discipline (Sprint 67 close)" —
 // the two-update rule this test enforces.
 //
 // T23 per `tests/plan/PLAN.md#platform-structural-and-crossing-evidence`.
@@ -154,7 +154,7 @@ fn sprint71_abi_version_baseline_co_regen() {
         missing.is_empty(),
         "Sprint 71 `cranelisp-platform` baseline regen is missing the \
          following new surface lines that MUST land in the same change-set \
-         as the ABI_VERSION 1 → 2 bump (per design/arch/CLAUDE.md \
+         as the ABI_VERSION 1 → 2 bump (per design/arch/AGENTS.md \
          §\"Baseline-diff discipline\"):\n\n  {}\n\n\
          If you see this failure post-Wave-2, run `cargo +nightly public-api \
          > crates/cranelisp-platform/public-api.txt` from the crate root and \

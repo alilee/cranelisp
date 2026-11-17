@@ -10,7 +10,7 @@
 //   - `(let [f not] (f true))`        — Primitive operator as a value
 //
 // `tests/stdlib_trait_impls.rs` couples these regressions to stdlib
-// evolution. Per `CLAUDE.md` §"Design Principles" — Stdlib separation,
+// evolution. Per `AGENTS.md` §"Design Principles" — Stdlib separation,
 // trait-import discipline is a **language-level** concern that must be
 // validated independently of `stdlib/`. This file uses
 // `PreludeVariant::TestStandard` (the QA-owned fixture at

@@ -457,7 +457,7 @@ def main() -> int:
         )
     )
     spec_files = [p for p in spec_files if p.is_file()
-                  and p.name not in ("CLAUDE.md",)]
+                  and p.name not in ("AGENTS.md",)]
 
     tests = build_test_index(root)
     idx = anchor_index(tests)

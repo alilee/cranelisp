@@ -9,7 +9,7 @@ Owned by `/design` narrow-deployed to the primitives + intrinsics surface
 The bounded context, its invariants and its sibling `cranelisp-primitives` are
 [bounded-contexts §4a/§4b](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics).
 Source conventions and debug hooks are in
-[the crate memory](../../crates/cranelisp-intrinsics/CLAUDE.md).
+[the crate memory](../../crates/cranelisp-intrinsics/AGENTS.md).
 
 ## Boundaries worth knowing before editing
 

@@ -6,7 +6,7 @@ crosses it. `sprints/METHOD.md` §1.1 lists the surfaces the triad is deployed t
 
 - **Exact Rust API** lives in each crate's rustdoc (crate-root `//!` plus
   per-item `///`); the generated `crates/{crate}/public-api.txt` is the as-built
-  enumeration, governed by [the baseline discipline](CLAUDE.md#public-api-discipline).
+  enumeration, governed by [the baseline discipline](AGENTS.md#public-api-discipline).
   This document does not enumerate items.
 - **Interior mechanism** lives in the context's own `design/{context}/` documents.
 - **Focused shared contracts** are linked from each section; they own their detail.
@@ -1149,4 +1149,4 @@ intrinsics; typecheck's per-form transient state.
 
 **What crosses the boundary.** Every public item is a boundary type; the crate
 is its surface. Cache serialization rules and runtime-only exceptions are in the
-[types memory](../../crates/cranelisp-types/CLAUDE.md).
+[types memory](../../crates/cranelisp-types/AGENTS.md).

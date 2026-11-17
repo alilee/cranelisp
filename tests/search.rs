@@ -1088,7 +1088,7 @@ fn search_unloaded_module_still_indexes_alongside_loaded_feed_neg() {
 //
 // FIXME(/testing): E2's two lifecycle messages resist a deterministic e2e repro
 // and were DELIBERATELY not committed here (a racy e2e test is forbidden — root
-// CLAUDE.md §Testing / tests/CLAUDE.md "no `timing-sensitive` tests"):
+// AGENTS.md §Testing / tests/AGENTS.md "no `timing-sensitive` tests"):
 //
 //   * "indexing N modules…" (the not-ready note, spec §17.19.3) fires only when a
 //     `/search` lands while file modules are still burning down. Empirically the

@@ -832,7 +832,7 @@ fn auto_curry_on_anonymous_lambda_partial_apply_rejected_neg() {
 // §3.4 Type Schemes — polymorphic-accumulator recursive fold (FIXME 0344)
 //
 // FAILING-NOT-IGNORED repro (S81 close), free-standing (no stdlib — defines
-// its own fold inline per root CLAUDE.md §"Stdlib separation"). A Clojure-style
+// its own fold inline per root AGENTS.md §"Stdlib separation"). A Clojure-style
 // `reduce` over a Vec threads a polymorphic accumulator (type `b`) that is
 // DISTINCT from the element type (`a`, via `vec-get`). The correct scheme is
 // `(Fn [(Fn [b a] b) b (Vec a)] b)`. Inference over-unifies: when a SIBLING

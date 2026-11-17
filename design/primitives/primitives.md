@@ -460,4 +460,4 @@ until complete.
   wrapper discharge
 - `crates/cranelisp-primitives/src/lib.rs` crate and item rustdoc
 - `crates/cranelisp-primitives/public-api.txt`
-- `crates/cranelisp-primitives/CLAUDE.md`
+- `crates/cranelisp-primitives/AGENTS.md`

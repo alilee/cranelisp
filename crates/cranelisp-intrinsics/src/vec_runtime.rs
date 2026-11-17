@@ -148,7 +148,7 @@ pub(crate) fn debug_assert_live_buffer(data_ptr: *const i64, cap: i64, site: &'s
 /// `site` names the calling free path — used ONLY by the debug data-buffer guard
 /// ([`databuf_guard`]) to report both sites on a double-free; it is a no-op string
 /// in release (the guard is `#[cfg(debug_assertions)]`, so it does not affect the
-/// release code path or heap layout — Principle 14 / `tests/CLAUDE.md`
+/// release code path or heap layout — Principle 14 / `tests/AGENTS.md`
 /// §"Heap-header integrity…").
 ///
 /// This is the **single** vec-data-buffer free path (Principle 7). `drop.rs`'s

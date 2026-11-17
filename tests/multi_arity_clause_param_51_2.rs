@@ -110,11 +110,11 @@ fn rp4_unannotated_backflow_accepted_and_runs() {
 }
 
 // MS-1b — [oracle] heap-integrity fence on the flagship new shape: rp4 driven
-// K× under `--link` (the sustained-repetition pattern, tests/CLAUDE.md). Assert
+// K× under `--link` (the sustained-repetition pattern, tests/AGENTS.md). Assert
 // exit 0. RED at HEAD (rp4 rejected ⇒ link fails); GREEN at leg (a). Graduates
 // into the S113 oracle lane.
 // spec: spec/05-definitions.md §5.1.2 — back-flow-pinned recursion reaches
-// codegen; the sustained-repetition heap-integrity guard (tests/CLAUDE.md).
+// codegen; the sustained-repetition heap-integrity guard (tests/AGENTS.md).
 #[test]
 fn rp4_link_repeated_dispatch_does_not_corrupt_heap() {
     let out = Cranelisp::new()

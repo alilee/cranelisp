@@ -87,7 +87,7 @@ Use the read-throughs; never re-pattern the lifecycle set:
 - **`callees` completeness is consumed silently.** The redefinition reverse
   index starves without error when a body-check seam omits the harvest; the
   completeness contract is in the
-  [typecheck memory](../cranelisp-typecheck/CLAUDE.md).
+  [typecheck memory](../cranelisp-typecheck/AGENTS.md).
 - **Public non-exhaustive lifecycle records have explicit authoring paths.**
   Construct `Callable`, `CallableArm`, `OverloadedCallable`,
   `MacroDeclaration`, `MacroClause`, `TraitRecord`, `TraitMethodRecord`,
@@ -239,7 +239,7 @@ Use the read-throughs; never re-pattern the lifecycle set:
 
 - Submodules are `pub(crate)`; the crate-root re-export list in `lib.rs` is the
   sole surface. Any surface change regenerates `public-api.txt` with the
-  [canonical command](../../design/arch/CLAUDE.md#baseline-diff-discipline-sprint-67-close)
+  [canonical command](../../design/arch/AGENTS.md#baseline-diff-discipline-sprint-67-close)
   and without `--features test-support`, which keeps the `test_support`
   builder off the frozen surface.
 - Every public lifecycle item, constructor, enum variant and public field has

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 // --- string_newtype! generated impls -------------------------------------
 
-// spec: design/arch/CLAUDE.md §"String Newtypes" — From<&str>/From<String>
+// spec: design/arch/AGENTS.md §"String Newtypes" — From<&str>/From<String>
 // agree; Deref/AsRef expose the inner &str; Display echoes it verbatim.
 #[test]
 fn newtype_conversions_and_display() {
@@ -34,7 +34,7 @@ fn newtype_conversions_and_display() {
     assert_eq!(from_str.to_string(), "foo");
 }
 
-// spec: design/arch/CLAUDE.md §"String Newtypes" — PartialEq<str> / PartialEq<&str>
+// spec: design/arch/AGENTS.md §"String Newtypes" — PartialEq<str> / PartialEq<&str>
 // let call sites compare a newtype to a string literal without allocating.
 #[test]
 fn newtype_partial_eq_with_str() {
@@ -44,7 +44,7 @@ fn newtype_partial_eq_with_str() {
     assert!(!(s == "Bool"));
 }
 
-// spec: design/arch/CLAUDE.md §"String Newtypes" — `Borrow<str>` is the
+// spec: design/arch/AGENTS.md §"String Newtypes" — `Borrow<str>` is the
 // load-bearing property: a HashMap keyed by a newtype MUST be queryable by
 // `&str` (symbol-table lookups do exactly this). A Hash/Borrow inconsistency
 // would make every by-name lookup miss.
@@ -63,7 +63,7 @@ fn newtype_borrow_enables_hashmap_lookup_by_str() {
 
 // --- FQSymbol / FQTypeName / FQTraitName Display -------------------------
 
-// spec: design/arch/CLAUDE.md §"String Newtypes" — FQ names render `module/name`.
+// spec: design/arch/AGENTS.md §"String Newtypes" — FQ names render `module/name`.
 #[test]
 fn fq_names_render_module_slash_name() {
     let fqs = FQSymbol {

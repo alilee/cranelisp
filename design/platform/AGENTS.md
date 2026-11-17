@@ -10,7 +10,7 @@ it commits to. They are distinct from:
 - `design/arch/bounded-contexts.md` §5 and `design/arch/platform-interface.md` —
   the boundary contract (what crosses, and in which direction);
 - `crates/cranelisp-platform/src/**` rustdoc — per-item public truth;
-- `crates/cranelisp-platform/CLAUDE.md` — the code's own voice: marshalling
+- `crates/cranelisp-platform/AGENTS.md` — the code's own voice: marshalling
   traps, layout invariants, the submodule seam map;
 - `spec/10-io.md`, `spec/12-runtime.md` — what runtime behaviour is correct.
 
@@ -47,7 +47,7 @@ the document that owns the fact, and the visit record goes.
   `public-api.txt` and the source already carry. A design document names shapes
   and responsibilities.
 - **One home per fact.** Boundary narrative goes to `design/arch/`; mechanical
-  conventions and API gotchas go to the crate's `CLAUDE.md`; per-item truth goes
+  conventions and API gotchas go to the crate's `AGENTS.md`; per-item truth goes
   to rustdoc. What is left here is direction, structure and trade-offs.
 - **Record rejected alternatives briefly** — considered X, chose Y because Z —
   and record deferred extensions with the **trigger** that would require them. A
@@ -59,6 +59,6 @@ the document that owns the fact, and the visit record goes.
 - **Grade a claim that is neither structural nor measured.** Where this surface
   asserts a property it does not enforce or observe — the crate has no capability
   vocabulary, the DLL writes no glue word — the claim carries its falsifier and
-  says what grade it holds (root `CLAUDE.md` §Assurance).
+  says what grade it holds (root `AGENTS.md` §Assurance).
 - **Cite, do not restate.** When a fact belongs to `arch`, `spec` or a
   neighbouring crate, cite it in that owner's language.

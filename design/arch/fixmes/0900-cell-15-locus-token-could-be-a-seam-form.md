@@ -35,10 +35,10 @@ established corpus grain either way.
 
 **Adjudication note (severity reclassified with rationale).** The delegated
 Codex reviewer (codex-cli 0.145.0) filed this as Important, claiming the line
-"violates `tests/CLAUDE.md`'s structured notation". The adjudicator verified
+"violates `tests/AGENTS.md`'s structured notation". The adjudicator verified
 against the corpus and the convention text and downgraded to Suggestion:
 crate-grain tokens are established practice (`locus=src` ×9,
 `locus=frontend` ×17, `locus=typecheck` ×9, `locus=crates/cranelisp-backend`
 ×29 — most with prose after the token, including cell #15's own pre-W4 line),
-and `tests/CLAUDE.md` itself states "prose after the token never pollutes the
+and `tests/AGENTS.md` itself states "prose after the token never pollutes the
 frequency counts". There is no violation; only a finer grain available.

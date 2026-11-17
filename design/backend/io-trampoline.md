@@ -538,7 +538,7 @@ Per the project's unit-test-per-fix discipline, the mandatory backend-tier seams
   whose env slot 0 is the (sentinel-initialized) result slot, and whose env slots 1..k
   hold the k marshaled args in order. Inspect via CLIF (`CRANELISP_CODEGEN_TRACE=1`) on
   a shrunk single-arg poll effect — the small repro produces small CLIF readable by eye
-  (per root `CLAUDE.md` "keep reductions small").
+  (per root `AGENTS.md` "keep reductions small").
 - **GOT load, not call.** The poll arm emits a `load` of the GOT slot and **no
   `call_indirect`** of the poll-fn at the construction site (the call belongs to the
   trampoline). Asserts the load/call distinction that is the whole point of the arm.
@@ -1586,7 +1586,7 @@ minus the peel.
 - **`public-api.txt` — almost certainly UNCHANGED for `cranelisp-backend`.** v9 is a pure
   *deletion* of an internal pass (`inject_poll_leading_pair` is not a public export) plus an
   internal peel removal — neither moves the backend's public surface. **Flag:** regenerate it
-  in the cutover change-set regardless (baseline-diff discipline, `design/arch/CLAUDE.md`) and
+  in the cutover change-set regardless (baseline-diff discipline, `design/arch/AGENTS.md`) and
   include the diff; the expectation is an **empty backend diff**. If `/dev` finds the pass *was*
   re-exported (it should not be), that removal is the only line and `/review` confirms it.
   (The ABI-surface regen the arch ruling names — `cranelisp-types` + `cranelisp-platform` for

@@ -8,7 +8,7 @@ to: arch
 sprint: 121
 filed_at: 2026-09-05
 refers_to:
-  - design/arch/CLAUDE.md §Baseline-diff discipline
+  - design/arch/AGENTS.md §Baseline-diff discipline
   - tests/public_api_relocations.rs
   - crates/cranelisp-platform/public-api.txt
 ---

@@ -28,7 +28,7 @@ Retired numbers are not reused, so gaps are deliberate.
 ### 1.1 Purpose
 
 The REPL is self-documenting: every symbol or form typed at the prompt yields
-`:Type value` feedback (root `CLAUDE.md` §Design Principles). The agent extends
+`:Type value` feedback (root `AGENTS.md` §Design Principles). The agent extends
 that into a development partner inside the live session, fluent from
 architecture advice to typed, compilable code.
 
@@ -289,7 +289,7 @@ cuts sit at seams (classifier arm, `/ask` body, allowlist rows, the module), so
   feature-off rules for `--agent` and `--yes`.
 - **The default suite compiles the agent and its tests.** The cost is
   unmeasured; the falsifier is the first default-suite run after the change,
-  against the root `CLAUDE.md` baseline.
+  against the root `AGENTS.md` baseline.
 - **The default build gains a Linux prerequisite.** `native-tls` needs
   `pkg-config` and the OpenSSL development headers (user-accepted, S123).
 - **Shipped artifacts stay agent-free by construction.**

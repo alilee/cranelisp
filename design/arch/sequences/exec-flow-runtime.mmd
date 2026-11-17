@@ -23,7 +23,7 @@ sequenceDiagram
         opt heap allocation needed (string literal, ADT constructor, closure capture, Vec push, etc.)
             create participant Allocator as Heap allocator<br/>cranelisp_intrinsics::alloc (per Decision 43 — backend-emitted-call target)
             UserCode ->> Allocator: cranelisp_intrinsics::heap_alloc(payload_size: i64) -> i64
-            Note over Allocator: layout — [total_size: u64 | rc: u64 | payload bytes...]<br/>returns base pointer (offset 0) — payload starts at offset 16. Per src/CLAUDE.md "Heap Access".
+            Note over Allocator: layout — [total_size: u64 | rc: u64 | payload bytes...]<br/>returns base pointer (offset 0) — payload starts at offset 16. Per src/AGENTS.md "Heap Access".
             Allocator -->> UserCode: ptr: i64 (base of allocation)
         end
 

@@ -81,7 +81,7 @@ Rules:
 
 - The only cross-crate element is `MacroDeclaration.macro_sexp`; it follows the
   types cache contract
-  ([types memory](../../crates/cranelisp-types/CLAUDE.md#the-serde-shape-is-the-cache-contract)).
+  ([types memory](../../crates/cranelisp-types/AGENTS.md#the-serde-shape-is-the-cache-contract)).
 - `Introspection`, `SharedState` and `RunMode` are int-internal.
 - The backend's CLIF capture flag is an ordinary parameter of its codegen
   entry; its presence does not make introspection a backend concept.

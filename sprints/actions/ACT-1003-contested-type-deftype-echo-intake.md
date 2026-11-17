@@ -65,7 +65,7 @@ enter bare `Qtok`. Include the reversed-order declaration. `qa` then does one
 of the following:
 
 - attributes the defect and directs a failing, unignored cell, owned by
-  `/dev` on `src/`. Its `// defect:` class comes from the `tests/CLAUDE.md`
+  `/dev` on `src/`. Its `// defect:` class comes from the `tests/AGENTS.md`
   vocabulary. No current class names a display reader that collapses a
   contested spelling, so `qa` may need to add one;
 - or dismisses the lead with the probe as evidence.

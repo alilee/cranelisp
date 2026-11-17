@@ -279,7 +279,7 @@ Evaluation errors MUST still emit the delta line — observation is the point, a
 
 **The delta window MUST include the program-result release.** [Tested tests/repl_introspection::mem_with_expr_emits_signed_delta_line] The purpose of `/mem <expr>` is to let a user at the prompt answer "did my expression's memory get reclaimed?", so the window the delta measures MUST be closed *after* the turn's result has been released, not after evaluation. A window that closes earlier reports `live +N` for every heap-valued expression — including expressions whose result the runtime provably reclaims — which tells the user they have a leak when they do not. This is a **truthfulness** requirement on the instrument, not a precision one: a diagnostic that systematically over-reports growth is worse than no diagnostic, because a user debugging their own ownership will act on it.
 
-Because the REPL renders a turn's whole `StyledDoc` before releasing that turn's result (`src/CLAUDE.md` §"Program-result ownership" — observe, then release), the delta line is *part of the text emitted before the release*, so satisfying this requirement is an ordering question, not a counter question. Two shapes satisfy it; the choice is the implementation's:
+Because the REPL renders a turn's whole `StyledDoc` before releasing that turn's result (`src/AGENTS.md` §"Program-result ownership" — observe, then release), the delta line is *part of the text emitted before the release*, so satisfying this requirement is an ordering question, not a counter question. Two shapes satisfy it; the choice is the implementation's:
 
 - the command takes responsibility for its own turn's release, releasing before it computes the closing counters; or
 - the delta line is emitted after the release rather than composed with the result line.
@@ -310,7 +310,7 @@ user> /sig double
 ```
 
 Unqualified type names or an unqualified symbol name in `/sig` output are non-conformances
-([root CLAUDE.md, Design Principles](../../CLAUDE.md#design-principles) — `:Type value` notation with fully-qualified names):
+([root AGENTS.md, Design Principles](../../AGENTS.md#design-principles) — `:Type value` notation with fully-qualified names):
 `:(Fn [Int] Int) double ; defn` is wrong in both positions. [S102]
 
 > Arbitration record (FIXME 0492, S102): the short-form rendering the binary produces today

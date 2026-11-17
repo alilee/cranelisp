@@ -448,7 +448,7 @@ fn let_shadowed_trait_operator_auto_curry_resolves_to_local() {
 // dispatch — the backend carrier fault above was in the local-target wrapper, not in
 // trait resolution, and this cell would have named that without the trait shadow
 // confounding it. A coverage-by-definition-variants cell (the local-closure variant
-// of the auto-curry family, `tests/CLAUDE.md` §"Coverage by definition variants"),
+// of the auto-curry family, `tests/AGENTS.md` §"Coverage by definition variants"),
 // not a nice-to-have: if a future fix re-keys the wrapper on trait-ness, the twins
 // diverge and the failing one names the site.
 #[test]

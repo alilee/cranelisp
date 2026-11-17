@@ -16,16 +16,16 @@
 //! populated, `--run` the stdio entry in one, `--link` it in the other and exec
 //! the produced executable, then compare. Both must exit 0 and their stdout
 //! must be byte-identical — a REPL/`--run`/`--link` divergence is always a
-//! defect (root `CLAUDE.md`).
+//! defect (root `AGENTS.md`).
 //!
 //! Cost is two full cold compiles of the showcase (~3s each). That is the
 //! price of an application-scale link gate; the `--link` path links five
 //! workspace members it has no Cargo dependency edge to, and only a real link
-//! exercises them (`tests/CLAUDE.md` §"`--link` / platform prerequisites" — the
+//! exercises them (`tests/AGENTS.md` §"`--link` / platform prerequisites" — the
 //! nextest setup script builds them before any test runs).
 //!
 //! The exemplar is one of the two sanctioned stdlib touchpoints (root
-//! `CLAUDE.md` §"Stdlib separation"): the showcase depends on `stdlib/` by
+//! `AGENTS.md` §"Stdlib separation"): the showcase depends on `stdlib/` by
 //! design, so `CRANELISP_LIB` points at the workspace tree here.
 
 use std::path::{Path, PathBuf};

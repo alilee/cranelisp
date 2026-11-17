@@ -25,7 +25,7 @@ are met.
 |---|---|---|
 | [Runtime model](../spec/12-runtime.md) §12.3.1 item 2: freed memory is not accessed. §12.7.8 item 4: no use-after-free | **Not met** | **Observed.** This audit re-ran `tests/vec_push_match_binder_same_name_shadow.rs` at `88bbbd12`. Its control aborts with `USE-AFTER-FREE: vec op vec_push_copy(src) touched data buffer … freed (previous free site = vec_drop)`. That is [ACT-1030](../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md). **Predicted and unmeasured:** leads L2, L4, L5, L6 (ACT-1030's face), L10 and [ACT-1029](../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md) (`design/backend/ownership-codegen.md` §13.3). See also finding F4 |
 | [Runtime model](../spec/12-runtime.md) §12.7.2.1: `vec-set` with an index `< 0` or `>= length` panics | **Not met (source)** | `compile_vec_set` and `emit_vec_set_cow_core` (`compiler/vec_codegen.rs`) have no index check. The in-place arm loads the old element at `data_ptr + idx*8`, RC-decrements it and stores the new value, all under `MemFlags::trusted()`. The copy extern `vec_set_copy` (`crates/cranelisp-intrinsics/src/vec_runtime.rs`) drops the new value silently when the index is out of range. Only `emit_vec_get_core` checks bounds. The spec row is still `[S18]`; no test has ever exercised it. Not executed by this audit (F2) |
-| §12.3.1 item 1: heap values are freed when unreachable | **Partially met** | Carried leaks: [ACT-1026](../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md) (+1 per evaluation, exposure widened by the S122 COW correction), [ACT-1028](../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md), the [ACT-1022](../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) lead. Non-concrete faces 2 and 3 are said to "leak today" (`crates/cranelisp-backend/CLAUDE.md`; `rc_emission.rs::signature_heap_category` rustdoc). Nothing measures that claim (F5) |
+| §12.3.1 item 1: heap values are freed when unreachable | **Partially met** | Carried leaks: [ACT-1026](../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md) (+1 per evaluation, exposure widened by the S122 COW correction), [ACT-1028](../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md), the [ACT-1022](../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) lead. Non-concrete faces 2 and 3 are said to "leak today" (`crates/cranelisp-backend/AGENTS.md`; `rc_emission.rs::signature_heap_category` rustdoc). Nothing measures that claim (F5) |
 | [Runtime model](../spec/12-runtime.md) §12.5: self tail calls run in constant stack | Met | `[Tested+Neg]`; five `spec_12_runtime` cells |
 | [Runtime model](../spec/12-runtime.md) §12.7.2: runtime faults lower to `runtime/panic`, with the spec's messages and no hardware trap | Met, except `vec-set` | No `.trap(`, `trapz` or `trapnz` in the crate. `"match failed"`, `"division by zero"` and `"vec-get: index out of bounds"` match the spec table |
 | BC §3 invariant 1: one emission path | Met | `compile_to_module` is the only emission entry |
@@ -59,7 +59,7 @@ not lift it.
 | Duplication | **Adequate in code, weak in documents** | Code: one glue authority, one entry convention, one nullary guard. Documents: at least 10 rule families stated in two to four homes (§6 F6) |
 | Risk-weighted coverage | **Weak on the top risk** | Every S122 use-after-free was found incidentally. The generator and the differential oracle are blind to this class (§6 F3). `vec-set` bounds have been untested since S18 |
 | Maintainability | **Weak in the ownership stratum** | `FnCompiler` has 28 fields, 12 of them ownership state. 13 separate answers to "who owns this reference". Rustdoc is spliced onto the wrong functions (§6 F8) |
-| Memory freshness | **Weak** | `crates/cranelisp-backend/CLAUDE.md` makes at least six false or stale claims (finding F7). `design/backend/CLAUDE.md` is sound |
+| Memory freshness | **Weak** | `crates/cranelisp-backend/AGENTS.md` makes at least six false or stale claims (finding F7). `design/backend/AGENTS.md` is sound |
 
 ### 1.4 The acid-test answer
 
@@ -339,7 +339,7 @@ intake, never directly to `dev`.
     (`s115-carrier-and-rc-sweep.md`, `s117-failed-member-attribution.md`,
     `s122-closure.md`) and three work orders (`binding-indirection-consume.md`
     §5, `io-scheduling.md`, `io-trampoline.md` §12–§17, about 2,000 of its
-    2,279 lines) sit there. That contradicts `design/backend/CLAUDE.md` ("executed
+    2,279 lines) sit there. That contradicts `design/backend/AGENTS.md` ("executed
     plans … are Git's job").
   - **Duplicated authority.** At least 10 rule families are stated in two to
     four homes: the COW rule of `ownership-codegen.md` §13.7, the TCO verdict, IOR-5, the entry
@@ -351,7 +351,7 @@ intake, never directly to `dev`.
 
 ### F7 — The crate memory carries false claims and restates design (medium)
 
-- **Observed in `crates/cranelisp-backend/CLAUDE.md`:**
+- **Observed in `crates/cranelisp-backend/AGENTS.md`:**
   - "Three RC decisions" introduces a 13-row table;
   - `got_data_symbol_name` is called "non-injective … FIXME 0748". FIXME 0748
     was deleted in S119 and the scheme escapes `_`; the stale text also sits in

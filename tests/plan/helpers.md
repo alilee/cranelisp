@@ -43,7 +43,7 @@ signatures.
    limited to `target/debug/cranelisp`, `stdlib/`, the platform DLLs
    under `target/debug/`, and `tests/fixtures/` — and require a
    `// read-only` annotation per
-   `tests/CLAUDE.md §"Fresh Temp Directory per Test"`.
+   `tests/AGENTS.md §"Fresh Temp Directory per Test"`.
 
 3. **Composable.** A test author should be able to specify "no
    prelude, this user.cl, these helper modules, this stdin" in a
@@ -367,14 +367,14 @@ These were considered and explicitly rejected:
   test on a warm cache. Unit tests inside crates remain the place
   for sub-millisecond microbenchmark assertions. The full e2e
   suite needs to stay under the 30-second total cap
-  (`tests/CLAUDE.md`); we manage that by parallelising via
+  (`tests/AGENTS.md`); we manage that by parallelising via
   `cargo nextest run` and keeping each e2e test minimal.
 - **No intermediate-state inspection.** A failing e2e test cannot
   ask "what did the type checker infer for x?". It can ask "what
   did `/type x` print?" via a stdin script. If that is not enough
   to diagnose, the next step is a `/dev`-owned unit test inside
   the suspected crate, per
-  `tests/CLAUDE.md §"Isolating Cross-Crate Failures"`.
+  `tests/AGENTS.md §"Isolating Cross-Crate Failures"`.
 - **Coupling to CLI surface.** Every CLI flag the harness uses
   (`--run`, `--link`, etc.) is a contract with `/int`. Changes go
   through FIXME, not silent rename. No new CLI surface is required

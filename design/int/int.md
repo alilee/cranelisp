@@ -159,13 +159,13 @@ The two structural facts that dominate the tree today:
 | Gap-orchestration form chain | `process_form.rs` + `process_form/{form_dispatch,dependency,macro_clause,macro_resolution,platform,cache_restore,tests}.rs` — the sole crate-crossing where a `ResolutionGap` becomes a scheduler call (Principle 1/7) |
 | Cluster processing | `cluster.rs` (`process_cluster` → `ClusterOutcome::{Done, Gap}`; `ProcessedCluster` carries warnings, resolved imports, introspection records and the boxed `PreparedCommit`, which lives in `worker.rs`. No redefinition outcome rides it ([session transaction §5.1](session-transaction.md#51-why-no-redefinition-can-break-a-caller)). |
 | REPL eval | `eval.rs` (form-chain eval, bare-symbol introspection, dep registration); `repl_input.rs` (the `ReplInput` TTY/non-TTY abstraction) |
-| REPL command/display surface | `src/repl/` — five files; §3.3 states the structure and `src/CLAUDE.md` §"Session/REPL module map" lists the members |
+| REPL command/display surface | `src/repl/` — five files; §3.3 states the structure and `src/AGENTS.md` §"Session/REPL module map" lists the members |
 | Live redefinition | `redefine.rs` — the guarded-redefinition gate, blocking-dependent scan, instance-rematerialization policy, `RedefKind` slot classification and the retention pool (`session-transaction.md`); it still carries the superseded dependent-recompilation machinery recorded in `design/int/int.md` §16.0 |
-| Import/export + prelude fallback | `imports.rs` (+ `imports/tests.rs`) — the int-side installer; the `prelude_fallback` mechanism (`src/CLAUDE.md` §"Prelude as a resolution FALLBACK") |
+| Import/export + prelude fallback | `imports.rs` (+ `imports/tests.rs`) — the int-side installer; the `prelude_fallback` mechanism (`src/AGENTS.md` §"Prelude as a resolution FALLBACK") |
 | Bootstrap seeds | `bootstrap.rs` — `mount_synthetic_modules` (special forms, intrinsic types, `macros`/`Option`/`IO`/`Trace` seeds) |
 | Macro execution | `expander.rs` (the `JitMacroExpander` invocation core + expand loop); `marshal.rs` (sexp marshaling) |
 | Display / pretty-print | `display.rs` (`display::envelope` + value render); `pretty.rs` (`pretty_print`/`pretty_print_plain`); `styled.rs` (the `Role`/`StyledDoc` vocabulary + `styled::render`, the sole style-table site); `style.rs` (raw style helpers); `syntax.rs` |
-| Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/CLAUDE.md` §"Regeneration source") |
+| Save / regenerate | `save.rs` — `regenerate_backing_file` (Decision 39; source-text-first regen, `src/AGENTS.md` §"Regeneration source") |
 | Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `callee_edges.rs` (the one callee enumeration, shared with `redefine.rs`, §7.6.1); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller and deletes in S124 (§16.0) |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
@@ -222,7 +222,7 @@ and drive across files makes the gap protocol harder to verify.
 
 ### 3.3 REPL command/display surface (`src/repl/`)
 
-`src/CLAUDE.md` §"Session/REPL module map" lists each file's members. The design rules:
+`src/AGENTS.md` §"Session/REPL module map" lists each file's members. The design rules:
 
 - **`src/repl/mod.rs` is the bottom layer.** It holds slash dispatch, prompt/banner/editor,
   input classification and the shared toolbox: the resolution glue
@@ -268,7 +268,7 @@ enumeration, Principle 24's named carve-out, not a scan.
   surface that asks for the set cannot raise it. Terminal deduplication — one declaration
   reached by two paths prints one line — is the primitive's too, not int's.
 - **Render from the canonical key; never re-resolve.** Each candidate displays from its
-  `Resolved::canonical` by direct probe (`crates/cranelisp-types/CLAUDE.md` §"Resolution
+  `Resolved::canonical` by direct probe (`crates/cranelisp-types/AGENTS.md` §"Resolution
   primitive traps"). `src/repl/format.rs::format_definition_symbol_doc` re-deriving a
   displayed name from its bare spelling is the divergent mirror that made display show a
   tier winner (Principles 7, *Single source of truth*, and 24, *Resolve once*); removing
@@ -653,7 +653,7 @@ or ABI change.
 entry stands in a terminal pool. These paths are a successful registration, startup
 recovery's wait on a registered entry, and the empty restart. A terminal
 pool is `TypecheckDone`, `Complete` or `Failed`. This is what
-Invariant SW (`src/CLAUDE.md`; [§6.5](#65-entry-module-and-the-implicit-prelude))
+Invariant SW (`src/AGENTS.md`; [§6.5](#65-entry-module-and-the-implicit-prelude))
 assumes: no pool worker is mid-pass on the entry, and nothing can claim it.
 
 **Why it does not hold today.** A worker publishes in-memory completion and
@@ -858,7 +858,7 @@ slot.
 Frontend and typecheck stay pure (Principle 3): they return `ResolutionGap` values and never
 call the scheduler. `process_cluster_once` is the sole place a gap becomes a scheduler
 action (Principle 7). An FQ reference to an unloaded module — function, type or macro head —
-auto-loads through the same `drive_module_dep` seam (`src/CLAUDE.md` §"FQ auto-loading").
+auto-loads through the same `drive_module_dep` seam (`src/AGENTS.md` §"FQ auto-loading").
 The gap does not distinguish a macro from a function: the retry forces only the
 dependency's typecheck and codegen, and nothing is speculatively JIT-compiled.
 
@@ -3669,7 +3669,7 @@ further. Open Binary/int work is §16.0.
 
 ## 15. Subordinate topic docs
 
-`design/int/CLAUDE.md` §"Document index" is the triage of record: it names the
+`design/int/AGENTS.md` §"Document index" is the triage of record: it names the
 master, the durable subsystem docs, the active subordinate feature docs, the
 reference lineage and the historical records, and it is the collection
 declaration those documents are established through. Do not maintain a second

@@ -285,11 +285,10 @@ choices are the user's (§8.5).
   in the W0 change-set; the
   [shared-checker contract](../design/arch/s122-shared-document-checker.md)
   is one of them.
-- **Risk to name in W0.** The package's consuming guide does not mention
-  `CLAUDE.md`. The Claude host loads `CLAUDE.md` memories on entering a
-  directory; this session relied on that. Whether it loads `AGENTS.md` the
-  same way is unverified here. `sprint` owns host-entry guidance and should
-  measure it on one directory before renaming the rest.
+- **Host loading, measured in W0.** Claude Code 2.1.326 loads a root
+  `AGENTS.md` at session start and a nested one on reading a file in its
+  directory, with no `CLAUDE.md` present. The rename therefore needs no
+  redirect files.
 - **Rust context standard: stay unadopted.** Corrected 2026-11-16 by the
   [evaluation](s124-rust-context-standard-evaluation.md) §7, which tested
   this paragraph's original reasons against the standard and its checker.

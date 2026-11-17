@@ -705,7 +705,7 @@ impl CompilerSession {
     /// Display reads a candidate THROUGH this direct probe instead of
     /// re-resolving the written spelling; a second resolver at a display seam
     /// answers with a tier winner (Principles 7, 24;
-    /// `crates/cranelisp-types/CLAUDE.md` §"Resolution primitive traps").
+    /// `crates/cranelisp-types/AGENTS.md` §"Resolution primitive traps").
     pub(crate) fn entry_at(&self, symbol: &FQSymbol) -> Option<Binding<Code>> {
         self.shared
             .symbol_tables

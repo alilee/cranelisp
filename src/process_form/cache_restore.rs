@@ -179,7 +179,7 @@ fn cache_validity_check(
     );
 
     // `CRANELISP_MODULE_TRACE` — the module-discovery / compile-order / cache-hit
-    // observability channel (tests/CLAUDE.md §"Diagnostic Logging"). The `.meta`
+    // observability channel (tests/AGENTS.md §"Diagnostic Logging"). The `.meta`
     // is valid here: the module's typecheck result is cached (a cache HIT on the
     // typecheck artifact), so the import path reuses it rather than re-deriving
     // it from scratch. This is the S91 index→import cache-hit signal (§25.5): a
@@ -255,7 +255,7 @@ fn cache_macro_clauses_valid(table: &cranelisp_types::SymbolTable) -> bool {
 
 /// Structural specs pulled out of a `CachedModule`'s symbol table BEFORE it is
 /// moved into the live tables (phase 4 of `try_cache_hit_load`). Named struct
-/// (no bare tuple) per `src/CLAUDE.md §Code Structure`.
+/// (no bare tuple) per `src/AGENTS.md §Code Structure`.
 struct CachedSpecs {
     /// All `Def`-named symbols (for scheduler register).
     symbols: std::collections::HashSet<Symbol>,

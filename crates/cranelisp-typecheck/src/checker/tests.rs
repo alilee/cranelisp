@@ -2121,7 +2121,7 @@ fn prelude_private_ctor_not_reachable_via_fallback() {
 
 // spec: spec/08-modules.md §8.5 — self-qualified type reference resolves to
 // the LOCAL type. Cross-crate-isolation unit for FIXME 0351(b) (per
-// `tests/CLAUDE.md §"Isolating Cross-Crate Failures"`). The e2e
+// `tests/AGENTS.md §"Isolating Cross-Crate Failures"`). The e2e
 // `self_qualified_type_reference_resolves_to_local_type` fails with
 // `unknown type `t/Box` (from module ``)`. This unit drives the typecheck
 // leaf `resolve_type_expr_in_module` directly against a fixture where module

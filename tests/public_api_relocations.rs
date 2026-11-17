@@ -24,7 +24,7 @@
 //
 // FIXME(/dev — every per-crate workstream that lands a facade-conformant
 // change must regenerate the affected baseline per the triad pattern in
-// `tests/CLAUDE.md §"Public-API enforcement"`).
+// `tests/AGENTS.md §"Public-API enforcement"`).
 
 #![allow(dead_code)]
 
@@ -52,7 +52,7 @@ fn crates_with_baselines() -> &'static [&'static str] {
     ]
 }
 
-// spec: tests/CLAUDE.md §"Public-API enforcement" (structural test, no
+// spec: tests/AGENTS.md §"Public-API enforcement" (structural test, no
 // language-spec section — this is a conformance gate for facade adoption).
 // FIXME(/dev — multi: every crate with a facade-conformant landing in
 // S66 must commit its `public-api.txt` baseline per /qa slice §1.1).
@@ -64,7 +64,7 @@ fn public_api_check_runs_against_all_seven_crates() {
     let probe = match probe {
         Ok(output) if output.status.success() => output,
         _ => panic!(
-            "cargo +nightly public-api unavailable. Install per tests/CLAUDE.md \
+            "cargo +nightly public-api unavailable. Install per tests/AGENTS.md \
              §\"Public-API enforcement\":\n\
              rustup toolchain install nightly\n\
              cargo +nightly install cargo-public-api"
@@ -74,7 +74,7 @@ fn public_api_check_runs_against_all_seven_crates() {
     require_supported_public_api_version(&version).unwrap_or_else(|reason| {
         panic!(
             "unsupported cargo-public-api for committed baselines: {reason}\n\
-             Install version 0.52 or newer per tests/CLAUDE.md \
+             Install version 0.52 or newer per tests/AGENTS.md \
              §\"Public-API enforcement\""
         )
     });
@@ -190,7 +190,7 @@ fn require_supported_public_api_version(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-// spec: tests/CLAUDE.md §"Public-API enforcement" — the committed format
+// spec: tests/AGENTS.md §"Public-API enforcement" — the committed format
 // changed at cargo-public-api 0.52 and an older generator must be rejected.
 #[test]
 fn public_api_version_floor_rejects_pre_052_generator() {
@@ -199,7 +199,7 @@ fn public_api_version_floor_rejects_pre_052_generator() {
     assert!(error.contains("require >= 0.52"));
 }
 
-// spec: tests/CLAUDE.md §"Public-API enforcement" — the floor admits the
+// spec: tests/AGENTS.md §"Public-API enforcement" — the floor admits the
 // baseline-producing version and later compatible generators.
 #[test]
 fn public_api_version_floor_accepts_052_and_newer_generators() {

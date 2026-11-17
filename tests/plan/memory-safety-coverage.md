@@ -478,5 +478,5 @@ Git (`git show a07823d8:tests/plan/memory-safety-coverage.md` §6).
 - [S111 safety-matrix allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md) — the
   committed S111 safety matrices this strategy generalizes.
 - `tests/plan/risks.md` — standing risk entry pointing here.
-- `tests/CLAUDE.md` §"Diagnostic env vars", §"Defect-repro notation" — the
+- `tests/AGENTS.md` §"Diagnostic env vars", §"Defect-repro notation" — the
   signal inventory and the `class=` vocabulary the lane's failures feed.

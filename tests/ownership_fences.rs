@@ -12,7 +12,7 @@
 //!
 //! **Fence design** (every S-fence): (i) BEHAVIORAL leg — the guarded value
 //! is *used after the elided-inc window*, sustained (1000 crossings, the
-//! §"Sustained-load convention" of tests/CLAUDE.md), asserting VALUES, not
+//! §"Sustained-load convention" of tests/AGENTS.md), asserting VALUES, not
 //! crash-absence; (ii) BALANCE leg — `CRANELISP_RC_STATS` alloc/dealloc
 //! imbalance must be ITERATION-INDEPENDENT (measured at N=50 vs N=1000 —
 //! self-calibrating, no absolute-baseline fragility); (iii) two-condition
@@ -113,7 +113,7 @@ fn assert_exit_value(out: helpers::e2e::CrOutput, value: i64) -> helpers::e2e::C
 /// ⇒ delta ≤ 1); the rare full-suite FAIL is the pathological at-exit collision
 /// pushing one measurement to 2–3. We do NOT absorb that by widening the bar
 /// (which would blunt small-leak sensitivity). Instead we distinguish the race
-/// from a real leak by REPETITION — the property `tests/CLAUDE.md`
+/// from a real leak by REPETITION — the property `tests/AGENTS.md`
 /// §"Failing-test discipline" mandates over "flaky": a genuine per-iteration
 /// leak is DETERMINISTIC and huge (≥ 950 at this N-spread, every pair),
 /// while the at-exit race is
@@ -123,7 +123,7 @@ fn assert_exit_value(out: helpers::e2e::CrOutput, value: i64) -> helpers::e2e::C
 /// the first pair with zero extra subprocess cost; the retry budget targets the
 /// rare race pair. A real leak fails all 3 pairs and stays RED (the #26
 /// `vec_returned_from_generic_fn…` guard reads delta 950 — 59× the bar —
-/// unaffected). Bug-not-flake per `tests/CLAUDE.md` §"Failing-test discipline".
+/// unaffected). Bug-not-flake per `tests/AGENTS.md` §"Failing-test discipline".
 fn assert_iteration_independent_imbalance(template: &str, context: &str) {
     let measure = || {
         let (_o1, small) = run_with_rc_stats(&template.replace("{N}", "50"));

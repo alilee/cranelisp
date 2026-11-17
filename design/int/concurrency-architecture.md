@@ -9,7 +9,7 @@ the worker pool, the session data plane, and the diagnostic/host edges. The
 **language-level** effect-concurrency runtime (atomic RC, IVars, sparks, the IO
 reactor) is a runtime-library concern owned by `design/intrinsics/reactor.md`
 and `design/arch/effect-concurrency.md`; `/int` is a host-client of it
-(`design/int/CLAUDE.md` §Ownership), not its designer. Do not record runtime
+(`design/int/AGENTS.md` §Ownership), not its designer. Do not record runtime
 concurrency here.
 
 **Diagram companion**: `design/int/concurrency/` carries the as-built structural,

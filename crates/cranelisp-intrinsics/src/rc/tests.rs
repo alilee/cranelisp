@@ -64,7 +64,7 @@ fn a1_rc_inc_ok_on_live_pointer() {
     consume_shallow(crate::handle::test_owned(base));
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_shallow skips bare nullary tags
+// spec: design/arch/AGENTS.md Decision 24 — consume_shallow skips bare nullary tags
 #[test]
 fn decision24_consume_shallow_skips_nullary_tags() {
     // Bare nullary tags (< NULLARY_TAG_THRESHOLD) must be skipped —
@@ -84,7 +84,7 @@ fn decision24_consume_shallow_skips_nullary_tags() {
     assert_eq!(alloc::dealloc_count() - deallocs_before, 0);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_shallow frees last reference
+// spec: design/arch/AGENTS.md Decision 24 — consume_shallow frees last reference
 #[test]
 fn decision24_consume_shallow_frees_last_reference() {
     let allocs_before = alloc::alloc_count();
@@ -96,7 +96,7 @@ fn decision24_consume_shallow_frees_last_reference() {
     assert_eq!(alloc::dealloc_count() - deallocs_before, 1);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_shallow preserves value at rc>1
+// spec: design/arch/AGENTS.md Decision 24 — consume_shallow preserves value at rc>1
 #[test]
 fn decision24_consume_shallow_preserves_shared_reference() {
     let allocs_before = alloc::alloc_count();

@@ -2126,7 +2126,7 @@ fn vec_set_heap_var_element_borrowed_recursive_source_no_uaf_run() {
 // elements (S88 Stage-A gating repro — RESOLVED guard)
 // =============================================================================
 //
-// DEF-2 (exemplar/CLAUDE.md §Known-Issues, user-flagged) claimed that the
+// DEF-2 (exemplar/AGENTS.md §Known-Issues, user-flagged) claimed that the
 // curated wrapper `(defn conj [v x] (vec-push v x))` mis-manages the refcount
 // of a HEAP-ADT element passed through its own call frame, so a `(Vec Box)` /
 // `(Vec Cell)` accumulated via `conj` in a ~30-iteration loop comes out
@@ -2149,7 +2149,7 @@ fn vec_set_heap_var_element_borrowed_recursive_source_no_uaf_run() {
 // — a fixed defect earns a guard, not a RED), per /qa §Failing-not-ignored. A
 // RED here is a regression of the heap-ADT-through-the-wrapper RC convention.
 // Free-standing: the `conj` wrapper + `Box` type are defined inline (zero
-// stdlib dependency, CLAUDE.md §Stdlib separation).
+// stdlib dependency, AGENTS.md §Stdlib separation).
 
 // Single-field heap ADT (`Box`) accumulated via the curated `conj` wrapper vs
 // the bare `vec-push` primitive over 30 iterations; the two element sums MUST

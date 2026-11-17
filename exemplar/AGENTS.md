@@ -6,9 +6,9 @@ surface. Its design, design decisions and open obligations are in
 [the exemplar design](plan-exemplar.md); this memory holds entry guidance.
 
 - `exemplar/` and `src/main.rs` are the only trees that may depend on
-  `stdlib/` (root [Design Principles](../CLAUDE.md#design-principles),
+  `stdlib/` (root [Design Principles](../AGENTS.md#design-principles),
   "Stdlib separation").
-- Root [Testing](../CLAUDE.md#testing) places the stdio and test-capture
+- Root [Testing](../AGENTS.md#testing) places the stdio and test-capture
   platforms under `qa` as test-suite dependencies. The exemplar reuses them
   and owns neither. The `web` platform in `platforms/web/` is the exemplar's
   own.

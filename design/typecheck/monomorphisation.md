@@ -212,7 +212,7 @@ module as `home`. Three facts are load-bearing. Getting one wrong produces a spu
    implementation is recorded in the trait's defining module.
 
 The implementation-level statement, and the unit test that guards these facts, are in
-`crates/cranelisp-typecheck/CLAUDE.md` §"Cross-module monomorphisation".
+`crates/cranelisp-typecheck/AGENTS.md` §"Cross-module monomorphisation".
 
 ### 3.8 "Instantiate this symbol at these types" — `instantiate_demands`
 
@@ -561,7 +561,7 @@ installed or any code is emitted, and identical in the REPL, `--run` and `--link
 - No new settlement window (§3.3 standing rule): the instance step runs inside the mint
   that the existing windows already drive.
 - No public item, no `cranelisp-types` change, no cache-schema change. An instance
-  recheck records no `callees` edge (`crates/cranelisp-typecheck/CLAUDE.md`
+  recheck records no `callees` edge (`crates/cranelisp-typecheck/AGENTS.md`
   §"`callees` completeness"), so `.meta.json` meaning is unchanged.
 
 #### 3.10.5 Evidence

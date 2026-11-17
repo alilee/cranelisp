@@ -615,7 +615,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// FQ-Export for everything else) was a defect, deleted here. Function
 /// symbols never cross `.o` boundaries — every call goes through the per-
 /// module GOT — so `Linkage::Local` is sufficient and avoids cross-`.o`
-/// symbol-table pollution. See Decision 36 in `design/arch/CLAUDE.md` and
+/// symbol-table pollution. See Decision 36 in `design/arch/AGENTS.md` and
 /// `design/backend/compile-to-module.md` §7 for the full rationale.
 ///
 /// # GOT-slot write

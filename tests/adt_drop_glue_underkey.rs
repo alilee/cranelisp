@@ -18,7 +18,7 @@
 // of the full concrete instantiation (module + type name + concrete args).
 //
 // The `class=artifact-underkey` tag is the ratified controlled vocabulary
-// (`tests/CLAUDE.md` §"Defect-repro notation"; ratified S111, /qa): a
+// (`tests/AGENTS.md` §"Defect-repro notation"; ratified S111, /qa): a
 // per-INSTANTIATION artifact deduped under a key that under-determines its
 // body. The closest existing tags — `uaf` (R1 corruption face) and
 // `rc-miscount` (R2 leak face) — are two symptoms of the SAME root under-key,

@@ -36,7 +36,7 @@ use std::sync::Once;
 
 /// No-op: the platform cdylibs/rlibs are built suite-wide by the nextest setup
 /// script (`tests/scripts/build-link-prereqs.sh`), the single owner of that
-/// artifact-set invariant (`tests/CLAUDE.md` §"`--link` prerequisites" — "A test
+/// artifact-set invariant (`tests/AGENTS.md` §"`--link` prerequisites" — "A test
 /// MUST NOT shell out to `cargo build`").
 ///
 /// The former per-test `cargo build -p cranelisp-stdio -p cranelisp-test-capture`

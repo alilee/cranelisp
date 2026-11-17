@@ -78,7 +78,7 @@
 // requiring the facade to be a typed manifest. False positives are
 // possible (a name mentioned only in a cross-reference would pass);
 // the cost is recoverable — /review reads both the facade diff and the
-// pub-api diff side-by-side at PR time (see `design/arch/CLAUDE.md
+// pub-api diff side-by-side at PR time (see `design/arch/AGENTS.md
 // §"Baseline-diff discipline"`).
 //
 // **Item filtering.** We filter out trait-impl boilerplate that adds
@@ -91,7 +91,7 @@
 // type aliases, constants, and trait declarations — the surface that
 // the facade SHOULD enumerate.
 //
-// spec: design/arch/CLAUDE.md §"Baseline-diff discipline" — every
+// spec: design/arch/AGENTS.md §"Baseline-diff discipline" — every
 // edge change must update both the pub-api baseline and the facade in
 // the same change-set; this test enforces the second half.
 

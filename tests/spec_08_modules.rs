@@ -2816,7 +2816,7 @@ fn import_mod_target_qualified_and_bare_equiv() {
 // resolved `child` only as a project-root / lib-dir ROOT module — which did not
 // exist (the file is `shell/child.cl`, i.e. module `shell.child`).
 //
-// Isolation at the time (`tests/CLAUDE.md §"Isolating Cross-Crate Failures"`):
+// Isolation at the time (`tests/AGENTS.md §"Isolating Cross-Crate Failures"`):
 //   - The SELF-CONTAINED fixture reproduced it (this test — no stdlib
 //     dependency). The defect was NOT stdlib-specific; the `stdlib/core.cl`
 //     `(export [syntax …])` / `(export [io …])` bare re-exports were merely the

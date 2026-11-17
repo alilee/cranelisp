@@ -3,7 +3,7 @@
 Owner: `dev`, narrow-deployed to `exemplar/`. This document states the current
 design of the built Sudoku Solver exemplar and its open obligations. Entry
 guidance, run commands and evidence navigation are in the
-[exemplar memory](CLAUDE.md). Language behaviour is specified in `spec/`, and
+[exemplar memory](AGENTS.md). Language behaviour is specified in `spec/`, and
 this document does not restate it.
 
 ## Purpose

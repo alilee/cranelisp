@@ -24,7 +24,7 @@
 //! §6. The exemplar's `eliminate` has this shape — the application-scale guard
 //! is `tests/exemplar_ownership_residue_s116.rs`.
 //!
-//! Free-standing per root `CLAUDE.md` §"Stdlib separation": no prelude file and
+//! Free-standing per root `AGENTS.md` §"Stdlib separation": no prelude file and
 //! no `CRANELISP_LIB`, with `(import [primitives [*]])` supplying the same bare
 //! primitive surface `PreludeVariant::PrimitivesOnly` gives a builder-driven
 //! cell.

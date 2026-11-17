@@ -1,7 +1,7 @@
 //! Ring 0 inline-substitution table — a name-keyed dispatch optimisation.
 //!
 //! Per Decision 43 (forbidden pattern: no trait knowledge, one dispatch path —
-//! `crates/cranelisp-backend/CLAUDE.md`): this file holds ONLY the name-keyed inline-Cranelift-IR emission
+//! `crates/cranelisp-backend/AGENTS.md`): this file holds ONLY the name-keyed inline-Cranelift-IR emission
 //! table for the Ring 0 primitives. It is **not** a dispatch path — the
 //! dispatch path is the standard `compile_direct_call` keyed entry fetch
 //! (`entry_at` → `callable_got_slot()`) -> GOT-indirect call that every user

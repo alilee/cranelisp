@@ -147,7 +147,7 @@ The inc/consume pair is not redundant ceremony:
   **uniform** with every sibling complex-heap extern (`quote_sexp`, `str_join`,
   `cranelisp_run_io`). Making `sconcat` the one extern with a conditional or
   absent consume is precisely the divergent-sibling shape this project is
-  eliminating (Principle 7; `tests/CLAUDE.md` §"Coverage by definition
+  eliminating (Principle 7; `tests/AGENTS.md` §"Coverage by definition
   variants").
 - It states the reference taken **locally and explicitly** at the embed site,
   rather than encoding it in a non-local pairing of two deletions that a future
@@ -249,7 +249,7 @@ Track-B seams.
 
 `#[cfg(test)]` beside each seam, per the crates' externalized-`tests.rs`
 convention. Rows marked **(RED first)** must be written and observed failing
-*before* the fix (root `CLAUDE.md` §Testing; `sprints/METHOD.md` §2.2).
+*before* the fix (root `AGENTS.md` §Testing; `sprints/METHOD.md` §2.2).
 
 | Submodule | Normal / positive | Complexity / edge | Negative / fence |
 |---|---|---|---|
@@ -272,7 +272,7 @@ row**, and the constraint is structural, not incidental:
   (`tests/detector_arming_discipline_guard.rs::no_test_sets_a_cranelisp_variable_in_its_own_process`)
   forbids a test arming a detector in its own process. `set_var` against an
   already-forced `LazyLock` is a silent no-op that reads green forever — the
-  failure mode the gate exists to prevent (`crates/cranelisp-primitives/CLAUDE.md`
+  failure mode the gate exists to prevent (`crates/cranelisp-primitives/AGENTS.md`
   §"Counting RC ops in a unit test").
 
 **Ruled (`/design`, S118 post-W2b): the committed row's substitute IS the design

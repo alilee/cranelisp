@@ -101,5 +101,5 @@ consolidation; Git retains them, and their substance lives in `int.md`.
 
 - `design/arch/bounded-contexts.md` §6 — canonical int bounded context (cadences, handoffs, constraints).
 - `design/intrinsics/reactor.md` — the IO/RC runtime library `/int` is a host-client of (§0 = the seam).
-- `design/intrinsics/CLAUDE.md` — the runtime-library ownership statement (the callee side).
+- `design/intrinsics/AGENTS.md` — the runtime-library ownership statement (the callee side).
 - `design/arch/effect-concurrency.md` — the arch-owned language-level concurrency model (distinct from int's compiler-internal scheduler).

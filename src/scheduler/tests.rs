@@ -572,7 +572,7 @@ fn level4_multiple_cached_modules_each_claim_independently() {
 // `Result`). Three legacy tests (`block_for_macro_codegen_adds_priority_entry`,
 // `priority_codegen_complete_unblocks`, `priority_queue_deduplicates_symbols`)
 // are DROPPED — they probed the `block_for_macro_codegen` + `BlockingJitCodegen`
-// priority-codegen subsystem that was DELETED (src/CLAUDE.md §"Macro expansion"
+// priority-codegen subsystem that was DELETED (src/AGENTS.md §"Macro expansion"
 // / scheduler header — the locked macro model forbids same-module non-macro
 // clause callees, so there is no empty-slot pre-compile case).
 // ══════════════════════════════════════════════════════════════════════

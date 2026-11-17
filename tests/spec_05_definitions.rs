@@ -1369,7 +1369,7 @@ fn multi_clause_defn_self_call_repl_equals_run_neg() {
 // annotated, so the recursion's type IS pinned (no ambiguity) — the form
 // type-checks. The S89 flag was that the in-body self-call may lower to an
 // `undefined function` at codegen (a possible mischaracterisation of the symptom).
-// This is the cross-skill-handoff minimal repro (CLAUDE.md §"Cross-skill defect
+// This is the cross-skill-handoff minimal repro (AGENTS.md §"Cross-skill defect
 // handoff requires minimal repro"): its result decides disposition —
 //   RED  → a real codegen defect → retarget FIXME 0432 to /backend, carry the
 //          repro as a known-red guard;
@@ -1403,8 +1403,8 @@ fn defn_multi_clause_annotated_self_call() {
 // §5.1.2 — FIXME 0432 Face A: minimal repro + dimension narrowing (S91 Wave-7)
 //
 // The narrowing pins the EXACT triggering combination and the passing controls,
-// per CLAUDE.md §"Cross-compiler-skill defect handoff requires minimal repro" +
-// tests/CLAUDE.md §"Isolating Cross-Crate Failures". Each dimension was varied:
+// per AGENTS.md §"Cross-compiler-skill defect handoff requires minimal repro" +
+// tests/AGENTS.md §"Isolating Cross-Crate Failures". Each dimension was varied:
 //
 //   | shape                                            | result                  |
 //   |--------------------------------------------------|-------------------------|
@@ -1438,7 +1438,7 @@ fn defn_multi_clause_annotated_self_call() {
 // `register_mangled_variants` has already removed-and-reinserted those entries
 // under their MANGLED names, so the lookup misses and the self-call resolution is
 // never propagated into the AST. This is the "visible error belongs to one skill;
-// underlying failure belongs to another" pattern (CLAUDE.md) — visible at
+// underlying failure belongs to another" pattern (AGENTS.md) — visible at
 // /backend, owned by /typecheck. `/dev` should confirm at the seam with an
 // isolating unit test (parse → build_program → check, assert the self-call node
 // carries the `SigDispatch`/mangled `resolved_call`).

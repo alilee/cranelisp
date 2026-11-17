@@ -219,4 +219,4 @@ on it landing, and no obligation schedules it.
 - `design/arch/macro-availability-model.md`, `design/arch/macro-expansion-ownership.md` — the recognition/execution split the frontend sits outside.
 - `design/int/int.md` §6.2 — the cluster orchestration that drives `build_form`/`build_forms`.
 - `design/arch/principles.md` — Principles 2, 3, 5, 6, 7, 15, 16, 18.
-- `crates/cranelisp-frontend/CLAUDE.md` — the crate-local conventions and seam map (`dev`-owned).
+- `crates/cranelisp-frontend/AGENTS.md` — the crate-local conventions and seam map (`dev`-owned).

@@ -27,7 +27,7 @@ adoption by Cranelisp, feedback-dev and magic.
   selectors before changing extraction.
 - Include root establishment and source-comment citation conventions in the
   assessment. A syntax change must not silently drop either reference checking
-  or the establishment chain to root CLAUDE.md.
+  or the establishment chain to root AGENTS.md.
 - Sequence migration and checker cutover so existing citations remain checked
   until their replacement is verified. Keep historical records in Git or their
   existing historical policy; do not rewrite them merely for new syntax.

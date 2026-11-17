@@ -18,16 +18,16 @@ BC = [`bounded-contexts.md`](../bounded-contexts.md).
 
 | Label | Ruling | Current home |
 |---|---|---|
-| 1 | The pipeline crates form an acyclic DAG over the shared types crate. | BC per-context dependency statements; [source conventions](../../../src/CLAUDE.md) §"Dependencies Between Crates"; Cargo enforces it |
-| 2 | Types shared across contexts live in `cranelisp-types`; [Principle 15](../principles/15-facade-types-live-with-behavior.md) governs what belongs there. | [BC 7](../bounded-contexts.md#7-cross-crate-types-cratescranelisp-types); [types memory](../../../crates/cranelisp-types/CLAUDE.md) |
-| 3, 4, 5, 6 | `Span` is a struct; `TypeId` is `u32`; no optional metadata bag on a definition entry; `Type::from_name`/`type_name` centralise primitive naming. | Types-crate rustdoc; [source conventions](../../../src/CLAUDE.md) |
+| 1 | The pipeline crates form an acyclic DAG over the shared types crate. | BC per-context dependency statements; [source conventions](../../../src/AGENTS.md) §"Dependencies Between Crates"; Cargo enforces it |
+| 2 | Types shared across contexts live in `cranelisp-types`; [Principle 15](../principles/15-facade-types-live-with-behavior.md) governs what belongs there. | [BC 7](../bounded-contexts.md#7-cross-crate-types-cratescranelisp-types); [types memory](../../../crates/cranelisp-types/AGENTS.md) |
+| 3, 4, 5, 6 | `Span` is a struct; `TypeId` is `u32`; no optional metadata bag on a definition entry; `Type::from_name`/`type_name` centralise primitive naming. | Types-crate rustdoc; [source conventions](../../../src/AGENTS.md) |
 | 8 | Withdrawn: the first `MacroExpander` trait. The current callback is a different contract. | [`interfaces.md`](../interfaces.md) §"Macro execution callback" |
 | 9 | Withdrawn: per-product side stores. Compiled code, AST and callees live on the symbol-table entry. | [BC 7](../bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) |
-| 10 | Heap pointers address the allocation base; every field offset is positive. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) in-scope heap memory model; [source conventions](../../../src/CLAUDE.md) §"Heap Access" |
+| 10 | Heap pointers address the allocation base; every field offset is positive. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) in-scope heap memory model; [source conventions](../../../src/AGENTS.md) §"Heap Access" |
 | 11 | A closure embeds its drop-glue pointer beside its code pointer, so a closure released in another module needs no side table. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 5 |
 | 12 | String layout is opaque to backend; every string operation is an extern call. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 4 |
 | 13 | Reference-count operations are atomic from the first ring, with an acquire fence before drop glue reads fields. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 3; `design/backend/ring2-rc.md` §2.1 |
-| 16 | Trait-method and multi-signature symbol mangling. | [source conventions](../../../src/CLAUDE.md) §"JIT Symbol Names" |
+| 16 | Trait-method and multi-signature symbol mangling. | [source conventions](../../../src/AGENTS.md) §"JIT Symbol Names" |
 | 17 | Withdrawn: compiler-seeded traits. No trait is registered at startup. | `crates/cranelisp-typecheck/src/builtins.rs` tests |
 | 18 | Withdrawn with `ReplCheckResult`; typecheck has one entry and one result shape. | [BC 2](../bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) |
 | 19 | `generalize` collects trait constraints into `Scheme.constraints`. | [BC 2](../bounded-contexts.md#2-typecheck-cratescranelisp-typecheck) invariant 6 |
@@ -43,7 +43,7 @@ BC = [`bounded-contexts.md`](../bounded-contexts.md).
 | 29 | The IO trampoline releases only the IO nodes it owns, each through the single IO teardown tail under the disposition its transfer requires; no release is outer-allocation-only. | [BC 4b](../bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 7; [ownership and disposal](../../intrinsics/ownership-and-disposal.md) §6–§7 |
 | 30 | Withdrawn: mutual imports are diagnosed as a cycle instead of deadlocking the scheduler. | [BC 6](../bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle) "Known architectural constraints" |
 | 31 | JIT pages are reclaimed only by dropping the owning `Jit`; every pointer published from it has a retention owner. | [BC 3](../bounded-contexts.md#3-backend-cratescranelisp-backend) invariant 5; [Principle 22](../principles/22-published-pointers-have-retention-owners.md); `crates/cranelisp-backend/src/jit.rs` rustdoc; `design/int/session-transaction.md` |
-| 32 | `CodeStore` and `LinkerStore` are method-free marker bounds, so the types crate never names Cranelift. | [arch memory](../CLAUDE.md) §"Facade convention"; rustdoc in `crates/cranelisp-types/src/module.rs` |
+| 32 | `CodeStore` and `LinkerStore` are method-free marker bounds, so the types crate never names Cranelift. | [arch memory](../AGENTS.md) §"Facade convention"; rustdoc in `crates/cranelisp-types/src/module.rs` |
 | 33 | Import, export, platform and submodule declarations are fields of `SymbolTable`, preserving the source specification for regeneration. | Rustdoc on the `SymbolTable` fields in `crates/cranelisp-types/src/module.rs` |
 | 34 | The cache carries an explicit schema version; a mismatch is a stale entry, never a deserialisation failure. | `crates/cranelisp-backend/src/cache/mod.rs` rustdoc; `design/backend/module-caching.md` |
 | 35 | `Code` is the session's concrete code store and owns lifetime only; callable addresses live in the GOT. | [BC 7](../bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) "Callability is structural"; `crates/cranelisp-backend/src/code.rs` rustdoc |

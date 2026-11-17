@@ -1929,7 +1929,7 @@ mod tests {
         }
     }
 
-    // spec: spec/09-macros.md §9.4 (multi-clause defmacro) + CLAUDE.md §Design
+    // spec: spec/09-macros.md §9.4 (multi-clause defmacro) + AGENTS.md §Design
     // Principles (self-documenting REPL) — the clause-exhaustion diagnostic
     // anchors at the USER-CALL span (threaded down the expansion recursion, NOT
     // a synthetic ≥1_000_000 expansion-buffer offset) and surfaces the accepted

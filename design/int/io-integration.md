@@ -209,7 +209,7 @@ never sees a panic, chooses no panic status and formats no panic text.
 - **A flushed write, not returned data.** The notice is ordered against
   output that platforms write to fd 1 during the driver call. Data returned
   after the call cannot precede that output, so the notice is exempt from the
-  binary's rule that warnings are returned data (`src/CLAUDE.md`).
+  binary's rule that warnings are returned data (`src/AGENTS.md`).
 - **Text and style.** The REPL display module owns the notice text, rendered
   through the `styled::render` seam. The pipeline decides only when it is
   written.

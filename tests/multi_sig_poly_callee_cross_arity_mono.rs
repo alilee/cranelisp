@@ -16,7 +16,7 @@
 //
 // PRIMITIVE-vs-PRELUDE AXIS (verified S112 Phase 6b): /port's probe used prelude
 // `+`/`-`/`=`. Reduced here to primitive ops (`add-i64`/`sub-i64`/`eq-i64`) to
-// keep the repro stdlib-free (tests/CLAUDE.md §"Test isolation") — the defect
+// keep the repro stdlib-free (tests/AGENTS.md §"Test isolation") — the defect
 // STILL FIRES that way. So the trait-method/prelude axis is NOT load-bearing; the
 // minimal firing form is this primitive one. The load-bearing axes are: (1) the
 // callee is genuinely POLY (`idpoly`), and (2) it is reached from a multi-sig

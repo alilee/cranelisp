@@ -37,7 +37,7 @@ const DOC_EXCERPT_WINDOW: usize = 30;
 /// codepoint's lowercase form is a different byte length (e.g. `İ` → `i` + U+0307).
 /// A byte offset from the lowercased string is not a valid boundary in `doc` and
 /// would split a codepoint or exceed `doc.len()`, panicking on user-supplied
-/// docstring text (src/CLAUDE.md — never panic on user input). All windowing is
+/// docstring text (src/AGENTS.md — never panic on user input). All windowing is
 /// on `char` boundaries.
 fn docstring_excerpt(doc: &str, query: &str) -> Option<String> {
     let query_lc = query.to_lowercase();
@@ -68,7 +68,7 @@ fn docstring_excerpt(doc: &str, query: &str) -> Option<String> {
 
 /// Build the `StyledDoc` for one `/search` result row (§10.3 K7, §17.19.2). A
 /// free function (uses no session state) so the K7 role composition is unit-pinnable
-/// without constructing a `CompilerSession` (`src/CLAUDE.md` testability discipline;
+/// without constructing a `CompilerSession` (`src/AGENTS.md` testability discipline;
 /// mirrors `render_search_row`'s peer `_doc` producers).
 ///
 /// `:{sig} {name}\n  in {module}   — {action}\n` — the sig is R4, the name R15, the
@@ -592,7 +592,7 @@ mod search_excerpt_tests {
         assert!(docstring_excerpt("some documentation text", "absent").is_none());
     }
 
-    // spec: src/CLAUDE.md — never panic on user input. A docstring whose
+    // spec: src/AGENTS.md — never panic on user input. A docstring whose
     // lowercase form is a DIFFERENT byte length than the original (`İ`, U+0130,
     // is 2 bytes but lowercases to `i` + U+0307 = 3 bytes) must not panic: a byte
     // offset into `doc.to_lowercase()` is NOT a valid boundary in the original

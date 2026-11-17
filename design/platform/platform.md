@@ -520,7 +520,7 @@ scheduled.
 
 - `crates/cranelisp-platform/src/lib.rs` crate-root `//!` and per-item `///` —
   the public-API contract
-- `crates/cranelisp-platform/CLAUDE.md` — the code's own voice: marshalling
+- `crates/cranelisp-platform/AGENTS.md` — the code's own voice: marshalling
   traps, layout invariants, the submodule seam map
 - `design/arch/bounded-contexts.md` §5 — the bounded context and its invariants
 - `design/arch/platform-interface.md` — the three-exports model, the generated

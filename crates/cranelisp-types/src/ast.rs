@@ -679,7 +679,7 @@ pub struct TraitDecl {
 /// AND con_var spelling against the trait's declaration. `#[serde(default)]`:
 /// a pre-b0 serialized form deserializes as `None`, which equals the
 /// fresh-parse value for the bare-head form — the schema-bump-exempt class
-/// (`crates/cranelisp-types/CLAUDE.md` §serde-shape).
+/// (`crates/cranelisp-types/AGENTS.md` §serde-shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
     pub trait_name: TraitRef,

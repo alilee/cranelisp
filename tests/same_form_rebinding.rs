@@ -51,7 +51,7 @@
 //
 // Free-standing: `PreludeVariant::None` (or `TestStandard` for the one cell that
 // runs the user's example verbatim with `+`), every other name imported from
-// `primitives`, no stdlib (root CLAUDE.md §"Stdlib separation").
+// `primitives`, no stdlib (root AGENTS.md §"Stdlib separation").
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -96,7 +96,7 @@ fn user_example_same_form_rebinding_evaluates_to_two_in_repl() {
 }
 
 // The same shape through the two compiled modes. A `--run`/`--link` divergence
-// is always a defect (root `CLAUDE.md` §Pipeline), and the REPL cell above
+// is always a defect (root `AGENTS.md` §Pipeline), and the REPL cell above
 // cannot see one.
 // spec: spec/04-expressions.md §4.3 — sequential visibility inside one binding
 // vector: `a`'s second initializer reads the first `a`, and the body reads the
@@ -179,7 +179,7 @@ const REBIND_SPARK_WITH_SPARK_BODY: &str = "\
     c)";
 
 /// Drive `src` through the three modes a language-semantics cell must agree
-/// across (root `CLAUDE.md` §Pipeline). The REPL observation loads the program
+/// across (root `AGENTS.md` §Pipeline). The REPL observation loads the program
 /// as `user.cl` and evaluates `(main)`; typing the two mutually-recursive
 /// definitions as separate turns cannot work (the first forward-references the
 /// second), which is a REPL turn-model property and not this feature's concern.
@@ -230,7 +230,7 @@ fn parse_repl_int(stdout: &str) -> Option<i32> {
 }
 
 /// One invariant, applied identically to the subject and to each of its
-/// controls — the twin-fixture shape (`tests/CLAUDE.md` §"Coverage by
+/// controls — the twin-fixture shape (`tests/AGENTS.md` §"Coverage by
 /// definition variants"): the programs are one identifier apart and go through
 /// the SAME assertion, so the failing twin names the site by itself.
 fn assert_rebound_value_is_read(body: &str, expected: i32, role: &str) {
@@ -442,7 +442,7 @@ fn rebinding_one_spark_with_another_spark_reads_the_rebound_value() {
 // One scope, one binding vector, no nesting, no parameter: the smallest program
 // in which a name is bound twice and the first value becomes unreachable at the
 // second binding. Both subjects answer correctly, so the exit code is NOT an
-// oracle here and the marginal pair IS the instrument (`tests/CLAUDE.md`
+// oracle here and the marginal pair IS the instrument (`tests/AGENTS.md`
 // §"Allocator balance is measured MARGINALLY").
 //
 // Source seam as it stood then, read at S121: `let_if.rs::compile_let_sequential`

@@ -423,7 +423,7 @@ fn test_mono_defn_self_recursive_tco() {
 
 // --- compile_to_module module tests ---
 
-// spec: design/arch/CLAUDE.md Decision 36 — bare-name function declarations
+// spec: design/arch/AGENTS.md Decision 36 — bare-name function declarations
 // uniformly across all modules. Two modules with same-named function compile
 // into separate JITs without collision because function symbols are
 // `.o`-Local — they cannot collide across modules' JITs.
@@ -1343,7 +1343,7 @@ fn sprint56_constrained_template_excluded_by_defined_symbols() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 36 — function symbols are declared
+// spec: design/arch/AGENTS.md Decision 36 — function symbols are declared
 // with their bare name uniformly across all modules. The pre-Sprint-58
 // user/main vs FQ-Export discriminator is deleted.
 #[test]
@@ -1381,7 +1381,7 @@ fn decision_36_function_naming_is_bare_for_every_module() {
     }
 }
 
-// spec: design/arch/CLAUDE.md Decision 36 — function linkage is Local
+// spec: design/arch/AGENTS.md Decision 36 — function linkage is Local
 // uniformly. Symbols never need to cross .o boundaries (all-GOT calling).
 #[test]
 fn decision_36_function_linkage_is_local_uniformly() {
@@ -1418,7 +1418,7 @@ fn decision_36_function_linkage_is_local_uniformly() {
     }
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 (updated) — `__cranelisp_got_{M}`
+// spec: design/arch/AGENTS.md Decision 23 (updated) — `__cranelisp_got_{M}`
 // is defined as Linkage::Export data of at least `GOT_TABLE_SIZE` slots inside
 // the .o emitted by compile_to_module<ObjectModule>.
 #[test]
@@ -1508,7 +1508,7 @@ fn decision_23_got_data_symbol_defined_as_export_in_object_path() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 — JIT-mode GOT-data definition
+// spec: design/arch/AGENTS.md Decision 23 — JIT-mode GOT-data definition
 // lives outside compile_to_module (`Jit::new`'s symbol binding).
 // compile_to_module<JITModule>'s `define_module_got_data` is a no-op and
 // does NOT redundantly declare/define the symbol on the JIT module.
@@ -1547,7 +1547,7 @@ fn decision_23_got_data_symbol_jit_path_is_noop() {
     // doesn't emit a GOT-indirect call so neither path declares it.)
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 — GOT data symbol size matches
+// spec: design/arch/AGENTS.md Decision 23 — GOT data symbol size matches
 // the symbol table's `next_got_slot` (one 8-byte slot per allocated index).
 #[test]
 fn decision_23_got_data_size_matches_slot_count() {
@@ -1624,7 +1624,7 @@ fn decision_23_got_data_size_matches_slot_count() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 36 — cross-module function refs
+// spec: design/arch/AGENTS.md Decision 36 — cross-module function refs
 // are NOT declared as Linkage::Import in the importing module's .o. Under
 // all-GOT calling, cross-module calls reach callees through
 // `__cranelisp_got_{other_M}` data symbol — never through a function-symbol
@@ -1703,7 +1703,7 @@ fn decision_36_no_cross_module_function_imports() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 — Sprint 58 Wave 2 regression
+// spec: design/arch/AGENTS.md Decision 23 — Sprint 58 Wave 2 regression
 // guard. The `__cranelisp_got_{M}` data symbol carries function-address
 // relocations (declared via `desc.write_function_addr`). On macOS, `ld`
 // segfaults when applying relocations against `__DATA,__bss`

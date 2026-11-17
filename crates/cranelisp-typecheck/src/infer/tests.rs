@@ -3185,7 +3185,7 @@ fn value_position_local_shadow_of_trait_method_does_not_miscompile() {
 // =========================================================================
 
 /// Helper: parse a single expression to an `Expr` AST via the frontend,
-/// mirroring `tests/CLAUDE.md §"Isolating Cross-Crate Failures"` (do not
+/// mirroring `tests/AGENTS.md §"Isolating Cross-Crate Failures"` (do not
 /// hand-construct `Expr` trees).
 fn build_expr_from_source(src: &str) -> cranelisp_types::Expr {
     let sexps = cranelisp_frontend::parse(src).expect("parse must succeed");

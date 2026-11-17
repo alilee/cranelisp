@@ -157,7 +157,7 @@ provisionally exposes a same-key re-implementation.
 The field is serde-mandatory: a sidecar predating it fails the
 `CACHE_SCHEMA_VERSION` gate and recompiles wholesale, with no migration shim.
 A change to the record's serde shape or meaning is an ordinary schema bump under
-the [types cache contract](../../crates/cranelisp-types/CLAUDE.md#the-serde-shape-is-the-cache-contract).
+the [types cache contract](../../crates/cranelisp-types/AGENTS.md#the-serde-shape-is-the-cache-contract).
 
 ## 7. Why a second home is justified (Principle 7)
 

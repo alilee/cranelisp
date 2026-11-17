@@ -4,7 +4,7 @@
 //!
 //! The stdlib `par-map`/`par-reduce`/`par-map-reduce` are ordinary `.cl` defs
 //! (`/stdlib`, a separate wave) and are NOT testable in `tests/` (free-standing
-//! rule — zero stdlib dependency, root `CLAUDE.md`). So these exercise the
+//! rule — zero stdlib dependency, root `AGENTS.md`). So these exercise the
 //! SUBSTRATE via inline par-map / par-reduce-SHAPED programs defined with
 //! primitives + special forms only. The floor the substrate must hold:
 //!   - correctness: parallel-eligible results are IDENTICAL to sequential
@@ -159,7 +159,7 @@ fn par_map_shaped_inline_not_slower_than_sequential() {
 // so these are LOAD-BEARING regression guards. All GREEN on HEAD (the feature
 // shipped Wave 1); they are guards, not RED repros.
 //
-// Free-standing per `tests/CLAUDE.md`: inline shapes, primitives + special forms
+// Free-standing per `tests/AGENTS.md`: inline shapes, primitives + special forms
 // only, ZERO stdlib dependency.
 // =============================================================================
 
@@ -496,7 +496,7 @@ fn dependent_spark_partial_dependency_win() {
 //     inside the full 1700-test concurrent `cargo nt` ⇒ dips below 3x ⇒ GREEN. A
 //     hard CPU-ratio assert in the default lane therefore flips RED↔GREEN with
 //     machine load — exactly the banned `flaky`/`timing-sensitive` disposition
-//     (`tests/CLAUDE.md` §"Failing-test discipline"), and it would surface a spurious
+//     (`tests/AGENTS.md` §"Failing-test discipline"), and it would surface a spurious
 //     "regression" on a loaded CI box.
 //   - Deterministic-RED-in-the-concurrent-suite is INFEASIBLE from `tests/` alone:
 //     it would need exclusive core scheduling (a nextest test-group in
@@ -527,7 +527,7 @@ fn cranelisp_bin() -> PathBuf {
 /// parallel), each leaf (`churn`) doing `iters` `vec-set` copies of the SHARED
 /// `(Vec Box)` `v`. `Box` is a single-field heap ADT, so each copy-on-write copy
 /// inc/dec's the RC of every retained element atomically — the contention source.
-/// Free-standing per `tests/CLAUDE.md`: primitives + special forms only, ZERO
+/// Free-standing per `tests/AGENTS.md`: primitives + special forms only, ZERO
 /// stdlib. Result == `leaves * iters*(iters+1)/2` (each leaf sums the read-back
 /// `(Box k)` values `iters..1`).
 fn churn_dac_program(vec_len: usize, leaves: i64, iters: i64) -> String {

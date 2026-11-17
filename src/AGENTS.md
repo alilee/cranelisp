@@ -1,6 +1,6 @@
 # src/
 
-Cross-cutting source conventions for compiler code, plus the binary/int surface's operational constraints. Local `CLAUDE.md` files may add conventions but must not contradict these.
+Cross-cutting source conventions for compiler code, plus the binary/int surface's operational constraints. Local `AGENTS.md` files may add conventions but must not contradict these.
 
 The int surface's boundary is `design/arch/bounded-contexts.md` §6 (Binary / int); its interior design is `design/int/` (entry: `design/int/int.md`). This file records only the constraints a contributor must keep while editing `src/`; cite the design for mechanism.
 
@@ -229,4 +229,4 @@ The embedded LLM advisor lives entirely in `src/agent/`, fully `#[cfg(feature = 
 
 ## Debugging Cross-Crate Failures
 
-When an integration test fails and the root cause could be in any crate, follow the isolation process in `tests/CLAUDE.md` §"Isolating Cross-Crate Failures". The key principle: write a crate-level unit test that asserts the expected state at the crate boundary. If it passes, the bug is in the integration wiring. If it fails, fix the crate.
+When an integration test fails and the root cause could be in any crate, follow the isolation process in `tests/AGENTS.md` §"Isolating Cross-Crate Failures". The key principle: write a crate-level unit test that asserts the expected state at the crate boundary. If it passes, the bug is in the integration wiring. If it fails, fix the crate.

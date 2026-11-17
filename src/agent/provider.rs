@@ -195,7 +195,7 @@ struct RigModel<M: CompletionModel> {
 impl<M: CompletionModel> RigModel<M> {
     /// Build the rig-backed model. Returns `Err` when the current-thread tokio
     /// runtime cannot be constructed — the provider-selection caller maps that to
-    /// a DORMANT agent (no panic in pipeline code, per `src/CLAUDE.md` §Error
+    /// a DORMANT agent (no panic in pipeline code, per `src/AGENTS.md` §Error
     /// Handling; the U6 dormancy fallback is the right degradation).
     fn new(model: M) -> Result<Self, std::io::Error> {
         // current-thread runtime: one blocking completion call per loop step, no

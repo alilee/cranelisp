@@ -897,7 +897,7 @@ fn mod_submodule_body_survives_source_regeneration() {
 // =============================================================================
 
 // A macro-defining macro mirroring stdlib defs.cl `def` (D1's mechanism),
-// hosted in a local fixture module — stdlib-free per tests/CLAUDE.md.
+// hosted in a local fixture module — stdlib-free per tests/AGENTS.md.
 const MDEF_MODULE: &str = "(import [primitives [*]])\n\
                            (defmacro mdef \"define a named value\" [name value]\n\
                            \x20 (match name\n\
@@ -5359,7 +5359,7 @@ fn get_p4_outcome(response: &str) -> &'static str {
 // spec: spec/08-modules.md §8.8.2 — `x` uses the prelude's type `P` through
 // the implicit import (§8.8.1), and a save of `prelude.cl` adds
 // `(import [x [one]])`. A session and a restart on the saved files MUST agree
-// (root CLAUDE.md: a REPL/restart divergence is a defect): `(x/get (P 4))`
+// (root AGENTS.md: a REPL/restart divergence is a defect): `(x/get (P 4))`
 // gives 4 in both or is refused in both. The cell takes no position on which,
 // pending the §8.8.1/§8.10.2 ruling ACT-1014 carries.
 // DEFECT (open): the session gives 4; the restart refuses, with `prelude`
@@ -5480,7 +5480,7 @@ fn names_prelude_x_cycle(text: &str) -> bool {
 // `(import [x [one]])`, where `x.cl` does not reference `prelude`, closes
 // `prelude -> x -> prelude` through `x`'s implicit prelude import. The reload
 // MUST refuse the save naming the cycle, and a restart on the saved files MUST
-// report the same cycle (REPL/restart parity, root CLAUDE.md).
+// report the same cycle (REPL/restart parity, root AGENTS.md).
 #[test]
 fn prelude_save_importing_module_without_opt_out_neg_refused_as_cycle_like_restart() {
     let session = save_prelude_importing_x(false);

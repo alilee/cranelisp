@@ -2,7 +2,7 @@
 // class. This intentionally copies the showcase sources into a scratch project;
 // the durable compiler test never writes into or executes from exemplar/.
 //
-// WHY AN ABSOLUTE NUMBER LIVES HERE AT ALL (tests/CLAUDE.md §"Allocator balance
+// WHY AN ABSOLUTE NUMBER LIVES HERE AT ALL (tests/AGENTS.md §"Allocator balance
 // is measured MARGINALLY" bans absolute thresholds for the prelude-loading
 // class). The ban's premise is an ambient, program-independent compile-time
 // residual that an absolute cell would be measuring instead of the behaviour
@@ -137,7 +137,7 @@ fn sudoku_warm_serial_solve_retains_nothing() {
 // changed meaning — re-derive it (marginally) before reading the subject again.
 // Exact, not a threshold: any movement must flip this cell and force the record
 // to be updated, which is the whole point. This is the marginal-accounting
-// principle of tests/CLAUDE.md carried onto the cold/warm axis §11.3 flagged:
+// principle of tests/AGENTS.md carried onto the cold/warm axis §11.3 flagged:
 // the control/subject pair here differs by the workload, and the quantity
 // asserted is the control side of it.
 // spec: spec/12-runtime.md §12.3.1 — unreachable heap ownership is released

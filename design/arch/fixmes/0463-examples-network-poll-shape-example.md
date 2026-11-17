@@ -16,7 +16,7 @@ status: open
   async poll-leaf mechanism (example 34), but not the network
   `accept` → `read` → `send` leaf shape. That shape exists only in the exemplar
   web platform, which examples must not depend on (the stdlib-separation
-  design principle in root `CLAUDE.md`).
+  design principle in root `AGENTS.md`).
 - No shared platform under `platforms/` binds a socket or offers a client
   `connect` leaf. `platforms/poll-pool` arms timers only.
 - `tests/examples.rs` runs each example as a bare `--run` subprocess and checks

@@ -1,7 +1,7 @@
 # design/arch/
 
 Owned by `arch`: system boundaries, shared technical contracts, architecture
-principles and sequence diagrams. Root [role ownership](../../CLAUDE.md#roles)
+principles and sequence diagrams. Root [role ownership](../../AGENTS.md#roles)
 and the shared [arch contract](../../.agents/skills/arch/SKILL.md) govern the role.
 The [document map and retention rules](../../sprints/METHOD.md#31-where-things-live)
 govern information placement; this memory adds architecture navigation and local
@@ -58,7 +58,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | `architecture-sequences` | Current execution and lifecycle sequence diagrams with their navigation and rendering conventions. | [Sequence guide](sequences/README.md). |
 | `architecture-archive` | Frozen superseded architecture records retained as historical reference. | [Archive](archive/); historical references retain their recorded meaning. |
 
-The [principles memory](principles/CLAUDE.md) governs principle authoring;
+The [principles memory](principles/AGENTS.md) governs principle authoring;
 [the principles index](principles.md) is the membership authority. Collection
 membership does not waive live references or settle a file's outstanding work.
 
@@ -107,17 +107,17 @@ strings remain for messages, documentation, source text and descriptions.
 ## Conventions
 
 Types' cache serialization rules, runtime-only exceptions and shared predicates
-live in the [types memory](../../crates/cranelisp-types/CLAUDE.md). Do not infer
+live in the [types memory](../../crates/cranelisp-types/AGENTS.md). Do not infer
 that every runtime type serializes merely because it belongs to the types crate.
 [Facade-type ownership](principles/15-facade-types-live-with-behavior.md) governs
 placement; crossing one crate boundary alone does not move a type into the shared
-crate. [Source conventions](../../src/CLAUDE.md) apply to source work.
+crate. [Source conventions](../../src/AGENTS.md) apply to source work.
 
 ## Public-API discipline
 
 `pub(crate)` is the default; each public item needs rustdoc explaining the
 cross-boundary promise. Public-surface and consumer-edge changes pass the root
-[inter-crate public-API user gate](../../CLAUDE.md#roles), which owns the
+[inter-crate public-API user gate](../../AGENTS.md#roles), which owns the
 approval, baseline-regeneration timing and generated-delta confirmation rules.
 
 `arch` owns the contract and approval packet; the implementing crate regenerates
@@ -136,7 +136,7 @@ that gate. Source rustdoc and BC statements replace retired facade-spec files.
   Principle 15 (such as out-of-tree platform authors).
 - Public DTOs use `#[non_exhaustive]` except explicit ABI layouts and closed sums
   whose exhaustive consumers are the safety contract. The precise exception
-  set lives in [types public-surface mechanics](../../crates/cranelisp-types/CLAUDE.md#public-surface-mechanics).
+  set lives in [types public-surface mechanics](../../crates/cranelisp-types/AGENTS.md#public-surface-mechanics).
 - Keep the existing sealed-marker-trait convention for cross-crate `CodeStore`
   and `LinkerStore` contracts; only arch extends that boundary.
 
@@ -163,7 +163,7 @@ cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crat
 - Co-land changed source, corresponding rustdoc/BC contracts and the generated
   diff. Review checks the approved and actual surfaces; the user confirms a
   non-empty actual diff before promotion, per the root
-  [API gate](../../CLAUDE.md#roles). A baseline is not a substitute for rustdoc
+  [API gate](../../AGENTS.md#roles). A baseline is not a substitute for rustdoc
   currentness review.
 
 **Approved format change, not yet implemented:**

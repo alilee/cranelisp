@@ -40,7 +40,7 @@
 //
 // Free-standing: `PreludeVariant::None`, every language name imported from
 // `primitives`, the two scheduled effects from the workspace `test-capture`
-// platform, no stdlib (root `CLAUDE.md` §"Stdlib separation").
+// platform, no stdlib (root `AGENTS.md` §"Stdlib separation").
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -162,7 +162,7 @@ fn link_then_run_prog(src: &str) -> CrOutput {
 /// The contract, applied identically to the subject and to every control: the
 /// program answers 8 and no reference count is decremented on a freed pointer.
 /// One invariant, five programs, SAME predicate — so the failing program names
-/// the site by itself (`tests/CLAUDE.md` §"Coverage by definition variants").
+/// the site by itself (`tests/AGENTS.md` §"Coverage by definition variants").
 ///
 /// Returns the violation rather than panicking, so a caller that observes more
 /// than one mode reports EVERY mode's outcome instead of stopping at the first:
@@ -211,7 +211,7 @@ fn assert_clean_results(outcomes: &[(&str, CrOutput)], role: &str) {
 // The subject, through both compiled modes.
 // ===========================================================================
 
-// A `--run`/`--link` divergence is always a defect (root `CLAUDE.md`
+// A `--run`/`--link` divergence is always a defect (root `AGENTS.md`
 // §Pipeline), and both modes were measured aborting pre-fix, so both are
 // asserted here rather than trusting one to stand for the other.
 // spec: spec/12-runtime.md §12.3.1 — a heap-allocated value MUST be freed when

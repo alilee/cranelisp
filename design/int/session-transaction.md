@@ -252,7 +252,7 @@ Committed callable bindings carry forward `callees`: every statically resolved
 reference from a checked body to a module-resident callable, in call position or
 as a value. `cranelisp-types` settles them through its callable-arm settlement
 (`canonical_callees`); typecheck owns their extraction
-(`crates/cranelisp-typecheck/CLAUDE.md`).
+(`crates/cranelisp-typecheck/AGENTS.md`).
 
 ### 3.2 Why edges come from typecheck
 

@@ -10,7 +10,7 @@
 //!
 //! The stdlib `assoc`/`get` are ordinary wrappers over the primitives
 //! (`(defn assoc [v :Int i x] (vec-set v i x))`, `(defn get [v :Int i] (vec-get
-//! v i))`). Stripped to primitives (no stdlib, per root `CLAUDE.md`
+//! v i))`). Stripped to primitives (no stdlib, per root `AGENTS.md`
 //! §Stdlib-separation), the defect is a single user function that calls an
 //! IN-PLACE vec op (`vec-set` / `vec-push`) on its Vec parameter and returns the
 //! result; the caller then reads an element of the returned Vec:
@@ -39,7 +39,7 @@
 //! it: a **premature free**. `--run` returns a nondeterministic garbage exit
 //! code (freed-heap read, truncated mod 256); the REPL prints the full garbage
 //! i64; `--link` deterministically ABORTS (SIGABRT, glibc heap-header integrity
-//! trip — the marshaling/heap-corruption signature of `tests/CLAUDE.md`
+//! trip — the marshaling/heap-corruption signature of `tests/AGENTS.md`
 //! §"Diagnostic env vars").
 //!
 //! defect: class=rc-miscount locus=crates/cranelisp-backend (premature free of a Vec returned from a user fn whose param it aliases — the in-place vec-set/vec-push op releases the backing before the caller's use; manifests as UAF/garbage + --link SIGABRT) found=S109 owner=/backend
@@ -319,7 +319,7 @@ const LET_WRAPPED_PUSH_RETURN: &str = "(defn fp [v x] (let [r (vec-push v x)] r)
 // manifests reliably in the harness), the `vec-push` grow-branch allocates a
 // fresh backing, so the freed slot is NOT reliably reused before the caller's
 // `vec-get` reads it — the REPL read returns intact `99` (a timing-dependent
-// FALSE GREEN, forbidden per `tests/CLAUDE.md` §"Forbidden dispositions").
+// FALSE GREEN, forbidden per `tests/AGENTS.md` §"Forbidden dispositions").
 // The deterministic guard is the `--link` face below (glibc heap-integrity
 // abort). Op-uniformity with `vec-set` is thereby proven without a flaky test.
 

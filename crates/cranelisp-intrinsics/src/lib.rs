@@ -95,7 +95,7 @@
 //! ## Int-owned intrinsics (inventory note)
 //!
 //! The two test-runner intrinsics `discover-tests` and `run-test` physically
-//! live in `src/` (int), registered unconditionally — see `src/CLAUDE.md`
+//! live in `src/` (int), registered unconditionally — see `src/AGENTS.md`
 //! §"Int-owned JIT intrinsics". They are NOT in this crate and NOT in the
 //! catalog (parked — out of scope per the 2026-06-04 ruling).
 //!

@@ -895,7 +895,7 @@ acceleration).
   proof:* a planted wrong expected line and a planted unclassified block
   each fail. The default prelude makes this harness stdlib-dependent. The
   stdlib-separation rule admits one named exception today (stdlib
-  conformance, `tests/CLAUDE.md` §Test isolation), so this harness needs a
+  conformance, `tests/AGENTS.md` §Test isolation), so this harness needs a
   second, equally visible exception; `sprint` records it in the root
   guidance's stdlib-separation principle before `test` builds the harness. It carries no language
   authority. *Class:* maintenance
@@ -1446,7 +1446,7 @@ checkpoint (§8.5).
   name states the balanced result it now asserts, and its section heading
   no longer calls the workload a copy arm. U-18's two subject comments
   state the fixed defect in the past tense, as the
-  [defect-repro notation](../CLAUDE.md#defect-repro-notation-defect) requires.
+  [defect-repro notation](../AGENTS.md#defect-repro-notation-defect) requires.
 - **`qa`:** U-8 and U-10 are recorded (§3.10); M-1, M-6 and §4 are
   discharged (§8).
 
@@ -1615,7 +1615,7 @@ The user decides each of the three rows Phase 5 added to §5:
   state word, the named file and the variable (§1.2).
 - **The `user/` sample harness (M-3, Phase 6b).** It needs `docs`'
   classification of every fenced block, and a second named
-  stdlib-dependency exception in root `CLAUDE.md`, recorded by `sprint`
+  stdlib-dependency exception in root `AGENTS.md`, recorded by `sprint`
   first. The user accepted that exception at Phase 4. The harness is a
   maintenance check for `user/`, and its detection proof is the two
   planted faults M-3 names.
@@ -1713,7 +1713,7 @@ projects. Neither is a 6a change: both match the W5 logs.
       `io_internal_ctors_stay_excluded_from_exhaustiveness_neg`) and
       `ctor_as_value` (the two `bare_ctor_*_map_io_*` cells).
     - `test`: rewrite `ring4s`'s attributed-red narration as a working
-      segment and correct `repl/demos/CLAUDE.md`'s 0907 reference.
+      segment and correct `repl/demos/AGENTS.md`'s 0907 reference.
     - `dev` on `stdlib/`: the six `core.io` self-tests in
       [`plan-stdlib.md` §6.2](../../stdlib/plan-stdlib.md), which this
       acceptance opens.

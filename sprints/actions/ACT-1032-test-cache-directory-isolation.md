@@ -8,7 +8,7 @@ to: test
 sprint: 122
 filed_at: 2026-09-30
 refers_to:
-  - tests/CLAUDE.md §Fresh temp directory per test
+  - tests/AGENTS.md §Fresh temp directory per test
   - tests/concurrency_fanout_web.rs
   - tests/launch_vec_send_corrupt.rs
   - tests/launch_grid_corrupt.rs
@@ -17,7 +17,7 @@ refers_to:
 
 ## Request
 
-Remove every write the suite makes under a checked-in path. `tests/CLAUDE.md`
+Remove every write the suite makes under a checked-in path. `tests/AGENTS.md`
 §Fresh temp directory per test forbids it. The writes observed are git-ignored
 `.cranelisp-cache/` directories.
 

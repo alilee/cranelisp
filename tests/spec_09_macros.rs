@@ -983,7 +983,7 @@ fn cross_module_macro_cannot_use_private_helper_neg() {
 // an ordinary `Sexp` rather than dying at `build_form` with "unexpected
 // quote/quasiquote form — should have been expanded". The `// defect:` notation is
 // retained (greppable class-frequency signal over GREEN repros — see
-// tests/CLAUDE.md §"Defect-repro notation").
+// tests/AGENTS.md §"Defect-repro notation").
 //
 // A `Sexp` value renders `:macros/Sexp (Sexp.SexpXxx …)`; datum survival is
 // asserted on that render (`Sexp.SexpSym "m"` etc.). `run_prims` gives the

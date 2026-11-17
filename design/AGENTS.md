@@ -6,7 +6,7 @@ Architecture and per-crate implementation design for Cranelisp.
 
 Two owners divide this tree:
 
-- **`design/arch/`** — owned by `/arch` (Compiler Architect): principles, bounded contexts, cross-crate interfaces, the newcomer overview, sequence diagrams. See `design/arch/CLAUDE.md`.
+- **`design/arch/`** — owned by `/arch` (Compiler Architect): principles, bounded contexts, cross-crate interfaces, the newcomer overview, sequence diagrams. See `design/arch/AGENTS.md`.
 - **`design/{crate}/`** — owned by `/design`, the per-crate triad design role. `/design` is **narrow-deployed to one crate-shaped surface per invocation**; each subdirectory holds that surface's interior design (algorithms, data structures, trade-offs) below the level of the arch overview.
 
 The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retired and collapsed into `/design` narrow-deployment; they are historical.
@@ -28,11 +28,11 @@ The former `/frontend`, `/typecheck`, `/backend`, `/platform` skills were retire
 
 ## Governing memories and document collections
 
-The existing context memories are [arch](arch/CLAUDE.md),
-[frontend](frontend/CLAUDE.md), [typecheck](typecheck/CLAUDE.md),
-[backend](backend/CLAUDE.md), [intrinsics](intrinsics/CLAUDE.md),
-[platform](platform/CLAUDE.md), [int](int/CLAUDE.md), and
-[review](review/CLAUDE.md). They establish their local products and collections.
+The existing context memories are [arch](arch/AGENTS.md),
+[frontend](frontend/AGENTS.md), [typecheck](typecheck/AGENTS.md),
+[backend](backend/AGENTS.md), [intrinsics](intrinsics/AGENTS.md),
+[platform](platform/AGENTS.md), [int](int/AGENTS.md), and
+[review](review/AGENTS.md). They establish their local products and collections.
 This memory directly governs the primitives and runtime design
 collections below, which have no separate local memory.
 
@@ -48,9 +48,9 @@ a stale live reference.
 
 ## Design-doc expectations
 
-Per-crate design docs describe *how* a surface solves problems — algorithms, data structures, internal architecture, trade-offs. They are distinct from `design/arch/interfaces.md` (cross-crate boundary contracts) and `spec/` (correct behaviour). A design doc is created or updated as part of the design phase for each surface; see each subdirectory's `CLAUDE.md`.
+Per-crate design docs describe *how* a surface solves problems — algorithms, data structures, internal architecture, trade-offs. They are distinct from `design/arch/interfaces.md` (cross-crate boundary contracts) and `spec/` (correct behaviour). A design doc is created or updated as part of the design phase for each surface; see each subdirectory's `AGENTS.md`.
 
-The content split (skill definition vs design doc vs `CLAUDE.md`) is normative in `sprints/METHOD.md` §1.2.
+The content split (skill definition vs design doc vs `AGENTS.md`) is normative in `sprints/METHOD.md` §1.2.
 
 ## Architecture and delivery
 

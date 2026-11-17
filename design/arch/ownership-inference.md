@@ -587,7 +587,7 @@ and no interface edit is owed to broaden it to statically-sized aggregates. But 
 ABI half DOES need a `cranelisp-types` carrier**: it is a new `Mode::MutBorrowed` variant in
 `crates/cranelisp-types/src/ownership.rs`, ABI-bearing on `param_modes`, therefore requiring a
 `CACHE_SCHEMA_VERSION` bump + `public-api.txt` regen + the `interfaces.md`/[BC 7](bounded-contexts.md#7-cross-crate-types-cratescranelisp-types) cascade in the
-implementing change-set (the full baseline-diff discipline, `design/arch/CLAUDE.md`). Unlike the
+implementing change-set (the full baseline-diff discipline, `design/arch/AGENTS.md`). Unlike the
 escape→stack fact, it **cannot** stay within the backend/intrinsics boundary — the mode vector is the
 typecheck→backend contract and crosses the crate edge by construction. `/arch` authors the variant at
 the implementing sprint; it is **not** landed speculatively in S105 (Phase-2 anti-speculation, §3.3).
@@ -672,7 +672,7 @@ Candidate (b) — flipping the `:590` default — is REJECTED.**
   inline COW pair (`vec_codegen`'s `SourceOwnership::Borrowed`), and those MUST carry
   declared, **reachable** facts (the primitives completeness test covers declaration; (a3)
   closes reachability). This soundness argument lands as rustdoc at `transfer.rs:590` and as
-  the structural contract in `cranelisp-primitives/CLAUDE.md`'s declared-facts section:
+  the structural contract in `cranelisp-primitives/AGENTS.md`'s declared-facts section:
   *"a primitive whose emission deviates from the consuming convention MUST carry declared
   facts, and the ownership envs MUST be able to reach them."* Flipping the default instead
   (candidate (b)) would mark nearly every summary whose body tail-calls anything
@@ -772,7 +772,7 @@ Four axes, owners assigned:
    checked against the backend's actual emission convention (any COW-shaped or
    borrowing emission beyond the named `vec-set`/`vec-push` pair must carry truthful
    declared facts), a row-by-row sweep, not a two-row patch. Durable form: the
-   declared-facts contract sentence in `cranelisp-primitives/CLAUDE.md` (§3.7 — *a
+   declared-facts contract sentence in `cranelisp-primitives/AGENTS.md` (§3.7 — *a
    primitive whose emission deviates from the consuming convention MUST carry
    declared, REACHABLE facts*).
 4. **Behavioural axis** — 0623's body-shape × branch × face matrix + the two fences

@@ -27,7 +27,7 @@
 | Runtime IO teardown and trampoline transitions | [intrinsics ownership and disposal](../intrinsics/ownership-and-disposal.md) §6–§7 |
 | Allocation ledger, RC tracing and double-free checks | [intrinsics diagnostic modes](../intrinsics/diagnostic-modes.md) |
 | Capturing a heap parameter in a platform effect closure | [platform-dlls.md](../platform/platform-dlls.md) §4 |
-| Where each mechanism sits in source | `crates/cranelisp-backend/CLAUDE.md` |
+| Where each mechanism sits in source | `crates/cranelisp-backend/AGENTS.md` |
 
 ## 2. RC emission
 

@@ -207,7 +207,7 @@ fn emit_rc_add(builder: &mut FunctionBuilder, rc_addr: Value, one: Value) {
 /// The nullary-tag skip guard shared by BOTH guarded RC halves. Emits the
 /// predicate, branches on it, and switches the builder into the guarded block.
 ///
-/// ONE predicate, one home (the crate's ONE-predicate pattern, `CLAUDE.md`
+/// ONE predicate, one home (the crate's ONE-predicate pattern, `AGENTS.md`
 /// §"RC-emission gates that are ONE predicate"; Principle 18). The emitted shape
 /// is
 ///

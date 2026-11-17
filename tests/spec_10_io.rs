@@ -1005,7 +1005,7 @@ fn capture_return_inc_does_not_double_free() {
 // =============================================================================
 //
 // `bind!` and `do` are stdlib macros (`stdlib/io.monad`). Tests MUST NOT
-// depend on stdlib (root CLAUDE.md §"Design Principles" — Stdlib separation),
+// depend on stdlib (root AGENTS.md §"Design Principles" — Stdlib separation),
 // so the `bind!` / `do` desugaring assertions live in `tests/spec_11_stdlib.rs`
 // (the named exception that uses the workspace stdlib). This file covers
 // the underlying primitive `bind` shape that `bind!` desugars to.

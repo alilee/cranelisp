@@ -5,7 +5,7 @@
 //! reduction step SMALLER: it drops the `Cell` / `Grid` ADT wrappers and renders
 //! two live `(Vec Int)`s directly through the borrowed-Var `get`/`assoc` wrappers.
 //!
-//! ## Why a second, smaller guard (CLAUDE.md §Testing — "small repros aid the fix")
+//! ## Why a second, smaller guard (AGENTS.md §Testing — "small repros aid the fix")
 //!
 //! FIXME 0486 asked whether a still-smaller `redA` shape — "launch + send-conn +
 //! churned STRING body, no grids/vec" — reproduces (the pure `Response.body` heap

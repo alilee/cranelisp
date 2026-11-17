@@ -286,12 +286,12 @@ fn nested_result_vec_builder_releases_repeated_workloads() {
 // partial witness before routing a fix), against the S121 crash attribution
 // (`qa`, 2026-09-07).
 //
-// Both witnesses were committed FAILING-NOT-IGNORED per root `CLAUDE.md`
+// Both witnesses were committed FAILING-NOT-IGNORED per root `AGENTS.md`
 // §"Usability Findings and Defects"; the S121 ownership-result correction
 // (`design/typecheck/ownership-inference.md` §19) flipped them, and they stay as
 // the permanent regression guard for the class. Per that rule no numbered FIXME
 // accompanies them, and their `// defect:` lines ride the corpus green
-// (`tests/CLAUDE.md` §"Defect-repro notation").
+// (`tests/AGENTS.md` §"Defect-repro notation").
 //
 // WHAT THE CELLS ASSERT: only what the language guarantees — the correct value
 // under the DEFAULT configuration. `CRANELISP_NO_OWNERSHIP=1` also produced the
@@ -301,7 +301,7 @@ fn nested_result_vec_builder_releases_repeated_workloads() {
 // PRE-CORRECTION OBSERVATIONS (measured 2026-09-07 on `18bca20d` before §19; all
 // source-level plus compiler-native traces, no native debugger on this host, so
 // no faulting PC was captured). Retained because they are what makes each face a
-// sound oracle rather than a garbage-value assertion (`tests/CLAUDE.md`
+// sound oracle rather than a garbage-value assertion (`tests/AGENTS.md`
 // §"Forbidden dispositions"), not as a change history.
 //
 //   Merely DECLARING a self-recursive callable whose self-call PERMUTED a scalar

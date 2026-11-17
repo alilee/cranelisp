@@ -1,8 +1,8 @@
 # Test plan
 
 Owner: QA. This is the current assurance and coverage navigation for Cranelisp,
-established by [test ownership](../CLAUDE.md). Requirements remain in the
-[language specification](../../spec/CLAUDE.md) and
+established by [test ownership](../AGENTS.md). Requirements remain in the
+[language specification](../../spec/AGENTS.md) and
 [REPL specification](../../repl/spec.md); mechanisms remain in their owning
 designs. This plan allocates evidence, not language semantics or implementation.
 
@@ -49,7 +49,7 @@ separates delivered wiring from unresolved document conformance.
 - Preserve intended RED/control and corrected GREEN provenance when allocated.
   A failing process must fail for the intended reason, and a passing absence
   assertion needs a positive operational signal where silence could be vacuous.
-- Under [root coverage annotations](../../CLAUDE.md#requirementstest-traceability),
+- Under [root coverage annotations](../../AGENTS.md#requirementstest-traceability),
   positive-only `[Tested]` remains a coverage gap until the required negative
   behavior is evidenced; do not label it `[Tested+Neg]`. QA chooses the
   proportionate observation under the shared risk/cost rule, without weakening
@@ -67,14 +67,14 @@ separates delivered wiring from unresolved document conformance.
 - A suite-state count at a gate states the stable failing set exactly and
   lists any run-dependent guard separately by name. A run-dependent guard is
   a defect signal to attribute under the
-  [failing-test discipline](../CLAUDE.md#failing-test-discipline-migrated-from-the-retired-ledger),
+  [failing-test discipline](../AGENTS.md#failing-test-discipline-migrated-from-the-retired-ledger),
   never a member of the exact count;
   [suite-count provenance 0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md)
   is the open record of the last such guard.
 - A leak attribution separates a program-independent residual from the leak
   by scaling the workload: a delta invariant under N is residual, a delta
   that scales with N is the leak. Measure it as a marginal pair under
-  [allocator balance](../CLAUDE.md#allocator-balance-is-measured-marginally-never-absolutely),
+  [allocator balance](../AGENTS.md#allocator-balance-is-measured-marginally-never-absolutely),
   never against a threshold.
 - A wall-clock witness asserts a structural inequality between regimes that
   are wide apart (overlapped, waved, serial), never a tuned threshold. Repeat
@@ -83,7 +83,7 @@ separates delivered wiring from unresolved document conformance.
   while a lower bound stays single-shot. A CPU-bound speedup witness needs a
   qualifying attempt among several, and its no-speedup control a majority.
   Widen the separation between regimes before loosening a margin; assert
-  value equality on every attempt. [Failing-test discipline](../CLAUDE.md#failing-test-discipline-migrated-from-the-retired-ledger)
+  value equality on every attempt. [Failing-test discipline](../AGENTS.md#failing-test-discipline-migrated-from-the-retired-ledger)
   bans the "timing-sensitive" disposition these rules exist to avoid.
 - Four drafting rules come from the S101 escape analysis and are stated once,
   in the [S101 coverage audit](coverage-audit-s101.md#25-standing-rules-fed-back-into-qa-practice-supersede-post-mortem-33):
@@ -96,7 +96,7 @@ separates delivered wiring from unresolved document conformance.
   are the vocabulary test sources use for those observations.
 - In-scope failures remain visible. Unknown attribution stays provisional;
   neither an old issue label nor a terminal error identifies the corrective
-  owner. Use the [test-side notation and harness rules](../CLAUDE.md).
+  owner. Use the [test-side notation and harness rules](../AGENTS.md).
 - An explicit module deferral names the cases, observing seam, owner and what
   remains unproved publicly. “Unit-pinned” alone is insufficient. Reuse adequate
   existing evidence; do not manufacture public invalid-language triggers for
@@ -165,10 +165,10 @@ sampled carry-forward those audits demanded exists in the current suite or
 was dispositioned by the S82 harvest gate, and no register held a rule
 without a current home — the FFI-marshalling detection gaps are
 [Risk 11](risks.md), the failure-ledger retirement is stated in
-[test conventions](../CLAUDE.md), and the S119 negative-coverage practice
+[test conventions](../AGENTS.md), and the S119 negative-coverage practice
 is in §Traceability above. Their surviving rules live where a reader needs them: the
 tier strategy above, the per-test temporary-directory rule in
-[test conventions](../CLAUDE.md#fresh-temp-directory-per-test) with its
+[test conventions](../AGENTS.md#fresh-temp-directory-per-test) with its
 harness enforcement in [helpers design constraints](helpers.md#design-constraints),
 and the S61 negative-coverage promotions in the specification annotations
 themselves.
@@ -186,7 +186,7 @@ The Sprint-69, Sprint-75, Sprint-92 and Sprint-94 working plans were deleted in
 S122 (`git show cdd1f9ea:tests/plan/`); their closed
 [sprint records](../../sprints/archive/) hold each disposition. The S69 and S75
 plans scheduled facade-conformance re-anchoring whose subject is retired:
-[public-API enforcement](../CLAUDE.md#public-api-enforcement) names the
+[public-API enforcement](../AGENTS.md#public-api-enforcement) names the
 executing guard, and the constructor-as-value cell S75 carried forward is
 observed by [constructor values](../ctor_as_value.rs). Every solution test the
 S92 apply-argument and spark-budget plan and the S94 effect-await,
@@ -221,7 +221,7 @@ the S110 gate attribution, the two Sprint-116 baseline and changed-test
 reconciliations and the S120 0917 provenance delta. No current source, test,
 design or filing cited them. Every filing the S106, S107 and S110 records
 planned against is closed, the agent-lane provenance race they attributed is
-stated in [test conventions](../CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir),
+stated in [test conventions](../AGENTS.md#the-agent-lane---features-agent--isolated-target-dir),
 the delivered 0917 contract lives in
 `design/backend/non-concrete-release-contract.md` §6, and the harness limits
 S106 and S107 named are in the [current strategy](#strategy--two-tiers-no-middle). The Sprint-116 changed-test audit listed module
@@ -552,7 +552,7 @@ reuse. Retirement needs the citing owners to move their citations first.
   and the
   [last architecture-plan revision](https://github.com/alilee/cranelisp/blob/57253cf2/tests/plan/e2e-architecture.md)).
   The architecture plan's standing rules are the link-prerequisite and
-  fresh-tmpdir rules in the [tests memory](../CLAUDE.md). The S120 delta measured the
+  fresh-tmpdir rules in the [tests memory](../AGENTS.md). The S120 delta measured the
   citation instrument that the shared document checker replaced, its last
   standing consumer was the retired S120 audit report, and its two package
   advisories are delivered in the shared package; the

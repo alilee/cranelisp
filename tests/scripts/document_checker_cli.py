@@ -185,8 +185,8 @@ class CandidateCliAcceptance(unittest.TestCase):
         guide.write_text(
             guide.read_text(encoding="utf-8")
             + "\n[Missing path](missing.md)\n"
-            + "[Missing anchor](../CLAUDE.md#absent-heading)\n"
-            + "The missing section is `CLAUDE.md` §Absent section.\n"
+            + "[Missing anchor](../AGENTS.md#absent-heading)\n"
+            + "The missing section is `AGENTS.md` §Absent section.\n"
             + "The ambiguous shorthand is `topic.md` §Shared topic.\n",
             encoding="utf-8",
         )
@@ -234,7 +234,7 @@ class CandidateCliAcceptance(unittest.TestCase):
         config = root / "standing-documents.toml"
         config.write_text(
             config.read_text(encoding="utf-8").replace(
-                'root_memory = "CLAUDE.md"', 'root_memory = "../outside.md"'
+                'root_memory = "AGENTS.md"', 'root_memory = "../outside.md"'
             ),
             encoding="utf-8",
         )
@@ -336,7 +336,7 @@ class CandidateCliAcceptance(unittest.TestCase):
     def test_bare_memory_reference_uses_the_nearest_applicable_memory(self) -> None:
         temporary, root = project()
         self.addCleanup(temporary.cleanup)
-        memory = root / "docs/CLAUDE.md"
+        memory = root / "docs/AGENTS.md"
         memory.write_text(
             memory.read_text(encoding="utf-8") + "\n## Protected values\n",
             encoding="utf-8",
@@ -344,7 +344,7 @@ class CandidateCliAcceptance(unittest.TestCase):
         guide = root / "docs/guide.md"
         guide.write_text(
             guide.read_text(encoding="utf-8")
-            + "\nThe local rule is `CLAUDE.md` §Protected values.\n",
+            + "\nThe local rule is `AGENTS.md` §Protected values.\n",
             encoding="utf-8",
         )
         code, report, detail = invoke(root)
@@ -420,7 +420,7 @@ class CandidateCliAcceptance(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         target = root / "docs/notes.txt"
         target.write_text("Fixture notes\n\n## Details\n", encoding="utf-8")
-        memory = root / "docs/CLAUDE.md"
+        memory = root / "docs/AGENTS.md"
         memory.write_text(
             memory.read_text(encoding="utf-8")
             + "\n`docs/notes.txt` supplies a non-Markdown section target.\n",
@@ -434,7 +434,7 @@ class CandidateCliAcceptance(unittest.TestCase):
             + 'kind = "standing"\n'
             + 'owner = "docs"\n'
             + 'purpose = "Supplies a non-Markdown section target."\n'
-            + 'established_by = "docs/CLAUDE.md"\n',
+            + 'established_by = "docs/AGENTS.md"\n',
             encoding="utf-8",
         )
         guide = root / "docs/guide.md"
@@ -457,7 +457,7 @@ class CandidateCliAcceptance(unittest.TestCase):
         nested = root / "docs/nested/guide.md"
         nested.parent.mkdir()
         nested.write_text("# Nested guide\n", encoding="utf-8")
-        memory = root / "docs/CLAUDE.md"
+        memory = root / "docs/AGENTS.md"
         memory.write_text(
             memory.read_text(encoding="utf-8")
             + "\n[Nested guide](nested/guide.md) is the nested fixture guide.\n",
@@ -471,7 +471,7 @@ class CandidateCliAcceptance(unittest.TestCase):
             + 'kind = "standing"\n'
             + 'owner = "docs"\n'
             + 'purpose = "The nested fixture guide."\n'
-            + 'established_by = "docs/CLAUDE.md"\n',
+            + 'established_by = "docs/AGENTS.md"\n',
             encoding="utf-8",
         )
         code, report, detail = invoke(root)

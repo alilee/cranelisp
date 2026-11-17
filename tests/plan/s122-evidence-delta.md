@@ -367,7 +367,7 @@ the regression control; all three defects below are present in it.
   - `spec/12-runtime.md`: the §12.7.2.1 heading and its Vec bounds row.
   - `spec/04-expressions.md`: §4.12, §4.12.2, §4.12.3 and §4.12.9.
 - **Vocabulary.** `missing-runtime-check` is added to the `class=` list in
-  `tests/CLAUDE.md`, for ACT-1037.
+  `tests/AGENTS.md`, for ACT-1037.
 
 #### Phase-6b intake: the panic sentinel and test's RED questions (2026-09-30)
 
@@ -473,7 +473,7 @@ Each item was verified against its source before disposition.
 |---|---|---|
 | 0914 | Done: K4 step 5 replayed the demo clean, with the closing note at `live +0` | Deleted 2026-09-30 |
 | 0708 | Deleted by its owner, `design`(int), in the working tree | None |
-| 0868 | `dev`(stdlib) repoints `stdlib/CLAUDE.md:81`; `sprint` repoints the inventory; then `dev`(src) deletes it | None. `tests/cache.rs::cache_restored_parent_enrols_private_test_child` is adequate acceptance evidence. The missing owner unit pin is a METHOD §2.2 debt of `dev`(src), which adds it at its next touch of `cache_restore.rs`. It is not a K4 condition |
+| 0868 | `dev`(stdlib) repoints `stdlib/AGENTS.md:81`; `sprint` repoints the inventory; then `dev`(src) deletes it | None. `tests/cache.rs::cache_restored_parent_enrols_private_test_child` is adequate acceptance evidence. The missing owner unit pin is a METHOD §2.2 debt of `dev`(src), which adds it at its next touch of `cache_restore.rs`. It is not a K4 condition |
 | 0889 | `test`: the "ambient 1143" test comments that `dev`'s K3 report lists | None. The narrowed filing stays open with its 46 |
 | 0604 sweep | `test`: the retarget in [K1 adequacy](#k1--bounded-adequacy-2026-09-30) | None |
 
@@ -841,7 +841,7 @@ three links and nothing else.
     passed in step 1.
   - The repair is `test`'s, in three places:
     - the demo segment;
-    - the demo's description in `repl/demos/CLAUDE.md`;
+    - the demo's description in `repl/demos/AGENTS.md`;
     - that test's module doc, which is in the present tense, names 0914 as a
       live filing and has no `fixed=` stamp.
   - This is record maintenance, not compiler acceptance. It belongs with the
@@ -2141,7 +2141,7 @@ condition and the ACT-1024 scope are unchanged. The QA report is
 - **Condition.** V1, V2, K4 and `sprint`'s §16.5 replay each start by
   removing those ignored caches, and record the listing before and after.
 - **Intake (maintenance, `test`).** Tests that write under checked-in paths
-  break `tests/CLAUDE.md`'s fresh-directory rule. The in-place writers are:
+  break `tests/AGENTS.md`'s fresh-directory rule. The in-place writers are:
   - `concurrency_fanout_web.rs`;
   - `launch_vec_send_corrupt.rs`, which runs `--run` without `--no-cache` in
     `tests/fixtures/web_launch_vec_send_corrupt/`. Its git-ignored cache was
@@ -2980,7 +2980,7 @@ Reuse the existing stub DSL/provider. Test the runner's shared launch/grader pat
 
 ## Approved shared document-checking pilot — ACT-0950
 
-The user approved the replacement D7 scope on 2026-09-10; [SPRINT.md](../../sprints/archive/sprint-122.md) is the scope authority. One offline shared `.agents` tool consumes project declarations, independently discovers all project-owned nonignored Markdown, checks establishment to root `CLAUDE.md` or justified exemptions, and checks document references, anchors and sections while preserving Cranelisp source-citation checks. Validate the candidate against both repositories read-only, then adopt it in Cranelisp and repair findings. Magic edits and upstream publication need subsequent approval. There is no blanket residual baseline migration.
+The user approved the replacement D7 scope on 2026-09-10; [SPRINT.md](../../sprints/archive/sprint-122.md) is the scope authority. One offline shared `.agents` tool consumes project declarations, independently discovers all project-owned nonignored Markdown, checks establishment to root `AGENTS.md` or justified exemptions, and checks document references, anchors and sections while preserving Cranelisp source-citation checks. Validate the candidate against both repositories read-only, then adopt it in Cranelisp and repair findings. Magic edits and upstream publication need subsequent approval. There is no blanket residual baseline migration.
 
 This supersedes the narrow four-target-root proposal; measurements taken with the retired citation script do not describe the delivered checker's corpus or findings. Delivery state is recorded under [D7 integrated project gate](#d7-integrated-project-gate--adequacy-and-remaining-conformance).
 
@@ -2991,7 +2991,7 @@ The [shared checker design](../../design/arch/s122-shared-document-checker.md) i
 | Condition | Minimal discriminating evidence |
 |---|---|
 | Discovery is independent of declarations | Add one nonignored Markdown file outside all declared paths and observe it in discovery plus an unestablished finding; include a new untracked file. An ignored file and a recorded foreign gitlink/package boundary are excluded; discovery does not descend into gitlinks. A declaration omitting a project document must not hide it. |
-| Establishment reaches the governing root | A valid governing-memory chain reaches root `CLAUDE.md`. An orphan and a disconnected cycle do not. An explicit justified establishment exemption retains its root-reaching governing memory and remains visible in the report; an absent or invalid justification cannot silently establish the file. A broken outgoing reference in a live establishment-exempt document must still fail unless it has its own justified rule-specific waiver. A bounded reasoned `historical-record` class remains discovered, owned and root-established; its outgoing references are excluded and counted. A live link into that archive still requires target resolution; use these paired observations to preserve dated records without hiding broken live navigation. Mere incidental prose linkage cannot replace the design's governing relation. |
+| Establishment reaches the governing root | A valid governing-memory chain reaches root `AGENTS.md`. An orphan and a disconnected cycle do not. An explicit justified establishment exemption retains its root-reaching governing memory and remains visible in the report; an absent or invalid justification cannot silently establish the file. A broken outgoing reference in a live establishment-exempt document must still fail unless it has its own justified rule-specific waiver. A bounded reasoned `historical-record` class remains discovered, owned and root-established; its outgoing references are excluded and counted. A live link into that archive still requires target resolution; use these paired observations to preserve dated records without hiding broken live navigation. Mere incidental prose linkage cannot replace the design's governing relation. |
 | References resolve under the documented grammar | One valid target, heading anchor and section citation serve as controls; break each target independently and require the corresponding located diagnostic. Include one ambiguous shorthand/section target that must report ambiguity instead of choosing a convenient match. Reuse extracted Magic fixtures for supported bold/table section labels and comment/docstring citations. A code file selected through `references.comment_input_patterns` supplies reference inputs without acquiring standing-document establishment obligations; keep that control distinct from document `extra_suffixes`. Unsupported or ambiguous forms cannot be counted as verified resolution; proposed targets and absent optional-package targets remain separately classified, not verified. An established optional absent Gitlink control must not mask a missing file inside an initialized package. |
 | Cranelisp source guards survive | Reuse the existing valid source citation plus missing path, out-of-bounds line and absent symbol witnesses. Verify the actual project entry point still executes all three guards; successful document-link checks cannot substitute for them. |
 | Reporting and ratchet reject new debt | Repeat an unchanged fixture and compare stable finding identity. A new finding must fail the project gate; resolving it must clear that failure. An old baseline entry must not automatically enroll a different checker rule or newly discovered document. Invalid declarations or incomplete checks must be distinguishable from a clean corpus. Exercise the declared CLI statuses: 0 for no unsuppressed findings, 1 for findings, 2 for invalid configuration/invocation or inability to inspect. Use one overlapping-class or escaping-path declaration to discriminate invalid configuration; no broad schema permutation matrix. Any retained legacy baseline identity requires an explicit reviewed mapping. |
@@ -3922,7 +3922,7 @@ The affected owner-merged observation covered 819 documents and reported
 (exit 1, 44.36s). Of the nine previously grouped relative-establishment
 observations, eight disappeared through the contextual-resolution correction;
 one was an actual owner navigation defect. The test owner repaired
-`repl/CLAUDE.md` to link directly to `repl/demos/CLAUDE.md` using a
+`repl/AGENTS.md` to link directly to `repl/demos/AGENTS.md` using a
 relative link. Its targeted candidate
 classification now reports the direct token present and zero relevant findings
 in `/tmp/s122-d7-repl-demos-establishment-green-30692e8a.log`. This settles all
@@ -4047,7 +4047,7 @@ Residual intake, classified. None gates the corrected harvest seam.
 | Context exports arm uses `public_symbols()` while `/exports` resolves candidates and filters internals | Same consumer family; advisory model context; no requirement fixes the grain and no wrong outcome is reproduced. | No observation now. `design/int/agent.md` §5.2 records the divergence as an open design question. `design` (int) decides convergence on the `/exports` producer; if adopted, one twin cell (context export names equal `/exports`) accompanies it. |
 | Pin narrower than "full current-module source" (types, traits, impls, file-loaded definitions absent) | Authority and realization disagree; not a defect until the owner chooses which moves. | `design/int/agent.md` §5.2 now states the delivered admission rule and records the narrower pin as an open design question; `repl/spec/17-embedded-agent.md` §17.8.1 describes disclosure of the full current-module source. The decision remains `design` (int)'s, with `spec` if the disclosure wording moves, raised through `sprint`; `qa` allocates after it. |
 | `prelude_implicit_names` holds the prelude table guard across a second `symbol_tables` read | Latent safety residual in a shape FIXME 0666 already retired in harvest; present before this change and not widened; reached by `/imports` and every context dump. | `dev` (`src/`): collect-then-resolve, the constructive repair. No detector or stress cell. Delivered for this function; review found it correct. |
-| `src/CLAUDE.md` and `format.rs` said `/doc` follows the import chain through the identity helper `resolve_entry_for_display`, since removed (final section); stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | The `src/CLAUDE.md` and `format.rs` `/doc` claims are repaired with the `/imports` guard correction, and review confirmed the new text against source. The `defined_symbols()` mentions are gone: a search of `design/int/agent.md` and `src/agent/` finds none. No evidence. |
+| `src/AGENTS.md` and `format.rs` said `/doc` follows the import chain through the identity helper `resolve_entry_for_display`, since removed (final section); stale `defined_symbols()` mentions in `design/int/agent.md` and `harvest.rs` comments | Stale records. `/doc` on a re-exported primitive and on a constructor is observed working. | The `src/AGENTS.md` and `format.rs` `/doc` claims are repaired with the `/imports` guard correction, and review confirmed the new text against source. The `defined_symbols()` mentions are gone: a search of `design/int/agent.md` and `src/agent/` finds none. No evidence. |
 
 - Review A1 and A2 are mechanical comment repairs with root. A3 is accepted:
   the cap unit guards the Haiku ceiling only and is not a general budget guard;
@@ -4183,7 +4183,7 @@ confirm that no guarantee rests on it.
 - **Independent review: not triggered.** The three waiver conditions hold:
   the search is empty, every non-comment source hunk is a tuple pass-through,
   and the cells pass.
-- **Limits.** The rewritten comments and `src/CLAUDE.md` sentences are read,
+- **Limits.** The rewritten comments and `src/AGENTS.md` sentences are read,
   not executed; the checker validates their references only. The stale
   `Import`-edge narration `dev` listed elsewhere in `src/` and other crates is
   outside this change and stays with those surfaces' next `dev` pass. This
@@ -4513,7 +4513,7 @@ node therefore reaches teardown only through a future emitter or a corrupted
 word. What is worth evidence is the decode, because `glue => Owned(glue)` is a
 catch-all: dropping the `1` arm compiles, keeps every current test green, and
 turns the word into a call to address 1. The gated report is a new instrument,
-so its detection proof belongs to the introducing change-set (root `CLAUDE.md`
+so its detection proof belongs to the introducing change-set (root `AGENTS.md`
 §Assurance).
 
 Conditional on `design` (intrinsics) retaining `Reserved`. If `design` retires
@@ -5060,7 +5060,7 @@ cannot go vacuous and pass on cell B's strength if `/reset` ever stops
 dispatching.
 
 `// defect:` class. `release-path-bypass` is added to the controlled
-vocabulary in `tests/CLAUDE.md`: retained state whose release the spec ties to
+vocabulary in `tests/AGENTS.md`: retained state whose release the spec ties to
 one named condition, discarded by an unrelated lifecycle action. The exact
 test-side line for cell C is in `.local/s122-reset-qa-close-result.md`;
 `test` applies it and re-words the cell's comment to past tense.
@@ -5552,7 +5552,7 @@ Attribution:
   (`wrong-accept`, `enumeration-miss`) are superseded. The key under which the
   cached module is validated omits a determinant of its content, the class
   `drop-glue-underkey` anticipated generalizing when a non-glue sibling
-  appeared. The class becomes `artifact-underkey`; the vocabulary in `tests/CLAUDE.md` and the affected test tags now use
+  appeared. The class becomes `artifact-underkey`; the vocabulary in `tests/AGENTS.md` and the affected test tags now use
   that class under QA's vocabulary authority.
 
 #### Correction evidence — transitive dependency record ([`int.md` §7.6](../../design/int/int.md#76-dependency-record-and-validity))
@@ -5809,7 +5809,7 @@ load? Is the missing fact one that nothing records?
   `TraitMethod` callables.
 - `Ctor` (with its positional `tag`) and accessor origins record nothing.
   Type names, macro heads and mono-instance rechecks also record nothing
-  (typecheck `CLAUDE.md`).
+  (typecheck `AGENTS.md`).
 - A re-exported name records only its terminal home.
 - `drop_glue_symbol_name` mints glue under the demanding module, so an
   importer holds its own glue for a foreign type.
@@ -5861,7 +5861,7 @@ load? Is the missing fact one that nothing records?
   - Set `CRANELISP_RC_STATS=1` on every run, cold included, so every object
     is compiled under the same codegen gate.
   - The assertion is a pair that differs only in cache use, which satisfies
-    the marginal rule in `tests/CLAUDE.md`. Use no absolute balance and no
+    the marginal rule in `tests/AGENTS.md`. Use no absolute balance and no
     threshold.
 - **QR-4, arming.** Two more checks apply:
   - the warm unchanged counts equal the cold counts;
@@ -6251,7 +6251,7 @@ No public API, `ResolutionGap` or schema changed.
   FT-4.
 - **Detection sequence.** An executed RED for the predicted reason, logged
   before the fix, establishes each cell; the test and the fix land in one
-  change-set (root `CLAUDE.md` §Testing). A separate RED-only commit is not
+  change-set (root `AGENTS.md` §Testing). A separate RED-only commit is not
   required.
 - **Scope.** Trait-only positions, a renamed trait import and the other
   [open leads](#open-leads-from-the-loading-group--candidates-not-defects)
@@ -8588,7 +8588,7 @@ cited requirement.
 | RED | Mechanism | Discriminating control | Refuter | Class | Where it entered |
 |---|---|---|---|---|---|
 | P1 `persist_external_edit_adding_product_field_reloads` | **Provisional.** `reload_module` keeps the prior bindings, and publication checks each constructor against its prior binding ([session transaction §7.3](../../design/int/session-transaction.md#73-the-watcher-and-reload-path)). `same_publishable_origin` treats a constructor's `field_count` as part of its origin identity. Not observed: whether `validate_publication_collision` or `unpublished_synthesized_replacement_target` raises | A changed field type keeps the count and reloads. An added sum constructor reloads. The refusal does not depend on earlier turns or on how `T` was installed | A sum constructor whose payload arity changes reloads | `wrong-reject` | Int reload design. §7.3 checks a reload against the prior bindings, although §14.2 step 2 starts it from cleared state. No watcher cell reloaded a `deftype` |
-| P3 typecheck and commit-gate cells | **Confirmed in source.** In pass 2, `process_regular_form_with_origin` writes the record's `sexp`, `expanded` and `ast` before the cluster typecheck and commit gate. It writes `source` only when absent, so the prior text stays. A rejection restores nothing. The old text no longer re-parses to the new `sexp`, so regeneration renders the rejected `sexp`. That matches the observed file | `rejected_change_does_not_write_an_incoherent_backing_file`: rejection with no later regeneration leaves the file coherent. `persist_function_replacement_persists_through_restart`: an accepted replacement persists | With the writer still before typecheck, a rejected redefinition followed by regeneration writes the prior form | `partial-record-update`, widened (`tests/CLAUDE.md`) | Int design [§2.4.1](../../design/int/session-persistence.md#241-who-writes-a-record) row 1 places the writer in form processing, and §2.4.4 recorded the limit as unconfirmed. The rejection cell ended before any later regeneration |
+| P3 typecheck and commit-gate cells | **Confirmed in source.** In pass 2, `process_regular_form_with_origin` writes the record's `sexp`, `expanded` and `ast` before the cluster typecheck and commit gate. It writes `source` only when absent, so the prior text stays. A rejection restores nothing. The old text no longer re-parses to the new `sexp`, so regeneration renders the rejected `sexp`. That matches the observed file | `rejected_change_does_not_write_an_incoherent_backing_file`: rejection with no later regeneration leaves the file coherent. `persist_function_replacement_persists_through_restart`: an accepted replacement persists | With the writer still before typecheck, a rejected redefinition followed by regeneration writes the prior form | `partial-record-update`, widened (`tests/AGENTS.md`) | Int design [§2.4.1](../../design/int/session-persistence.md#241-who-writes-a-record) row 1 places the writer in form processing, and §2.4.4 recorded the limit as unconfirmed. The rejection cell ended before any later regeneration |
 | P4 `persist_mod_turn_on_cache_restored_macro_expanded_module` | **Confirmed in source.** Rehydration (`save::authored_keys`) keys only native definition heads and `begin` members. A top-level macro call gets no key, so `x-def` has no record, and §2.4.3 refuses the write. The entry module is rebuilt from source over its preloaded table, so form processing writes its records. That is why the entry face did not reproduce | The same turn in the session that compiled `lib` from source regenerates `lib.cl`. The no-macro probe p4g also regenerates | A restored `lib` without a macro call also refuses; p4g did not | `enumeration-miss` | Int design's former §2.4.4 first limit, now carried by [§2.4.5](../../design/int/session-persistence.md#245-editing-a-cache-installed-module). Its trigger, a QA-confirmed reproduction, is now met. No cell regenerated a macro-expanded module restored from cache |
 
 ### Requirement support
@@ -9483,7 +9483,7 @@ design, arch, dev and design-close results, and the review
   remedy is decided with G1.
 - **R3.** A weak module witness, returned to `dev`: drop the generic "keeps"
   leg. RM-3 is the durable record.
-- **Mechanical.** The RM notation goes to `test`, below. The `src/CLAUDE.md`
+- **Mechanical.** The RM notation goes to `test`, below. The `src/AGENTS.md`
   degraded-startup note goes to `dev`.
 
 ### Allocation to `test`
@@ -10244,7 +10244,7 @@ prelude reference and uses no prelude name. The control adds only
   - increment: `publication_cycle` does not walk fallback edges.
 
   A correction at one seam leaves the others accepting. `--link` shares
-  `--run`'s fresh load, so PD-1 adds it only for parity (`tests/CLAUDE.md`).
+  `--run`'s fresh load, so PD-1 adds it only for parity (`tests/AGENTS.md`).
 - **T5 keeps its reading-independent parity legs.** After the correction both
   paths refuse. PD-2 owns the cycle diagnostic, which T5 does not assert.
 - **Not allocated:**
@@ -10928,7 +10928,7 @@ risk is allocated to it now.
     contention, from "not sparked", which is a product regression. The
     threshold is unchanged. `sprint` schedules it or carries it.
 - **(c) Examples need a committed `--link` cell: warranted.**
-  - `examples/CLAUDE.md` makes `--link`-then-execute part of the
+  - `examples/AGENTS.md` makes `--link`-then-execute part of the
     learning-sequence gate, but only a manual sweep at sprint open and close
     runs it. W3's `--link` pass was a one-off.
   - **Residual.** A `--link`-only regression in a composition that no
@@ -10948,7 +10948,7 @@ risk is allocated to it now.
     cache behaviour).
   - **Class.** A maintenance check on the learning sequence, not acceptance
     authority for language rows. A failure is a suspected defect routed to
-    `qa` (`examples/CLAUDE.md` rule 2).
+    `qa` (`examples/AGENTS.md` rule 2).
 - **(d) Six stale "RED on HEAD" framings in `tests/repl_persist.rs`: routed
   to `test`, comment only.**
   - The cells are `persist_macro_defining_macro_use_survives_restart`, whose
@@ -10961,7 +10961,7 @@ risk is allocated to it now.
   - All six pass in the checkpoint suite, and FIXMEs 0548 and 0549 are
     closed.
   - Restate each in the past tense, per the defect-repro rule in
-    `tests/CLAUDE.md`, at the next touch or the close commit. No filing.
+    `tests/AGENTS.md`, at the next touch or the close commit. No filing.
 
 ### Traceability
 
@@ -11179,7 +11179,7 @@ Write each unit RED first.
   SQ-2 are then the lowest layer.
 - **Re-cite** the `// spec:` lines that name "§14.5 item 5" in
   `src/session_v4/persistence_tests.rs` (six) and `src/agent/pull.rs` (one),
-  and the "Degraded startup load" section of `src/CLAUDE.md`.
+  and the "Degraded startup load" section of `src/AGENTS.md`.
 
 ### Inputs for `design`(int) — resolved
 
@@ -11483,7 +11483,7 @@ file for the others.
 - **R1 is not `lost-wakeup`.** It has no waiter and no notification, and
   nothing depends on interleaving. `sync_watcher` runs before the poll on
   every turn, so the face is deterministic.
-- **QA adds `failure-collapse`** to the vocabulary in `tests/CLAUDE.md`. In
+- **QA adds `failure-collapse`** to the vocabulary in `tests/AGENTS.md`. In
   this class, a fallible read maps its failure, at the read site, onto a
   legitimate outcome of the same reader. There are three instances, all
   reads of a source file:
@@ -11581,7 +11581,7 @@ file for the others.
     and no file is regenerated while it is locked.
   - [§15.1](../../repl/spec/15-session-persistence.md): regeneration writes
     the module's current state, which after a reload is the saved source.
-- **Class: `lost-update`,** added to the vocabulary in `tests/CLAUDE.md`. A
+- **Class: `lost-update`,** added to the vocabulary in `tests/AGENTS.md`. A
   definition turn's regeneration writes `user.cl` without comparing the file
   with the state last recorded for it. It then records its own write as the
   watcher's baseline (`update_content_hash`). The poll after the turn finds
@@ -11819,7 +11819,7 @@ after the fix.
     recompiled eagerly.
   - [§15.1](../../repl/spec/15-session-persistence.md): regeneration writes
     the module's current state.
-- **Class: `lost-wakeup`,** widened in `tests/CLAUDE.md`. The watcher is
+- **Class: `lost-wakeup`,** widened in `tests/AGENTS.md`. The watcher is
   armed after the change it must report:
   - `watch_file` takes its first-sight baseline from the file on disk, not
     from the state the session read (`SharedState.recorded_sources`);

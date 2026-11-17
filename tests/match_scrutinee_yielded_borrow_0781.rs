@@ -26,7 +26,7 @@
 // ONE derived answer, `fn_compiler::value_provenance` (lattice
 // `Fresh ⊑ OwnedTemporary ⊑ NotOwnedHere`), at two thresholds —
 // `is_fresh_construction` = `== Fresh`, `yields_owned_temporary` =
-// `!= NotOwnedHere`. See `crates/cranelisp-backend/CLAUDE.md` §"RC-emission
+// `!= NotOwnedHere`. See `crates/cranelisp-backend/AGENTS.md` §"RC-emission
 // gates that are ONE predicate, not per-site syntax".
 //
 // SEAM NOTE (S118 W3, `/testing`). Two of the three named gates no longer exist:
@@ -59,7 +59,7 @@
 // and owned by `/dev` next sprint. Every scrutinee below is a BORROWED param
 // reaching the match through a yielding node — the complementary case.
 //
-// Stdlib-free: `primitives` only (root CLAUDE.md §Design Principles).
+// Stdlib-free: `primitives` only (root AGENTS.md §Design Principles).
 
 #[path = "helpers/mod.rs"]
 mod helpers;

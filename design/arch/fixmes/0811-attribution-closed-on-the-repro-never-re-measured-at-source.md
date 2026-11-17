@@ -60,4 +60,4 @@ The S114 plan is retired to Git; [QA evidence retention](../../../tests/plan/PLA
 records that the verdict's *repro* stands while its *attribution of the exemplar
 residue* is falsified. Any S115 record that reads "0720 fixed → exemplar leak
 resolved" still requires correction. /port corrects the exemplar-side
-records (`exemplar/CLAUDE.md`, `plan-exemplar.md`) in Phase 6b.
+records (`exemplar/AGENTS.md`, `plan-exemplar.md`) in Phase 6b.

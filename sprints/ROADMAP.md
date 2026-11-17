@@ -1,7 +1,7 @@
 # Cranelisp Delivery Roadmap
 
 Owner: sprint. This roadmap records delivery direction and future sequencing.
-The [active sprint](SPRINT.md) owns current execution; [architecture guidance](../design/arch/CLAUDE.md)
+The [active sprint](SPRINT.md) owns current execution; [architecture guidance](../design/arch/AGENTS.md)
 owns technical contracts, and the [test plan](../tests/plan/PLAN.md) owns assurance.
 
 ## Phases
@@ -9,7 +9,7 @@ owns technical contracts, and the [test plan](../tests/plan/PLAN.md) owns assura
 | Phase | Description | Status |
 |-------|-------------|--------|
 | A | Extract: spec completion, architecture contracts, QA plan | COMPLETE |
-| B | Scaffold: crate structure, interfaces, CLAUDE.md files, experience specs | COMPLETE |
+| B | Scaffold: crate structure, interfaces, AGENTS.md files, experience specs | COMPLETE |
 | C | Ring 0 — Core: expressions, types, functions, let, if, match | COMPLETE |
 | D | Ring 1 — Heap: strings, ADTs, closures, reference counting | COMPLETE |
 | E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | COMPLETE |
@@ -239,7 +239,7 @@ retiring the old migration schedule does not close those obligations.
 Root guidance identifies the scheduler-driven pipeline as the sole live
 pipeline. The [S58 convergence outcome](archive/sprint-58.md) and later closed
 records retain migration evidence. Current mechanisms live in the
-[architecture](../design/arch/CLAUDE.md) and integration designs; the old
+[architecture](../design/arch/AGENTS.md) and integration designs; the old
 migration forecast does not schedule further work.
 
 ### Ring 4 acceptance criteria gap analysis (verified 2026-04-16)

@@ -111,7 +111,7 @@ fn test_parse_int_empty() {
     // Decision 24: extern consumed s.
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern parse_int
+// spec: design/arch/AGENTS.md Decision 24 — consuming convention, extern parse_int
 #[test]
 fn decision24_parse_int_consumes_heap_arg() {
     let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
@@ -131,7 +131,7 @@ fn decision24_parse_int_consumes_heap_arg() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — parse_int with None result still consumes arg
+// spec: design/arch/AGENTS.md Decision 24 — parse_int with None result still consumes arg
 #[test]
 fn decision24_parse_int_none_path_still_consumes_heap_arg() {
     let allocs_before = cranelisp_intrinsics::alloc::alloc_count();

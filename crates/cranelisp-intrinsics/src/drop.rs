@@ -266,7 +266,7 @@ const SELECT_FIELDS: &[IoField] = &[IoField {
 // The raw `*(base + off)` primitive is `heap_access::{read_i64, write_i64}` —
 // the single mechanical owner (MED-1 / FIXME 0370 / 0850). This module used to
 // carry a private `read_i64` twin with a `usize` offset; it is deleted, and
-// every read below goes through the owner the crate's `CLAUDE.md` already
+// every read below goes through the owner the crate's `AGENTS.md` already
 // declared. `heap_access` does NOT own the header layout (`HeapHeader`) nor the
 // Vec layout (`vec_runtime`) nor the consuming dec sequences (per-module by
 // design) — only the accessor.

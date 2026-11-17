@@ -2,13 +2,13 @@
 
 > **Owner**: `sprint`.
 > **Scope**: what cranelisp adds to the shared role package — the crate-shaped surfaces, the seven-phase increment, and the artifacts each role keeps here.
-> **Out of scope**: role authority, boundaries, handoffs and shared model relationships (`.agents/`); the role declaration, phase mapping and filing protocol (root `CLAUDE.md`); architectural rules (`design/arch/`); per-crate design (`design/{crate}/`). This document points to these rather than restating them.
+> **Out of scope**: role authority, boundaries, handoffs and shared model relationships (`.agents/`); the role declaration, phase mapping and filing protocol (root `AGENTS.md`); architectural rules (`design/arch/`); per-crate design (`design/{crate}/`). This document points to these rather than restating them.
 
 ---
 
 ## 1. Roles here
 
-Root `CLAUDE.md` §Roles is the declaration — which of the package's twelve roles cranelisp dispatches, what each owns here, and how the shared allocation is hosted. This section carries what that declaration is too compact to hold.
+Root `AGENTS.md` §Roles is the declaration — which of the package's roles cranelisp dispatches, what each owns here, and how the shared allocation is hosted. This section carries what that declaration is too compact to hold.
 
 ### 1.1 The crate-shaped surfaces
 
@@ -33,7 +33,7 @@ The [information map](#31-where-things-live) identifies canonical homes. Shared
 role contracts own procedure; technical documents own system contracts and
 mechanisms; local memories supply entry guidance and navigation.
 
-A local `CLAUDE.md` carries only guidance needed to work in that directory:
+A local `AGENTS.md` carries only guidance needed to work in that directory:
 non-obvious tooling constraints, build/debug entry points and links to its
 contracts and tests. Link to canonical invariants and API guarantees rather
 than maintaining a second account. Do not repeat parent guidance, sprint
@@ -52,7 +52,7 @@ The override exists because several S66 decisions landed via `arch` answering `s
 
 ## 2. The increment
 
-Seven phases. Root `CLAUDE.md` §Delivery maps them onto the ordering the package requires.
+Seven phases. Root `AGENTS.md` §Delivery maps them onto the ordering the package requires.
 
 ### 2.1 Phase table
 
@@ -218,7 +218,7 @@ Assessments are temporary point-in-time records used to reach disposition. Prese
 
 | Information | Canonical home | Owner |
 |---|---|---|
-| Entry guidance and navigation | Root and nearest `CLAUDE.md`; public introduction in `README.md` | Directory owner; root `sprint` |
+| Entry guidance and navigation | Root and nearest `AGENTS.md`; public introduction in `README.md` | Directory owner; root `sprint` |
 | Required language / REPL behavior | `spec/index.md` and `repl/spec.md`, leading to their sections | `spec` |
 | Using / learning the system | `user/` / `examples/`; callable reference in library docstrings | `docs` / `training`; library `dev` |
 | System boundaries and shared guarantees | `design/arch/overview.md`, `design/arch/bounded-contexts.md` and focused shared contracts | `arch` |
@@ -231,7 +231,7 @@ Assessments are temporary point-in-time records used to reach disposition. Prese
 | Unresolved obligations | `sprints/actions/`; existing `design/arch/fixmes/` drained in place | Target role resolves |
 | Closed delivery outcomes | Compact `sprints/archive/` records; ordinary working history in Git | `sprint` |
 | Role procedure / local delivery additions | Shared `.agents/skills/` / this method | Shared package / `sprint` |
-| Host-entry guidance and adapters | `AGENTS.md`, `.codex/`, `.claude/`, `.github/` entry and role wiring | `sprint` |
+| Host-entry guidance and adapters | `AGENTS.md`, `.claude/`, `.github/` entry and role wiring | `sprint` |
 | Repository verifier implementations / project document declaration | `scripts/` / `standing-documents.toml`; checker implementation in shared package | `test` / `sprint`; shared package |
 
 The primitives/intrinsics shared contracts under `design/runtime/` retain one
@@ -272,7 +272,7 @@ its normal file tools can access them within the repository scope.
   Completed matrices and transcripts do not accumulate there or move into a
   replacement archive dump. Split only independently maintained subjects.
 - Establish every retained document through its governing memory or a coherent
-  collection to root `CLAUDE.md`. The project declaration implements discovery,
+  collection to root `AGENTS.md`. The project declaration implements discovery,
   not another explanatory map; new exceptions need explicit disposition.
 - Judge reduction by active prose, duplicate authorities, and how many places
   a reader or ordinary change must visit. File/finding counts are diagnostic,
@@ -280,17 +280,17 @@ its normal file tools can access them within the repository scope.
 
 ### 3.2 Reading order
 
-1. Root `CLAUDE.md` — project overview, the role declaration, pointers
+1. Root `AGENTS.md` — project overview, the role declaration, pointers
 2. The role contract at `.agents/skills/{role}/SKILL.md`
 3. `sprints/SPRINT.md` for current work
 4. `sprints/METHOD.md` (this) for what cranelisp adds
 5. `design/arch/` and `design/{crate}/` for design context
-6. Per-directory `CLAUDE.md` on entering a directory
+6. Per-directory `AGENTS.md` on entering a directory
 7. Open filings targeting the current role
 
 ### 3.3 Filing formats
 
-Lifecycle and routing are in root `CLAUDE.md` §Cross-Role Changes. The forms:
+Lifecycle and routing are in root `AGENTS.md` §Cross-Role Changes. The forms:
 
 **Action** — an `ACT-NNNN-short-name.md` file under `sprints/actions/`, frontmatter then body:
 

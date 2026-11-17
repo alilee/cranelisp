@@ -40,7 +40,7 @@
 //! handed forward, not owed.
 //!
 //! Free-standing: every fixture is `(import [primitives [*]])` + inline helpers;
-//! zero stdlib dependency (root CLAUDE.md §Stdlib separation). Sources are small
+//! zero stdlib dependency (root AGENTS.md §Stdlib separation). Sources are small
 //! inline scale-downs of the committed F7/F8 fixtures (nextest speed; the graded
 //! full-scale runs live in the perf harness).
 

@@ -69,7 +69,7 @@
 //
 // Free-standing: `PreludeVariant::PrimitivesOnly`, zero stdlib.
 // `CRANELISP_NO_LENIENT=1` on every run — no sparks in these shapes, and it
-// keeps the RC counts deterministic (tests/CLAUDE.md §"RC tests run serially").
+// keeps the RC counts deterministic (tests/AGENTS.md §"RC tests run serially").
 
 #[path = "helpers/mod.rs"]
 mod helpers;

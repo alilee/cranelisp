@@ -1,7 +1,7 @@
 # S124 public-API approval packet
 
 **Owner:** `arch`. **Reader:** the user, at the inter-crate public-API gate
-(root `CLAUDE.md` §Roles). **Status:** every row is approved: D1–D7 and D9
+(root `AGENTS.md` §Roles). **Status:** every row is approved: D1–D7 and D9
 on 2026-11-16; D8, R10-9, D10, D11, R10-10 and D12 on 2026-11-17, as written
 in Parts B, B3 and B4. D12 carries one condition, stated in Part B4.
 **Checkpoint:** `main` at

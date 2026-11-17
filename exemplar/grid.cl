@@ -18,7 +18,7 @@
 ;; `collections.vec`; the remaining string primitives (`char-at`,
 ;; `str-len`) plus boolean `not` are imported by name from `primitives`.
 ;; String equality goes through `=` (Eq on String). The exemplar is one of
-;; the two trees permitted to depend on stdlib (root CLAUDE.md §Stdlib
+;; the two trees permitted to depend on stdlib (root AGENTS.md §Stdlib
 ;; separation).
 ;;
 ;; S88 adoption (Stage D): the DEF-2 carve-out is RETIRED — heap-ADT (`Cell`)
@@ -299,7 +299,7 @@
 ;; DELIBERATELY NOT used by the hot `format-board` path in `solver.cl`: that
 ;; path stays on direct `str-concat`/digit rendering to keep `show`-dispatch
 ;; overhead out of production output (the documented perf decision in
-;; exemplar/CLAUDE.md "String building via str-concat" stands).
+;; exemplar/AGENTS.md "String building via str-concat" stands).
 (impl Display Cell
   (defn show [self]
     (match self

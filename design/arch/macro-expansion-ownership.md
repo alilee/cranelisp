@@ -126,7 +126,7 @@ still bind:
 | [Bounded contexts](bounded-contexts.md) §1, §2, §6, §7 | Per-context statements and invariants |
 | [Boundary types](interfaces.md) §Macro execution callback | Narrative companion to the trait |
 | [Compilation sequence](sequences/exec-flow-compilation.mmd) | The three-pass model with Pass 1 in the binary |
-| `src/CLAUDE.md` §Macro expansion | Binary-side conventions: single executor, quote shield, qualification walk |
+| `src/AGENTS.md` §Macro expansion | Binary-side conventions: single executor, quote shield, qualification walk |
 
 ## 5. Retired section remaps
 

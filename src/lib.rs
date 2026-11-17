@@ -25,7 +25,7 @@ pub(crate) mod styled;
 // trace_ring — the exit-safe per-thread ring the three trace sinks share.
 pub(crate) mod trace_ring;
 
-// cluster — the cluster-atomic typecheck orchestration hot path (src/CLAUDE.md
+// cluster — the cluster-atomic typecheck orchestration hot path (src/AGENTS.md
 // §Cluster-atomic orchestration). `process_cluster` is the SOLE crate-crossing
 // where `ResolutionGap` values become scheduler calls. The `ProcessedCluster`
 // it returns is committed by the prepared publication. Live on every
@@ -125,7 +125,7 @@ pub(crate) mod agent_activation;
 
 // agent — the embedded LLM advisor, entirely `#[cfg(feature = "agent")]`:
 // feature-off ⇒ this module does not exist; that is the agent-free build
-// (design/int/agent.md §1, §3.1; src/CLAUDE.md §"Embedded agent"). Holds the dispatch classifier
+// (design/int/agent.md §1, §3.1; src/AGENTS.md §"Embedded agent"). Holds the dispatch classifier
 // (`classify_for_agent`) + the live `agent_turn` model↔tool loop (provider
 // selection, harvester, primer, pull-as-visible-commands). The `rig-core`
 // optional dep rides this feature.

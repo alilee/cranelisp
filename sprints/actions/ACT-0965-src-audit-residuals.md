@@ -12,7 +12,7 @@ refers_to:
   - src/worker.rs
   - src/process_form.rs
   - src/session_v4/lifecycle.rs
-  - src/CLAUDE.md
+  - src/AGENTS.md
 ---
 
 ## Request
@@ -39,13 +39,13 @@ realization mismatch” carries it. None of the three is approved work.
    did **not** recommend an extraction campaign. Proposed: when planned work
    opens one of these functions, `design` (int) chooses a cohesive
    decomposition or records a truthful exception to the budget in
-   `src/CLAUDE.md`.
+   `src/AGENTS.md`.
 3. **S87 F-B — JIT and `--link`/cache paths wire host externs by different
    routes with no parity guard.** `src/worker.rs` (the cache `Linker` path)
    still resolves every `DefKind::PrimitiveExtern` by `dlsym(RTLD_DEFAULT, …)`
    and silently skips a miss, while the fresh JIT uses its exported-symbol
    fallback. No misbehaviour is observed — this is not `qa` defect intake —
-   but root `CLAUDE.md` §Pipeline names REPL/`--run`/`--link` divergence as
+   but root `AGENTS.md` §Pipeline names REPL/`--run`/`--link` divergence as
    always a defect, so a route difference with no guard is a standing
    exposure. Question: accept the two routes with a named falsifier, or ask
    `qa` to allocate one parity observation.

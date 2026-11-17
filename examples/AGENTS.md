@@ -31,7 +31,7 @@ language is broken, and a reader cannot tell which of the two of you is wrong.
    `tests/examples.rs` in the same change-set. `training` does not edit
    `tests/`.
 5. **Free-standing.** Examples MUST NOT depend on `stdlib/`, so the sequence
-   validates the language rather than the library ([root separation rule](../CLAUDE.md#design-principles)). Shared helpers belong in `lib/`, under the rules in
+   validates the language rather than the library ([root separation rule](../AGENTS.md#design-principles)). Shared helpers belong in `lib/`, under the rules in
    [`lib/README.md`](lib/README.md).
 
 ## Verification

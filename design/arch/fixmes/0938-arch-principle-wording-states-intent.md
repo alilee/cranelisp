@@ -4,7 +4,7 @@ target: /arch
 filed_by: /sprint
 filed_at: 2026-08-29
 sprint_filed: 119
-refers_to: design/arch/principles/CLAUDE.md;
+refers_to: design/arch/principles/AGENTS.md;
   design/arch/principles/24-resolve-once.md
 status: open
 ---
@@ -27,7 +27,7 @@ status: open
 
 ## Current state (verified 2026-09-24)
 
-`design/arch/principles/CLAUDE.md` governs principle authoring and
+`design/arch/principles/AGENTS.md` governs principle authoring and
 membership. It and the shared `maintain-documents` support skill require
 current intent over history, but neither states the three rules above.
 Principle 24's text already carries the resulting acid test and carve-outs;
@@ -36,7 +36,7 @@ the derivation method is not recorded as repeatable.
 ## Remaining obligation
 
 `arch` places the three rules in one carrier at the Phase 7 principle review —
-`design/arch/principles/CLAUDE.md` is the default, or a shared-package
+`design/arch/principles/AGENTS.md` is the default, or a shared-package
 contribution if the rule proves project-neutral. The user's local memory entry
 "Principle wording states intent" retires when this lands.
 

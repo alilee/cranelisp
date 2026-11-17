@@ -8,7 +8,7 @@ wiring. A failure stops this script before any local prerequisite can mask it.
 
 The remaining conditions belong to this repository:
 
-  W1  root ``CLAUDE.md`` declares the same subordinate roles as
+  W1  root ``AGENTS.md`` declares the same subordinate roles as
       ``.agents-consumer.toml``, and Copilot exposes exactly that set
   W2  each Copilot adapter names its role and shared contract
   W3  lifecycle telemetry, provider-routing guard, and dispatch transports are
@@ -104,9 +104,9 @@ def run_consumer_check(root: Path) -> int:
 
 
 def declared_roles(root: Path, report: Report) -> list[str]:
-    path = root / "CLAUDE.md"
+    path = root / "AGENTS.md"
     if not path.is_file():
-        report.fail("W1", "no root instruction file at CLAUDE.md")
+        report.fail("W1", "no root instruction file at AGENTS.md")
         return []
     roles: list[str] = []
     in_section = False
@@ -126,7 +126,7 @@ def declared_roles(root: Path, report: Report) -> list[str]:
         elif in_table and not line.startswith("|"):
             break
     if not roles:
-        report.fail("W1", "the `## Roles` section of CLAUDE.md declares no role rows")
+        report.fail("W1", "the `## Roles` section of AGENTS.md declares no role rows")
     return roles
 
 
@@ -149,9 +149,9 @@ def check_inventory(root: Path, prose_roles: list[str], report: Report) -> None:
 
     for role in sorted(machine - prose):
         report.fail("W1", f".agents-consumer.toml dispatches `{role}`, but root "
-                    "CLAUDE.md §Roles has no row for it")
+                    "AGENTS.md §Roles has no row for it")
     for role in sorted(prose - machine):
-        report.fail("W1", f"root CLAUDE.md §Roles declares `{role}`, but "
+        report.fail("W1", f"root AGENTS.md §Roles declares `{role}`, but "
                     ".agents-consumer.toml does not dispatch it")
     for role in sorted(machine - copilot):
         report.fail("W1", f"role `{role}` is dispatched but has no Copilot adapter at "

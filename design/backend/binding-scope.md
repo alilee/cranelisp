@@ -76,4 +76,4 @@ drop-glue registry's.
 - `design/backend/uniform-counting.md` — the ownership plan that keys counting
   on binder identity.
 - `design/backend/transitive-drop-glue.md` — type-directed release.
-- `crates/cranelisp-backend/CLAUDE.md` — as-built backend seam guidance.
+- `crates/cranelisp-backend/AGENTS.md` — as-built backend seam guidance.

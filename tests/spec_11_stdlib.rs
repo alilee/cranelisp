@@ -1,7 +1,7 @@
 // spec_11_stdlib.rs — Stdlib conformance, REPL canonical
 // (Sprint 64 Wave 2 Batch 5; re-ported under REPL canonical in Wave 2.5).
 //
-// This file is the named exception to the no-stdlib rule (root CLAUDE.md
+// This file is the named exception to the no-stdlib rule (root AGENTS.md
 // §"Design Principles" — Stdlib separation): it loads the workspace stdlib
 // via the `use_workspace_stdlib_for_stdlib_conformance_only()` gate. No
 // other test file may use that gate.
@@ -1064,7 +1064,7 @@ fn macro_thread_last_multi() {
 // [Historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md), S109 D.1 AN-1.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.2 + root CLAUDE.md stdlib-separation exception —
+// spec: spec/08-modules.md §8.6.2 + root AGENTS.md stdlib-separation exception —
 // AN-1(b): each core prelude name `do`/`pure`/`cond`/`when`/`case`/`vec`/`list`/
 // `def` is available (the cascade that took them ALL down via one submodule's
 // one-hop miss must not recur). GREEN today; invariance pin + commit-2 acceptance.

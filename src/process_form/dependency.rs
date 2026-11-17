@@ -8,7 +8,7 @@
 //! `drive_module_dep` is the single FQ-autoload drive seam; `gap_target_module`
 //! maps a `ResolutionGap` to the module to load. This is the SOLE crate-crossing
 //! where a `ResolutionGap` becomes a scheduler call — kept as one cohesive module
-//! (do not split block/notify/drive across files; S87 §5, `src/CLAUDE.md
+//! (do not split block/notify/drive across files; S87 §5, `src/AGENTS.md
 //! §Cluster-Atomic Orchestration`). `compile_macro_clause_*` stays a documented
 //! single-impl-with-adapters elsewhere; this module owns the dep protocol.
 
@@ -1626,7 +1626,7 @@ fn rewrite_parent_inline_mod(
 ///
 /// Extracted as the pure owner of the transformation so the parent-rewrite
 /// logic is unit-testable without an FS harness or a `ModuleCompiler` (mirrors
-/// the `layout_hash_gate` extraction; `src/CLAUDE.md` testability discipline).
+/// the `layout_hash_gate` extraction; `src/AGENTS.md` testability discipline).
 pub(crate) fn splice_inline_mod_to_bare(source: &str, name: &str) -> Option<String> {
     // Re-parse the CURRENT content and locate the live inline `(mod <name> …)`
     // form. A parse failure (corrupt / mid-edit file) is a no-op — best-effort.

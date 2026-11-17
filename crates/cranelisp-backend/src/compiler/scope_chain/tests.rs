@@ -4,7 +4,7 @@
 // operation, then applied twice: to the production `pop_frame`, which must
 // satisfy it, and to `pop_frame_by_name` — the pre-repair delete-by-name pop,
 // planted here as the fault — which must violate it. That is the arming proof
-// in both directions (root `CLAUDE.md` §Assurance): the check is shown to fire
+// in both directions (root `AGENTS.md` §Assurance): the check is shown to fire
 // on the fault, and the rename control shows it stays silent without it.
 
 use super::*;

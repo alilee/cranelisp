@@ -11,7 +11,7 @@
 //! normalisation, which could let a SIGSEGV pose as a legitimate
 //! mod-256 exit code) as a single table-driven test.
 //!
-//! Per `examples/CLAUDE.md` rule (cited inline in the legacy file):
+//! Per `examples/AGENTS.md` rule (cited inline in the legacy file):
 //! a non-zero `main` Int return is the program's exit code, and the
 //! integer is the sum of in-program sub-test pass counts. The exit
 //! checksum is therefore the regression-guard surface — if compilation
@@ -23,7 +23,7 @@
 //! the example project because `--link` requires its module cache.
 //!
 //! FIXME(/spec): the "non-zero exit = sub-test pass count" convention is
-//! documented in `examples/CLAUDE.md` (training guidance), not in any spec/*.md file. The convention is a project-level
+//! documented in `examples/AGENTS.md` (training guidance), not in any spec/*.md file. The convention is a project-level
 //! testing pattern, not a language-level normative requirement.
 
 use std::os::unix::process::ExitStatusExt;
@@ -60,7 +60,7 @@ fn platform_search_path() -> PathBuf {
 
 /// No-op: the platform cdylibs/rlibs are built suite-wide by the nextest setup
 /// script (`tests/scripts/build-link-prereqs.sh`), the single owner of that
-/// artifact-set invariant (`tests/CLAUDE.md` §"`--link` prerequisites" — "A test
+/// artifact-set invariant (`tests/AGENTS.md` §"`--link` prerequisites" — "A test
 /// MUST NOT shell out to `cargo build`").
 ///
 /// The former per-test `cargo build -p cranelisp-stdio -p cranelisp-test-capture`
@@ -345,12 +345,12 @@ fn link_and_execute_example(path: &Path, artifact: &Path) -> Result<Output, Stri
 
 // spec: examples/plan-examples.md §"Learning Sequence Design" — the
 //       `--link`-then-execute cell of the learning-sequence verification
-//       (examples/CLAUDE.md §Verification): every top-level entry in
+//       (examples/AGENTS.md §Verification): every top-level entry in
 //       `expected_exits()` plus the `16-modules` and `37-method-import`
 //       directory projects links into a per-test directory and the executable
 //       exits with the documented code; a signal never matches. A maintenance
 //       check on the learning sequence, not acceptance for language rows: a
-//       failure is a suspected defect routed to `qa` (examples/CLAUDE.md rule 2).
+//       failure is a suspected defect routed to `qa` (examples/AGENTS.md rule 2).
 //       Cache behaviour belongs to `cache.rs`, so no cold-cache leg.
 #[test]
 fn every_example_links_and_executes_with_documented_exit() {
@@ -454,7 +454,7 @@ impl std::fmt::Display for Outcome {
 // project (per §8.2.5 nested-only resolution, ruled by FIXME 0345). The checked-in
 // learning-sequence project has its own row below; this fixture remains the
 // durable guard independent of user-proxy content churn per
-// tests/CLAUDE.md §"Repros live in tests/, not exemplar/ or examples/".
+// tests/AGENTS.md §"Repros live in tests/, not exemplar/ or examples/".
 //
 // It is a real, durable CI extension (green, not a failing defect guard): it
 // runs a directory-entry program through `--run` and asserts its documented

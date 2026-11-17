@@ -110,7 +110,7 @@ fn scratch_project(base: &Path) -> PathBuf {
     initialize_git(&root);
 
     fs::write(
-        root.join("CLAUDE.md"),
+        root.join("AGENTS.md"),
         "# Fixture guidance\n\n[Guide](docs/guide.md) records the source claim. \
          [The declaration](standing-documents.toml) defines the inventory.\n",
     )
@@ -126,7 +126,7 @@ fn scratch_project(base: &Path) -> PathBuf {
         root.join(CONFIG),
         r#"[inventory]
 version = 1
-root_memory = "CLAUDE.md"
+root_memory = "AGENTS.md"
 owners = ["test"]
 
 [references]
@@ -134,7 +134,7 @@ source_roots = ["src"]
 symbol_roots = ["src"]
 
 [[document]]
-path = "CLAUDE.md"
+path = "AGENTS.md"
 kind = "root-memory"
 owner = "test"
 purpose = "Fixture guidance and inventory."
@@ -144,14 +144,14 @@ path = "docs/guide.md"
 kind = "standing"
 owner = "test"
 purpose = "Records the source claim."
-established_by = "CLAUDE.md"
+established_by = "AGENTS.md"
 
 [[document]]
 path = "standing-documents.toml"
 kind = "standing"
 owner = "test"
 purpose = "Defines the fixture document inventory."
-established_by = "CLAUDE.md"
+established_by = "AGENTS.md"
 "#,
     )
     .expect("write fixture declaration");
@@ -175,7 +175,7 @@ fn document_class<'a>(declaration: &'a str, name: &str) -> Option<&'a str> {
 // success: unresolved findings stay visible until their owners repair or
 // explicitly disposition them.
 //
-// spec: CLAUDE.md §Assurance — §"Records are claims too"
+// spec: AGENTS.md §Assurance — §"Records are claims too"
 #[test]
 fn project_documents_conform_to_the_checked_in_declaration() {
     let run = run_project_gate(&[]);
@@ -200,7 +200,7 @@ fn project_documents_conform_to_the_checked_in_declaration() {
 // same document after its symbol is made stale. Empty findings are asserted on
 // the clean leg so exit 0 cannot come from an uninspected fixture.
 //
-// spec: CLAUDE.md §Assurance — §"Records are claims too" (instrument detection)
+// spec: AGENTS.md §Assurance — §"Records are claims too" (instrument detection)
 #[test]
 fn project_document_gate_detects_a_planted_source_symbol_and_clears_its_control() {
     let target = Path::new(workspace_root()).join("target");
@@ -250,7 +250,7 @@ fn project_document_gate_detects_a_planted_source_symbol_and_clears_its_control(
 // products while the separately owned `.agents` Gitlink stays outside the
 // project corpus.
 //
-// spec: CLAUDE.md §Assurance — shared document discovery and ownership boundary
+// spec: AGENTS.md §Assurance — shared document discovery and ownership boundary
 #[test]
 fn project_document_discovery_covers_owned_surfaces_and_the_package_boundary() {
     let run = run_project_gate(&["--list-docs", "--format", "json"]);
@@ -265,7 +265,7 @@ fn project_document_discovery_covers_owned_surfaces_and_the_package_boundary() {
         ".claude/agents/qa.md",
         ".github/agents/qa.agent.md",
         ".github/copilot-instructions.md",
-        "design/review/CLAUDE.md",
+        "design/review/AGENTS.md",
         "sprints/archive/sprint-108.md",
         "standing-documents.toml",
         "tests/plan/s122-document-checker-reconciliation/README.md",

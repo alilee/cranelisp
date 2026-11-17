@@ -6,7 +6,7 @@ is built as role-tagged spans and styled at one render site. The normative role
 table is `repl/spec/10-terminal-styling.md` §10.3; this document owns the
 cross-surface mechanism. The interior (modules, producer signatures, colour
 decision) is [terminal styling](../int/terminal-styling.md), and the working
-rules for `src/` are the [source memory](../../src/CLAUDE.md#repl-display).
+rules for `src/` are the [source memory](../../src/AGENTS.md#repl-display).
 
 ## 1. The defect class this seam removes
 

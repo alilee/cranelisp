@@ -144,7 +144,7 @@ authority". Source and the backend audit contradict that for several of them:
 | 0761 | The RC lane is differential, so it is blind to a leak both lowerings share. The option-2 measurement compares an all-Owned toggle against current emission | must be stated as a limit of step 1's measurement |
 | 0848, 0857 | Detection proofs and regrading for the allocator modes and `CRANELISP_RC_DEC_CHECK`. The plant protocol now exists (`crates/cranelisp-intrinsics/src/diagnostics/tests.rs`), so 0848 may be largely stale | before step 4's armed batch relies on those modes |
 
-The [assurance rule](../../CLAUDE.md#assurance--how-we-know-something-holds)
+The [assurance rule](../../AGENTS.md#assurance--how-we-know-something-holds)
 makes this binding: an instrument is unverified until it is proven to detect.
 S123 step 4 arms `CRANELISP_RC_DEC_CHECK`; its proof is 0848/0857's subject.
 
@@ -543,7 +543,7 @@ authorizes no Phase 3 work.
   allocations. The same loop through any one-line wrapper copies every time:
   1,000 of 1,000 and 1,002 allocations. This holds for a same-module wrapper,
   for the stdlib's `collections.vec/conj` and for `assoc`. The exemplar reaches
-  every Vec through `assoc`/`conj` (`exemplar/CLAUDE.md` §Conventions), so it
+  every Vec through `assoc`/`conj` (`exemplar/AGENTS.md` §Conventions), so it
   never has this shape.
 - **The toggle already removes in-place updates.** With
   `CRANELISP_NO_OWNERSHIP` set, the direct loop copies 1,000 of 1,000 too.

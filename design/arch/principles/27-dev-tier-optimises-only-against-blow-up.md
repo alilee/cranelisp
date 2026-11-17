@@ -91,7 +91,7 @@ spark-density axis and confined non-atomic counting.
   constant factor.
 - **Name the blow-up and measure it.** A proposal names a workload whose
   growth rate changes without the optimisation, and shows the measurement.
-  The measurement happens inside the design window (root `CLAUDE.md`
+  The measurement happens inside the design window (root `AGENTS.md`
   §Assurance).
 - **It carries its check.** The optimisation is checked against the
   conservative lowering, which stays reachable (Principle 25).

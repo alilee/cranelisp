@@ -54,7 +54,7 @@ str-concat
 ; writes a merge-sortable dump to stderr at process exit — empty by
 ; default, zero-cost when unset. These logs were load-bearing during
 ; S61 Slice 3 root-causing (H4/H5/H6 race closures) and are now
-; permanent instrumentation. See tests/CLAUDE.md §"Diagnostic Logging".
+; permanent instrumentation. See tests/AGENTS.md §"Diagnostic Logging".
 
 /sh printf 'CRANELISP_SCHEDULER_TRACE=1\nCRANELISP_IO_TRACE=1\n'
 

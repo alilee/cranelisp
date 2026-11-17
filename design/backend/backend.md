@@ -13,7 +13,7 @@
 > `crates/cranelisp-backend/src/` owns the exact Rust obligations and
 > `public-api.txt` is their evidence. Where any statement here disagrees with
 > those, they win. Code conventions, the submodule seam map and the debug hooks
-> are `dev`'s, in `crates/cranelisp-backend/CLAUDE.md`.
+> are `dev`'s, in `crates/cranelisp-backend/AGENTS.md`.
 
 ## 1. What the crate is
 
@@ -90,7 +90,7 @@ This supersedes the release-build skip that
 
 ## 3. Internal shape
 
-The kept-current module and seam map is `crates/cranelisp-backend/CLAUDE.md`;
+The kept-current module and seam map is `crates/cranelisp-backend/AGENTS.md`;
 this document does not carry a second inventory, because the ones it used to
 carry decayed through three reorganisations before anyone noticed.
 
@@ -394,7 +394,7 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
   of the B1–B5 change-sets.
 - `CACHE_SCHEMA_VERSION` is bumped by B5 and B8, and by two change-sets that
   land on other surfaces but must edit this crate's constant: row D3's and
-  ACT-1052's ([crate guidance](../../crates/cranelisp-backend/CLAUDE.md), cache
+  ACT-1052's ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache
   discipline; [int §7.6.3](../int/int.md#763-slot-layout-identity-act-1052)).
 - ACT-1052's change-set also corrects the rustdoc of
   `CachedModuleRef::dependency_hashes` (`cache/manifest.rs`), which says the
@@ -480,6 +480,6 @@ byte-identical and the golden corpus is unaffected.
 - `design/arch/concrete-boundary-type.md` — why the type the backend classifies
   has no variable case
 - `design/arch/principles.md` — the principles cited above
-- `crates/cranelisp-backend/CLAUDE.md` — seam map, debug hooks, code conventions
+- `crates/cranelisp-backend/AGENTS.md` — seam map, debug hooks, code conventions
 - `crates/cranelisp-backend/src/` — the implementation, and the rustdoc that is
   the facade

@@ -143,7 +143,7 @@ struct IndexedEntry {
 
 /// One importable symbol's index payload — the projection
 /// `public_entries_from_table` (and the branch-c `record_triples`) hand the
-/// recorders. A named row (not a bare tuple, `src/CLAUDE.md`) keeps the scheme
+/// recorders. A named row (not a bare tuple, `src/AGENTS.md`) keeps the scheme
 /// and docstring axes explicit. Macro groups are excluded before this boundary.
 #[derive(Debug, Clone)]
 struct ImportableRow {

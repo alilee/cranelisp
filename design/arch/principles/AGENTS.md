@@ -35,7 +35,7 @@ Nothing else needs editing — reachability is the index.
 
 ## Editing a Principle
 
-Revise the body file and, when the statement changes, its index line, at sprint close; cite the motivating sprint in the body and in the sprint outcome report. Then sweep the canonical set for references the change touches (`design/arch/CLAUDE.md` §Where a commitment manifests).
+Revise the body file and, when the statement changes, its index line, at sprint close; cite the motivating sprint in the body and in the sprint outcome report. Then sweep the canonical set for references the change touches (`design/arch/AGENTS.md` §Where a commitment manifests).
 
 ## Retiring a Principle
 

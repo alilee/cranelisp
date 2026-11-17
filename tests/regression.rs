@@ -234,7 +234,7 @@ fn assert_no_signal_crash(label: &str, out: &e2e::CrOutput) {
 /// the real exemplar source. Used for the four open-Defect-6 ledger entries
 /// (`d6_exemplar_*`) and the d45 real-exemplar reductions.
 ///
-/// Per `tests/CLAUDE.md` §"Fresh Temp Directory per Test", reads from
+/// Per `tests/AGENTS.md` §"Fresh Temp Directory per Test", reads from
 /// `project_root().join("exemplar")` — this is read-only on a checked-in
 /// path (`exemplar/` is not modified) so the // read-only annotation
 /// applies.
@@ -2597,7 +2597,7 @@ fn run_repl_in_tmpdir(cwd: &Path, stdin_input: &str) -> std::process::Output {
 /// binary's prelude auto-discovery finds a spec-clean, compiling prelude that
 /// shadows stdlib per §8.8.2) and does NOT set `CRANELISP_LIB`. The reductions
 /// thus exercise the same REPL-import + shutdown/eval lifecycle on a tiny
-/// `tiny.cl` fixture, free-standing per root CLAUDE.md "Stdlib separation".
+/// `tiny.cl` fixture, free-standing per root AGENTS.md "Stdlib separation".
 fn run_repl_in_tmpdir_no_stdlib(cwd: &Path, stdin_input: &str) -> std::process::Output {
     let binary = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target")
@@ -3019,7 +3019,7 @@ fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
     assert!(
         !signal_segv && !killed_by_signal,
         "exemplar solver crashed with exit={exit:?}. Per Defect 6 \
-         (exemplar/CLAUDE.md Known Issues) propagate/solve stack-overflow \
+         (exemplar/AGENTS.md Known Issues) propagate/solve stack-overflow \
          on full 81-cell grids. Once /backend resolves this, /port can \
          re-enable test-easy-puzzle, test-hard-puzzle, test-unsolvable \
          in exemplar/solver.cl. \
@@ -4595,7 +4595,7 @@ fn constructor_wrapped_in_lambda_applied_indirectly_works() {
 // branch: the lambda is declared once with the sparking signature (2 params)
 // and once with the combinator signature (1 param) under one name.
 //
-// Established by isolation (`tests/CLAUDE.md §"Isolating Cross-Crate Failures"`):
+// Established by isolation (`tests/AGENTS.md §"Isolating Cross-Crate Failures"`):
 //   - `CRANELISP_NO_LENIENT=1` ⇒ compiles + runs clean, exit 111 (the bound
 //     branch wins; both branches are immediate `Pure`s, `race` returns the
 //     first). So the codegen path is correct; only the lenient-sparking

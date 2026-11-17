@@ -42,7 +42,7 @@ are what keep it cheap enough to leave in place permanently.
 - **`CRANELISP_IO_TRACE=*`** — same as `1` for Sprint 61; reserved for future per-component filter syntax (e.g. `bind,par`) without re-parse cost.
 - **Unset** — zero overhead: each event site is gated on `Option<&'static TraceFilter>` (single pointer load + null check), the filter is `None`.
 
-**Parse-once discipline (resolves `FIXME(/backend)` from `/arch` Phase 2 review):** the env var is parsed **once** at runtime init into a `OnceLock<Option<TraceFilter>>`. Per-event string parsing is forbidden. This mirrors the established pattern documented in `tests/CLAUDE.md §"Diagnostic Logging"` alongside `CRANELISP_RC_TRACE`, `CRANELISP_INFER_TRACE`, `CRANELISP_CODEGEN_TRACE`, `CRANELISP_MODULE_TRACE`, `CRANELISP_MACRO_TRACE`.
+**Parse-once discipline (resolves `FIXME(/backend)` from `/arch` Phase 2 review):** the env var is parsed **once** at runtime init into a `OnceLock<Option<TraceFilter>>`. Per-event string parsing is forbidden. This mirrors the established pattern documented in `tests/AGENTS.md §"Diagnostic Logging"` alongside `CRANELISP_RC_TRACE`, `CRANELISP_INFER_TRACE`, `CRANELISP_CODEGEN_TRACE`, `CRANELISP_MODULE_TRACE`, `CRANELISP_MACRO_TRACE`.
 
 ```rust
 // Shape (specification only — not implementation):
@@ -178,7 +178,7 @@ Slice 4 readout names the hypothesis by citing specific event-log dumps. Until t
 ## 11. Cross-References
 
 - `design/int/observability.md` — `/int`-owned companion; overall trace-var inventory, scheduler/worker event log, merge-sort methodology. Consult for the non-IO half.
-- `tests/CLAUDE.md §"Diagnostic Logging"` — env-var parse-once pattern; existing `CRANELISP_*_TRACE` conventions.
+- `tests/AGENTS.md §"Diagnostic Logging"` — env-var parse-once pattern; existing `CRANELISP_*_TRACE` conventions.
 - `crates/cranelisp-intrinsics/src/io.rs` — state machine whose transitions this doc instruments. Line references: `run_io_trampoline` (l.91), `call_continuation` (l.240), `dispatch_par_branches` (l.283).
 - `spec/10-io.md §10.12 bind!`, `§10.10 platforms` — spec-level definition of Pure/Bind/Par/PlatformEffect.
 - `design/backend/io-trampoline.md` — existing trampoline design (instrumented by this doc, not replaced).

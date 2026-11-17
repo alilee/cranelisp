@@ -20,7 +20,7 @@ const SCRIPT: &str = "scripts/verify-role-wiring.py";
 /// Every input the composed gate reads. The package is copied whole because its
 /// checker deliberately discovers package facts, including plugin manifests.
 const WIRING_INPUTS: &[&str] = &[
-    "CLAUDE.md",
+    "AGENTS.md",
     ".agents-consumer.toml",
     ".gitmodules",
     ".claude/agents",
@@ -98,7 +98,7 @@ fn rewrite_once(path: &Path, from: &str, to: &str, label: &str) {
     fs::write(path, rewritten).expect("write plant");
 }
 
-// spec: CLAUDE.md §Roles — eleven dispatched subordinate roles and the host
+// spec: AGENTS.md §Roles — eleven dispatched subordinate roles and the host
 //       wiring that exposes their shared contracts
 #[test]
 fn role_wiring_agrees_with_shared_consumer_contract_and_local_adapters() {
@@ -117,7 +117,7 @@ fn role_wiring_agrees_with_shared_consumer_contract_and_local_adapters() {
 // another. The shared-check plant also proves ordering: its failure returns
 // before the local summary can be printed.
 //
-// spec: CLAUDE.md §Assurance — §"Records are claims too" (instrument detection
+// spec: AGENTS.md §Assurance — §"Records are claims too" (instrument detection
 //       proof; both polarities)
 #[test]
 fn role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy() {
@@ -182,8 +182,8 @@ fn role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy() {
 
     // W1a — prose and machine declaration diverge.
     let prose_drift = scratch_copy(base, "prose-role-drift");
-    let claude = prose_drift.join("CLAUDE.md");
-    let body = fs::read_to_string(&claude).expect("read CLAUDE.md plant target");
+    let claude = prose_drift.join("AGENTS.md");
+    let body = fs::read_to_string(&claude).expect("read AGENTS.md plant target");
     let stripped = body
         .lines()
         .filter(|line| !line.starts_with("| `docs` |"))
@@ -198,7 +198,7 @@ fn role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy() {
             && run
                 .output
                 .contains(".agents-consumer.toml dispatches `docs`")
-            && run.output.contains("CLAUDE.md §Roles"),
+            && run.output.contains("AGENTS.md §Roles"),
         "W1 prose fault fired for the wrong reason.\n\n{}",
         run.output,
     );

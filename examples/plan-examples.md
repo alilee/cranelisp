@@ -3,7 +3,7 @@
 `training` owns this plan: what each example teaches, the rules the sequence
 follows, and the open gaps between the sequence and the language. The files on
 disk are the sequence of record. `tests/examples.rs` (owned by `test`) pins
-their exits. [`CLAUDE.md`](CLAUDE.md) holds the operating rules and the
+their exits. [`AGENTS.md`](AGENTS.md) holds the operating rules and the
 verification gate. [`lib/README.md`](lib/README.md) holds the library rules.
 Where this plan and `spec/` disagree, the spec governs and this plan is repaired.
 
@@ -136,7 +136,7 @@ language and CLI contracts. Phase 6b at checkpoint `640d2ec7` replayed all 38
 entries in cold and warm `--run` and linked execution: **152/152 exits matched**
 `tests/examples.rs`. 38 also reported four `ok` lines under `--test`, exit 0.
 The replay used the isolated environment in
-[`CLAUDE.md`](CLAUDE.md#verification), with no stdlib path. These observations
+[`AGENTS.md`](AGENTS.md#verification), with no stdlib path. These observations
 verify the teaching material, not independent acceptance coverage. Dated probes
 below retain their original dates where their specific scenario was not
 repeated; a green sequence run does not re-prove those diagnostic claims.
@@ -222,7 +222,7 @@ diagnostic-prefix blocker. Re-probe any diagnostic before quoting it.
 - **Every `main` is written for the harness.** Each file ends in a nested
   `add-i64` staircase: 30 levels in 15 and 22 in 20 (S115).
 - **Most exits are checksums, not pass counts.** The conventional pass count
-  in `CLAUDE.md` holds in only a few files, such as 08, 31–34, 36 and 37. Several sub-tests contribute 0 on success, 02 and 20 among
+  in `AGENTS.md` holds in only a few files, such as 08, 31–34, 36 and 37. Several sub-tests contribute 0 on success, 02 and 20 among
   them. In 20 the signal is inverted: a regression would raise the total.
 - **Boilerplate.** The `;; Wrap the sum-of-pass-counts in Pure …` block
   appears in 27 files (scan 2026-09-22).

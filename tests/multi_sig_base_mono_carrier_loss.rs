@@ -16,7 +16,7 @@
 // from any monomorphised body. The control below (single-sig `h`) is GREEN,
 // isolating the multi-sig base as the load-bearing element.
 //
-// ISOLATION (tests/CLAUDE.md §"Isolating Cross-Crate Failures"): the error is
+// ISOLATION (tests/AGENTS.md §"Isolating Cross-Crate Failures"): the error is
 // EMITTED at codegen (backend), but the missing datum — the `resolved_target`
 // carrier for the multi-sig-base dispatch call `(h 1)` inside the monomorphised
 // `ga$Int` body — is a typecheck→backend keyed carrier the PRODUCER (typecheck)

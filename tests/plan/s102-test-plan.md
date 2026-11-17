@@ -118,7 +118,7 @@ increment II.
 | (b) | `imported_generic_in_value_position_monomorphises` | imported generic as value | `undefined variable: iden2` |
 | (c) | `composition_over_fold_bodied_imported_generic_monomorphises` | composition over fold-bodied imported generic | `undefined function: vcount` blamed on the OUTER fn |
 
-**The seam question the isolation must answer** (per audit §3.4 + tests/CLAUDE.md
+**The seam question the isolation must answer** (per audit §3.4 + tests/AGENTS.md
 §Isolating): typecheck's edge/instantiation recording is unit-verified complete
 (the `callees_records_fn_as_value_*` cells, now in `crates/cranelisp-typecheck/src/program/callees/tests.rs`) — so for EACH signature, is the
 mono instance (i) **never requested** (typecheck-side after all — the unit tier may

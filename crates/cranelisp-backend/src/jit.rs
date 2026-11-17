@@ -4,7 +4,7 @@
 // multiple ISA constructions in the prototype.
 //
 // Ring 1: registers all runtime intrinsics by function pointer
-// on the JITBuilder. Uses the naming convention from src/CLAUDE.md
+// on the JITBuilder. Uses the naming convention from src/AGENTS.md
 // §"JIT Symbol Names".
 
 use std::collections::HashMap;
@@ -44,7 +44,7 @@ fn register_intrinsics(builder: &mut JITBuilder) {
 /// builder, walking each module's defs and following `Import` edges to the
 /// defining table (BC §3 derivation 3, the third `Jit::new` step).
 ///
-/// The symbol-table key IS the JIT linker name (`src/CLAUDE.md` §"JIT Symbol
+/// The symbol-table key IS the JIT linker name (`src/AGENTS.md` §"JIT Symbol
 /// Names"; the `jit_name` field was retired — `DefKind::PlatformEffect` has no
 /// name payload). A platform effect contributes a symbol only when its GOT
 /// slot is populated (a non-null pointer the platform DLL loader wrote at
@@ -120,7 +120,7 @@ pub fn jit_free_memory_call_count() -> u64 {
 /// it), `Arc::drop` triggers `Jit::drop` which calls `free_memory` and
 /// reclaims the per-batch JIT pages. Stack-local JIT paths run the
 /// compiled function synchronously and drop the `Jit` only after that call
-/// returns. See Decision 31 in `design/arch/CLAUDE.md` for the full
+/// returns. See Decision 31 in `design/arch/AGENTS.md` for the full
 /// invariant and REPL-redefinition discussion.
 ///
 // Several fields are read only inside the `pub(crate)` JIT-orchestration
@@ -165,7 +165,7 @@ impl Drop for Jit {
             // `Code::Jit(Arc<Jit>)` in each compiled arm's realization, or a
             // stack-local `Jit` whose compiled function was already invoked
             // synchronously). See the struct docs above
-            // and Decision 31 in `design/arch/CLAUDE.md` for the full
+            // and Decision 31 in `design/arch/AGENTS.md` for the full
             // argument.
             unsafe {
                 module.free_memory();
@@ -201,7 +201,7 @@ impl Jit {
     ///      got.load_slot(slot))`; `ModuleEntry::Import` edges are followed to
     ///      the defining table so an importing module's JIT resolves the
     ///      platform fn too. (The symbol-table key IS the JIT linker name per
-    ///      `src/CLAUDE.md` §"JIT Symbol Names"; the retired `jit_name` field
+    ///      `src/AGENTS.md` §"JIT Symbol Names"; the retired `jit_name` field
     ///      no longer exists — `DefKind::PlatformEffect { scheduling_class }`.)
     ///
     /// `C`/`L` are the symbol-table carrier params; at int's JIT boundary the

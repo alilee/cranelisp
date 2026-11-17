@@ -6,7 +6,7 @@ self-test model, the unbuilt surface and the open stdlib decisions. Module
 source is the authority for exact names and signatures. The
 [spec §11](../spec/11-stdlib.md) records what the language guarantees any
 library author, and this document does not restate it. The
-[stdlib memory](CLAUDE.md) carries authoring conventions and the self-test run
+[stdlib memory](AGENTS.md) carries authoring conventions and the self-test run
 recipe. Delivery history is in Git.
 
 Status labels used below:
@@ -37,13 +37,13 @@ Status labels used below:
 - **Depth signals generality** (§3.1).
 - **Small, optional prelude.** Nothing in the prelude is required for the
   language to work, and an empty prelude is valid (root
-  [design principles](../CLAUDE.md#design-principles)).
+  [design principles](../AGENTS.md#design-principles)).
 - **Self-testing.** Every definition-bearing module ships backing self-tests (§2).
 - **Clojure-aligned vocabulary.** Unify `List`/`Vec`/`Seq` later through
   collection traits. In the interim, do not bind one concrete family to a
   shared bare name (§1.5).
 - **Separation.** `tests/` and `examples/` never depend on the stdlib (root
-  [design principles](../CLAUDE.md#design-principles)).
+  [design principles](../AGENTS.md#design-principles)).
 
 ### 1.3 Naming
 
@@ -292,7 +292,7 @@ primitives and special forms. Other findings go elsewhere:
 
 - a defect goes to a failing test;
 - a needed primitive or language change goes to an action;
-- per root [usability findings and defects](../CLAUDE.md#usability-findings-and-defects).
+- per root [usability findings and defects](../AGENTS.md#usability-findings-and-defects).
 
 Flow:
 

@@ -104,7 +104,7 @@ fn vec_push_as_value_through_hof_appends() {
 
 // spec: spec/04-expressions.md §4.6.2 — indirect calls; mode coverage: the same
 // defect is observable under `--run` (crosses REPL/--run modes, so the e2e is
-// warranted alongside the REPL shapes per tests/CLAUDE.md §unit-test-per-fix).
+// warranted alongside the REPL shapes per tests/AGENTS.md §unit-test-per-fix).
 // `main` returns `(Pure 20)` ⇒ exit code 20 when fixed. RED on HEAD: SIGSEGV.
 #[test]
 fn vec_get_as_value_run_mode_returns_element() {

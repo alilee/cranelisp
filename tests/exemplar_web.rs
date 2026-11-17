@@ -19,9 +19,9 @@
 //!
 //! Exemplar dependency: this test references `exemplar/main.cl` and the
 //! workspace `stdlib/` + `target/debug/` (the `web` platform DLL). Per
-//! `tests/CLAUDE.md §"Repros live in tests/"`, exemplar-driven tests MAY depend
+//! `tests/AGENTS.md §"Repros live in tests/"`, exemplar-driven tests MAY depend
 //! on `exemplar/` (cf. `tests/exemplar.rs`); the exemplar is one of the two
-//! trees permitted to use stdlib (root CLAUDE.md §Stdlib separation).
+//! trees permitted to use stdlib (root AGENTS.md §Stdlib separation).
 //!
 //! Port: `exemplar/main.cl` supplies 8080 as its source default, while this
 //! test reserves an ephemeral port and passes it as `CRANELISP_PORT`; the web

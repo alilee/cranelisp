@@ -3,7 +3,7 @@
 
 Policy (tasks, graders, classifications, report contents) is QA's:
 tests/plan/s122-evidence-delta.md §"Runnable eval corpus and policy". Usage and
-fixture layout: tests/CLAUDE.md §"REPL-agent evals".
+fixture layout: tests/AGENTS.md §"REPL-agent evals".
 
 Each run is one fresh project, stdlib copy, process and log. Setup forms, the
 `/ask` prompt and grader probes travel through ordinary REPL stdin, each

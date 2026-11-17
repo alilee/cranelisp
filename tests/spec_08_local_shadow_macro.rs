@@ -33,7 +33,7 @@ mod helpers;
 use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 
 // The stdlib `def` macro, inlined VERBATIM (from stdlib/defs.cl §def) so the
-// repro is stdlib-free per tests/CLAUDE.md §Test-Isolation. `(def g v)` expands
+// repro is stdlib-free per tests/AGENTS.md §Test-Isolation. `(def g v)` expands
 // to `(begin (defn g-def [] v) (defmacro g [] …))` — making `g` a bare-symbol
 // zero-arg macro. Uses only `macros/*` + `primitives/*` (both resolvable under
 // the PrimitivesOnly re-export prelude).

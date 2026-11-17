@@ -402,7 +402,7 @@ In live S88 use, agent output sometimes emitted ANSI colour codes as **literal t
 - Under `--no-color`, `NO_COLOR`, or a non-TTY (§10.1), agent output MUST be **completely free of SGR/escape sequences** — the `--no-color` transcript is clean plain text (gutter + plain prose + plain-indented Lisp). [S89]
 - This is the **user-visible acceptance** for the defect's fix: an `/ask` answer containing prose **plus** a `` ```lisp `` block renders with formatted prose and a pretty-printed, correctly-coloured form, with **no literal escape codes anywhere**, and stays clean under `--no-color`. [S89]
 
-(The root cause is an int-internal render-path wiring issue — style-once-at-the-leaf, the global colour gate honoured uniformly — not a missing colour-mode parameter; that is `/int`/`/dev`-owned mechanism. This spec pins only the user-visible contract: no literal escapes, clean `--no-color`. A `/qa` narrow failing-not-ignored repro is owed before closure, per `CLAUDE.md §Testing`.) [S89]
+(The root cause is an int-internal render-path wiring issue — style-once-at-the-leaf, the global colour gate honoured uniformly — not a missing colour-mode parameter; that is `/int`/`/dev`-owned mechanism. This spec pins only the user-visible contract: no literal escapes, clean `--no-color`. A `/qa` narrow failing-not-ignored repro is owed before closure, per `AGENTS.md §Testing`.) [S89]
 
 ### 17.14 Build Mode — The Confirm-Gated Submit UX [S89]
 

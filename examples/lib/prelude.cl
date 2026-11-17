@@ -1,7 +1,7 @@
 ;; examples/lib/prelude.cl — standalone prelude for the examples sequence.
 ;;
 ;; This file is NOT the stdlib prelude. It is a minimal, free-standing
-;; prelude owned by /examples per root CLAUDE.md §"Stdlib separation":
+;; prelude owned by /examples per root AGENTS.md §"Stdlib separation":
 ;; examples MUST NOT depend on stdlib/. This prelude only re-exports the
 ;; 30 primitives that examples use; it does not pull in any traits,
 ;; macros, or domain modules.

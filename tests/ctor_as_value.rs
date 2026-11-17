@@ -11,7 +11,7 @@
 // `timeout` simplification and the /docs concurrency.md ctor rough-edge retirement.
 //
 // GREEN guards (past tense — the defect is fixed; retro-tagged for the density/
-// hotspot analysis over the permanent corpus, per tests/CLAUDE.md §Defect-repro).
+// hotspot analysis over the permanent corpus, per tests/AGENTS.md §Defect-repro).
 
 #[path = "helpers/mod.rs"]
 mod helpers;

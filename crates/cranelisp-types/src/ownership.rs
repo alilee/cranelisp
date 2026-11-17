@@ -51,7 +51,7 @@
 //!
 //! [`Mode`], [`ResultMode`], and [`ParamFlow`] are deliberate EXCEPTIONS to
 //! the types-crate `#[non_exhaustive]` policy
-//! (`crates/cranelisp-types/CLAUDE.md` §Public-surface mechanics), and
+//! (`crates/cranelisp-types/AGENTS.md` §Public-surface mechanics), and
 //! [`ModeSummary`] is excepted with them (it is literally constructed by both
 //! producers — typecheck's fixpoint and primitives' declared-fact table).
 //! For an ABI-bearing memory-model vocabulary, exhaustive consumer matches

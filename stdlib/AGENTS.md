@@ -2,7 +2,7 @@
 
 The reference standard library, written in Cranelisp. `dev`, narrow-deployed
 to `stdlib/`, owns the modules, their self-tests and this directory's
-documents (root [roles](../CLAUDE.md#roles)).
+documents (root [roles](../AGENTS.md#roles)).
 
 - [Standard library design](plan-stdlib.md) holds the curated surface and
   prelude, the module map, the self-test model, the unbuilt surface, the
@@ -40,7 +40,7 @@ documents (root [roles](../CLAUDE.md#roles)).
 ## Conventions
 
 - **Separation.** `tests/` and `examples/` must not depend on `stdlib/` (root
-  [design principles](../CLAUDE.md#design-principles)). Stdlib evidence lives
+  [design principles](../AGENTS.md#design-principles)). Stdlib evidence lives
   here as self-tests.
 - **Shells and prelude.** Shell modules only declare submodules.
   `prelude.cl` only re-exports; it has no `defn` or `defmacro`.
@@ -87,4 +87,4 @@ documents (root [roles](../CLAUDE.md#roles)).
 A defect in stdlib code is `dev`'s to fix here. A language or runtime defect
 found while composing the library needs a minimal repro. The wave does not
 close until `test` has committed a narrow, failing, un-ignored reproduction with
-a `// spec:` annotation (root [usability findings and defects](../CLAUDE.md#usability-findings-and-defects)).
+a `// spec:` annotation (root [usability findings and defects](../AGENTS.md#usability-findings-and-defects)).

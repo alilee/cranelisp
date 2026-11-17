@@ -30,7 +30,7 @@ archived, after confirming that each rule below still has a canonical home.
 ## Findings are not debt by default
 
 - The project invocation applies no baseline
-  ([root assurance guidance](../../CLAUDE.md#records-are-claims-too)).
+  ([root assurance guidance](../../AGENTS.md#records-are-claims-too)).
   Outstanding findings are repaired or explicitly dispositioned; installing the
   checker accepted none of them.
 - The retired checker's baseline and the complete old-to-new identity mapping

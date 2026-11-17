@@ -2,7 +2,7 @@
 //
 // `design/int/agent.md` §3. This module is entirely `#[cfg(feature = "agent")]`
 // (declared so in `lib.rs`), a sibling to `repl.rs` / `eval.rs` / `process_form.rs`
-// in int's session decomposition (`src/CLAUDE.md §"Session/REPL module
+// in int's session decomposition (`src/AGENTS.md §"Session/REPL module
 // decomposition"`). Feature-off ⇒ this module does not exist and the binary is
 // byte-identical to today (`agent.md §1`, `repl/spec.md §17.1`).
 //

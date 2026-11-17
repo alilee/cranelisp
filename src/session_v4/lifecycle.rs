@@ -2,7 +2,7 @@
 //
 // `impl CompilerSession` — construct (`new`), accessors, module registration,
 // watcher reload, link, shutdown/Drop — plus `populate_ring0_got_slots` (a
-// `new`-helper). This is the residual responsibility set `src/CLAUDE.md
+// `new`-helper). This is the residual responsibility set `src/AGENTS.md
 // §"Session/REPL module decomposition"` names for the session: one coherent
 // concern (the session's own lifetime + the module-graph operations it owns)
 // and the bulk of the file. The `CompilerSession`/`SharedState` struct

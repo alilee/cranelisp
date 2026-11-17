@@ -53,7 +53,7 @@ pub fn auto_schedule_defn<C: CodeStore, L: LinkerStore>(
     // Single-sig only (multi-sig functions are not auto-scheduled). This is a
     // caller-defended invariant: `apply_bind_chain_analysis`'s multi-sig guard
     // guarantees this function is never reached for a multi-sig defn — so a
-    // violation is a programmer logic bug, never user input (src/CLAUDE.md
+    // violation is a programmer logic bug, never user input (src/AGENTS.md
     // §Error Handling — `unreachable!`, never `panic!`/`assert!` on user input).
     if defn.is_multi_sig() {
         unreachable!("invariant: auto_schedule_defn called on multi-sig defn");

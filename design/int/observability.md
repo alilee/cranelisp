@@ -41,7 +41,7 @@ timebase (§6) and merges at dump time (§7).
 | `CRANELISP_SCHED_DUMP_ON_SIGUSR1` (any value) | scheduler-state snapshot | live pool / `blocked_on` / waiter / queue state on `SIGUSR1` | `src/sched_dump.rs` (§8) |
 | *(none — `RunMode::Repl`)* | introspection store | per-symbol metadata (§10; shape in `int.md` §4.3) | `SharedState.introspection` |
 
-There is no repository-wide environment-variable inventory. `tests/CLAUDE.md`
+There is no repository-wide environment-variable inventory. `tests/AGENTS.md`
 §"Diagnostic env vars & assertions" lists the *other* surfaces' trace variables
 for test authors and does not cover the int sinks. This table is canonical for
 the int-owned activators only; it does not claim to be the project's whole

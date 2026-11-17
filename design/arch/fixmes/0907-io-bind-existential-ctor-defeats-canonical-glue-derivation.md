@@ -40,7 +40,7 @@ Under the [approved S122 disposition](../../../tests/plan/s122-evidence-delta.md
   - `docs` owes no edit here.
 - **Obligation 2, training leg: satisfied (qa, 2026-09-30).**
   - `training` reported the refusal-era text removed from examples 21 and 23.
-  - QA checked the working tree. Neither file, nor `examples/CLAUDE.md` or
+  - QA checked the working tree. Neither file, nor `examples/AGENTS.md` or
     `examples/plan-examples.md`, still carries the known-red header, the
     `disagrees on declared parameter identity` refusal, a 0907 reference or a
     dark-part marker. The remaining `=== Part N ===` headings are ordinary

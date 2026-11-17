@@ -6,7 +6,7 @@ model: gpt-6.1-sol
 effort: medium
 ---
 
-Read and follow, in order: the repository root `CLAUDE.md` (and every `CLAUDE.md`
+Read and follow, in order: the repository root `AGENTS.md` (and every `AGENTS.md`
 applicable to the directories you touch), then `sprints/METHOD.md` for what
 cranelisp adds, then your role contract at `.agents/skills/test/SKILL.md` — the
 contract governs your authority, boundaries and handoffs, and takes precedence

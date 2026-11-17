@@ -56,9 +56,9 @@ Its exact file patterns are declared in `standing-documents.toml`.
 ## Cross-role changes
 
 - A user doc that surfaces a defect — a documented example that does not compile,
-  output that contradicts the doc — follows root `CLAUDE.md` §"Usability Findings
+  output that contradicts the doc — follows root `AGENTS.md` §"Usability Findings
   and Defects": hand off with a minimal repro; the item is not closed until `test`
   has committed a narrow failing test reproducing it.
-- A change needed in another role's document follows root `CLAUDE.md`
+- A change needed in another role's document follows root `AGENTS.md`
   §"Cross-Role Changes": resolve it through `sprint` within the increment, or file
   an action under `sprints/actions/`. Do not edit the other role's files directly.

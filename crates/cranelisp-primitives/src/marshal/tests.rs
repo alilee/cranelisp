@@ -89,7 +89,7 @@ fn heap_offsets_derive_from_heap_header() {
     assert_eq!(HeapHeader::RC_OFFSET as usize, 8);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — shallow_rc_inc increments the
+// spec: design/arch/AGENTS.md Decision 24 — shallow_rc_inc increments the
 // RC field the marshal bodies share. Behaviour-preserving guard for the
 // HIGH-1 single-source change: an inc at the derived RC offset is observed
 // by consume_shallow (which reads the same canonical offset).
@@ -167,7 +167,7 @@ fn test_sconcat_both_nonempty() {
 // the `re1_*` rows below are the ones that see the embed rule.
 // ---------------------------------------------------------------------
 
-// spec: design/arch/CLAUDE.md Decision 24 — consuming convention, extern sconcat
+// spec: design/arch/AGENTS.md Decision 24 — consuming convention, extern sconcat
 #[test]
 fn decision24_sconcat_rc_balanced() {
     let allocs_before = cranelisp_intrinsics::alloc::alloc_count();

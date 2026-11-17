@@ -6,7 +6,7 @@ S88/S89 made the agent *act*; the S90 fluency phase makes it *reach* for supplem
 detail rather than guess. The first reach is **`/syntax`** — a topic-indexed,
 token-dense, **verified-compiling** reference for the **core language syntax**, surfaced
 as a REPL command that is useful to **both the human at the prompt and the agent**
-(the self-documenting-REPL principle — [root CLAUDE.md, Design Principles](../../CLAUDE.md#design-principles)
+(the self-documenting-REPL principle — [root AGENTS.md, Design Principles](../../AGENTS.md#design-principles)
 — turned toward syntax discovery). It is the curated, higher-precision replacement for fuzzy spec-grep
 (`design/arch/repl-embedded-agent.md` §11 R7; the S90 plan's Pillar 1, `sprints/archive/sprint-90.md`). [S90]
 

@@ -64,7 +64,7 @@
 //! halves of a pair MUST use the same drive — a control and subject that differ
 //! in mode subtract two unrelated numbers. A cell wanting both faces measures
 //! two pairs and asserts each, which is also what makes a mode divergence
-//! visible as a divergence (root `CLAUDE.md`: a REPL/`--run`/`--link`
+//! visible as a divergence (root `AGENTS.md`: a REPL/`--run`/`--link`
 //! difference is always a defect).
 //!
 //! ## Environment allow-list (`env_clear` + exactly these)
@@ -182,7 +182,7 @@ enum Lib {
     /// No `CRANELISP_LIB` at all.
     None,
     /// The workspace `stdlib/` tree. The ONE sanctioned stdlib touchpoint
-    /// (root `CLAUDE.md` §"Stdlib separation"); a cell using it says so in its
+    /// (root `AGENTS.md` §"Stdlib separation"); a cell using it says so in its
     /// own header.
     WorkspaceStdlib,
     /// A tree materialised from inline `(relative path, contents)` pairs into a

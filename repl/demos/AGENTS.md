@@ -79,7 +79,7 @@ runtime-behaviour demo, not a language-capability one: its subject is the
 allocation ledger read through `/mem`, and the invariant it puts on display is
 the S118 program-result owner — a heap value is formatted IN FULL and then
 released EXACTLY ONCE, in the same observe-then-release order in REPL, `--run`,
-and linked startup (`src/CLAUDE.md` §"Program-result ownership"). It works by
+and linked startup (`src/AGENTS.md` §"Program-result ownership"). It works by
 `/mem` **snapshot** arithmetic: produce the same heap value several times and
 `allocs`/`deallocs` advance together while `live` does not move. Concrete
 shapes (a user product, a recursive tree, `(Some heap)`) are shown flat, and
@@ -262,5 +262,5 @@ The showcase has no agent demo: the agent exists only in a `--features agent`
 build, and its probe traffic is deliberately not echoed into the session
 ([§17.2.1](../spec/17-embedded-agent.md)). Its deterministic evidence is the
 agent lane and its live-model quality evidence is the eval runner, both in
-[tests/CLAUDE.md](../../tests/CLAUDE.md#the-agent-lane---features-agent--isolated-target-dir).
+[tests/AGENTS.md](../../tests/AGENTS.md#the-agent-lane---features-agent--isolated-target-dir).
 `/syntax`, which the agent also pulls, is shown in `01-tour.demo`.

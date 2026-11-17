@@ -134,7 +134,7 @@ Design rules:
 - `Sexp` is persisted on cache-carried fields — macro declarations' stored
   Sexp and `ModDecl.inline_body` — so the variant is part of the
   `CACHE_SCHEMA_VERSION` contract
-  ([types memory](../../crates/cranelisp-types/CLAUDE.md#the-serde-shape-is-the-cache-contract)).
+  ([types memory](../../crates/cranelisp-types/AGENTS.md#the-serde-shape-is-the-cache-contract)).
 - Marshal tags are runtime-only and never serialised.
 
 ## 7. The mirrors the node replaces

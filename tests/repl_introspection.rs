@@ -3658,7 +3658,7 @@ fn display_type_lookup_neg_no_impl_section_when_none() {
 // spec: repl/spec.md §1.5 — a non-empty user-defined List value displays its
 // elements (the generic ADT recursive `(List.Cons h t)` form), with the empty
 // tail showing `List.Nil` — not a raw heap pointer. Tests define List inline
-// (no stdlib dependency per tests/CLAUDE.md isolation).
+// (no stdlib dependency per tests/AGENTS.md isolation).
 // (harvest: legacy/repl_experience.rs::display_list_non_empty_shows_elements + display_list_nil)
 #[test]
 fn display_user_list_value_shows_elements_and_nil() {
@@ -3871,7 +3871,7 @@ fn display_float_nan_value() {
 // =============================================================================
 
 /// Path to the shipped cheat-sheet asset, read-only on project_root (per
-/// `tests/CLAUDE.md` — locating a checked-in asset, never written). Lets the
+/// `tests/AGENTS.md` — locating a checked-in asset, never written). Lets the
 /// asset-contract guard (P1.7) and the sampled-example guard (P1.8) reference
 /// the SAME source `/dev`'s parser and `/docs`'s authoring share.
 // read-only on project_root

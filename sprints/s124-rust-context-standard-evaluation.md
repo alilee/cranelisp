@@ -90,7 +90,7 @@ check enforces, and they are where the model does not fit:
 
 | The standard requires | Cranelisp today | Verdict |
 |---|---|---|
-| Root guidance introduces each context and links its design, or one context index | Root layout table links `design/CLAUDE.md` and each crate memory; the bounded-context statement is the index | Partly met: three hops to a design master |
+| Root guidance introduces each context and links its design, or one context index | Root layout table links `design/AGENTS.md` and each crate memory; the bounded-context statement is the index | Partly met: three hops to a design master |
 | One authoritative `DESIGN.md` at each crate root | One master per context under `design/{context}/`, with subordinate subjects | Met in substance; different location |
 | Architecture's boundary statement may sit beside the design, one owner per fact | Bounded-context sections owned by `arch`; interiors owned by `design` | Met |
 | Rustdoc carries the callable contract; no duplicating interface document | Rustdoc plus `public-api.txt` as evidence; facade-spec files retired | Met |
@@ -99,7 +99,7 @@ check enforces, and they are where the model does not fit:
 
 Cranelisp's layout differs in one structural way. The standard's reader goes
 root guidance → crate `DESIGN.md` → source. Cranelisp's reader goes root →
-`design/CLAUDE.md` → `design/{context}/CLAUDE.md` → master. No root line links
+`design/AGENTS.md` → `design/{context}/AGENTS.md` → master. No root line links
 a design master directly, and no crate memory links the bounded-context
 statement except primitives'.
 
@@ -357,7 +357,7 @@ Not determined:
 | Workspace facts | `cargo metadata --no-deps --offline`, captured to the scratch directory |
 | Checker dry runs | `python3 .agents/tools/check_rust_contexts.py --root . --declaration <scratch> --metadata <scratch>` for runs A, B and C; once with no arguments |
 | Declaration acceptance | `python3 .agents/tools/check_consumer.py --root . --declaration <scratch>` |
-| Current arrangement | Root guidance; `design/arch/CLAUDE.md`; the bounded-context statement's dependency table and section openings; each `design/{context}/CLAUDE.md`; `tests/CLAUDE.md` §Public-API enforcement; `tests/public_api_relocations.rs`; `sprints/METHOD.md` §3.1 |
+| Current arrangement | Root guidance; `design/arch/AGENTS.md`; the bounded-context statement's dependency table and section openings; each `design/{context}/AGENTS.md`; `tests/AGENTS.md` §Public-API enforcement; `tests/public_api_relocations.rs`; `sprints/METHOD.md` §3.1 |
 | Surfaces | Line and item counts over the eight `public-api.txt` files; crate-root `lib.rs` sizes; `#[no_mangle]` counts |
 | Citations and layout | `git grep` counts of design paths, bounded-context citations and test-module declarations |
 | Edge history | `git log -G` over crate manifests; `git show` of `d1949fbf`, `ef69ede5`, `e7470e17`, `701a5f20` |

@@ -19,7 +19,7 @@ Three carriers, and keeping them distinct is what stops this directory decaying:
 | What the Rust surface exactly is | Per-item `///` rustdoc in `crates/cranelisp-backend/src/`, with `public-api.txt` as its evidence |
 | What runtime behaviour is *correct* | `spec/12-runtime.md` |
 | How the crate solves its problems | Here |
-| How to work in the code — seam map, debug hooks, conventions | `crates/cranelisp-backend/CLAUDE.md` (`dev`-owned) |
+| How to work in the code — seam map, debug hooks, conventions | `crates/cranelisp-backend/AGENTS.md` (`dev`-owned) |
 
 Cite these rather than restating them. The recurring failure in this directory
 has been a design doc carrying its own copy of a boundary fact, a signature or a

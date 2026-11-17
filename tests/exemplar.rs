@@ -33,7 +33,7 @@ use e2e::Cranelisp;
 //       file resolves at compile time and is callable from main, yielding
 //       the expected Int. (Legacy version asserted the prelude's `const`
 //       macro; the new shape inlines a defmacro to avoid a stdlib
-//       dependency per `tests/CLAUDE.md` test isolation rules.)
+//       dependency per `tests/AGENTS.md` test isolation rules.)
 //
 // (carry: legacy/exemplar.rs::exemplar_batch_const_macro)
 #[test]

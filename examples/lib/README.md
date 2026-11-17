@@ -2,8 +2,8 @@
 
 `training` owns this library and its rules. `examples/Cranelisp.toml`
 (`lib-dirs = ["./lib"]`) puts it on every example's library search path. It
-is not the standard library. Root `CLAUDE.md` states the
-[separation rule](../../CLAUDE.md#design-principles) it serves.
+is not the standard library. Root `AGENTS.md` states the
+[separation rule](../../AGENTS.md#design-principles) it serves.
 
 ## Purpose
 

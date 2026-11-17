@@ -1728,7 +1728,7 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
 // for OFF) so the tests hold under the L-B2(i) ambient-polarity lane.
 //
 // Observability: dep-module cache hits emit `module-trace: cache hit …` on
-// stderr under CRANELISP_MODULE_TRACE=1 (tests/CLAUDE.md §Diagnostic Logging);
+// stderr under CRANELISP_MODULE_TRACE=1 (tests/AGENTS.md §Diagnostic Logging);
 // recompilation is additionally pinned via the dep's `.o` mtime.
 
 const LB3_MAIN: &str =

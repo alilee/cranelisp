@@ -20,7 +20,7 @@ Their standing rules live where a reader needs them: relational coverage axes
 kind, module locality) in [PLAN](PLAN.md#standing-coverage-audit--definition-variants);
 suite-count and leak-scaling conventions in [PLAN](PLAN.md#traceability-and-authoring);
 mode uniformity, defect classes and the failing-test discipline in the
-[tests memory](../CLAUDE.md); the spec-change annotation-clearing rule in the
+[tests memory](../AGENTS.md); the spec-change annotation-clearing rule in the
 [delivery method](../../sprints/METHOD.md#22-phase-notes); the differential
 oracle, capability-fence and adversarial-authorship rules in the strategy.
 Rankings, counts and wave statuses in those reads describe their sprint, not
@@ -54,7 +54,7 @@ the current tree.
   invisible below a crossing threshold and a glibc abort above it, and it is
   distinct from an RC miscount: every RC-driven free still hits `rc = 0`
   cleanly on a correctly located object. The instance is DEF-6 (S86, `--link`
-  only), class `marshal-overrun` in the [defect vocabulary](../CLAUDE.md#defect-repro-notation--defect).
+  only), class `marshal-overrun` in the [defect vocabulary](../AGENTS.md#defect-repro-notation--defect).
 - **Current controls.** Constructive: both hosts build their callbacks
   through one builder, `cranelisp_intrinsics::host_callbacks()`
   (`src/platform.rs`, `crates/cranelisp-exe-bundle/src/lib.rs`), so the
@@ -62,7 +62,7 @@ the current tree.
   Measured: the sustained-repetition, link-then-run guard
   `tests/link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`
   (200 crossings, well above the observed ~40 threshold); the
-  [tests memory](../CLAUDE.md#diagnostic-env-vars--assertions) states the
+  [tests memory](../AGENTS.md#diagnostic-env-vars--assertions) states the
   sustained-repetition and run-under-load rules for every marshalling
   boundary. Diagnostic: the intrinsics allocator's dealloc-time
   header-integrity check (`crates/cranelisp-intrinsics/src/alloc.rs`,

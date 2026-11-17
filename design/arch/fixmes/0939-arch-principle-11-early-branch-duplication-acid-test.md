@@ -14,7 +14,7 @@ status: open
 
 ## S122 verified disposition (2026-09-10)
 
-Verified Principle 11 itself: it still states one pipeline and parameterized genuine differences, but does not contain the proposed early-branch/shared-work audit test. Remaining owner: arch at Phase 7 principle review, using the existing user ruling; no mid-sprint principle amendment or new policy is enacted. Current principles/CLAUDE.md requires body plus index when the statement changes, not the obsolete four import blocks mentioned below.
+Verified Principle 11 itself: it still states one pipeline and parameterized genuine differences, but does not contain the proposed early-branch/shared-work audit test. Remaining owner: arch at Phase 7 principle review, using the existing user ruling; no mid-sprint principle amendment or new policy is enacted. Current principles/AGENTS.md requires body plus index when the statement changes, not the obsolete four import blocks mentioned below.
 
 ## Issue
 
@@ -49,7 +49,7 @@ gate only, so batch `--run` silently kept the old def-wins behaviour; the user f
 the mode divergence as the tell that the rejection had to move to the shared typecheck
 path.
 
-The root `CLAUDE.md` §Pipeline already says a REPL/`--run`/`--link` divergence is always
+The root `AGENTS.md` §Pipeline already says a REPL/`--run`/`--link` divergence is always
 a defect. What is missing is the diagnostic that catches it *before* it diverges.
 
 ## Proposed resolution
@@ -62,5 +62,5 @@ wrapper finding can be fixed narrowly and immediately, a genuine dual-driver reg
 escalates to `/arch`, and either way the enforcement lands at the shared seam rather
 than a mode-specific gate.
 
-Per `design/arch/principles/CLAUDE.md`, amending the text does not change the four import blocks,
+Per `design/arch/principles/AGENTS.md`, amending the text does not change the four import blocks,
 but the Configuration-consistency audit applies.

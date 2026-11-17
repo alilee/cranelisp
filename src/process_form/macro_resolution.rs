@@ -296,7 +296,7 @@ pub(super) fn qualify_expanded_sexp(
 }
 
 /// The threaded qualify-walk context (mirrors the expander's resolver-threading;
-/// keeps the recursive helpers under the 8-param `src/CLAUDE.md` budget).
+/// keeps the recursive helpers under the 8-param `src/AGENTS.md` budget).
 struct QualifyCtx<'a> {
     symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: &'a ModuleFullPath,

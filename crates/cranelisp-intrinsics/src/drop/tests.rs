@@ -82,7 +82,7 @@ fn make_io_pure(value: i64) -> i64 {
 
 // Tests -----------------------------------------------------------------
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_slist frees a shallow chain
+// spec: design/arch/AGENTS.md Decision 24 — consume_slist frees a shallow chain
 #[test]
 fn decision24_consume_slist_frees_chain() {
     let allocs = alloc_count();
@@ -106,7 +106,7 @@ fn decision24_consume_slist_frees_chain() {
     assert_eq!(dealloc_count() - deallocs, 4);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_sexp frees heap fields
+// spec: design/arch/AGENTS.md Decision 24 — consume_sexp frees heap fields
 #[test]
 fn decision24_consume_sexp_sym_frees_string() {
     let allocs = alloc_count();
@@ -120,7 +120,7 @@ fn decision24_consume_sexp_sym_frees_string() {
     assert_eq!(dealloc_count() - deallocs, 2);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_sexp of SexpList recurses
+// spec: design/arch/AGENTS.md Decision 24 — consume_sexp of SexpList recurses
 #[test]
 fn decision24_consume_sexp_list_recurses() {
     let allocs = alloc_count();
@@ -139,7 +139,7 @@ fn decision24_consume_sexp_list_recurses() {
     assert_eq!(dealloc_count() - deallocs, 7);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_sexp preserves shared refs
+// spec: design/arch/AGENTS.md Decision 24 — consume_sexp preserves shared refs
 #[test]
 fn decision24_consume_sexp_preserves_shared_ref() {
     let allocs = alloc_count();
@@ -372,7 +372,7 @@ fn unknown_tags_hard_fail_under_the_diagnostic_gate() {
     }
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_vec_of_string frees elements
+// spec: design/arch/AGENTS.md Decision 24 — consume_vec_of_string frees elements
 #[test]
 fn decision24_consume_vec_of_string_frees_elements() {
     let allocs = alloc_count();
@@ -410,7 +410,7 @@ fn databuf_guard_still_trips_on_stale_fixture_buffer_after_consume() {
     crate::vec_runtime::debug_assert_live_buffer(data, 2, "test(stale-fixture)");
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Pure is scalar
+// spec: design/arch/AGENTS.md Decision 24 — consume_io_tree Pure is scalar
 #[test]
 fn decision24_consume_io_pure_frees_node() {
     let allocs = alloc_count();
@@ -533,7 +533,7 @@ fn dec_shallow_io_par_deep_frees_branches() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Bind recurses
+// spec: design/arch/AGENTS.md Decision 24 — consume_io_tree Bind recurses
 #[test]
 fn decision24_consume_io_bind_recurses_into_inner() {
     let allocs = alloc_count();
@@ -559,7 +559,7 @@ fn decision24_consume_io_bind_recurses_into_inner() {
     assert_eq!(dealloc_count() - deallocs, 3);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Par dec's each branch
+// spec: design/arch/AGENTS.md Decision 24 — consume_io_tree Par dec's each branch
 #[test]
 fn decision24_consume_io_par_walks_branches() {
     let allocs = alloc_count();
@@ -583,7 +583,7 @@ fn decision24_consume_io_par_walks_branches() {
     assert_eq!(dealloc_count() - deallocs, 3);
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — consume_closure frees bare closure
+// spec: design/arch/AGENTS.md Decision 24 — consume_closure frees bare closure
 #[test]
 fn decision24_consume_closure_bare() {
     let allocs = alloc_count();
@@ -734,7 +734,7 @@ fn re2_consume_slist_stops_at_a_live_interior_reference() {
     );
 }
 
-// spec: design/arch/CLAUDE.md Decision 24 — nullary tag is a no-op
+// spec: design/arch/AGENTS.md Decision 24 — nullary tag is a no-op
 #[test]
 fn decision24_consume_slist_skips_nullary() {
     let allocs = alloc_count();
@@ -799,7 +799,7 @@ fn consume_launch_node_detached_field0_sentinel_is_noop() {
 
 // GREP-ZERO: `drop.rs` carries no local raw reader and no copy of the Vec layout
 // offsets. `heap_access::{read_i64, write_i64}` is the single mechanical owner
-// and `vec_runtime` the single Vec-layout authority — the crate's `CLAUDE.md`
+// and `vec_runtime` the single Vec-layout authority — the crate's `AGENTS.md`
 // has declared both for three sprints while the source contradicted it (the
 // third-sprint recurrence of S87 F3). This row makes the guidance true and keeps
 // it true: a re-introduced private reader or offset copy fails HERE, at the

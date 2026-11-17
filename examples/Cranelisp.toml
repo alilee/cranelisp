@@ -1,6 +1,6 @@
 # examples/Cranelisp.toml — project configuration for the learning sequence.
 #
-# Per root CLAUDE.md §"Stdlib separation", the examples/ directory MUST be
+# Per root AGENTS.md §"Stdlib separation", the examples/ directory MUST be
 # free-standing: it cannot depend on stdlib/. This config puts `./lib` on
 # the library search path, which is how `examples/lib/prelude.cl` — and the
 # rest of the examples-local library alongside it — is discovered when an

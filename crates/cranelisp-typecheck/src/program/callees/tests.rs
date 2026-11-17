@@ -1,5 +1,5 @@
 //! Per-submodule tests for `program/callees.rs` — the S101 `Def.callees`
-//! completeness contract (`crates/cranelisp-typecheck/CLAUDE.md`, FIXME
+//! completeness contract (`crates/cranelisp-typecheck/AGENTS.md`, FIXME
 //! 0470/0472): every statically-resolved user-fn reference, call- AND
 //! value-position, at every body-check seam. Split from the pooled
 //! `program/tests.rs` (FIXME 0722).

@@ -479,7 +479,7 @@ The only configuration honestly comparable to the north-star. Operationalisation
 ## §3. Part 17 — verification lanes
 
 Each lane: **purpose → mechanics → gate → stage → tier**. "Hook:" marks owed
-observability that compiler skills must implement (per `tests/CLAUDE.md` §Diagnostic
+observability that compiler skills must implement (per `tests/AGENTS.md` §Diagnostic
 env vars & assertions — `/qa` specifies, the owning skill builds); this plan's
 [hooks list](#37-owed-observability-hooks-specified-here-implemented-by-the-owning-skill)
 collects them.
@@ -562,7 +562,7 @@ enumeration (from backend §3/§9 + typecheck §4) and the fence design:
 
 **Fence design (all sites):** (i) **behavioral leg** — the guarded value is *used after
 the elided-inc window*, repeatedly (sustained-load convention, 200–2000 crossings,
-`tests/CLAUDE.md` §Diagnostic env vars & assertions), asserting values, not crash-absence; (ii)
+`tests/AGENTS.md` §Diagnostic env vars & assertions), asserting values, not crash-absence; (ii)
 **balance leg** — `CRANELISP_RC_STATS` allocs==deallocs (± documented baseline) at
 exit; (iii) **two-condition rule** — each fence runs under plain AND under the ASan
 lane; a fence green only under one tool is not green
@@ -605,7 +605,7 @@ Wrong things must NOT happen:
   forward unchanged as this fence's floor: `ring2-rc.md` §5.5.2.6's UAF/exclusion
   guards, `tests/launch_grid_corrupt.rs`, `tests/launch_vec_send_corrupt.rs` (flipped
   green with the 0486 fix — the S100-close suite state carries only the `tests/plan/s100-ownership-verification.md` §7 guards as
-  intentional failures, per root `CLAUDE.md` §Testing; they remain the standing
+  intentional failures, per root `AGENTS.md` §Testing; they remain the standing
   launched-strand fence, independent of this design).
 - **L-C2 — stack-slot lanes** (item 3 of the backend design's
   [open questions](../../design/backend/ownership-codegen.md#12-open-questions-routed-onward)):
@@ -711,7 +711,7 @@ All e2e-able as scripted REPL sessions (canonical nextest):
 | H4 | Transferred-eligible atomic-op attribution ("all fork edges are joins") | `/typecheck` (classification) + `/backend` (counter) | L-D2 |
 | H5 | `CRANELISP_OWNERSHIP_TRACE` — per-cluster summary + per-site verdict dump (typecheck §11 designs it) | `/typecheck` | L-D3f, I-G3 |
 
-Per `tests/CLAUDE.md` §Diagnostic env vars & assertions, these are implementation obligations of
+Per `tests/AGENTS.md` §Diagnostic env vars & assertions, these are implementation obligations of
 the increment sprints, drafted into the QA-first failing set where testable (H5's dump
 format gets a golden smoke; counters get "moves when the mechanism fires" unit-adjacent
 e2e probes).
@@ -804,7 +804,7 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
   counters; perf lanes II-G1…II-G6; L-D2 decision point executed on increment-I data.
 - **Every sprint:** ledger discipline — new intentional-failing guards enter
   the retired failure ledger with the six fields; the canonical-suite intentional-failure
-  count in root `CLAUDE.md` §Testing is updated by `/sprint` at close.
+  count in root `AGENTS.md` §Testing is updated by `/sprint` at close.
 
 ### 6.1 Stage-M drafting specification (S101 Phase 3 — sprint-ready)
 
@@ -844,7 +844,7 @@ the drafting and re-anchor commits.
 ("S101 Phase-5 Stage-1 — R3 machinery QA-first RED set", the S93-precedent form) with
 the six fields covering all RED-at-draft tests below; they flip green as the `/dev`
 waves land. At close the entry is annotated resolved (or any carried RED gets its own
-full entry and joins the root `CLAUDE.md` intentional-failing count).
+full entry and joins the root `AGENTS.md` intentional-failing count).
 
 #### L-R1 — trap stubs (`tests/repl_redefinition.rs`; spine §5.5, backend §8.1)
 
@@ -1035,7 +1035,7 @@ spec as written, discovered at drafting:
    L-R2(a) use closest-reachable shapes.** `(def gv g)` as written above is not
    REPL-reachable in a free-standing test: `def` is a **stdlib macro** (stdlib is
    out of bounds for `tests/` under the stdlib-separation
-   [design principle](../../CLAUDE.md#design-principles)) and expands to
+   [design principle](../../AGENTS.md#design-principles)) and expands to
    a zero-arg `defn` + bare-symbol macro — i.e. it re-evaluates through a
    recompiled static caller, exactly the `/repl` Phase-3 finding. No cross-turn
    value carrier exists in the core REPL (bare-expression results are dropped;
@@ -1131,7 +1131,7 @@ spec as written, discovered at drafting:
 > canonical intentional-failing count is **3** (the NEW
 > `tests/vec_cow_value_use_leak.rs` FIXME-0474 guards — the COW copy-branch
 > leak residual on the same seam, incl. a static-site widening), flagged to
-> `/sprint` for the root-`CLAUDE.md` user update. `suite_polarity.sh`
+> `/sprint` for the root-`AGENTS.md` user update. `suite_polarity.sh`
 > protocol run post-flip: polarity-identical
 > (ledger §"Sprint 101 Wave-5 close-out records").
 
@@ -1155,10 +1155,10 @@ The fix is S101 scope item 1; when it lands, in order:
 4. **Test-file docs** (`/qa`, same change-set as 3): update the
    `tests/vec_query_value_use.rs` module comment and per-test "RED on HEAD" notes to
    record the resolution (the triage narrative stays as history).
-5. **Root `CLAUDE.md` §Testing count**: the intentional-failing count drops 4 → 0
+5. **Root `AGENTS.md` §Testing count**: the intentional-failing count drops 4 → 0
    (plus any stage-M RED-first guards still carried at that moment — the ledger
    entry of the stage-M drafting specification tracked those; at close the expected canonical state is **0 intentional
-   failures** since the machinery lands in-sprint). The root-CLAUDE.md edit is
+   failures** since the machinery lands in-sprint). The root-AGENTS.md edit is
    outside `/qa` and `/sprint` edit boundaries — `/sprint` **flags it for the user at
    close** (S101 acceptance line 1), with `/qa` supplying the exact close-state
    counts in its Phase-7 suite report.
@@ -1170,7 +1170,7 @@ The fix is S101 scope item 1; when it lands, in order:
 
 ## §8. Registration
 
-- This plan is registered in `tests/CLAUDE.md` §Plan documents.
+- This plan is registered in `tests/AGENTS.md` §Plan documents.
 - Supersedes nothing; peer of `tests/plan/s99-measurement.md` (whose baselines it
   consumes). `tests/plan/PLAN.md` remains the spec→tests bridge; rows for the new
   tests join it as they are authored (the S100 triage tests trace to

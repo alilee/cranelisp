@@ -56,7 +56,7 @@
 // PROCESS-ABORT GUARD (the FIXME's request 1, and plan §2.3's requirement). The
 // failure is a SIGABRT: a bare in-process value assertion would take the harness
 // down with it. Every cell here runs the compiler in a FRESH SUBPROCESS through
-// the `Cranelisp` builder (tests/CLAUDE.md §"Two tiers, no middle" /
+// the `Cranelisp` builder (tests/AGENTS.md §"Two tiers, no middle" /
 // §"Fresh temp directory per test"), so an aborting child is captured as an exit
 // STATUS this file asserts on — the harness process is never at risk. No cell
 // touches an allocator internal and no cell arms a detector in this process.
@@ -70,7 +70,7 @@
 // still fails the balance half, and a change that balances the counters by
 // releasing a genuinely shared tail fails the value half.
 //
-// LAYOUT SENSITIVITY IS NOT AN EXCUSE (tests/CLAUDE.md §"Failing-test
+// LAYOUT SENSITIVITY IS NOT AN EXCUSE (tests/AGENTS.md §"Failing-test
 // discipline"). Which allocator face fires at which size varies — the FIXME
 // records `corrupted double-linked list`, `free(): chunks in smallbin
 // corrupted`, silent exit and hang for the same logical computation. That is the

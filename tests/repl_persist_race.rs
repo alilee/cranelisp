@@ -239,7 +239,7 @@ fn heisenbug_race_reduced_concurrent_import_pairs() {
     //     Typical failing run short-circuits at the first trial that
     //     reproduces (see `break 'trials` below), so mean wall-time
     //     is ~1s; the worst case (all 10 trials pass) is ~10s —
-    //     still well under the tests/CLAUDE.md 30s ceiling.
+    //     still well under the tests/AGENTS.md 30s ceiling.
     //
     // See `design/int/heisenbug-race-closure.md §3b` for the
     // reduction notes that justify these constants.
@@ -426,7 +426,7 @@ fn h5_replay_gate_deterministic_under_scheduler_stress() {
     for iteration in 0..ITERATIONS {
         // Fresh Cranelisp builder + tmpdir per iteration (the builder is
         // single-shot; fresh tmpdir is the isolation discipline from
-        // tests/CLAUDE.md §"Fresh Temp Directory per Test").
+        // tests/AGENTS.md §"Fresh Temp Directory per Test").
         //
         // PreludeVariant::None: the import + bare-call shape needs only the
         // helper module; no operators are load-bearing (reduction discipline
@@ -484,7 +484,7 @@ fn h5_normal_completion_liveness_yields_dep_value() {
     // from "hung indefinitely": a regression that re-introduces a stall on the
     // normal-completion path surfaces as a Timeout, not an infinitely-hanging
     // test. 15 s is far above typical completion (~0.3–0.8 s observed) and
-    // half the tests/CLAUDE.md per-test 30 s cap. The `Cranelisp` builder's
+    // half the tests/AGENTS.md per-test 30 s cap. The `Cranelisp` builder's
     // `.timeout(...)` enforces it: on breach, `.output()` panics with
     // `CrError::Timeout` (the builder kills the child first), which IS the
     // liveness-failure signal.
@@ -527,7 +527,7 @@ fn h5_normal_completion_liveness_yields_dep_value() {
 //   was raised to 4.
 //
 // Spec anchor: implicit Principle 11 (REPL and --run produce the same
-// semantics). Defects per root CLAUDE.md "Defects" §1: REPL/--run
+// semantics). Defects per root AGENTS.md "Defects" §1: REPL/--run
 // divergence is a defect.
 //
 // REGRESSION-GUARD: Sprint 58 Wave 6 Defect 1 — race resolved post-S58 W6;
@@ -537,7 +537,7 @@ fn h5_normal_completion_liveness_yields_dep_value() {
 
 // spec: repl/spec.md §0.2 — Run Mode parity: REPL `(import ...)` of a
 //       stdlib module MUST produce the same outcome as the equivalent
-//       `--run` invocation (root CLAUDE.md "Defects" §1 — REPL/--run
+//       `--run` invocation (root AGENTS.md "Defects" §1 — REPL/--run
 //       divergence is a defect)
 //
 // REGROUNDED (design/int/int.md §6.2): the prior version asserted
@@ -570,7 +570,7 @@ fn repl_dep_load_no_race_with_persistent_workers() {
     // persistent-worker pressure and constructs a value from it — is preserved
     // with a tiny spec-clean test-owned ADT module (`mylist.cl`, no `primitives`
     // glob + separate Option footgun), so the test is free-standing per root
-    // CLAUDE.md "Stdlib separation".
+    // AGENTS.md "Stdlib separation".
     let td = tempfile::tempdir().expect("create tempdir");
     let cwd = td.path();
     std::fs::write(

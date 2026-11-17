@@ -10,7 +10,7 @@ filed_at: 2026-09-21
 refers_to:
   - crates/cranelisp-types/src/module.rs
   - crates/cranelisp-types/src/error.rs
-  - crates/cranelisp-types/CLAUDE.md
+  - crates/cranelisp-types/AGENTS.md
 ---
 
 ## Request
@@ -36,7 +36,7 @@ Two recommendations remain, **undisposed — not approved work**:
    accessor read-throughs, exception classes). Doc-only; `public-api.txt`
    unchanged. Question for `arch` and the user: accept as a bounded pass,
    decline, or fold into the next change-set that opens the file.
-2. **R5 residue — citations.** `crates/cranelisp-types/CLAUDE.md` is now
+2. **R5 residue — citations.** `crates/cranelisp-types/AGENTS.md` is now
    mostly symbol-anchored; three `file.rs:NNN` citations remain. Two types
    source comments still cite retired facade documents
    (`crates/cranelisp-types/src/error.rs` → `facades/backend.md`;

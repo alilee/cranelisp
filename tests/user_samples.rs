@@ -1,4 +1,4 @@
-//! M-3 documentation maintenance check. Metadata and limits: tests/CLAUDE.md.
+//! M-3 documentation maintenance check. Metadata and limits: tests/AGENTS.md.
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -22,7 +22,7 @@ fn diagnostic(output: &Output) -> String {
     )
 }
 
-// spec: CLAUDE.md §Design Principles — the user/ sample harness stdlib exception
+// spec: AGENTS.md §Design Principles — the user/ sample harness stdlib exception
 #[test]
 fn user_documentation_samples_match_the_compiler() {
     // read-only on project_root; all compiler writes go to checker-owned tmpdirs.
@@ -68,7 +68,7 @@ Error: ...
 ```
 "#;
 
-// spec: CLAUDE.md §Assurance — a maintenance instrument must detect its planted faults
+// spec: AGENTS.md §Assurance — a maintenance instrument must detect its planted faults
 #[test]
 fn sample_checker_detects_wrong_output_and_unclassified_fences_then_clears() {
     let corpus = tempfile::tempdir().unwrap();

@@ -95,7 +95,7 @@ pub struct MonoMatchArm {
 ///
 /// **NOT `#[non_exhaustive]`** — deliberately. The closed sum IS the contract
 /// (the same exception class as the ownership mode vocabulary, types
-/// `CLAUDE.md` §Public-surface mechanics): a variant addition MUST break every
+/// `AGENTS.md` §Public-surface mechanics): a variant addition MUST break every
 /// consumer match at compile time; a `_ =>` arm here would re-smuggle the
 /// ambiguous default this type exists to kill.
 ///
@@ -169,7 +169,7 @@ pub enum ApplyRef {
 ///   one level up; the lenient walk seam-asserts on the same miss).
 ///
 /// **NOT `#[non_exhaustive]`** — same closed-sum exception class as
-/// [`VarRef`]/[`ApplyRef`] (types `CLAUDE.md` §Public-surface mechanics): the
+/// [`VarRef`]/[`ApplyRef`] (types `AGENTS.md` §Public-surface mechanics): the
 /// NotConcrete-vs-Unresolved routing at the fallback seam is the load-bearing
 /// consumer match, and a `_ =>` arm there would silently route a future
 /// variant into the wrong leg.

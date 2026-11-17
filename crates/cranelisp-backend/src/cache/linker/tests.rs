@@ -25,7 +25,7 @@ fn test_linker_new() {
     assert!(linker.symbols.is_empty());
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 — Sprint 58 Wave 2 regression
+// spec: design/arch/AGENTS.md Decision 23 — Sprint 58 Wave 2 regression
 // guard. Cranelift emits `ARM64_RELOC_GOT_LOAD_PAGE21` /
 // `ARM64_RELOC_GOT_LOAD_PAGEOFF12` relocations when CLIF references an
 // `Linkage::Import` data symbol (such as `__cranelisp_got_{M}` for cross-
@@ -204,7 +204,7 @@ fn ensure_got_slot_accepts_preresolved_local_symbol_address() {
     drop(stable);
 }
 
-// spec: design/arch/CLAUDE.md Decision 23 + Sprint 60 Wave 2 Step A.3
+// spec: design/arch/AGENTS.md Decision 23 + Sprint 60 Wave 2 Step A.3
 // (single-GOT convergence). When a cached `.o` file is loaded,
 // `load_data_sections` must NOT register the `.o`'s own
 // `__cranelisp_got_{M}` export into `self.defined_symbols` — the

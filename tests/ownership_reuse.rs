@@ -37,7 +37,7 @@
 //!       exit 198 vs correct 109)
 //!
 //! Free-standing: every fixture is `(import [primitives [*]])` + inline helpers;
-//! zero stdlib dependency (root CLAUDE.md §Stdlib separation).
+//! zero stdlib dependency (root AGENTS.md §Stdlib separation).
 
 #[path = "helpers/mod.rs"]
 mod helpers;

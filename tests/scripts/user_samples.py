@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M-3 maintenance check; metadata contract: tests/CLAUDE.md."""
+"""M-3 maintenance check; metadata contract: tests/AGENTS.md."""
 import argparse
 import json
 import os

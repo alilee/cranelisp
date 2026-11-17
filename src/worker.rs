@@ -2696,7 +2696,7 @@ fn load_cached_module_via_linker(
     // statically linked into the host). The cache-restore `Linker` has NO such
     // dlsym fallback (`cache/linker.rs` resolves only its registered maps), so a
     // cached `.o` referencing `sconcat` failed with `unresolved symbol: sconcat`
-    // (the disk-cache gap noted in `src/CLAUDE.md`). Mirror the JIT by resolving
+    // (the disk-cache gap noted in `src/AGENTS.md`). Mirror the JIT by resolving
     // every `DefKind::Primitive` whose GOT slot is empty against the host's own
     // exported symbol and registering it with the linker.
     register_binary_exported_primitives(&mut linker, shared_state);
@@ -2708,7 +2708,7 @@ fn load_cached_module_via_linker(
     // `PlatformEffect` entry carries its DLL function pointer in the owning
     // module's GOT slot (`got.load_slot(got_slot)`); the symbol-table key IS
     // the JIT linker name (the retired `jit_name` field no longer exists —
-    // `src/CLAUDE.md` §"JIT Symbol Names").
+    // `src/AGENTS.md` §"JIT Symbol Names").
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
         for (name, entry) in st.all_symbols() {

@@ -445,5 +445,5 @@ for each fact:
 - The [S116 fault classes](../../tests/plan/s116-test-plan.md#4-track-c-positive-detection-proof),
   the [S118 arming gate](../../tests/plan/s118-test-plan.md#1-certification-split-and-detector-arming-discipline-ruling-3-structural)
   and the [S118 triplet acceptance](../../tests/plan/s118-test-plan.md#31-eight-detector-rows-plant-triplets-0848).
-- `crates/cranelisp-intrinsics/CLAUDE.md` §"Debug hooks" — the environment
+- `crates/cranelisp-intrinsics/AGENTS.md` §"Debug hooks" — the environment
   variable reference for contributors.

@@ -20,7 +20,7 @@
 // cell is hand-authored on the ABSOLUTE corruption face (no SIGABRT / no
 // RC_DEC_CHECK abort / REPL≡run) below.
 //
-// Stdlib-free: `primitives` only (root CLAUDE.md §Design Principles). RC-reading
+// Stdlib-free: `primitives` only (root AGENTS.md §Design Principles). RC-reading
 // runs are per-subprocess, safe under nextest process isolation.
 //
 // SCOPE NOTE (W1): MS-P1/P2/P4/P5 land here. MS-P3 (mechanical retro-wrap of the

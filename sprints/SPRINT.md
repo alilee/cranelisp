@@ -196,7 +196,7 @@ delta outside the approved packet stops the wave and returns to the user.
 
 ### W0 — Package convergence (item 6), alone on the tree
 
-- **Agent:** `arch`, then `test` for the `tests/CLAUDE.md` listing of the delta
+- **Agent:** `arch`, then `test` for the `tests/AGENTS.md` listing of the delta
   and the REPRO-1067 vocabulary class `qa` names.
 - **Scope:** the `AGENTS.md` repository-memory convention across the 103
   memories, `standing-documents.toml`, `.codex/config.toml`; `ux` declared not

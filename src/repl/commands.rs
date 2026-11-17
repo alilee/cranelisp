@@ -202,7 +202,7 @@ impl CompilerSession {
     /// pushed for "ask about <path>"; the rendered request is then written there.
     ///
     /// A bad/unwritable path returns a graceful error line — never a panic
-    /// (`src/CLAUDE.md` §Error Handling: no `unwrap`/`expect` in pipeline code).
+    /// (`src/AGENTS.md` §Error Handling: no `unwrap`/`expect` in pipeline code).
     #[cfg(feature = "agent")]
     pub(crate) fn handle_context(&self, path: &str) -> String {
         let path = path.trim();

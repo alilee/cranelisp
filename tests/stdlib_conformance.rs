@@ -22,7 +22,7 @@
 //      the CLASS, not the race.
 //
 // Behind the ONE sanctioned `use_workspace_stdlib_for_stdlib_conformance_only()`
-// gate (root CLAUDE.md §"Design Principles" — Stdlib separation; tests/CLAUDE.md
+// gate (root AGENTS.md §"Design Principles" — Stdlib separation; tests/AGENTS.md
 // §"Test isolation"). The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
 // records S110 E / SG-1.
 

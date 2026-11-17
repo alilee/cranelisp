@@ -186,7 +186,7 @@ fn closure_capture_controls_balance_green() {
 // `Borrowed` ARGUMENTS instead of captured. These route through the W3b
 // `emit_post_call_decs` arm, which DOES use the type-directed release, and they
 // balance exactly. Same value, same nesting, one axis changed — the twin fixture
-// that names the seam (`tests/CLAUDE.md` §"Coverage by definition variants").
+// that names the seam (`tests/AGENTS.md` §"Coverage by definition variants").
 // spec: spec/12-runtime.md §12.3.1 — heap values are freed when no longer reachable.
 #[test]
 fn borrowed_argument_twins_of_k_and_l_balance_green() {

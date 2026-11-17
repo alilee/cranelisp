@@ -42,7 +42,7 @@ One semantic operation — resolve `name` from module `M` — was once implement
 as a family of per-site variants, each deciding for itself whether to consult
 the prelude. Every new resolution site could forget it, and several did. The
 cure is structural: the forgettable decision is not available at a call site.
-[The review memory](../review/CLAUDE.md) carries the per-diff cue for divergent
+[The review memory](../review/AGENTS.md) carries the per-diff cue for divergent
 and entry-point duplication.
 
 ## 3. The one lookup: `ResolutionScope`

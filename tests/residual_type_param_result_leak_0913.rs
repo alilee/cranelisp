@@ -45,7 +45,7 @@ use helpers::marginal::{Child, Instrument, MarginalPair};
 const TURNS: usize = 20;
 
 /// Both children open with the SAME import so `Result`/`Err` resolve without a
-/// prelude file (root `CLAUDE.md` §"Stdlib separation"), then repeat one turn.
+/// prelude file (root `AGENTS.md` §"Stdlib separation"), then repeat one turn.
 /// Everything but the annotation is common and cancels in the marginal.
 fn session(turn: &str) -> String {
     let mut s = String::from("(import [primitives [*]])\n");

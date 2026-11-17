@@ -43,7 +43,7 @@
 //!     tags + intrinsics (first-`Poll::Ready` ⇒ drop the loser future(s) ⇒ their
 //!     RAII `Permit`s + reactor-interest handles release). `timeout` is derived
 //!     `.cl` stdlib (`race io (sleep d)`); tests MUST NOT depend on `stdlib/`
-//!     (root `CLAUDE.md` §"Stdlib separation"), so the §C3 rows express `timeout`
+//!     (root `AGENTS.md` §"Stdlib separation"), so the §C3 rows express `timeout`
 //!     **inline** as `(race io (poll-read deadline-tok cap d))` — the existing
 //!     `poll-pool` `poll-read` IS an armed-timer "sleep that returns its `ms`", so
 //!     the derived form is constructible from the combinator surface + the existing

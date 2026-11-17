@@ -2685,7 +2685,7 @@ fn cache_hit_swallowed_failure_guard_signals_module_error() {
 }
 
 // spec: design/int/int.md §7.1 (Decision 37) +
-//       design/arch/CLAUDE.md Decision 36 — cache-hit transitive recursion
+//       design/arch/AGENTS.md Decision 36 — cache-hit transitive recursion
 //       walks `cached.symbol_table.imports` and ensures each transitive
 //       dep's symbol table is installed before the codegen worker for
 //       this dep tries to load its `.o`. Regression guard for the
@@ -2762,7 +2762,7 @@ fn register_transitive_cached_imports_filters_synthetic_modules() {
     }
 }
 
-// spec: design/arch/CLAUDE.md Decision 36 + design/int/int.md §7.1
+// spec: design/arch/AGENTS.md Decision 36 + design/int/int.md §7.1
 //       §"Investigation findings" → "Bug A — DISSOLVED"
 //
 // Under Decision 36, `compile_to_module` declares every user-defined

@@ -43,7 +43,7 @@
 //!     discriminator is exactly what keeps them RED on HEAD and flips them GREEN
 //!     post-cutover.
 //!
-//! Free-standing per `tests/CLAUDE.md`: primitives + special forms only; the only
+//! Free-standing per `tests/AGENTS.md`: primitives + special forms only; the only
 //! external surface is the workspace `web` platform DLL (its leaf signatures ARE
 //! what v9 reshapes) + an inline opaque `web.cl`. ZERO `stdlib/` dependency.
 

@@ -28,7 +28,7 @@
 //!     armed (design §8.3 describes it as a fixture-future) — absent on HEAD ⇒ clean
 //!     runtime-RED. See the gap-G-D FIXME on 5.2.
 //!
-//! Free-standing per `tests/CLAUDE.md`: primitives + special forms only; 5.2 uses
+//! Free-standing per `tests/AGENTS.md`: primitives + special forms only; 5.2 uses
 //! the workspace `poll-pool` fixture platform. ZERO `stdlib/` dependency.
 
 #[path = "helpers/mod.rs"]

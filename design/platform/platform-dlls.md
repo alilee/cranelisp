@@ -102,7 +102,7 @@ author to do is `poll-leaf-authoring.md` §3.
 header size to recover the base; `alloc_with_tag` returns the **base** already
 and `CLAdt::construct` passes it through (`platform.md` §4.5). All heap `CL*`
 wrappers store base pointers. This is the crate's sharpest trap, and the crate's
-own `CLAUDE.md` carries the citation-level detail.
+own `AGENTS.md` carries the citation-level detail.
 
 **Why only these two?** Deallocation belongs to the RC system; platform code
 never explicitly frees a cranelisp heap value. Nothing else the boundary needs is
@@ -361,7 +361,7 @@ version check, and no way to validate that the DLL provides what was expected.
   and node layouts, and its bounded-context invariants
 - `design/platform/poll-leaf-authoring.md` — the poll-shape leaf contract
 - `design/platform/adt-marker-binding.md` — the marker-binding mechanism
-- `crates/cranelisp-platform/CLAUDE.md` — the code's own voice: marshalling
+- `crates/cranelisp-platform/AGENTS.md` — the code's own voice: marshalling
   traps, layout invariants, the submodule seam map
 - `design/arch/bounded-contexts.md` §5 — the platform bounded context
 - `design/arch/platform-interface.md` — the three-exports model and the

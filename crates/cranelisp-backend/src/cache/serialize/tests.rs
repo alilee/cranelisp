@@ -350,7 +350,7 @@ fn cache_meta_json_is_serialised_symbol_table() {
 /// Per design/backend/module-caching.md §14.3 step [3]: schema mismatch
 /// returns `CacheStale::SchemaMismatch` so the caller can route through
 /// the same fall-through code path as dep-hash mismatch (§14.7).
-// spec: design/arch/CLAUDE.md Decision 34
+// spec: design/arch/AGENTS.md Decision 34
 #[test]
 fn cache_schema_version_mismatch_falls_through() {
     let dir = tempfile::tempdir().unwrap();

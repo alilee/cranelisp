@@ -27,7 +27,7 @@ The collection is `spec.md` (compatibility entry point), `spec/index.md`
 | File | Contents |
 |---|---|
 | `showcase` | Top-level showcase script — builds binary, plays demos |
-| `demos/` | `.demo` scripts, demo player (`demo-player.py`), and [local ownership and guidance](demos/CLAUDE.md) |
+| `demos/` | `.demo` scripts, demo player (`demo-player.py`), and [local ownership and guidance](demos/AGENTS.md) |
 
 ## Conventions
 

@@ -775,7 +775,7 @@ them as follows:
 - §20.2, §20.3, §20.4 → §3.4
 - §20.5 → §10.5 (schema), §12 (provenance)
 - §20.6 → §3.4, §11
-- §15.5 → `crates/cranelisp-typecheck/CLAUDE.md` §"`Def.callees` completeness contract"
+- §15.5 → `crates/cranelisp-typecheck/AGENTS.md` §"`Def.callees` completeness contract"
 
 The staging plans, per-sprint measurements and superseded rulings behind the former
 §§13–20 are in Git history.

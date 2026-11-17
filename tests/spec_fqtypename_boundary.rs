@@ -128,7 +128,7 @@ fn fqtypename_cross_module_same_short_name_neg_no_alias_collapse() {
 // FULLY-QUALIFIED form. A `deftype Box` defined in the REPL's entry module (the
 // default `user` module) introspects/value-displays as `:user/Box …`, not the
 // bare short `Box` in type position. (Per the self-documenting-REPL FQ-display
-// principle in root CLAUDE.md, Design Principles section.)
+// principle in root AGENTS.md, Design Principles section.)
 #[test]
 fn fqtypename_repl_introspection_displays_fully_qualified() {
     // Define the type, then introspect it. The deftype echo itself tags the type

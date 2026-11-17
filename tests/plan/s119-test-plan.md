@@ -109,7 +109,7 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   (`src/bootstrap.rs:884-905`, `:1129-1160`;
   `crates/cranelisp-types/src/module.rs:1446-1471`) — and it propagated
   unverified through three hands before `total-concreteness.md` verified
-  it. The lesson is root `CLAUDE.md` §Assurance applied to our own
+  it. The lesson is root `AGENTS.md` §Assurance applied to our own
   artefacts: a slot-status claim is a claim about source, checked at source
   before any row is amended over it. The partition table is superseded; do
   not resurrect it. **Known blind spot, by construction:** NC-1 quantifies
@@ -262,7 +262,7 @@ one of exactly two forms:
   is non-compliant.
 
 **Thresholds are banned outright** for this class (already the
-[allocator-balance rule](../CLAUDE.md#allocator-balance-is-measured-marginally-never-absolutely);
+[allocator-balance rule](../AGENTS.md#allocator-balance-is-measured-marginally-never-absolutely);
 this proposal makes it the required form's negative space).
 
 **N2 — the unit-tier lens rule.** A unit row asserting balance **at one

@@ -6,7 +6,7 @@
 # both polarities of CRANELISP_NO_OWNERSHIP. The allowed delta between the two
 # runs is empty (the toggle changes no observable pass/fail); the shared failure
 # set must match the open defect filings at execution time
-# (root CLAUDE.md, Testing — verify against the printed list).
+# (root AGENTS.md, Testing — verify against the printed list).
 #
 # Historical S103 observation (2026-07-05): the expected shared failing set at execution time is `{h3}`
 # + the transient increment-II QA-first reds (ledger §"Sprint 103 Phase-5
@@ -54,7 +54,7 @@ run_polarity "no_ownership" "CRANELISP_NO_OWNERSHIP=1"
 if diff -u "$WORK/default.failset" "$WORK/no_ownership.failset"; then
     echo "suite_polarity: PASS — identical pass/fail sets under both polarities."
     echo "Reminder: verify each shared failure above traces to an open defect"
-    echo "under root CLAUDE.md, Testing; an unexplained failure is a regression."
+    echo "under root AGENTS.md, Testing; an unexplained failure is a regression."
     exit 0
 else
     echo "suite_polarity: FAIL — the two polarities diverge (diff above)." >&2

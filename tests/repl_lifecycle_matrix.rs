@@ -126,7 +126,7 @@ fn rejected_change_restart_cache_wiped_restores_prior_source() {
 // =============================================================================
 
 /// The D1 mechanism fixture — a macro-defining macro mirroring stdlib `def`,
-/// hosted in a local module (stdlib-free per tests/CLAUDE.md). Same fixture
+/// hosted in a local module (stdlib-free per tests/AGENTS.md). Same fixture
 /// as tests/repl_persist.rs::MDEF_MODULE.
 const MDEF_MODULE: &str = "(import [primitives [*]])\n\
                            (defmacro mdef \"define a named value\" [name value]\n\

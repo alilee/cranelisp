@@ -30,7 +30,7 @@
 // Modules are stdlib-free: `primitives` + the synthetic `macros` module (Sexp
 // constructors + `SNil`/`SCons`) + two tiny local modules. The `(import [prelude
 // []])` line in the preserved verbatim files is vestigial (imports no names) and
-// dropped for test isolation (root CLAUDE.md §Design Principles — Stdlib
+// dropped for test isolation (root AGENTS.md §Design Principles — Stdlib
 // separation); all other content is verbatim from FIXME 0638.
 
 #[path = "helpers/mod.rs"]

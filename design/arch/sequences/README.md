@@ -36,7 +36,7 @@ Each diagram is a temporal walkthrough of one execution mode. The actor grain is
 3. `exec-flow-run.svg` and `exec-flow-link.svg` — narrower modes, easier once REPL is understood.
 4. `exec-flow-compilation.svg` and `exec-flow-runtime.svg` — the two cadences in isolation, when narrower depth is wanted than the per-mode flows.
 5. The six concurrency-invariant diagrams — verify the correctness claims.
-6. Crate surfaces — once the choreography is in mind, the typed Rust signatures fall into place. All `facades/{crate}.md` specs are retired (see `../CLAUDE.md` §Canonical documents): the canonical surface per crate is the source rustdoc (crate-root `//!` + per-item `///`) plus the tracked `crates/{crate}/public-api.txt` baseline, with cross-surface narrative in `../bounded-contexts.md` (§7 for types, §1 frontend, §2 typecheck, §3 backend, §4a primitives, §4b intrinsics, §5 platform, §6 int).
+6. Crate surfaces — once the choreography is in mind, the typed Rust signatures fall into place. All `facades/{crate}.md` specs are retired (see `../AGENTS.md` §Canonical documents): the canonical surface per crate is the source rustdoc (crate-root `//!` + per-item `///`) plus the tracked `crates/{crate}/public-api.txt` baseline, with cross-surface narrative in `../bounded-contexts.md` (§7 for types, §1 frontend, §2 typecheck, §3 backend, §4a primitives, §4b intrinsics, §5 platform, §6 int).
 
 ## Conventions
 

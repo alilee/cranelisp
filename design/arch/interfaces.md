@@ -759,7 +759,7 @@ design that needs a public change outside these rows stops and returns to `arch`
 | K11-b | `IntrinsicEntry::is_runtime` removed | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 11 |
 | K11-c | `SymbolTable::{settle_template, settle_concrete}` become `pub(crate)` | types | — | [lifecycle authoring facade](#lifecycle-authoring-facade) |
 | K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`, re-exported under `test_support` | types | binary and backend test code and their dev-dependencies | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
-| K11-a | Baseline format omits auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/CLAUDE.md` | [baseline-diff discipline](CLAUDE.md#baseline-diff-discipline-sprint-67-close) |
+| K11-a | Baseline format omits auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md` | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
 One factual rustdoc correction needs no row: the frontend crate root says `trace` fails when
 linked, which contradicts spec §4.12.9 and [tracing §2.5](tracing.md#25-build-modes). The

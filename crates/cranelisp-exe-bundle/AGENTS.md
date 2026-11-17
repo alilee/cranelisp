@@ -42,7 +42,7 @@ a reader will misread the asymmetry as inconsistency:
    live static rather than via implicit `pub use` discipline (Principle 7 — the
    dependency is legible at the site that needs it). If a *primitive* vanishes
    from a `--link` binary, this hook or one of the three mechanisms in
-   `crates/cranelisp-primitives/CLAUDE.md` §"Traps" regressed — do NOT
+   `crates/cranelisp-primitives/AGENTS.md` §"Traps" regressed — do NOT
    re-add a `pub use` or a `#[used]` static to "fix" it.
 
 ## The `__cranelisp_got_primitives` link symbol + the null-slab crash window
@@ -114,6 +114,6 @@ crate.
   memory). `find_bundle_lib` (`src/exe.rs`) locates it; `CRANELISP_BUNDLE_PATH`
   overrides the search for CI/custom layouts.
 - **Debug**: a runtime symbol missing from a `--link` binary → check the three
-  DCE mechanisms (`crates/cranelisp-primitives/CLAUDE.md`) before touching
+  DCE mechanisms (`crates/cranelisp-primitives/AGENTS.md`) before touching
   anything here. `CRANELISP_CODEGEN_TRACE=1` surfaces the startup stub's
   GOT-indirect emission when diagnosing a null-slot fault.

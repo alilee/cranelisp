@@ -84,5 +84,5 @@ For `/arch`:
   fold into.
 - FIXME 0768 (`target: /arch`) — register statuses require a cited detection
   proof; this row ships with one.
-- `crates/cranelisp-backend/CLAUDE.md` §"RC-emission gates that are ONE
+- `crates/cranelisp-backend/AGENTS.md` §"RC-emission gates that are ONE
   predicate, not per-site syntax".

@@ -103,7 +103,7 @@ const INT_LOOP: &str = "(import [primitives [add-i64 eq-i64 Pure]])\n\
 
 /// Every child here compiles against the workspace `stdlib/` — the persistent
 /// collection verbs are the subject and they live nowhere else (the ONE
-/// sanctioned stdlib touchpoint, root `CLAUDE.md` §"Stdlib separation").
+/// sanctioned stdlib touchpoint, root `AGENTS.md` §"Stdlib separation").
 fn stdlib_child(src: &str) -> Child {
     Child::new(src).use_workspace_stdlib_for_stdlib_conformance_only()
 }

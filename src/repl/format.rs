@@ -328,7 +328,7 @@ impl CompilerSession {
     pub fn format_eval_result(&self, result: &EvalResult) -> String {
         // S83 W2 (FIXME 0363): surface accumulated typecheck `Warning`s in the
         // REPL output. Warnings are DATA accumulated through the eval chain
-        // (`src/CLAUDE.md` §Error Handling: "displayed by the binary crate"),
+        // (`src/AGENTS.md` §Error Handling: "displayed by the binary crate"),
         // but no display site existed — so a `ShadowedName` warning (e.g. a
         // synthesised §5.2.6 accessor colliding with an existing binding) was
         // invisible. Render each as a `; warning: <message>` comment line

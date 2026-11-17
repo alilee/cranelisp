@@ -162,7 +162,7 @@ types at a concrete instantiation for category and glue purposes.
   - `arch` ruled its deletion a contraction (2026-09-01) scoped to the `vec-len` de-slot
     change-set. That change-set landed without the deletion, so the ruling's condition has
     passed, and an `arch` ruling never satisfied the user gate.
-  - Removal is an inter-crate public-API change under root `CLAUDE.md` §Inter-crate
+  - Removal is an inter-crate public-API change under root `AGENTS.md` §Inter-crate
     public-API user gate. Before implementation `arch` presents the exact delta: one baseline
     line (`pub mod cranelisp_primitives::vec`), no Rust importer, and the e2e guard
     `tests/facade_pif_rows.rs` that asserts the line's presence, which `test` revises in the

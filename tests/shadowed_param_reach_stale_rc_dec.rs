@@ -53,10 +53,10 @@
 // Absolute allocator balance is NOT an oracle for these programs: the renamed
 // control itself exits with `allocs=3 deallocs=2` (the returned string is still
 // live at exit), so the only truthful reading is the MARGINAL one against that
-// control (tests/CLAUDE.md §"Allocator balance is measured MARGINALLY").
+// control (tests/AGENTS.md §"Allocator balance is measured MARGINALLY").
 //
 // Free-standing: `PreludeVariant::None`, every name imported from `primitives`,
-// no stdlib (root CLAUDE.md §"Stdlib separation").
+// no stdlib (root AGENTS.md §"Stdlib separation").
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -411,7 +411,7 @@ const OUTER_LOCAL_RELEASE_RENAME_CONTROL_TWIN: &str = "\
 
 /// Drive `src` through `--run` and through `--link`-then-run, returning both
 /// outcomes. Two modes because a `--run`/`--link` divergence is itself a defect
-/// (root `CLAUDE.md` §Pipeline) and because a repair that reached only the JIT
+/// (root `AGENTS.md` §Pipeline) and because a repair that reached only the JIT
 /// path must not be able to pass this cell.
 fn run_and_link_outcomes(src: &str) -> Vec<(&'static str, helpers::e2e::CrOutput)> {
     vec![
@@ -429,7 +429,7 @@ fn run_and_link_outcomes(src: &str) -> Vec<(&'static str, helpers::e2e::CrOutput
 }
 
 /// The face-D contract, applied identically to the subject and to its rename
-/// control — the twin-fixture shape (`tests/CLAUDE.md` §"Coverage by definition
+/// control — the twin-fixture shape (`tests/AGENTS.md` §"Coverage by definition
 /// variants"): one invariant, two programs one identifier apart, SAME
 /// assertion, so the failing twin names the site by itself.
 fn assert_outer_local_binding_survives_the_inner_scope(src: &str, role: &str) {

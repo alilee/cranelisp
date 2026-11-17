@@ -39,7 +39,7 @@ pub enum ParsedEntry {
     /// let-bindings). Per spec §5.2 EBNF: `type_var = symbol (* lowercase
     /// by convention *)` — type parameters are *symbols*, not type names.
     /// The newtype-discipline rule (`lib.rs` §"String Newtypes",
-    /// `design/arch/CLAUDE.md §"String Newtypes"`) maps lowercase
+    /// `design/arch/AGENTS.md §"String Newtypes"`) maps lowercase
     /// identifiers (locals, binders) to `Symbol` and uppercase identifiers
     /// (ADT / builtin / constructor names) to `TypeName`. Using `TypeName`
     /// here was a category error fixed in S70 Phase 3. Sibling sites

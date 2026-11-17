@@ -54,7 +54,7 @@ embedded Rust-string corpus that exposed the original issue.
 
 ## Remaining evidence and closure trigger
 
-Root `CLAUDE.md` requires a defect-born solution-level regression test. The
+Root `AGENTS.md` requires a defect-born solution-level regression test. The
 suite still has no exact process input for the malformed required-method tail;
 the nearby nameless-parameter test uses `[:a]`, a different source position.
 At the first executable root-compiler gate, `/test` adds one narrow REPL guard:

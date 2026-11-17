@@ -45,7 +45,7 @@ remaining repeated cost negligible enough for B.
 | Prior assessment | [S113 at checkpoint 57253cf2](https://github.com/alilee/cranelisp/blob/57253cf2/audits/frontend-s113.md), read from local Git history; the frontend row of [ACT-0969](../sprints/actions/ACT-0969-next-rotation-audit-inputs.md) is an independently re-judged input |
 | Disposition | **Pending S124 Phase 1.** No recommendation authorizes implementation, accepts a residual, changes semantics or blocks S123. |
 
-This is dated evidence, established by [the audit collection](CLAUDE.md), under
+This is dated evidence, established by [the audit collection](AGENTS.md), under
 [the audit contract](../.agents/skills/audit/SKILL.md) and
 [the rotation/disposition rule](../sprints/METHOD.md#27-rolling-whole-context-audit).
 The working tree contained unrelated changes to the shared package, a role
@@ -274,7 +274,7 @@ boundary rustdoc/BC promises. Cost: small–medium, primarily deletion/correctio
 
 Concrete contradictions reopened against source:
 
-- `crates/cranelisp-frontend/CLAUDE.md:65` says compact annotations read as
+- `crates/cranelisp-frontend/AGENTS.md:65` says compact annotations read as
   colon-bearing symbols. Lines 80–98 require `try_consume_annotation`, which
   does not exist. The reader creates `Annotated`; the builder consumes it.
 - The crate memory and several designs list the trait default body as a caller

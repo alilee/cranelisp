@@ -60,7 +60,7 @@ spec rulings). A retiring mechanism's typecheck facts keep being produced.
 ## §1. Seams
 
 The mechanisms land on existing seams; there is no new pipeline stage, graph or
-store. The main ones, by module (the seam map is `crates/cranelisp-backend/CLAUDE.md`):
+store. The main ones, by module (the seam map is `crates/cranelisp-backend/AGENTS.md`):
 
 - **`cranelisp-backend/src/heap.rs`** — the inline RC emission helpers, the
   atomicity decision (`use_nonatomic_arm`), `emit_stack_alloc`,

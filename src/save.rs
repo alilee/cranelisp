@@ -46,7 +46,7 @@ use crate::session_v4::Introspection;
 /// normally (the child lives in its own file the regen never touches).
 ///
 /// Extracted as a pure fn (no `&self`, no FS) so the role gate is unit-testable
-/// (`src/CLAUDE.md` testability discipline; mirrors `splice_inline_mod_to_bare`
+/// (`src/AGENTS.md` testability discipline; mirrors `splice_inline_mod_to_bare`
 /// / `layout_hash_gate`).
 pub(crate) fn should_regenerate(symbol_table: &crate::code::SessionSymbolTable) -> bool {
     !symbol_table

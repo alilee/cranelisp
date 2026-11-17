@@ -626,7 +626,7 @@ fn platform_clheap_inc_dec_rc_take_ref_self() {
     }
 }
 
-// spec: design/arch/CLAUDE.md §"Facade convention" — public DTOs use
+// spec: design/arch/AGENTS.md §"Facade convention" — public DTOs use
 // `#[non_exhaustive]` except explicit ABI layouts (Principle 14).
 // `OwnedPlatformFnDescriptor` is plain host-side Rust, so it carries the marker;
 // `CLOwned<T>` deliberately does not — its rustdoc records the exemption

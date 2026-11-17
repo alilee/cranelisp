@@ -124,7 +124,7 @@ is ACCEPTED.**
 1. **Nobody releases the program result value, in any mode.** Verified by
    absence: `src/` contains no rc-dec / value-release call site at all
    (`grep -rn "release_value\|consume_value\|rc_dec" src/` → only a
-   `src/CLAUDE.md` prose hit). `--run`/`--link` route
+   `src/AGENTS.md` prose hit). `--run`/`--link` route
    `main` → `cranelisp_run_program` → `ProgramOutcome.exit_code` →
    `src/main.rs:331` (truncate to exit code); the REPL routes
    `src/pipeline.rs:148-151` → `program_outcome_to_result` →

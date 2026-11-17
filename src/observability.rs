@@ -39,7 +39,7 @@
 //! `CRANELISP_SCHEDULER_TRACE` is parsed **once** into a
 //! `OnceLock<Option<TraceFilter>>` on the first `record_event` (or
 //! direct `filter()` / `dump_*`) call. Mirrors the convention in
-//! `tests/CLAUDE.md §"Diagnostic Logging"`. Per-event string parsing
+//! `tests/AGENTS.md §"Diagnostic Logging"`. Per-event string parsing
 //! is forbidden.
 
 use std::cell::RefCell;

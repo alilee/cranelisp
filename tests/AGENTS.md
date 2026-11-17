@@ -23,11 +23,11 @@ and fall into exactly two tiers:
    `dev` alongside the implementation.
 
 Both tiers observe the *compiler*. A third, small and closed category observes
-the **repository** instead — the standing gates that make root `CLAUDE.md`
+the **repository** instead — the standing gates that make root `AGENTS.md`
 §Assurance's mechanisms run on every `cargo nextest run` rather than when
 someone remembers (`citation_drift.rs`, `role_wiring.rs`). They spawn a
 stdlib-only checker under `scripts/`, take no position on language behaviour,
-and trace to `CLAUDE.md` rather than to a `plan/PLAN.md` row. Each carries its
+and trace to `AGENTS.md` rather than to a `plan/PLAN.md` row. Each carries its
 own detection proof against planted faults in the same file, because a gate that
 cannot fire is indistinguishable from one that finds nothing.
 
@@ -76,7 +76,7 @@ Supporting directories:
 
 ```
 tests/
-  CLAUDE.md              — this file
+  AGENTS.md              — this file
   plan/                  — qa's plan + tooling (see above)
   helpers/
     mod.rs               — module declarations only (pub mod e2e; marginal; regex;)
@@ -249,7 +249,7 @@ Worked callsites: `tests/ms_p8_conj_leak.rs`,
 
 ## Test isolation (prelude & stdlib)
 
-Tests MUST NOT depend on `stdlib/` (root `CLAUDE.md` §"Design Principles" —
+Tests MUST NOT depend on `stdlib/` (root `AGENTS.md` §"Design Principles" —
 Stdlib separation). The suite uses its own QA-owned fixtures under
 `tests/fixtures/` to validate language features independently of stdlib
 evolution. The named exceptions are the [user-documentation sample harness](#user-documentation-sample-harness)
@@ -446,13 +446,13 @@ Never enable `cranelisp-types`'s `test-support` feature for this operation.
 Install the required tools with `rustup toolchain install nightly` and
 `cargo +nightly install cargo-public-api`. The public-surface change, its
 baseline, source rustdoc and bounded-context record land together under the
-`dev` + `design` + `review` discipline in `design/arch/CLAUDE.md` §Baseline-diff
+`dev` + `design` + `review` discipline in `design/arch/AGENTS.md` §Baseline-diff
 discipline.
 
 ## Defect-repro notation (`// defect:`)
 
 Every **repro test** — a test born from a defect, committed per root
-`CLAUDE.md` §"Usability Findings and Defects" — carries ONE greppable
+`AGENTS.md` §"Usability Findings and Defects" — carries ONE greppable
 `// defect:` line beside its `// spec:` comment:
 
 ```rust
@@ -557,7 +557,7 @@ grep -rh "// defect:" tests/ | grep -o "found=S[0-9]*" | sort | uniq -c
 
 ## Failing-test discipline (migrated from the retired ledger)
 
-Regression triage runs on the inline convention (root `CLAUDE.md` §Testing):
+Regression triage runs on the inline convention (root `AGENTS.md` §Testing):
 every intentional RED — a failing-not-ignored defect guard — traces to an
 open defect (FIXME or annotation) naming the owner; a RED that does not so
 trace is a **genuine regression**. `#[ignore]` on a spec violation hides the
@@ -648,7 +648,7 @@ built with `LLVM_PROFILE_FILE` set. `coverage/` is gitignored.
 ## Build & run
 
 Always use `cargo nextest run --no-fail-fast` (never `cargo test`; alias
-`cargo nt`). Root `CLAUDE.md` §Testing owns the suite's time budget and the
+`cargo nt`). Root `AGENTS.md` §Testing owns the suite's time budget and the
 background/one-agent run rules.
 
 ```bash
@@ -675,7 +675,7 @@ CRANELISP_RC_TRACE=1 cargo nextest run --test spec_12_runtime         # with a t
 
 Every fix lands with a unit test, and the e2e need is assessed
 **before** the fix is written; failing test(s) first, fix flips them green, both
-in the same change-set. This is stated canonically in root `CLAUDE.md`
+in the same change-set. This is stated canonically in root `AGENTS.md`
 §Testing and `sprints/METHOD.md` §2.2 — follow those; not restated here.
 
 ## QA-first targeting and deferral discipline

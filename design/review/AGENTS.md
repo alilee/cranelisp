@@ -17,7 +17,7 @@ reviewed against is assembled per invocation from:
   architectural principles, cited by name in findings.
 - **`design/{crate}/{crate}.md`** — the per-crate design intent the change is
   reviewed against.
-- **`crates/{crate}/CLAUDE.md`** (or `src/CLAUDE.md`) — local conventions and
+- **`crates/{crate}/AGENTS.md`** (or `src/AGENTS.md`) — local conventions and
   API gotchas; drift from them is a finding.
 - The crate's committed **`public-api.txt`** baseline + `design/arch/bounded-contexts.md`
   — the as-designed public surface for library crates with a tracked baseline
@@ -85,8 +85,8 @@ lens on the same category:
 | Altitude | Skill | Lens |
 |---|---|---|
 | Per-diff | `review` (this cue) | catch the (N+1)th variant as it is proposed |
-| Rolling coverage | `qa` | the [coverage by definition variants](../../tests/CLAUDE.md) standing category |
-| Whole-context | `audit` | the [Duplication quality attribute](../../audits/CLAUDE.md) (mirror + divergent + entry-point + spec-surface facets) — sweeps what per-diff review cannot see |
+| Rolling coverage | `qa` | the [coverage by definition variants](../../tests/AGENTS.md) standing category |
+| Whole-context | `audit` | the [Duplication quality attribute](../../audits/AGENTS.md) (mirror + divergent + entry-point + spec-surface facets) — sweeps what per-diff review cannot see |
 
 ## Findings
 

@@ -82,7 +82,7 @@ is a map, not a second contract.
 
 A `public-api.txt` change is an inter-crate public-API change: it needs the
 user's approval before implementation and rides its source change-set under
-`design/arch/CLAUDE.md` §"Baseline-diff discipline".
+`design/arch/AGENTS.md` §"Baseline-diff discipline".
 
 ---
 
@@ -106,7 +106,7 @@ user's approval before implementation and rides its source change-set under
 | `scheme.rs`, `scope.rs`, `result.rs`, `signature_match.rs`, `trace.rs` | Generalise/instantiate, the lexical scope stack, the result types, the search predicates and the trace hook. |
 | `builtins.rs` | Test-only synthetic world (`#[cfg(test)]`); production mounts are `int`'s. |
 
-Module tests sit beside their production unit; `crates/cranelisp-typecheck/CLAUDE.md`
+Module tests sit beside their production unit; `crates/cranelisp-typecheck/AGENTS.md`
 §"Testing" names the homes.
 
 ### 3.2 Maintainability watch
@@ -121,7 +121,7 @@ assessments remain in Git.
 
 Short-name resolution is current-module-only, with per-symbol chain-follow
 through `Import`/`Reexport` entries — never a universe scan (Principle 17;
-`crates/cranelisp-typecheck/CLAUDE.md` §"Name resolution").
+`crates/cranelisp-typecheck/AGENTS.md` §"Name resolution").
 `resolve_terminal_entry_and_home` is the navigation primitive, staging-aware
 through `probe_module_entry_owned`. Every bare-name reference resolves through the
 one scope seam: `TypeCheckEnv::scope_resolve` / `scope_resolve_in` for a single
@@ -507,7 +507,7 @@ export positions; its evidence and status belong to that surface.
    ambiguity backstop, the two post-settlement monomorphisation harvest windows
    (`monomorphisation.md` §3.3), and final publication: each body's AST and
    complete callee set are published together, once
-   (`crates/cranelisp-typecheck/CLAUDE.md` §"`callees` completeness"). The
+   (`crates/cranelisp-typecheck/AGENTS.md` §"`callees` completeness"). The
    ownership pass then runs over the published concrete bodies
    (`design/typecheck/ownership-inference.md` §1.2).
 
@@ -1274,7 +1274,7 @@ never walks alias segments or spells an alias key itself, fixtures included
 
 The `program/` and `traits/` cuts are §3.1 and the finalize ordering is
 `monomorphisation.md` §3.3. Deleted records and where their content now lives
-are listed in `design/typecheck/CLAUDE.md` §"Redirections".
+are listed in `design/typecheck/AGENTS.md` §"Redirections".
 
 ---
 
