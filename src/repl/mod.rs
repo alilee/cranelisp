@@ -1574,7 +1574,6 @@ mod session_lock_admission_tests {
             ("/refs g", false),
             ("/tests-for g", false),
             ("/syntax", false),
-            ("/context ctx.txt", false),
             ("/search g", false),
             ("/platform-schema none", false),
             ("/no-such-command", false),
@@ -1584,11 +1583,21 @@ mod session_lock_admission_tests {
         plant(&mut s, "lib", &root.path().join("lib.cl"), failed_source());
         let refusal = final_text(s.process_commands("(g)", &mut Vec::new()))
             .expect("precondition: an expression is refused");
-        for (command, refused) in COMMANDS {
+        let context = format!("/context {}", root.path().join("ctx.txt").display());
+        let commands = COMMANDS
+            .iter()
+            .map(|(command, refused)| (*command, *refused))
+            .chain([(context.as_str(), false)]);
+        for (command, refused) in commands {
             let result = s.process_commands(command, &mut Vec::new());
             let was_refused = matches!(&result, CommandResult::Final(text) if *text == refusal);
-            assert_eq!(was_refused, *refused, "`{command}`");
+            assert_eq!(was_refused, refused, "`{command}`");
         }
+        #[cfg(feature = "agent")]
+        assert!(
+            root.path().join("ctx.txt").exists(),
+            "the admitted `/context` writes inside the test's directory"
+        );
         assert!(matches!(
             s.process_commands("/quit", &mut Vec::new()),
             CommandResult::Quit
