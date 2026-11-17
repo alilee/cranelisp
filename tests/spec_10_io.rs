@@ -2689,3 +2689,745 @@ fn s124_1065_e_rd() {
         0,
     );
 }
+
+
+fn s124_scheduling_sample(multi: bool, dependent: bool, second: bool) -> u128 {
+    let b = if dependent {
+        "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 a) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
+    } else {
+        "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 d) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
+    };
+    let def = if !multi { format!("(defn f [d] {b})") }
+        else if second { format!("(defn f ([d] (Pure d)) ([d e] {b}))") }
+        else { format!("(defn f ([d] {b}) ([d e] (Pure e)))") };
+    let args = if second { "300 0" } else { "300" };
+    let src = format!("(platform poll-pool) (import [platform.poll-pool [poll-read]]) (import [primitives [*]]) {def} (defn main [] (f {args}))");
+    (0..3).map(|_| {
+        let out = Cranelisp::new().use_workspace_platforms().file("p.cl", &src).run("p.cl").output().assert_exit(0);
+        out.elapsed.as_millis()
+    }).min().unwrap()
+}
+
+// spec: spec/10-io.md §10.12.1 — REPRO-0981, independent versus dependent twins
+// defect: class=enumeration-miss locus=src/bind_chain_analysis.rs::auto_schedule_defn found=S124 owner=/dev
+#[test]
+fn s124_0981_multi_signature_overlap() {
+    let single = s124_scheduling_sample(false, false, false);
+    let serial = s124_scheduling_sample(false, true, false);
+    assert!(single * 4 < serial * 3, "single {single}ms, serial {serial}ms");
+    for second in [false, true] {
+        let multi = s124_scheduling_sample(true, false, second);
+        assert!(multi * 4 < serial * 3, "multi second={second}: {multi}ms, single {single}ms, serial {serial}ms");
+    }
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_bind_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k bind] (k (Pure 5) (fn [v] (Pure v)))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_bind_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k bind] (k (Pure 5) (fn [v] (Pure v)))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_bind_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k bind] (k (Pure 5) (fn [v] (Pure v)))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_ap
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_bind_ap_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (ap bind))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_ap
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_bind_ap_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (ap bind))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_ap
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_bind_ap_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (ap bind))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 race
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_race_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k race] (k (Pure 5) (Pure 5))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 race
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_race_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k race] (k (Pure 5) (Pure 5))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 race
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_race_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k race] (k (Pure 5) (Pure 5))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_select_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k select] (k [(Pure 5) (Pure 5)])))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_select_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k select] (k [(Pure 5) (Pure 5)])))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_select_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k select] (k [(Pure 5) (Pure 5)])))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select_ap
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_select_ap_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (aps select))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select_ap
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_select_ap_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (aps select))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select_ap
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_select_ap_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (aps select))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_sleep_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k sleep] (bind (k 1) (fn [_] (Pure 5)))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_sleep_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k sleep] (bind (k 1) (fn [_] (Pure 5)))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_sleep_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k sleep] (bind (k 1) (fn [_] (Pure 5)))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 name
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_name_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k name t (trace (add-i64 1 2))] (Pure (if (str-eq (k t) (name t)) 5 99))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 name
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_name_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k name t (trace (add-i64 1 2))] (Pure (if (str-eq (k t) (name t)) 5 99))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 name
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_name_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k name t (trace (add-i64 1 2))] (Pure (if (str-eq (k t) (name t)) 5 99))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 nanos
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_nanos_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k nanos t (trace (add-i64 1 2))] (Pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 nanos
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_nanos_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k nanos t (trace (add-i64 1 2))] (Pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 nanos
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_value_nanos_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k nanos t (trace (add-i64 1 2))] (Pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 add_control
+#[test]
+fn s124_1063_value_add_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k add-i64] (Pure (k 2 3))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 add_control
+#[test]
+fn s124_1063_value_add_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k add-i64] (Pure (k 2 3))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 add_control
+#[test]
+fn s124_1063_value_add_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k add-i64] (Pure (k 2 3))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 str_control
+#[test]
+fn s124_1063_value_str_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k str-len] (Pure (k "abcde"))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 str_control
+#[test]
+fn s124_1063_value_str_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k str-len] (Pure (k "abcde"))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 str_control
+#[test]
+fn s124_1063_value_str_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k str-len] (Pure (k "abcde"))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 vec_control
+#[test]
+fn s124_1063_value_vec_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k vec-len] (Pure (k [1 2 3 4 5]))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 vec_control
+#[test]
+fn s124_1063_value_vec_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k vec-len] (Pure (k [1 2 3 4 5]))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 vec_control
+#[test]
+fn s124_1063_value_vec_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (let [k vec-len] (Pure (k [1 2 3 4 5]))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_direct_control
+#[test]
+fn s124_1063_value_bind_direct_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_direct_control
+#[test]
+fn s124_1063_value_bind_direct_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_direct_control
+#[test]
+fn s124_1063_value_bind_direct_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 race_direct_control
+#[test]
+fn s124_1063_value_race_direct_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (race (Pure 5) (Pure 5)))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 race_direct_control
+#[test]
+fn s124_1063_value_race_direct_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (race (Pure 5) (Pure 5)))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 race_direct_control
+#[test]
+fn s124_1063_value_race_direct_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (race (Pure 5) (Pure 5)))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select_direct_control
+#[test]
+fn s124_1063_value_select_direct_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (select [(Pure 5) (Pure 5)]))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select_direct_control
+#[test]
+fn s124_1063_value_select_direct_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (select [(Pure 5) (Pure 5)]))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 select_direct_control
+#[test]
+fn s124_1063_value_select_direct_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (select [(Pure 5) (Pure 5)]))"#, "repl", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep_direct_control
+#[test]
+fn s124_1063_value_sleep_direct_control_run() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#, "run", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep_direct_control
+#[test]
+fn s124_1063_value_sleep_direct_control_link() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#, "link", 5);
+}
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep_direct_control
+#[test]
+fn s124_1063_value_sleep_direct_control_repl() {
+ s124_value(Cranelisp::new(), r#"(import [primitives [*]])
+(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
+(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#, "repl", 5);
+}
+
+
+fn s124_missing_main(src: &str, mode: &str) {
+    let cr=Cranelisp::new().file("p.cl",src);
+    let out=if mode=="link" { cr.link("p.cl").output() } else { cr.run("p.cl").output() };
+    assert!(!out.status.success(),"{}{}",out.stdout,out.stderr);
+    let lines:Vec<_>=out.stderr.lines().collect();
+    assert_eq!(lines.len(),1,"one diagnostic: {}",out.stderr);
+    assert!(lines[0].starts_with("p.cl: error: module error: ") && lines[0].contains("main"),"{}",out.stderr);
+    assert!(!out.stderr.contains("0..0") && !out.stderr.contains("codegen error"),"{}",out.stderr);
+}
+
+fn s124_located_entry_refusal(src: &str, line: usize, text: &str, mode: &str) {
+    let cr=Cranelisp::new().file("p.cl",src);
+    let out=if mode=="link" { cr.link("p.cl").output() } else { cr.run("p.cl").output() };
+    assert!(!out.status.success() && out.status.code()!=Some(7),"{}{}",out.stdout,out.stderr);
+    assert!(out.stderr.contains(text),"refusal text: {}",out.stderr);
+    assert!(out.stderr.contains(&format!("p.cl:{line}:")) && !out.stderr.contains("0..0"),"written form location: {}",out.stderr);
+}
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_missing_empty_run() { s124_missing_main(r#""#,"run"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_missing_definitions_run() { s124_missing_main(r#"(defn helper [] 5)"#,"run"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_missing_trait_method_run() { s124_missing_main(r#"(import [primitives [*]]) (deftrait Entry (main [self] (IO Int))) (impl Entry Int (defn main [n] (Pure n)))"#,"run"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_arity_run() { s124_located_entry_refusal(r#"
+
+(defn main [x] (primitives/Pure x))"#,3,"zero-argument","run"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_macro_run() { s124_located_entry_refusal(r#"
+
+(defmacro main [] (quote 7))"#,3,"not a function","run"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_macro_produced_run() { s124_located_entry_refusal(r#"
+(defmacro mk [n] `(defn ~n [x] (primitives/Pure x)))
+
+(mk main)"#,4,"zero-argument","run"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_overload_run() { s124_located_entry_refusal(r#"
+
+(defn main ([] (primitives/Pure 7)) ([x] (primitives/Pure x)))"#,3,"main","run"); }
+
+// spec: spec/10-io.md §10.6 — single-arity main control
+#[test]
+fn s124_main_control_5_run() { s124_value(Cranelisp::new(),"(defn main [] (primitives/Pure 5))","run",5); }
+
+// spec: spec/10-io.md §10.6 — single-arity main control
+#[test]
+fn s124_main_control_7_run() { s124_value(Cranelisp::new(),"(defn main [] (primitives/Pure 7))","run",7); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_missing_empty_link() { s124_missing_main(r#""#,"link"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_missing_definitions_link() { s124_missing_main(r#"(defn helper [] 5)"#,"link"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_missing_trait_method_link() { s124_missing_main(r#"(import [primitives [*]]) (deftrait Entry (main [self] (IO Int))) (impl Entry Int (defn main [n] (Pure n)))"#,"link"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_arity_link() { s124_located_entry_refusal(r#"
+
+(defn main [x] (primitives/Pure x))"#,3,"zero-argument","link"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_macro_link() { s124_located_entry_refusal(r#"
+
+(defmacro main [] (quote 7))"#,3,"not a function","link"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_macro_produced_link() { s124_located_entry_refusal(r#"
+(defmacro mk [n] `(defn ~n [x] (primitives/Pure x)))
+
+(mk main)"#,4,"zero-argument","link"); }
+
+// spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
+// defect: class=wrong-reject locus=src/exe.rs::entry_main_gate found=S124 owner=/dev
+#[test]
+fn s124_main_location_overload_link() { s124_located_entry_refusal(r#"
+
+(defn main ([] (primitives/Pure 7)) ([x] (primitives/Pure x)))"#,3,"main","link"); }
+
+// spec: spec/10-io.md §10.6 — single-arity main control
+#[test]
+fn s124_main_control_5_link() { s124_value(Cranelisp::new(),"(defn main [] (primitives/Pure 5))","link",5); }
+
+// spec: spec/10-io.md §10.6 — single-arity main control
+#[test]
+fn s124_main_control_7_link() { s124_value(Cranelisp::new(),"(defn main [] (primitives/Pure 7))","link",7); }
+
+
+fn s124_rc_counts(stderr: &str) -> (i64,i64) {
+    let stats=stderr.lines().find(|l|l.contains("[RC_STATS]")).expect("RC statistics must be emitted");
+    let count=|key:&str|stats.split_whitespace().find_map(|f|f.strip_prefix(key).and_then(|v|v.parse().ok())).expect("RC count");
+    (count("allocs="),count("deallocs="))
+}
+
+fn s124_0934_balance(combinator: &str, mode: &str) {
+    let child=|heap:bool| {
+        let operands=if heap { "(Pure (str-concat \"a\" \"bc\")) (Pure (str-concat \"d\" \"ef\"))" } else { "(Pure 3) (Pure 3)" };
+        let io=if combinator=="select" {format!("(select [{operands}])")} else {format!("(race {operands})")};
+        let result=if heap {"(str-len x)"} else {"x"};
+        let program=format!("(import [primitives [*]]) (defn main [] (bind {io} (fn [x] (Pure {result}))))");
+        let cr=Cranelisp::new().env("CRANELISP_RC_STATS","1").env("CRANELISP_RC_TRACE","1").env("CRANELISP_RC_DEC_CHECK","1")
+           .linked_environment(&[("CRANELISP_RC_STATS","1"),("CRANELISP_RC_TRACE","1"),("CRANELISP_RC_DEC_CHECK","1")]);
+        let out=match mode { "run"=>cr.file("p.cl",&program).run("p.cl").output(), "link"=>cr.file("p.cl",&program).link_then_run("p.cl").output(), _=>cr.stdin(&format!("{program}\n(main)\n")).output() };
+        if mode=="repl" { assert!(out.status.success() && out.stdout.contains(":primitives/Int 3"),"{}{}",out.stdout,out.stderr); }
+        else { assert_eq!(out.status.code(),Some(3),"{}{}",out.stdout,out.stderr); }
+        let stderr=if mode=="link" {out.linked_stderr.as_deref().unwrap()} else {&out.stderr};
+        let (allocs,frees)=s124_rc_counts(stderr);
+        assert_eq!(allocs,frees,"{stderr}");
+        allocs
+    };
+    let control=child(false); let heap=child(true);
+    assert!(heap>control,"heap traffic {heap} must exceed scalar traffic {control}");
+}
+
+// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+#[test]
+fn s124_f_0934_race_run() { s124_0934_balance("race","run"); }
+
+// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+#[test]
+fn s124_f_0934_race_link() { s124_0934_balance("race","link"); }
+
+// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+#[test]
+fn s124_f_0934_race_repl() { s124_0934_balance("race","repl"); }
+
+// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+#[test]
+fn s124_f_0934_select_run() { s124_0934_balance("select","run"); }
+
+// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+#[test]
+fn s124_f_0934_select_link() { s124_0934_balance("select","link"); }
+
+// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+#[test]
+fn s124_f_0934_select_repl() { s124_0934_balance("select","repl"); }
+
+// spec: spec/10-io.md §10.12.1 — F-0975, non-leaf scheduling exclusion
+#[test]
+fn s124_f_0975_inline_bind() { s124_value(Cranelisp::new().use_workspace_platforms(),r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n] (if (eq-i64 n 0) (Pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
+(defn main [] (bind (bind (poll-read 1 1 20) (fn [x] (bind (poll-read 2 1 30) (fn [y] (Pure (add-i64 x y)))))) (fn [a] (bind (poll-read 8 1 10) (fn [b] (Pure (sub-i64 (add-i64 a b) 60)))))))"#,"run",0); }
+
+// spec: spec/10-io.md §10.12.1 — F-0975, non-leaf scheduling exclusion
+#[test]
+fn s124_f_0975_race() { s124_value(Cranelisp::new().use_workspace_platforms(),r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n] (if (eq-i64 n 0) (Pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
+(defn main [] (bind (race (poll-read 1 1 20) (poll-read 2 1 20)) (fn [a] (bind (poll-read 8 1 10) (fn [b] (Pure (sub-i64 (add-i64 a b) 30)))))))"#,"run",0); }
+
+// spec: spec/10-io.md §10.12.1 — F-0975, non-leaf scheduling exclusion
+#[test]
+fn s124_f_0975_launch() { s124_value(Cranelisp::new().use_workspace_platforms(),r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n] (if (eq-i64 n 0) (Pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
+(defn main [] (bind (fan 3) (fn [a] (bind (poll-read 8 1 10) (fn [b] (Pure (sub-i64 (add-i64 a b) 10)))))))"#,"run",0); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_bind_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_bind_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_bind_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,"repl",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_race_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (race (Pure 5) (Pure 5)))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_race_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (race (Pure 5) (Pure 5)))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_race_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (race (Pure 5) (Pure 5)))"#,"repl",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_select_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (select [(Pure 5) (Pure 5)]))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_select_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (select [(Pure 5) (Pure 5)]))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_select_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (select [(Pure 5) (Pure 5)]))"#,"repl",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_sleep_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_sleep_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_sleep_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,"repl",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_name_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (Pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_name_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (Pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_name_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (Pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,"repl",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_nanos_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (Pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_nanos_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (Pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_nanos_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (Pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,"repl",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_vec_control_run() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,"run",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_vec_control_link() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,"link",5); }
+
+// spec: spec/03-types.md §3.2.1 — REPRO-1063 direct-call control
+#[test]
+fn s124_1063_direct_vec_control_repl() { s124_value(Cranelisp::new(),r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,"repl",5); }

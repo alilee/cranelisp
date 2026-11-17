@@ -577,3 +577,88 @@ fn platform_nested_non_entry_declaration_rejected_neg() {
         out.stderr
     );
 }
+
+
+fn s124_platform_placement(module: Option<&str>,mode:&str) {
+    let cr=Cranelisp::new().use_workspace_platforms();
+    let cr=match module {
+        None=>cr.user("(platform stdio) (import [platform.stdio [print]]) (defn main [] (print \"loaded\"))"),
+        Some(name)=>cr.file(&format!("{}.cl",name.replace('.',"/")),"(platform stdio) (defn value [] 0)")
+          .user(&format!("(defn main [] (primitives/Pure ({name}/value)))")),
+    };
+    let out=match mode {"link"=>cr.link_then_run("user.cl").output(),"repl"=>cr.stdin("(main)\n").output(),_=>cr.run("user.cl").output()};
+    let diag=format!("{}{}",out.stdout,out.stderr);
+    if module.is_some() {
+        assert!(diag.contains("platform") && diag.contains("entry") && diag.contains("error"),"{diag}");
+        if mode!="repl" {assert_eq!(out.status.code(),Some(1),"{diag}");}
+    } else {assert!(out.status.success() && out.stdout.contains("loaded"),"{diag}");}
+}
+
+// spec: spec/10-io.md §10.9.1 — T-0973 entry
+#[test]
+fn s124_0973_entry_link() {s124_platform_placement(None,"link");}
+
+// spec: spec/10-io.md §10.9.1 — T-0973 entry
+#[test]
+fn s124_0973_entry_repl() {s124_platform_placement(None,"repl");}
+
+// spec: spec/10-io.md §10.9.1 — T-0973 root
+#[test]
+fn s124_0973_root_link() {s124_platform_placement(Some("helper"),"link");}
+
+// spec: spec/10-io.md §10.9.1 — T-0973 root
+#[test]
+fn s124_0973_root_repl() {s124_platform_placement(Some("helper"),"repl");}
+
+// spec: spec/10-io.md §10.9.1 — T-0973 nested
+#[test]
+fn s124_0973_nested_link() {s124_platform_placement(Some("nested.helper"),"link");}
+
+// spec: spec/10-io.md §10.9.1 — T-0973 nested
+#[test]
+fn s124_0973_nested_repl() {s124_platform_placement(Some("nested.helper"),"repl");}
+
+// spec: spec/10-io.md §10.9.1 — T-0973-c, cached entry becomes dependency
+#[test]
+fn s124_0973_cached_entry_run() {
+ let first=Cranelisp::new().use_workspace_platforms().file("helper.cl","(platform stdio) (defn value [] 0) (defn main [] (primitives/Pure 0))").run("helper.cl").output().assert_exit(0);
+ assert!(first.tmp_exists(".cranelisp-cache/helper.o"),"entry must be cached");
+ let cr=first.run_again().env("CRANELISP_MODULE_TRACE","1").file("app.cl","(import [helper [value]]) (defn main [] (primitives/Pure (value)))");
+ let out=cr.run("app.cl").output(); let diag=format!("{}{}",out.stdout,out.stderr);
+ assert!(diag.contains("platform") && diag.contains("entry") && diag.contains("error"),"cached non-entry declaration must refuse: {diag}");
+ assert!(!diag.lines().any(|line|line.contains("helper") && line.contains("restored")),"dependency must not restore: {diag}");
+}
+
+// spec: spec/10-io.md §10.9.1 — T-0973-c, cached entry becomes dependency
+#[test]
+fn s124_0973_cached_entry_link() {
+ let first=Cranelisp::new().use_workspace_platforms().file("helper.cl","(platform stdio) (defn value [] 0) (defn main [] (primitives/Pure 0))").run("helper.cl").output().assert_exit(0);
+ assert!(first.tmp_exists(".cranelisp-cache/helper.o"),"entry must be cached");
+ let cr=first.run_again().env("CRANELISP_MODULE_TRACE","1").file("app.cl","(import [helper [value]]) (defn main [] (primitives/Pure (value)))");
+ let out=cr.link("app.cl").output(); let diag=format!("{}{}",out.stdout,out.stderr);
+ assert!(diag.contains("platform") && diag.contains("entry") && diag.contains("error"),"cached non-entry declaration must refuse: {diag}");
+ assert!(!diag.lines().any(|line|line.contains("helper") && line.contains("restored")),"dependency must not restore: {diag}");
+}
+
+// spec: spec/10-io.md §10.9.1 — T-0973-c, cached entry becomes dependency
+#[test]
+fn s124_0973_cached_entry_repl() {
+ let first=Cranelisp::new().use_workspace_platforms().file("helper.cl","(platform stdio) (defn value [] 0) (defn main [] (primitives/Pure 0))").run("helper.cl").output().assert_exit(0);
+ assert!(first.tmp_exists(".cranelisp-cache/helper.o"),"entry must be cached");
+ let cr=first.run_again().env("CRANELISP_MODULE_TRACE","1").file("app.cl","(import [helper [value]]) (defn main [] (primitives/Pure (value)))");
+ let out=cr.cli_flag("app.cl").stdin("5\n").output(); let diag=format!("{}{}",out.stdout,out.stderr);
+ assert!(diag.contains("platform") && diag.contains("entry") && diag.contains("error"),"cached non-entry declaration must refuse: {diag}");
+ assert!(!diag.lines().any(|line|line.contains("helper") && line.contains("restored")),"dependency must not restore: {diag}");
+}
+
+
+// spec: spec/10-io.md §10.9.1 — T-0973, non-entry import of an entry platform
+#[test]
+fn s124_0973_dependency_import_control() {
+    let src="(platform stdio) (import [helper [say]]) (defn main [] (say))";
+    for mode in ["run","link","repl"] {
+        let cr=Cranelisp::new().use_workspace_platforms().file("helper.cl","(import [platform.stdio [print]]) (defn say [] (print \"loaded\"))").user(src);
+        let out=match mode {"link"=>cr.link_then_run("user.cl").output(),"repl"=>cr.stdin("(main)\n").output(),_=>cr.run("user.cl").output()};
+        assert!(out.status.success() && out.stdout.contains("loaded"),"{}{}",out.stdout,out.stderr);
+    }
+}

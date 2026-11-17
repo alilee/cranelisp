@@ -728,3 +728,38 @@ fn watch_change_triggers_cache_directory_creation() {
 // owning skill (/backend, via /int's harvest pass). The legacy file
 // `tests/legacy/sprint23.rs::watch_unchanged_modules_keep_cache`
 // preserves the existing test body verbatim until that harvest lands.
+
+
+fn s124_sh_reload(target: Option<&str>) {
+    let cr = Cranelisp::new()
+        .file("real/math.cl", "(defn sq [x] (primitives/mul-i64 x x))")
+        .user("(import [math [sq]]) (defn f [] (sq 3))");
+    let root = cr.tmpdir_path();
+    std::fs::hard_link(root.join("real/math.cl"), root.join("math.cl")).unwrap();
+    let command = target.map_or_else(|| "/sh true".to_owned(), |path|
+        format!("/sh echo '(defn sq [x] (primitives/mul-i64 x 2))' > {path}"));
+    let out = cr.stdin(&format!("(f)\n{command}\n(f)\n")).output().assert_ok();
+    let turns: Vec<_> = out.stdout.split("user> ").collect();
+    assert!(turns[1].contains(":primitives/Int 9"), "{}", out.stdout);
+    if target.is_some() {
+        assert!(turns[2].contains("[updated: math.cl]") && turns[2].contains("[updated: user.cl]"),
+            "save must be reported before its next prompt: {}", out.stdout);
+        assert!(turns[3].contains(":primitives/Int 6"), "{}", out.stdout);
+    } else {
+        assert!(!out.stdout.contains("[updated:"), "{}", out.stdout);
+        assert!(turns[3].contains(":primitives/Int 9"), "{}", out.stdout);
+    }
+}
+
+// spec: repl/spec/14-file-watching.md §14.2 — T-1061, notification withheld
+// defect: class=notification-only-detection locus=src/watch.rs::poll_changes found=S124 owner=/dev
+#[test]
+fn s124_1061_save_without_notification() { s124_sh_reload(Some("real/math.cl")); }
+
+// spec: repl/spec/14-file-watching.md §14.2 — T-1061, watched-path control
+#[test]
+fn s124_1061_watched_save_control() { s124_sh_reload(Some("math.cl")); }
+
+// spec: repl/spec/14-file-watching.md §14.2 — T-1061, unchanged-file control
+#[test]
+fn s124_1061_no_save_control() { s124_sh_reload(None); }

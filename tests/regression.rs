@@ -4680,3 +4680,12 @@ fn s124_1067_control() {
     );
     out.assert_exit(48);
 }
+
+
+// spec: spec/02-grammar.md §2.3 — REPRO-1067 type-depth control
+#[test]
+fn s124_1067_type_depth_control() {
+    let bindings=(0..64).map(|n|if n==0 {"v0 (Yep 0)".to_owned()} else {format!("v{n} (Yep v{})",n-1)}).collect::<Vec<_>>().join(" ");
+    let src=format!("(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (defn main [] (let [{bindings}] (Pure 5)))");
+    Cranelisp::new().file("p.cl",&src).run("p.cl").output().assert_exit(5);
+}

@@ -717,15 +717,12 @@ fn traced_fib_12_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
 #[test]
 fn trace_records_every_call_of_spark_admitted_callee() {
     let out = traced_fib_12_repl(false);
-    assert_traced_fib_worker_ran(&out.stdout, &out.stderr);
-    assert_eq!(
-        out.stdout.matches("Trace.TraceCall \"user/fib\"").count(),
-        465,
-        "`(trace (fib 12))` MUST record all 465 `fib` calls\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status,
-        out.stdout,
-        out.stderr
-    );
+    let control = traced_fib_12_repl(true);
+    assert_eq!(out.stdout.matches("Trace.TraceCall \"user/fib\"").count(), control.stdout.matches("Trace.TraceCall \"user/fib\"").count(), "all frames with sparks enabled: {}{}",out.stdout,out.stderr);
+    assert!(s124_spark_stat(&out.stderr, "trace_declines") > 0, "trace must decline sparks: {}",out.stderr);
+    let untraced=Cranelisp::new().env("CRANELISP_SPARK_STATS","1").env("CRANELISP_SPARK_MAX_DEPTH","1").env("CRANELISP_HIER_DECLINE","1").stdin(&format!("{FIB_AND_FRAMES}(fib 12)\n")).output().assert_ok();
+    assert!(s124_spark_stat(&untraced.stderr,"spawns")>0,"untraced twin must spark: {}",untraced.stderr);
+    assert_eq!(s124_spark_stat(&untraced.stderr,"trace_declines"),0,"{}",untraced.stderr);
 }
 
 // spec: spec/04-expressions.md §4.12.2 — control: with sparks disabled the
@@ -798,7 +795,7 @@ fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
 #[test]
 fn traced_spark_admitted_callee_releases_every_formatted_string() {
     let pair = traced_vs_untraced_fib_12(false).measure();
-    assert_traced_fib_worker_ran(&pair.subject().stdout, &pair.subject().stderr);
+    assert!(s124_spark_stat(&pair.subject().stderr,"trace_declines")>0,"{}",pair.subject().stderr);
     pair.assert_balanced("the formatted Strings of every traced fib call");
 }
 
@@ -865,4 +862,21 @@ fn trace_records_user_function_calls_in_every_mode() {
         "`(trace (fib 3))` MUST record 5 `fib` frames in every mode\n{}",
         wrong.join("\n")
     );
+}
+
+
+fn s124_spark_stat(stderr: &str, key: &str) -> u64 {
+    stderr.lines().find(|line|line.starts_with("[SPARK_STATS]")).and_then(|line|line.split_whitespace().find_map(|field|field.strip_prefix(&format!("{key}=")))).and_then(|n|n.parse().ok()).unwrap_or_else(||panic!("missing {key}: {stderr}"))
+}
+
+// spec: spec/04-expressions.md §4.12.9 — T-1039 imported-module control
+#[test]
+fn s124_1039_imported_module_control() {
+    let src=format!("{FIB_AND_FRAMES}(defn count-frames [] (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)]))");
+    for mode in ["run","link","repl"] {
+        let cr=Cranelisp::new().file("p.cl",&src).user("(import [p [count-frames]]) (defn main [] (primitives/Pure (count-frames)))").env("CRANELISP_NO_LENIENT","1");
+        let out=match mode {"run"=>cr.run("user.cl").output(),"link"=>cr.link_then_run("user.cl").output(),_=>cr.stdin("(main)\n").output()};
+        if mode=="repl" {assert!(out.stdout.contains(":primitives/Int 5"),"{}{}",out.stdout,out.stderr);}
+        else {assert_eq!(out.status.code(),Some(5),"{}{}",out.stdout,out.stderr);}
+    }
 }

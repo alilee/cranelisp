@@ -837,3 +837,41 @@ fn all_pass_run_keeps_existing_report() {
     assert!(repl.stdout.contains(":primitives/Int 813"));
     assert!(cli.stderr.is_empty() && repl.stderr.is_empty());
 }
+
+
+// spec: repl/spec/16-test-discovery.md §16.1 — REPRO-1063 discover-tests value
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+#[test]
+fn s124_1063_discover_value() {
+    Cranelisp::new().stdin("(import [primitives [*]])\n(let [d discover-tests] (vec-len (d [])))\n").output()
+        .assert_ok().assert_stdout_contains(":primitives/Int 0").assert_stdout_does_not_contain("GOT-slot carrier");
+}
+
+// spec: repl/spec/16-test-discovery.md §16.1 — direct-call control
+#[test]
+fn s124_1063_discover_direct_control() {
+    Cranelisp::new().stdin("(import [primitives [*]])\n(vec-len (discover-tests []))\n").output()
+        .assert_ok().assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5; repl/spec/16-test-discovery.md §16.6 — REPRO-0915-loc
+// defect: class=wrong-reject locus=src/exe.rs::refuse_dev_session_externs found=S124 owner=/dev
+#[test]
+fn s124_discover_batch_location_run() {
+ let cr=Cranelisp::new().file("p.cl","\n\n(defn main [] (primitives/Pure (primitives/vec-len (primitives/discover-tests []))))");
+ let out=cr.run("p.cl").output();
+ assert!(!out.status.success(),"{}{}",out.stdout,out.stderr);
+ assert!(out.stderr.contains("discover-tests"),"{}",out.stderr);
+ assert!(out.stderr.contains("p.cl:3:") && !out.stderr.contains("0..0"),"{}",out.stderr);
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5; repl/spec/16-test-discovery.md §16.6 — REPRO-0915-loc
+// defect: class=wrong-reject locus=src/exe.rs::refuse_dev_session_externs found=S124 owner=/dev
+#[test]
+fn s124_discover_batch_location_link() {
+ let cr=Cranelisp::new().file("p.cl","\n\n(defn main [] (primitives/Pure (primitives/vec-len (primitives/discover-tests []))))");
+ let out=cr.link("p.cl").output();
+ assert!(!out.status.success(),"{}{}",out.stdout,out.stderr);
+ assert!(out.stderr.contains("discover-tests"),"{}",out.stderr);
+ assert!(out.stderr.contains("p.cl:3:") && !out.stderr.contains("0..0"),"{}",out.stderr);
+}
