@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W2
+**Status**: PHASE 5 LANGUAGE — W4 accepted; W5 next
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -339,9 +339,35 @@ The third-deferral groups and ACT-1067 (Notes).
 - **ACT-1068 filed, unscheduled:** saving a session omits every
   multi-signature function from the module file (data loss; predates S124).
   Scheduling is with the user.
+- **W2 accepted by `qa` (`cc5b11db`):** row D5 (`b0f48914`, `8f44040e`),
+  the census (`1a3ab46e`, frame record `3ca6086e`). Row D1 (B3) was pulled
+  forward from W5 and landed (`3deee350`, cardinality fix `24c42430`).
+- **W3 accepted by `qa` (`688bf2c0`):** T1–T4 and T6 (`a49bc340` to
+  `616c0d0a`); suite 190 failed. Review findings open: ACT-1072 (sibling
+  members overcount depth; introduced by T4, fixed in this sprint), three
+  weak module rows returned to `dev`(typecheck).
+- **W4 accepted by `qa` (`1db7b1d8`):** ACT-1050 resolved, ACT-1065 open only
+  for T-1065-d (W7), ACT-1060 met (`32e434dc`, `8667a868`). Suite 7,597 run,
+  194 failed: 26 opening guards, 166 S124 cells RED on their assertion, two
+  maintenance checks, nothing unattributed (delta §14.1).
+- **CEN-4 met after W4:** zero census records from any program in all four
+  partitions, each with frames; the two remaining records are backend module
+  fixtures. B4 is licensed.
+- **Filed during Phase 5, scheduling with the user unless stated:** ACT-1068
+  (save omits multi-signature functions), ACT-1069 (trace formats a one-word
+  ADT as a pointer; fixed by D4/B5 in W5), ACT-1070 (JIT direct call out of
+  range), ACT-1071 (imported parametric instance calls a multi-signature
+  function through an empty slot), ACT-1073 (refused cluster leaves an
+  implementation shell registered), ACT-1074 (implementation body cannot
+  call a same-cluster multi-signature function), ACT-1075 (call selecting a
+  polymorphic function from a multi-candidate spelling fails at codegen).
+  ACT-1062 widened to the trace and display readers; ACT-1039 widened to
+  cached traced callees.
 - **Queued for the user:** ignored-path disposal; category of refusals about
   an existing `main`; whether method-level re-entry counts toward depth; the
-  T-D7-b overload-leg residual.
+  T-D7-b overload-leg residual; ACT-1018 carry on 2 blocks; scheduling of
+  ACT-1068, ACT-1070, ACT-1071, ACT-1073, ACT-1074, ACT-1075 and ACT-1062's
+  two readers; duplicate same-key implementations in one cluster.
 
 ### User rulings on the Phase 2 decisions, 2026-11-16
 
