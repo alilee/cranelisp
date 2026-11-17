@@ -137,12 +137,10 @@ when the binder is spelled like the enclosing function. Shadowing
   consuming occurrence the plan has classified. A jump would skip it and leave
   the plan unbalanced. The emitter therefore asks the plan, through the one
   shared predicate the plan uses for callee evaluation.
-- **As built, narrower than one source of truth.** Two other readers of the
-  self-call predicate do not ask the plan: the stack-placement TCO gate and the
-  spark SCC classifier. Each can count a shadowed local call as
-  self-recursive. For stack placement that is a needless decline, which is the
-  safe direction. Converging all three readers on the plan's answer is `dev`'s
-  follow-up.
+- **As built, narrower than one source of truth.** One other reader of the
+  self-call predicate does not ask the plan: the spark SCC classifier. It can
+  count a shadowed local call as self-recursive. Converging both readers on
+  the plan's answer is `dev`'s follow-up.
 
 ### 2.4 Outside the list
 
@@ -153,14 +151,14 @@ none is implicated in the faults in §6:
 - canonical drop glue ([transitive-drop-glue.md](transitive-drop-glue.md));
 - category before operation
   ([non-concrete-release-contract.md](non-concrete-release-contract.md) §3);
-- stack placement for `NoEscape` and one-word value flattening
-  ([ownership-codegen.md](ownership-codegen.md) §4, §7), each with its
-  analysis-off fallback;
+- one-word value flattening ([ownership-codegen.md](ownership-codegen.md) §7),
+  with its analysis-off fallback;
 - the IO node's release and the trampoline balance
   ([ring2-rc.md](ring2-rc.md) §3.5).
 
 **Placement mechanisms leave the dev tier.** Stack placement and value
-flattening change only a constant, so Principle 27 retires them in S124, and
+flattening change only a constant, so Principle 27 retires them in S124
+(stack placement at B1), and
 non-atomic RC for `Confined` retired at S123 W4
 ([ownership-codegen.md](ownership-codegen.md) §0, §5). Confined counting
 already had no consumer under U′: its only emission site was the return

@@ -7,7 +7,8 @@
 operation it emits, the disposition of each non-concrete face, and the open
 backend work that completes it. It absorbed the S121 C4 visit design; that
 visit's delivered bundles are recorded here as current mechanism and its open
-bundles as §7. Source was re-verified on 2026-11-15, and for §7 on 2026-11-16. *When* a reference is
+bundles as §7. Source was re-verified on 2026-11-15, for §7 on 2026-11-16,
+and for §5.3, §7.3, §7.4 and §7.7 on 2026-11-17 at `1a3ab46e`. *When* a reference is
 moved, duplicated or dropped is [uniform counting](uniform-counting.md), built
 at S123 W2; this contract governs whether an RC operation may be emitted on a
 value at all. §6 and §7.6 are retired with the provenance classification and
@@ -190,7 +191,7 @@ Every measured face has exactly one disposition.
 | # | Face | Disposition | State |
 |---|---|---|---|
 | **1** | Constructor template's own residual parameter | The template frame emits nothing on it (I-CT′, §4.1) | **Structural:** `Life::Template` carries no slot and no view, so a residual-parameter constructor frame is not a codegen target. Evidence reconciliation of the constructor census partition stays open under FIXME 0931 |
-| **2** | Synthetic accessor of a generic product (F1) | Canonical glue after the frame is monomorphised per concrete instantiation | Producer obligation (typecheck). The backend fallback arms it relies on retire in §7.4 |
+| **2** | Synthetic accessor of a generic product (F1) | Canonical glue after the frame is monomorphised per concrete instantiation | Producer obligation (typecheck). In source at `1a3ab46e` an accessor instance is minted at the demanded concrete instantiation, and the first census reading recorded no `Accessor` traffic (§7.3). The backend fallback arms retire in §7.4 |
 | **3** | Generic trait-method instance (F2) | Same as face 2: the instance key widens to the full concrete instantiation | Producer obligation (typecheck); its backend arm closes with §7.4 (FIXME 0903) |
 | **4** | IO's existential `Bind` | Runtime-directed teardown, with the `Pure` payload stamped at construction | **Delivered** (§5) |
 | **5** | Typecheck's lenient-view result root | Canonical glue once the view carries the node's real type, with unconstrained parameters explicitly defaulted | Producer obligation (typecheck) |
@@ -312,11 +313,10 @@ four:
   returned `FuncId`, or `iconst 0` when the request declines. The tag-and-fields
   emitter is unchanged and never given a type; the stamp is one more field value.
 
-**Stack placement.** A stack-placed `Pure` (`NoEscape` with a scalar payload,
-[ownership-codegen.md](ownership-codegen.md) §4) always carries `0` and, with an
-immortal header, is never freed. **Falsifier:** a stack-placement verdict that
-admits a heap-typed payload; stack placement for `Pure` must then be refused,
-not stamped.
+Every `Pure` node is allocated on the RC heap. Stack placement and its
+stack-placed `Pure` refusal were deleted at S124 B1
+([ownership-codegen.md](ownership-codegen.md) §4), so no placement verdict
+reaches a stamp site.
 
 ### 5.4 The discharge — `drop<IO T>`
 
@@ -402,11 +402,13 @@ disagree with what a constructor carries, so none exists.
 
 ## 7. Open backend work
 
-Each item below is designed and not yet implemented, except §7.6, which is
-retired. None is accepted as residual. §7.3 and §7.4 are built in S124 to the
+Each item below is designed and not yet implemented, except §7.3, whose census
+is built apart from its frame record, and §7.6, which is retired. None is
+accepted as residual. §7.3 and §7.4 are built in S124 to the
 end state of [the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category);
 §7.1 and §7.2 are not on that path and stay open. Order and dependencies are
-§7.7. Source read for this section: `main` at `4b58ab93`, 2026-11-16.
+§7.7. Source read for this section: `main` at `4b58ab93`, 2026-11-16; §7.3,
+§7.4 and §7.7 again at `1a3ab46e`, 2026-11-17.
 
 ### 7.1 Consume the lifecycle exhaustively (partial)
 
@@ -463,16 +465,18 @@ an RC operation on a word whose category it cannot name, and of every
 constructor field read whose instantiation is not concrete. §7.4 adds a
 refusal or deletes an arm only once the census measures zero traffic through
 it. It is a developer instrument whose nouns R-4 forbids in user output, so it
-is compiled into debug builds only (§8 reject 14).
+is compiled into debug builds only (§8 reject 14). Built at S124 B2
+(`compiler/census.rs`), except the frame record below.
 
-**Record points — one per arm, and the field read.**
+**Record points — one per arm, the field read, and the frame.**
 
 | Point | Where it is recorded | What one record means |
 |---|---|---|
 | Retain | `rc_emission::signature_heap_category`'s `Err` arm. Every categorisation passes through it: duplicates, `is_heap_type`, Vec elements, captures, dependent-spark and apply-site results | a residual type licensed as `Mixed` |
-| Release | the shallow guarded decrement in `FnCompiler::emit_release` | a residual-typed value released without its glue |
+| Release | the shallow guarded decrement in `FnCompiler::emit_release` | a residual-typed value released without its glue. The release first asks `is_heap_type` (the §3.5 gate order), so each release record comes with one retain record for the same word |
 | Absent | the two parameter-typing fallbacks, when they yield no type: a defn parameter whose selected scheme supplies none, and a lambda parameter whose `Lambda` node type is not a function type, after the body-derived type is also absent | a binder introduced untyped, which every later duplicate and drop of it then skips |
 | Field | `CompileContext::ctor_field_types`, the match lowering's one field-type read, once per call | a constructor's field types read at an instantiation of the class below |
+| Frame (not built) | where the codegen target is selected and its partition assigned, once per target compiled | one frame compiled under the census, in its partition: the denominator a zero reading is read against |
 
 **Field-read instantiation class.** Each field record carries one of three
 classes, decided from the declaration and the scrutinee's type before any
@@ -495,6 +499,25 @@ arguments it is given, and so has no record point. Concrete records are
 counted in the tally only; the census file receives a line for the residual
 and absent classes and the short-declaration shape.
 
+**Which classes the match lowering can produce.** The match passes the field
+read its scrutinee's counted type: the binder's recorded type when that is
+concrete, otherwise the scrutinee node's type. Both are concrete by
+construction, because a `MonoExpr` node carries a `ConcreteType`. So:
+
+- **residual** cannot arise through the match lowering. Its fixture plants it
+  at the field-read seam directly. Row D1's accessor takes `ConcreteType`
+  arguments, so the class has no representation after step 1;
+- **absent** arises only when the counted type is a node's placeholder — the
+  `Int` a view builder writes for a type it does not have (safety register
+  R18) — or an ADT carrying the wrong number of arguments. A residual binder
+  falls through to that placeholder, which is why an accessor matching on its
+  own residual parameter (family F1) lands in the absent class, not the
+  residual one. No real codegen target has a residual parameter: a
+  `Concrete` arm's scheme must be concrete (the types crate's arm
+  validation), and a residual-parameter constructor or accessor is a slotless
+  `Template`. In production, absent-class traffic therefore means a view node
+  carrying the placeholder, which is typecheck's R-2 correction.
+
 The absent arm is recorded where the absence is created, not at the early
 returns of `emit_dup` and `emit_release`. A match-field binder is stored
 untyped on purpose when its field owns no heap (`match_codegen::heap_field_type`),
@@ -506,52 +529,119 @@ partition (`Ctor`, `Accessor`, `TraitMethod` or `Plain`), the point, the type
 shape (bare `Var`; `ADT(<concrete>, [Var…])`; residual `Fn`; absent), for a
 field record its instantiation class, and the frame's symbol. The partition is handed to the body compiler where the codegen
 target is selected and is inherited by every inner compiler of that frame:
-lambdas, spark thunks and wrappers. No new carrier is needed
+lambdas, spark thunks and wrappers. A minted instance carries its template's
+origin, so an accessor or trait-method instance records in its template's
+partition. No new carrier is needed
 ([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category)).
 
 **Output.** In a debug build an in-process tally counts every record.
 `CRANELISP_CATEGORY_CENSUS=<path>`, read once, additionally appends one line
-per record to that file. A suite run therefore aggregates across every child
+per reported record to that file. A suite run therefore aggregates across every child
 process it spawns without writing to any process's standard streams, which
 tests observe. Every record point is host code, so emitted code is
 byte-identical whether the variable is set or not.
 
-**Both detection legs, for each arm, land in the instrument's change-set.**
+**The frame record is the liveness signal.** The file is opened at its first
+reported record. Without the frame record, a run with no non-concrete traffic
+writes nothing, and its zero cannot be told apart from an unset variable, a
+release binary, or partitions that compiled no frame. The frame record is
+reported to the file, so:
+
+- a missing file means the census did not run, and the reading is void;
+- a partition's zero is meaningful only against a non-zero frame count in that
+  partition. A partition with no frames has a vacuous zero, whatever its
+  record count.
+
+Concrete field records stay in the tally only. They would show that the field
+point executes, which its negative detection leg already proves, and they give
+no denominator for a frame that contains no match. The frame record is a
+debug-only host-side record like the others: one variant and one call at the
+site that assigns the partition, byte-identical emission, and both detection
+legs in its change-set (a fixture compiling N targets records N frames, each
+in its target's partition; with the variable set, each frame writes one line).
+
+**What the reading counts.** Records are made when a frame is compiled, not
+when it runs:
+
+- a frame restored from the object cache is not compiled and records nothing.
+  A reading is valid only when no frame was restored from a cache written
+  before the run, for example under `--no-cache` or from an empty cache. A
+  restore inside the run is covered by the compilation that wrote it;
+- with the cache on, a frame is compiled twice, once for the JIT and once for
+  its cached object, and records twice. Counts are compilations, so attribute
+  by frame symbol. The duplication does not change whether a count is zero.
+
+**Both detection legs, for each point, land in the instrument's change-set.**
 The corpus traffic that proved the S119 scaffold is gone, so each leg is a
 planted unit fixture through the production per-body path
 (`test_support::probe_defn_clif` and its siblings), observed as a change in the
 in-process tally:
 
 - positive — a directly constructed frame plants the arm: a residual-typed
-  parameter that is duplicated (retain) and dropped (release), and a `Lambda`
-  node whose type is not a function type, with an unused parameter (absent).
-  For the field point, a match on a generic product whose scrutinee carries a
-  type variable (residual) and one whose scrutinee carries no arguments
-  (absent). Each records exactly once, in the expected partition, point, shape
-  and class;
+  parameter that is duplicated (retain) and dropped (release, recording one
+  retain and one release), and a `Lambda` node whose type is not a function
+  type, with an unused parameter (absent). For the field point: a match on a
+  generic product whose scrutinee carries no arguments (absent), and a
+  residual instantiation planted at the field-read seam (residual), which the
+  match cannot produce. The no-arguments fixture records its field read and
+  is then refused by the scrutinee's release, whose glue needs the arguments.
+  It plants the point; it is not a program that reaches emission. Each records
+  exactly once, in the expected partition, point, shape and class;
 - negative — each fixture's concrete twin leaves the arm tallies and the
   residual and absent field classes unchanged; the field twin records once in
   the concrete class, which is also the proof that the point executes.
 
-**Criterion for §7.4 step 1.** Across the full default suite and the `spec_*`
-corpus, zero field records in the residual and absent classes, and zero
-short-declaration shapes. If the first reading is not zero, step 1 follows the
-producer correction that removes the measured traffic, and the reading is
-taken again before it lands. The expected first reading is not zero: the
-synthetic accessors of a generic product (§2.2, family F1, `Grid.cells`
-among them) match on their own residual-typed parameter. *Refuted if* the
-first reading is zero in both classes, in which case step 1 lands directly
-after the census.
+**The first reading** (CEN-3, taken by `dev`(backend) on the B2 tree; `qa`'s
+[evidence delta](../../tests/plan/s124-evidence-delta.md) holds the record
+and its attribution) had no field records in the residual or absent class, no
+short-declaration shape, and no retain or release records. All of its records
+were on the absent arm, in the `Plain` partition. The `Ctor`, `Accessor` and
+`TraitMethod` partitions had no records. Because the frame record was not yet
+built, that reading cannot say whether those partitions compiled any frames.
 
-**Flip criterion for §7.4 step 2.** After §7.4 step 1, the typecheck producer
-corrections (including ACT-1034) and ACT-1050's producer correction: across the
-full default suite and the `spec_*` corpus, zero records in **every** partition
-and arm, and no failing test outside the opening tree's filed set. Step 2
-refuses in every partition, so a `Plain` record is a legal program that step 2
-would break. The census reading zero is the criterion; a code reading is not.
-The ACT-1034 condition is from the arch close: its programs are refused before
-emission today, so they contribute no `TraitMethod` traffic and a zero read
-without them is vacuous.
+**Criterion for §7.4 step 1 — met by the first reading.** Across the full
+default suite and the `spec_*` corpus: zero field records in the residual and
+absent classes, and zero short-declaration shapes, in a reading valid under
+the cache condition above. The design expected a non-zero first reading from
+family F1, `Grid.cells` among it. That expectation is refuted. F1 frames are no
+longer codegen targets: an accessor of a generic product is a template, and
+each instance a program demands is compiled at a concrete instantiation.
+`f4_sudoku` never calls `cells`, so its accessor is never instantiated. The
+clause "*refuted if* the first reading is zero in both classes, in which case
+step 1 lands directly after the census" has fired.
+
+Step 1 needs neither the frame record nor a re-taken reading. The census
+file of the first reading existed, so the instrument ran. The field point
+executes on every constructor pattern the suite compiles. And step 1 carries
+its own detector: a suite program that reached one of its refusals would fail
+to compile, in every mode, in step 1's own full-suite run (§7.4, *falsifier*).
+That run is not exposed to the cache condition, because a changed compiler
+invalidates every cached object (`BUILD_ID`), so every frame is compiled
+again. Whether the first reading itself met the cache condition is `qa`'s to
+record.
+
+**Flip criterion for §7.4 step 2.** Step 2 follows §7.4 step 1, the typecheck producer
+corrections (including ACT-1034) and ACT-1050's producer correction. Across the
+full default suite and the `spec_*` corpus there must be zero records at
+**every** point and in every partition, with no failing test outside the
+opening tree's filed set, in a reading that:
+
+- is valid under the cache condition above;
+- carries frame records, showing a non-zero frame count in the `Plain`,
+  `Accessor` and `TraitMethod` partitions. The `Ctor` partition may have no
+  frames, because face 1 is closed by representation (§4);
+- was taken on a tree where ACT-1034's programs emit. Its programs are
+  refused before emission today, so they contribute no `TraitMethod` traffic.
+  A `TraitMethod` frame count above zero is necessary but not sufficient:
+  only the ACT-1034 cells passing, after typecheck row T4
+  ([typecheck §12](../typecheck/typecheck.md#12-designed-changes-not-yet-in-source-s124)),
+  shows that population is in the reading.
+
+Step 2 refuses in every partition, so a `Plain` record is a legal program that
+step 2 would break. The census reading zero is the criterion; a code reading
+is not. The first reading's absent-arm records in `Plain` are traffic of this
+kind. Step 2 waits on their attribution and correction (CEN-3), and ACT-1050's
+subject is expected among them (§7.4).
 
 **After the close** the arms are gone and the record points become the located
 refusals that replace them (§7.4 steps 1 and 2). The census keeps counting there, so a
@@ -578,7 +668,8 @@ into the declaration's field types with its own walk. It returns the
 declaration's types unsubstituted when the scrutinee carries no arguments.
 `extract_constructor` defaults a missing field type to `Int`. Either way a
 generic product's field can reach classification as a `Type::Var`. No frame
-monomorphisation closes this, and the census cannot read zero while it stands.
+monomorphisation closes this. The match lowering reaches either path only
+through an absent-class read (§7.3), and the first reading measured none.
 
 The walk also binds the wrong parameter at a concrete instantiation. It pairs
 the scrutinee's arguments with the type variables in order of first
@@ -625,20 +716,21 @@ field as `String`.
   confined to concrete reads whose parameter pairing the walk got wrong
   (above), and the change-set carries a scoped, attributed re-baseline of
   exactly those frames. If none exists in the corpus, step 1 is byte-identical.
-- **The `Grid.cells` witness moves with its traffic.** FIXME 0903 assigns the
+- **No `Grid.cells` frame exists to re-baseline.** FIXME 0903 assigned the
   scoped re-baseline of the `f4_sudoku` `user::Grid.cells` accessor frame to
-  this change-set. That frame is a residual field read (§7.3), so step 1 can
-  land only after the accessor producer correction has replaced it, and the
-  frame's emission changes in that correction's change-set. The re-baseline
-  belongs to whichever change-set changes the frame. *Refuted if* the census
-  reads the frame in the concrete class.
+  this change-set. That accessor is not a codegen target: `f4_sudoku` never
+  calls `cells`, so its template is never instantiated, and no golden frame
+  carries it (§7.3, first reading). Step 1 owes no re-baseline for it.
 
-**Order.** Step 1 precedes the step 2 zero read: while the hand-rolled walk
-stands, a generic product's field records on the retain arm, so that zero is
-unreachable (safety register R17). Step 1 follows the census and, unless the
-census reads its classes at zero, the producer correction that removes their
-traffic ([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category),
-order).
+**Order.** Step 1 follows the census. Because the first reading met its
+criterion (§7.3), it lands directly after the census rather than after a
+producer correction
+([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category),
+order). Step 1 precedes step 2 for two reasons. Step 2 types every match field
+through step 1's accessor (the step 2 table), so it cannot be built first.
+And while the hand-rolled walk stands, an absent-class read would hand a
+generic product's field to the retain arm (safety register R17). The first
+reading measured no such read, but nothing yet makes one unconstructable.
 
 #### Step 2 — binder types are concrete, and the arms are deleted
 
@@ -762,11 +854,12 @@ shown where the order depends on them.
 
 | # | Change-set | Depends on | Emission acceptance class |
 |---|---|---|---|
-| 1 | Stack-placement retirement with row D5 ([ownership codegen](ownership-codegen.md) §4) | — | attributed whole-corpus re-baseline, taken once. It makes armed halves usable again (ACT-1049) |
-| 2 | Census (§7.3) | 1 | byte-identical; debug-profile only |
-| — | Typecheck producer corrections, including ACT-1034, and ACT-1050's producer | the census readings | typecheck's; the accessor correction carries the `Grid.cells` re-baseline |
-| 3 | Close step 1: the field channel, row D1 (§7.4) | 2, and zero residual and absent field reads (§7.3). If the census's first reading is not zero, also the producer corrections that remove that traffic, then a fresh reading | byte-identical, except a scoped, attributed re-baseline of concrete reads the walk paired wrongly |
-| — | The zero read (§7.3) | 3 and every producer correction | census |
+| 1 | Stack-placement retirement with row D5 ([ownership codegen](ownership-codegen.md) §4) — **landed** (`b0f48914`, `8f44040e`) | — | no golden diff: the corpus held no stack-placed construction |
+| 2 | Census (§7.3) — **landed** (`1a3ab46e`), without the frame record | 1 | byte-identical; debug-profile only |
+| 2′ | The census frame record (§7.3) | 2 | byte-identical; debug-profile only |
+| 3 | Close step 1: the field channel, row D1 (§7.4) | 2, and the first reading, which met the criterion (§7.3) | byte-identical, except a scoped, attributed re-baseline of concrete reads the walk paired wrongly |
+| — | Typecheck producer corrections, including ACT-1034 (row T4), the attributed absent-arm traffic, and ACT-1050's producer | the census readings | typecheck's |
+| — | The zero read (§7.3, flip criterion) | 2′, 3 and every producer correction | census |
 | 4 | Close step 2: concrete binder types, the three arms deleted, the remaining narrowings (§7.4) | the zero read | byte-identical; zero new refusals |
 | 5 | Value-flattening retirement, row D4 ([ownership codegen](ownership-codegen.md) §7) | 4 | attributed re-baseline; `CACHE_SCHEMA_VERSION` bump |
 
@@ -827,7 +920,7 @@ dispatch, and the shared nullary guard) are in source and are not repeated.
 | lifecycle disposition (§7.1) | each `Concrete × Realization` arm lowers as tabled; `defined_symbols` equals the `Concrete × Body` projection | `FacadeOf` is a name-alias with no per-instance body | exhaustive, no `_ =>`; `Template` in value position and `Declared` at codegen are located refusals |
 | `cache/serialize` (§7.1) | a legal restored entry loads | tombstones conserve | each legality violation is a `CacheStale` recompile, never an `assert!` |
 | `error` frame (§7.2) | one prefix, real span, unmangled subject | a refusal inside a monomorphised instance renders the instantiation as types | no `0..0` from the glue registry; no `module/module/` doubling |
-| census (§7.3) | each arm's planted fixture records once, in its partition, arm and shape; each field fixture records once in its class; an inner compiler's record carries its frame's partition | a scalar match field records nothing on the absent arm; a non-parametric product's field read is concrete | each concrete twin leaves the arm tallies and the residual and absent classes unchanged; the census file is written only when its variable is set |
+| census (§7.3) | each arm's planted fixture records once, in its partition, arm and shape (the release fixture also once on the retain arm); each field fixture records once in its class; an inner compiler's record carries its frame's partition; compiling N targets records N frames, each in its target's partition (frame record, open) | a scalar match field records nothing on the absent arm; a non-parametric product's field read is concrete; a match on a residual parameter reads in the absent class | each concrete twin leaves the arm tallies and the residual and absent classes unchanged; the census file is written only when its variable is set |
 | `compiler/context` constructor materialisation (§7.4 step 1) | field types at a concrete instantiation come from the one types projection; a product whose fields mention its parameters out of declaration order binds each field to its own parameter's type | a nullary constructor has zero fields; a parametric constructor reached without type arguments is a `ParamArity` keying error | a residual instantiation is a located refusal at the reference's span; no second field-type read feeds a category |
 | binder types (§7.4 step 2) | every binder kind records its source's `ConcreteType` (the step 2 table) | an unused heap parameter of a defn and of a lambda is released at introduction | a `Lambda` node whose type is not a function type is a located refusal; a defn with parameters and a non-function scheme is a located invariant error |
 | `vec_codegen` element inc pointer (§7.4) | a concrete element resolves its adapter | a scalar element needs none | a missing element type is a located refusal |
@@ -853,7 +946,7 @@ E2e acceptance is `qa`'s.
 - [transitive-drop-glue.md](transitive-drop-glue.md) §1 (canonical glue), §4.1
   (the superseded I-CT record), §11 (the no-interim list this extends)
 - [io-trampoline.md](io-trampoline.md) §1.1 — IO node layout
-- [ownership-codegen.md](ownership-codegen.md) §4 — stack placement
+- [ownership-codegen.md](ownership-codegen.md) §4 — stack placement, retired
 - [total-concreteness.md](../arch/total-concreteness.md) §3.2, §3.4, §3.5
 - [symbol-table-lifecycle.md](../arch/symbol-table-lifecycle.md) §4, §5.5
 - [safety-invariants.md](../arch/safety-invariants.md) §4 — R17, R18, R19

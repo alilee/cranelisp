@@ -97,9 +97,9 @@ fetch (`CtorMeta`); pattern matching reads the same tag.
 
 - **no fields** — the value is the bare tag (`iconst`); nothing is allocated,
   preserving the `NULLARY_TAG_THRESHOLD` contract;
-- **fields** — allocate an ADT payload, store the tag and store each field.
-  Only the allocation varies: a saturated inline site may place a proven
-  non-escaping aggregate in a stack slot ([ownership codegen](ownership-codegen.md) §4).
+- **fields** — allocate an ADT payload on the RC heap, store the tag and store
+  each field. No site places a construction elsewhere: stack placement retired
+  at S124 ([ownership codegen](ownership-codegen.md) §4).
 
 Every construction reaches it:
 

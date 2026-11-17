@@ -61,8 +61,8 @@ typecheck's, and repeatedly did not — the recurring "two resolvers, one name"
 class, including run-to-run wrong-tag nondeterminism. Identity that the backend
 re-derives is identity that can disagree. The same rule governs smaller
 judgments: self-call identity is ONE shared predicate (`is_self_call`) consumed
-by the TCO back-edge decision and the spark classifier (and, until its S124
-retirement, the stack-allocation gate), so they can never diverge; before it existed each judged
+by the TCO back-edge decision and the spark classifier, so they can never
+diverge; before it existed each judged
 identity by bare written-name equality and a shadowed call looped forever.
 
 **Where a judgment is genuinely the backend's, it stays here.** The scope-stack
@@ -356,9 +356,9 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
 | RC discipline | `ring2-rc.md` | The calling convention as emitted, extern consumption, the IO extern's balance and the RC emission primitives. |
-| Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count, and each one's disposition under Principle 27 (§0): confined atomicity retired at S123 W4; stack placement, value flattening, the spark density axis and the borrowed-sibling carrier retire in S124, each with its change-set designed. Also the reuse counters, the redefinition slots and the supporting contracts. |
+| Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count, and each one's disposition under Principle 27 (§0): confined atomicity retired at S123 W4 and stack placement at S124 B1; value flattening, the spark density axis and the borrowed-sibling carrier retire in S124, each with its change-set designed. Also the reuse counters, the redefinition slots and the supporting contracts. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
-| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the three-arm census, the constructor field channel, concrete binder types (§7.3–§7.4, order §7.7). The lifecycle disposition and refusal frame stay open. |
+| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the census (built) and its frame record, the constructor field channel, concrete binder types (§7.3–§7.4, order §7.7). The lifecycle disposition and refusal frame stay open. |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | Retired (S123 W2); a stub kept for cited section numbers until those citations move. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
@@ -376,10 +376,9 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
 
 | # | Change-set | Design | Waits on |
 |---|---|---|---|
-| B1 | Stack-placement retirement with row D5, closing ACT-1049 and ACT-1066 | [ownership codegen](ownership-codegen.md) §4 | — (first backend change-set); its intrinsics half lands with it |
-| B2 | Category census, three arms | [release contract](non-concrete-release-contract.md) §7.3 | B1 |
-| B3 | Close step 1: constructor field channel, row D1 | release contract §7.4 | B2, and the census reading zero residual and absent field reads (release contract §7.3). Expected: after typecheck's accessor monomorphisation, which removes the measured accessor traffic |
-| B4 | Close step 2: concrete binder types, the three arms deleted | release contract §7.4 | the zero read: B3, typecheck's producer corrections including ACT-1034, and ACT-1050's producer |
+| B2′ | The census frame record, the liveness signal a zero reading is read against | [release contract](non-concrete-release-contract.md) §7.3 | — (B1 and B2 landed at `8f44040e` and `1a3ab46e`) |
+| B3 | Close step 1: constructor field channel, row D1 | release contract §7.4 | nothing further: the first census reading had no residual or absent field reads and no short declaration (release contract §7.3) |
+| B4 | Close step 2: concrete binder types, the three arms deleted | release contract §7.4 | the zero read under the §7.3 flip criterion, taken after B2′, B3, typecheck's producer corrections (ACT-1034 through row T4, and the attributed absent-arm traffic), and ACT-1050's producer |
 | B5 | Value-flattening retirement, row D4 | [ownership codegen](ownership-codegen.md) §7 | B4 |
 | B6 | Row D2, then the panic handle (P-15) | §7 above | — ; the handle follows D2 |
 | B7 | Rows R10-1, -2, -3, -5, -7 as one contraction (R10-6 is superseded by R10-9, B11) | [BC §3](../arch/bounded-contexts.md#3-backend-cratescranelisp-backend) | B6's D2 |
@@ -391,7 +390,7 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
 
 - B6 to B10 and B12 have no dependency on the close; `sprint` places them. Each
   emission-affecting one carries its own scoped re-baseline, so keep them out
-  of the B1–B5 change-sets.
+  of the B2′–B5 change-sets.
 - `CACHE_SCHEMA_VERSION` is bumped by B5 and B8, and by two change-sets that
   land on other surfaces but must edit this crate's constant: row D3's and
   ACT-1052's ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache

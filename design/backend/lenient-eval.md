@@ -240,7 +240,11 @@ per-site ownership facts pass 5 already annotated (`ownership-codegen.md`
   no longer exists (`ownership-codegen.md` §13.4).
 
 A `NoEscape` site scores 0, a scalar-result site is not scored, and a site with
-no fact counts as dense.
+no fact counts as dense. Scoring a `NoEscape` site 0 assumed it would not
+allocate on the shared heap. Since stack placement retired at S124 B1
+(`ownership-codegen.md` §4) every construction does, so this exclusion
+under-counts in the same way as the borrow-elided one. The axis is disabled
+and retiring, so neither is corrected.
 
 **Activation.** The axis is **inert** when the subtree carries no ownership fact
 (for example under `CRANELISP_NO_OWNERSHIP=1`). This polarity is deliberate: a
@@ -324,8 +328,8 @@ recursion is the structural "probably large" signal.
   (`mstatic_recursive_set`). An inner compiler rebuilds the identical set.
 - The `callees` feed omits direct self-edges, because the recursion name is
   shadowed at check time. Direct self-recursion is therefore recovered per site
-  through the shared `is_self_call` predicate, the same one TCO and the stack
-  gate use (`backend.md` §2).
+  through the shared `is_self_call` predicate, the same one TCO uses
+  (`backend.md` §2).
 - Spark candidates are always compiled in non-tail position, so the tail
   conjunct is `false` at every current site. Tail self-calls are excluded
   earlier, by the TCO fast paths (`design/backend/lenient-eval.md` §2.5.3).
@@ -734,11 +738,6 @@ Per-binding-vector state is keyed by **binding position** (§2.1).
    forced before the body, in source order.
 3. **Phase 3 — the body,** compiled normally.
 
-`compile_spark_thunk` raises `in_spark_thunk` around the thunk compile and
-restores it on every exit. It makes constructions relocated into the thunk
-decline stack placement (`ownership-codegen.md` §4.3, gate 5), because a stack
-slot would dangle at the join.
-
 ### 4.3 Thunk closure layout
 
 A thunk is an ordinary closure (Decision 11):
@@ -807,7 +806,6 @@ cannot reach it.
   value.
 - **No new `MonoExpr` shape and no boundary change.** A MonoExpr-level rewrite
   would need `arch` first.
-- The inner compiler sets `in_spark_thunk` (gate 5).
 
 **The RC rule for captured IVar pointers** (load-bearing):
 

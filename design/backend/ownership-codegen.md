@@ -4,7 +4,7 @@
 [backend.md](backend.md).
 
 **Status:** the current design of the backend mechanisms that consume the
-ownership analysis without deciding a count: stack placement, value
+ownership analysis without deciding a count: value
 flattening, reuse counters, the redefinition machinery and the supporting
 contracts. Counting — move, duplicate and drop — is
 [uniform counting](uniform-counting.md), built at S123 W2. The counting
@@ -14,7 +14,8 @@ deleted; their section numbers remain as one-line stubs because source and
 tests cite them. §0 records each mechanism's disposition under
 [Principle 27](../arch/principles/27-dev-tier-optimises-only-against-blow-up.md):
 the dev tier keeps an optimisation only against a change of growth rate.
-Verified against source on 2026-11-16. The increment ladders, as-built
+Verified against source on 2026-11-16, and §0, §1, §4 and §13 again after
+S124 B1 on 2026-11-17. The increment ladders, as-built
 narratives and falsified analyses are in Git history.
 
 **Governing authority:** [the ownership spine](../arch/ownership-inference.md)
@@ -43,7 +44,7 @@ spec rulings). A retiring mechanism's typecheck facts keep being produced.
 |---|---|---|---|
 | Master analysis-off toggle and cache key | §2 | Built | Stays: the differential oracle, not an optimisation |
 | Borrow elision | §3 | Retired (uniform counting) | — |
-| Stack placement for `NoEscape` | §4 | Built for scalar-payload ADT constructor calls; closures and Vec literals decline | Constant factor: retires in S124 as the first backend change-set, with packet row D5 (§4). The region arena (§4.4) is release-tier |
+| Stack placement for `NoEscape` | §4 | Retired at S124 B1 with packet row D5 | Constant factor: dev tier no longer carries it. The region arena (§4.4) is release-tier |
 | Non-atomic RC for `Confined` | §5 | Retired at S123 W4: no classifier or census; every emitted RC operation is atomic unless the probe is set | Constant factor: release tier (§5). The unsound measurement probe stays |
 | Dynamic Vec COW check and reuse counters | §6 | Built | Stays: rule U2 holds an update loop linear ([uniform counting](uniform-counting.md) §2). The counters are instrumentation |
 | General drop-guided reuse | §6.1 | Not built | Release tier |
@@ -63,13 +64,11 @@ The mechanisms land on existing seams; there is no new pipeline stage, graph or
 store. The main ones, by module (the seam map is `crates/cranelisp-backend/AGENTS.md`):
 
 - **`cranelisp-backend/src/heap.rs`** — the inline RC emission helpers, the
-  atomicity decision (`use_nonatomic_arm`), `emit_stack_alloc`,
-  `HeapCategory::classify`. The atomicity decision and stack-slot
-  initialisation live only here. Header layout is also read by
+  atomicity decision (`use_nonatomic_arm`) and
+  `HeapCategory::classify`. The atomicity decision lives only here. Header layout is also read by
   `compiler/rc_emission.rs` and `drop_glue.rs`.
-- **`compiler/fn_compiler.rs`** — the stack-eligibility gates and the site-fact
-  readers `node_escapes` and `node_confined`.
-- **`compiler/apply.rs`** — the stack-eligible constructor path.
+- **`compiler/fn_compiler.rs`** — the site-fact readers `node_escapes` and
+  `node_confined`, whose only consumer is the spark density axis.
 - **`compiler/vec_codegen.rs`** — the inline COW cores and their reuse
   counters.
 - **`compiler/control_flow/fn_as_value.rs`** — value-position and auto-curry
@@ -111,8 +110,8 @@ unchanged, so the backend is shaped to make it so:
 
 ### 2.3 The toggle is a cache invalidation key
 
-Code compiled analysis-on and analysis-off differs: moves on or off, stack
-placement until its S124 retirement, and the facts the cache persists. Loading one polarity's cache under
+Code compiled analysis-on and analysis-off differs: moves on or off, and the
+facts the cache persists. Loading one polarity's cache under
 the other would make the differential compare a mixture. The toggle's polarity
 is therefore one of the manifest's global invalidation dimensions alongside the
 compiler fingerprint, target and format: flipping it invalidates the whole
@@ -144,123 +143,60 @@ consuming entry with nothing to adapt (§13.3).
 
 ## §4. Stack placement for `NoEscape`
 
-The mechanism is live: `STACK_ALLOC_ESCAPE_FACT_SOUND = true`, with
-`CRANELISP_NO_STACK_ALLOC=1` as the fine runtime oracle and
-`CRANELISP_NO_OWNERSHIP` as the coarse one.
+**Retired from the dev tier at S124 B1** (`b0f48914`, `8f44040e`; packet row
+D5; Principle 27). Every construction allocates on the RC heap, whatever its
+escape fact. Without stack placement a `NoEscape` construction costs a
+constant per construction and changes no growth rate. The mechanism's
+description is in Git history. What stays live:
 
-**Disposition: retires from the dev tier in S124** (Principle 27; it replaces
-the 2026-11-15 ruling that kept stack placement pending a cost measurement).
-Without it a `NoEscape` construction allocates on the RC heap, which costs a
-constant per construction and changes no growth rate. Until the S124 change
-lands, this section is the current design. The retirement is one change-set:
-
-- **Deleted, backend:** `emit_stack_alloc` and `IMMORTAL_RC` (`heap.rs`); the
-  stack-eligible constructor path in `compiler/apply.rs`;
-  `FnCompiler::constructor_call_stack_eligible` with its five gates (§4.1) and
-  `STACK_ALLOC_ESCAPE_FACT_SOUND`; the `CRANELISP_NO_STACK_ALLOC` oracle
-  (§13.2.2 N4); the `tally_stack_slot` push.
-- **Deleted because the gates were their only readers:**
-  `FnCompiler::fn_has_self_call` and the whole-body walk `body_has_self_call`
-  that sets it (gate 3), and `FnCompiler::in_spark_thunk` with
-  its propagation into lambda bodies and the dependent-spark thunk (gate 5).
-  The shared self-call predicate `is_self_call` stays: the TCO back-edge
-  decision and the spark classifier still consume it.
-- **`node_escapes`** loses its stack reader. It goes with whichever of this
-  change-set and the density retirement (§13.4) lands second.
-- **Deleted, intrinsics, in the same change-set** (packet row D5):
-  `rc::stack_slot_hits`, `rc::tally_stack_slot` and the `[RC_STATS]`
-  `stack_slot` field (§13.2.1). The backend is their only caller, so the two
-  surfaces' halves cannot land apart without a broken build.
 - **Kept:** typecheck's escape fact, produced and tested where it is computed.
-- **ACT-1049 closes by subtraction.** No stack-placed value reaches the armed
-  decrement check, so the check needs no exemption for immortal headers; the
-  exemption the action requested of intrinsics is not needed.
-- **ACT-1066 closes by the same subtraction.** A direct `quote-sexp` call on
-  a stack-placed scalar `Sexp` operand stops the debug build at drop glue's
-  liveness assertion, which needs no environment variable: the shim releases
-  its immortal operand harmlessly, but a stack slot is not a tracked
-  allocation. No change outside this retirement is owed. *Refuted if*
-  REPRO-1066 ([evidence delta](../../tests/plan/s124-evidence-delta.md)
-  §3.10) is still RED on the B1 tree; the attribution then returns to `qa`.
-- **Evidence shape:** emission changes at every eligible construction, so the
-  golden corpus is re-baselined once, with attribution, before the category
-  census and the R-1 close claim their own scoped diffs
-  ([release contract](non-concrete-release-contract.md) §7.7). The analysis-on
-  and analysis-off lowerings then agree on allocation placement. `BUILD_ID`
-  invalidates cached objects, so no schema bump is needed for placement alone.
-- **Other owners:** the readers of the `stack_slot` field are test helpers
-  (`test`); the gate's row in the crate's environment table is `dev`'s. Spec
-  §12.1's descriptive layouts should not describe stack placement after S124
-  (`spec`).
+  The backend's remaining reader of it, `node_escapes`, is the spark density
+  scorer's, and it leaves with the density retirement (§13.4).
+- **Kept:** the shared self-call predicate `is_self_call`, consumed by the TCO
+  back-edge decision and the spark classifier. The stack gate was its third
+  reader.
+- **Pinned:** a `NoEscape` scalar-payload constructor call takes the heap
+  path, identical to its escaping twin
+  (`compiler/apply/heap_placement_tests.rs`).
+- **Golden corpus:** B1 recorded no diff and so no re-baseline. The corpus held
+  no stack-placed construction, so no attributed whole-corpus re-baseline
+  was owed. Analysis-on and analysis-off lowerings now agree on allocation
+  placement.
+- **ACT-1049 and ACT-1066 close by subtraction.** No stack-placed value reaches
+  the armed decrement check or drop glue's liveness assertion, so neither
+  needs an exemption for immortal headers. *Refuted if* REPRO-1066
+  ([evidence delta](../../tests/plan/s124-evidence-delta.md) §3.10) is still
+  RED on the B1 tree; the attribution then returns to `qa`.
+- **Other owners:** spec §12.1's descriptive layouts should not describe stack
+  placement after S124 (`spec`).
 
 ### 4.1 Eligibility
 
-`emit_stack_alloc` creates a stack slot of `HeapHeader::SIZE + payload`, takes
-its address and initialises the header exactly as `alloc_with_rc` would except
-for the immortal RC (§4.2), so every downstream store and RC/COW/drop path runs
-unchanged against the stack address.
-
-The escape fact lives on the use-site `Apply` of a constructor (the allocation
-in the caller's frame), not on the synthetic constructor body.
-`FnCompiler::constructor_call_stack_eligible` computes the verdict there,
-requiring `escapes == Some(false)` and all five gates, each conservative:
-
-1. **Statically sized** — always true for a constructor call.
-2. **All-scalar payload** — every field classifies `NeverHeap`. A stack aggregate
-   holding heap fields would owe a frame-exit field release its drop glue never
-   runs.
-3. **Not reachable by a TCO back-edge** — declined for the whole function when it
-   self-calls, because the escape fact is per frame and a loop iteration would
-   reuse the slot under a live reference.
-4. **Backend-emitted** — extern bodies allocate through `alloc_with_rc` and
-   cannot be redirected without an allocator seam (§4.4).
-5. **Not relocated into a spark thunk** — §4.3.
-
-Scope: scalar-payload ADT constructor calls only. Closures and Vec literals
-decline (a Vec literal allocates through `runtime/vec_new`; closures need a
-scalar-capture gate). Declining is always sound. A stack value is counted like
-any other; its releases are drift on the immortal count (§4.2).
+Retired with §4. The five eligibility gates (static size, all-scalar payload,
+no TCO back-edge, backend-emitted, not relocated into a spark thunk) are
+deleted with the mechanism. A citation of gate 3 or gate 5 names a check that
+no longer exists.
 
 ### 4.2 The immortal header
 
-Stack slots keep the standard header with `rc = IMMORTAL_RC` (`1 << 62`). Any
-RC traffic a `NoEscape` value meets — duplicates, drops, callee consuming
-decs, guarded ops — is a harmless drift on a frame-local cell; the free path
-(`old == 1`) is unreachable, so `dealloc` never sees a stack pointer; and the COW
-unique check never succeeds, so a buffer-freeing grow path is unreachable. No
-call site changes for stack-ness. When stack placement extends to Vec literals,
-vecs with in-frame writes should decline, because they would never mutate in
-place.
+Retired with §4. `IMMORTAL_RC` is deleted; no header the backend emits is
+immortal.
 
 ### 4.3 Spark relocation — gate 5
 
-A joined spark reading a parent-frame stack slot through a capture is sound:
-the parent frame is live across spark and join, and suspension crossings are
-escape edges typecheck already classifies.
-
-A construction the **backend itself relocates** into a spark thunk is different,
-and the escape fact cannot see it: lenient evaluation synthesizes thunk bodies
-for sparked apply arguments and `let` bindings, and a construction moved there
-carries the fact computed for its original frame while its slot lives in a thunk
-frame that pops at the join. Gate 5 declines every stack placement while
-`FnCompiler::in_spark_thunk` is set. The flag is raised by the one
-`compile_spark_thunk` helper for apply-argument and independent-`let` sparks,
-set directly on the dependent-`let` thunk's compiler, and propagated into lambda
-bodies by `compile_lambda_body`. Constructions genuinely written inside a thunk
-are also declined — a conservative over-decline accepted because the win there
-is marginal. Under `CRANELISP_NO_LENIENT` no thunk exists and the gate never
-fires.
+Retired with §4, together with `FnCompiler::in_spark_thunk` and its
+propagation into lambda bodies and the dependent-spark thunk.
 
 ### 4.4 The region arena — deferred
 
 An arena for `NoEscape` allocations of one structural lifetime (a `let` body, a
 match arm, a `ParBind` arm) would reach dynamically sized and extern-produced
-allocations. It consumes the same escape facts, shares the immortal-header
-discipline, and frees a `ParBind`-arm arena in the joining parent after the join.
-**Trigger to design it:** an allocator seam that lets extern allocations be
-redirected, **and** a fixture whose hot allocation is `NoEscape` and dynamically
-sized or extern-produced, so the arena would deliver a measured win stack slots
-cannot.
+allocations. It would consume typecheck's escape facts and free a
+`ParBind`-arm arena in the joining parent after the join. It is release-tier
+work (§0). **Trigger to design it:** a release-tier optimisation pass, an
+allocator seam that lets extern allocations be redirected, **and** a fixture
+whose hot allocation is `NoEscape`, so that the arena would deliver a
+measured win.
 
 ---
 
@@ -473,8 +409,8 @@ platform ABI edges stay boxed.
 - Matches over `HeapCategory` stay exhaustive; no wildcard collapses `Value`
   into another arm.
 - A `Copy` parameter emits no inc and no dec.
-- Stack placement and reuse key on allocation size and site facts, so
-  flattening only removes candidates from them.
+- Reuse keys on allocation size and site facts, so flattening only removes
+  candidates from it.
 - No code may assume "heap-typed ⇔ has a header" beyond what `classify` says.
 
 ---
@@ -547,16 +483,15 @@ half, in the same change-set:
 
 - **Simplicity.** Every mechanism rides an existing seam: the null
   element-function path, the panic machinery and the slot allocator. Net-new
-  machinery is stack-slot emission with its sentinel and one manifest key. The S124 retirements (§0) remove the stack-slot emission.
+  machinery is one manifest key.
 - **Maintainability.** The atomicity decision and slot initialisation stay in
   `cranelisp-backend/src/heap.rs`.
 - **Observability.** `[RC_STATS]` attributes the mechanisms (§13.2), the CLIF
   dump shows fact-gated deltas, and the toggle gives every observation an A/B
   baseline.
 - **Concurrency safety.** The backend adds no strand reasoning and no shared
-  state; confinement and escape arrive as typecheck verdicts. The immortal
-  sentinel (§4.2) and the else-arm discipline (§2.2) are this crate's structural
-  guards.
+  state; confinement and escape arrive as typecheck verdicts. The else-arm
+  discipline (§2.2) is this crate's structural guard.
 - **Performance.** Acceptance rides `qa`'s measured bars, never estimates here.
 
 ---
@@ -619,13 +554,13 @@ working:
 
 ```
 [RC_STATS] rc_inc=N rc_dec=N allocs=N deallocs=N \
-           stack_slot=N reuse_hit=N reuse_miss=N rc_nonatomic=N rc_atomic=N \
+           reuse_hit=N reuse_miss=N rc_nonatomic=N rc_atomic=N \
            str-len_adapt=N alloc_bytes=N
 ```
 
 - `rc_inc`, `rc_dec`, `allocs`, `deallocs`, `reuse_hit`, `reuse_miss` and
   `alloc_bytes` are **runtime** tallies.
-- `stack_slot`, `rc_nonatomic` and `rc_atomic` are **codegen-time** counts,
+- `rc_nonatomic` and `rc_atomic` are **codegen-time** counts,
   honest for `--run` and the REPL (compile and run share a process) and honestly
   zero for a `--link` binary, which did no codegen.
 - `rc_nonatomic` and `rc_atomic` count only the probe-selected helpers (§5.2):
@@ -633,10 +568,10 @@ working:
   total of atomic operations emitted.
 
 The counter state and the print surface live in `cranelisp-intrinsics::rc`; the
-backend is the sole writer, pushing (`tally_stack_slot`, `tally_rc_emit`) from
-host code during compilation. The pushes emit no IR. The `stack_slot` field
-and its push leave with stack placement (§4, packet row D5), which moves every
-later field one position left; readers that parse by name are unaffected.
+backend is the sole writer, pushing (`tally_rc_emit`) from host code during
+compilation. The pushes emit no IR. The `stack_slot` field left with stack
+placement (§4, packet row D5), moving every later field one position left;
+readers that parse by name are unaffected.
 
 #### 13.2.2 Finer measurement seams
 
@@ -651,10 +586,7 @@ changes a public API, a `cranelisp-types` item or a C-ABI symbol:
   channel and is heavier.
 - **N3 — per-site residual atomic RC** (`[RC_SITE_STATS]`) — retired at S123
   W4 with the confined classifier, its only record site (§5.1).
-- **N4 — fine stack oracle** — `CRANELISP_NO_STACK_ALLOC=1`, read once at codegen
-  and ANDed with `STACK_ALLOC_ESCAPE_FACT_SOUND`, declines stack placement only
-  while every other mechanism stays live. Built; retires with stack placement
-  (§4).
+- **N4 — fine stack oracle** — retired with stack placement (§4).
 
 ### 13.3 Wrapper contracts
 
@@ -725,7 +657,6 @@ oracle.
 | Wrappers (`fn_as_value.rs`) | dispatch kind {user function, extern, inline primitive, constructor, trait method, operator} × use {HOF argument, partial application, returned, stored, bound} × instantiation count {1, 2 same op, 2 different ops, n} × mode {REPL, `--run`} |
 | COW cores (`vec_codegen.rs`) | branch {mutate, copy, grow} × source count {1, >1} × call site {static, wrapper, curry} → the source is always owned; mutate and grow forward its reference, copy releases it; the result owns exactly one reference on every branch. Counting scenarios are the ownership plan's ([uniform counting](uniform-counting.md) §8) |
 | Vec literal element move-in | element {fresh temporary, COW-aliased result} × escape |
-| Stack placement — retires with §4 | the five gates × `escapes` × site kind → stack slot or unchanged heap; sentinel behaviour |
 | Spark density (`sparkability.rs`) — retires with §13.4 | facts {present, absent} × body {allocation-dense, compute-dense, mixed} × threshold boundary → admitted, declined, inert |
 | GOT | exhaustion, freeze, in-place patch |
 
