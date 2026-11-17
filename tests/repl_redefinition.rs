@@ -1175,3 +1175,170 @@ fn concrete_same_type_body_edit_reaches_compiled_caller_control() {
         .assert_stdout_contains(":primitives/Int 42")
         .assert_stdout_does_not_contain("cannot redefine");
 }
+
+fn s124_mode_redefinition(kind: &str, moves_off: bool) {
+    let (old, changed, same, call, key) = match kind {
+        "generic" => (
+            "(defn f [v] (let [x (vec-get v 0)] v))",
+            "(defn f [v] [(vec-get v 0)])",
+            "(defn f [v] (let [x (vec-get v 0) w v] w))",
+            "f",
+            "f",
+        ),
+        "impl" => (
+            "(impl Change String (defn change [v] (str-len v)))",
+            "(impl Change String (defn change [v] (str-len (trim v))))",
+            "(impl Change String (defn change [v] (let [w v] (str-len w))))",
+            "change",
+            "Change.change",
+        ),
+        _ => (
+            "(defn f [:(Vec Int) v] v)",
+            "(defn f [:(Vec Int) v] [1])",
+            "(defn f [:(Vec Int) v] (let [w v] w))",
+            "f",
+            "f",
+        ),
+    };
+    let prefix = if kind == "impl" {
+        "(deftrait Change (change [self] Int))\n"
+    } else {
+        ""
+    };
+    let (callers, arg) = if kind == "impl" {
+        ("(defn direct [:String v] (change v))\n(defn hold [] change)\n(defn indirect [:String v] (let [k (hold)] (k v)))\n".to_owned(), "\" x \"")
+    } else {
+        (
+            format!(
+                "(defn direct [v] (vec-len ({call} v)))\n(defn hold [] {call})\n(defn indirect [v] (let [k (hold)] (vec-len (k v))))\n"
+            ),
+            "[1 2 3]",
+        )
+    };
+    let calls = format!("(direct {arg})\n(indirect {arg})\n");
+    let before = format!("(import [primitives [*]])\n{prefix}{old}\n{callers}{calls}");
+    let turns = format!("{before}{changed}\n{calls}");
+    let cr = Cranelisp::new()
+        .env("CRANELISP_OWNERSHIP_TRACE", "1")
+        .env("CRANELISP_RC_DEC_CHECK", "1");
+    let cr = if moves_off {
+        cr.env("CRANELISP_NO_OWNERSHIP", "1")
+    } else {
+        cr
+    };
+    let out = cr.stdin(&turns).output().assert_ok();
+    let witness = if moves_off {
+        Some(
+            Cranelisp::new()
+                .env("CRANELISP_OWNERSHIP_TRACE", "1")
+                .stdin(&turns)
+                .output(),
+        )
+    } else {
+        None
+    };
+    let trace = witness.as_ref().unwrap_or(&out);
+    let summaries: std::collections::BTreeSet<_> = trace
+        .stderr
+        .lines()
+        .filter(|line| {
+            line.split(": modes=").next().is_some_and(|head| {
+                let head = head.trim();
+                head == key
+                    || head.starts_with(&format!("{key}$"))
+                    || head.contains(&format!("user/{key} "))
+            }) && line.contains(": modes=")
+        })
+        .map(|line| {
+            line.split(": modes=")
+                .nth(1)
+                .unwrap()
+                .split(" spark_ops=")
+                .next()
+                .unwrap()
+        })
+        .collect();
+    {
+        assert!(
+            summaries.len() >= 2,
+            "premise: different inferred summaries for {key}: {}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+    assert!(
+        !out.stdout.contains("cannot redefine"),
+        "same language type must publish: {}",
+        out.stdout
+    );
+    assert!(
+        count(&out.stdout, ":primitives/Int 1") >= 2,
+        "direct and old-compiled value routes must see new body: {}",
+        out.stdout
+    );
+    eprintln!("saved source: {}", out.read_tmp("user.cl"));
+    let restart = out
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin(&calls)
+        .output()
+        .assert_ok();
+    assert!(
+        count(&restart.stdout, ":primitives/Int 1") >= 2,
+        "restart agrees: {}",
+        restart.stdout
+    );
+    use helpers::marginal::{Child, MarginalPair};
+    let mk = |replacement: &str| {
+        let turns = format!("{before}{replacement}\n{calls}");
+        let c = Child::repl(&turns).env("CRANELISP_RC_DEC_CHECK", "1");
+        if moves_off {
+            c.env("CRANELISP_NO_OWNERSHIP", "1")
+        } else {
+            c
+        }
+    };
+    MarginalPair::new(
+        "same-language-type replacement with different inferred modes",
+        mk(same),
+        mk(changed),
+    )
+    .measure()
+    .assert_balanced("publication must not change release accounting of live callers");
+}
+
+// spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+#[test]
+fn s124_d7_single_moves_on() {
+    s124_mode_redefinition("single", false);
+}
+
+// spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+#[test]
+fn s124_d7_single_moves_off() {
+    s124_mode_redefinition("single", true);
+}
+
+// spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+#[test]
+fn s124_d7_generic_moves_on() {
+    s124_mode_redefinition("generic", false);
+}
+
+// spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+#[test]
+fn s124_d7_generic_moves_off() {
+    s124_mode_redefinition("generic", true);
+}
+
+// spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+#[test]
+fn s124_d7_impl_moves_on() {
+    s124_mode_redefinition("impl", false);
+}
+
+// spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+#[test]
+fn s124_d7_impl_moves_off() {
+    s124_mode_redefinition("impl", true);
+}

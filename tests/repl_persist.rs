@@ -6977,3 +6977,70 @@ fn s124_1005_d_macro_dependency_fence() {
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 42");
 }
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1064 batch control
+#[test]
+fn s124_1064_batch_control() {
+    Cranelisp::new()
+        .file("a.cl", "(deftype Box [:primitives/Int v]) (defn mk [] (Box 3))")
+        .file("b.cl", "(deftype Box [:primitives/Int v]) (defn mk [] (Box 4))")
+        .file("p.cl", "(import [primitives [*]]) (import [a []]) (import [b []]) (deftrait Sz (sz [x] Int)) (impl Sz a/Box (defn sz [_] 1)) (impl Sz b/Box (defn sz [_] 20)) (defn main [] (Pure (add-i64 (sz (a/mk)) (sz (b/mk)))))")
+        .run("p.cl").output().assert_exit(21);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1005-b value control
+#[test]
+fn s124_1005_b_restart_value_control() {
+    let out=Cranelisp::new().stdin("(defn z [] 1)\n(deftype T K)\n(defn y [] 2)\n(defmacro m [] (quote 7))\n(defn x [] 3)\n").output().assert_ok();
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin("(z)\n(y)\n(x)\n(m)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_contains(":primitives/Int 3")
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — T-D7-b partial reduction
+// defect: class=partial-record-update locus=src/save.rs::multi_definition_record found=S124 owner=/dev — provisional; filing/attribution returned to QA
+#[test]
+fn s124_overload_definition_survives_restart_partial() {
+    let out = Cranelisp::new()
+        .stdin(
+            "(import [primitives [*]])\n(defn f ([:Int n] n) ([:String s] (str-len s)))\n(f 7)\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7");
+    let saved = out.read_tmp("user.cl");
+    assert!(
+        saved.contains("(defn f"),
+        "overload must be recorded: {saved}"
+    );
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f 7)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — single-signature control
+#[test]
+fn s124_single_definition_restart_control() {
+    let out = Cranelisp::new()
+        .stdin("(defn f [:primitives/Int n] n)\n(f 7)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7");
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f 7)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7");
+}

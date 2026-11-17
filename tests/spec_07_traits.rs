@@ -3101,3 +3101,1385 @@ fn w4_impl_begin_with_keep_retains_code_control() {
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 5");
 }
+
+const S124_Q7_HEADER: &str = r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size Bool (defn size [b] 1))
+(defn pick [n] (if (eq-i64 n 0) Nope (Yep n)))
+(defn pb [n] (if (eq-i64 n 0) Nope (Yep true)))
+(defn none2 [n] (if (eq-i64 n 0) Nope (Yep (pick n))))
+"#;
+
+// spec: spec/03-types.md §3.10 — T-q7_a_int
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_int_repl() {
+    assert_main_value_in_modes(
+        "q7_a_int",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"),
+        7,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_int
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_int_run() {
+    assert_main_value_in_modes(
+        "q7_a_int",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"),
+        7,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_int
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_int_link() {
+    assert_main_value_in_modes(
+        "q7_a_int",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"),
+        7,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_bool
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_bool_repl() {
+    assert_main_value_in_modes(
+        "q7_a_bool",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pb 0))))
+"),
+        7,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_bool
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_bool_run() {
+    assert_main_value_in_modes(
+        "q7_a_bool",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pb 0))))
+"),
+        7,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_bool
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_bool_link() {
+    assert_main_value_in_modes(
+        "q7_a_bool",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pb 0))))
+"),
+        7,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_shrink
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_shrink_repl() {
+    assert_main_value_in_modes(
+        "q7_a_shrink",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (none2 0))))
+"),
+        7,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_shrink
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_shrink_run() {
+    assert_main_value_in_modes(
+        "q7_a_shrink",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (none2 0))))
+"),
+        7,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_shrink
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_shrink_link() {
+    assert_main_value_in_modes(
+        "q7_a_shrink",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (none2 0))))
+"),
+        7,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_grow_once
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_grow_once_repl() {
+    assert_main_value_in_modes(
+        "q7_a_grow_once",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep (Yep 7))) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"),
+        7,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_grow_once
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_grow_once_run() {
+    assert_main_value_in_modes(
+        "q7_a_grow_once",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep (Yep 7))) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"),
+        7,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_grow_once
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_a_grow_once_link() {
+    assert_main_value_in_modes(
+        "q7_a_grow_once",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep (Yep 7))) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"),
+        7,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_uncalled_control
+#[test]
+fn s124_q7_a_uncalled_control_repl() {
+    assert_main_value_in_modes(
+        "q7_a_uncalled_control",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure 5))
+"),
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_uncalled_control
+#[test]
+fn s124_q7_a_uncalled_control_run() {
+    assert_main_value_in_modes(
+        "q7_a_uncalled_control",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure 5))
+"),
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_a_uncalled_control
+#[test]
+fn s124_q7_a_uncalled_control_link() {
+    assert_main_value_in_modes(
+        "q7_a_uncalled_control",
+        &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure 5))
+"),
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_c_helper
+#[test]
+fn s124_q7_c_helper_repl() {
+    assert_main_value_in_modes(
+        "q7_c_helper",
+        &format!(
+            "{S124_Q7_HEADER}(defn wsize [:Size x] (size x))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope (wsize (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"
+        ),
+        7,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_c_helper
+#[test]
+fn s124_q7_c_helper_run() {
+    assert_main_value_in_modes(
+        "q7_c_helper",
+        &format!(
+            "{S124_Q7_HEADER}(defn wsize [:Size x] (size x))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope (wsize (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"
+        ),
+        7,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_c_helper
+#[test]
+fn s124_q7_c_helper_link() {
+    assert_main_value_in_modes(
+        "q7_c_helper",
+        &format!(
+            "{S124_Q7_HEADER}(defn wsize [:Size x] (size x))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope (wsize (Yep 7)) (Yep x) (size x)])))
+(defn main [] (Pure (size (pick 0))))
+"
+        ),
+        7,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_d_self
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_d_self_repl() {
+    assert_main_value_in_modes(
+        "1034_d_self",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (L a) LNil (LCons [:a h :(L a) t]))
+(deftrait Len (len [self] Int))
+(impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))
+(defn main [] (Pure (len (LCons 1 (LCons 2 LNil)))))
+"
+        ),
+        2,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_d_self
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_d_self_run() {
+    assert_main_value_in_modes(
+        "1034_d_self",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (L a) LNil (LCons [:a h :(L a) t]))
+(deftrait Len (len [self] Int))
+(impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))
+(defn main [] (Pure (len (LCons 1 (LCons 2 LNil)))))
+"
+        ),
+        2,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_d_self
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_d_self_link() {
+    assert_main_value_in_modes(
+        "1034_d_self",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (L a) LNil (LCons [:a h :(L a) t]))
+(deftrait Len (len [self] Int))
+(impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))
+(defn main [] (Pure (len (LCons 1 (LCons 2 LNil)))))
+"
+        ),
+        2,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-fr_monomorphic_control
+#[test]
+fn s124_fr_monomorphic_control_repl() {
+    assert_main_value_in_modes(
+        "fr_monomorphic_control",
+        &format!(
+            "{S124_Q7_HEADER}(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
+(defn main [] (Pure (f (pick 0))))
+"
+        ),
+        1,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-fr_monomorphic_control
+#[test]
+fn s124_fr_monomorphic_control_run() {
+    assert_main_value_in_modes(
+        "fr_monomorphic_control",
+        &format!(
+            "{S124_Q7_HEADER}(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
+(defn main [] (Pure (f (pick 0))))
+"
+        ),
+        1,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-fr_monomorphic_control
+#[test]
+fn s124_fr_monomorphic_control_link() {
+    assert_main_value_in_modes(
+        "fr_monomorphic_control",
+        &format!(
+            "{S124_Q7_HEADER}(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
+(defn main [] (Pure (f (pick 0))))
+"
+        ),
+        1,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_e_sibling
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_sibling_repl() {
+    assert_main_value_in_modes(
+        "1034_e_sibling",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_e_sibling
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_sibling_run() {
+    assert_main_value_in_modes(
+        "1034_e_sibling",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_e_sibling
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_sibling_link() {
+    assert_main_value_in_modes(
+        "1034_e_sibling",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_e_sibling_reversed
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_sibling_reversed_repl() {
+    assert_main_value_in_modes(
+        "1034_e_sibling_reversed",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_e_sibling_reversed
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_sibling_reversed_run() {
+    assert_main_value_in_modes(
+        "1034_e_sibling_reversed",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-1034_e_sibling_reversed
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_sibling_reversed_link() {
+    assert_main_value_in_modes(
+        "1034_e_sibling_reversed",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_b_sibling
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_b_sibling_repl() {
+    assert_main_value_in_modes(
+        "q7_b_sibling",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size (Yep 0)))))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_b_sibling
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_b_sibling_run() {
+    assert_main_value_in_modes(
+        "q7_b_sibling",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size (Yep 0)))))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_b_sibling
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_b_sibling_link() {
+    assert_main_value_in_modes(
+        "q7_b_sibling",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size (Yep 0)))))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_b_sibling_reversed
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_b_sibling_reversed_repl() {
+    assert_main_value_in_modes(
+        "q7_b_sibling_reversed",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn describe [o] (add-i64 4 (size (Yep 0)))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_b_sibling_reversed
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_b_sibling_reversed_run() {
+    assert_main_value_in_modes(
+        "q7_b_sibling_reversed",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn describe [o] (add-i64 4 (size (Yep 0)))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-q7_b_sibling_reversed
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_b_sibling_reversed_link() {
+    assert_main_value_in_modes(
+        "q7_b_sibling_reversed",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Cont (size [self] Int) (describe [self] Int))
+(impl Cont (Opt a) (defn describe [o] (add-i64 4 (size (Yep 0)))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
+(defn main [] (Pure (describe (Yep "s"))))
+"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-Q7-d
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_d_box_first_repl() {
+    assert_main_value_in_modes(
+        "Q7-d",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
+(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(defn main [] (Pure (size (Yep 3))))
+"
+        ),
+        4,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-Q7-d
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_d_box_first_run() {
+    assert_main_value_in_modes(
+        "Q7-d",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
+(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(defn main [] (Pure (size (Yep 3))))
+"
+        ),
+        4,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-Q7-d
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_d_box_first_link() {
+    assert_main_value_in_modes(
+        "Q7-d",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
+(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(defn main [] (Pure (size (Yep 3))))
+"
+        ),
+        4,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-Q7-d
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_d_opt_first_repl() {
+    assert_main_value_in_modes(
+        "Q7-d",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(defn main [] (Pure (size (Yep 3))))
+"
+        ),
+        4,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-Q7-d
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_d_opt_first_run() {
+    assert_main_value_in_modes(
+        "Q7-d",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(defn main [] (Pure (size (Yep 3))))
+"
+        ),
+        4,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-Q7-d
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_q7_d_opt_first_link() {
+    assert_main_value_in_modes(
+        "Q7-d",
+        &format!(
+            "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
+(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
+(impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
+(defn main [] (Pure (size (Yep 3))))
+"
+        ),
+        4,
+        &[LINK],
+    );
+}
+
+fn s124_imported_trait_value(module: &str, expr: &str, expected: i32, mode: &str) {
+    let cr = Cranelisp::new().file("p.cl", module);
+    let entry = format!("(import [primitives [*]]) (import [p [*]]) (defn main [] (Pure {expr}))");
+    let out = match mode {
+        "run" => cr.file("entry.cl", &entry).run("entry.cl").output(),
+        "link" => cr
+            .file("entry.cl", &entry)
+            .link_then_run("entry.cl")
+            .output(),
+        _ => cr.stdin(&format!("{entry}\n(main)\n")).output(),
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    if mode == "repl" {
+        assert!(
+            out.status.success() && out.stdout.contains(&format!(":primitives/Int {expected}")),
+            "{diag}"
+        );
+    } else {
+        assert_eq!(out.status.code(), Some(expected), "{diag}");
+    }
+    assert!(!diag.contains("undefined function"), "{diag}");
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_a_imported_control
+#[test]
+fn s124_1034_a_imported_control_run() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)])))"
+        ),
+        r#"(size (Yep 3))"#,
+        7,
+        "run",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_a_imported_control
+#[test]
+fn s124_1034_a_imported_control_link() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)])))"
+        ),
+        r#"(size (Yep 3))"#,
+        7,
+        "link",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_a_imported_control
+#[test]
+fn s124_1034_a_imported_control_repl() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)])))"
+        ),
+        r#"(size (Yep 3))"#,
+        7,
+        "repl",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_b_imported
+#[test]
+fn s124_1034_b_imported_run() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))]))) (defn twice [x] (add-i64 (size x) (size x)))"
+        ),
+        r#"(twice (Yep 3))"#,
+        8,
+        "run",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_b_imported
+#[test]
+fn s124_1034_b_imported_link() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))]))) (defn twice [x] (add-i64 (size x) (size x)))"
+        ),
+        r#"(twice (Yep 3))"#,
+        8,
+        "link",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_b_imported
+#[test]
+fn s124_1034_b_imported_repl() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))]))) (defn twice [x] (add-i64 (size x) (size x)))"
+        ),
+        r#"(twice (Yep 3))"#,
+        8,
+        "repl",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_c_imported
+#[test]
+fn s124_1034_c_imported_run() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))"
+        ),
+        r#"(size (Yep (Yep 3)))"#,
+        5,
+        "run",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_c_imported
+#[test]
+fn s124_1034_c_imported_link() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))"
+        ),
+        r#"(size (Yep (Yep 3)))"#,
+        5,
+        "link",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034_c_imported
+#[test]
+fn s124_1034_c_imported_repl() {
+    s124_imported_trait_value(
+        &format!(
+            "{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))"
+        ),
+        r#"(size (Yep (Yep 3)))"#,
+        5,
+        "repl",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-a, same-cluster REPL leg
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_a_begin_repl() {
+    repl_prims("(begin (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)]))))\n(size (Yep 3))\n")
+      .assert_stdout_contains(":primitives/Int 7").assert_stdout_does_not_contain("undefined function");
+}
+
+const S124_DEPTH_HEADER: &str = "(import [primitives [*]])\n(deftype (Opt a) Nope (Yep [:a v]))\n(deftrait Size (size [self] Int))\n(impl Size Int (defn size [n] n))\n";
+const S124_DEPTH_IMPL: &str =
+    "(impl Size (Opt :Size a)\n (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))\n";
+
+fn s124_depth_program(depth: usize) -> String {
+    let bindings = (0..depth)
+        .map(|n| {
+            if n == 0 {
+                "v0 (Yep 0)".to_owned()
+            } else {
+                format!("v{n} (Yep v{})", n - 1)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{S124_DEPTH_HEADER}{S124_DEPTH_IMPL}(defn main [] (let [{bindings}] (Pure (size v{}))))\n",
+        depth - 1
+    )
+}
+
+fn s124_type_refusal(src: &str, lines: &[usize], mode: &str) {
+    let cr = Cranelisp::new().file("p.cl", src);
+    let out = if mode == "link" {
+        cr.link("p.cl").output()
+    } else {
+        cr.run("p.cl").output()
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(!out.status.success(), "refusal required: {diag}");
+    assert!(
+        diag.contains("type error"),
+        "type-error category required: {diag}"
+    );
+    assert!(
+        !diag.contains("codegen error")
+            && !diag.contains("undefined function")
+            && !diag.contains("0..0"),
+        "{diag}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| diag.contains(&format!("p.cl:{line}:"))),
+        "inner-call location in {lines:?}: {diag}"
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_depth_64_run() {
+    assert_main_value_in_modes("depth 64", &s124_depth_program(64), 64, &[RUN]);
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_depth_64_link() {
+    assert_main_value_in_modes("depth 64", &s124_depth_program(64), 64, &[LINK]);
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_depth_64_repl() {
+    assert_main_value_in_modes("depth 64", &s124_depth_program(64), 64, &[REPL]);
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-b, design limit
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_depth_65_run() {
+    s124_type_refusal(&s124_depth_program(65), &[6], "run");
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-b, design limit
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_depth_65_link() {
+    s124_type_refusal(&s124_depth_program(65), &[6], "link");
+}
+
+// spec: spec/03-types.md §3.10 — F-pr
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_f_pr_run() {
+    s124_type_refusal(
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x)
+ (add-i64 1 (size (Yep o)))])))
+(defn main [] (Pure (size (Yep 3))))"#,
+        &[7],
+        "run",
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_f_pr_link() {
+    s124_type_refusal(
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x)
+ (add-i64 1 (size (Yep o)))])))
+(defn main [] (Pure (size (Yep 3))))"#,
+        &[7],
+        "link",
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr, unused implementation control
+#[test]
+fn s124_f_pr_uncalled_control_run() {
+    assert_main_value_in_modes(
+        "uncalled growing impl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x)
+ (add-i64 1 (size (Yep o)))])))
+(defn main [] (Pure 5))"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr, unused implementation control
+#[test]
+fn s124_f_pr_uncalled_control_link() {
+    assert_main_value_in_modes(
+        "uncalled growing impl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x)
+ (add-i64 1 (size (Yep o)))])))
+(defn main [] (Pure 5))"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr, unused implementation control
+#[test]
+fn s124_f_pr_uncalled_control_repl() {
+    assert_main_value_in_modes(
+        "uncalled growing impl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x)
+ (add-i64 1 (size (Yep o)))])))
+(defn main [] (Pure 5))"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-PR, demand turn and REPL recovery
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_f_pr_repl_demand() {
+    let out=Cranelisp::new().stdin(r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (impl Size Int (defn size [n] n)) (impl Size (Opt :Size a)  (defn size [o] (match o [Nope 0 (Yep x)  (add-i64 1 (size (Yep o)))])))
+(size (Yep 3))
+(size 4)
+"#).output().assert_ok();
+    let turns: Vec<_> = out.stdout.split("user> ").collect();
+    assert!(
+        !turns[1].contains("Error") && !turns[1].contains("error"),
+        "impl declaration must be accepted: {}",
+        out.stdout
+    );
+    assert!(
+        turns[2].contains("type error"),
+        "demand must report type error: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("codegen error") && !out.stdout.contains("undefined function"),
+        "{}",
+        out.stdout
+    );
+    out.assert_stdout_contains(":primitives/Int 4");
+}
+
+// spec: spec/03-types.md §3.10 — F-pr_helper
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_f_pr_helper_run() {
+    s124_type_refusal(
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(defn wrap [:Size x] (size (Yep x)))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
+(defn main [] (Pure (size (Yep 3))))"#,
+        &[5, 7],
+        "run",
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr_helper
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_f_pr_helper_link() {
+    s124_type_refusal(
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(defn wrap [:Size x] (size (Yep x)))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
+(defn main [] (Pure (size (Yep 3))))"#,
+        &[5, 7],
+        "link",
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr_helper, unused implementation control
+#[test]
+fn s124_f_pr_helper_uncalled_control_run() {
+    assert_main_value_in_modes(
+        "uncalled growing impl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(defn wrap [:Size x] (size (Yep x)))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
+(defn main [] (Pure 5))"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr_helper, unused implementation control
+#[test]
+fn s124_f_pr_helper_uncalled_control_link() {
+    assert_main_value_in_modes(
+        "uncalled growing impl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(defn wrap [:Size x] (size (Yep x)))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
+(defn main [] (Pure 5))"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-pr_helper, unused implementation control
+#[test]
+fn s124_f_pr_helper_uncalled_control_repl() {
+    assert_main_value_in_modes(
+        "uncalled growing impl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(defn wrap [:Size x] (size (Yep x)))
+(impl Size (Opt :Size a)
+ (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
+(defn main [] (Pure 5))"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — T-FR growing
+#[test]
+fn s124_fr_growing_run() {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))
+(defn main [] (Pure 5))"#,
+    );
+    let out = cr.run("p.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("type"),
+        "{diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/03-types.md §3.10 — T-FR growing
+#[test]
+fn s124_fr_growing_link() {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))
+(defn main [] (Pure 5))"#,
+    );
+    let out = cr.link("p.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("type"),
+        "{diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/03-types.md §3.10 — T-FR growing
+#[test]
+fn s124_fr_growing_repl() {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))
+(defn main [] (Pure 5))"#,
+    );
+    let out = cr.cli_flag("p.cl").stdin("5\n").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("type"),
+        "{diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/03-types.md §3.10 — T-FR second_type
+#[test]
+fn s124_fr_second_type_run() {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
+(defn use [] (f (Yep "s")))
+(defn main [] (Pure 5))"#,
+    );
+    let out = cr.run("p.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("type"),
+        "{diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/03-types.md §3.10 — T-FR second_type
+#[test]
+fn s124_fr_second_type_link() {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
+(defn use [] (f (Yep "s")))
+(defn main [] (Pure 5))"#,
+    );
+    let out = cr.link("p.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("type"),
+        "{diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/03-types.md §3.10 — T-FR second_type
+#[test]
+fn s124_fr_second_type_repl() {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        r#"(import [primitives [*]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
+(defn use [] (f (Yep "s")))
+(defn main [] (Pure 5))"#,
+    );
+    let out = cr.cli_flag("p.cl").stdin("5\n").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("type"),
+        "{diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_imported_forward_run() {
+    s124_imported_trait_value(
+        r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))"#,
+        r#"(describe (Yep 3))"#,
+        5,
+        "run",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_imported_forward_link() {
+    s124_imported_trait_value(
+        r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))"#,
+        r#"(describe (Yep 3))"#,
+        5,
+        "link",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_imported_forward_repl() {
+    s124_imported_trait_value(
+        r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))"#,
+        r#"(describe (Yep 3))"#,
+        5,
+        "repl",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_imported_reverse_run() {
+    s124_imported_trait_value(
+        r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))"#,
+        r#"(describe (Yep 3))"#,
+        5,
+        "run",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_imported_reverse_link() {
+    s124_imported_trait_value(
+        r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))"#,
+        r#"(describe (Yep 3))"#,
+        5,
+        "link",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+#[test]
+fn s124_1034_e_imported_reverse_repl() {
+    s124_imported_trait_value(
+        r#"(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))"#,
+        r#"(describe (Yep 3))"#,
+        5,
+        "repl",
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e / T-Q7-b non-parametric sibling control
+#[test]
+fn s124_sibling_nonparametric_control_repl() {
+    assert_main_value_in_modes(
+        "nonparametric sibling",
+        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (Pure (describe (MkPlain 3))))"#,
+        5,
+        &[REPL],
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e / T-Q7-b non-parametric sibling control
+#[test]
+fn s124_sibling_nonparametric_control_run() {
+    assert_main_value_in_modes(
+        "nonparametric sibling",
+        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (Pure (describe (MkPlain 3))))"#,
+        5,
+        &[RUN],
+    );
+}
+
+// spec: spec/07-traits.md §7.3.3 — T-1034-e / T-Q7-b non-parametric sibling control
+#[test]
+fn s124_sibling_nonparametric_control_link() {
+    assert_main_value_in_modes(
+        "nonparametric sibling",
+        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (Pure (describe (MkPlain 3))))"#,
+        5,
+        &[LINK],
+    );
+}
+
+// spec: spec/03-types.md §3.10 — F-PR-2 REPL demand and recovery
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_f_pr_helper_repl_demand() {
+    let out=Cranelisp::new().stdin("(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (impl Size Int (defn size [n] n)) (defn wrap [:Size x] (size (Yep x))) (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))\n(size (Yep 3))\n(size 4)\n").output().assert_ok();
+    let turns: Vec<_> = out.stdout.split("user> ").collect();
+    assert!(
+        !turns[1].contains("Error"),
+        "declaration accepted: {}",
+        out.stdout
+    );
+    assert!(
+        turns[2].contains("type error"),
+        "type error at demand: {}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("codegen error") && !out.stdout.contains("undefined function"),
+        "{}",
+        out.stdout
+    );
+    out.assert_stdout_contains(":primitives/Int 4");
+}
+
+// spec: spec/03-types.md §3.10 — T-DEPTH-b REPL entry demand
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
+#[test]
+fn s124_depth_65_repl() {
+    let out = Cranelisp::new()
+        .file("p.cl", &s124_depth_program(65))
+        .cli_flag("p.cl")
+        .stdin("5\n")
+        .output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("type error") && diag.contains("p.cl:6:"),
+        "{diag}"
+    );
+    assert!(
+        !diag.contains("codegen error")
+            && !diag.contains("undefined function")
+            && !diag.contains("0..0"),
+        "{diag}"
+    );
+}

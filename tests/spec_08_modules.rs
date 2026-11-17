@@ -5032,3 +5032,880 @@ fn export_mount_only_does_not_reexport_bare_names_neg() {
         "must load the mount and reject only the bare name: {diagnostic}"
     );
 }
+
+fn s124_projection_modules() -> Cranelisp {
+    Cranelisp::new().file("mathx.cl", r#"(import [primitives [*]]) (deftype Shade Blue Dark) (deftype Hue Red Green) (defn square [n] (mul-i64 n n)) (defn y [] 7) (defn x [] 3)"#).file("api.cl", "(export [mathx [(square sq)]])").file("api0.cl", "(export [mathx [square]])").file("broken.cl", "(defn malformed [")
+}
+
+fn s124_module_value(cr: Cranelisp, src: &str, expected: i32, mode: &str) {
+    let out = match mode {
+        "run" => cr.file("p.cl", src).run("p.cl").output(),
+        "link" => cr.file("p.cl", src).link_then_run("p.cl").output(),
+        _ => cr
+            .file("p.cl", src)
+            .cli_flag("p.cl")
+            .stdin("(main)\n")
+            .output(),
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    if mode == "repl" {
+        assert!(
+            out.status.success() && out.stdout.contains(&format!(":primitives/Int {expected}")),
+            "{diag}"
+        );
+    } else {
+        assert_eq!(out.status.code(), Some(expected), "{diag}");
+    }
+    assert!(
+        !diag.contains("[errors:") && !diag.contains("undefined function"),
+        "{diag}"
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_a
+#[test]
+fn s124_modules_r2_a_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/Pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_a
+#[test]
+fn s124_modules_r2_a_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/Pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_a
+#[test]
+fn s124_modules_r2_a_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/Pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_b
+#[test]
+fn s124_modules_r2_b_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_b
+#[test]
+fn s124_modules_r2_b_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_b
+#[test]
+fn s124_modules_r2_b_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_c
+#[test]
+fn s124_modules_r2_c_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [api [sq]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_c
+#[test]
+fn s124_modules_r2_c_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [api [sq]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_c
+#[test]
+fn s124_modules_r2_c_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [api [sq]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_control
+#[test]
+fn s124_modules_r2_control_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [api0 [square]]) (defn main [] (primitives/Pure (square 7)))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_control
+#[test]
+fn s124_modules_r2_control_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [api0 [square]]) (defn main [] (primitives/Pure (square 7)))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 r2_control
+#[test]
+fn s124_modules_r2_control_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [api0 [square]]) (defn main [] (primitives/Pure (square 7)))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup
+#[test]
+fn s124_modules_dup_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup
+#[test]
+fn s124_modules_dup_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup
+#[test]
+fn s124_modules_dup_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup_glob_control
+#[test]
+fn s124_modules_dup_glob_control_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup_glob_control
+#[test]
+fn s124_modules_dup_glob_control_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup_glob_control
+#[test]
+fn s124_modules_dup_glob_control_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup_dotted
+#[test]
+fn s124_modules_dup_dotted_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup_dotted
+#[test]
+fn s124_modules_dup_dotted_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 dup_dotted
+#[test]
+fn s124_modules_dup_dotted_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 exp0
+#[test]
+fn s124_modules_exp0_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(export [broken []]) (defn main [] (primitives/Pure 49))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 exp0
+#[test]
+fn s124_modules_exp0_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(export [broken []]) (defn main [] (primitives/Pure 49))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 exp0
+#[test]
+fn s124_modules_exp0_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(export [broken []]) (defn main [] (primitives/Pure 49))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 exp0_control
+#[test]
+fn s124_modules_exp0_control_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(export [mathx []]) (defn main [] (primitives/Pure 49))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 exp0_control
+#[test]
+fn s124_modules_exp0_control_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(export [mathx []]) (defn main [] (primitives/Pure 49))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 exp0_control
+#[test]
+fn s124_modules_exp0_control_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(export [mathx []]) (defn main [] (primitives/Pure 49))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 super
+#[test]
+fn s124_modules_super_run() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))"#,
+        49,
+        "run",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 super
+#[test]
+fn s124_modules_super_link() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))"#,
+        49,
+        "link",
+    );
+}
+
+// spec: spec/08-modules.md §8.4 — S124 super
+#[test]
+fn s124_modules_super_repl() {
+    let cr = s124_projection_modules();
+    s124_module_value(
+        cr,
+        r#"(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))"#,
+        49,
+        "repl",
+    );
+}
+
+// spec: spec/08-modules.md §8.6.4 — T-ALIAS
+// defect: class=silent-accept locus=src/imports.rs::import_alias_writer found=S122 owner=/dev
+#[test]
+fn s124_modules_alias_conflict_file() {
+    let out = Cranelisp::new()
+        .file("a.cl", "(defn v [] 1)")
+        .file("b.cl", "(defn v [] 2)")
+        .file(
+            "p.cl",
+            "(import [(a z) []])\n(import [(b z) []])\n(defn main [] (primitives/Pure (z/v)))",
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "conflicting aliases accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:2:"), "{}", out.stderr);
+}
+
+// spec: spec/08-modules.md §8.6.4 — T-ALIAS, later turn
+// defect: class=silent-accept locus=src/imports.rs::import_alias_writer found=S122 owner=/dev
+#[test]
+fn s124_modules_alias_conflict_turn() {
+    let out = Cranelisp::new()
+        .file("a.cl", "(defn v [] 1)")
+        .file("b.cl", "(defn v [] 2)")
+        .stdin("(import [(a z) []])\n(import [(b z) []])\n(z/v)\n")
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("error"),
+        "conflicting aliases accepted: {}",
+        out.stdout
+    );
+    out.assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_does_not_contain(":primitives/Int 2");
+}
+
+// spec: spec/08-modules.md §8.6.4 — T-ALIAS distinct-name control
+#[test]
+fn s124_modules_alias_distinct_control() {
+    s124_module_value(
+        Cranelisp::new()
+            .file("a.cl", "(defn v [] 1)")
+            .file("b.cl", "(defn v [] 2)"),
+        "(import [(a za) []]) (import [(b zb) []]) (defn main [] (primitives/Pure (primitives/add-i64 (za/v) (zb/v))))",
+        3,
+        "run",
+    );
+}
+
+fn s124_alias_fixture() -> Cranelisp {
+    Cranelisp::new()
+        .file("app/s.cl", "(defn q [] 0)")
+        .file("lib.cl", "(defn x [] 3) (defn y [] 7)")
+        .file("lib1.cl", "(defn x [] 3) (defn y [] 1)")
+        .file("lib2.cl", "(defn x [] 3) (defn y [] 2)")
+}
+
+fn s124_alias_refusal(forms: &str, line: usize, repl: bool) {
+    let out = if repl {
+        s124_alias_fixture()
+            .stdin(&format!("{forms}\n5\n"))
+            .output()
+    } else {
+        s124_alias_fixture()
+            .file(
+                "app.cl",
+                &format!("{forms}\n(defn main [] (primitives/Pure 0))"),
+            )
+            .run("app.cl")
+            .output()
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("alias") || diag.contains("mount"),
+        "alias diagnostic required: {diag}"
+    );
+    assert!(
+        !diag.contains("expected symbol") && !diag.contains("invalid export"),
+        "semantic collision, not parser refusal: {diag}"
+    );
+    if repl {
+        assert!(out.status.success() && diag.contains("error"), "{diag}");
+        assert!(out.stdout.contains(":primitives/Int 5"), "{diag}");
+    } else {
+        assert!(
+            !out.status.success() && diag.contains(&format!("app.cl:{line}:")),
+            "{diag}"
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-mnt_child_before
+#[test]
+fn s124_modules_mnt_child_before() {
+    s124_alias_refusal(
+        r#"(mod s)
+(export [(lib s) [x]])"#,
+        2,
+        false,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-mnt_child_after
+#[test]
+fn s124_modules_mnt_child_after() {
+    s124_alias_refusal(
+        r#"(export [(lib s) [x]])
+(mod s)"#,
+        1,
+        false,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-mnt_different_same_form
+#[test]
+fn s124_modules_mnt_different_same_form() {
+    s124_alias_refusal(r#"(export [(lib1 s) [x] (lib2 s) [x]])"#, 1, false);
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-mnt_different_later_form
+#[test]
+fn s124_modules_mnt_different_later_form() {
+    s124_alias_refusal(
+        r#"(export [(lib1 s) [x]])
+(export [(lib2 s) [x]])"#,
+        2,
+        false,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-mnt_different_later_turn
+#[test]
+fn s124_modules_mnt_different_later_turn() {
+    s124_alias_refusal(
+        r#"(export [(lib1 s) [x]])
+(export [(lib2 s) [x]])"#,
+        2,
+        true,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-q4_conflict_import_first
+#[test]
+fn s124_modules_q4_conflict_import_first() {
+    s124_alias_refusal(
+        r#"(import [(lib1 s) []])
+(export [(lib2 s) [x]])"#,
+        2,
+        false,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-q4_conflict_export_first
+#[test]
+fn s124_modules_q4_conflict_export_first() {
+    s124_alias_refusal(
+        r#"(export [(lib2 s) [x]])
+(import [(lib1 s) []])"#,
+        2,
+        false,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-q4_conflict_turns
+#[test]
+fn s124_modules_q4_conflict_turns() {
+    s124_alias_refusal(
+        r#"(import [(lib1 s) []])
+(export [(lib2 s) [x]])"#,
+        2,
+        true,
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-mnt_same_target, public route and cache restart
+#[test]
+fn s124_modules_mnt_same_target() {
+    let src = r#"(export [(lib s) [x]])
+(export [(lib s) [x]])
+(export [(lib s) [x]])
+(defn inside [] (s/y))
+"#;
+    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
+    out.run_again().run("app.cl").output().assert_exit(14);
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-q4_equal_import_first, public route and cache restart
+#[test]
+fn s124_modules_q4_equal_import_first() {
+    let src = r#"(import [(lib s) []])
+(export [(lib s) [x]])
+(defn inside [] (s/y))
+"#;
+    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
+    out.run_again().run("app.cl").output().assert_exit(14);
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-q4_equal_export_first, public route and cache restart
+#[test]
+fn s124_modules_q4_equal_export_first() {
+    let src = r#"(export [(lib s) [x]])
+(import [(lib s) []])
+(defn inside [] (s/y))
+"#;
+    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
+    out.run_again().run("app.cl").output().assert_exit(14);
+}
+
+// spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-reg_rename
+#[test]
+fn s124_modules_reg_rename() {
+    let out = s124_alias_fixture()
+        .file("colors.cl", "(deftype Shade Blue Dark)")
+        .file("boxes.cl", "(deftype Box [:primitives/Int n])")
+        .file("traits.cl", "(deftrait Show (show [self] primitives/Int))")
+        .stdin(
+            r#"(import [lib [(x ex)]])
+(defn extra [] 5)
+(ex)
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(!saved.is_empty());
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(ex)
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-reg_dotted
+#[test]
+fn s124_modules_reg_dotted() {
+    let out = s124_alias_fixture()
+        .file("colors.cl", "(deftype Shade Blue Dark)")
+        .file("boxes.cl", "(deftype Box [:primitives/Int n])")
+        .file("traits.cl", "(deftrait Show (show [self] primitives/Int))")
+        .stdin(
+            r#"(import [colors [Shade.Blue]])
+(defn extra [] 5)
+(match Blue [Blue 3 _ 99])
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(!saved.is_empty());
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(match Blue [Blue 3 _ 99])
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-reg_glob
+#[test]
+fn s124_modules_reg_glob() {
+    let out = s124_alias_fixture()
+        .file("colors.cl", "(deftype Shade Blue Dark)")
+        .file("boxes.cl", "(deftype Box [:primitives/Int n])")
+        .file("traits.cl", "(deftrait Show (show [self] primitives/Int))")
+        .stdin(
+            r#"(import [colors [Shade.*]])
+(defn extra [] 5)
+(match Blue [Blue 3 _ 99])
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(!saved.is_empty());
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(match Blue [Blue 3 _ 99])
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-reg_mount
+#[test]
+fn s124_modules_reg_mount() {
+    let out = s124_alias_fixture()
+        .file("colors.cl", "(deftype Shade Blue Dark)")
+        .file("boxes.cl", "(deftype Box [:primitives/Int n])")
+        .file("traits.cl", "(deftrait Show (show [self] primitives/Int))")
+        .stdin(
+            r#"(export [(lib s) [x]])
+(defn extra [] 5)
+(s/y)
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(!saved.is_empty());
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(s/y)
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-d10_type_rename
+#[test]
+fn s124_modules_d10_type_rename() {
+    let out = s124_alias_fixture()
+        .file("colors.cl", "(deftype Shade Blue Dark)")
+        .file("boxes.cl", "(deftype Box [:primitives/Int n])")
+        .file("traits.cl", "(deftrait Show (show [self] primitives/Int))")
+        .stdin(
+            r#"(import [boxes [(Box B)]])
+(deftrait Show (show [self] primitives/Int))
+(impl Show B (defn show [_] 3))
+(defn extra [] 5)
+(show (B 1))
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(
+        saved.contains("(impl Show B"),
+        "impl head as written: {saved}"
+    );
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(show (B 1))
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-d10_trait_rename
+#[test]
+fn s124_modules_d10_trait_rename() {
+    let out = s124_alias_fixture()
+        .file("colors.cl", "(deftype Shade Blue Dark)")
+        .file("boxes.cl", "(deftype Box [:primitives/Int n])")
+        .file("traits.cl", "(deftrait Show (show [self] primitives/Int))")
+        .stdin(
+            r#"(import [traits [(Show S) Show.*]])
+(impl S primitives/Int (defn show [n] (primitives/add-i64 n 2)))
+(defn extra [] 5)
+(show 1)
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    let saved = out.read_tmp("user.cl");
+    assert!(
+        saved.contains("(impl S primitives/Int"),
+        "impl head as written: {saved}"
+    );
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(show 1)
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.4 — T-SUP root-module refusal controls
+#[test]
+fn s124_modules_root_super_refusal_controls() {
+    for form in ["(import [super [x]])", "(export [super [x]])"] {
+        let out = Cranelisp::new()
+            .file(
+                "app.cl",
+                &format!("{form}\n(defn main [] (primitives/Pure 0))"),
+            )
+            .run("app.cl")
+            .output();
+        assert!(
+            !out.status.success()
+                && out.stderr.contains("super")
+                && out.stderr.contains("app.cl:1:"),
+            "{}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
+// spec: spec/08-modules.md §8.3.11 — T-DUP, dotted source projects only the member
+#[test]
+fn s124_modules_dotted_source_not_local_name() {
+    let out=Cranelisp::new().file("colors.cl","(deftype Shade Blue Dark)").file("p.cl","(import [colors [Shade.Blue]]) (defn main [] (primitives/Pure (match Shade.Blue [Blue 5 _ 99])))").run("p.cl").output();
+    assert!(
+        !out.status.success() && out.stderr.contains("Shade.Blue"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-MNT-b, idempotent mount across turns
+#[test]
+fn s124_modules_same_mount_later_turn_control() {
+    let out = s124_alias_fixture()
+        .stdin("(export [(lib s) [x]])\n(export [(lib s) [x]])\n(s/y)\n")
+        .output()
+        .assert_ok();
+    out.assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("Error:");
+}
+
+// spec: spec/08-modules.md §8.4.4 — T-MNT-b, idempotent mount in one form
+#[test]
+fn s124_modules_same_mount_same_form_control() {
+    let out = s124_alias_fixture()
+        .stdin("(export [(lib s) [x] (lib s) [x]])\n(s/y)\n")
+        .output()
+        .assert_ok();
+    out.assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("Error:");
+}
