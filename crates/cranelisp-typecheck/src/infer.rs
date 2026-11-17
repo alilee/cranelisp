@@ -984,20 +984,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // unify + dispatch to the instance mangle, exactly as the standalone
             // twin's self-call resolves. A call at DIFFERENT args (a distinct
             // instance / sibling clause) falls through to the ordinary defer.
-            if state
-                .mono_recheck_self
-                .as_ref()
-                .and_then(|context| context.recursion.as_ref())
-                .is_some_and(|recursion| {
-                    recursion.base == *name && recursion.params.len() == arg_types.len()
-                })
-            {
+            if state.mono_recheck_self.as_ref().is_some_and(|recursion| {
+                recursion.base == *name && recursion.params.len() == arg_types.len()
+            }) {
                 let (instance, inst_params, inst_ret) = {
-                    let recursion = state
-                        .mono_recheck_self
-                        .as_ref()
-                        .and_then(|context| context.recursion.as_ref())
-                        .unwrap();
+                    let recursion = state.mono_recheck_self.as_ref().unwrap();
                     (
                         recursion.instance.clone(),
                         recursion.params.clone(),
@@ -1062,7 +1053,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if let Some(base) = state
                 .mono_recheck_self
                 .as_ref()
-                .and_then(|context| context.recursion.as_ref())
                 .map(|recursion| recursion.base.clone())
                 && base == *name
             {
@@ -1100,19 +1090,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     // a property of the selected call's substituted parameter
                     // vector.  A template arm naturally has concrete parameters
                     // here because overload selection just instantiated it.
+                    let clause_identity = FQSymbol {
+                        module: state.current_module.clone(),
+                        symbol: clause_mangled.clone(),
+                    };
                     let selected_template = state
-                        .mono_recheck_self
+                        .mono_window
                         .as_ref()
-                        .and_then(|context| {
-                            context
-                                .local_templates
-                                .get(&clause_mangled)
-                                .cloned()
-                                .map(|core| crate::traits::TemplateFn {
-                                    core,
-                                    local_templates: context.local_templates.clone(),
-                                    template_target: Some(selected_target.clone()),
-                                })
+                        .and_then(|window| window.template(&clause_identity).cloned())
+                        .map(|core| crate::traits::TemplateFn {
+                            core,
+                            template_target: Some(selected_target.clone()),
                         })
                         .or_else(|| self.owned_overload_template(&selected_target));
                     // Resolve the selected sibling clause to a CONCRETE dispatch

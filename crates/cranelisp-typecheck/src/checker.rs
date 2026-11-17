@@ -45,7 +45,6 @@ use crate::candidate_selection::{PendingNameUse, PendingPatternUse};
 use crate::scheme;
 use crate::scope::ScopeStack;
 use crate::traits::ActiveConstraints;
-use crate::traits::TemplateCore;
 
 /// Maximum depth for following Import/Reexport chains (spec §8.6.2).
 /// Session-level per-module prelude-fallback flags (S78 §2.7; S108 Wave G).
@@ -178,11 +177,6 @@ pub(crate) struct MonoRecursionContext {
     pub(crate) ret: Type,
 }
 
-pub(crate) struct MonoRecheckContext {
-    pub(crate) recursion: Option<MonoRecursionContext>,
-    pub(crate) local_templates: HashMap<Symbol, TemplateCore>,
-}
-
 impl BodyFrame {
     pub(crate) fn explicit_types() -> Self {
         Self::default()
@@ -306,9 +300,14 @@ pub struct CheckState {
     /// call's args match `instance_params`, `infer_apply` resolves it inline as
     /// monomorphic recursion to THIS instance (unify + dispatch to
     /// `instance_mangled`), exactly as the standalone-function twin's self-call
-    /// resolves. The template map also supports ordinary same-cluster nested
-    /// mono hops while their declarations remain unpublished. Stack-saved/restored.
-    pub(crate) mono_recheck_self: Option<MonoRecheckContext>,
+    /// resolves. Stack-saved/restored per mint.
+    pub(crate) mono_recheck_self: Option<MonoRecursionContext>,
+    /// The cluster's checked templates for the settlement window being driven
+    /// (`design/typecheck/monomorphisation.md` §3.10.2). Same-cluster
+    /// templates stay `Life::Declared` until final settlement, so the table
+    /// cannot say they are templates; this set does. Installed by the window,
+    /// read by every successor step, keyed by canonical identity.
+    pub(crate) mono_window: Option<crate::traits::MonoWindow>,
     /// Per bare field spelling → the product types whose accessors were
     /// synthesised under it in this cluster. When a bare use of the spelling
     /// stays ambiguous, these supply the canonical alternatives (`Box.v`,
@@ -341,6 +340,7 @@ impl CheckState {
             pending_overload_resolutions: Vec::new(),
             deferred_self_call_dispatch: Vec::new(),
             mono_recheck_self: None,
+            mono_window: None,
             accessor_owning_types: HashMap::new(),
             current_module: module,
         }

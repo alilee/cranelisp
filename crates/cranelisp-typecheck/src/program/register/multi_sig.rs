@@ -42,7 +42,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 scheme: owned_arm.callable.scheme.clone(),
                 origin: CallableOrigin::Plain,
             },
-            local_templates: HashMap::new(),
             template_target: Some(target.clone()),
         })
     }
@@ -724,17 +723,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // External call — bifurcate on the selected arm's lifecycle. Its
         // instantiated parameters can be concrete even when the declaration
         // arm is a template, so substituted type shape is not a valid proxy.
-        let mut selected_template = state.mono_recheck_self.as_ref().and_then(|context| {
-            context
-                .local_templates
-                .get(&mangled_name)
-                .cloned()
-                .map(|core| crate::traits::TemplateFn {
-                    core,
-                    local_templates: context.local_templates.clone(),
-                    template_target: Some(selected_target.clone()),
-                })
-        });
+        let clause_identity = FQSymbol {
+            module: state.current_module.clone(),
+            symbol: mangled_name.clone(),
+        };
+        let mut selected_template = state
+            .mono_window
+            .as_ref()
+            .and_then(|window| window.template(&clause_identity).cloned())
+            .map(|core| crate::traits::TemplateFn {
+                core,
+                template_target: Some(selected_target.clone()),
+            });
         if selected_template.is_none() {
             selected_template =
                 bodies.and_then(|ledger| self.checked_body_template(state, ledger, &mangled_name));
@@ -872,14 +872,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 };
                 let imported_home =
                     (template_home != state.current_module).then_some(template_home);
-                match self.monomorphise_call(
+                // The drain's template arm settles outside the finalize
+                // windows; its mint reads a window of its own when none is
+                // being driven.
+                let saved_window = match (&state.mono_window, bodies) {
+                    (None, Some(ledger)) => {
+                        let window = self.cluster_template_window(state, ledger);
+                        Some(state.mono_window.replace(window))
+                    }
+                    _ => None,
+                };
+                let minted = self.monomorphise_call(
                     state,
                     &mangled_name,
                     &demand,
                     imported_home.as_ref(),
                     Some(base_name),
                     Some(template),
-                )? {
+                );
+                if let Some(saved) = saved_window {
+                    state.mono_window = saved;
+                }
+                match minted? {
                     Some(md) => md.defn.name.clone(),
                     None => mangled_name.clone(),
                 }

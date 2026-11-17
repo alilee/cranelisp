@@ -20,10 +20,38 @@ pub(crate) struct TemplateCore {
 #[derive(Clone)]
 pub(crate) struct TemplateFn {
     pub(crate) core: TemplateCore,
-    pub(crate) local_templates: HashMap<Symbol, TemplateCore>,
     /// Semantic declaration body which owns this template. Ordinary templates
     /// derive a binding target from `fn_name`; owned overload arms provide it.
     pub(crate) template_target: Option<CallableTarget>,
+}
+
+/// The same-cluster template set of one settlement window
+/// (`design/typecheck/monomorphisation.md` §3.10.2): the cluster's checked
+/// bodies that are still templates, keyed by canonical identity.
+#[derive(Clone)]
+pub(crate) struct MonoWindow {
+    module: ModuleFullPath,
+    templates: HashMap<Symbol, TemplateCore>,
+}
+
+impl MonoWindow {
+    pub(crate) fn new(module: ModuleFullPath, templates: HashMap<Symbol, TemplateCore>) -> Self {
+        MonoWindow { module, templates }
+    }
+
+    /// A window with no same-cluster templates, as replay has: its templates
+    /// are published.
+    pub(crate) fn empty(module: ModuleFullPath) -> Self {
+        Self::new(module, HashMap::new())
+    }
+
+    /// The template for a resolved callee, only when the callee belongs to
+    /// the cluster this window settles.
+    pub(crate) fn template(&self, callee: &FQSymbol) -> Option<&TemplateCore> {
+        (callee.module == self.module)
+            .then(|| self.templates.get(&callee.symbol))
+            .flatten()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -259,22 +287,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             visibility: Visibility::Public,
             span: defn.span,
         };
-        // Scope the exact same-cluster template set to this mono recheck. For a
-        // multi-signature clause, also carry the concrete self-recursion identity.
-        // The previous context is restored unconditionally so nested rechecks do
-        // not leak either fact into their caller.
-        let saved_mono_recheck_self = state.mono_recheck_self.take();
-        if origin_base.is_some() || !constrained_fn.local_templates.is_empty() {
-            state.mono_recheck_self = Some(crate::checker::MonoRecheckContext {
-                recursion: origin_base.map(|base| crate::checker::MonoRecursionContext {
-                    base: base.clone(),
-                    instance: JitSymbol::from(mangled_name.as_str()),
-                    params: concrete_param_types.clone(),
-                    ret: concrete_ret_ty.clone(),
-                }),
-                local_templates: constrained_fn.local_templates.clone(),
-            });
-        }
+        // For a multi-signature clause, carry the concrete self-recursion
+        // identity into this recheck only. The previous context is restored
+        // unconditionally so nested rechecks do not inherit it.
+        let saved_mono_recheck_self = std::mem::replace(
+            &mut state.mono_recheck_self,
+            origin_base.map(|base| crate::checker::MonoRecursionContext {
+                base: base.clone(),
+                instance: JitSymbol::from(mangled_name.as_str()),
+                params: concrete_param_types.clone(),
+                ret: concrete_ret_ty.clone(),
+            }),
+        );
         let recheck_result = self.recheck_and_resolve_inner(
             state,
             &mut wrap_defn,
@@ -1135,15 +1159,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Some(resolved) => (resolved.entry, resolved.canonical),
                 None => continue,
             };
-            // Same-cluster checked templates are deliberately unpublished
-            // until final settlement, so their table entry is still
-            // `Declared`. The ledger-derived mono context is authoritative for
-            // that population; persisted templates continue to use the table
-            // lifecycle predicate.
+            // Same-cluster checked templates stay `Declared` until final
+            // settlement; the window's set answers for them, by identity.
             let local_core = state
-                .mono_recheck_self
+                .mono_window
                 .as_ref()
-                .and_then(|context| context.local_templates.get(inner_name).cloned());
+                .and_then(|window| window.template(&callee).cloned());
             if local_core.is_none() && !Self::entry_is_monomorphisable_polymorphic(&entry) {
                 continue;
             }
@@ -1164,12 +1185,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // polymorphic scheme 0344 deliberately keeps. The inner entry is built
             // from `inner_arg_types` (already concrete, captured before this) +
             // the isolated subst, so isolation does not affect what gets created.
-            let local_template = local_core.and_then(|core| {
-                state.mono_recheck_self.as_ref().map(|context| TemplateFn {
-                    core,
-                    local_templates: context.local_templates.clone(),
-                    template_target: Some(CallableTarget::Binding(callee.clone())),
-                })
+            let local_template = local_core.map(|core| TemplateFn {
+                core,
+                template_target: Some(CallableTarget::Binding(callee.clone())),
             });
             let template = local_template
                 .or_else(|| self.get_constrained_fn(state, &callee.symbol, Some(&callee.module)));
@@ -1249,16 +1267,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             let callee = callee.clone();
-            let Some(entry) = self.probe_module_entry_owned(&callee.module, callee.symbol.as_ref())
-            else {
-                continue;
+            let window_core = state
+                .mono_window
+                .as_ref()
+                .and_then(|window| window.template(&callee).cloned());
+            let template = match window_core {
+                Some(core) => Some(TemplateFn {
+                    core,
+                    template_target: Some(CallableTarget::Binding(callee.clone())),
+                }),
+                None => self
+                    .probe_module_entry_owned(&callee.module, callee.symbol.as_ref())
+                    .filter(Self::entry_is_monomorphisable_polymorphic)
+                    .and_then(|_| {
+                        self.get_constrained_fn(state, &callee.symbol, Some(&callee.module))
+                    }),
             };
-            if !Self::entry_is_monomorphisable_polymorphic(&entry) {
-                continue;
-            }
-            let Some(template) =
-                self.get_constrained_fn(state, &callee.symbol, Some(&callee.module))
-            else {
+            let Some(template) = template else {
                 continue;
             };
             let use_type = Type::Fn(params.clone(), ret.clone());
@@ -1325,7 +1350,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 scheme: callable.arm.scheme.clone(),
                 origin: callable.origin.clone(),
             },
-            local_templates: HashMap::new(),
             template_target: Some(CallableTarget::Binding(FQSymbol {
                 module: lookup_module.clone(),
                 symbol: name.clone(),
@@ -1442,6 +1466,8 @@ pub(crate) fn concrete_type_name(ty: &Type) -> Option<TypeName> {
     receiver_identity(ty).map(|identity| identity.name)
 }
 
+#[cfg(test)]
+mod successor_tests;
 #[cfg(test)]
 mod tests;
 

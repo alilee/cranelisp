@@ -65,9 +65,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         name: &Symbol,
     ) -> Option<crate::traits::TemplateFn> {
         // Select the requested source occurrence through the ledger's exact
-        // publication index. The companion snapshot below exists only so a
-        // scoped mono recheck can follow a later same-cluster template hop;
-        // it is not used to discover or choose the requested body.
+        // publication index.
         let selected = bodies.checked_for_publication(name)?;
         let selected_callable = self
             .current_symbol_table(state)
@@ -75,19 +73,33 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .lookup(name)
             .and_then(Binding::callable)
             .cloned()?;
-        let selected_scheme = self.checked_body_scheme(state, selected.registration);
         if selected_callable.arm.scheme.ty.is_concrete()
             && selected_callable.arm.scheme.constraints.is_empty()
         {
             return None;
         }
-        let core = crate::traits::TemplateCore {
-            body: TemplateBody::Ast(selected.ast.clone()),
-            scheme: selected_scheme,
-            origin: selected_callable.origin,
-        };
+        Some(crate::traits::TemplateFn {
+            core: crate::traits::TemplateCore {
+                body: TemplateBody::Ast(selected.ast.clone()),
+                scheme: self.checked_body_scheme(state, selected.registration),
+                origin: selected_callable.origin,
+            },
+            template_target: Some(CallableTarget::Binding(FQSymbol {
+                module: state.current_module.clone(),
+                symbol: name.clone(),
+            })),
+        })
+    }
 
-        let mut local_templates = HashMap::new();
+    /// The cluster's checked bodies that are still templates, as one
+    /// settlement window's set (`design/typecheck/monomorphisation.md`
+    /// §3.10.2). Derived once per window from settled state.
+    pub(crate) fn cluster_template_window(
+        &self,
+        state: &CheckState,
+        bodies: &BodyLedger,
+    ) -> crate::traits::MonoWindow {
+        let mut templates = HashMap::new();
         for body in bodies.checked_bodies() {
             let publication = &body.registration.publication_name;
             let Some(callable) = self
@@ -99,27 +111,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             else {
                 continue;
             };
-            let scheme = self.checked_body_scheme(state, body.registration);
             if callable.arm.scheme.ty.is_concrete() && callable.arm.scheme.constraints.is_empty() {
                 continue;
             }
-            local_templates.insert(
+            templates.insert(
                 publication.clone(),
                 crate::traits::TemplateCore {
                     body: TemplateBody::Ast(body.ast.clone()),
-                    scheme,
+                    scheme: self.checked_body_scheme(state, body.registration),
                     origin: callable.origin,
                 },
             );
         }
-        Some(crate::traits::TemplateFn {
-            core,
-            local_templates,
-            template_target: Some(CallableTarget::Binding(FQSymbol {
-                module: state.current_module.clone(),
-                symbol: name.clone(),
-            })),
-        })
+        crate::traits::MonoWindow::new(state.current_module.clone(), templates)
     }
 
     /// Rebuild a checked body's scheme from the ledger-owned monotypes and the
@@ -264,7 +268,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut seen = HashMap::new();
         let mut mono_defns = Vec::new();
         let no_local_bodies = BodyLedger::default();
+        let saved_window = state.mono_window.replace(crate::traits::MonoWindow::empty(
+            state.current_module.clone(),
+        ));
+        let result = self.instantiate_demand_roots_in_window(
+            state,
+            demands,
+            &mut warnings,
+            &mut seen,
+            &mut mono_defns,
+            &no_local_bodies,
+        );
+        state.mono_window = saved_window;
+        result?;
 
+        Ok(CheckResult {
+            warnings,
+            display: None,
+            unresolved_dispatch: Vec::new(),
+        })
+    }
+
+    fn instantiate_demand_roots_in_window(
+        &self,
+        state: &mut CheckState,
+        demands: Vec<MonoDemand>,
+        warnings: &mut Vec<cranelisp_types::Warning>,
+        seen: &mut HashMap<Symbol, JitSymbol>,
+        mono_defns: &mut Vec<MonoDefn>,
+        no_local_bodies: &BodyLedger,
+    ) -> Result<(), CranelispError> {
         for demand in demands {
             let Some(owner) = callable_target_owner(&demand.template) else {
                 continue;
@@ -304,9 +337,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let drive = self.drive_call_site_monomorphisation(
                 state,
                 std::slice::from_ref(&demand),
-                &mut seen,
-                &mut mono_defns,
-                &no_local_bodies,
+                seen,
+                mono_defns,
+                no_local_bodies,
             );
             match drive {
                 Ok(()) => {}
@@ -331,12 +364,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Err(error) => return Err(error),
             }
         }
-
-        Ok(CheckResult {
-            warnings,
-            display: None,
-            unresolved_dispatch: Vec::new(),
-        })
+        Ok(())
     }
 
     /// Monomorphise every reachable polymorphic / constrained call site into
@@ -352,6 +380,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// surfaces as a §3.11.1 could-not-monomorphise error) runs at the
     /// `monomorphise_call` seam, unchanged.
     pub(super) fn pass4_monomorphise(
+        &self,
+        state: &mut CheckState,
+        defns: &[&Defn],
+        constrained_fn_names: &HashSet<Symbol>,
+        bodies: &mut BodyLedger,
+    ) -> Result<Vec<MonoDefn>, CranelispError> {
+        let window = self.cluster_template_window(state, bodies);
+        let saved_window = state.mono_window.replace(window);
+        let result = self.pass4_monomorphise_in_window(state, defns, constrained_fn_names, bodies);
+        state.mono_window = saved_window;
+        result
+    }
+
+    fn pass4_monomorphise_in_window(
         &self,
         state: &mut CheckState,
         defns: &[&Defn],
