@@ -518,7 +518,14 @@ where
         // S110 W2 (S16): keyed `ctor_meta_at` read off the carrier, replacing the
         // `lookup_constructor` chain-follow — the recorder records the canonical
         // `member_key` for a ctor value ref (§1.1.2), so the direct read HITS.
-        if let Some((fqtn, ctor_info)) = target_fq.and_then(|fq| self.ctx.ctor_meta_at(fq)) {
+        let target_ctor = match target_fq {
+            Some(fq) => self
+                .ctx
+                .ctor_meta_at(fq)
+                .map_err(|short| short.refusal(fq, span))?,
+            None => None,
+        };
+        if let Some((fqtn, ctor_info)) = target_ctor {
             // R5 (§7.1): a value-flattened single-ctor type constructs by a
             // bare-word move of its single field — no alloc. MUST match the
             // use-site (`compile_var_apply`) and synthetic-body

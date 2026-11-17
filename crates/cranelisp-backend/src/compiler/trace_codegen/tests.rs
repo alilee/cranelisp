@@ -526,6 +526,7 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
     };
     let (fqtn, meta) = ctx
         .ctor_meta_at(&cons_fq)
+        .expect("Cons is fully declared")
         .expect("Cons storage key hits its Def");
     assert_eq!(fqtn.name.as_ref(), "IntList");
     assert_eq!(meta.tag, 1);
@@ -539,7 +540,7 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
         symbol: Symbol::from("IntList.Ghost"),
     };
     assert!(
-        ctx.ctor_meta_at(&ghost).is_none(),
+        matches!(ctx.ctor_meta_at(&ghost), Ok(None)),
         "a storage key with no Def is a None (the §10.3 hard-error precondition)"
     );
 }

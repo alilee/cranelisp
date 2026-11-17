@@ -183,7 +183,7 @@ where
         // carrier (the canonical `member_key` the recorder records — §1.1.2), not
         // the `lookup_constructor` chain-follow. The emission routes through
         // `emit_adt_construct(tag, &[], span)`.
-        if let Some(tag) = self.nullary_constructor_tag(resolved_target) {
+        if let Some(tag) = self.nullary_constructor_tag(resolved_target, span)? {
             return self.emit_adt_construct(tag, &[], span);
         }
 
@@ -279,15 +279,26 @@ where
     ///
     /// The fieldless test is [`CtorMeta::value_shape`] and nothing else
     /// (FIXME 0917, §6.2.1).
+    /// A short declaration is refused at `span`.
     pub(crate) fn nullary_constructor_tag(
         &self,
         resolved_target: Option<&FQSymbol>,
-    ) -> Option<usize> {
-        let (_fqtn, ctor_info) = self.ctx.ctor_meta_at(resolved_target?)?;
-        match ctor_info.value_shape() {
+        span: Span,
+    ) -> Result<Option<usize>, CranelispError> {
+        let Some(fq) = resolved_target else {
+            return Ok(None);
+        };
+        let Some((_fqtn, ctor_info)) = self
+            .ctx
+            .ctor_meta_at(fq)
+            .map_err(|short| short.refusal(fq, span))?
+        else {
+            return Ok(None);
+        };
+        Ok(match ctor_info.value_shape() {
             CtorValueShape::BareTag => Some(ctor_info.tag),
             CtorValueShape::Payload => None,
-        }
+        })
     }
 
     // --- Operator-as-value support (spec §7.6) ---

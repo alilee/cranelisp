@@ -1062,7 +1062,14 @@ where
         // returns `None` from `extract_constructor` and falls through to the
         // S5/S7 keyed direct-call arm below. Covers data AND nullary ctors so no
         // ctor Var callee reaches `compile_direct_call`.
-        if let Some((fqtn, meta)) = callee_target.and_then(|fq| self.ctx.ctor_meta_at(fq)) {
+        let callee_ctor = match callee_target {
+            Some(fq) => self
+                .ctx
+                .ctor_meta_at(fq)
+                .map_err(|short| short.refusal(fq, span))?,
+            None => None,
+        };
+        if let Some((fqtn, meta)) = callee_ctor {
             let field_count = meta.fields.len();
             if args.len() != field_count {
                 return Err(CranelispError::CodegenError {

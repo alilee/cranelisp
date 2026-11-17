@@ -140,7 +140,7 @@ impl FieldClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Declaration {
     Full,
-    /// Fewer field types than fields; the missing ones are defaulted.
+    /// Fewer field types than fields; the read refuses the constructor.
     Short,
 }
 

@@ -194,17 +194,9 @@ where
             ),
             location: ErrorLocation::from_span(span),
         })?;
-        let (fqtn, ctor_info) = self.ctx.ctor_meta_at(fq).ok_or_else(|| {
-            // A `Some` that resolves to no `Def` is keying drift — fail LOUDLY at
-            // compile time (Principle 18), never silently mis-tag.
-            CranelispError::CodegenError {
-                message: format!(
-                    "pattern constructor '{name}' resolved to '{fq}' which has no \
-                     Def (pattern_ctors keying drift)"
-                ),
-                location: ErrorLocation::from_span(span),
-            }
-        })?;
+        let (fqtn, ctor_info) =
+            self.ctx
+                .pattern_ctor_meta(fq, match_ctx.scrut_type.as_ref(), span, &self.census)?;
         let _type_def =
             self.ctx
                 .lookup_type_def(&fqtn)

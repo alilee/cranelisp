@@ -347,3 +347,221 @@ fn a_short_declaration_is_refused_not_defaulted_neg() {
     let err = read(&tables(), "MkSh", None).expect_err("a short declaration refuses");
     assert!(err.to_string().contains("keying"), "{err}");
 }
+
+/// Compile `(defn f [params] body)` with `f : Fn [params] Int` against
+/// [`tables`], through the production per-body function.
+fn compile_against_short(
+    params: &[(&str, Type)],
+    body: Expr,
+    resolved_targets: &HashMap<Span, FQSymbol>,
+    pattern_ctors: &HashMap<Span, FQSymbol>,
+) -> Result<String, CranelispError> {
+    use cranelisp_types::{CallableOrigin, Defn, DefnVariant};
+    let tables = tables();
+    let param_names: Vec<Symbol> = params.iter().map(|(p, _)| Symbol::from(*p)).collect();
+    tables
+        .get_mut(&user())
+        .expect("user table")
+        .declare(
+            Symbol::from("f"),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(
+                    params.iter().map(|(_, t)| t.clone()).collect(),
+                    Box::new(Type::Int),
+                ),
+            },
+            param_names.clone(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            Visibility::Public,
+        )
+        .expect("declare f");
+    let defn = Defn {
+        name: Symbol::from("f"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: param_names.into_iter().map(|p| (p, None)).collect(),
+            body,
+            span: Span::SYNTHETIC,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    };
+    let mut module = crate::test_support::make_object_module();
+    crate::test_support::try_compile_defns_in_module_with_pattern_ctors(
+        &[&defn],
+        &[],
+        resolved_targets,
+        pattern_ctors,
+        &tables,
+        user(),
+        &mut module,
+        &|_| {},
+    )
+    .map(|mut clifs| clifs.remove(0))
+}
+
+fn mk_sh() -> FQSymbol {
+    FQSymbol {
+        module: user(),
+        symbol: Symbol::from("MkSh"),
+    }
+}
+
+/// A short declaration's refusal: a keying error located at `at`.
+fn assert_short_refusal(result: Result<String, CranelispError>, at: Span) {
+    let err = result.expect_err("a short declaration must refuse, not lower");
+    let CranelispError::CodegenError { message, location } = &err else {
+        panic!("expected a codegen refusal, got {err:?}");
+    };
+    assert!(message.contains("keying"), "{message}");
+    assert!(message.contains("MkSh"), "{message}");
+    assert_eq!(location.span, at, "{message}");
+}
+
+// spec: §7.4 step 1 (NEGATIVE) — a match arm naming a short constructor with
+// no bindings is refused; it does not take the nullary bare-tag comparison, which
+// would read a one-field record's heap pointer as a tag.
+#[test]
+fn a_short_constructor_is_not_matched_as_nullary_neg() {
+    let pattern_span = Span::new(20, 24);
+    let body = Expr::Match {
+        scrutinee: Box::new(Expr::var(Symbol::from("b"), Span::new(10, 11))),
+        arms: vec![cranelisp_types::MatchArm {
+            pattern: cranelisp_types::Pattern::Constructor {
+                name: cranelisp_types::SymbolRef::new(None, Symbol::from("MkSh")),
+                bindings: vec![],
+                span: pattern_span,
+            },
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::new(30, 31),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::new(19, 32),
+        }],
+        span: Span::new(0, 40),
+        compiler_generated: false,
+        inferred_type: None,
+    };
+    let pattern_ctors = HashMap::from([(pattern_span, mk_sh())]);
+    assert_short_refusal(
+        compile_against_short(
+            &[("b", at("Sh", vec![]))],
+            body,
+            &HashMap::new(),
+            &pattern_ctors,
+        ),
+        pattern_span,
+    );
+}
+
+// spec: §6.2.1, §7.4 step 1 (NEGATIVE) — a value reference to a short
+// constructor is refused; it is not folded to a bare tag.
+#[test]
+fn a_short_constructor_reference_is_not_a_bare_tag_neg() {
+    let reference = Span::new(5, 9);
+    let body = Expr::var(Symbol::from("MkSh"), reference);
+    let targets = HashMap::from([(reference, mk_sh())]);
+    assert_short_refusal(
+        compile_against_short(&[], body, &targets, &HashMap::new()),
+        reference,
+    );
+}
+
+// spec: §7.4 step 1 (NEGATIVE) — constructing a short constructor is refused
+// at either argument count: its arity is the declaration's, never the shortened
+// field list's.
+#[test]
+fn a_short_constructor_call_is_refused_at_any_arity_neg() {
+    for args in [
+        vec![],
+        vec![Expr::IntLit {
+            value: 1,
+            span: Span::new(12, 13),
+            inferred_type: Some(Box::new(Type::Int)),
+        }],
+    ] {
+        let callee = Span::new(6, 10);
+        let call = Span::new(5, 14);
+        let body = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("MkSh"), callee)),
+            args,
+            span: call,
+            resolved_call: None,
+            inferred_type: Some(Box::new(at("Sh", vec![]))),
+        };
+        let targets = HashMap::from([(callee, mk_sh())]);
+        let result = compile_against_short(&[], body, &targets, &HashMap::new());
+        let err = result.expect_err("a short constructor call must refuse");
+        let text = err.to_string();
+        assert!(text.contains("keying"), "{text}");
+        assert!(!text.contains("expects 0 args"), "{text}");
+    }
+}
+
+// spec: §7.4 step 1 (NEGATIVE) — the type-wide constructor read refuses a type
+// with a short constructor rather than reporting it with fewer fields.
+#[test]
+fn a_type_with_a_short_constructor_has_no_constructor_metadata_neg() {
+    let tables = tables();
+    let func_ids = HashMap::new();
+    let func_arities = HashMap::new();
+    let ctx = CompileContext {
+        func_ids: &func_ids,
+        func_arities: &func_arities,
+        symbol_tables: &tables,
+        current_module: user(),
+        alloc_func_id: None,
+        dealloc_func_id: FuncId::from_u32(0),
+        alloc_string_func_id: None,
+        panic_func_id: None,
+        vec_new_func_id: None,
+        vec_drop_func_id: None,
+    };
+    let type_def = ctx.lookup_type_def(&fqtn("Sh")).expect("Sh");
+    let err = ctx
+        .constructor_metas(&type_def)
+        .expect_err("a short constructor has no metadata");
+    assert!(err.to_string().contains("MkSh"), "{err}");
+    assert!(
+        ctx.constructor_metas(&ctx.lookup_type_def(&fqtn("P")).expect("P"))
+            .is_ok()
+    );
+}
+
+// spec: §6.2.1, §7.4 step 1 (NEGATIVE) — a short declaration yields no
+// constructor record at all, so no reader can see its shortened field list as
+// a bare tag or as a smaller arity; a full declaration of the same type shape
+// still yields its record.
+#[test]
+fn a_short_declaration_builds_no_constructor_record_neg() {
+    let tables = tables();
+    let func_ids = HashMap::new();
+    let func_arities = HashMap::new();
+    let ctx = CompileContext {
+        func_ids: &func_ids,
+        func_arities: &func_arities,
+        symbol_tables: &tables,
+        current_module: user(),
+        alloc_func_id: None,
+        dealloc_func_id: FuncId::from_u32(0),
+        alloc_string_func_id: None,
+        panic_func_id: None,
+        vec_new_func_id: None,
+        vec_drop_func_id: None,
+    };
+    assert!(ctx.ctor_meta_at(&mk_sh()).is_err());
+    let full = FQSymbol {
+        module: user(),
+        symbol: Symbol::from("MkPt"),
+    };
+    let (_, meta) = ctx
+        .ctor_meta_at(&full)
+        .expect("MkPt is fully declared")
+        .expect("MkPt is a constructor");
+    assert!(meta.fields.is_empty());
+}

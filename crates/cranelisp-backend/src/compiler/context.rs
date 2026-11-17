@@ -37,16 +37,37 @@ pub(crate) struct CtorField {
 /// `DefKind::Constructor`; field names from `param_names`; field types
 /// reconstructed from the `Def.scheme`. See `design/backend/compile-to-module.md`
 /// §2.6 and `DefKind::Constructor` rustdoc in `cranelisp-types::module`.
+///
+/// `fields` has exactly one entry per declared field: a constructor whose
+/// scheme supplies fewer field types than it declares fields is refused when
+/// its metadata is read ([`ShortDeclaration`]), so no reader can take it for a
+/// nullary or smaller-arity constructor.
 #[derive(Debug, Clone)]
 pub(crate) struct CtorMeta {
     pub tag: usize,
-    /// The field types the constructor's scheme supplies, at most one per
-    /// declared field. None is defaulted.
     pub fields: Vec<CtorField>,
-    /// The scheme supplies fewer field types than the constructor declares
-    /// fields, so `fields` is shorter than the declaration. The field-type read
-    /// refuses such a constructor ([`CompileContext::ctor_field_types`]).
-    pub short_declaration: bool,
+}
+
+/// A constructor whose scheme supplies fewer field types than it declares
+/// fields. Its metadata is never built; every read of it is a keying error.
+#[derive(Debug, Clone)]
+pub(crate) struct ShortDeclaration {
+    pub type_name: FQTypeName,
+    declared: usize,
+    supplied: usize,
+}
+
+impl ShortDeclaration {
+    /// The keying error for a read of `ctor`, located at `at`.
+    pub(crate) fn refusal(&self, ctor: &dyn std::fmt::Display, at: Span) -> CranelispError {
+        keying_drift_at(
+            at,
+            format!(
+                "constructor '{ctor}' declares {} field(s) but its scheme supplies types for {}",
+                self.declared, self.supplied
+            ),
+        )
+    }
 }
 
 /// What a constructor reference's VALUE carries
@@ -170,10 +191,64 @@ where
     /// pattern position uses; the deterministic, run-to-run-stable answer to
     /// "which ctor did typecheck pick" that `lookup_constructor`'s context-free
     /// re-resolution could not give for a scrutinee-directed same-named ctor.
-    pub(crate) fn ctor_meta_at(&self, fq: &FQSymbol) -> Option<(FQTypeName, CtorMeta)> {
-        let table = self.symbol_tables.get(&fq.module)?;
-        let entry = table.get(fq.symbol.as_ref())?;
-        Self::extract_constructor(entry)
+    ///
+    /// `Ok(None)` is "not a constructor"; a short declaration is an error, never
+    /// a constructor with fewer fields.
+    pub(crate) fn ctor_meta_at(
+        &self,
+        fq: &FQSymbol,
+    ) -> Result<Option<(FQTypeName, CtorMeta)>, ShortDeclaration> {
+        let Some(table) = self.symbol_tables.get(&fq.module) else {
+            return Ok(None);
+        };
+        table
+            .get(fq.symbol.as_ref())
+            .and_then(Self::extract_constructor)
+            .transpose()
+    }
+
+    /// [`Self::ctor_meta_at`] for a pattern constructor, which must be one: a
+    /// miss and a short declaration are keying errors located at `reference`.
+    /// The short refusal is recorded as a field read, so the census sees it.
+    pub(crate) fn pattern_ctor_meta(
+        &self,
+        resolved_ctor: &FQSymbol,
+        scrut_type: Option<&Type>,
+        reference: Span,
+        census: &super::census::Frame,
+    ) -> Result<(FQTypeName, CtorMeta), CranelispError> {
+        match self.ctor_meta_at(resolved_ctor) {
+            Ok(Some(found)) => Ok(found),
+            Ok(None) => Err(keying_drift_at(
+                reference,
+                format!("pattern constructor '{resolved_ctor}' has no constructor Def"),
+            )),
+            Err(short) => {
+                self.record_field_read(
+                    census,
+                    &short.type_name,
+                    scrut_type,
+                    super::census::Declaration::Short,
+                );
+                Err(short.refusal(resolved_ctor, reference))
+            }
+        }
+    }
+
+    fn record_field_read(
+        &self,
+        census: &super::census::Frame,
+        type_name: &FQTypeName,
+        scrut_type: Option<&Type>,
+        declaration: super::census::Declaration,
+    ) {
+        let type_params = self
+            .lookup_type_def(type_name)
+            .map_or(0, |type_def| type_def.type_params.len());
+        super::census::record(census, || super::census::Record::Field {
+            class: super::census::FieldClass::of(type_params, scrut_type),
+            declaration,
+        });
     }
 
     /// The ONE keyed fetch (S110 W1, `backend-keyed-consumer.md` §1.3) — the
@@ -300,9 +375,11 @@ where
     /// the prior `ModuleEntry::TypeDef.constructor_scheme` smuggling field is
     /// retired. The product ctor enters this routine through the one `Def` arm
     /// below, reading its field types from the `Def`'s own `scheme`.
+    ///
+    /// `None` is "not a constructor"; `Some(Err)` is a short declaration.
     fn extract_constructor<C2: cranelisp_types::CodeStore>(
         entry: &Binding<C2>,
-    ) -> Option<(FQTypeName, CtorMeta)> {
+    ) -> Option<Result<(FQTypeName, CtorMeta), ShortDeclaration>> {
         match &entry.declaration {
             Decl::Callable(callable) => {
                 let CallableOrigin::Ctor {
@@ -318,19 +395,19 @@ where
                     Type::Fn(params, _) => params.as_slice(),
                     _ => &[],
                 };
+                if field_types.len() < *field_count {
+                    return Some(Err(ShortDeclaration {
+                        type_name: type_name.clone(),
+                        declared: *field_count,
+                        supplied: field_types.len(),
+                    }));
+                }
                 let fields: Vec<CtorField> = field_types
                     .iter()
                     .take(*field_count)
                     .map(|ty| CtorField { ty: ty.clone() })
                     .collect();
-                Some((
-                    type_name.clone(),
-                    CtorMeta {
-                        tag: *tag,
-                        fields,
-                        short_declaration: field_types.len() < *field_count,
-                    },
-                ))
+                Some(Ok((type_name.clone(), CtorMeta { tag: *tag, fields })))
             }
             _ => None,
         }
@@ -371,17 +448,18 @@ where
                 // bare fallback for the product dual-facet.
                 let canonical =
                     cranelisp_types::member_key(&type_def.name.name, ctor_name.as_ref());
-                table
+                match table
                     .get(canonical.as_ref())
                     .or_else(|| table.get(ctor_name.as_ref()))
                     .and_then(Self::extract_constructor)
-                    .map(|(_, meta)| meta)
-                    .ok_or_else(|| {
-                        keying_drift(format!(
-                            "constructor '{ctor_name}' of '{}' has no resolvable Def",
-                            type_def.name
-                        ))
-                    })
+                {
+                    Some(Ok((_, meta))) => Ok(meta),
+                    Some(Err(short)) => Err(short.refusal(&ctor_name, Span::SYNTHETIC)),
+                    None => Err(keying_drift(format!(
+                        "constructor '{ctor_name}' of '{}' has no resolvable Def",
+                        type_def.name
+                    ))),
+                }
             })
             .collect()
     }
@@ -405,31 +483,14 @@ where
         reference: Span,
         census: &super::census::Frame,
     ) -> Result<Vec<ConcreteType>, CranelispError> {
-        let (fqtn, ctor) = self.ctor_meta_at(resolved_ctor).ok_or_else(|| {
-            keying_drift_at(
-                reference,
-                format!("pattern constructor '{resolved_ctor}' has no constructor Def"),
-            )
-        })?;
+        let (fqtn, ctor) = self.pattern_ctor_meta(resolved_ctor, scrut_type, reference, census)?;
         let type_def = self.lookup_type_def(&fqtn).ok_or_else(|| {
             keying_drift_at(reference, format!("type '{fqtn}' has no type definition"))
         })?;
         super::census::record(census, || super::census::Record::Field {
             class: super::census::FieldClass::of(type_def.type_params.len(), scrut_type),
-            declaration: if ctor.short_declaration {
-                super::census::Declaration::Short
-            } else {
-                super::census::Declaration::Full
-            },
+            declaration: super::census::Declaration::Full,
         });
-        if ctor.short_declaration {
-            return Err(keying_drift_at(
-                reference,
-                format!(
-                    "constructor '{resolved_ctor}' declares more fields than its scheme supplies types for"
-                ),
-            ));
-        }
 
         let args: Vec<ConcreteType> = match scrut_type {
             Some(Type::ADT(_, args)) => args
