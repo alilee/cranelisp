@@ -169,7 +169,7 @@ The two structural facts that dominate the tree today:
 | Cache orchestration | `cache.rs` (the `ObjectCache` facade over session cache state: the validity query, loaded-source records, deferred entries); `cache/dependency_record.rs` (the dependency record, its one edge set, the one builder, deferral and the current-hash source, §7.6); `callee_edges.rs` (the one callee enumeration, shared with `redefine.rs`, §7.6.1); `session_v4/nice_worker.rs` (the `.meta`/`.o` and manifest writer); `session_v4/index_worker.rs` (index `.meta` writes); `process_form/cache_restore.rs` (restore). `cache_writer.rs` has no caller and deletes in S124 (§16.0) |
 | `--link` + exe-bundle | `exe.rs` (`validate_main`, alias-`.o`, linker invoke); `link/{mod,gnu,apple}.rs`; `crates/cranelisp-exe-bundle/` |
 | Platform DLL orchestration | `platform.rs` (+ `platform/tests.rs`) — `load_platform_dll`, `/platform-schema`, `ABI_VERSION` gate; `marshal.rs` (host↔DLL) |
-| Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/tests.rs`) — §10.12 `bind!`-chain → `ParBind` / `LaunchContinue` transform (`bind-chain-analysis.md`) |
+| Auto-IO scheduling (compile-time) | `bind_chain_analysis.rs` (+ `bind_chain_analysis/{tests,identity_tests}.rs`) — §10.12 `bind!`-chain → `ParBind` / `LaunchContinue` transform (`bind-chain-analysis.md`) |
 | Observability sinks | `observability.rs` (+ `observability/tests.rs`) scheduler/worker event log; `io_trace.rs`; `got_trace.rs`; `sched_dump.rs` — all env-var-gated ring buffers. |
 | Embedded agent | `src/agent/` (fully `#[cfg(feature = "agent")]`; `agent.md`) |
 | `Code` carrier + aliases | `code.rs` — `SessionSymbolTable`/`SessionModuleEntry` aliases; `Code` is re-exported from `cranelisp-backend` (Decision 41) |
@@ -2411,10 +2411,10 @@ Step that runs compiled code (REPL expression turn, /run-tests, /run-all-tests;
       crash in a clause that calls into another restored module.
     - *Claim and re-registration* moved out of this list: it is designed
       below (*A claim ends inside its registration*).
-- **A claim ends inside its registration (S124, ACT-0994; not in source at
-  `4b58ab93`).** Import turns do not wait for cached loads, so today a watcher
-  reload can re-register a restored module while a pool worker's claim is
-  still loading it. The stale load then stores GOT slots and publishes code
+- **A claim ends inside its registration (designed S124, ACT-0994; not in
+  source and not scheduled: deferred past S124 by the user).** Import turns
+  do not wait for cached loads, so today a watcher reload can re-register a
+  restored module while a pool worker's claim is still loading it. The stale load then stores GOT slots and publishes code
   owners into the table the reload's prologue has just installed, and its
   loaded completion marks the fresh registration in memory, so an in-memory
   wait covering that module can return before its fresh code is compiled.
@@ -3724,7 +3724,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   S124-Q8 ruling, the scoping of ACT-1063 and ACT-1065, and row D12 with
   its category condition (`sprints/SPRINT.md`, Notes), and to `arch`'s S124 contracts
   ([approved changes](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
-  None is in source at `4b58ab93`.
+  None was in source at `4b58ab93`; ACT-1050 and ACT-1065 landed at
+  `32e434dc` (W4).
   - *Cached-object validity (ACT-1052):* [§7.6.3](#763-slot-layout-identity-act-1052).
     The record keys each member by source hash and authored slot layout.
   - *Import and export entries and mounts (D3; ACT-0997, ACT-1055,
@@ -3761,20 +3762,24 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     constraint the carried ACT-1005 correction must keep is recorded in
     [session persistence §1.4](session-persistence.md#14-dependency-ordering).
     Nothing is built in S124; the present grouping already satisfies it.
-  - *An inline `bind` continuation loses its type (ACT-1050):*
+  - *An inline `bind` continuation loses its type (ACT-1050), in source at
+    `32e434dc`:*
     [bind-chain analysis §3.6](bind-chain-analysis.md#36-reconstruction).
     The rewrite rebuilds each sequential step from the spans of the nodes it
     consumed, so no span names two nodes. No published type changes, and
     nothing is asked of typecheck.
-  - *A user function spelled `bind` is taken for the primitive (ACT-1065):*
+  - *A user function spelled `bind` is taken for the primitive (ACT-1065),
+    in source at `32e434dc` except the renamed-import row, which lands with
+    D3
+    ([bind-chain analysis §7](bind-chain-analysis.md#7-open-obligations)):*
     [bind-chain analysis §3.1](bind-chain-analysis.md#31-pattern-recognition).
     The pass resolves each callee once, through the committed
     `ResolutionScope` behind a lexical layer and the cluster's own
     declarations. A step is the primitive only when that resolution reaches
     the one identity bootstrap installs. The same answer supplies the
     platform-effect class and the timer leaf, so the pass's split-spelling
-    lookups delete. The root already consumes `ResolutionScope`: no public
-    API changes.
+    lookups are deleted. The root already consumes `ResolutionScope`: no
+    public API changes.
   - *A "no `main`" refusal (S124-Q8, ruled B):*
     [io-integration §1](io-integration.md#1-running-a-program). One gate
     produces it as row D12's `BatchError::MissingMain`, and `src/main.rs`
@@ -3786,7 +3791,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     entry table's `main`, so it takes the "no `main`" refusal; a
     multi-arity `main` is not a single callable, so it takes the located
     refusal of ACT-1036. No further change.
-  - *A cached load across re-registration (ACT-0994):*
+  - *A cached load across re-registration (ACT-0994), designed and not
+    scheduled:* the persistence group carries past S124 by the user's third
+    deferral (`sprints/SPRINT.md`, Notes). Design:
     [§7.1](#71-cache-hit-flow-inside-register_module), *A claim ends inside
     its registration*. The reload's settle wait also waits out the module's
     cached load, and a loaded completion acts only while its module is still
@@ -3862,7 +3869,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     4. D4: in the backend's D4 change-set, after the structural close.
     5. R10-3: in the backend's R10 change-set, after D2. K11-d: with the
        types change-set.
-    6. ACT-1050: in the producer-correction row of the backend's order
+    6. ACT-1050 (landed at `32e434dc`): in the producer-correction row of
+       the backend's order
        ([release contract §7.7](../backend/non-concrete-release-contract.md#77-order)).
        It lands after the census's first reading, which is `qa`'s named
        refuter of the attribution and would lose its subject if the fix came

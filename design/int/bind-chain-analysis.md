@@ -63,7 +63,8 @@ no other chain walk. The answer comes from three layers, in order:
    bindings and chain binders. The set is collected once per definition and
    ignores nesting, so a local `bind` in one arm also declines the primitive
    in another. That over-approximation is sound (§1) and removes scope
-   threading from a pass that otherwise needs none.
+   threading from a pass that otherwise needs none. Its cost is a missed
+   rewrite, recorded in §7 (*A same-named local declines unrelated chains*).
 2. **The cluster's own declarations.** A bare spelling, or one qualified by
    the current module, that the cluster's program declares resolves to that
    declaration. The program reaches the pass before typecheck commits it, so
@@ -98,6 +99,13 @@ leaves the application as the user wrote it, which is sound (§1).
   layer 3 would miss it and could fall back to the prelude's `bind`. The
   falsifier is a module that imports a user `bind` and whose prelude exports
   the primitive, compiled in one cluster: the user's function must run.
+  That is `qa`'s cell T-1065-f, which cannot yet execute this clause: its
+  program is refused in every mode by
+  [ACT-1075](../../sprints/actions/ACT-1075-polymorphic-candidate-selected-from-a-shared-spelling-is-undefined-at-codegen-intake.md),
+  a separate typecheck-to-codegen defect, with the pass disabled. Until
+  ACT-1075 is corrected the assertion remains a debt. The C8 module rows do
+  not discharge it: their fixtures commit the imports themselves, so they
+  show only that the pass declines once an import is committed.
 - **No import is uncommitted because of a cycle.** An imported module is
   compiled before its importer (spec §8.10.3), and a cycle among modules
   still loading is refused at the import that closes it
@@ -121,24 +129,24 @@ Rejected alternatives:
   would need a fallback carried on the published `Expr`, which is a types
   change for a decision the pass can make itself.
 - **Resolve with `resolve_terminal_entry_and_home` from a split spelling**,
-  as §4 did. It ignores module aliases and locals, and it is a second chain
-  beside the one typecheck uses.
+  as the platform-effect lookup once did. It ignores module aliases and
+  locals, and it is a second chain beside the one typecheck uses.
 
 ### 3.2 Chain collection
 
-`collect_bind_chain` flattens the nesting into ordered steps and the terminal
+Chain collection flattens the nesting into ordered steps and the terminal
 body. Each nested step passes the §3.1 test on its own; the first application
-that fails it is the terminal body, transformed recursively. A step records the binder, its parameter annotation, the effect
-expression, and the three written nodes it consumes: the `bind` application's
-span, the callee node itself (its spelling and span together), and the
-continuation lambda's span. Reconstruction reads each node's identity from
+that fails it is the terminal body, transformed recursively. A step records
+the binder, its parameter annotation, the effect expression, and the three
+written nodes it consumes: the `bind` application's span, the callee node
+itself (its spelling and span together), and the continuation lambda's span. Reconstruction reads each node's identity from
 that record (§3.6).
 
 ### 3.3 Scheduling classification
 
-`classify_expr` reads a scheduling class only for a direct call to a platform
-effect (§4). Anything else — a user-function wrapper, a nested bind, a `let`,
-a literal — is `Sequential`. The pass never looks inside function bodies.
+A step's effect has a scheduling class only when it is a direct call whose
+callee resolves to a platform effect (§4). Anything else — a user-function
+wrapper, a nested bind, a `let`, a literal — is `Sequential`. The pass never looks inside function bodies.
 
 ### 3.4 Data independence
 
@@ -169,13 +177,14 @@ no span argument, so it cannot give a rebuilt node any span but the one its
 step recorded. A `ParBind` or `LaunchContinue` takes the span of the first
 application it consumes; that application, its callee and its lambda leave
 the tree, so the span stays unique. Nodes the pass does not consume keep their
-own spans.
+own spans. No published type depends on this rule.
 
-At `4b58ab93` the source does not hold this: `make_bind` gives the callee, the
-lambda and the application one span, the application's. Typecheck's type for
-the application then overwrites the lambda's, the lambda's parameter reaches
-the backend untyped, and a parameter the body never reads is never released
-(ACT-1050). The correction is this section; it changes no published type.
+Why it binds: when one span named the application, its callee and its
+lambda, typecheck's type for the application overwrote the lambda's, the
+lambda's parameter reached the backend untyped, and a parameter the body
+never read was never released (ACT-1050). A pre-typecheck rewrite that mints
+or shares a span is a standing review reject
+([int §12.1](int.md#121-standing-review-rejects), item 19).
 
 Rejected alternatives:
 
@@ -213,9 +222,9 @@ launched step and for a launched sub-tree (an inlined handler chain):
    `ResourceSerial` platform leaf (`is_launchable_leaf`). `Commutative` (token
    0), `Sequential` (token 1), a poll-shape leaf with a literal-`0` leading token,
    and any opaque user function are refused. A `sleep` timer leaf is accepted
-   as a member of a launched sub-tree (`is_sleep_timer_leaf`), never as the
-   launched root. The leaf is the callee whose §3.1 resolution is the
-   identity bootstrap installs for `sleep`. It is not identified by its
+   as a member of a launched sub-tree, never as the launched root. The leaf
+   is the callee whose §3.1 resolution is the identity bootstrap installs
+   for `sleep`. It is not identified by its
    lifecycle state: `bind`, `race`, `select` and `sleep` are installed as
    host-promised with no host symbol behind them (see
    [int §16.0](int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
@@ -241,15 +250,13 @@ runs detached or inline. Realising that ownership belongs to the runtime; see
 - **Lookup follows resolution.** A direct call's callee is resolved once, by
   §3.1's three layers. Only a terminal `PlatformEffect` yields a class.
   Anything else, including a local, a cluster declaration or a failed
-  resolution, classifies `Sequential`. At `4b58ab93` the source resolves a
-  split spelling with `cranelisp_types::resolve_terminal_entry_and_home` and
-  no lexical layer. A local that shadows a platform function's name would
-  then be classified as that effect and grouped. That is predicted from
-  source, not observed, and is `qa` intake. The ACT-1065 change-set removes
-  that lookup (§7).
+  resolution, classifies `Sequential`. A local spelled like a platform
+  function is therefore never taken for the effect; the spelling lookup this
+  replaced grouped two calls of such a local and aborted at run time
+  (REPRO-1065-e).
 - **No bare-name fallback.** Matching an unqualified symbol would let two
   platforms that export the same name collide.
-- **One record for both decisions.** `effect_descriptor` supplies both the
+- **One record for both decisions.** The one callee answer supplies both the
   class for grouping (§3.3) and `poll_shape` for the E3 token-0 refusal
   (§3.7), so classification and launch eligibility cannot disagree about which
   entry was called.
@@ -263,6 +270,15 @@ runs detached or inline. Realising that ownership belongs to the runtime; see
   expression wrapping and default-method appending and before
   `check_program_compat`. The seam supplies the cluster's committed
   resolution scope (§3.1, layer 3).
+- **Precondition: the module's table exists.** The scope's first hop is the
+  module's committed table. Both entries to `process_cluster_once`, the
+  worker's cluster driver (`src/cluster.rs`) and REPL evaluation
+  (`src/eval.rs`), ensure that table before the cluster runs, so the pass
+  always runs. The seam does not create a table: with none it declines and
+  the cluster compiles sequentially, which is sound (§1). This holds by
+  reading the two entries, not by construction. A third entry that skipped
+  the ensure would compile its clusters unscheduled, and its falsifier is a
+  scheduling witness (C1) driven through that entry.
 - **After expansion:** `bind!` is a macro, and the pattern exists only after
   expansion.
 - **Before typecheck:** `ParBind` and `LaunchContinue` are expression variants
@@ -317,10 +333,10 @@ features have different safety arguments and are debugged separately.
 | C3 same-handle pair | never independent | E2-style value sharing: same handle ⇒ shared free variable ⇒ dependent | `tests/spec_10_io.rs` same-token serialisation |
 | C4 `Sequential` pair | stays sequential | the class gate in `rebuild_chain` | unit tests; `tests/spec_10_io.rs` sequential-class e2e |
 | C5 single eligible step | no `ParBind` (sequential or launch) | `flush_par_group` | unit tests |
-| C6 non-platform effect | `Sequential` | `classify_expr` | unit tests |
+| C6 non-platform effect | `Sequential` | the callee resolution (§3.1, §4) | unit tests; C8's platform-spelled local row |
 | Mode uniformity | same grouping in every mode | the single seam (§5.1) | `auto_io_par_grouping_uniform_across_modes` observes run and linked execution |
-| C7 node identity | no output span on two nodes; each rebuilt node's span is its written node's | the step record and a reconstruction with no span argument (§3.6) | owed: a module row over every rewrite shape, on fixtures whose nodes have distinct spans; `tests/bind_unused_heap_argument.rs` end to end |
-| C8 callee identity | a step only where the callee resolves to the primitive; every other callee left as written | §3.1's three layers and the one bootstrap identity | owed: module rows below (§7); REPRO-1065 end to end |
+| C7 node identity | no output span on two nodes; each rebuilt node's span is its written node's | the step record and a reconstruction with no span argument (§3.6) | C7 module rows in `src/bind_chain_analysis/identity_tests.rs`, one per rewrite shape on distinct-span fixtures; `tests/bind_unused_heap_argument.rs` end to end |
+| C8 callee identity | a step only where the callee resolves to the primitive; every other callee left as written | §3.1's three layers and the one bootstrap identity | C8 module rows in `src/bind_chain_analysis/identity_tests.rs`; `bootstrap.rs`'s row pinning both identities to the installed entries; REPRO-1065-a to c and e in `tests/spec_10_io.rs`. Owed: T-1065-d (renamed import, after row D3) and T-1065-f (§3.1's import assertion, masked by ACT-1075) |
 
 - **Ordering between effects on one handle is the inference's job.** Under the
   handle model of `design/arch/effect-concurrency.md` §4.1.1 the runtime does
@@ -338,42 +354,28 @@ features have different safety arguments and are debugged separately.
 
 ## 7. Open obligations
 
-- **ACT-1050 — node identity (designed S124, not in source at `4b58ab93`).**
-  `dev` realises §3.6 in `src/bind_chain_analysis.rs` and adds C7's module
-  row. The row's detection proof is the current `make_bind`: the rebuilt
-  callee and lambda share the application's span. Its fixtures must give every
-  input node its own span; the existing fixtures put `Span::SYNTHETIC` on
-  every node, which no uniqueness check can pass. Shapes: one step, a
-  two-step chain, a parallel group followed by a sequential step, a launched
-  step, a chain inside an effect expression, and a chain under a lambda,
-  match arm and `let`. Order: [int §16.0](int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21).
-- **ACT-1065 — callee identity (designed S124, not in source at
-  `4b58ab93`).** `is_bind_var` takes any `Var` spelled `bind` or ending
-  `/bind` for the primitive, so a user's `bind` is grouped or launched and
-  the program changes. `qa` classified it a defect: a silent wrong value and a
-  wrong reject. §3.6 alone removes the reject but not the wrong value, as
-  `qa` observed; §3.1 removes both.
-  - `dev` realises §3.1 in `src/bind_chain_analysis.rs` in the same
-    change-set as ACT-1050, because both edit chain collection and
-    reconstruction. The pass takes the committed scope from the seam
-    (§5.1), built once per cluster with the construction macro recognition
-    uses. The one bootstrap identity for `bind` and `sleep` sits beside their
-    installers.
-  - Deleted in that change-set: the spelling test, `effect_descriptor`'s
-    split-spelling lookup, `resolves_to_sleep_extern` and the test-only
-    `scheduling_of`. §4's lookup and §3.7's timer leaf read §3.1's answer.
-  - Module rows (C8), each with distinct-span fixtures. Subjects that must
-    decline: a user `bind` declared in the cluster, the same `bind` committed
-    by an earlier turn, a parameter or `let` named `bind`, a self-qualified
-    user `bind`, and an ambiguous spelling. Subjects that must be recognised:
-    the primitive through a glob import, the prelude fallback, a qualified
-    `primitives/bind` and a module alias, and once row D3 lands a renamed
-    import. Detection proof: the present `is_bind_var` recognises every
-    declining subject. Negative leg: each recognised subject still groups
-    as it does today.
-  - Emission acceptance adds to ACT-1050's: a function whose callee is not
-    the primitive must emit its call unchanged from the user's source, and
-    no function that calls the primitive may change for this reason.
+- **ACT-1065 — the renamed import (row D3).** §3.1 and §3.6 are in source
+  at `32e434dc` (ACT-1050, ACT-1065). One recognition remains: once row D3
+  lets the primitive be imported under another name, that name must group
+  as the primitive does (spec §10.12.1). §3.1 needs no change for it,
+  because layer 3 resolves a renamed import to its target. `dev` adds the
+  C8 module row for that subject in D3's change-set, and `qa`'s T-1065-d
+  observes it end to end.
+- **§3.1's import assertion is unwitnessed end to end** until ACT-1075 is
+  corrected and T-1065-f executes (§3.1, *Asserted with a named falsifier*).
+- **A same-named local declines unrelated chains.** Layer 1 collects every
+  binder of a definition without scope (§3.1). A definition that binds a
+  local spelled `bind`, `sleep` or like a platform function anywhere also
+  declines that callee in chains the local cannot reach: an eligible pair
+  there stays sequential, and a launch whose sub-tree calls the timer leaf
+  is refused. The program is the sequential one (§1), but `spec/10-io.md`
+  §10.12.1 says the compiler inserts a `Par` node for an eligible pair, so
+  this is a conformance gap of the same kind as the multi-signature one
+  below, with no module row pinning it. Whether it is a defect, and whether
+  a row records it, is `qa`'s. The design changes only on that
+  classification: the trigger is a ruling that the gap must close, and the
+  correction is to thread the binders in scope through the pass's
+  recursion in place of the per-definition set.
 
 - **G1 — free-variable completeness.** C2 soundness depends on
   `free_vars_expr` reporting every free variable in every expression variant.
