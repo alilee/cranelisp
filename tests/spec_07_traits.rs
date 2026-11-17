@@ -4741,3 +4741,60 @@ fn s124_1071_local_control_link() {
 fn s124_1071_local_control_repl() {
     s124_imported_impl_overload("local_control", "repl");
 }
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+fn s124_jit_call_range(arena_control: bool) {
+    let outputs = std::thread::scope(|scope| {
+        let children: Vec<_> = (0..16)
+            .map(|_| {
+                scope.spawn(move || {
+                    let cr = Cranelisp::new()
+                        .with_prelude(PreludeVariant::PrimitivesOnly)
+                        .user(&s124_two_member_depth_program(64));
+                    let cr = if arena_control {
+                        cr.env("MALLOC_ARENA_MAX", "1")
+                    } else {
+                        cr.env_remove("MALLOC_ARENA_MAX")
+                    };
+                    cr.run("user.cl").output()
+                })
+            })
+            .collect();
+        children
+            .into_iter()
+            .map(|child| child.join().expect("capture thread"))
+            .collect::<Vec<_>>()
+    });
+    let failures: Vec<_> = outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, out)| out.status.code() != Some(64))
+        .map(|(i, out)| {
+            format!(
+                "run {i}: status={:?}\n{}{}",
+                out.status, out.stdout, out.stderr
+            )
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "all 16 runs must exit 64 (arena_control={arena_control}); {} failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1070, every run of the 16-run cell exits 64
+// defect: class=jit-call-out-of-range locus=crates/cranelisp-backend/src/jit.rs::finish_builder found=S124 owner=/dev
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[test]
+fn s124_1070_jit_call_range_subject() {
+    s124_jit_call_range(false);
+}
+
+// spec: spec/03-types.md §3.10 — ACT-1070, allocator-placement control
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[test]
+fn s124_1070_jit_call_range_arena_control() {
+    s124_jit_call_range(true);
+}
