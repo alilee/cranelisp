@@ -41,6 +41,10 @@ pub(crate) struct CtorField {
 pub(crate) struct CtorMeta {
     pub tag: usize,
     pub fields: Vec<CtorField>,
+    /// The scheme supplies fewer field types than the constructor has fields;
+    /// the missing ones are defaulted to `Int` (release contract §7.4 step 1
+    /// deletes the default).
+    pub short_declaration: bool,
 }
 
 /// What a constructor reference's VALUE carries
@@ -317,7 +321,14 @@ where
                         ty: field_types.get(i).cloned().unwrap_or(Type::Int),
                     })
                     .collect();
-                Some((type_name.clone(), CtorMeta { tag: *tag, fields }))
+                Some((
+                    type_name.clone(),
+                    CtorMeta {
+                        tag: *tag,
+                        fields,
+                        short_declaration: field_types.len() < *field_count,
+                    },
+                ))
             }
             _ => None,
         }
@@ -381,6 +392,7 @@ where
         &self,
         resolved_ctor: &FQSymbol,
         scrut_type: Option<&Type>,
+        census: &super::census::Frame,
     ) -> Result<Vec<Type>, CranelispError> {
         let (fqtn, ctor) = self.ctor_meta_at(resolved_ctor).ok_or_else(|| {
             keying_drift(format!(
@@ -390,6 +402,17 @@ where
         let type_def = self
             .lookup_type_def(&fqtn)
             .ok_or_else(|| keying_drift(format!("type '{fqtn}' has no type definition")))?;
+        super::census::record(
+            census,
+            super::census::Record::Field {
+                class: super::census::FieldClass::of(type_def.type_params.len(), scrut_type),
+                declaration: if ctor.short_declaration {
+                    super::census::Declaration::Short
+                } else {
+                    super::census::Declaration::Full
+                },
+            },
+        );
 
         let concrete_type_args: Vec<Type> = match scrut_type {
             Some(Type::ADT(_, args)) => args.clone(),

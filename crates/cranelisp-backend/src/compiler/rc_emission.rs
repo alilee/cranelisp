@@ -16,6 +16,7 @@ use cranelisp_types::{
 use crate::heap::{self, HeapCategory};
 
 use super::FnCompiler;
+use super::census::{self, Record, Shape};
 
 /// Release a CLOSURE box through its **embedded** `DROP_GLUE_PTR` — the
 /// borrowed-builder body of [`FnCompiler::emit_closure_dec_inline`].
@@ -365,6 +366,7 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
 pub(crate) fn signature_heap_category<C, L>(
     ty: &Type,
     symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
+    census_frame: &census::Frame,
 ) -> HeapCategory
 where
     C: cranelisp_types::CodeStore,
@@ -377,7 +379,10 @@ where
         // trait-method instance) — or an unresolved HKT head: uniform i64
         // representation → `Mixed` (the guarded RC path).
         // `design/backend/transitive-drop-glue.md` §4.1 + FIXME 0903.
-        Err(_) => HeapCategory::Mixed,
+        Err(_) => {
+            census::record(census_frame, Record::Retain(Shape::of_residual(ty)));
+            HeapCategory::Mixed
+        }
     }
 }
 

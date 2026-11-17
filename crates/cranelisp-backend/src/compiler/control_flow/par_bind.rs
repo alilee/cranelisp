@@ -224,6 +224,7 @@ where
                 builder,
                 self.module,
                 self.ctx.clone(),
+                self.census.clone(),
                 self.glue,
                 0, // fn_param_count=0: binding names come from results buffer
                 plan,

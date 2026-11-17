@@ -380,6 +380,15 @@ where
                     })
             })
             .unwrap_or_else(|| vec![None; d.params().len()]);
+        // The frame's partition comes from its binding, as production's does.
+        let census = {
+            let table = symbol_tables.get(&module_path);
+            let declaration = table
+                .as_ref()
+                .and_then(|table| table.get(d.name.as_ref()))
+                .map(|entry| &entry.declaration);
+            crate::compiler::census::Frame::of_target(declaration, &module_path, &d.name)
+        };
         let art = crate::compile_defn_in_module(
             d,
             &body,
@@ -388,6 +397,7 @@ where
             &mut func_ctx,
             &func_ids,
             compile_ctx,
+            census,
             true,
             &mut glue,
         )?;

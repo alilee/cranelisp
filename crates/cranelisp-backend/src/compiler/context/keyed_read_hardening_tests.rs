@@ -75,7 +75,13 @@ fn a_type_with_no_module_table_is_an_error() {
 // control: a resolvable pattern constructor yields its field types.
 #[test]
 fn a_resolvable_pattern_constructor_yields_its_field_types() {
-    let fields = with_context(|ctx| ctx.ctor_field_types(&main_key("Some"), None));
+    let fields = with_context(|ctx| {
+        ctx.ctor_field_types(
+            &main_key("Some"),
+            None,
+            &crate::compiler::census::Frame::for_test(),
+        )
+    });
     assert_eq!(fields.expect("Some resolves"), vec![Type::Int]);
 }
 
@@ -84,7 +90,13 @@ fn a_resolvable_pattern_constructor_yields_its_field_types() {
 // list (which made every field of the arm an unreleased scalar).
 #[test]
 fn a_missed_pattern_constructor_key_is_an_error_not_no_fields() {
-    let err = with_context(|ctx| ctx.ctor_field_types(&main_key("Ghost"), None))
-        .expect_err("a missed key must fail");
+    let err = with_context(|ctx| {
+        ctx.ctor_field_types(
+            &main_key("Ghost"),
+            None,
+            &crate::compiler::census::Frame::for_test(),
+        )
+    })
+    .expect_err("a missed key must fail");
     assert!(err.to_string().contains("keying drift"), "{err}");
 }

@@ -219,8 +219,15 @@ where
         let mut capture_names: Vec<Symbol> = ord_captures.to_vec();
         capture_names.extend(deps.iter().map(|(name, _, _)| name.clone()));
         let plan = Self::plan_body(val_expr, &[], &capture_names, inner_name)?;
-        let mut inner =
-            FnCompiler::inner(builder, self.module, self.ctx.clone(), self.glue, 0, plan);
+        let mut inner = FnCompiler::inner(
+            builder,
+            self.module,
+            self.ctx.clone(),
+            self.census.clone(),
+            self.glue,
+            0,
+            plan,
+        );
         // Seed the discriminator so any inner functions emitted within the RHS
         // (nested lambdas, etc.) get uniquely-prefixed names (as `lambda.rs`).
         inner.current_fn_name = Some(Symbol::from(inner_name));
@@ -291,7 +298,8 @@ where
             .enumerate()
             .filter_map(|(i, cap)| {
                 let ty = self.lookup_type(cap)?;
-                let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
+                let category =
+                    signature_heap_category(&ty, Some(self.ctx.symbol_tables), &self.census);
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
                     HeapCategory::NeverHeap | HeapCategory::Value => None,

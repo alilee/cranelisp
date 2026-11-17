@@ -676,7 +676,7 @@ where
     // ownership summary and selected-arm parameter types. The four lockstep
     // vectors + the hard `codegen_view`-
     // None producer-gap error live in `collect_compile_targets`.
-    let (defns, bodies, param_types) =
+    let (defns, bodies, param_types, census_frames) =
         collect_compile_targets::<C, L>(&module_path, targets, symbol_tables)?;
 
     // v9 ctx-vtable (`io-trampoline.md §17.3`): the S96 `inject_poll_leading_pair`
@@ -743,6 +743,7 @@ where
         &defns,
         &bodies,
         &param_types,
+        &census_frames,
         &func_ids,
         &func_arities,
         &intrinsic_ids,
@@ -826,6 +827,7 @@ fn collect_compile_targets<C, L>(
         Vec<Defn>,
         Vec<cranelisp_types::MonoExpr>,
         Vec<Vec<Option<cranelisp_types::Type>>>,
+        Vec<compiler::census::Frame>,
     ),
     CranelispError,
 >
@@ -847,6 +849,7 @@ where
     let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(targets.len());
     let mut param_types: Vec<Vec<Option<cranelisp_types::Type>>> =
         Vec::with_capacity(targets.len());
+    let mut census_frames: Vec<compiler::census::Frame> = Vec::with_capacity(targets.len());
     {
         let table = symbol_tables
             .get(module_path)
@@ -986,12 +989,17 @@ where
             // (Rev-2: no soft fallback).
             let body = view.body.clone();
 
+            census_frames.push(compiler::census::Frame::of_target(
+                Some(&entry.declaration),
+                module_path,
+                &defn.name,
+            ));
             defns.push(defn);
             bodies.push(body);
             param_types.push(selected_param_types);
         }
     }
-    Ok((defns, bodies, param_types))
+    Ok((defns, bodies, param_types, census_frames))
 }
 
 /// Step 2 (S111 R5 §3.1): declare every module function with its bare
@@ -1040,6 +1048,7 @@ fn compile_module_bodies<M, C, L>(
     defns: &[Defn],
     bodies: &[cranelisp_types::MonoExpr],
     param_types: &[Vec<Option<cranelisp_types::Type>>],
+    census_frames: &[compiler::census::Frame],
     func_ids: &HashMap<Symbol, FuncId>,
     func_arities: &HashMap<Symbol, usize>,
     intrinsic_ids: &crate::jit::IntrinsicFuncIds,
@@ -1107,6 +1116,7 @@ where
             &mut func_ctx,
             func_ids,
             compile_ctx,
+            census_frames[index].clone(),
             render_clif,
             glue,
         )
@@ -1490,6 +1500,7 @@ fn compile_defn_in_module<M, C, L>(
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
     compile_ctx: CompileContext<'_, C, L>,
+    census: compiler::census::Frame,
     capture_clif: bool,
     glue: &mut drop_glue::DropGlueRegistry,
 ) -> Result<FunctionArtifacts, CranelispError>
@@ -1524,6 +1535,7 @@ where
         func_ctx,
         module,
         compile_ctx,
+        census,
         glue,
     )?;
 
@@ -1586,23 +1598,24 @@ mod concrete_boundary_phase3_tests {
     #[test]
     fn signature_path_classifies_concrete_and_var() {
         let no_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>> = None;
+        let frame = crate::compiler::census::Frame::for_test();
         // Concrete scalars route through the total `ConcreteType` classify.
         assert_eq!(
-            signature_heap_category(&Type::Int, no_tables),
+            signature_heap_category(&Type::Int, no_tables, &frame),
             HeapCategory::NeverHeap
         );
         assert_eq!(
-            signature_heap_category(&Type::String, no_tables),
+            signature_heap_category(&Type::String, no_tables, &frame),
             HeapCategory::AlwaysHeap
         );
         // A ctor-template field `Var` → `Mixed` (uniform representation),
         // NOT a panic and NOT a widened `classify` (transitive-drop-glue.md §4.1).
         assert_eq!(
-            signature_heap_category(&Type::Var(0), no_tables),
+            signature_heap_category(&Type::Var(0), no_tables, &frame),
             HeapCategory::Mixed
         );
         assert_eq!(
-            signature_heap_category(&Type::TyConApp(1, vec![Type::Int]), no_tables),
+            signature_heap_category(&Type::TyConApp(1, vec![Type::Int]), no_tables, &frame),
             HeapCategory::Mixed
         );
     }

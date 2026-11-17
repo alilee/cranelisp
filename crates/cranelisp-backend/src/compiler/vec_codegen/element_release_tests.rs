@@ -37,6 +37,7 @@ fn element_release_requires_type_but_accepts_scalar_without_adapter() {
         builder,
         jit.jit_module(),
         ctx,
+        crate::compiler::census::Frame::for_test(),
         &mut glue,
         0,
         crate::compiler::ownership_plan::OwnershipPlan::default(),

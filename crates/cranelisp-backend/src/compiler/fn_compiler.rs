@@ -16,6 +16,7 @@ use cranelisp_types::{
 
 use crate::heap::{self, HeapCategory};
 
+use super::census::{self, Record};
 use super::ownership_plan::{BinderId, CaptureEntry, Intro, Occurrence, OwnershipPlan, Use};
 use super::scope_chain::{Binding, CaptureEnv, ScopeChain, resolve_binding};
 use super::{
@@ -72,6 +73,9 @@ where
     pub(crate) captures: CaptureEnv,
     /// Shared immutable compilation context.
     pub(crate) ctx: CompileContext<'a, C, L>,
+    /// The codegen target this body belongs to, which every census record it
+    /// makes is attributed to; an inner compiler inherits its parent's.
+    pub(crate) census: super::census::Frame,
     /// The compilation-local canonical drop-glue registry
     /// (`design/backend/transitive-drop-glue.md` §3.4 D1). A field disjoint
     /// from [`Self::module`] and [`Self::ctx`], so
@@ -149,10 +153,12 @@ where
     /// Create an inner `FnCompiler` for lambda bodies, continuations and spark
     /// thunks, planned by `plan`. The single construction point for inner
     /// compilers. TCO is disabled for inner functions.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn inner(
         builder: FunctionBuilder<'a>,
         module: &'a mut M,
         ctx: CompileContext<'a, C, L>,
+        census: super::census::Frame,
         glue: &'a mut crate::drop_glue::DropGlueRegistry,
         fn_param_count: usize,
         plan: OwnershipPlan,
@@ -163,6 +169,7 @@ where
             scope: ScopeChain::new(),
             captures: CaptureEnv::new(),
             ctx,
+            census,
             glue,
             next_var: 0,
             plan,
@@ -239,6 +246,7 @@ where
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
         ctx: CompileContext<'a, C, L>,
+        census: super::census::Frame,
         glue: &'a mut crate::drop_glue::DropGlueRegistry,
     ) -> Result<(), CranelispError> {
         let param_names: Vec<Symbol> = defn.params().iter().map(|(n, _)| n.clone()).collect();
@@ -261,7 +269,15 @@ where
         // Not sealed yet: tail calls add back-edges during body compilation.
         builder.switch_to_block(loop_header);
 
-        let mut compiler = FnCompiler::inner(builder, module, ctx, glue, defn.params().len(), plan);
+        let mut compiler = FnCompiler::inner(
+            builder,
+            module,
+            ctx,
+            census,
+            glue,
+            defn.params().len(),
+            plan,
+        );
         compiler.current_fn_name = Some(defn.name.clone());
         compiler.tail_loop_block = Some(loop_header);
         compiler.in_tail_position = true;
@@ -272,6 +288,9 @@ where
                 Some(Some(ty)) => Some(ty.clone()),
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
+            if ty.is_none() {
+                census::record(&compiler.census, Record::Absent);
+            }
             compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
         }
 
@@ -541,7 +560,7 @@ where
         let Some(ty) = ty else {
             return;
         };
-        match signature_heap_category(ty, Some(self.ctx.symbol_tables)) {
+        match signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census) {
             HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, self.module, val),
             HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, self.module, val),
             HeapCategory::NeverHeap | HeapCategory::Value => {}
@@ -573,6 +592,10 @@ where
             return Ok(());
         }
         if cranelisp_types::ConcreteType::from_type(ty).is_err() {
+            census::record(
+                &self.census,
+                Record::Release(census::Shape::of_residual(ty)),
+            );
             let dealloc = self.ctx.dealloc_func_id;
             heap::emit_rc_dec_guarded(&mut self.builder, self.module, val, dealloc, None, true);
             return Ok(());
@@ -767,7 +790,7 @@ where
     /// Check if a type is heap-allocated and needs RC management.
     pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
         matches!(
-            signature_heap_category(ty, Some(self.ctx.symbol_tables)),
+            signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census),
             HeapCategory::AlwaysHeap | HeapCategory::Mixed
         )
     }

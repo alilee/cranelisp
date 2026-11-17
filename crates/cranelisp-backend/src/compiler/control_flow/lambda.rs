@@ -171,7 +171,7 @@ where
             let Some(ty) = self.lookup_type(cap_name) else {
                 continue;
             };
-            let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables), &self.census);
             let Some(kind) =
                 CaptureReleaseKind::classify(category, matches!(ty, cranelisp_types::Type::Fn(..)))
             else {
@@ -346,6 +346,7 @@ where
             builder,
             self.module,
             self.ctx.clone(),
+            self.census.clone(),
             self.glue,
             params.len(),
             plan,
@@ -396,6 +397,12 @@ where
                 Some(Some(ty)) => Some(ty.clone()),
                 _ => Self::derive_param_type_from_body(body, param_name),
             };
+            if ty.is_none() {
+                crate::compiler::census::record(
+                    &inner_compiler.census,
+                    crate::compiler::census::Record::Absent,
+                );
+            }
             inner_compiler.bind_binder(Intro::Param(i), param_name, val, ty)?;
         }
 

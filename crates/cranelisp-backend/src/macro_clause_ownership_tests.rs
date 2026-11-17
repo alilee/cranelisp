@@ -328,6 +328,7 @@ fn macro_clause_projection_carries_parameter_authority_and_one_result_owner() {
                 other => panic!("macro clause must carry a function scheme, got {other}"),
             },
             Some(&tables),
+            &crate::compiler::census::Frame::for_test(),
         ),
         crate::heap::HeapCategory::Mixed
     ));

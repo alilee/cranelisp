@@ -161,7 +161,7 @@ where
         let elem_type = self.vec_elem_type(&args[0]);
         let elem_category = elem_type
             .as_ref()
-            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
+            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables), &self.census));
         let vec_val = arg_vals[0];
         let result = match name {
             "vec-len" => {
@@ -288,7 +288,7 @@ where
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };
 
-        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census);
         match category {
             HeapCategory::NeverHeap | HeapCategory::Value => {
                 Ok(self.builder.ins().iconst(types::I64, 0))
@@ -435,7 +435,7 @@ where
             return Ok(builder.ins().iconst(types::I64, 0));
         };
 
-        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census);
         match category {
             HeapCategory::NeverHeap | HeapCategory::Value => {
                 Ok(builder.ins().iconst(types::I64, 0))
@@ -485,7 +485,7 @@ where
     ) -> Result<Value, CranelispError> {
         let elem_category = elem_type
             .as_ref()
-            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
+            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables), &self.census));
         match (name, params.len()) {
             ("vec-len", 1) => {
                 let vec_drop_id =

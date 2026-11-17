@@ -589,6 +589,7 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
         builder,
         jit.jit_module(),
         ctx,
+        crate::compiler::census::Frame::for_test(),
         &mut glue,
         1,
         crate::compiler::ownership_plan::OwnershipPlan::default(),

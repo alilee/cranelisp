@@ -460,7 +460,7 @@ where
         match_ctx: &MatchContext,
     ) -> Result<Vec<cranelisp_types::Type>, CranelispError> {
         self.ctx
-            .ctor_field_types(resolved_ctor, match_ctx.scrut_type.as_ref())
+            .ctor_field_types(resolved_ctor, match_ctx.scrut_type.as_ref(), &self.census)
     }
 
     /// Raise `"match failed"`: every arm's test failed.

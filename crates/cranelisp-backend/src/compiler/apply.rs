@@ -1813,7 +1813,8 @@ where
             .iter()
             .enumerate()
             .filter_map(|(i, ty)| {
-                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                let category =
+                    signature_heap_category(ty, Some(self.ctx.symbol_tables), &self.census);
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
                     HeapCategory::NeverHeap | HeapCategory::Value => None,

@@ -26,6 +26,7 @@
 // items externally; codegen lives in `impl FnCompiler` blocks inside them and
 // no out-of-crate consumer exists).
 pub(crate) mod apply;
+pub(crate) mod census;
 pub(crate) mod control_flow;
 pub(crate) mod literals;
 pub(crate) mod match_codegen;
