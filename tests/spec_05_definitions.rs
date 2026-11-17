@@ -2162,3 +2162,101 @@ fn run_prims_05(user: &str) -> helpers::e2e::CrOutput {
         .user(user)
         .output()
 }
+
+const S124_1073_TYPES: &str =
+    "(deftype A MkA)\n(deftype B MkB)\n(deftrait Size (size [self] Int))\n";
+const S124_1073_CLUSTER: &str =
+    "(begin (impl Size A (defn size [x] 1)) (impl Size B (defn size [x] \"bad\")))\n";
+
+fn s124_refused_cluster_rollback(imported: bool, refused_cluster: bool) {
+    let setup = if imported {
+        "(import [types [*]])\n"
+    } else {
+        S124_1073_TYPES
+    };
+    let cluster = if refused_cluster {
+        S124_1073_CLUSTER
+    } else {
+        ""
+    };
+    let out = Cranelisp::new().file("types.cl", S124_1073_TYPES)
+        .stdin(&format!("{setup}{cluster}(size MkA)\n(impl Size B (defn size [x] 2))\n(defn kept [] 9)\n(kept)\n"))
+        .output().assert_ok();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !diag.contains("codegen error"),
+        "call after refusal must be a type error: {diag}"
+    );
+    let turns: Vec<_> = out.stdout.split("user> ").collect();
+    let call_turn = if imported { 2 } else { 4 } + usize::from(refused_cluster);
+    assert!(
+        turns[call_turn].contains("type error"),
+        "missing no-impl type error: {diag}"
+    );
+    assert!(!diag.contains("failed to save"), "{diag}");
+    assert!(out.stdout.contains(":primitives/Int 9"), "{diag}");
+    assert!(
+        out.read_tmp("user.cl").contains("(defn kept"),
+        "following definition must save: {diag}"
+    );
+}
+
+fn s124_refused_cluster_file(mode: &str) {
+    let program = format!("{S124_1073_TYPES}{S124_1073_CLUSTER}");
+    let cr = Cranelisp::new().file("p.cl", &program);
+    let out = if mode == "link" {
+        cr.link("p.cl").output()
+    } else {
+        cr.run("p.cl").output()
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(!out.status.success(), "{diag}");
+    assert!(
+        diag.contains("method `size` does not conform") && diag.contains("type mismatch"),
+        "second implementation must be refused: {diag}"
+    );
+    assert_eq!(
+        diag.lines().filter(|line| line.contains("error:")).count(),
+        1,
+        "one refusal: {diag}"
+    );
+    assert!(!diag.contains("codegen error"), "{diag}");
+}
+
+// spec: spec/05-definitions.md §5.4.5 — ACT-1073 local subject
+// defect: class=partial-record-update locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_pending_trait_impls found=S124 owner=/dev
+#[test]
+fn s124_1073_local_subject_repl() {
+    s124_refused_cluster_rollback(false, true);
+}
+
+// spec: spec/05-definitions.md §5.4.5 — ACT-1073 local no_impl_control
+#[test]
+fn s124_1073_local_no_impl_control_repl() {
+    s124_refused_cluster_rollback(false, false);
+}
+
+// spec: spec/05-definitions.md §5.4.5 — ACT-1073 imported subject
+// defect: class=partial-record-update locus=crates/cranelisp-typecheck/src/traits/impl_check.rs::check_pending_trait_impls found=S124 owner=/dev
+#[test]
+fn s124_1073_imported_subject_repl() {
+    s124_refused_cluster_rollback(true, true);
+}
+
+// spec: spec/05-definitions.md §5.4.5 — ACT-1073 imported no_impl_control
+#[test]
+fn s124_1073_imported_no_impl_control_repl() {
+    s124_refused_cluster_rollback(true, false);
+}
+
+// spec: spec/05-definitions.md §5.4.5 — ACT-1073 file refusal control
+#[test]
+fn s124_1073_file_control_run() {
+    s124_refused_cluster_file("run");
+}
+
+// spec: spec/05-definitions.md §5.4.5 — ACT-1073 file refusal control
+#[test]
+fn s124_1073_file_control_link() {
+    s124_refused_cluster_file("link");
+}
