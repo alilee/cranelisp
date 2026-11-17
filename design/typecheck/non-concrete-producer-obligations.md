@@ -1,7 +1,7 @@
 # Non-concrete producer obligations — typecheck's half of the release contract
 
 **Status:** current design. §1–§4 verified against source on 2026-09-22 and re-read at
-`4b58ab93` on 2026-11-16: every route in §1 is in source. §5 re-read at `616c0d0a`
+`4b58ab93` on 2026-11-16: every route in §1 is in source. §5 re-read at `951622cf`
 (after S124 W3). §5 is the S124 design for
 typecheck's part of [the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
@@ -276,7 +276,7 @@ census runs, and how the rest is scoped once it has.
 The routes of §1 are in source. The S123 close described the same populations as
 exempt from monomorphisation; that description is superseded by §1 and §2, and the
 census, not either text, decides what remains (the `arch` review's scope rule). Read
-against source at `4b58ab93`, unchanged at `616c0d0a`:
+against source at `4b58ab93`, unchanged at `951622cf`:
 
 - **A compiled frame's body cannot carry a residual from this crate.** Every node of a
   strict view is a `ConcreteType`, `Lambda` included, so a type read from the view is

@@ -1,7 +1,7 @@
 # Monomorphisation — typecheck interior
 
 **Status:** current design, verified against source on 2026-09-21; §3.1, §3.4, §3.9 and
-§3.10 re-verified at `616c0d0a` (S124 W3: ACT-1034 and the in-progress chain).
+§3.10 re-verified at `951622cf` (S124 W3: ACT-1034, the in-progress chain and ACT-1072).
 **Owner:** `design`, narrow-deployed to `cranelisp-typecheck`.
 **Subordinate to:** [`typecheck.md`](typecheck.md) §9.3.
 **Governed by:**
@@ -103,6 +103,16 @@ generalisation the fold accumulator depends on (§5).
 
 There is one engine. Replay, the multi-signature drain's template arm and every window
 enter the same core. A second instantiation entry point is rejected (Principle 7).
+
+**A collector takes the callee's identity from its `var_refs` verdict.** The verdict is
+the selected canonical identity ([candidate selection §8](use-site-candidate-selection.md#8-final-identity-writeback);
+[Principle 24](../arch/principles/24-resolve-once.md)). Re-resolving the written spelling
+re-derives it, and when several declarations share the spelling (spec §8.6.4) it misses
+the selected one. In source at `951622cf`, the cluster scan's constrained-call, local,
+imported and fn-value collectors and the instance's free-function hop require a global
+verdict but then re-resolve the spelling for the identity. A polymorphic candidate
+selected from a shared spelling is therefore never minted (ACT-1075, failing cells
+committed). The instance's function-value step reads the verdict.
 
 ### 3.2 Roots
 
@@ -490,14 +500,20 @@ each level of a type nested 64 deep make a chain of 64 implementation instantiat
 and 128 method instances, and it mints.
 
 - **Reading the implementation instantiation.** A chain element records it from the
-  template's `CallableOrigin::TraitMethod`: the shell, and the implementing type read
-  from the demand's concrete signature as the first type, parameters then result,
-  whose head is the implementation's target. For a conventional trait the dispatch
-  argument is argument 0, or the result for a member with no arguments that returns
-  `self` ([traits §7](traits.md#7-method-resolution) step 2), so that first type is the
-  type the dispatch selected the implementation by. The trait's own record decides
-  whether it is higher-kinded (non-empty type parameters); a higher-kinded
-  implementation records no type, since its constructor is the shell's.
+  template's `CallableOrigin::TraitMethod`: the shell, and the type the trait member's
+  `self` variable takes in the demand's concrete signature. The member is the trait
+  declaration's method whose mangled implementation entry is the template; its
+  declared scheme is matched structurally against the signature, and `self` is the
+  scheme variable constrained by the trait. The reading follows `self` wherever the
+  signature places it, so it does not depend on which argument dispatch selects by
+  ([traits §7](traits.md#7-method-resolution) step 2). Considered: the first type in
+  the signature whose head is the implementing type; rejected because an earlier
+  annotated parameter with that head (`(Opt Mi)` before a `self` of `(Opt Int)`) makes
+  each sibling member a distinct instantiation, and 65 siblings at one instantiation
+  were refused (ACT-1072). The trait's own record decides whether it is higher-kinded
+  (non-empty type parameters); a higher-kinded implementation records no type, since
+  its constructor is the shell's. A member whose scheme cannot be read records the
+  shell alone.
 - **Termination does not rest on that reading.** An element that does not count is a
   member's first entry at an instantiation already on the chain, at most one per
   member per instantiation, and each instantiation's first entry counts. So the depth
@@ -631,6 +647,7 @@ installed or any code is emitted, and identical in the REPL, `--run` and `--link
   | Constant and grow-once controls | `constant_and_grow_once_reentries_mint` |
   | Boundary: 64 mint, 65 refused | `depth_boundary_64_mints_65_is_refused_on_the_worker_stack` |
   | Counting unit: two members per level (T-DEPTH-c); alternating implementations; method-level re-entry; free functions ride | `depth_counts_implementation_instantiations_not_method_instances`, `alternating_implementations_count_on_one_chain`, `method_level_reentry_at_one_instantiation_is_refused`, `free_function_instances_ride_the_chain_without_counting` |
+  | Instantiation read from `self`, not an earlier same-head parameter: 65 siblings at one instantiation mint; a growing `self` behind a fixed earlier parameter is refused (ACT-1072) | `siblings_differing_in_an_earlier_parameter_of_the_implementing_head_count_once` |
   | Settled sites mint nothing (guard) | `settled_sites_inside_an_instance_mint_nothing` |
 
   Template check accepts every re-entry shape with no caller (guard):

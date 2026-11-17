@@ -773,7 +773,7 @@ routes decide the reading in the same three steps:
   satisfaction-check rules
   ([inference §4.5](inference.md#45-value-position-annotations)).
 - **The identity is the declaration's, never the spelling's** (S124 target T5, with
-  packet row D3; not in source at `616c0d0a`). In source, `resolve_trait` returns only the home and
+  packet row D3; not in source at `951622cf`). In source, `resolve_trait` returns only the home and
   `resolve_trait_as_written` pairs it with the spelled name. Under a renamed import
   (`(import [lib [(Size Sz)]])`, spec §8.3.5) that mints `lib/Sz`, an identity that does
   not exist, so the constraint's impl lookup at the home misses. `resolve_trait` returns
@@ -1372,7 +1372,7 @@ are listed in `design/typecheck/AGENTS.md` §"Redirections".
 ## 12. Designed changes not yet in source (S124)
 
 Navigation for the S124 work still to land in this crate, re-verified against `main` at
-`616c0d0a` (after wave W3). Scope and rulings: `sprints/SPRINT.md`. Each row's design is
+`951622cf` (after wave W3 and ACT-1072). Scope and rulings: `sprints/SPRINT.md`. Each row's design is
 in its home document; this table does not restate it. Remove a row when its change
 lands, and the section when it is empty. T1, T2, T3, T4 and T6 landed in W3 and are
 described as current design in their home documents.
@@ -1393,7 +1393,7 @@ described as current design in their home documents.
   the census read `dev` reported after T4, nothing is attributed here
   ([producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it)).
 
-**Approved rows this crate consumes.** At `616c0d0a` this crate reads none of D1, D3,
+**Approved rows this crate consumes.** At `951622cf` this crate reads none of D1, D3,
 D7, K11-c and K11-d: no `ctor_field_types_at`, `ImportNames`, `ExportSpec`,
 `ModeSummary` ABI predicate, `settle_template`, `settle_concrete` or `lenient_from_expr`
 call. Row D6 breaks three module-test literals that name `borrowed_sibling: None`
@@ -1446,7 +1446,7 @@ checked, so it would have no result to read.
   lands and a same-key re-impl replaces the label with its own. The shell does not carry
   the label, so restore enrolment's conflict comparison is unchanged.
 - **Construction sites.** Twelve `WrittenTraitImpl::new` calls, all re-read at
-  `616c0d0a`: the producer above; in this crate's tests `infer/tests.rs`,
+  `951622cf`: the producer above; in this crate's tests `infer/tests.rs`,
   `checker/tests.rs` and `traits/dispatch/tests.rs` (two); in the types crate's tests
   `module/tests.rs` (three) and `crates/cranelisp-types/tests/lifecycle_facade.rs`; in the binary's tests
   `src/save.rs` (two) and `src/repl/mod.rs`'s test support. Each test site writes the

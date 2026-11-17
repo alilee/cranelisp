@@ -285,7 +285,7 @@ crate decides only where the record is staged: exactly where the shell is.
 - **Values.** The record clones the trait, target, writer module and method names
   that the shell is built from. They are resolved once and nothing is re-parsed:
   one derivation feeds two carriers (Principle 24).
-- **Authored label (S124 target T7, approved row D10; not in source at `616c0d0a`).** The record
+- **Authored label (S124 target T7, approved row D10; not in source at `951622cf`).** The record
   also carries its form's authored label, from `TraitImpl::authored_label` on the form
   as received. It is an opaque association key back to that form, never an identity
   source, and the shell does not carry it. Its definition is
@@ -403,7 +403,7 @@ which case resolution is deferred.
    not a trait method is not dispatched here.
 2. **Dispatch argument.** Use the method's `hkt_param_index` (`hkt.md`), otherwise
    argument 0. The index is read only from the resolved method's canonical declaration;
-   `None` there means argument 0. In source at `616c0d0a` a `None` instead falls through to
+   `None` there means argument 0. In source at `951622cf` a `None` instead falls through to
    `hkt_param_idx_for_method`, which scans visible trait declarations for the first method
    of the same bare name, so a same-named higher-kinded method could set a conventional
    call's dispatch argument. That scan is not part of the design (ACT-1001 P-2, ruled
