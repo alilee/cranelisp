@@ -1365,7 +1365,10 @@ fn macro_nullary_quoted_body_control() {
 }
 
 fn s124_value(cr: helpers::e2e::Cranelisp, program: &str, mode: &str, expected: i32) {
-    let cr=cr.env("CRANELISP_RC_STATS","1").env("CRANELISP_RC_DEC_CHECK","1").linked_environment(&[("CRANELISP_RC_STATS","1"),("CRANELISP_RC_DEC_CHECK","1")]);
+    let cr = cr
+        .env("CRANELISP_RC_STATS", "1")
+        .env("CRANELISP_RC_DEC_CHECK", "1")
+        .linked_environment(&[("CRANELISP_RC_STATS", "1"), ("CRANELISP_RC_DEC_CHECK", "1")]);
     let out = match mode {
         "run" => cr.file("p.cl", program).run("p.cl").output(),
         "link" => cr.file("p.cl", program).link_then_run("p.cl").output(),
@@ -1384,10 +1387,21 @@ fn s124_value(cr: helpers::e2e::Cranelisp, program: &str, mode: &str, expected: 
     } else {
         assert_eq!(out.status.code(), Some(expected % 256), "{diag}");
     }
-    let stats=if mode=="link" {out.linked_stderr.as_deref().expect("linked execution")} else {&out.stderr};
-    let line=stats.lines().find(|line|line.contains("[RC_STATS]")).expect("armed run must report RC statistics");
-    let count=|key:&str|line.split_whitespace().find_map(|field|field.strip_prefix(key).and_then(|n|n.parse::<i64>().ok())).expect("RC counter");
-    assert_eq!(count("allocs="),count("deallocs="),"{stats}");
+    let stats = if mode == "link" {
+        out.linked_stderr.as_deref().expect("linked execution")
+    } else {
+        &out.stderr
+    };
+    let line = stats
+        .lines()
+        .find(|line| line.contains("[RC_STATS]"))
+        .expect("armed run must report RC statistics");
+    let count = |key: &str| {
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix(key).and_then(|n| n.parse::<i64>().ok()))
+            .expect("RC counter")
+    };
+    assert_eq!(count("allocs="), count("deallocs="), "{stats}");
     assert!(
         !diag.contains("undefined function") && !diag.contains("GOT-slot carrier"),
         "{diag}"
@@ -1797,66 +1811,131 @@ fn s124_q3_shorthand() {
 // defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
 #[test]
 fn s124_1063_sconcat_value() {
- Cranelisp::new().stdin("(import [macros [*]])\n(let [c sconcat] (c SNil SNil))\n").output().assert_ok().assert_stdout_contains("SList.SNil").assert_stdout_does_not_contain("GOT-slot carrier");
+    Cranelisp::new()
+        .stdin("(import [macros [*]])\n(let [c sconcat] (c SNil SNil))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("SList.SNil")
+        .assert_stdout_does_not_contain("GOT-slot carrier");
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 sconcat
 #[test]
 fn s124_1063_sconcat_direct_control() {
- Cranelisp::new().stdin("(import [macros [*]])\n(sconcat SNil SNil)\n").output().assert_ok().assert_stdout_contains("SList.SNil").assert_stdout_does_not_contain("GOT-slot carrier");
+    Cranelisp::new()
+        .stdin("(import [macros [*]])\n(sconcat SNil SNil)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("SList.SNil")
+        .assert_stdout_does_not_contain("GOT-slot carrier");
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 sconcat
 #[test]
 fn s124_1063_sconcat_partial_control() {
- Cranelisp::new().stdin("(import [macros [*]])\n(let [c (sconcat SNil)] (c SNil))\n").output().assert_ok().assert_stdout_contains("SList.SNil").assert_stdout_does_not_contain("GOT-slot carrier");
+    Cranelisp::new()
+        .stdin("(import [macros [*]])\n(let [c (sconcat SNil)] (c SNil))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("SList.SNil")
+        .assert_stdout_does_not_contain("GOT-slot carrier");
 }
 
 // spec: spec/09-macros.md §9.11.1 — REPRO-1066 scalar variants
 // defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
 #[test]
 fn s124_1066_large_int_repl() {
- let out=Cranelisp::new().stdin(r#"(import [primitives [*]]) (import [macros [*]])
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [*]]) (import [macros [*]])
 (quote-sexp (SexpInt 3000))
-"#).output().assert_ok();
- assert!(out.stdout.contains("Sexp.SexpList"),"{}{}",out.stdout,out.stderr);
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("Sexp.SexpList"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 // spec: spec/09-macros.md §9.11.1 — REPRO-1066 scalar variants
 // defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
 #[test]
 fn s124_1066_bool_repl() {
- let out=Cranelisp::new().stdin(r#"(import [primitives [*]]) (import [macros [*]])
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [*]]) (import [macros [*]])
 (quote-sexp (SexpBool true))
-"#).output().assert_ok();
- assert!(out.stdout.contains("Sexp.SexpList"),"{}{}",out.stdout,out.stderr);
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("Sexp.SexpList"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 // spec: spec/09-macros.md §9.11.1 — REPRO-1066 scalar variants
 // defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
 #[test]
 fn s124_1066_float_repl() {
- let out=Cranelisp::new().stdin(r#"(import [primitives [*]]) (import [macros [*]])
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [*]]) (import [macros [*]])
 (quote-sexp (SexpFloat 1.5))
-"#).output().assert_ok();
- assert!(out.stdout.contains("Sexp.SexpList"),"{}{}",out.stdout,out.stderr);
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("Sexp.SexpList"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 // spec: spec/09-macros.md §9.11.1 — REPRO-1066 scalar variants
 // defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
 #[test]
 fn s124_1066_let_repl() {
- let out=Cranelisp::new().stdin(r#"(import [primitives [*]]) (import [macros [*]])
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [*]]) (import [macros [*]])
 (let [s (SexpInt 3)] (quote-sexp s))
-"#).output().assert_ok();
- assert!(out.stdout.contains("Sexp.SexpList"),"{}{}",out.stdout,out.stderr);
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("Sexp.SexpList"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 // spec: spec/09-macros.md §9.11.1 — REPRO-1066 scalar variants
 #[test]
 fn s124_1066_sym_control_repl() {
- let out=Cranelisp::new().stdin(r#"(import [primitives [*]]) (import [macros [*]])
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [*]]) (import [macros [*]])
 (quote-sexp (SexpSym "a"))
-"#).output().assert_ok();
- assert!(out.stdout.contains("Sexp.SexpList"),"{}{}",out.stdout,out.stderr);
+"#,
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        out.stdout.contains("Sexp.SexpList"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
 }

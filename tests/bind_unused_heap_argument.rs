@@ -278,14 +278,30 @@ fn used_and_named_continuations_balance_repl_moves_off() {
     check("(bind (Pure [49]) k)", "[49]", Mode::Repl, true);
 }
 
-
 fn s124_two_step_bind_balance(mode: Mode, moves_off: bool) {
-    let control="(let [k2 (fn [w] (Pure 49)) k1 (fn [v] (bind (Pure [2]) k2))] (bind (Pure [1]) k1))";
-    let subject="(bind (Pure [1]) (fn [v] (bind (Pure [2]) (fn [w] (Pure 49)))))";
-    let m=MarginalPair::new("T-1050-a two rewritten continuations",child(&control,mode,moves_off),child(subject,mode,moves_off)).measure();
-    for half in [m.control(),m.subject()] {
-        assert_eq!(half.exit_code(),Some(if matches!(mode,Mode::Repl) {0} else {49}),"{}",half.stderr);
-        if matches!(mode,Mode::Repl) { assert!(half.stdout.contains(":primitives/Int 49"),"{}",half.stdout); }
+    let control =
+        "(let [k2 (fn [w] (Pure 49)) k1 (fn [v] (bind (Pure [2]) k2))] (bind (Pure [1]) k1))";
+    let subject = "(bind (Pure [1]) (fn [v] (bind (Pure [2]) (fn [w] (Pure 49)))))";
+    let m = MarginalPair::new(
+        "T-1050-a two rewritten continuations",
+        child(&control, mode, moves_off),
+        child(subject, mode, moves_off),
+    )
+    .measure();
+    for half in [m.control(), m.subject()] {
+        assert_eq!(
+            half.exit_code(),
+            Some(if matches!(mode, Mode::Repl) { 0 } else { 49 }),
+            "{}",
+            half.stderr
+        );
+        if matches!(mode, Mode::Repl) {
+            assert!(
+                half.stdout.contains(":primitives/Int 49"),
+                "{}",
+                half.stdout
+            );
+        }
     }
     m.assert_balanced("both ignored heap payloads must be released");
 }
@@ -293,29 +309,41 @@ fn s124_two_step_bind_balance(mode: Mode, moves_off: bool) {
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
 // defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
 #[test]
-fn s124_1050_two_steps_run_moves_on() { s124_two_step_bind_balance(Mode::Run,false); }
+fn s124_1050_two_steps_run_moves_on() {
+    s124_two_step_bind_balance(Mode::Run, false);
+}
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
 // defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
 #[test]
-fn s124_1050_two_steps_run_moves_off() { s124_two_step_bind_balance(Mode::Run,true); }
+fn s124_1050_two_steps_run_moves_off() {
+    s124_two_step_bind_balance(Mode::Run, true);
+}
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
 // defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
 #[test]
-fn s124_1050_two_steps_link_moves_on() { s124_two_step_bind_balance(Mode::Link,false); }
+fn s124_1050_two_steps_link_moves_on() {
+    s124_two_step_bind_balance(Mode::Link, false);
+}
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
 // defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
 #[test]
-fn s124_1050_two_steps_link_moves_off() { s124_two_step_bind_balance(Mode::Link,true); }
+fn s124_1050_two_steps_link_moves_off() {
+    s124_two_step_bind_balance(Mode::Link, true);
+}
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
 // defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
 #[test]
-fn s124_1050_two_steps_repl_moves_on() { s124_two_step_bind_balance(Mode::Repl,false); }
+fn s124_1050_two_steps_repl_moves_on() {
+    s124_two_step_bind_balance(Mode::Repl, false);
+}
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
 // defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
 #[test]
-fn s124_1050_two_steps_repl_moves_off() { s124_two_step_bind_balance(Mode::Repl,true); }
+fn s124_1050_two_steps_repl_moves_off() {
+    s124_two_step_bind_balance(Mode::Repl, true);
+}
