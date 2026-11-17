@@ -419,9 +419,14 @@ impl std::error::Error for CtorFieldsAtError {}
 /// the whole ctor ([`CtorFieldsAtError::NotConcrete`]). **Never fabricates**:
 /// there is no default arm, no `unwrap_or(Int)` — this is the only legal
 /// derivation of instantiated ctor-field types for category/glue purposes
-/// (`design/arch/total-concreteness.md` §2.1; the backend's hand-rolled `scheme.ty`
-/// walk with its `unwrap_or(Type::Int)` launder retires onto this in the S120
-/// backend wash, closing register row R-13).
+/// (`design/arch/total-concreteness.md` §2.1).
+///
+/// `args` are the type's arguments in **declared parameter order**: `args[i]`
+/// instantiates the type's `i`-th parameter. A field takes the argument of
+/// the parameter it mentions, whatever order the fields mention the
+/// parameters in and whether or not every parameter is mentioned. Pairing
+/// arguments with variables by first appearance in the fields is a different,
+/// wrong projection.
 ///
 /// `ctor_key` is the **storage key** of the ctor `Def` (canonical
 /// `member_key(Type, Ctor)` for sum ctors, the bare type name for a product) —

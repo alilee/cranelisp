@@ -681,3 +681,61 @@ fn ctor_field_types_at_instantiation_mismatch() {
         "the agreeing instantiation projects"
     );
 }
+
+// spec: design/arch/total-concreteness.md §2.1 — each field takes the
+// argument of its own declared parameter, whatever order the fields mention
+// the parameters in (ACT-1062).
+#[test]
+fn ctor_field_types_at_pairs_arguments_with_declared_parameters() {
+    let args = [ConcreteType::Int, ConcreteType::String];
+    let t = one_table(vec![
+        // (deftype (P a b) (MkP [:b y :a x])): fields reverse the parameters.
+        (
+            "P.MkP",
+            generic_ctor_entry("P", &[1, 2], vec![Type::Var(2), Type::Var(1)]),
+        ),
+        // (deftype (R a b) (MkR [:b y])): no field mentions the first parameter.
+        (
+            "R.MkR",
+            generic_ctor_entry("R", &[1, 2], vec![Type::Var(2)]),
+        ),
+        // (deftype (Q a b) (MkQ [:a x :b y])): the in-order control.
+        (
+            "Q.MkQ",
+            generic_ctor_entry("Q", &[1, 2], vec![Type::Var(1), Type::Var(2)]),
+        ),
+    ]);
+    let at = |key: &str| ctor_field_types_at(&t, &Symbol::from(key), &args);
+
+    assert_eq!(
+        at("P.MkP"),
+        Ok(vec![ConcreteType::String, ConcreteType::Int])
+    );
+    assert_eq!(at("R.MkR"), Ok(vec![ConcreteType::String]));
+    assert_eq!(
+        at("Q.MkQ"),
+        Ok(vec![ConcreteType::Int, ConcreteType::String])
+    );
+}
+
+// spec: design/arch/total-concreteness.md §2.1 — the pairing is per
+// constructor against the type's parameters, so sibling constructors that
+// mention them in opposite order agree on one instantiation (ACT-1062).
+#[test]
+fn ctor_field_types_at_sibling_ctors_share_one_parameter_pairing() {
+    // (deftype (E a b) (L [:b l]) (R [:a r])) at (E Int String).
+    let args = [ConcreteType::Int, ConcreteType::String];
+    let t = one_table(vec![
+        ("E.L", generic_ctor_entry("E", &[1, 2], vec![Type::Var(2)])),
+        ("E.R", generic_ctor_entry("E", &[1, 2], vec![Type::Var(1)])),
+    ]);
+
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("E.L"), &args),
+        Ok(vec![ConcreteType::String])
+    );
+    assert_eq!(
+        ctor_field_types_at(&t, &Symbol::from("E.R"), &args),
+        Ok(vec![ConcreteType::Int])
+    );
+}

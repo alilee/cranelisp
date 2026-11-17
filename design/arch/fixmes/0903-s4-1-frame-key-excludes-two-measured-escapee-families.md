@@ -50,9 +50,6 @@ the leaks does not apply here.
   unmeasured.
 - The frame-key narrowing remains forbidden: it was measured at +16 corpus
   refusals and reverted (contract §2.6 and §8).
-- `test`'s U′ golden-CLIF re-capture (W2 C-6, C-7) changes every fixture. It
-  does not supply the scoped `Grid.cells` re-baseline below, because the arm it
-  would witness still stands.
 - This filing subsumes FIXME 0891 (face 1, a constructor template's own
   residual parameter), deleted at S123 W2; Git history holds it. Verified
   2026-11-16: face 1 is structural. Codegen targets are `Life::Concrete` body
@@ -92,17 +89,16 @@ The refusal frame (§7.2, FIXME 0915) is no longer a precondition: it carries
 past S124 by the user's ruling, and the close adds a refusal only where the
 census measured zero traffic.
 
-The accessor correction's change-set (item 3) carries a scoped, attributed
-re-baseline of the `f4_sudoku` `user::Grid.cells` accessor frame as the static
-witness. It cannot ride the field-channel change-set (item 2): that change-set
-lands only once the census reads zero residual and absent field reads, which
-is after the accessor traffic is gone. That frame is uncalled in the corpus
-and the exemplar, so it is not a runtime witness.
+No `Grid.cells` re-baseline is owed. An accessor of a generic product is a
+template, compiled only at the instantiations a program demands; `f4_sudoku`
+never calls `cells`, and `tests/fixtures/clif_baseline/golden/f4_sudoku.clif`
+carries no such frame (read 2026-11-18). The census read zero residual and
+absent field reads, so the field-channel change-set (item 2) lands directly
+after the census (contract §7.3, §7.4).
 
 Register rows: [safety invariants](../safety-invariants.md) R15, R17 and R18.
 
 ## Closure
 
 The shallow-dec arm, the `Err ⇒ Mixed` arm and the absent-type early returns
-are gone, the census reads zero in every partition and arm, and the
-`Grid.cells` re-baseline is recorded.
+are gone, and the census reads zero in every partition and arm.

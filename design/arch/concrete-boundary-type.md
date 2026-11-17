@@ -255,17 +255,26 @@ rows R17 and R18. Backend interior: the
   retirement re-baselines the golden corpus once before any census-scoped diff is claimed.
   Then: census with both detection legs → the field channel (row D1) and the producer
   corrections, including ACT-1034 → zero read → the arm deletion.
-  - **Row D1 precedes the zero read.** The backend's own field-type substitution hands
+  - **Row D1 precedes the arm deletion.** The backend's own field-type substitution hands
     classification a type variable whenever the reference's type arguments are absent or
-    residual, and each such word records on the retain arm. The zero is unreachable while
-    that channel stands (safety-register row R17).
+    residual. The census measures no such read
+    ([release contract §7.3](../backend/non-concrete-release-contract.md#73-the-category-census-armed-open)),
+    so the channel does not hold the zero read open; but until the walk is deleted nothing
+    makes one unconstructable, and the arm deletion types every match field through row D1's
+    accessor (safety-register row R17).
   - **No refusal lands on measured traffic, row D1's included.** The census distinguishes a
     field read whose instantiation is concrete, residual or absent. Row D1 turns the last
-    two into located errors, so it lands before the producer corrections only if the census
-    measures zero field reads in both classes. Otherwise it follows the producer correction
-    that removes that traffic. A narrowing landed ahead of its producers is the measured
-    failure of the frame key (+16 refusals, twice;
+    two into located errors, so it lands only on a census reading of zero field reads in both
+    classes. That reading is taken and is zero, so row D1 lands directly after the census,
+    ahead of the producer corrections. A narrowing landed ahead of its producers is the
+    measured failure of the frame key (+16 refusals, twice;
     [release contract §2.6](../backend/non-concrete-release-contract.md#26-frame-key-falsification)).
+  - **Row D1 also corrects a concrete read.** The backend's walk pairs a reference's type
+    arguments with the declaration's variables by first appearance in the fields, so a type
+    whose fields mention its parameters out of declaration order binds a field at another
+    parameter's type (ACT-1062, memory-unsafe). No census point records it, because the wrong
+    type is concrete. `ctor_field_types_at` pairs by declared parameter
+    ([total concreteness §2.1](total-concreteness.md#21-constructor-field-types-at-an-instantiation)).
 - **A census record is attributed by where the backend read the type it could not
   classify**, then by partition
   ([producer obligations §5.3](../typecheck/non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it)
@@ -283,11 +292,12 @@ rows R17 and R18. Backend interior: the
     Each attributed record is reduced by `qa` before any correction is designed, and the
     reduction shows the channel. `design`(backend) may add a channel wherever a point
     already knows it at no threading cost.
-- **The `Grid.cells` static witness rides typecheck's accessor correction**, not row D1's
-  change-set. D1 lands only after the accessor traffic is gone, so by then the generic
-  accessor frame it would have re-baselined is no longer emitted. The accessor correction
-  carries the scoped, attributed re-baseline of that frame
-  ([release contract §7.7](../backend/non-concrete-release-contract.md#77-order)).
+- **No `Grid.cells` frame exists to re-baseline.** An accessor of a generic product is a
+  template, compiled only at the concrete instantiations a program demands. `f4_sudoku` never
+  calls `cells`, so `tests/fixtures/clif_baseline/golden/f4_sudoku.clif` carries no such
+  frame, and neither row D1 nor a producer correction owes a re-baseline of it. Row D1's
+  emission change is confined to the concrete reads its pairing corrects
+  ([release contract §7.4](../backend/non-concrete-release-contract.md#74-the-r-1-structural-close-open)).
 - **No mode may differ.** ACT-1034's cells diverge between the REPL and batch in opposite
   directions; instance demand is one function of the program in every mode
   ([Principle 11](principles/11-single-pipeline-mode-parameters.md)). `qa` attributes the

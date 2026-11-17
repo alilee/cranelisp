@@ -114,6 +114,9 @@ types at a concrete instantiation for category and glue purposes.
 - It substitutes the instantiation's arguments into the declared field types and converts
   each through `ConcreteType::from_type`. An already-concrete constructor projects unchanged
   and a nullary constructor has zero fields.
+- The arguments pair with the type's declared parameters by position. A field takes the
+  argument of the parameter it mentions, whatever order the fields mention the parameters in
+  and whether or not every parameter is mentioned; sibling constructors share the one pairing.
 - One residual field refuses the whole constructor (`CtorFieldsAtError::NotConcrete`). It
   never fabricates: there is no default arm.
 - A caller bug — a key that is not a constructor, a parameter-arity mismatch, an
@@ -122,7 +125,9 @@ types at a concrete instantiation for category and glue purposes.
   exact signature.
 - Open: the backend's declaration-scheme walk in
   `crates/cranelisp-backend/src/compiler/context.rs` still fills a missing field type with
-  `Type::Int`, and the function has no consumer outside its crate. S124 retires the walk onto
+  `Type::Int` and pairs arguments with variables by first appearance in the fields, which
+  binds a field to another parameter's type (ACT-1062). The function has no consumer outside
+  its crate. S124 retires the walk onto
   this projection; the backend consumer edge is approved (S124 packet row D1). Contract:
   [the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
 
