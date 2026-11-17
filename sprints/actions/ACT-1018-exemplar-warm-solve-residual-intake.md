@@ -109,3 +109,11 @@ The residual falls from 51 to **2** on the U′ build. The 2 is one block per
   No S124 change-set owns the stranded block. The reduction named above is
   still the next step and is unscheduled.
 - **Refuted if** the cell reads 0 on the tree that corrects ACT-1050.
+
+## After ACT-1050's correction (qa, 2026-11-18, `8667a868`)
+
+O-1018, taken on the tree that corrects ACT-1050: the guard reads **2**
+(14,872 allocations, 14,870 deallocations). The prediction above holds and
+its refutation clause did not fire. The residual is not the bind-chain
+rewrite's. This record carries on the number 2; the reduction is still
+unscheduled, and the carry is the user's decision.

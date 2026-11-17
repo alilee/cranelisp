@@ -1,7 +1,7 @@
 ---
 id: ACT-1050
 title: An inline bind continuation that ignores a heap argument leaks it
-status: open
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -71,6 +71,22 @@ rewrite.** Evidence and controls:
    - cover only the first step of a rebuilt chain (cell T-1050-a);
    - type the parameter in the backend, which would fabricate a category.
 3. `dev` adds a module row at the seam that owns the fix.
+
+## Accepted at W4's exit (qa, 2026-11-18, `8667a868`)
+
+- **Red to green.** The twelve committed guards and T-1050-a's six cells
+  failed on their balance assertions at `f775478e` and pass at `8667a868`,
+  in `dev`'s full run and in `qa`'s focused run, with the six controls.
+  `32e434dc` changes no file under `tests/`.
+- **Module rows.** Fourteen of `dev`'s nineteen C7 and C8 rows failed
+  before the change, and all pass.
+- **The measured aggregate.** The census absent arm in `Plain` read 600
+  records in 39 frames on the T4 tree. On `8667a868` no program the suite
+  compiles records on any arm
+  ([evidence delta §14.5](../../tests/plan/s124-evidence-delta.md#145-the-category-census)).
+- **Owed by `test`,** tracked in the evidence delta §14.3: the notation
+  below. It does not hold this filing open.
+- **Not addressed, as predicted:** ACT-1018's guard still reads 2.
 
 ## Completion evidence
 

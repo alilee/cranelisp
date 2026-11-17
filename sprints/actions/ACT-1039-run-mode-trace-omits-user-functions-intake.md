@@ -91,6 +91,15 @@ argument and result text, and 40 when it has no child.
   imported-module control passes because each cell starts cold.
 - **Refuted if** the second invocation still records nothing once the
   traced set is fixed by slot claims.
+- **The `--link` leg is run-dependent** (qa, 2026-11-18, `8667a868`).
+  `s124_1039_w_subject_link` fails alone, seven runs of seven, and passed
+  in both full-suite runs of that night. The mechanism above is an order
+  between two slot writes, and load changes the order under `--link`. The
+  cell stays a RED guard; a pass in a loaded run is not a correction.
+- **`--link` has no `--no-cache` control.** `repl/spec/00-cli-invocation.md`
+  §0.6 requires `--no-cache` with `--link` to be refused. The linked leg's
+  control is its own first, cold invocation, which the cell asserts
+  records five frames.
 
 ## Evidence allocation
 
@@ -98,7 +107,8 @@ argument and result text, and 40 when it has no child.
   [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#96-get-to-green-item-7)):**
   the imported-module program invoked twice in one directory, in every mode,
   asserting the same frames on the second invocation; the `--no-cache`
-  second invocation is its control. `class=mode-divergence`, the same locus.
+  second invocation is its control under `--run` and the REPL.
+  `class=mode-divergence`, the same locus. Committed at `79324083`.
 
 - **`test` (allocated now):** a failing, un-ignored cell in `tests/trace.rs`
   that runs the program above through all three modes and asserts 5. Cite

@@ -68,9 +68,12 @@ primitives imported.
 | No face | a `let`-bound lambda named `poll-read` that returns `Pure` | 207 | 207, as its renamed twin |
 
 **An imported user `bind` beside a prelude that exports the primitive**
-(`arch`'s falsifier). `m` defines the user `bind`, the entry imports it by
-name, `prelude.cl` re-exports the primitive: `undefined function: bind`;
-with `then` in all three places, 106.
+(`arch`'s falsifier, T-1065-f). `m` defines the user `bind`, the entry
+imports it by name, `prelude.cl` re-exports the primitive:
+`undefined function: bind`. This face is not this defect's. It is
+[ACT-1075](ACT-1075-polymorphic-candidate-selected-from-a-shared-spelling-is-undefined-at-codegen-intake.md),
+which any spelling shows; the `then` control removed the second candidate
+together with the spelling and could not tell the two apart.
 
 ## Classification: a defect
 
@@ -113,7 +116,20 @@ with `then` in all three places, 106.
   shapes), so `design`(int) strikes that assertion or names a module-tier
   observation.
 
+## Accepted at W4's exit (qa, 2026-11-18, `8667a868`)
+
+- **Red to green.** The eight cells of REPRO-1065-a, b, c and e failed on
+  their assertions at `f775478e` and pass at `8667a868` in `dev`'s full run
+  and in `qa`'s focused run, with the seventeen controls. `dev`'s C8 module
+  rows were RED before the change and pass.
+- **T-1065-f stays RED and is re-traced to ACT-1075.** Its program fails
+  the same way with the pass disabled and with spellings the pass never
+  reads. The design's import assertion keeps `dev`'s module row
+  `ambiguous_bind_is_not_the_primitive` as its evidence until ACT-1075's
+  correction lets the cell execute.
+- **Open:** T-1065-d, with row D3 in W7. This filing closes on it.
+
 ## Completion evidence
 
-REPRO-1065-a to c and e and T-1065-f fail as stated, then pass with their
-controls and the C8 module rows; T-1065-d passes once row D3 lands.
+REPRO-1065-a to c and e fail as stated, then pass with their controls and
+the C8 module rows (met, above); T-1065-d passes once row D3 lands.

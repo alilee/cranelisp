@@ -43,8 +43,8 @@ prelude. Found while probing the W3 review's redirect finding.
 | Subject, `--link` | 42 |
 | Control: `helper` with one signature, `(defn helper [x k] …)` | 42 in `--run`, `--link` and the REPL |
 | Control: the `impl` in `p.cl` instead of `lib.cl` | 42 |
-| Variant: `helper`'s body dispatches `(size x)`, in its own module beside a `base.cl` | signal 11 under `--run`; `--link` fails at the linker: the instance in `p.o` refers to `__cranelisp_got_lib`, which no object defines |
-| The variant with a back-edge, `(helper (if false o Nope) 0)` | the same two faces |
+| Variant: `helper`'s body dispatches `(size x)`, in its own module beside a `base.cl` | signal 11 under `--run` and the REPL; 42 under `--link` (the committed cell, `f775478e` and `8667a868`) |
+| The variant with a back-edge, `(helper (if false o Nope) 0)` | signal 11 under `--run` and the REPL; `--link` fails at the linker: the instance in `p.o` refers to `__cranelisp_got_lib`, which no object defines |
 
 ## Classification: a defect, memory-unsafe; a mode divergence
 
