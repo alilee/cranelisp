@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W0
+**Status**: PHASE 5 LANGUAGE — W2
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -326,6 +326,22 @@ The third-deferral groups and ACT-1067 (Notes).
 ## Notes
 
 - 2026-11-16: opening suite run and package convergence recorded above.
+- **W0 landed (`ae011366`):** 29 tracked memories renamed to `AGENTS.md`
+  (the scope's "103" counted ignored copies); `.codex/config.toml` deleted;
+  shared-tree guard hooked. The document checker inspects and reports about
+  590 pre-existing findings, 577 of class ignored-path; their disposal is
+  with the user, so W0's checker exit is open and one `citation_drift` test
+  stays RED.
+- **W1 accepted by `qa` (`b630252b`):** suite 7,423 run, 267 failed — 44
+  opening guards, 216 new cells RED on their assertion, 6 RED on setup
+  (returned to `test` by wave, delta §14), one document-gate check, no
+  regression. FIXME 0934 and ACT-0975 closed on passing fences.
+- **ACT-1068 filed, unscheduled:** saving a session omits every
+  multi-signature function from the module file (data loss; predates S124).
+  Scheduling is with the user.
+- **Queued for the user:** ignored-path disposal; category of refusals about
+  an existing `main`; whether method-level re-entry counts toward depth; the
+  T-D7-b overload-leg residual.
 
 ### User rulings on the Phase 2 decisions, 2026-11-16
 

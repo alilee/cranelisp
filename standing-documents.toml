@@ -378,7 +378,7 @@ disposition = "established"
 
 [[document_class]]
 name = "backend-current-designs"
-patterns = ["design/backend/backend.md", "design/backend/uniform-counting.md", "design/backend/binding-indirection-consume.md", "design/backend/binding-scope.md", "design/backend/compile-to-module.md", "design/backend/executable-generation.md", "design/backend/io-scheduling.md", "design/backend/io-trampoline.md", "design/backend/jit-object-convergence.md", "design/backend/lenient-eval.md", "design/backend/module-caching.md", "design/backend/non-concrete-release-contract.md", "design/backend/ownership-codegen.md", "design/backend/per-module-got.md", "design/backend/ring2-rc.md", "design/backend/s115-carrier-and-rc-sweep.md", "design/backend/s117-failed-member-attribution.md", "design/backend/s122-closure.md", "design/backend/transitive-drop-glue.md"]
+patterns = ["design/backend/backend.md", "design/backend/uniform-counting.md", "design/backend/binding-indirection-consume.md", "design/backend/binding-scope.md", "design/backend/compile-to-module.md", "design/backend/executable-generation.md", "design/backend/io-scheduling.md", "design/backend/io-trampoline.md", "design/backend/jit-object-convergence.md", "design/backend/lenient-eval.md", "design/backend/module-caching.md", "design/backend/non-concrete-release-contract.md", "design/backend/ownership-codegen.md", "design/backend/per-module-got.md", "design/backend/ring2-rc.md", "design/backend/s115-carrier-and-rc-sweep.md", "design/backend/s117-failed-member-attribution.md", "design/backend/s122-closure.md", "design/backend/transitive-drop-glue.md", "design/backend/trace-codegen.md"]
 owner = "design"
 purpose = "Current backend interior designs and the retained design evidence that cannot be re-derived from source."
 established_by = "design/backend/AGENTS.md"
@@ -394,7 +394,7 @@ disposition = "established"
 
 [[document_class]]
 name = "intrinsics-current-designs"
-patterns = ["design/intrinsics/process-lifecycle.md", "design/intrinsics/diagnostic-modes.md", "design/intrinsics/intrinsics-table.md", "design/intrinsics/reactor.md", "design/intrinsics/ownership-and-disposal.md"]
+patterns = ["design/intrinsics/process-lifecycle.md", "design/intrinsics/diagnostic-modes.md", "design/intrinsics/intrinsics-table.md", "design/intrinsics/reactor.md", "design/intrinsics/ownership-and-disposal.md", "design/intrinsics/heap-layout.md", "design/intrinsics/trace-runtime.md"]
 owner = "design"
 purpose = "Current intrinsics interior designs for runtime heap ownership, node disposal, IO execution, intrinsic registration and diagnostics."
 established_by = "design/intrinsics/AGENTS.md"
