@@ -2310,7 +2310,7 @@ fn s124_1063_p_user_control_repl() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_a_bind() {
     s124_value(
@@ -2339,7 +2339,7 @@ fn s124_1065_a_then() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_bare_bind_run() {
     s124_value(
@@ -2384,7 +2384,7 @@ fn s124_1065_arity_control_bind_run() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_imported_bind_run() {
     s124_value(
@@ -2413,7 +2413,7 @@ fn s124_1065_imported_then_run() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
 #[test]
 fn s124_1065_prelude_bind_run() {
     s124_value(
@@ -2446,7 +2446,7 @@ fn s124_1065_prelude_then_run() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_bare_bind_link() {
     s124_value(
@@ -2491,7 +2491,7 @@ fn s124_1065_arity_control_bind_link() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_imported_bind_link() {
     s124_value(
@@ -2520,7 +2520,7 @@ fn s124_1065_imported_then_link() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
 #[test]
 fn s124_1065_prelude_bind_link() {
     s124_value(
@@ -2553,7 +2553,7 @@ fn s124_1065_prelude_then_link() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_bare_bind_repl() {
     s124_value(
@@ -2598,7 +2598,7 @@ fn s124_1065_arity_control_bind_repl() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_imported_bind_repl() {
     s124_value(
@@ -2627,7 +2627,7 @@ fn s124_1065_imported_then_repl() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
 #[test]
 fn s124_1065_prelude_bind_repl() {
     s124_value(
@@ -2660,7 +2660,7 @@ fn s124_1065_prelude_then_repl() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::effect_descriptor found=S124 owner=/dev
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::effect_descriptor found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1065_e_poll_read() {
     s124_value(

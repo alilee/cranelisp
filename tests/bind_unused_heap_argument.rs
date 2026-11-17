@@ -63,7 +63,7 @@ fn check(subject: &str, payload: &str, mode: Mode, moves_off: bool) {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn unused_heap_argument_is_released_run_moves_on() {
     check(
@@ -75,7 +75,7 @@ fn unused_heap_argument_is_released_run_moves_on() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn nested_unused_heap_argument_is_released_run_moves_on() {
     check(
@@ -99,7 +99,7 @@ fn used_and_named_continuations_balance_run_moves_on() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn unused_heap_argument_is_released_run_moves_off() {
     check(
@@ -111,7 +111,7 @@ fn unused_heap_argument_is_released_run_moves_off() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn nested_unused_heap_argument_is_released_run_moves_off() {
     check(
@@ -135,7 +135,7 @@ fn used_and_named_continuations_balance_run_moves_off() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn unused_heap_argument_is_released_link_moves_on() {
     check(
@@ -147,7 +147,7 @@ fn unused_heap_argument_is_released_link_moves_on() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn nested_unused_heap_argument_is_released_link_moves_on() {
     check(
@@ -171,7 +171,7 @@ fn used_and_named_continuations_balance_link_moves_on() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn unused_heap_argument_is_released_link_moves_off() {
     check(
@@ -183,7 +183,7 @@ fn unused_heap_argument_is_released_link_moves_off() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn nested_unused_heap_argument_is_released_link_moves_off() {
     check(
@@ -207,7 +207,7 @@ fn used_and_named_continuations_balance_link_moves_off() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn unused_heap_argument_is_released_repl_moves_on() {
     check(
@@ -219,7 +219,7 @@ fn unused_heap_argument_is_released_repl_moves_on() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn nested_unused_heap_argument_is_released_repl_moves_on() {
     check(
@@ -243,7 +243,7 @@ fn used_and_named_continuations_balance_repl_moves_on() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn unused_heap_argument_is_released_repl_moves_off() {
     check(
@@ -255,7 +255,7 @@ fn unused_heap_argument_is_released_repl_moves_off() {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
-// defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/control_flow/lambda.rs::compile_lambda found=S123 owner=/dev — provisional locus (ACT-1050)
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S123 owner=/dev fixed=S124/32e434dc
 #[test]
 fn nested_unused_heap_argument_is_released_repl_moves_off() {
     check(
@@ -307,42 +307,42 @@ fn s124_two_step_bind_balance(mode: Mode, moves_off: bool) {
 }
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
-// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1050_two_steps_run_moves_on() {
     s124_two_step_bind_balance(Mode::Run, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
-// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1050_two_steps_run_moves_off() {
     s124_two_step_bind_balance(Mode::Run, true);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
-// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1050_two_steps_link_moves_on() {
     s124_two_step_bind_balance(Mode::Link, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
-// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1050_two_steps_link_moves_off() {
     s124_two_step_bind_balance(Mode::Link, true);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
-// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1050_two_steps_repl_moves_on() {
     s124_two_step_bind_balance(Mode::Repl, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — T-1050-a
-// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev
+// defect: class=node-span-collision locus=src/bind_chain_analysis.rs::make_bind found=S124 owner=/dev fixed=S124/32e434dc
 #[test]
 fn s124_1050_two_steps_repl_moves_off() {
     s124_two_step_bind_balance(Mode::Repl, true);
