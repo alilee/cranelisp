@@ -77,7 +77,7 @@ fn run_with_rc_stats(src: &str) -> helpers::e2e::CrOutput {
 
 /// Extract an integer field `k` from the single `[RC_STATS]` line. The landed
 /// S102 H2 grammar (`crates/cranelisp-intrinsics/src/rc.rs::rc_stats_line`):
-/// `[RC_STATS] rc_inc=N rc_dec=N allocs=N deallocs=N stack_slot=N reuse_hit=N
+/// `[RC_STATS] rc_inc=N rc_dec=N allocs=N deallocs=N reuse_hit=N
 /// reuse_miss=N rc_nonatomic=N rc_atomic=N`.
 fn rc_field(stderr: &str, k: &str) -> i64 {
     let line = stderr
@@ -710,4 +710,181 @@ fn elided_proof_not_taken_on_aliased_value_neg() {
     );
     // Value semantics: the retained `w` reads the ORIGINAL 10; v2[0] is 99 ⇒ 109.
     assert_exit_value(out, 10 + 99);
+}
+
+const S124_D4_HEADER: &str = "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(deftype Box [:Int value])\n(deftype Wrap [:Box box :Int guard])\n(defn unbox [b] (match b [(Box n) n]))\n(defn observe [:Box b] (add-i64 1 (unbox b)))\n(defn scalar [:Int n] (add-i64 n 1))\n";
+
+fn s124_d4(position: &str, mode: &str) {
+    let expr = match position {
+        "vec" => "(vec-get [(Box 2000) (Box 17)] 0)",
+        "field" => "(match (Wrap (Box 2000) 17) [(Wrap b guard) b])",
+        "capture" => "(let [b (Box 2000) f (fn [n] (if (eq-i64 n 0) b (Box n)))] (f 0))",
+        "trace" => "(match (trace (observe (Box 2000))) [(TraceCall root rp rr children rn) (match children [SNil (Box -4) (SCons frame rest) (match frame [(TraceCall n p r c ns) (match p [SNil (Box -1) (SCons h t) (if (str-eq h \"(Box 2000)\") (if (str-eq r \"2001\") (Box 2000) (Box -2)) (Box -3))])])])])",
+        "trace_control" => "(match (trace (scalar 2000)) [(TraceCall root rp rr children rn) (match children [SNil (Box -4) (SCons frame rest) (match frame [(TraceCall n p r c ns) (if (str-eq r \"2001\") (Box 2000) (Box -1))])])])",
+        "result" => "(Box 2000)",
+        _ => unreachable!(),
+    };
+    let body = if position == "result" {
+        expr.to_owned()
+    } else {
+        format!("(unbox {expr})")
+    };
+    let program = format!("(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n(defn main [] (Pure {body}))\n");
+    // Import the traced callee to avoid ACT-1039's same-module omission.
+    let cr = Cranelisp::new()
+        .file("shapes.cl", S124_D4_HEADER)
+        .env("CRANELISP_NO_LENIENT", "1")
+        .env("CRANELISP_RC_STATS", "1")
+        .env("CRANELISP_RC_DEC_CHECK", "1")
+        .linked_environment(&[
+            ("CRANELISP_RC_STATS", "1"),
+            ("CRANELISP_RC_DEC_CHECK", "1"),
+            ("CRANELISP_NO_LENIENT", "1"),
+        ]);
+    let out = match mode {
+        "run" => cr.file("p.cl", &program).run("p.cl").output(),
+        "link" => cr.file("p.cl", &program).link_then_run("p.cl").output(),
+        "repl" => cr
+            .stdin(&format!("{program}(main)\n{expr}\n(unbox {expr})\n"))
+            .output(),
+        _ => unreachable!(),
+    };
+    let diag = format!("status={:?}\n{}{}", out.status, out.stdout, out.stderr);
+    assert!(
+        !diag.contains("Error:") && !diag.contains("error:"),
+        "{position}/{mode}: {diag}"
+    );
+    if mode == "repl" {
+        assert!(out.status.success(), "{diag}");
+        assert!(
+            out.stdout.contains(":shapes/Box (Box 2000)")
+                && out.stdout.contains(":primitives/Int 2000"),
+            "{diag}"
+        );
+    } else {
+        let expected = if position == "result" { 0 } else { 2000 % 256 };
+        assert_eq!(
+            out.status.code(),
+            Some(expected),
+            "{position}/{mode}: {diag}"
+        );
+    }
+    let stderr = if mode == "link" {
+        out.linked_stderr.as_deref().expect("linked execution")
+    } else {
+        &out.stderr
+    };
+    assert_eq!(
+        rc_field(stderr, "allocs"),
+        rc_field(stderr, "deallocs"),
+        "{position}/{mode}: {stderr}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 vec, run
+#[test]
+fn s124_d4_vec_run() {
+    s124_d4("vec", "run");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 vec, link
+#[test]
+fn s124_d4_vec_link() {
+    s124_d4("vec", "link");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 vec, repl
+#[test]
+fn s124_d4_vec_repl() {
+    s124_d4("vec", "repl");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 field, run
+#[test]
+fn s124_d4_field_run() {
+    s124_d4("field", "run");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 field, link
+#[test]
+fn s124_d4_field_link() {
+    s124_d4("field", "link");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 field, repl
+#[test]
+fn s124_d4_field_repl() {
+    s124_d4("field", "repl");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 capture, run
+#[test]
+fn s124_d4_capture_run() {
+    s124_d4("capture", "run");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 capture, link
+#[test]
+fn s124_d4_capture_link() {
+    s124_d4("capture", "link");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 capture, repl
+#[test]
+fn s124_d4_capture_repl() {
+    s124_d4("capture", "repl");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 trace, run
+#[test]
+fn s124_d4_trace_run() {
+    s124_d4("trace", "run");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 trace, link
+#[test]
+fn s124_d4_trace_link() {
+    s124_d4("trace", "link");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 trace, repl
+#[test]
+fn s124_d4_trace_repl() {
+    s124_d4("trace", "repl");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 result, run
+#[test]
+fn s124_d4_result_run() {
+    s124_d4("result", "run");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 result, link
+#[test]
+fn s124_d4_result_link() {
+    s124_d4("result", "link");
+}
+
+// spec: spec/12-runtime.md §12.3.1; repl/spec/01-display-format.md §1.5 — T-D4 result, repl
+#[test]
+fn s124_d4_result_repl() {
+    s124_d4("result", "repl");
+}
+
+// spec: spec/04-expressions.md §4.12.3 — T-D4 scalar trace control
+#[test]
+fn s124_d4_trace_control_run() {
+    s124_d4("trace_control", "run");
+}
+
+// spec: spec/04-expressions.md §4.12.3 — T-D4 scalar trace control
+#[test]
+fn s124_d4_trace_control_link() {
+    s124_d4("trace_control", "link");
+}
+
+// spec: spec/04-expressions.md §4.12.3 — T-D4 scalar trace control
+#[test]
+fn s124_d4_trace_control_repl() {
+    s124_d4("trace_control", "repl");
 }
