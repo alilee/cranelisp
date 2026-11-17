@@ -940,3 +940,88 @@ fn s124_1038_untraced_sparks_control() {
     assert!(s124_spark_stat(&out.stderr, "spawns") > 0, "{}", out.stderr);
     out.assert_stdout_contains(":primitives/Int 144");
 }
+
+fn s124_cached_import_trace(mode: &str, no_cache_control: bool) {
+    let main = "(import [primitives [Pure TraceCall]]) (import [p [fib frames]]) (defn main [] (Pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))\n";
+    let invoke = |cr: Cranelisp| match mode {
+        "run" => cr.run("user.cl").output(),
+        "link" => cr.link_then_run("user.cl").output(),
+        "repl" => cr.stdin("(main)\n").output(),
+        _ => unreachable!(),
+    };
+    let assert_frames = |out: &helpers::e2e::CrOutput, invocation: &str| {
+        let diag = format!(
+            "{mode}/{invocation}: status={:?}\n{}{}",
+            out.status, out.stdout, out.stderr
+        );
+        if mode == "repl" {
+            assert!(
+                out.status.success() && out.stdout.contains(":primitives/Int 5"),
+                "five fib frames: {diag}"
+            );
+            assert!(!out.stdout.contains("error:"), "{diag}");
+        } else {
+            assert_eq!(out.status.code(), Some(5), "five fib frames: {diag}");
+        }
+    };
+    let cold = invoke(
+        Cranelisp::new()
+            .file("p.cl", FIB_AND_FRAMES)
+            .user(main)
+            .env("CRANELISP_NO_LENIENT", "1")
+            .env("CRANELISP_MODULE_TRACE", "1"),
+    );
+    assert_frames(&cold, "cold");
+    let cr = cold
+        .run_again()
+        .env("CRANELISP_NO_LENIENT", "1")
+        .env("CRANELISP_MODULE_TRACE", "1");
+    let warm = invoke(if no_cache_control {
+        cr.cli_flag("--no-cache")
+    } else {
+        cr
+    });
+    if no_cache_control {
+        assert!(!warm.stderr.contains("cache hit"), "{}", warm.stderr);
+    } else {
+        assert!(
+            warm.stderr.contains("cache hit (.meta valid) for p"),
+            "must restore imported p: {}",
+            warm.stderr
+        );
+    }
+    assert_frames(&warm, "second invocation");
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w subject
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_1039_w_subject_run() {
+    s124_cached_import_trace("run", false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w subject
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_1039_w_subject_link() {
+    s124_cached_import_trace("link", false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w subject
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_1039_w_subject_repl() {
+    s124_cached_import_trace("repl", false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w no_cache_control
+#[test]
+fn s124_1039_w_no_cache_control_run() {
+    s124_cached_import_trace("run", true);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w no_cache_control
+#[test]
+fn s124_1039_w_no_cache_control_repl() {
+    s124_cached_import_trace("repl", true);
+}
