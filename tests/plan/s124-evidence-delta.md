@@ -17,13 +17,12 @@
 > §14.2; `repl/spec/15-session-persistence.md` §15.4;
 > `repl/spec/16-test-discovery.md` §16.1 and §16.6.
 > **Checkpoint:** `main` at `4b58ab93` for sections 1 to 13, and `main` at
-> `2c690be5` for section 14, the acceptance of the evidence wave. No
-> compiler source changed between the two.
-> **Scope:** §1 to §7 are intake, attribution and the reproductions that do
-> not depend on the S124 designs. §8 to §13 are the conditions for the S124
-> corrections and the Phase 3 readiness judgment. §14 is the standing state
-> of the evidence: what is accepted, what is returned to `test`, and what
-> each correction wave still owes.
+> `1a3ab46e` for section 14, the state of the evidence after wave W2.
+> **Scope:** sections 1 to 7 are intake, attribution and the reproductions
+> that do not depend on the S124 designs. Sections 8 to 13 are the conditions for the S124
+> corrections and the Phase 3 readiness judgment. Section 14 is the standing state
+> of the evidence: what is accepted, the failing set, what is returned to
+> `test`, and what each correction wave still owes.
 > **Held:** nothing. F-PR-3 is not written, by the user's ruling. §10 states
 > one question queued for the user; it holds no cell.
 
@@ -162,7 +161,7 @@ passes today. All land in the S124 evidence wave. Ranked by harm.
 |---|---|---|---|---|
 | 1 | REPRO-1068 | Regeneration omits every multi-signature function, deleting it from the user's file | ACT-1068 | Not scheduled: `sprint` |
 | 1 | REPRO-1064 | Regeneration deletes one of two impls for same-named types; the next session crashes | ACT-1064 | S124, row D10 |
-| 2 | REPRO-1066 | A direct `quote-sexp` call on a scalar-payload `Sexp` aborts the debug build | ACT-1066 | S124, row D5 (backend B1), with ACT-1049 |
+| 2 | REPRO-1066 | A direct `quote-sexp` call on a scalar-payload `Sexp` aborted the debug build | ACT-1066, closed | Corrected by row D5 (backend B1); the cells stay as a fence |
 | 2 | REPRO-1063-p | A partial application of `bind` aborts the process in every mode | ACT-1063 | S124, backend row B12 |
 | 2 | REPRO-1065 | A user function named `bind` is replaced by the primitive, and a local named like a platform function is scheduled as that effect: a silent wrong value and an abort | ACT-1065 | S124, with ACT-1050 |
 | 3 | REPRO-1005-a | Redefining one member of a multi-definition form regenerates a file that restarts locked | ACT-1005 | Carried past S124 |
@@ -646,49 +645,26 @@ no GOT-slot carrier`.
 - **Limit.** `quote-sexp` is slot-carrying and works as a value; its
   direct call is §3.10's subject.
 
-### 3.10 REPRO-1066 — a direct `quote-sexp` call aborts the debug build
+### 3.10 REPRO-1066 — a direct `quote-sexp` call aborted the debug build
 
-Observations and attribution: [ACT-1066](../../sprints/actions/ACT-1066-direct-quote-sexp-call-on-scalar-payload-releases-freed-value-intake.md).
-No prelude; `primitives` and `macros` imported whole. `k` matches
-`(SexpList xs)` to 5.
+**Corrected by B1; the seven cells are a standing fence.** No prelude;
+`primitives` and `macros` imported whole. `k` matches `(SexpList xs)` to 5.
 
-**Not a release of a freed value.** The operand is stack-placed with an
-immortal header, the shim's release of it is harmless, and the debug
-build's liveness assertion in drop glue stops on it because a stack slot
-is not a tracked allocation. The mechanism is ACT-1049's, met at a second
-check that needs no environment variable. Stack placement retires in S124
-(row D5, backend B1), which closes both.
-
-| Leg | `main` returns | Required | Observed |
-|---|---|---|---|
-| Subject | `(Pure (k (quote-sexp (SexpInt 3))))`, `--run` | exit 5 | abort: `STALE RC DEC (drop glue): dec of non-live heap pointer` |
-| Subject, REPL | `(quote-sexp X)` for `X` in `(SexpInt 3)`, `(SexpInt 3000)`, `(SexpBool true)`, `(SexpFloat 1.5)`; and `(SexpInt 3)` bound by `let` first | the quoted form displayed | the same abort, each |
-| Control | `(quote-sexp (SexpStr "abc"))`, `--run` | exit 5 | exit 5; 9 allocations, 9 frees |
-| Control, REPL | `(quote-sexp (SexpSym "a"))` | displayed | as required |
-| Control | `(let [q quote-sexp] (Pure (k (q (SexpInt 3)))))` | exit 5 | exit 5; 9 and 9 |
+| Leg | `main` returns | Required |
+|---|---|---|
+| Subject | `(Pure (k (quote-sexp (SexpInt 3))))`, every mode | exit 5 |
+| Subject, REPL | `(quote-sexp X)` for `X` in `(SexpInt 3)`, `(SexpInt 3000)`, `(SexpBool true)`, `(SexpFloat 1.5)`; and `(SexpInt 3)` bound by `let` first | the quoted form displayed |
+| Control | `(quote-sexp (SexpStr "abc"))`; `(let [q quote-sexp] (Pure (k (q (SexpInt 3)))))` | exit 5 |
 
 - **Requirement.** Spec §9.11.1: `quote-sexp` returns the quoted form of
   its argument.
-- **What the controls decide.** Both table controls are operands that are
-  not stack-placed (`stack_slot=0` in each). The discriminating control is
-  the subject itself with `CRANELISP_NO_STACK_ALLOC=1`: exit 5, 8
-  allocations and 8 frees under the armed check. The subject's CLIF shows
-  the `SexpInt` built in a stack slot with the immortal header and that
-  address passed to the shim. That variable retires with B1, so it is a
-  recorded observation and not a leg.
-- **Assertion.** The value and no signal, in every mode; allocations equal
-  frees against the `SexpStr` twin.
-- **Completion.** RED on the abort; green with B1 and no other change.
-  If it is still RED on the B1 tree, the attribution is refuted and the
-  cell returns to `qa`.
+- **What it fences.** A scalar-payload constructor operand that is not a
+  tracked allocation reaching the debug build's drop-glue liveness
+  assertion. Before B1 the operand was stack-placed and each subject
+  aborted with `STALE RC DEC (drop glue)`; the cells went green with B1 and
+  no other change.
 - **File and trace.** `tests/spec_09_macros.rs`,
-  `// spec: spec/09-macros.md §9.11.1`,
-  `locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc` (the
-  debug liveness assertion), `class=check-domain-overreach`, `found=S124`,
-  `owner=/dev`.
-- **Limit.** `--link` and a call inside a macro body were not probed. Other
-  consuming host primitives given a stack-placed operand were not
-  enumerated; B1 removes the placement for all of them.
+  `// spec: spec/09-macros.md §9.11.1`, `class=check-domain-overreach`.
 
 ### 3.11 REPRO-1067 — a deeply nested expression aborts the compiler
 
@@ -921,7 +897,7 @@ lead, not of the row.
 | `design`(typecheck), `dev`(typecheck) | (1) §2.2: confirm the two sites; unit rows with the correction. T-1034-d shows a third: the instance is published and the site inside it is not redirected. T-Q7-c's REPL leg shows the dispatch hop from a free-function instance that an earlier cluster published (§9.1). (2) The counting unit is settled as the implementation instantiation ([monomorphisation §3.10.3](../../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch)); T-DEPTH-c is its cell. (3) A lead, not observed: the mint recurses once per chain element on the compile worker's stack, and that stack is exhausted today by a source expression about 56 forms deep in the debug build (ACT-1067). T-DEPTH-a and T-DEPTH-c are the falsifiers of "the deepest admitted chain fits"; `dev`'s boundary row 6 should run on a worker-sized stack. (4) `CRANELISP_OWNERSHIP_TRACE` prints no summary for a member of a multi-signature family. No cell depends on it (§9.4); it is recorded as a gap in a diagnostic observer. |
 | `design`(int) | (1) [ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md): place the correction once it is scheduled, and say whether `section_entry_claimed_or_excluded` is repaired or removed. (2) With `dev`(`src/`): the §4.2 module test when ACT-0994 is scheduled. |
 | `dev`(`src/`) | ACT-1060. |
-| `sprint` | (1) ACT-1068 needs a scheduling decision from the user: its correction is in no S124 row and it loses user data. (2) W2 needs a `test` step inside it: X-D5 and T-D5 (§9.4) land in B1's change-set. (3) The overload leg of T-D7-b is a residual that needs the user's approval (§9.4). (4) The document gate fails on 600 findings, 577 of them ignored-path; their disposal is with the user, and until it is decided no claim rests on that gate. (5) `tests/plan/spec_coverage_reconcile.py` counts a cleared row only when its tag has a "was" clause, so a new obligation tagged `[Uncovered S124]` alone is outside the close gate (§11). The repair is `qa`'s, with its detection test, and needs a pass that may run it. (6) Two questions are queued for the user and hold no cell (§10). (7) ACT-1066 closes with row D5; ACT-1067 is carried with its reproduction RED. |
+| `sprint` | (1) ACT-1068 needs a scheduling decision from the user: its correction is in no S124 row and it loses user data. (2) Suite readings are taken in the primary harness: thirteen tests fail only in the Codex sandbox (§14.1). (3) The overload leg of T-D7-b is a residual that needs the user's approval (§9.4). (4) The document gate fails on 600 findings, 577 of them ignored-path; their disposal is with the user, and until it is decided no claim rests on that gate. (5) `tests/plan/spec_coverage_reconcile.py` counts a cleared row only when its tag has a "was" clause, so a new obligation tagged `[Uncovered S124]` alone is outside the close gate (§11). The repair is `qa`'s, with its detection test, and needs a pass that may run it. (6) Two questions are queued for the user and hold no cell (§10). (7) ACT-1067 is carried with its reproduction RED. (8) [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) has no correction in any S124 wave and ACT-1050's is predicted not to move it (§14.4): it needs a route or a recorded carry. |
 | `spec` | (1) [Appendix D](../../spec/appendix-d-open-questions.md), S124-Q7: the "counting-unit gap — unresolved" paragraph is stale at `2c690be5`. The design counts implementation instantiations, as spec §3.10 states; the remaining question is the method-level re-entry (§10). (2) Three places where spec §3.10 and §10.6 leave the observation open: §10's list. (3) Whether the language limits the nesting depth of a source expression (ACT-1067), for the user. |
 
 ## 7. What was run, and limits
@@ -982,9 +958,9 @@ span (`CheckState::expr_types`), so the three nodes share one entry and the
   type. The span-keyed table and the rewrite's span reuse are source
   readings at `4b58ab93`; the frontend design names the same collision as a
   hazard ([defmacro synthesis §2.2](../../design/frontend/defmacro-synthesis.md#22-the-body-is-constrained-to-sexp-in-every-clause-shape)).
-- **Refuted if** the census's first reading (CEN-3) has no absent-arm record
-  in the `Plain` partition for the subject's frame, or a build whose rebuilt
-  `Lambda` keeps the written lambda's span still leaks.
+- **Refuted if** a build whose rebuilt `Lambda` keeps the written lambda's
+  span still leaks. The census condition is met (§14.5): the subject records
+  one absent-arm record in `Plain`, and its let-bound twin none.
 - **Ownership.** The typecheck prediction is right about inference and
   wrong about arrival; the backend's "absent arm" reading is right, and its
   producer is neither typecheck's inference site nor the backend. The
@@ -1074,8 +1050,8 @@ correction.
 |---|---|---|---|---|
 | CEN-1 | Each census point (retain, release, absent, field) records once for its planted fixture, in its partition, shape and class; each concrete twin records nothing on the arms and once in the concrete field class; an inner compiler's record carries its frame's partition | M, module, `dev`(backend) | A point that cannot fire; a field point that never executes; a count taken at the early return, which includes every scalar field | Both legs per point in the instrument's change-set (release contract §7.3, §9) |
 | CEN-2 | Emission is byte-identical with the census variable set and unset; the census writes only its file; it is absent from a release build | M, module and the golden lane, `dev`(backend) | An instrument that perturbs what it measures, or text on a stream tests assert | Golden lane clean in the census change-set |
-| CEN-3 | First reading: one full default-suite run with `CRANELISP_CATEGORY_CENSUS` set. `qa` attributes every non-concrete record to a producer and reduces each to a cell | O, suite, `qa` | — | Each record has an owner and a RED; the ACT-1050 subject appears on the absent arm, `Plain` (§8.1) |
-| CEN-4 | The zero read: zero records in every partition, arm and non-concrete field class, **in a run where** the concrete tallies are non-zero, the ACT-1034 cells A1, A2 and T-1034-b pass and the ACT-1050 and REPRO-1062 cells pass | A, suite, `qa` | A zero from programs that never reach emission (§2.4); a zero from an unset variable or a release binary | The reading and its traffic counts recorded here; it is the settling target's first bullet |
+| CEN-3 | First reading: one full default-suite run with `CRANELISP_CATEGORY_CENSUS` set. `qa` attributes every non-concrete record to a producer and reduces each to a cell | O, suite, `qa` | — | Taken at `1a3ab46e` (§14.5): every record is on the absent arm in `Plain`, owned by the bind-chain rewrite (ACT-1050). Re-read on the W4 tree, where the arm is expected to read zero |
+| CEN-4 | The zero read: zero records in every partition, arm and non-concrete field class, **in a run where** the concrete tallies are non-zero, the ACT-1034 cells A1, A2 and T-1034-b pass and the ACT-1050 and REPRO-1062 cells pass | A, suite, `qa` | A zero from programs that never reach emission (§2.4); a zero from an unset variable or a release binary; a zero in a partition that compiled no frame | The reading and its traffic counts recorded here; it is the settling target's first bullet. The traffic counts must come from the run's own census output, per partition; the instrument does not report them yet (§14.5) |
 | CEN-5 | After step 2: no test fails outside §1's filed set and the REDs this record allocates, and the golden lane is byte-identical | A, suite and golden lane | A legal program refused by a refusal the close added | Full run on the step 2 tree |
 | REPRO-1062-a | §8.2 subject and control (`P`), every mode: value, and allocations equal to frees | A, e2e | Pairing by first appearance; a correction for products only | RED by signal, then green with step 1 |
 | REPRO-1062-b | Unmentioned parameter (`R`) with its control | A, e2e | Pairing that skips an unused parameter | as above |
@@ -1192,9 +1168,10 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
 
 | ID | Condition | Class, tier | Wrong outcome it rejects | Completion |
 |---|---|---|---|---|
-| T-D5 | The marginal halves that ACT-1049 forced unarmed run armed and balance | F, e2e, existing cells re-armed by `test` | A stack-placed value still reaching the armed check | Green after B1; `tests/vec_set_owning_old_element.rs` and `tests/synthetic_accessor_input_release.rs` name the halves |
-| X-D5 | The three cells that read `stack_slot` leave with the mechanism: both `tests/s105_residual_attribution.rs` cells that assert its value, and the field-presence assertion in `tests/ownership_fences.rs` | M, `test` | An observer of a retired mechanism kept as a gate | Removed in B1's change-set; `tests/perf/s105_*.py` read the field by name and are checked by `test` |
-| T-D4 | A one-word single-constructor ADT as a `Vec` element, a field of another ADT, a closure capture, a traced argument and the program result: values, REPL §1.5 display, and allocations equal to frees under the armed check, every mode | F, e2e | A consumer that still reads the word as the field: `(Box <address>)`, an unreleased result, a missing element function | Passes before D4 (no allocation) and after it (balanced) |
+| T-D5 | The marginal halves of `tests/vec_set_owning_old_element.rs` and `tests/synthetic_accessor_input_release.rs` run armed and balance | F, e2e, existing | A value that is not a tracked allocation reaching the armed check | Green on the B1 tree, all thirteen. Both halves were already armed; no constructor is kept out of an armed half any longer |
+| X-D5 | The three cells that read `stack_slot` leave with the mechanism: both `tests/s105_residual_attribution.rs` cells that assert its value, and the field-presence assertion in `tests/ownership_fences.rs` | M, `test` | An observer of a retired mechanism kept as a gate | Done (`f290a356`). The `tests/perf/s105_*.py` readers parse the ten-field line; their release measurements were not re-run |
+| T-D4 | A one-word single-constructor ADT as a `Vec` element, a field of another ADT, a closure capture and the program result: values, REPL §1.5 display, and allocations equal to frees under the armed check, every mode | F, e2e | A consumer that still reads the word as the field: `(Box <address>)`, an unreleased result, a missing element function | Passes before D4 (no allocation) and after it (balanced) |
+| T-D4-t | **Spec §4.12.2 item 3.** The same ADT as a traced call's argument: the frame's argument text is `(Box 2000)` and its result text `2001`, with T-D4's value and balance clauses, every mode. A small-payload leg, `(Box 3)`. Controls: a scalar argument and a two-field product | A, e2e | The trace formatter reading the word as a constructor tag (`<unknown-tag:3>`) or as an address (signal 11) | RED today on [ACT-1069](../../sprints/actions/ACT-1069-trace-formats-one-word-adt-argument-as-tag-or-pointer-intake.md): the `(Box 2000)` legs by signal, the small-payload leg on the text. Green with D4 (B5) and no other change |
 | T-D7 | **R12's falsifier.** At the REPL, a function is redefined at the same language type with different inferred modes. It has two kinds of live dependent: a direct caller, and a function compiled before the replacement that takes the function as a value and calls it (REPL §18.1: calls and callable values that refer through the slot). The redefinition turn reports no error; later calls through both routes return the new body's values; the session balances under the armed check against a twin whose redefinition keeps its modes; a restart on the saved source agrees | A, e2e | Callers compiled against the old summary miscount after the patch; a value route that keeps the old body; restart differing from the session | RED today on the §18.1.2 rejection; green with D7 |
 | T-D7-b | T-D7 for a generic realization and an impl method (§18.7) | A, e2e; the impl-method leg is F | A slot kind that keeps its own comparison | Generic: RED today, refused as `cannot rematerialize prior instance … changed the realization key or ABI`; green with D7. Impl method: passes on arrival and stays. Today's gate does not cover an impl method: the trace shows the summary move from `Borrowed` to `Owned`, the redefinition publishes and the session balances |
 | X-D7 | `repl_redefinition::same_type_ownership_abi_change_is_rejected_before_slot_patch` is replaced by T-D7; `caller_free_type_change_publishes` stays. `cache::cache_restored_sum_field_projection_keeps_ownership_abi` keeps its assertion and re-points its `// spec:` line from the removed REPL §18.1.2 to §18.1 | M, `test` | A `// spec:` anchor to a removed section: `spec_link_check.py` reports both today | With D7; the link check then reports none |
@@ -1267,8 +1244,9 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
 | O-1038 | ACT-1038 | A lenient binding created outside a trace and forced inside it: frame count over repeated runs | O, e2e, reported not asserted | The distribution is recorded; see §12 |
 | M-1038 | ACT-1038 | [Trace runtime §5](../../design/intrinsics/trace-runtime.md#5-evidence) rows, each flipped by removing its check; the backend row for a trace-form site emitting the gate | A, module, `dev` | With D8's change-sets |
 | T-1039 | ACT-1039 | The committed all-modes cell, plus an imported-module leg (5 frames today) | A, e2e | `--run` leg RED then green; the imported leg is the control |
+| T-1039-w | ACT-1039 | The imported-module program invoked twice in one directory records the same frames on the second invocation, every mode. Control: the second invocation with `--no-cache` | A, e2e | RED today: the second invocation records no frame in `--run`, `--link` and the REPL. Green with B10 |
 | T-0973 | ACT-0973 | The two committed guards; a nested and a root-level child each refuse in every mode; the entry placement loads; a non-entry module importing `platform.<name>` works | A, e2e | Green |
-| T-0973-c | ACT-0973 | A module cached as an entry, then imported as a dependency, refuses and does not restore | A, e2e | RED today: with the platform found on both invocations the cached module is restored and the program exits 0 (observed at `2c690be5`). The landed cells fail before that, on a platform path the second invocation does not set (§14.3). Green with ACT-0973's correction |
+| T-0973-c | ACT-0973 | A module cached as an entry, then imported as a dependency, refuses and does not restore | A, e2e | RED today: with the platform found on both invocations the cached module is restored and the program exits 0 (the committed cells fail on this). Green with ACT-0973's correction |
 | T-1016 | ACT-1016 | The three committed guards and the acyclic re-export control | A, e2e, existing | Green |
 | T-0985 | ACT-0985 | The committed cell with the implementation-first control | A, e2e, existing | Green |
 | T-1001 | ACT-1001 | `impl_ambiguous_trait_names_both_candidates_neg` with `impl_unknown_trait_diagnostic_control` | A, e2e, existing | Green |
@@ -1277,7 +1255,7 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
 | T-1061 | ACT-1061 | §3.6, with both `user_samples` tests | A, e2e; M for `user_samples` | Green; O-1061 recorded |
 | T-Q9-a | S124-Q9 | **Spec §10.6: a trait method named `main` does not define `main`.** An entry whose only `main` is a method of `(deftrait Entry (main [self] (IO Int)))`, with an `Int` implementation: T-Q8's clauses, `--run` and `--link`. Control: the same file with `(defn main [] (Pure 5))` in place of the trait and its impl exits 5 | A, e2e | RED today on the position (`p.cl:1:1: error: codegen error at 0..0: entry module has no 'main' function`), green with the one-producer gate |
 | T-Q9-b | S124-Q9 | **Spec §10.6: a multi-arity `main` is refused.** `(defn main ([] (Pure 7)) ([x] (Pure x)))` on line 3: non-zero exit that is not 7; the diagnostic is located on line 3 with no `0..0`. `--run` and `--link`. Control: the zero-argument clause alone exits 7 | A, e2e | RED today on the location (`p.cl:1:1: error: codegen error at 0..0: 'main' in entry module is not a function definition`), green with ACT-1036's correction |
-| O-1018 | ACT-1018 | Re-measure the warm solve after ACT-1050 lands | O, measurement, `qa` | The guard passes, or it carries on the measured residual with its number |
+| O-1018 | ACT-1018 | Re-measure the warm solve after ACT-1050 lands | O, measurement, `qa` | The guard passes, or it carries on the measured residual with its number. It reads 2 at `1a3ab46e`; controls predict ACT-1050's correction leaves it at 2 (§14.4) |
 
 - **T-1038 replaces its predecessors' premise.** The committed cells
   require that a worker ran a traced call. Rule 1 makes that permanently
@@ -1406,7 +1384,6 @@ S124-Q8, S124-Q9, row D12, and ACT-1063 and ACT-1065 in scope.
   - ACT-1067's correction is unscheduled. Its reproduction is RED from the
     evidence wave and is carried by `sprint`'s decision, like the rows of
     §3 marked "Carried".
-  - ACT-1066 closes with row D5.
 - **ACT-1063 stays in scope.** Its correction is one surface: both wrapper
   rules are the backend's, and both readings agree no producer owes a
   carrier. The user's named-carry condition is not met. It would be if the
@@ -1461,10 +1438,10 @@ S124-Q8, S124-Q9, row D12, and ACT-1063 and ACT-1065 in scope.
   - *F-PR's wording is not asserted.* Any type error at the inner call's
     line passes its category clause. The cell's fixture is otherwise
     well-typed (its no-caller control), which bounds the confusion.
-  - *The debug build's drop-glue liveness assertion stops on any
-    stack-placed value a consuming host primitive releases.* REPRO-1066
-    is the one instance found; the others were not enumerated, because
-    B1 removes the placement.
+  - *The trace formatter and the result display are separate renderers.*
+    ACT-1069 found them disagreeing on a one-word ADT. D4 removes that
+    representation; no condition compares the two renderers on other
+    shapes.
   - *A primitive's direct call and its function-value wrapper are separate
     lowerings.* REPRO-1063 found them disagreeing. The backend design
     gives each host-promised primitive one lowering; no condition compares
@@ -1513,43 +1490,61 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
 - Counts are single runs unless a row gives a rate. Every §8.2 subject
   failed on each of its runs.
 
-## 14. Evidence wave acceptance (W1 exit)
+## 14. The evidence after wave W2
 
-**Accepted. The correction waves can start, and nothing returns to `test`
-before W2.** Four cell groups fail to observe their clause and return to
-`test` before the waves that correct them (§14.3). One new defect was
-found and is filed (ACT-1068).
+**W2's exit is accepted. W3 can start.** Stack placement's retirement (B1)
+is adequately evidenced (§14.6). The category census (B2) is accepted as an
+instrument for the readings it can make, and its first reading is accepted
+as a reading; it is not the zero read, and the instrument cannot yet make
+one (§14.5). One new defect is filed (ACT-1069). ACT-1049 and ACT-1066 are
+closed.
 
-- **Read against:** `test`'s commits `f36bbfb3`, `135ad1c2`, `e708be86`,
-  `d900970e` and `2c690be5`, its clause map, and its full run on
-  `2c690be5`: 7,423 run, 7,156 passed, 267 failed, 1 skipped.
-- **What `qa` did:** partitioned that run's log against the opening guard
-  list; read the first failing assertion of every failing test; read the
-  source of the cells that looked wrong; re-ran twelve cells; and ran
-  about twenty scratch programs on the debug build, one also on the
-  release build of 2026-11-15.
-- **Limit.** The source of a passing cell was read only where its row made
-  a claim that the failing set could not confirm. A control that passes for
-  a reason other than the one its row states is not excluded.
+- **Read against:** B1 (`b0f48914`, `8f44040e`), `test`'s `f290a356`,
+  `9dce9172` and `57c6ede2` with its clause map, B2 (`1a3ab46e`), and
+  `dev`(backend)'s full run with the census variable set on the B2 tree:
+  7,452 run, 7,181 passed, 271 failed, 1 skipped.
+- **What `qa` did:** compared that run's failing set by name with the
+  evidence wave's and with `test`'s run on `57c6ede2`; read the first
+  failing assertion of every new or changed failure; read the census
+  module's tests and its record sites; recomputed the reading from the
+  census file; and ran about seventy scratch programs on the debug build,
+  five also on the release build of 2026-11-15. No `cargo nextest` run.
+- **Limits.** The run was `dev`'s, not repeated. A passing cell's source
+  was read only where its row made a claim the failing set could not
+  confirm.
 
-### 14.1 The failing set
+### 14.1 The failing set at `1a3ab46e`
 
 | Class | Count | Traces to |
 |---|---|---|
-| Opening filed guards | 44 | §1. All 44 still fail; none passed |
-| S124 cells failing on their stated assertion | 216 | The filings and approved rows below |
-| S124 cells failing on setup | 6 | §14.3: the three `s124_0973_cached_entry` legs, `s124_f_pr_helper_repl_demand` and the two `s124_q7_d` REPL legs |
-| `citation_drift::project_documents_conform_to_the_checked_in_declaration` | 1 | Maintenance check (§6, `sprint` item 4). Its two siblings pass |
+| Opening filed guards | 44 | §1. All 44 still fail |
+| S124 cells failing on their row's assertion, or by the signal their row names | 225 | The filings and approved rows below |
+| `citation_drift::project_documents_conform_to_the_checked_in_declaration` | 1 | Maintenance check (§6, `sprint` item 4) |
+| `public_api_relocations::public_api_check_runs_against_all_seven_crates` | 1 | Maintenance check (M-API). The drift is the two removals of packet row D5 and nothing else; it clears when the baselines are regenerated at the Phase 5 checkpoint |
 | Anything else | 0 | No genuine regression |
 
-Both `user_samples` tests passed in this run. They stay run-dependent
-until ACT-1061 is corrected (§5.1).
+- **Change from the evidence wave (267):** the seven REPRO-1066 cells
+  pass; T-1034-a's `begin` leg (1), T-DEPTH-c (6) and T-D4-t (3) are new
+  REDs; the API check fails on row D5. Two mount cells were renamed.
+- **No cell fails on setup.** T-0973-c, F-PR-2's REPL leg and T-D7 now
+  reach their assertions. T-Q7-d's two REPL legs and its three `Opt`-first
+  legs stop at ACT-0985's refusal, which is a filed defect and not a
+  construction fault (§14.2).
+- **Thirteen failures in `test`'s run are the Codex sandbox's, not the
+  tree's.** Ten end on `bind ephemeral port: … PermissionDenied`; three
+  intrinsics reactor tests end on the 30-second backstop. All thirteen pass
+  by name in `dev`'s run in the primary harness, and no intrinsics or
+  platform source differs between the two trees. The other 271 names are
+  identical in both runs. Why the reactor tests stall in the sandbox was
+  not established.
+- Both `user_samples` tests passed. They stay run-dependent until ACT-1061
+  is corrected (§5.1).
 
-The 222 new failures, by filing or approved row:
+The 225, by filing or approved row:
 
-| Traces to | New | Opening guards of the same filing |
+| Traces to | Cells | Opening guards of the same filing |
 |---|---|---|
-| ACT-1034, with the S124-Q7 and depth conditions | 58 | 4 |
+| ACT-1034, with the S124-Q7 and depth conditions | 65 | 4 |
 | ACT-1063 | 38 | — |
 | ACT-1056 | 17 | 6 |
 | ACT-1062 | 12 | — |
@@ -1559,13 +1554,13 @@ The 222 new failures, by filing or approved row:
 | ACT-1057 | 8 | 5 |
 | Row D3, the S124-Q4 and module conditions (T-SUP, T-EXP0, T-ALIAS) | 8 | — |
 | ACT-0973 | 7 | 2 |
-| ACT-1066 | 7 | — |
 | ACT-1005 | 6 | — |
 | ACT-1050 | 6 | 12 |
 | Row D12, S124-Q8 and Q9 (T-Q8, T-Q9-a) | 6 | — |
 | ACT-1055 | 4 | 2 |
 | ACT-0977 | 3 | — |
 | ACT-1059 | 3 | — |
+| ACT-1069 (T-D4-t) | 3 | — |
 | ACT-1064 | 2 | — |
 | ACT-1067 | 2 | — |
 | Row D7 (T-D7, T-D7-b) | 2 | — |
@@ -1574,9 +1569,7 @@ The 222 new failures, by filing or approved row:
 | ACT-1068 | 1 | — |
 
 The other opening guards are ACT-1016 (3), ACT-1038 (2), ACT-0985,
-ACT-1001, ACT-1018, ACT-1039 and ACT-1052 (1 each). T-Q7-d's three
-`Opt`-first legs, counted under ACT-1034, stop first at
-ACT-0985's refusal, as §9.1 expects.
+ACT-1001, ACT-1018, ACT-1039 and ACT-1052 (1 each).
 
 ### 14.2 Row groups
 
@@ -1587,57 +1580,167 @@ every control and fence passed in the full run.
 |---|---|---|
 | REPRO-1062-a to d | Accepted | W5 turns them green; the accessor leg also needs the accessor producer |
 | REPRO-1064, REPRO-1005-a to c, F-1005-d | Accepted | Each subject stops at its first assertion (the saved form, the restart lock, the order); the restart values run only once that passes |
-| REPRO-1066 | Accepted | W2. Green with B1 and no other change, or it returns to `qa` |
+| REPRO-1066, T-D5 | Green, standing fences | §14.6 |
 | REPRO-1063, REPRO-1063-p | Accepted | W6, row B12 |
 | REPRO-1065-a to c, e, T-1065-f | Accepted | W4 |
 | REPRO-0977, REPRO-0981, REPRO-1067 | Accepted | Carried RED past S124. REPRO-0977 has a timer-race leg in place of `timeout`. REPRO-0981 has no impl-method twin (§3.2) |
 | REPRO-R1 with the S124-Q2 controls, T-Q3, REPRO-R3, R3-risk, T-R2-a to c | Accepted | W7 |
 | T-1061 | Accepted | W8 |
 | REPRO-0915-loc, T-Q8, T-Q9-a, T-Q9-b | Accepted | W8 |
-| T-1034-b to e | Accepted | W3 |
-| T-1034-a | **Returned** | The `begin` leg passes: its call is in a later turn (§2.1, §14.3) |
+| T-1034-a to e | Accepted | W3. The `begin` leg holds the call and is RED on `undefined function`; the later-turn form is its control |
 | T-Q7-a to c; T-Q7-d under `--run` and `--link` | Accepted | W3. T-Q7-c's one-form-per-turn REPL leg is RED on ACT-1034 (§9.1) |
-| T-Q7-d, REPL legs | **Returned** | Fail on setup (§14.3) |
-| F-PR; F-PR-2 under `--run` and `--link` | Accepted | W3. The location clauses follow the category assertion and have not executed |
-| F-PR-2, REPL leg | **Returned** | Fails on setup (§14.3) |
-| T-DEPTH-a, T-DEPTH-b | Accepted | W3. Neither fails by stack overflow |
+| T-Q7-d, REPL legs | Accepted as constructed | W3. Both impls are in one `begin`, and both orders stop at ACT-0985's refusal (`no impl of trait`), recorded on that filing. T2 lets them reach the value clause; T4 turns them green |
+| F-PR; F-PR-2 in every mode | Accepted | W3. The location, exclusion and recovery clauses follow the category assertion and have not executed |
+| T-DEPTH-a, T-DEPTH-b, T-DEPTH-c | Accepted | W3. The 64-level legs are RED on `undefined function`, the 65-level legs on the category. None fails by stack overflow |
 | T-FR, F-0975, F-0934 | Accepted, all green | They stay green through every wave |
-| T-D7, T-D7-b | Accepted as §9.4 now states them | W8. The impl-method legs pass today and stay. The publication assertion matches one refusal text (§14.3) |
+| T-D4 | Accepted, all twelve green | W5. They stay green through D4 |
+| T-D4-t | Accepted as RED by signal | W5. The three subjects end on signal 11 before any clause; the scalar controls pass. The small-payload leg and the two-field control are owed (§14.3) |
+| T-D7, T-D7-b | Accepted | W8. The single and generic moves-on legs are RED on the no-error assertion; the other four pass and stay |
 | T-1050-a | Accepted | W4 |
-| T-1038-a, T-1038-b | Accepted | W6. The `trace_declines` clause follows the frame count and has not executed |
-| T-1039, T-0973, T-1016, T-0985, T-1001, T-1036 | Accepted | Existing assertions unchanged |
-| T-0973-c | **Returned** | Fails on setup (§14.3) |
+| T-1038-a, T-1038-b | Accepted | W6. T-1038-a's frame-count clause is run-dependent: it failed in the evidence wave's run and passed in this one, which then failed on the absent `trace_declines` field. The cell is RED either way until rule 1 |
+| T-1039, T-0973, T-0973-c, T-1016, T-0985, T-1001, T-1036 | Accepted | T-0973-c is RED on the missing refusal after a cache hit |
 | T-SUP, T-DUP, T-EXP0, T-ALIAS | Accepted | W7 |
 | T-MNT-a, T-MNT-b, T-Q4-a, T-Q4-b, T-D10, and T-REG's rename, dotted and mount legs | Accepted as RED on the parser's refusal only | W7. Their collision, idempotence, route and persistence clauses have not executed. `qa` reads them on the first tree whose parser accepts the forms, before W7 is accepted |
 
 ### 14.3 Returned to `test`
 
-None of these blocks W2. Each item lands before the wave it names.
+None of these blocks W3. Each item lands before the wave it names.
 
 | Before | Item |
 |---|---|
-| W3 | **T-1034-a, `begin` leg.** Put the call `(size (Yep 3))` inside the `begin`. Keep today's cell as its control |
-| W3 | **F-PR-2, REPL leg.** Enter the helper and the impl in one `begin`, after the type, trait and `Int` impl. Today the declaration turn is refused with `no impl of trait`, so no F-PR clause runs. With the `begin`, the demand turn is refused at codegen: RED on the category |
-| W3 | **T-Q7-d, REPL legs.** Enter the two impls in one `begin`. Entered one per turn, each refers to an impl not yet declared and both turns are refused, in either order |
-| W3 | **T-DEPTH-c** (§9.1), new |
-| W5 | **T-D4** (§9.4). It was missing from §6's earlier handoff row; it passes before D4 and after it |
+| W5 | **T-D4-t** (§9.4, [ACT-1069](../../sprints/actions/ACT-1069-trace-formats-one-word-adt-argument-as-tag-or-pointer-intake.md)). On the three trace subjects, cite spec §4.12.2 and add the `// defect:` line the filing gives. Add the small-payload leg `(Box 3)` and the two-field control, every mode |
+| W6 | **T-1039-w** (§9.6): the imported-module program invoked twice in one directory, every mode, with the `--no-cache` control |
+| W3, after T2 | **F-PR-4** (§9.1) |
 | The wave that takes ACT-1068 | **REPRO-1068** (§3.12): the by-arity, file-loaded and other-module legs; `class=enumeration-miss`; the name without `_partial`; the control with the same `import` as the subject |
-| W8 | **T-0973-c.** `run_again()` clears the platform path, so the second invocation fails with `platform 'stdio' not found`. Set it on both invocations |
-| W8 | **T-D7.** Assert that the redefinition turn prints no `Error:`; the generic leg's refusal has another text and reaches the value assertion instead |
-| W7 | Rename `s124_modules_same_mount_same_form_control` and `…_later_turn_control`: they are acceptance legs that fail today, not controls |
 
-In their corrections' change-sets, as before: X-D5 and T-D5 (W2), F-PR-4
-(W3, after T2), T-1063-b (W6), T-1065-d (W7), X-D7 (W8). O-1018, O-1038
-and O-1061 are `qa`'s readings on the corrected trees.
+In their corrections' change-sets, as before: T-1063-b (W6), T-1065-d
+(W7), X-D7 (W8). O-1018, O-1038 and O-1061 are `qa`'s readings on the
+corrected trees.
 
-### 14.4 Residuals this acceptance adds
+### 14.4 Residuals
 
 - **A multi-signature family's mode-changing redefinition has no cell**
   (§9.4). Awaiting the user's approval.
 - **Clauses behind a first RED have not executed.** A cell stops at its
-  first failing assertion, so the later clauses of F-PR, T-1038-a,
-  REPRO-1064 and the mount and rename cells are unproven until their
-  corrections land. Each wave's adequacy pass reads them then.
+  first failing assertion, so the later clauses of F-PR, F-PR-2, the 65-level
+  depth legs, T-1038-a, REPRO-1064, T-D4-t and the mount and rename cells
+  are unproven until their corrections land. Each wave's adequacy pass
+  reads them then.
 - **ACT-1068 is unscheduled** and deletes authored source in every session
   that defines anything beside a multi-signature function.
+- **ACT-1069 is memory-unsafe today** and predates S124: a trace of a call
+  whose argument is a one-word ADT with a payload of 1024 or more reads
+  through the payload as an address. Its correction is D4, in W5.
+- **ACT-1039 is wider than filed.** A traced callee restored from the cache
+  is not recorded in any mode. B10's design fixes the traced set by slot
+  claims; T-1039-w is its cell.
+- **ACT-1018 has no correction in S124.** The warm solve retains 2 blocks,
+  one per `print`. A single `print` retains 1 with no `bind`, and the
+  let-bound twin of an inline `bind` retains the same 2 with no census
+  record, so ACT-1050's correction is predicted to leave the guard RED
+  ([ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md)).
+- **Suite readings from the Codex sandbox overstate the failing set** by
+  the thirteen tests of §14.1. A reading that gates a wave is taken in the
+  primary harness.
 
+### 14.5 The category census
+
+**The instrument (CEN-1, CEN-2): accepted for its four record points.**
+
+- Each of retain, release, absent and field has a planted positive leg
+  that records once in its partition, shape and class, and a concrete twin
+  that records nothing on the arms. Eighteen module tests, all passing in
+  the full run.
+- Emission does not depend on the variable: the child-process cell
+  compares CLIF with it set and unset, and the golden lane's fourteen
+  programs agree. The census is compiled out of a release build.
+- **The residual field class is evidenced at the read seam only.** The
+  match lowering hands the read a concrete type, so no program reaches that
+  class; an accessor matching its own residual parameter lands in the
+  absent class, which has its own leg.
+- **What a record does not carry.** The absent arm has two sites, a `defn`
+  parameter and a lambda parameter, and one record shape. No record names
+  the test or program that produced it. With the cache on, a frame can be
+  compiled twice. Attribution below the frame symbol needs a re-run of the
+  program.
+
+**The instrument cannot yet make the zero read (CEN-4).** A concrete field
+read goes to the in-process tally only, and no record counts compiled
+frames, so the file gives no denominator: a partition with no records and a
+partition that compiled nothing look the same. `design`(backend) is adding
+a per-frame record with its own detection legs. CEN-4 is read only on a
+tree that has it. *This judgment rests on that design answer; if the
+liveness signal takes another form, CEN-4's completion follows it.*
+
+**The first reading (CEN-3): accepted as a reading.**
+
+| Point | Partition | Records | Frames |
+|---|---|---|---|
+| absent | `Plain` | 606 | 39 |
+| retain, release | any | 0 | — |
+| field, residual or absent class, or a short declaration | any | 0 | — |
+| any | `Ctor`, `Accessor`, `TraitMethod` | 0 | — |
+
+The instrument's own planted fixtures (frames `user/census_*` and
+`test/fixture`, 22 records) are excluded.
+
+- **Valid under the cache condition.** No frame was restored from a cache
+  written before the run: every cell compiles in its own temporary
+  directory, and no cache directory outside `/tmp` was written on the day
+  of the run. The build identifier does not give this: an uncommitted build
+  carries its base commit's identifier, and this run was on an uncommitted
+  tree.
+- **Attribution: the bind-chain rewrite (ACT-1050, §8.1).** On the B2 tree,
+  the ACT-1050 subject records one absent-arm record in `Plain` and leaks
+  1; its let-bound twin and a continuation that uses its argument record
+  nothing and balance; an unused `defn` parameter and an unused parameter
+  of a plain lambda record nothing.
+- **The traffic is wider than the leak.** An inline `bind` whose
+  continuation ignores a scalar argument records the same record and
+  balances. Step 2 would refuse it, so ACT-1050's correction precedes step
+  2 for programs that are green today: 23 of the frames belong to five
+  examples, and one is `core.io/>>`.
+- **The population is attributed by frame, not record by record.** By their
+  names the 39 frames are entry points, REPL expressions and IO helpers. *Closing measurement:*
+  the absent arm on the W4 tree, expected 0; a remainder is another
+  producer and is stated as a number.
+
+**What the reading licenses.**
+
+- §7.4 step 1's criterion, zero field records in the residual and absent
+  classes and no short declaration. The field point executes in the
+  suite's programs (`dev`'s one-off unfiltered run of `f4_sudoku` shows
+  concrete reads; that run is an observation, not an instrument), and step
+  1 carries its own detector: a suite program that reaches its refusal
+  fails to compile.
+- §8.1's attribution of ACT-1050.
+
+**What it does not license.**
+
+- **Step 2 (B4).** The absent arm carries traffic, and CEN-4's other
+  conditions are unmet.
+- **Any claim about `TraitMethod`.** The 69 cells of ACT-1034 and S124-Q7
+  are refused before emission, so their frames are never compiled (§2.4).
+  The partition's zero says only that the trait-method frames compiling
+  today record nothing.
+- **A reading of `Ctor` and `Accessor` as measured zeros.** Two scratch
+  programs show constructor and accessor instances of a generic product
+  compiled at concrete instantiations with no record, which is consistent
+  with a true zero and is not a count over the suite.
+
+### 14.6 Stack-placement retirement (B1)
+
+**Adequately evidenced.**
+
+- **Structural.** The stack-slot emitter, the immortal header and the
+  eligibility gates are deleted; no constructor path creates a stack slot.
+  `dev`'s module row pins a `NoEscape` scalar constructor to the heap path
+  and was RED before the deletion.
+- **Red to green.** REPRO-1066's seven cells failed on the abort in the
+  evidence wave and pass on the B1 tree with no change made for them.
+  ACT-1049's own program, armed, exits 3 at 2 allocations and 2 frees with
+  no stop; ACT-1066's subject, armed, exits 5 at 8 and 8.
+- **Fences.** T-D5's thirteen armed cells pass. The golden lane has no
+  diff. `review` reported no findings.
+- **Observers.** The three cells that read the retired counter are removed
+  (X-D5), and the `[RC_STATS]` line no longer prints the field.

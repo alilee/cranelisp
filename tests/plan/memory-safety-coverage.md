@@ -431,9 +431,9 @@ not assertion counts.
 | Stale-release trap (`CRANELISP_RC_DEC_CHECK`) armed | 20 | 39 | 0 positive assertions |
 | `--link` face (`.link*`, `run_through_all_modes`, `LinkThenRun`) | 62 | 255 | 25 files |
 
-- The armed stale-release trap now has standing positive assertions, and
-  [ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md)
-  limits it: an armed half cannot contain a stack-placed constructor.
+- The armed stale-release trap now has standing positive assertions. No
+  constructor is stack-placed since S124, so an armed half may contain any
+  constructor.
 - Under U′ no position borrows, so the elision profile of §4's first row
   no longer has an emitter; the differential now checks moves on against
   moves off.

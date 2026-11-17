@@ -727,7 +727,7 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [Uncovered S124 — was S122 — partial. Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4. Items 2–3 are defective when a traced callee sparks: calls on a worker are not recorded and leak (ACT-1038; RED tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string)]
+### 4.12.2 Semantics [Uncovered S124 — was S122 — partial. Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; call-tree recording is evidenced under §4.12.3 and §4.12.4. Items 2–3 are defective when a traced callee sparks: calls on a worker are not recorded and leak (ACT-1038; RED tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string). Item 3's argument format is defective for a one-word single-constructor ADT (ACT-1069; RED tests/ownership_reuse::s124_d4_trace_run)]
 
 Evaluation proceeds as follows:
 

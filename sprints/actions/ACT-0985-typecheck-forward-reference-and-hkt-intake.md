@@ -52,6 +52,30 @@ primitives-only prelude.
   passing control. It is a discovered defect, so the RED lands now under
   METHOD §2.2. The carry defers the correction, not the reproduction.
 
+## A REPL face: two implementations in one `begin` (qa, 2026-11-18)
+
+`target/debug/cranelisp` at `1a3ab46e`. Fixture: T-Q7-d of the
+[S124 evidence delta](../../tests/plan/s124-evidence-delta.md#91-type-concreteness-item-1),
+an `(impl Size (Box :Size a) …)` and an `(impl Size (Opt :Size a) …)` whose
+bodies each dispatch to the other.
+
+| Input | Observed |
+|---|---|
+| REPL, `(begin <Box impl> <Opt impl>)` | refused at the `Box` impl: `no impl of trait user/Size for type user/Opt` |
+| REPL, `(begin <Opt impl> <Box impl>)` | refused at the `Opt` impl: `no impl of trait user/Size for type user/Box` |
+| File, `Box` impl first, with or without the `begin` | typecheck accepts; refused at codegen (ACT-1034) |
+| File, `Opt` impl first | refused: `no impl of trait` |
+
+- One REPL input is one cluster (§5.13.2), so §5.13.1 admits both orders.
+  The `begin` is the only way to enter the pair at the REPL.
+- The file accepts one order where the REPL accepts neither. The hypothesis
+  above does not explain the accepted order; `dev`(typecheck) probes it
+  before implementing.
+- **Cells:** `spec_07_traits::s124_q7_d_box_first_repl` and
+  `s124_q7_d_opt_first_repl`. They are constructed as allocated and stop at
+  this refusal. Row T2's completion includes them reaching their value
+  clause.
+
 ## Request
 
 Classify three source-read leads from the typecheck design reconciliation before

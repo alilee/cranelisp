@@ -40,7 +40,7 @@ No prelude, `(import [primitives [*]])`, `--run`.
 | Control: no slot, has a wrapper rule | `vec-len` as a value | runs correctly |
 | Control: host symbol exists | `(sconcat SNil)` partially applied, REPL | runs correctly |
 | Control: a user function over the primitive | `(defn then [io f] (bind io f))`, partially applied | runs correctly |
-| Not in the family | `quote-sexp` as a value runs correctly; its direct call is [ACT-1066](ACT-1066-direct-quote-sexp-call-on-scalar-payload-releases-freed-value-intake.md) | — |
+| Not in the family | `quote-sexp` as a value runs correctly; its direct call aborted on a stack-placed operand until stack placement retired (ACT-1066, closed S124) | — |
 
 ## Classification: a defect
 

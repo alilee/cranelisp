@@ -62,7 +62,43 @@ fresh directory with `CRANELISP_NO_LENIENT=1`, so no spark was involved.
 - **Coverage gap.** `tests/trace.rs` observed user-function frames only in
   the REPL and `--link`.
 
+## A second face: a callee restored from the cache (qa, 2026-11-18)
+
+`qa`, `target/debug/cranelisp` at `1a3ab46e`, fresh directories,
+`CRANELISP_NO_LENIENT` unset. `shapes.cl` defines
+`(defn scalar [:Int n] (add-i64 n 1))`; the entry imports it and `main`
+returns 7 when `(trace (scalar 2000))` has one child frame with the right
+argument and result text, and 40 when it has no child.
+
+| Leg | First invocation | Second invocation |
+|---|---|---|
+| `--run` | 7 | 40 |
+| `--link`, each produced executable run once | 7 | 40 |
+| `--run`, second invocation with `--no-cache` | 7 | 7 |
+| `--run` of a new entry beside an import cached by an earlier entry | — | 40 |
+| REPL in a directory whose import is cached | — | no `shapes/scalar` frame |
+
+- **Requirement.** §4.12.3 and §4.12.9, as above. A cached restart must not
+  change a program's value.
+- **Mechanism, observed at its seam.** `CRANELISP_GOT_TRACE` on the fourth
+  leg shows the entry's `main` written to its slot before the linker writes
+  the restored import's slots. Discovery therefore reads them as zero and
+  drops the import's functions: the mechanism recorded above, reached by
+  every mode. The `--no-cache` leg differs only in whether the import is
+  restored.
+- **Extent.** The filed title understates it: `--link` and the REPL lose
+  frames too once a traced callee is restored from the cache. The committed
+  imported-module control passes because each cell starts cold.
+- **Refuted if** the second invocation still records nothing once the
+  traced set is fixed by slot claims.
+
 ## Evidence allocation
+
+- **`test`, before W6 (T-1039-w of the
+  [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#96-get-to-green-item-7)):**
+  the imported-module program invoked twice in one directory, in every mode,
+  asserting the same frames on the second invocation; the `--no-cache`
+  second invocation is its control. `class=mode-divergence`, the same locus.
 
 - **`test` (allocated now):** a failing, un-ignored cell in `tests/trace.rs`
   that runs the program above through all three modes and asserts 5. Cite
@@ -79,5 +115,6 @@ Fix or carry is the user's decision under METHOD §2.4. QA retains this intake.
 
 ## Completion evidence
 
-The cell goes RED in `--run` only, then GREEN in every mode. QA restores the
+The cell goes RED in `--run` only, then GREEN in every mode; T-1039-w goes
+RED on its second invocation, then GREEN. QA restores the
 §4.12.3 and §4.12.9 bands.

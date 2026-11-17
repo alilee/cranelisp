@@ -84,3 +84,28 @@ The residual falls from 51 to **2** on the U′ build. The 2 is one block per
   under the stdlib conformance exception or by `dev`(stdlib), followed by a
   control that differs only in that path.
 - **Still owed for closure.** The completion evidence above, unchanged.
+
+## After stack placement retired (qa, 2026-11-18, `1a3ab46e`)
+
+- **The cell still reads 2:** 14,872 allocations against 14,870 frees. The
+  allocation count rose because no constructor is stack-placed; the residual
+  did not move.
+- **It is not ACT-1050's producer.** With the stdlib prelude, the `stdio`
+  platform, `CRANELISP_NO_LENIENT=1` and the category census
+  (`CRANELISP_CATEGORY_CENSUS`), cold and warm alike:
+
+  | `main` | Allocations, frees | Census records |
+  |---|---|---|
+  | `(print "a")` | 2, 1 | none |
+  | `(bind (print "a") (fn [u] (print "b")))` | 6, 4 | 2, absent arm |
+  | the same with the continuation bound by `let` first | 6, 4 | none |
+  | `(Pure 0)` | 1, 1 | none |
+
+  The let-bound twin differs from the inline form only in whether the
+  bind-chain rewrite fires, and retains the same 2. A single `print` retains
+  1 with no `bind` at all.
+- **Consequence.** ACT-1050's correction is predicted to leave this cell at
+  2, so the planned re-measure after it (O-1018) will not close this record.
+  No S124 change-set owns the stranded block. The reduction named above is
+  still the next step and is unscheduled.
+- **Refuted if** the cell reads 0 on the tree that corrects ACT-1050.

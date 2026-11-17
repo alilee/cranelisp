@@ -1062,7 +1062,7 @@ deallocs are shown as `a/d`.
   encode a refusal as the corpus's expected outcome. *Class:* maintenance.
   *Owner:* `test`.
 - **M-9 — the armed release check stops on a stack-placed value**
-  ([ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md)).
+  (ACT-1049, closed at S124 when stack placement retired).
   `(Pure (match (Point 3 7) [(Point x y) x]))` stops armed on both compilers
   with `STALE RC DEC … Freed-value … = None`, while it exits 3 at 1/1
   unarmed. The constructor lives in a stack slot with the immortal header,
@@ -1593,7 +1593,7 @@ The user decides each of the three rows Phase 5 added to §5:
 | Item | Why it carries |
 |---|---|
 | [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md) | Unbounded leak in a loop, not memory-unsafe. It predates U′ and was found after W2's first review, so the correction-loop stop rule applies. Twelve REDs stand |
-| [ACT-1049](../../sprints/actions/ACT-1049-rc-dec-check-stops-on-stack-placed-value-intake.md) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
+| ACT-1049 (closed at S124) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
 | [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
 | [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
