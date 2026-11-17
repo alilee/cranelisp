@@ -1,7 +1,7 @@
 //! S102 Phase-5 Stage-1 — increment-I QA-first set: starved-inc fences
 //! (S1–S6), projection-escape negatives (L-D3a–f), the declared-fact-table
-//! row tests, stack-slot behavioural lanes (L-C2), and the owed-observability
-//! hook smokes (H1/H2/H3/H5).
+//! row tests, allocation lifetime lanes (L-C2), and the owed-observability
+//! hook smokes (H1/H3/H5).
 //!
 //! Plan: `tests/plan/s100-ownership-verification.md` §3.2 (fence design),
 //! §3.3 (L-D3), §3.4 (L-C2), §3.7 (hooks), §6 (drafting list);
@@ -22,17 +22,16 @@
 //! ALL S-fences and L-D3a–e rows are **GREEN at draft** — today's
 //! conservative Decision-24 codegen satisfies them by construction. They
 //! become load-bearing the moment each B3 mechanism lands (borrow-elision
-//! B3.2, non-atomic RC B3.3, stack slots B3.4, str-len sibling B3.5): a
+//! B3.2, non-atomic RC B3.3, str-len sibling B3.5): a
 //! mechanism that skips an inc it must not skip fails the behavioral leg; a
 //! mechanism that leaks fails the balance leg.
 //!
 //! Draft-time polarity (probed 2026-07-03 on the CS-A binary):
-//!   RED ×7 — the owed hooks + the golden smoke (loud signals, flip in the
+//!   Owed hooks + the golden smoke (loud signals, flip in the
 //!   named waves) + TWO defects DISCOVERED at drafting (guards are the
 //!   record; both live in the fn_as_value B3.1 seam):
 //!     clif_golden_single_module_smoke      (L-B1 in-suite smoke — flips at
 //!                                           Wave 3 B0-be golden capture)
-//!     h2_rc_stats_reports_per_mechanism_counters  (H2 — /backend, B3)
 //!     h3_rc_stats_reports_per_extern_adaptation_pairs (H3 — /backend, B3 or
 //!                                           deferred with the L-D5 decision)
 //!     h5_ownership_trace_emits_verdicts    (H5 — /typecheck, B2 CS-4)
@@ -630,16 +629,10 @@ fn fact_row_vec_len_and_vec_get_root_survives_and_balances() {
 }
 
 // =============================================================================
-// L-C2 — stack-slot behavioural lanes (backend §12.3). At draft these are
-// the behavioral halves only (GREEN); the counter-attribution halves key on
-// Hook H2 and activate at B3.4. ASan legs: tests/scripts/asan/ (wave gates).
+// L-C2 — allocation lifetime lanes.
 // =============================================================================
 
-// spec: design/backend/ownership-codegen.md §13.2 — L-C2(a) behavioral half:
-// an allocation in a TCO loop body flowing into the recur args survives 10k
-// iterations with correct values (the back-edge shape that must NOT
-// stack-allocate once B3.4 lands; the negative is then asserted via the H2
-// stack-slot-hit counter). GREEN at draft.
+// spec: spec/12-runtime.md §12.3.1 — allocations transferred along a TCO backedge stay live.
 #[test]
 fn l_c2a_tco_backedge_allocation_flows_into_recur_args_10k() {
     let src = "(import [primitives [*]])\n\
@@ -651,9 +644,7 @@ fn l_c2a_tco_backedge_allocation_flows_into_recur_args_10k() {
     assert_exit_value(out, 3);
 }
 
-// spec: design/backend/ownership-codegen.md §13.2 — L-C2(b) behavioral half:
-// sparked branches read a parent-frame value, sustained (the
-// spark-reads-parent-stack-slot shape once B3.4 lands). GREEN at draft.
+// spec: spec/12-runtime.md §12.3.1 — sparked branches keep a parent value live.
 #[test]
 fn l_c2b_sparked_branches_read_parent_value_sustained() {
     let src = "(import [primitives [*]])\n\
@@ -672,31 +663,6 @@ fn l_c2b_sparked_branches_read_parent_value_sustained() {
 // Owed-observability hook smokes (qa plan §6 gaps G-2/G-3/G-4; s100 plan
 // §3.7). RED at draft — the loud signal each hook is owed in its named wave.
 // =============================================================================
-
-// spec: design/backend/ownership-codegen.md §13.2 — Hook H2: per-mechanism
-// stat counters (stack-slot hits, reuse hit/miss, non-atomic op share) in
-// the RC-stats surface. RED on HEAD (/backend, B3 change-sets; gate-blocking
-// for I-G3/I-G7). Needle is the counter FAMILY name; tighten to the ratified
-// grammar when H2 lands.
-#[test]
-fn h2_rc_stats_reports_per_mechanism_counters() {
-    let (out, _) = run_with_rc_stats(
-        "(import [primitives [*]])\n\
-         (defn main [] (Pure (str-len \"abc\")))\n",
-    );
-    let stats_line = out
-        .stderr
-        .lines()
-        .find(|l| l.contains("[RC_STATS]"))
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        stats_line.contains("stack_slot"),
-        "Hook H2 (per-mechanism counters — stack-slot hits, reuse hit/miss, \
-         non-atomic share) is owed in the B3 change-sets (/backend); the \
-         RC_STATS line carries no per-mechanism counters yet: {stats_line}"
-    );
-}
 
 // spec: design/backend/ownership-codegen.md §13.2 — Hook H3: per-extern
 // adaptation-pair attribution in CRANELISP_RC_STATS (needed by the L-D5

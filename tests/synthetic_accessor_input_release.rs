@@ -5,7 +5,6 @@ mod helpers;
 use helpers::marginal::{Child, MarginalPair};
 
 fn child(defs: &str, value: &str, linked: bool) -> Child {
-    // ACT-1049: all constructors are inside go, never freshly placed in main.
     let c = Child::new(&format!(
         "(import [primitives [*]])\n{defs}\n\
          (defn go [n acc]\n\

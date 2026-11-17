@@ -5,7 +5,6 @@ mod helpers;
 use helpers::marginal::{Child, Marginal, MarginalPair};
 
 fn child(body: &str, linked: bool) -> Child {
-    // ACT-1049: constructors stay in work, outside main's stack placement.
     let c = Child::new(&format!(
         "(import [primitives [*]])\n\
          (deftype B (MkB [:String s]))\n\

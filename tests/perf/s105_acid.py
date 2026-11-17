@@ -1,44 +1,8 @@
 #!/usr/bin/env python3
-"""S105 Phase-5 Wave-1b — the ACID TEST harness (a focused sibling of
-`s105_attribution.py`, single-sourced on it per Principle 7).
+"""Allocation-volume and allocator-wall probes for serial temporary aggregates
+and the parallel F6 witness. Uses the S105 counter-off timing scaffold.
 
-Wave-1 settled that the F3/F4 backtracking-parallel residual has no memory lever
-(unavailable parallelism). But F3/F4 are the WORST case for the "escape∧uniqueness
-stack allocation" hypothesis and unrepresentative of its real target. The
-hypothesis's delta over what already shipped is the (a)-allocator term: increment-II
-reuse tokens already remove the COPY when a value is unique; the delta is to
-STACK-ALLOCATE unique non-escaping aggregates so there is no malloc/free at all.
-That delta is NOT built (as-built escape→stack is statically-sized-all-scalar only).
-
-So this harness measures the TWO THINGS the delta's value depends on — NOT the delta
-firing:
-
-  (i)  The gate-3 / loop DETERMINANT — where the EXISTING statically-sized-all-scalar
-       stack mechanism (F8 serial arm, hits=4) fires across control-flow shapes:
-       straight-line, loop, non-tail-recursive. Read STACK_SLOT_HITS (backend-side
-       via CRANELISP_RC_STATS `stack_slot=`) + toggle CRANELISP_NO_STACK_ALLOC to
-       confirm. THE KEY UNKNOWN: does stack-alloc survive a loop body, or do loops
-       (self-recursion — Cranelisp has NO loop form) trip gate 3 and decline?
-
-  (ii) OPPORTUNITY SIZE for realistic serial temp-aggregate code — a non-scalar
-       unique non-escaping aggregate (a Vec) built/computed/discarded in one frame,
-       straight-line + loop. Since the delta isn't built these won't stack-alloc;
-       measure the OPPORTUNITY CEILING: alloc_bytes/allocs (N1), N3 Confined/Crossing
-       (delta-eligible ⇔ Confined+unique), the mimalloc-vs-system wall delta + the
-       strace brk/mmap share.
-
-  (iii) F6 RE-PROBE (S104 positive-scaling parallel witness): per-strand allocation
-       volume + the gate-5 spark tally — is there an alloc-bound opportunity behind
-       gate 5, or is F6 compute-bound with negligible per-strand alloc (⇒ no parallel
-       opportunity either)?
-
-Doctrine (inherited from s105_attribution §0/§7): walls counter-OFF; counts from a
-SEPARATE run; idle out-of-band (INVALID-not-benign); HW/strace external; mimalloc a
-second build. This is an ORDER-OF-MAGNITUDE probe (single-shot-ish, low reps).
-
-Usage:
-  SYS_BIN=.../cranelisp-system MI_BIN=.../cranelisp-mimalloc \
-    python3 tests/perf/s105_acid.py [--reps 3]
+SYS_BIN and MI_BIN select the system and mimalloc release binaries.
 """
 import os, sys, re, subprocess, statistics
 
@@ -127,52 +91,13 @@ def fmt(w):
     return "%.3fs" % w if isinstance(w, float) else str(w)
 
 
-# ══ (i) control-flow reach table ══════════════════════════════════════════════
-def reach_table(sysb, files, reps):
-    print("\n" + "=" * 78)
-    print("## (i) CONTROL-FLOW REACH — where the as-built stack mechanism fires")
-    print("#  (STACK_SLOT_HITS via CRANELISP_RC_STATS stack_slot=, serial-compile;")
-    print("#   NO_STACK_ALLOC toggle confirms via the allocs jump). Cranelisp has NO")
-    print("#   loop/recur/while form — a 'loop' IS a tail-self-recursive fn (gate 3).")
-    rows = []
-    #  label, fixture, where the construction lives
-    probes = [
-        ("straight-line (non-rec helper)", "f9_straightline", "non-recursive `one`, loop-driven"),
-        ("loop (inline, tail-self-rec)",   "f9_loop",         "INLINE in tail-recursive `drive`"),
-        ("non-tail recursion (inline)",    "f9_nontailrec",   "INLINE in non-tail D&C `drive`"),
-        ("loop→non-rec helper (F8 serial)", "f8_serial",      "non-recursive `one`, D&C-loop-driven"),
-    ]
-    for label, fx, where in probes:
-        clf = files[fx]
-        on = s105.counts(sysb, clf, s105.counts_env(serial=True)) or {}
-        off = s105.counts(sysb, clf, s105.counts_env(serial=True, no_stack=True)) or {}
-        w_on, _ = s105.timed_wall(sysb, clf, s105.wall_env(serial=True), reps)
-        w_off, _ = s105.timed_wall(sysb, clf, s105.wall_env(serial=True, no_stack=True), reps)
-        ss = on.get("stack_slot")
-        a_on, a_off = on.get("allocs"), off.get("allocs")
-        recov = (a_off - a_on) if None not in (a_off, a_on) else None
-        fires = "FIRES" if (ss and ss > 0) else "declines"
-        rows.append((label, where, ss, a_on, a_off, recov, w_on, w_off, fires))
-        print("\n  %-34s [%s]" % (label, fires))
-        print("    where            : %s" % where)
-        print("    stack_slot(codegen) = %s   → gate reason: %s" % (
-            ss, "gate 3 CLEAR (non-recursive fn)" if (ss and ss > 0)
-            else "gate 3 TRIPS (self-call in fn — TCO/rec)"))
-        print("    allocs[stackON]=%s  allocs[NO_STACK_ALLOC]=%s  → heap-alloc recovery=%s" % (
-            a_on, a_off, recov))
-        print("    wall[stackON]=%s  wall[NO_STACK_ALLOC]=%s" % (fmt(w_on), fmt(w_off)))
-    return rows
-
-
 # ══ (ii) opportunity ceiling — serial non-scalar temp aggregate ═══════════════
 def opportunity(sysb, mib, files, reps):
     print("\n" + "=" * 78)
     print("## (ii) OPPORTUNITY CEILING — serial non-scalar temp-aggregate (Vec)")
-    print("#  Vec payload is a heap buffer (non-scalar) ⇒ fails gate 2 ⇒ never")
-    print("#  stack-allocs today. Measure what the DELTA could recover.")
     out = {}
-    for arm, fx in (("SL (delta-eligible: non-rec helper)", "f10_sl"),
-                    ("LOOP (gate-3-declined even w/ delta)", "f10_loop")):
+    for arm, fx in (("SL (non-recursive helper)", "f10_sl"),
+                    ("LOOP (tail recursion)", "f10_loop")):
         clf = files[fx]
         c = s105.counts(sysb, clf, s105.counts_env(serial=True)) or {}
         (conf, cross), sites = rc_site(sysb, clf, serial=True)
@@ -185,9 +110,9 @@ def opportunity(sysb, mib, files, reps):
         print("    N1: allocs=%s  alloc_bytes=%s  (bytes/alloc≈%s)" % (
             c.get("allocs"), c.get("alloc_bytes"),
             (c.get("alloc_bytes") // c.get("allocs")) if c.get("allocs") else "?"))
-        print("        reuse_hit=%s reuse_miss=%s  rc_atomic=%s  stack_slot=%s" % (
-            c.get("reuse_hit"), c.get("reuse_miss"), c.get("rc_atomic"), c.get("stack_slot")))
-        print("    N3: confined_cells=%s crossing_cells=%s   (delta-eligible ⇔ Confined+unique)" % (
+        print("        reuse_hit=%s reuse_miss=%s  rc_atomic=%s" % (
+            c.get("reuse_hit"), c.get("reuse_miss"), c.get("rc_atomic")))
+        print("    N3: confined_cells=%s crossing_cells=%s" % (
             conf, cross))
         for (s_id, cls, ops) in sites:
             print("        site=%s class=%s ops=%s" % (s_id, cls, ops))
@@ -222,8 +147,8 @@ def f6_reprobe(sysb, files, reps):
         c.get("allocs"), c.get("alloc_bytes"),
         (c.get("allocs") // leaves) if c.get("allocs") is not None else "?",
         (c.get("alloc_bytes") // leaves) if c.get("alloc_bytes") is not None else "?"))
-    print("    reuse_hit=%s  rc_atomic=%s  stack_slot=%s" % (
-        c.get("reuse_hit"), c.get("rc_atomic"), c.get("stack_slot")))
+    print("    reuse_hit=%s  rc_atomic=%s" % (
+        c.get("reuse_hit"), c.get("rc_atomic")))
     print("  gate-5 / M-static spark tally (SPARK_SITE_STATS):")
     print("    admit(would-spark)=%s  decline=%s" % (admit, decline))
     for (site, scc, tail, ad, emits) in srows:
@@ -232,7 +157,7 @@ def f6_reprobe(sysb, files, reps):
         fmt(ser), NPROC, fmt(par), ("%.2fx" % speedup) if speedup else "?"))
     verdict = ("COMPUTE-BOUND, negligible per-strand alloc ⇒ NO alloc-bound parallel "
                "opportunity behind gate 5") if (c.get("allocs") is not None and c.get("allocs") < 100) \
-        else "ALLOC-BEARING — inspect gate-5 decline for a spark-stack opportunity"
+        else "ALLOC-BEARING — inspect gate-5 decline for allocation cost"
     print("  F6 VERDICT: %s" % verdict)
     return dict(allocs=c.get("allocs"), alloc_bytes=c.get("alloc_bytes"),
                 admit=admit, decline=decline, ser=ser, par=par, speedup=speedup,
@@ -258,7 +183,6 @@ def main():
     print("# start busy_cores=%.2f  load1=%.2f" % (s104.busy_cores(), os.getloadavg()[0]))
     print("# DOCTRINE: walls counter-OFF; counts separate run; idle out-of-band; HW external.")
 
-    reach_table(sysb, files, args.reps)
     opportunity(sysb, mib, files, args.reps)
     f6_reprobe(sysb, files, args.reps)
 

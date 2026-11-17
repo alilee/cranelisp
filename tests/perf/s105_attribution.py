@@ -11,14 +11,11 @@ phase selects the evidence-supported lever rather than an asserted one.
   * the **2×2 factorial** (allocator-swap × ownership-off) walls + the explicit
     interaction `I = baseline − ¬a − ¬b + ¬a∧¬b` (§2, §3.1.6-R1);
   * the **fine-probe** direct-oracle net-recovery columns — `CRANELISP_NONATOMIC_RC`
-    (b-via-RC), `CRANELISP_CAPTURE_BORROW` (b-via-borrow), `CRANELISP_NO_STACK_ALLOC`
-    (a-via-stack), and the COARSE `CRANELISP_NO_OWNERSHIP` CEILING only (§3, §4);
+    (b-via-RC), `CRANELISP_CAPTURE_BORROW` (b-via-borrow), and the COARSE `CRANELISP_NO_OWNERSHIP` CEILING only (§3, §4);
   * the **core-count speedup-ceiling sweep** RAYON_NUM_THREADS ∈ {1,2,4,6,8,10} (I5);
   * the **syscall profile** (strace -c futex/sched_yield vs brk/mmap share, I1);
   * the **HW HITM** row (perf stat) — marked UNAVAILABLE gracefully if the PMU is
     blocked (I4, scope-gap #3);
-  * F8's **gate-5 sub-verdict** — per-arm STACK_SLOT_HITS (serial>0, parallel=0)
-    and the per-arm stack-oracle net-recovery (§5.2, §4.1);
   * the per-fixture **[S105-GATE ...]** verdict block (§6).
 
 ## Doctrine guards (§0 / §7 — non-negotiable, encoded as INVALID-marking preconds)
@@ -42,7 +39,7 @@ busy-cores idle probe, and the config-env scaffold are imported from
 Usage:
   SYS_BIN=.../cranelisp-system MI_BIN=.../cranelisp-mimalloc \
     python3 tests/perf/s105_attribution.py \
-      [--mode all|factorial|fine|sweep|syscall|hw|stack|gate] \
+      [--mode all|factorial|fine|sweep|syscall|hw|gate] \
       [--fixtures f4_hard,f3_inverted_search,f7_alloc,f8_stack_witness] \
       [--reps 3] [--threads 1,2,4,6,8,10]
 """
@@ -60,9 +57,9 @@ PIPE = subprocess.PIPE
 # ── Full [RC_STATS] grammar (post-S105 N1: alloc_bytes appended at the tail) ──
 RC_RE = re.compile(
     r"\[RC_STATS\] rc_inc=(\d+) rc_dec=(\d+) allocs=(\d+) deallocs=(\d+) "
-    r"stack_slot=(\d+) reuse_hit=(\d+) reuse_miss=(\d+) "
+    r"reuse_hit=(\d+) reuse_miss=(\d+) "
     r"rc_nonatomic=(\d+) rc_atomic=(\d+) str-len_adapt=(\d+) alloc_bytes=(\d+)")
-RC_FIELDS = ["rc_inc", "rc_dec", "allocs", "deallocs", "stack_slot", "reuse_hit",
+RC_FIELDS = ["rc_inc", "rc_dec", "allocs", "deallocs", "reuse_hit",
              "reuse_miss", "rc_nonatomic", "rc_atomic", "str_len_adapt", "alloc_bytes"]
 
 # Env keys the harness must scrub before a graded WALL (G-wall-off). Any stats/trace
@@ -72,7 +69,7 @@ STATS_ENV = ("CRANELISP_RC_STATS", "CRANELISP_SPARK_STATS", "CRANELISP_OWNERSHIP
              "CRANELISP_SCHEDULER_TRACE")
 # Semantic toggles the harness sets (never perturb the wall — they change codegen).
 SEM_ENV = ("CRANELISP_NO_LENIENT", "CRANELISP_NO_OWNERSHIP", "CRANELISP_NONATOMIC_RC",
-           "CRANELISP_CAPTURE_BORROW", "CRANELISP_NO_STACK_ALLOC", "RAYON_NUM_THREADS")
+           "CRANELISP_CAPTURE_BORROW", "RAYON_NUM_THREADS")
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -85,9 +82,7 @@ def make_fixtures():
         p = os.path.join(s99.WORK, name + ".cl")
         open(p, "w").write(open(src).read())
         files[name] = p
-    # F8 per-arm variants (sliced on the region markers) for the clean per-arm
-    # STACK_SLOT_HITS read (the global codegen counter attributes cleanly only when
-    # one arm is present).
+    # F8 per-arm variants, sliced on the region markers.
     sv, pv = _gen_f8_variants(open(os.path.join(s99.FIX, "f8_stack_witness.cl")).read())
     files["f8_serial"], files["f8_parallel"] = sv, pv
     return files
@@ -116,7 +111,7 @@ def _gen_f8_variants(src):
 
 # ── Env builders ──────────────────────────────────────────────────────────────
 def wall_env(serial=False, no_ownership=False, nonatomic=False, capture_borrow=False,
-             no_stack=False, threads=None):
+             threads=None):
     """A counter-OFF wall env (G-wall-off). Sets only the semantic toggles; scrubs
     every stats/trace gate so the wall is unperturbed."""
     e = dict(os.environ)
@@ -126,20 +121,18 @@ def wall_env(serial=False, no_ownership=False, nonatomic=False, capture_borrow=F
     if no_ownership:   e["CRANELISP_NO_OWNERSHIP"] = "1"
     if nonatomic:      e["CRANELISP_NONATOMIC_RC"] = "1"
     if capture_borrow: e["CRANELISP_CAPTURE_BORROW"] = "1"
-    if no_stack:       e["CRANELISP_NO_STACK_ALLOC"] = "1"
     if threads is not None:
         e["RAYON_NUM_THREADS"] = str(threads)
     return e
 
 
-def counts_env(serial=False, no_stack=False):
+def counts_env(serial=False):
     """A SEPARATE counts run (G-separate): RC_STATS on. Never timed."""
     e = dict(os.environ)
     for k in STATS_ENV + SEM_ENV:
         e.pop(k, None)
     e["CRANELISP_RC_STATS"] = "1"
     if serial:   e["CRANELISP_NO_LENIENT"] = "1"
-    if no_stack: e["CRANELISP_NO_STACK_ALLOC"] = "1"
     return e
 
 
@@ -210,13 +203,12 @@ def factorial(sysb, mib, clfile, reps):
 # ── fine-probe direct-oracle net-recovery (§3 / §4) ───────────────────────────
 def fine(sysb, clfile, reps):
     """Each fine probe's net wall recovery vs the coupled baseline (system, all-on).
-    Granularity-disciplined (§3): the stack/RC/borrow FINE probes apportion; the
+    Granularity-disciplined (§3): the RC/borrow FINE probes apportion; the
     COARSE NO_OWNERSHIP is reported ONLY as the ceiling, never as a (b) toggle."""
     base, _ = timed_wall(sysb, clfile, wall_env(), reps)
     out = {"baseline": base}
     probes = [("nonatomic_rc", dict(nonatomic=True), "b-via-RC (fine)"),
               ("capture_borrow", dict(capture_borrow=True), "b-via-borrow (fine)"),
-              ("no_stack_alloc", dict(no_stack=True), "a-via-stack (fine)"),
               ("no_ownership(CEILING)", dict(no_ownership=True), "COARSE all-memory-off ceiling")]
     for name, kw, _desc in probes:
         w, meta = timed_wall(sysb, clfile, wall_env(**kw), reps)
@@ -281,27 +273,6 @@ def hw_hitm(binp, clfile):
             "ctx_sw": cs.group(1) if cs else "?"}
 
 
-# ── F8 gate-5 sub-verdict — per-arm STACK_SLOT_HITS + stack-oracle recovery ────
-def f8_gate5(sysb, files, reps):
-    out = {}
-    for arm in ("f8_serial", "f8_parallel"):
-        # per-arm STACK_SLOT_HITS: serial-compilation (NO_LENIENT) vs lenient, and
-        # the direct stack-oracle allocs recovery (stack-ON vs NO_STACK_ALLOC).
-        c_serial_on = counts(sysb, files[arm], counts_env(serial=True))
-        c_serial_off = counts(sysb, files[arm], counts_env(serial=True, no_stack=True))
-        c_par_on = counts(sysb, files[arm], counts_env(serial=False))
-        # wall net-recovery on this arm (stack ON vs OFF), counter-off
-        w_on, _ = timed_wall(sysb, files[arm], wall_env(serial=True), reps)
-        w_off, _ = timed_wall(sysb, files[arm], wall_env(serial=True, no_stack=True), reps)
-        out[arm] = dict(
-            stack_serial=(c_serial_on or {}).get("stack_slot"),
-            stack_parallel=(c_par_on or {}).get("stack_slot"),
-            allocs_stackon=(c_serial_on or {}).get("allocs"),
-            allocs_nostack=(c_serial_off or {}).get("allocs"),
-            wall_stackon=w_on, wall_nostack=w_off)
-    return out
-
-
 # ── attribution vector + gate verdict (§6) ────────────────────────────────────
 def fmt_wall(w):
     return "%.3fs" % w if isinstance(w, float) else str(w)
@@ -328,8 +299,8 @@ def emit_gate(fx, fac, I, fn, sw, sysc_par, hw, cnts):
     print("    scheduler-spread     : sweep-ceiling %s (I5); syscall sched-share %s%%" % (
         ("%.2fx" % ceiling if ceiling else "?"),
         (sysc_par.get("sched_share") if sysc_par.get("status") == "ok" else "UNAVAIL")))
-    print("    (a)-allocation       : %s via NO_STACK_ALLOC(fine); 2x2 ¬a=%s  [allocs=%s bytes=%s]" % (
-        rec("no_stack_alloc"), fmt_wall(fac["¬a"][0]),
+    print("    (a)-allocation       : allocator factorial ¬a=%s  [allocs=%s bytes=%s]" % (
+        fmt_wall(fac["¬a"][0]),
         (cnts or {}).get("allocs"), (cnts or {}).get("alloc_bytes")))
     print("    residual-atomic-RC   : %s via NONATOMIC_RC(fine) + %s via CAPTURE_BORROW  [rc_atomic=%s]" % (
         rec("nonatomic_rc"), rec("capture_borrow"), (cnts or {}).get("rc_atomic")))
@@ -358,7 +329,7 @@ def report_fixture(fx, sysb, mib, files, reps, threads):
     print("    I = baseline − ¬a − ¬b + ¬a∧¬b = %s" % (("%+.3fs" % I) if I is not None else "n/a"))
     fn = fine(sysb, clf, reps)
     print("  fine-probe direct-oracle net-recovery (base=%s):" % fmt_wall(fn["baseline"]))
-    for name in ("no_stack_alloc", "nonatomic_rc", "capture_borrow", "no_ownership(CEILING)"):
+    for name in ("nonatomic_rc", "capture_borrow", "no_ownership(CEILING)"):
         w, r, st = fn[name]
         print("    %-22s wall=%-8s net-recovery=%-9s [%s]" % (
             name, fmt_wall(w), ("%+.3fs" % r) if r is not None else "n/a", st))
@@ -382,7 +353,7 @@ def report_fixture(fx, sysb, mib, files, reps, threads):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="all",
-                    choices=["all", "factorial", "fine", "sweep", "syscall", "hw", "stack", "gate"])
+                    choices=["all", "factorial", "fine", "sweep", "syscall", "hw", "gate"])
     ap.add_argument("--fixtures",
                     default="f4_hard,f3_inverted_search,f7_alloc,f8_stack_witness")
     ap.add_argument("--reps", type=int, default=3)
@@ -403,27 +374,6 @@ def main():
     print("# start busy_cores=%.2f  load1=%.2f" % (s104.busy_cores(), os.getloadavg()[0]))
     print("# DOCTRINE: walls counter-OFF; counts separate run; idle out-of-band "
           "(INVALID-not-benign); HW external.")
-
-    if args.mode in ("all", "stack", "gate"):
-        print("\n" + "=" * 78)
-        print("## F8 gate-5 sub-verdict — per-arm STACK_SLOT_HITS + stack-oracle recovery (§5.2)")
-        g = f8_gate5(sysb, files, args.reps)
-        for arm in ("f8_serial", "f8_parallel"):
-            d = g[arm]
-            print("  %-12s stack_slot[serial-compile]=%s  stack_slot[lenient]=%s" % (
-                arm, d["stack_serial"], d["stack_parallel"]))
-            print("               allocs[stackON]=%s allocs[NO_STACK_ALLOC]=%s  "
-                  "→ heap-alloc recovery=%s" % (
-                d["allocs_stackon"], d["allocs_nostack"],
-                (d["allocs_nostack"] - d["allocs_stackon"])
-                if None not in (d["allocs_nostack"], d["allocs_stackon"]) else "?"))
-            print("               wall[stackON]=%s wall[NO_STACK_ALLOC]=%s" % (
-                fmt_wall(d["wall_stackon"]), fmt_wall(d["wall_nostack"])))
-        sh = g["f8_serial"]["stack_serial"]; ph = g["f8_parallel"]["stack_serial"]
-        pl = g["f8_parallel"]["stack_parallel"]
-        print("  SUB-VERDICT: serial-arm hits=%s (>0 expected), parallel-arm hits=%s/%s "
-              "(serial-compile/lenient; =0 expected ⇒ (a) on the parallel path is behind "
-              "gate 3+5 — the stack lever does NOT recover it)" % (sh, ph, pl))
 
     if args.mode in ("all", "gate", "factorial", "fine", "sweep", "syscall", "hw"):
         for fx in args.fixtures.split(","):

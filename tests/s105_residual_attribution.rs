@@ -1,48 +1,5 @@
-//! S105 Phase-5 — residual-attribution perf-lane BEHAVIOURAL guards.
-//!
-//! Companion to the graded perf-lane instrument `tests/perf/s105_attribution.py`
-//! + fixtures `tests/fixtures/s99/{f7_alloc,f8_stack_witness}.cl`. The graded walls and
-//! attribution vectors are perf-lane records (`tests/plan/s105-attribution-results.md`),
-//! not nextest guards; what lands in the
-//! `cargo nextest` suite is (a) the fixtures' parallel≡serial exit-match
-//! CORRECTNESS record (GREEN) and (b) the two failing-not-ignored BEHAVIOURAL
-//! guards that flip green when the selected build lever lands.
-//!
-//! Polarity (probed against HEAD 2026-07-07, release binary) — ALL GREEN:
-//!   Correctness record (durable, independent of the perf verdict):
-//!     f7_alloc_parallel_serial_exit_match
-//!     f8_stack_witness_parallel_serial_exit_match
-//!     f8_serial_arm_stack_allocates            (positive control: stack-alloc CAN fire)
-//!   Current-behaviour characterizations (the two attribution records, §9.1):
-//!     f8_gate5_parallel_arm_correctly_declines_stack_alloc  (§9.1.1 — the 0525
-//!         gate-5 behaviour: the stack lever fires only on the non-recursive
-//!         in-frame arm, and CORRECTLY declines on the recursive/sparked
-//!         parallel-search arm. This is the current, correct behaviour under
-//!         the accept-done verdict — the stack lever is NOT selected. FRONTIER:
-//!         multi-field SROA would extend stack-alloc onto the parallel shape.)
-//!     f3_shared_read_currently_uses_atomic_rc  (§9.1.2 — the F3 dominant term:
-//!         a shared-read parallel reduce CURRENTLY emits conservatively-atomic
-//!         RC (the sound confinement default). FRONTIER: a confinement-precision
-//!         lever (0526/0528) would prove the shared reads Confined and move them
-//!         to the non-atomic arm.)
-//!
-//! S105 CLOSE RECLASSIFICATION (Phase-7 action 1, user-approved): these two were
-//! authored Wave-1 as failing-not-ignored REDs asserting an unbuilt feature. Under
-//! the accept-done verdict (`tests/plan/s105-attribution-results.md`: the F4-hard
-//! residual is unavailable-parallelism → accept-done → `--release`; NO memory or
-//! stack lever built this sprint) those assertions would stay RED forever — a
-//! misuse of failing-not-ignored, which is reserved for defects with intent-to-fix.
-//! They are correct current behaviour we CHOSE not to change. Reclassified to GREEN
-//! assertions of the current behaviour, each carrying a `// FRONTIER:` note of the
-//! future increment that would flip the expectation. They remain live regression
-//! guards of the current behaviour (they catch an accidental change), not perpetual
-//! REDs. The frontier work (multi-field SROA; 0526/0528 confinement precision) is
-//! handed forward, not owed.
-//!
-//! Free-standing: every fixture is `(import [primitives [*]])` + inline helpers;
-//! zero stdlib dependency (root AGENTS.md §Stdlib separation). Sources are small
-//! inline scale-downs of the committed F7/F8 fixtures (nextest speed; the graded
-//! full-scale runs live in the perf harness).
+//! Serial/parallel value equivalence for the S105 allocation fixtures, and
+//! the shared-read atomic-RC characterization. Timing lives in `perf/`.
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -82,8 +39,7 @@ fn run_rc_stats(src: &str, serial: bool) -> helpers::e2e::CrOutput {
 }
 
 /// Extract an integer field from the single `[RC_STATS]` line (post-S105 grammar,
-/// `crates/cranelisp-intrinsics/src/rc.rs::rc_stats_line`, incl. `stack_slot=`,
-/// `rc_atomic=`, `rc_nonatomic=`, `alloc_bytes=`).
+/// `crates/cranelisp-intrinsics/src/rc.rs::rc_stats_line`, incl. `rc_atomic=`, `rc_nonatomic=`, `alloc_bytes=`).
 fn rc_field(stderr: &str, k: &str) -> i64 {
     let line = stderr
         .lines()
@@ -108,7 +64,7 @@ const F7_MINI: &str = "(import [primitives [*]])\n\
     (add-i64 (reduce-tree lo (mid-of lo hi)) (reduce-tree (mid-of lo hi) hi))))\n\
   (defn main [] (Pure (rmod (reduce-tree 0 16) 251)))\n";
 
-// F8 SERIAL arm — non-recursive phi-P construction (gate 3 & 5 clear ⇒ stack-allocs).
+// F8 serial arm: non-recursive phi-P construction.
 const F8_SERIAL: &str = "(import [primitives [*]])\n\
   (defn rmod [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))\n\
   (deftype P (A [:Int x :Int y]) (B [:Int bx :Int by]))\n\
@@ -117,8 +73,7 @@ const F8_SERIAL: &str = "(import [primitives [*]])\n\
   (defn drive [k acc] (if (le-i64 k 0) acc (drive (sub-i64 k 1) (add-i64 acc (one k)))))\n\
   (defn main [] (Pure (rmod (drive 256 0) 1000)))\n";
 
-// F8 PARALLEL arm — the SAME phi-P construction lexically inside a self-recursive
-// D&C's spark-bearing apply-args (gate 3 self-recursion + gate 5 spark relocation).
+// F8 parallel arm: phi-P construction inside a recursive divide-and-conquer.
 const F8_PARALLEL: &str = "(import [primitives [*]])\n\
   (defn rmod [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))\n\
   (defn mid-of [lo hi] (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\
@@ -172,62 +127,6 @@ fn f8_stack_witness_parallel_serial_exit_match() {
         assert_eq!(s, p, "F8 arm parallel must equal serial");
         assert!(s.is_some(), "F8 arm must exit cleanly");
     }
-}
-
-// spec: design/backend/ownership-codegen.md §4.1 — in-frame NoEscape scalar constructor is stack-eligible
-// — positive control: stack allocation CAN fire on the non-recursive in-frame phi-ADT.
-#[test]
-fn f8_serial_arm_stack_allocates() {
-    let out = run_rc_stats(F8_SERIAL, /*serial=*/ true);
-    let hits = rc_field(&out.stderr, "stack_slot");
-    assert!(
-        hits > 0,
-        "F8 serial arm (non-recursive phi-ADT) MUST stack-allocate — the escape∧\
-         uniqueness stack path is live for the in-frame class; stack_slot={hits}\n{}",
-        out.stderr
-    );
-}
-
-// =============================================================================
-// Current-behaviour attribution characterizations (GREEN) — §9.1.
-// Reclassified from failing-not-ignored REDs at S105 close (accept-done verdict):
-// each asserts the CURRENT, correct behaviour and carries a `// FRONTIER:` note of
-// the future increment that would flip it. Live regression guards, not perpetual
-// REDs. See the module doc comment for the reclassification rationale.
-// =============================================================================
-
-// spec: design/backend/ownership-codegen.md §4.3 — spark relocation declines stack placement (gate 5); the 0525
-// gate-5 parallel-residual behaviour. GREEN characterization: the stack lever fires
-// only on the non-recursive in-frame arm (f8_serial_arm_stack_allocates, GREEN) and
-// CORRECTLY declines on the recursive/sparked parallel-search arm — gate 3 (self-
-// recursion) declines the recursive bearer AND gate 5 declines any lenient spark
-// relocation, so the SAME construction that stack-allocates in-frame stays heap on
-// the parallel path. This is the current, correct behaviour under the S105 accept-
-// done verdict: the stack lever is NOT selected, and it must NOT silently start
-// firing on the sparked path (which would relocate a possibly-escaping alloc into a
-// spark frame). This guard pins that decline.
-//
-// FRONTIER: multi-field SROA (scalar-replacement of the phi-ADT's fields across the
-// spark boundary) is the future increment that would legitimately extend stack-
-// allocation onto the parallel shape; when that lands, this expectation flips to
-// stack_slot>0 and the test is re-polarised. Handed forward, not owed.
-#[test]
-fn f8_gate5_parallel_arm_correctly_declines_stack_alloc() {
-    let out = run_rc_stats(F8_PARALLEL, /*serial=*/ false);
-    let hits = rc_field(&out.stderr, "stack_slot");
-    assert_eq!(
-        hits, 0,
-        "PARALLEL-ARM GATE-5 DECLINE (0525, current correct behaviour): the \
-         recursive/sparked parallel-search arm's phi-ADT construction must NOT \
-         stack-allocate — gate 3 (self-recursion) + gate 5 (spark relocation) \
-         correctly decline it, so the escape∧uniqueness stack lever stays on the \
-         in-frame arm only (f8_serial_arm_stack_allocates is the positive control). \
-         Observed stack_slot={hits} (expected 0). A non-zero here means stack-alloc \
-         has started firing on the sparked path — either the FRONTIER multi-field \
-         SROA lever landed (re-polarise this test to stack_slot>0) or an unsound \
-         relocation regressed in (investigate before flipping).\n{}",
-        out.stderr
-    );
 }
 
 // spec: design/backend/ownership-codegen.md §5.1 — shared reads outside one strand stay atomic; the F3
