@@ -1,5 +1,81 @@
 use super::*;
-use cranelisp_types::{FQSymbol, Scheme, Span, Symbol, Type, Visibility};
+use cranelisp_types::{
+    FQSymbol, ModuleAliases, Scheme, Span, Symbol, SymbolTable, Type, View, Visibility,
+};
+
+type SymbolTables = dashmap::DashMap<ModuleFullPath, SymbolTable>;
+
+/// Runs `f` with the pass a definition whose whole body is `expr` gets in
+/// module `m`, with no cluster declarations and no prelude.
+fn with_pass<R>(
+    tables: &SymbolTables,
+    m: &ModuleFullPath,
+    expr: &Expr,
+    f: impl FnOnce(&Pass<'_, '_, (), ()>) -> R,
+) -> R {
+    let aliases = ModuleAliases::default();
+    let table = tables.get(m).expect("module table");
+    let view = View::single(&table);
+    let scope = ResolutionScope::new(tables, &aliases, &view, m, None);
+    let declarations = ClusterDeclarations(HashSet::new());
+    let mut locals = HashSet::new();
+    collect_binders(expr, &mut locals);
+    let pass = Pass::new(&scope, &declarations, m, locals);
+    f(&pass)
+}
+
+fn transform_expr(expr: Expr, tables: &SymbolTables, m: &ModuleFullPath) -> Expr {
+    let probe = expr.clone();
+    with_pass(tables, m, &probe, |pass| pass.transform(expr))
+}
+
+fn classify_expr(expr: &Expr, tables: &SymbolTables, m: &ModuleFullPath) -> SchedulingClass {
+    with_pass(tables, m, expr, |pass| match pass.callee_of_call(expr) {
+        Callee::PlatformEffect { class, .. } => class,
+        _ => SchedulingClass::Sequential,
+    })
+}
+
+fn is_bind_chain_start(expr: &Expr, tables: &SymbolTables, m: &ModuleFullPath) -> bool {
+    with_pass(tables, m, expr, |pass| pass.starts_chain(expr))
+}
+
+fn is_bind_callee(expr: &Expr) -> bool {
+    matches!(expr, Expr::Var { name, .. } if name.as_ref() == "bind")
+}
+
+/// Installs the bootstrap `bind` and `sleep` in `primitives` and imports both
+/// bare into `user`.
+fn add_primitives(tables: &SymbolTables, user: &mut SymbolTable) {
+    let primitives = ModuleFullPath::from("primitives");
+    let mut table = SymbolTable::new(primitives.clone());
+    for name in ["bind", "sleep"] {
+        table
+            .install_host_promised(
+                Symbol::from(name),
+                Scheme {
+                    type_vars: vec![],
+                    constraints: std::collections::HashMap::new(),
+                    ty: Type::Int,
+                },
+                Vec::new(),
+                None,
+                0,
+                Visibility::Public,
+            )
+            .expect("primitive fixture installs");
+        user.expose_candidate(
+            Symbol::from(name),
+            FQSymbol {
+                module: primitives.clone(),
+                symbol: Symbol::from(name),
+            },
+            Visibility::Private,
+        )
+        .expect("primitive import fixture installs");
+    }
+    tables.insert(primitives, table);
+}
 
 fn make_var(name: &str) -> Expr {
     Expr::Var {
@@ -117,6 +193,7 @@ fn commutative_tables() -> (SymbolTables, ModuleFullPath) {
         )
         .expect("platform-effect import fixture installs");
     }
+    add_primitives(&tables, &mut user);
     tables.insert(user_mod.clone(), user);
 
     (tables, user_mod)
@@ -125,14 +202,16 @@ fn commutative_tables() -> (SymbolTables, ModuleFullPath) {
 // spec: 10-io §10.12.1 — pattern recognition
 #[test]
 fn test_is_bind_chain_start() {
+    let (tables, m) = commutative_tables();
     let expr = make_bind_expr(make_apply("get-time", vec![]), "t", make_int(0));
-    assert!(is_bind_chain_start(&expr));
+    assert!(is_bind_chain_start(&expr, &tables, &m));
 }
 
 #[test]
 fn test_non_bind_not_chain_start() {
+    let (tables, m) = commutative_tables();
     let expr = make_apply("foo", vec![make_int(1)]);
-    assert!(!is_bind_chain_start(&expr));
+    assert!(!is_bind_chain_start(&expr, &tables, &m));
 }
 
 // spec: 10-io §10.12.1 — chain collection
@@ -141,10 +220,12 @@ fn test_collect_two_step_chain() {
     // (bind (get-time) (fn [t1] (bind (get-time) (fn [t2] body))))
     let inner = make_bind_expr(make_apply("get-time", vec![]), "t2", make_int(42));
     let expr = make_bind_expr(make_apply("get-time", vec![]), "t1", inner);
-    let (chain, body) = collect_bind_chain(expr);
+    let (tables, m) = commutative_tables();
+    let probe = expr.clone();
+    let (chain, body) = with_pass(&tables, &m, &probe, |pass| pass.collect_chain(expr));
     assert_eq!(chain.len(), 2);
-    assert_eq!(chain[0].0.as_ref(), "t1");
-    assert_eq!(chain[1].0.as_ref(), "t2");
+    assert_eq!(chain[0].binder.as_ref(), "t1");
+    assert_eq!(chain[1].binder.as_ref(), "t2");
     assert!(matches!(body, Expr::IntLit { value: 42, .. }));
 }
 
@@ -326,33 +407,6 @@ fn test_empty_tables_no_transform() {
     assert!(!matches!(result, Expr::ParBind { .. }));
 }
 
-// spec: 10-io §10.12.1 — scheduling_of lookup
-#[test]
-fn test_scheduling_of_bare_name() {
-    let (tables, m) = commutative_tables();
-    assert_eq!(
-        scheduling_of(&tables, &m, "get-time"),
-        SchedulingClass::Commutative
-    );
-    assert_eq!(
-        scheduling_of(&tables, &m, "print"),
-        SchedulingClass::Sequential
-    );
-    assert_eq!(
-        scheduling_of(&tables, &m, "unknown"),
-        SchedulingClass::Sequential
-    );
-}
-
-#[test]
-fn test_scheduling_of_qualified_name() {
-    let (tables, m) = commutative_tables();
-    assert_eq!(
-        scheduling_of(&tables, &m, "platform.test/get-time"),
-        SchedulingClass::Commutative,
-    );
-}
-
 // spec: design/int/bind-chain-analysis.md §4 —
 // bind_chain_analysis reads scheduling_class from ModuleEntry::Def
 // (post-G8 migration: no PlatformRegistry).
@@ -425,7 +479,7 @@ fn test_mixed_chain_segments() {
     let Expr::Apply { callee, args, .. } = body.as_ref() else {
         panic!("expected sequential bind for c, got {body:?}");
     };
-    assert!(is_bind_var(callee), "c must be a sequential bind");
+    assert!(is_bind_callee(callee), "c must be a sequential bind");
     // Inside c's lambda body: d is a single eligible step → demoted to
     // sequential (1-element group), never a ParBind.
     let Expr::Lambda { body: c_body, .. } = &args[1] else {
@@ -484,6 +538,7 @@ fn bind_chain_analysis_reads_scheduling_class_from_entry() {
         Visibility::Private,
     )
     .expect("platform-effect import fixture installs");
+    add_primitives(&tables, &mut cst);
     tables.insert(m.clone(), cst);
 
     // Classify a direct call to `op` — must pick up the Commutative class
@@ -545,6 +600,7 @@ fn test_launch_emitted_for_discarded_resource_serial_result() {
         Visibility::Private,
     )
     .expect("platform-effect import fixture installs");
+    add_primitives(&tables, &mut cst);
     tables.insert(m.clone(), cst);
 
     // (bind (rd) (fn [r] 7)) — r discarded; rd is ResourceSerial.
@@ -649,22 +705,9 @@ fn fanout_tables() -> (SymbolTables, ModuleFullPath) {
         )
         .expect("platform-effect import fixture installs");
     }
-    // The `sleep` timer leaf — a `DefKind::PrimitiveExtern` (mirrors
-    // `bootstrap.rs`'s `sleep`). A resource-free timer: launch-eligible only as
-    // a sub-tree MEMBER (the §4.1 timer refinement), never the single-step root.
-    u.install_host_promised(
-        Symbol::from("sleep"),
-        Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: Type::Int,
-        },
-        Vec::new(),
-        None,
-        0,
-        Visibility::Public,
-    )
-    .expect("sleep primitive fixture installs");
+    // `sleep` is the timer leaf: launch-eligible only as a sub-tree member,
+    // never the single-step root.
+    add_primitives(&tables, &mut u);
     tables.insert(user_mod.clone(), u);
     (tables, user_mod)
 }
@@ -753,7 +796,7 @@ fn test_launch_subtree_discarded_value_local_resource_serial() {
     // The launched arm is the (transformed) handler sub-tree; the continuation
     // is the accept-loop recursion.
     assert!(
-        is_bind_chain_start(launched),
+        is_bind_chain_start(launched, &tables, &m),
         "launched arm must be the handler sub-tree"
     );
     assert!(
@@ -1065,7 +1108,7 @@ fn handler_subtree_with_sleep() -> Expr {
 // an effect position (opaque footprint ⇒ E3 refusal). Reshaped to a direct
 // `(sleep (slow-ms req))`, the timer is the §4.1 resource-free timer leaf and
 // the whole handler launches. design: effect-concurrency.md §4.1 (timer refinement).
-// RED-on-revert: reverting `is_sleep_timer_leaf` makes the sub-tree refuse (the
+// RED-on-revert: reverting the `Callee::Sleep` acceptance makes the sub-tree refuse (the
 // sleep effect position is neither ResourceSerial nor a recognised leaf).
 #[test]
 fn test_launch_subtree_with_inlined_sleep_timer_step() {
@@ -1084,7 +1127,7 @@ fn test_launch_subtree_with_inlined_sleep_timer_step() {
     // binds inside it — the inner sleep step must NOT be a nested LaunchContinue
     // (that would let `send` run before the delay, defeating it).
     assert!(
-        is_bind_chain_start(launched),
+        is_bind_chain_start(launched, &tables, &m),
         "the launched handler must be the read→sleep→send bind sub-tree, got {launched:?}"
     );
     let Expr::Apply { args, .. } = launched.as_ref() else {

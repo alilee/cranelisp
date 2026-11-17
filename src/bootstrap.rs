@@ -982,11 +982,32 @@ fn register_io_type(
 
 // --- Step 6: bind primitive (primitives) ---
 
+/// The canonical identity of the `bind` primitive installed below. The
+/// bind-chain pass recognises a chain step by resolving its callee to this
+/// identity (`design/int/bind-chain-analysis.md` §3.1).
+pub(crate) fn bind_primitive() -> FQSymbol {
+    FQSymbol {
+        module: ModuleFullPath::from("primitives"),
+        symbol: Symbol::from("bind"),
+    }
+}
+
+/// The canonical identity of the `sleep` timer leaf installed by
+/// `register_combinators`; the bind-chain pass's timer leaf
+/// (`design/int/bind-chain-analysis.md` §3.7).
+pub(crate) fn sleep_primitive() -> FQSymbol {
+    FQSymbol {
+        module: ModuleFullPath::from("primitives"),
+        symbol: Symbol::from("sleep"),
+    }
+}
+
 fn register_bind_primitive(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     next_id: &AtomicU32,
 ) -> Result<(), CranelispError> {
-    let primitives_path = ModuleFullPath::from("primitives");
+    let bind = bind_primitive();
+    let primitives_path = bind.module.clone();
     let a = fresh_type_id(next_id);
     let b = fresh_type_id(next_id);
     let io_fqtn = primitives_fqtn("IO");
@@ -1014,7 +1035,7 @@ fn register_bind_primitive(
     // externs).
     insert_primitive(
         &mut primitives,
-        "bind",
+        bind.symbol.as_ref(),
         bind_scheme,
         vec!["io", "f"],
         "Chain IO actions: extract value from first IO, pass to continuation",
@@ -1101,9 +1122,10 @@ fn register_combinators(
         constraints: HashMap::new(),
         ty: sleep_ty,
     };
+    let sleep = sleep_primitive();
     insert_primitive(
         &mut primitives,
-        "sleep",
+        sleep.symbol.as_ref(),
         sleep_scheme,
         vec!["d"],
         "Sleep for d milliseconds (a timer IO leaf): arms the reactor timer and resumes after the delay",
@@ -1727,6 +1749,28 @@ mod tests {
                 _ => panic!("Err should be a Constructor"),
             },
             other => panic!("Err should be a Def, got {other:?}"),
+        }
+    }
+
+    // spec: design/int/bind-chain-analysis.md §3.1 — the identities the
+    // bind-chain pass recognises name the host-promised entries this
+    // bootstrap installs.
+    #[test]
+    fn bind_chain_identities_name_installed_primitives() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
+        for identity in [bind_primitive(), sleep_primitive()] {
+            let table = tables
+                .get(&identity.module)
+                .expect("identity module mounted");
+            let callable = table
+                .get(identity.symbol.as_ref())
+                .and_then(|binding| binding.callable().cloned())
+                .unwrap_or_else(|| panic!("{identity} is not an installed callable"));
+            assert!(
+                matches!(callable.arm.life, Life::HostPromised),
+                "{identity} must be the host-promised primitive"
+            );
         }
     }
 

@@ -644,22 +644,26 @@ fn finalize_cluster(
 ) -> Result<ClusterOnce, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
-    // Automatic IO scheduling (spec §10.12, FIXME 0367): transform `bind!`-derived
-    // bind chains into `Expr::ParBind` nodes for data-independent, non-Sequential
-    // platform effects. Runs over the post-Pass-2 `final_working` (after macro
-    // expansion built the bind-chain shape), before typecheck sees the tree. This
-    // is the single mode-uniform seam — all three modes (`--run`/`--link`/REPL)
-    // flow through `process_cluster_once` → `finalize_cluster`.
-    //
-    // `CRANELISP_NO_IO_SCHEDULE` (presence-disables; default ON) is the escape
-    // hatch — checked ONCE here, not per-defn (§5c). Unit tests call
-    // `auto_schedule_defn` directly, bypassing this gate.
-    if std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err() {
-        crate::session_setup::apply_bind_chain_analysis(
-            &mut final_working,
+    // Automatic IO scheduling (spec §10.12; design/int/bind-chain-analysis.md
+    // §5.1): the single mode-uniform seam, after expansion and before
+    // typecheck. The pass resolves callees through the committed scope macro
+    // recognition uses; the table guard is released before typecheck commits.
+    // A module with no committed table is left unscheduled, which is sound.
+    // `CRANELISP_NO_IO_SCHEDULE` (presence disables) is read once here (§5.5).
+    if std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err()
+        && let Some(table) = crate::expander::committed_view(ctx.symbol_tables, module)
+    {
+        let view = cranelisp_types::View::single(&table);
+        let prelude = ModuleFullPath::from(crate::expander::PRELUDE_MODULE);
+        let scope = crate::expander::committed_scope(
             ctx.symbol_tables,
+            ctx.module_aliases,
+            ctx.prelude_fallback,
             module,
+            &view,
+            &prelude,
         );
+        crate::session_setup::apply_bind_chain_analysis(&mut final_working, &scope, module);
     }
 
     // FIXME 0650 §2.1 (macro-diagnostic-reanchoring.md) — the finalize/typecheck
