@@ -2151,7 +2151,7 @@ one record.
   | Live turn: the staged introspection record, the turn receipt and the definition result | the turn's built `impl` | the staging table's record, which typecheck upserts on success | REPL turn, fresh file load, whole-file rebuild on reload |
   | Rehydration (`save.rs::rehydrate_introspection_from_source`) | the backing file's `impl` forms, built as today | the table's persisted records, which carry the label | cache restore, fresh declaration load |
   | Regeneration (`save.rs::generate_impls`) | — | the module's records, enumerated | every path |
-  | Definition echo and impl lookup (`repl/format.rs`) | — | the record named by the result's identity | every path |
+  | Definition echo and impl lookup (`src/repl/format.rs`) | — | the record named by the result's identity | every path |
 
   The rebuild prologue and the redefinition gate already key records by
   `trait_impl_key` over the settled pair, and they do not change.
@@ -2409,16 +2409,48 @@ Step that runs compiled code (REPL expression turn, /run-tests, /run-all-tests;
       an outstanding load is outside this wait, and a pool worker cannot use
       it without claiming loads itself. Trigger: an aborted expansion or a
       crash in a clause that calls into another restored module.
-    - *Claim and re-registration.* A claim is not bound to the registration
-      it was granted for. Import turns do not wait for cached loads, so a
-      watcher reload can re-register a restored module while a pool
-      worker's claim is still loading it. The stale load keeps storing GOT
-      slots and publishing code owners into the live table, and its loaded
-      completion marks the fresh registration in memory, so an in-memory
-      wait covering that module can return before its fresh code is
-      compiled. This predates RR-1. Falsifier: edit a restored module's
-      source while its cached load is outstanding, then call into it, and
-      observe the pre-edit body or a signal.
+    - *Claim and re-registration* moved out of this list: it is designed
+      below (*A claim ends inside its registration*).
+- **A claim ends inside its registration (S124, ACT-0994; not in source at
+  `4b58ab93`).** Import turns do not wait for cached loads, so today a watcher
+  reload can re-register a restored module while a pool worker's claim is
+  still loading it. The stale load then stores GOT slots and publishes code
+  owners into the table the reload's prologue has just installed, and its
+  loaded completion marks the fresh registration in memory, so an in-memory
+  wait covering that module can return before its fresh code is compiled.
+  Not observed; it predates RR-1. Two rules close it, one per face:
+  - *A reload waits out the cached load.* A module is settled for a reload
+    only when no worker is mid-pass on it and its cached load is not held,
+    claimable or claimed, the classification the execution wait reads
+    (*Load before execution*). Every reload prologue already begins with the
+    one settle wait, so the condition is added there and nowhere else. After
+    the wait the load has ended or never existed, and nothing makes it
+    claimable again short of a new cached registration, which an existing
+    module never receives. No stale load can therefore reach the fresh
+    table. The wait is bounded as the claim's is, and holds no table guard
+    or check-state lock, because the load takes them.
+  - *A loaded completion acts only while the module is still claimed*, as a
+    failure completion already does. A re-registration leaves the module
+    with no cached load, so a completion arriving after one changes nothing:
+    the fresh registration is not marked in memory and its reservations are
+    untouched. This binds the completion to its registration without a
+    registration counter, because a module re-enters *claimed* only from a
+    cached registration of an unregistered module. It also covers any
+    re-registration path that a future change adds without the settle wait.
+  - *Rejected:* stamping each claim with a registration generation and
+    discarding a stale completion. It closes the completion face only; the
+    stale load's publication into the fresh table would remain.
+  - *Evidence, with `dev`(`src/`), at the scheduler module tier* (the window
+    is one worker's in-flight load, which a process test cannot hold open;
+    [S124 evidence delta §4.2](../../tests/plan/s124-evidence-delta.md#42-act-0994--no-public-reproduction)).
+    (1) Register a module from cache, release its hold, take its claim,
+    re-register it, complete the claim as loaded: the fresh registration is
+    not in memory and its typecheck work stays queued. RED today, which
+    marks it in memory. (2) With a claim outstanding the settle wait does
+    not return; it returns once the claim completes. Today it returns at
+    once. Negative legs: a fresh registration and a module whose load has
+    ended settle at once. Neither row shows that a real session reaches the
+    window.
 - **Fresh dependency of a restored module (open residual).** When the walk
   registers a dependency fresh because its cache entry misses, that
   dependency's table need not exist when the hold releases. `M`'s load can then
@@ -3748,6 +3780,18 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     produces it as row D12's `BatchError::MissingMain`, and `src/main.rs`
     renders it as the formatter's line without a position, keeping the
     `module error` category.
+  - *A trait-method or multi-arity `main` (ruled 2026-11-17, spec §10.6):*
+    [io-integration §1](io-integration.md#1-running-a-program). The gate
+    already gives both the required outcome: a trait method never binds the
+    entry table's `main`, so it takes the "no `main`" refusal; a
+    multi-arity `main` is not a single callable, so it takes the located
+    refusal of ACT-1036. No further change.
+  - *A cached load across re-registration (ACT-0994):*
+    [§7.1](#71-cache-hit-flow-inside-register_module), *A claim ends inside
+    its registration*. The reload's settle wait also waits out the module's
+    cached load, and a loaded completion acts only while its module is still
+    claimed. Private to `src/`; the scheduler module rows carry the
+    evidence.
   - *An inline primitive as a value (ACT-1063): no correction belongs to
     this surface* (read 2026-11-17). Typecheck accepts `(let [b bind] …)`
     and records the value reference: the backend passes its arity and

@@ -16,7 +16,7 @@ contract is `design/arch/platform-interface.md`.
   - `cranelisp_run_io` is the catalog's `runtime/run_io` import, not a host
     entry.
 - **`main`.** Before running, `exe::validate_main` requires `main` to be
-  `(Fn [] (IO _))` (`spec/10-io.md` §10.6.1). It also refuses an unresolved
+  an ordinary function of type `(Fn [] (IO _))` (`spec/10-io.md` §10.6). It also refuses an unresolved
   return-type-polymorphic dispatch in `main`'s body. `--run` and `--link`
   share this gate. A missing entry source file must not reach it: batch entry
   registration refuses that first ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
@@ -36,7 +36,7 @@ contract is `design/arch/platform-interface.md`.
       `defmacro`, carries the expansion's synthetic span on its
       `DefnVariant` and on its macro form (`(mk main)` with
       `(defmacro mk [n] `(defn ~n [x] …))` renders at `1:1`, `0..0`). REPL
-      §5.5 requires the triggering user form there. An overloaded `main` has
+      §5.5 requires the triggering user form there. A multi-arity `main` has
       no single definition span either. A types-owned declaration span would
       be a public-API row; the root already holds the fact, so none is
       needed.
@@ -61,16 +61,21 @@ contract is `design/arch/platform-interface.md`.
       the span with it; the located-refusal cells are its falsifier.
   - **A `main` that is not a function.** The entry binds `main` to a
     declaration that is not a single callable: a macro (`defmacro`, or
-    `def`/`const`) or an overloaded definition. It takes the located
+    `def`/`const`) or a multi-arity definition. It takes the located
     refusal above. Nothing else is needed for it.
-    - *Not read to a cause.* An entry whose only `main` is a trait method
-      is answered "no `main`" by the gate today (probed 2026-11-17), although
-      typecheck resolves a bare `main` to the method. It therefore takes
-      the unlocated refusal. Whether a trait method named `main` counts as
-      defining `main` for §10.6 is a spec reading this design does not
-      decide; *trigger:* a ruling that it does makes it a located refusal,
-      and then the form processor must attribute trait methods to their
-      `deftrait` form, which it does not do today.
+    - *Multi-arity `main`.* `(defn main ([] …) ([x] …))` is refused although
+      one arm takes no argument (`spec/10-io.md` §10.6). The gate refuses it
+      for its shape, never by selecting the zero-argument arm, and locates it
+      at the written `defn` form's line. It renders today's category for this
+      refusal, `codegen error`, which the spec does not fix.
+  - **A trait method named `main` is not `main`** (`spec/10-io.md` §10.6). The
+    gate reads only the entry table's `main` binding. A trait method's
+    binding lives under its canonical name, and the bare `main` holds only a
+    name candidate that lets typecheck resolve a bare `main` to the method.
+    An entry whose only `main` is a trait method is therefore an entry with
+    no `main` and takes the unlocated refusal below (row D12). It needs no
+    trait-method attribution and no separate check; `qa`'s T-Q9-a is the
+    falsifier, and T-Q9-b the multi-arity one.
   - **An entry with no `main` (S124-Q8, ruled B; row D12).** REPL §5.5's
     missing-`main` exception applies: the refusal names the entry file and
     the missing `main`, and carries no form span. That means no line and

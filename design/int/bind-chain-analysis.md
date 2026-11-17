@@ -98,10 +98,15 @@ leaves the application as the user wrote it, which is sound (§1).
   layer 3 would miss it and could fall back to the prelude's `bind`. The
   falsifier is a module that imports a user `bind` and whose prelude exports
   the primitive, compiled in one cluster: the user's function must run.
-- **No import is uncommitted because of a cycle.** Spec §8.10.2 refuses
-  every module cycle before any body is analysed, and §8.10.3 compiles each
-  dependency before its importer, so the falsifier above covers every
-  imported name the pass reads.
+- **No import is uncommitted because of a cycle.** An imported module is
+  compiled before its importer (spec §8.10.3), and a cycle among modules
+  still loading is refused at the import that closes it
+  ([int §6.2](int.md#62-cluster-orchestration)), before the importer's
+  cluster finalises. A cycle closed against modules already loaded imports
+  only committed names, and its generation is refused at publication
+  ([int §6.11](int.md#611-module-cycles-at-publication)), so the pass's
+  output is discarded. The falsifier above therefore covers every imported
+  name the pass reads, and no cycle case needs a cell of its own.
 
 Rejected alternatives:
 
