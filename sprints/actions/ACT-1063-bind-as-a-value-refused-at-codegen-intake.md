@@ -70,7 +70,7 @@ No prelude, `(import [primitives [*]])`, `--run`.
 ## Request
 
 - `test` commits REPRO-1063
-  ([evidence delta §3.9](../../tests/plan/s124-evidence-delta.md#39-repro-1063--an-inline-primitive-as-a-value))
+  ([evidence delta §3.9](../../tests/plan/s124-evidence-delta.md#39-repro-1063--a-host-promised-primitive-as-a-value))
   in the S124 evidence wave.
 - The correction is in S124's scope by the user's 2026-11-17 decision, as
   backend row B12. It stays there: the correction is one surface, so the

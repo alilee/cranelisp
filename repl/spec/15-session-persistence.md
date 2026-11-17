@@ -80,7 +80,7 @@ This design unifies interactive and file-based development:
 - File watching (§14) applies uniformly — external edits to the backing file MUST be picked up by the watcher and recompiled. An edit that changes the structure of a live nominal type takes effect at restart, not by reload (§14.8).
 - The object cache (§14.7) accelerates both imported modules and the user's own work.
 
-### 15.4 Regeneration Integrity [Uncovered S122 — partial: rule 1 is tested, rule 6 only for rule 1, and rules 2–4 have no cell; rules 2 and 4 are a known nonconformance (ACT-1005); see the rows]
+### 15.4 Regeneration Integrity [Uncovered S122 — partial: rule 1 is tested for single-signature functions, types, traits, impls and macros and is a known nonconformance for a multi-signature function, which regeneration omits (ACT-1068; tests/repl_persist::s124_overload_definition_survives_restart_partial RED); rule 6 only for rule 1, and rules 2–4 have no cell; rules 2 and 4 are a known nonconformance (ACT-1005); see the rows]
 
 The regenerated source file MUST satisfy the following invariants:
 

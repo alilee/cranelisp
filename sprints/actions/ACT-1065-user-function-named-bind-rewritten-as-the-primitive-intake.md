@@ -102,7 +102,7 @@ with `then` in all three places, 106.
 ## Request
 
 - `test` commits REPRO-1065
-  ([evidence delta §3.8](../../tests/plan/s124-evidence-delta.md#38-repro-1065--a-user-function-named-bind))
+  ([evidence delta §3.8](../../tests/plan/s124-evidence-delta.md#38-repro-1065--the-bind-chain-pass-identifies-callees-by-spelling))
   in the S124 evidence wave.
 - The correction is in S124's scope by the user's 2026-11-17 decision. It
   is designed in

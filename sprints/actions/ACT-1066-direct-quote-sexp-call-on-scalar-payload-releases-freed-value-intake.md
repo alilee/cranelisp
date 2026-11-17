@@ -57,7 +57,7 @@ re-ran it at `4b58ab93`.
 | The two filed controls (`SexpStr` operand; the function-value route) | `stack_slot=0`: neither operand is stack-placed |
 
 - **Mechanism, confirmed by a control differing only in placement.**
-  `marshal.rs::quote_sexp` builds a fresh result and releases its operand.
+  `crates/cranelisp-primitives/src/marshal.rs::quote_sexp` builds a fresh result and releases its operand.
   The operand is stack-placed, so that release reaches
   `drop.rs::atomic_dec_rc`, whose debug-build assertion requires a tracked
   live allocation. A stack slot is never tracked. The immortal header

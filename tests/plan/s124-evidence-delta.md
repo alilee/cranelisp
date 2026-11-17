@@ -16,16 +16,16 @@
 > `repl/spec/05-error-presentation.md` §5.1 and §5.5; `repl/spec/14-file-watching.md`
 > §14.2; `repl/spec/15-session-persistence.md` §15.4;
 > `repl/spec/16-test-discovery.md` §16.1 and §16.6.
-> **Checkpoint:** `main` at `4b58ab93`, `target/debug/cranelisp` built from
-> it. The specifications and designs it is read against are the uncommitted
-> Phase 3 tree of 2026-11-17; no source file has changed.
+> **Checkpoint:** `main` at `4b58ab93` for sections 1 to 13, and `main` at
+> `2c690be5` for section 14, the acceptance of the evidence wave. No
+> compiler source changed between the two.
 > **Scope:** §1 to §7 are intake, attribution and the reproductions that do
 > not depend on the S124 designs. §8 to §13 are the conditions for the S124
-> corrections and the Phase 3 readiness judgment.
-> **Held:** nothing waits on a ruling that has been made. One question is
-> open with the user, whether a second, type-size limit is admitted, and it
-> holds F-PR-3 alone. One reading of spec §3.10's counting unit is returned
-> to `spec` and holds T-DEPTH-c. §10 states both.
+> corrections and the Phase 3 readiness judgment. §14 is the standing state
+> of the evidence: what is accepted, what is returned to `test`, and what
+> each correction wave still owes.
+> **Held:** nothing. F-PR-3 is not written, by the user's ruling. §10 states
+> one question queued for the user; it holds no cell.
 
 Condition identifiers are local to this record. Every observation below was
 made by `qa` in scratch directories outside the repository unless a row says
@@ -70,7 +70,10 @@ Each cell's definitions were run in six shapes. "Refused" is
 
 - Rows with the same cluster structure agree across the REPL and `--run`:
   rows 2, 3 and 4, and rows 5 and 6.
-- A3 fails exactly when `k7` is in the caller's cluster. C3 fails exactly
+- A3 fails exactly when the cluster that defines `k7` also holds the root
+  that demands the instance. With the definitions in one `begin` and the
+  call in a later turn it yields 7 (observed at `2c690be5`); with a caller
+  or the call itself inside the `begin` it is refused. C3 fails exactly
   when `twice` was published by an earlier cluster.
 - This refutes the reading that part of the fault is in how `src/` drives
   instance minting per mode. [Principle 11](../../design/arch/principles/11-single-pipeline-mode-parameters.md)
@@ -117,7 +120,7 @@ shape, so a correction of one publication state could pass them.
 
 | ID | Condition | Wrong implementation it rejects | Now |
 |---|---|---|---|
-| T-1034-a | A3 yields 7 with its definitions in one `(begin …)` at the REPL, and with `k7` and the impl in an imported module under `--run` and `--link` | Demand derived only from templates the table already holds | RED in the `begin` leg, GREEN in the imported leg |
+| T-1034-a | A3 yields 7 with its definitions **and the call `(size (Yep 3))`** in one `(begin …)` at the REPL, and with `k7` and the impl in an imported module under `--run` and `--link` | Demand derived only from templates the table already holds | RED in the `begin` leg (`undefined function: k7`), GREEN in the imported leg. Control, green today: the same `begin` without the call, and the call in the next turn |
 | T-1034-b | C3 yields 8 with `twice` and the impls in an imported module, in the REPL and under `--run` and `--link` | Demand derived only for same-cluster callers | RED |
 | T-1034-c | A1 yields 5 with its definitions in an imported module, in every mode | A correction keyed on the caller's own module | RED |
 | T-1034-d | A method that recurses at its own instantiation: `(impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))` over `(deftype (L a) LNil (LCons [:a h :(L a) t]))` yields 2 for a two-element list, in every mode | A chain that refuses or re-mints its own key | RED: `undefined function: Len.len$p/L`, `--run` and the REPL |
@@ -157,6 +160,7 @@ passes today. All land in the S124 evidence wave. Ranked by harm.
 
 | Rank | ID | One line | Filing | Correction |
 |---|---|---|---|---|
+| 1 | REPRO-1068 | Regeneration omits every multi-signature function, deleting it from the user's file | ACT-1068 | Not scheduled: `sprint` |
 | 1 | REPRO-1064 | Regeneration deletes one of two impls for same-named types; the next session crashes | ACT-1064 | S124, row D10 |
 | 2 | REPRO-1066 | A direct `quote-sexp` call on a scalar-payload `Sexp` aborts the debug build | ACT-1066 | S124, row D5 (backend B1), with ACT-1049 |
 | 2 | REPRO-1063-p | A partial application of `bind` aborts the process in every mode | ACT-1063 | S124, backend row B12 |
@@ -247,8 +251,9 @@ a process abort or a wrong value and follow REPRO-1064 in the order listed.
 - **Wrong implementation rejected.** A scheduling pass that enumerates
   single-signature definitions only.
 - **Variants.** The chain in the two-parameter clause is serial too (619 ms).
-  A single-signature impl method overlaps (315 ms). `test` adds the
-  multi-signature impl-method twin if §7 admits the form.
+  A single-signature impl method overlaps (315 ms). Spec §7.3's grammar
+  gives a method one parameter vector and one body, so there is no
+  multi-signature impl-method twin.
 - **File and trace.** `tests/spec_10_io.rs`, `// spec: spec/10-io.md §10.12.1`,
   `class=enumeration-miss`, `locus=src/bind_chain_analysis.rs::auto_schedule_defn`
   (its caller's multi-signature guard), `found=S124`, `owner=/dev`.
@@ -711,12 +716,42 @@ nested `n` deep, generated by the cell.
   controls).
 - **File and trace.** `tests/regression.rs`, `// spec: spec/02-grammar.md §2.3`,
   `locus` provisional (the stage was not observed), `found=S124`,
-  `owner=/dev`. The vocabulary has no class for recursion depth that follows
-  input depth against a fixed stack; the cell is not tagged until `sprint`
-  authorises that addition (§6).
+  `owner=/dev`, `class=input-depth-stack-exhaustion`.
 - **Limit.** One run per leg; the debug threshold lies between 52 and 56 and
   the release build's between 64 and 200. `--link` and the REPL were not
   probed.
+
+### 3.12 REPRO-1068 — a multi-signature function is omitted from regeneration
+
+Observations and attribution: [ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md).
+No prelude; `(import [primitives [*]])`. `F` is
+`(defn f ([:Int n] n) ([:String s] (str-len s)))` and `G` is
+`(defn g ([n] n) ([a b] (add-i64 a b)))`.
+
+| Leg | Session | Required | Observed |
+|---|---|---|---|
+| Subject, entered | `F`, `(f 7)`; end the session; restart | the file holds `F`; restart: `(f 7)` is 7 and `(f "ab")` is 2 | the file holds the `import` only; restart: `undefined variable: f` |
+| Subject, entered, by arity | `G` in place of `F` | the file holds `G`; restart: `(g 7)` is 7 and `(g 1 2)` is 3 | the file holds the `import` only |
+| Subject, file-loaded | the entry file holds `F`; `(defn extra [] 5)` at the REPL | the file holds `F` and `extra` | `F` is deleted |
+| Subject, another module | `m.cl` holds `G`; `/mod m`, `(defn extra [] 5)` | `m.cl` holds `G` and `extra` | `G` is deleted |
+| Control | `(defn f [:Int n] n)` in place of `F`, entered and file-loaded | the file holds it; restart: 7 | as required |
+
+- **Requirement.** REPL §15.4 rule 1.
+- **Wrong implementations rejected.** A function section that writes
+  single-signature definitions only; one that writes the family for an
+  entered definition and loses a file-loaded one, or the reverse; one that
+  writes one clause of the family (both restart values are asserted).
+- **Assertion.** The form's presence in the file, the restart values, and no
+  `[errors:` line.
+- **File and trace.** `tests/repl_persist.rs`,
+  `// spec: repl/spec/15-session-persistence.md §15.4`,
+  `class=enumeration-miss`, `locus=src/save.rs` function-section
+  enumeration, `found=S124`, `owner=/dev`.
+- **Landed:** the first subject and a control, as
+  `s124_overload_definition_survives_restart_partial`. The other legs, the
+  class and the name are returned to `test` (§14.3).
+- **Limit.** A redefined family, a family inside a `begin` and a family a
+  macro produced were not probed.
 
 ## 4. Carried items that get no reproduction
 
@@ -737,7 +772,7 @@ nested `n` deep, generated by the cell.
   with the trampoline's `unknown IO tag` panic if the pass ever admits a
   non-leaf step. Class: safety fence for the exclusion.
   `// spec: spec/10-io.md §10.12.1`.
-- The intake is resolved.
+- The intake is resolved and deleted: F-0975 is committed and passes.
 - **One program does reach a non-leaf step:** a local named like a
   platform function (REPRO-1065-e, §3.8). Its cause is the pass's
   spelling lookup, not this exclusion, and it goes with ACT-1065.
@@ -769,8 +804,8 @@ nested `n` deep, generated by the cell.
   heap-payload programs with their scalar controls, `CRANELISP_RC_TRACE=1`
   and `CRANELISP_RC_DEC_CHECK=1`, no prelude, in every mode; allocations
   equal frees and are greater than the control's.
-  `// spec: spec/10-io.md §10.12.9` item 4. The filing closes when it
-  passes.
+  `// spec: spec/10-io.md §10.12.9` item 4. It is committed and passes in
+  every mode; the filing is deleted.
 
 ### 4.4 FIXME 0915 — prefix and subject faces
 
@@ -863,7 +898,7 @@ lead, not of the row.
 | ACT-1066 exits 5 with `CRANELISP_NO_STACK_ALLOC=1` (coordinator probe) | **Confirmed and re-attributed:** ACT-1049's mechanism at the drop-glue assertion. Not memory-unsafe | §3.10; ACT-1066 |
 | A macro-produced `main` with the wrong shape; `(defmacro main [] …)` (`qa`, earlier) | **Both constructible in core forms, both RED today at `1:1` and `0..0`.** Legs of ACT-1036 | REPRO-0915-loc, §3.4 |
 | A trait method named `main` (`spec`, S124-Q9) | **Ruled: it does not define `main`.** Today: `entry module has no 'main' function` at `1:1` and `0..0`, so the cell is RED on T-Q8's clauses | T-Q9-a, §9.6 |
-| Found in passing | A re-entry whose type doubles at each step is non-terminating with keys of exponential size. `design`(typecheck) confirms by analysis that the depth limit is reached only after types of about 2^64 nodes | F-PR-3, held: §10 |
+| Found in passing | A re-entry whose type doubles at each step is non-terminating with keys of exponential size. `design`(typecheck) confirms by analysis that the depth limit is reached only after types of about 2^64 nodes | No cell: an accepted risk, §10 |
 
 ### 5.7 Leads from the closing pass (2026-11-17)
 
@@ -871,9 +906,9 @@ lead, not of the row.
 |---|---|---|
 | The depth limit is ruled (user) | **Allocated at the solution tier:** the floor, and the design's constant as its twin | T-DEPTH-a and T-DEPTH-b, §9.1 |
 | S124-Q9 is ruled "no", with the multi-arity consequence (user) | **Allocated.** Both programs are refused today at `1:1` and `0..0` | T-Q9-a and T-Q9-b, §9.6 |
-| The doubling shape is not refused in bounded time (`design`(typecheck), analysis) | **Held, whole cell.** After T4 its subject would exhaust memory in the suite, not fail an assertion | F-PR-3, §10 |
+| The doubling shape is not refused in bounded time (`design`(typecheck), analysis) | **Not written.** After T4 its subject would exhaust memory in the suite, not fail an assertion; the user accepted the risk | §10 |
 | Found in passing | A constructor expression nested 64 deep aborts the compiler before any instantiation: a new defect, and a fixture constraint for the depth cells | REPRO-1067, §3.11; ACT-1067 |
-| Found by reading | The design counts implementation-method instances; spec §3.10 counts implementation instantiations. Two members that call each other reach 65 method instances at a type nested 33 deep | T-DEPTH-c, held: §10; §6 |
+| Found by reading | The design counts implementation-method instances; spec §3.10 counts implementation instantiations. Two members that call each other reach 65 method instances at a type nested 33 deep. **Settled:** the design now counts spec's unit | T-DEPTH-c, §9.1 |
 | Found by reading | No committed cell rejects polymorphic recursion in a function; the fold canary evidences only the accepting direction | T-FR, §9.1; §11 |
 | Found by reading | `repl_negative::type_error_arg_mismatch` asserts a category and no location, so it never evidenced REPL §5.1 item 2 | §11 |
 
@@ -881,14 +916,13 @@ lead, not of the row.
 
 | To | What |
 |---|---|
-| `test`, evidence wave | In this order: REPRO-1062 (§9.1); §3 in rank order; §2.3; T-D7 and T-D7-b; T-1050-a; T-1038-a and T-1038-b; §9.5; §9.6, with T-Q9-a and T-Q9-b; T-Q7-a to T-Q7-d; F-PR and F-PR-2; T-DEPTH-a and T-DEPTH-b; T-FR; F-0975 and F-0934. X-D5 and X-D7 land in their corrections' change-sets; T-1065-d, T-1063-b and F-PR-4 when they become constructible. **Completion:** each RED fails on its stated assertion and not on setup, each control and fence passes, and the returned clause map names the leg for every row. Nothing in §10's "Held" column is written: F-PR-3 and T-DEPTH-c. |
-| `dev`, per surface | The module rows: CEN-1, CEN-2, M-1062, M-1050, M-1052, M-P15, M-FE, M-1038, M-LAY, M-1061, M-1063, the §2.3 and §3.5 unit rows, and the C8 rows of §3.8. Each is RED before its correction or carries both detection legs. |
-| `design`(typecheck), `dev`(typecheck) | (1) §2.2: confirm the two sites; unit rows with the correction. T-1034-d shows a third: the instance is published and the site inside it is not redirected. (2) The counting unit. [Monomorphisation §3.10.3](../../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch) counts implementation-method instances, and spec §3.10 limits a chain of implementation instantiations. They agree for one member. For two members that call each other at each level, a type nested 33 deep puts 66 method instances on the chain, so the design refuses a chain of 33 implementation instantiations, below the floor of 64. A reading of the design, not an observation: confirm or refute it, and say which unit the constant counts (T-DEPTH-c, §10). (3) A lead, not observed: the mint recurses once per chain element on the compile worker's stack, and that stack is exhausted today by a source expression about 56 forms deep in the debug build (ACT-1067). T-DEPTH-a is the falsifier of "a chain of 64 mints fits"; `dev`'s boundary row 6 should run on a worker-sized stack. |
-| `design`(int) | (1) The peer-cycle assertion in [bind-chain analysis §3.1](../../design/int/bind-chain-analysis.md#31-pattern-recognition) names a falsifier no legal program can construct (§3.8): strike the paragraph, or name an observation at the module tier. (2) With `dev`(`src/`): the §4.2 module test when the binding is decided. |
-| `design`(backend) | [Compile-to-module §12.1](../../design/backend/compile-to-module.md#121-host-promised-primitives-as-values-act-1063-s124), extent: a partial `bind` does not fail at finalisation; it links and aborts at run time (§3.9). `quote-sexp` is not in the family. |
+| `test` | The evidence wave is delivered and accepted (§14). What remains is §14.3, in the wave each item names. **Completion, unchanged:** each RED fails on its stated assertion and not on setup, each control and fence passes, and the returned clause map names the leg for every row. F-PR-3 is never written. |
+| `dev`, per surface | The module rows: CEN-1, CEN-2, M-1062, M-1050, M-1052, M-P15, M-FE, M-1038, M-LAY, M-1061, M-1063, the §2.3 and §3.5 unit rows, and the C8 rows of §3.8. Each is RED before its correction or carries both detection legs. The cells each wave must turn green, and the ones it must not disturb, are §14.2. A RED that stays RED on its correction's tree returns to `qa` unchanged; the cell is not adjusted. |
+| `design`(typecheck), `dev`(typecheck) | (1) §2.2: confirm the two sites; unit rows with the correction. T-1034-d shows a third: the instance is published and the site inside it is not redirected. T-Q7-c's REPL leg shows the dispatch hop from a free-function instance that an earlier cluster published (§9.1). (2) The counting unit is settled as the implementation instantiation ([monomorphisation §3.10.3](../../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch)); T-DEPTH-c is its cell. (3) A lead, not observed: the mint recurses once per chain element on the compile worker's stack, and that stack is exhausted today by a source expression about 56 forms deep in the debug build (ACT-1067). T-DEPTH-a and T-DEPTH-c are the falsifiers of "the deepest admitted chain fits"; `dev`'s boundary row 6 should run on a worker-sized stack. (4) `CRANELISP_OWNERSHIP_TRACE` prints no summary for a member of a multi-signature family. No cell depends on it (§9.4); it is recorded as a gap in a diagnostic observer. |
+| `design`(int) | (1) [ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md): place the correction once it is scheduled, and say whether `section_entry_claimed_or_excluded` is repaired or removed. (2) With `dev`(`src/`): the §4.2 module test when ACT-0994 is scheduled. |
 | `dev`(`src/`) | ACT-1060. |
-| `sprint` | (1) ACT-1066 needs no scheduling decision: it closes with row D5, already in scope. (2) ACT-1067 needs one: its correction is in no S124 row. Its reproduction lands with the evidence wave either way. (3) Authorise one further vocabulary class in `tests/AGENTS.md`, for REPRO-1067; the cell is not tagged until it exists. (4) Ask `test` to list this file in `tests/AGENTS.md` with W0; `standing-documents.toml` already names it. (5) The type-size question (§10) is with the user. (6) `tests/plan/spec_coverage_reconcile.py` counts a cleared row only when its tag has a "was" clause, so a new obligation tagged `[Uncovered S124]` alone is outside the close gate (§11). The repair is `qa`'s, with its detection test, and needs a pass that may run it. |
-| `spec` | (1) [Appendix D](../../spec/appendix-d-open-questions.md), S124-Q7: the "counting-unit gap — unresolved" paragraph describes a per-template recurrence count the design no longer uses. The remaining gap is narrower: method instances against implementation instantiations (§10). (2) Three places where spec §3.10 and §10.6 leave the observation open: §10's list. (3) Whether the language limits the nesting depth of a source expression (ACT-1067), for the user. |
+| `sprint` | (1) ACT-1068 needs a scheduling decision from the user: its correction is in no S124 row and it loses user data. (2) W2 needs a `test` step inside it: X-D5 and T-D5 (§9.4) land in B1's change-set. (3) The overload leg of T-D7-b is a residual that needs the user's approval (§9.4). (4) The document gate fails on 600 findings, 577 of them ignored-path; their disposal is with the user, and until it is decided no claim rests on that gate. (5) `tests/plan/spec_coverage_reconcile.py` counts a cleared row only when its tag has a "was" clause, so a new obligation tagged `[Uncovered S124]` alone is outside the close gate (§11). The repair is `qa`'s, with its detection test, and needs a pass that may run it. (6) Two questions are queued for the user and hold no cell (§10). (7) ACT-1066 closes with row D5; ACT-1067 is carried with its reproduction RED. |
+| `spec` | (1) [Appendix D](../../spec/appendix-d-open-questions.md), S124-Q7: the "counting-unit gap — unresolved" paragraph is stale at `2c690be5`. The design counts implementation instantiations, as spec §3.10 states; the remaining question is the method-level re-entry (§10). (2) Three places where spec §3.10 and §10.6 leave the observation open: §10's list. (3) Whether the language limits the nesting depth of a source expression (ACT-1067), for the user. |
 
 ## 7. What was run, and limits
 
@@ -1054,16 +1088,17 @@ correction.
 | T-1034 | §2.3 | A, e2e | §2.3 | §2.3 |
 | T-Q7-a | **Spec §3.10, S124-Q7 (B): direct re-entry at another instantiation is an ordinary dispatch.** Fixture Q7 below. Legs, each yielding 7: `(size (pick 0))` at `(Opt Int)`; `(size (pb 0))` at `(Opt Bool)`, so the re-entry's `(Opt Int)` is demanded by no root; `(size (none2 0))` at `(Opt (Opt Int))`, a shrinking re-entry; and the body variant `(size (Yep (Yep 7)))` reached from `(Opt Int)`, which grows once and settles. `--run`, `--link` and the REPL | A, e2e | The re-entry redirected to the enclosing instance (the `(Opt Bool)` leg then yields 1); a chain that refuses a re-entry no smaller than its predecessor (the grows-once leg); a body judgment that refuses the `impl` | RED today: each is refused with `undefined function: Size.size$…/Opt`. Green with T4. Control, green today: the same `impl` with a `main` that never calls it exits 5, and the REPL accepts the `impl` turn |
 | T-Q7-b | The same for a sibling member: `describe` as `(add-i64 4 (size (Yep 0)))` in `(impl Cont (Opt a) …)` yields 5 for `(describe (Yep "s"))`, every mode | A, e2e | A dispatch hop written for the enclosing method only, or for the enclosing instantiation only (T-1034-e passes under it) | RED today: `undefined function: Cont.size$…/Opt`. Control, green today: the same members in an impl for a type with no parameters |
-| T-Q7-c | Re-entry through a constrained helper: `(defn wsize [:Size x] (size x))`, with fixture Q7's `Nope` arm as `(wsize (Yep 7))`; `(size (pick 0))` yields 7, every mode | A, e2e | A refusal of helper-mediated re-entry as polymorphic recursion; a chain that refuses a constant re-entry | Green on arrival under `--run` (exit 7); `test` reports any mode that differs. Stays green after T4 |
+| T-Q7-c | Re-entry through a constrained helper: `(defn wsize [:Size x] (size x))`, with fixture Q7's `Nope` arm as `(wsize (Yep 7))`; `(size (pick 0))` yields 7, every mode | A, e2e | A refusal of helper-mediated re-entry as polymorphic recursion; a chain that refuses a constant re-entry | Green on arrival under `--run` and `--link`, and at the REPL with the helper, the impl and `main` in one `begin`. RED at the REPL with one form per turn: `undefined function: Size.size$…/Opt` inside the `wsize` instance. That is ACT-1034's dispatch hop by cluster shape (§2.1), not a mode difference. Green in every shape with T4 |
 | T-Q7-d | Re-entry through another implementation: `(impl Size (Box :Size a) …)` whose body is `(add-i64 (size x) (size (pick 0)))` and an `(Opt :Size a)` body `(add-i64 1 (size (MkBox x)))`; `(size (Yep 3))` yields 4, in both declaration orders, every mode | A, e2e | A chain keyed on one template; a refusal of a cycle between two implementations | RED today. `Box` first: `undefined function`, green with T4. `Opt` first: `no impl of trait` (ACT-0985), green with T2 and T4 |
 | F-PR | **Spec §3.10: a chain of implementation instantiations exceeding the depth limit is a type error, reported when an instance is demanded.** Fixture Q7 with the `(Yep x)` arm as `(add-i64 1 (size (Yep o)))`, demanded by `main` as `(size (Yep 3))`. Non-zero exit within the harness timeout; the diagnostic's category is `type error`; it is located at the inner call's line; no `codegen error`, `undefined function` or `0..0`. `--run` and `--link`. REPL: the `impl` turn is accepted, the turn that evaluates `(size (Yep 3))` reports the error, and a following `(size 4)` yields 4 | A, e2e | The chain missing, so the compiler hangs; the refusal left to codegen; a refusal raised at the `impl` form | RED today on the category: refused at codegen as `undefined function`. Green with T4. Controls, green today: the same `impl` with no caller exits 5; the function twin `(defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))` is a type error (`infinite type`) |
-| F-PR-2 | The same through a constrained helper: `(defn wrap [:Size x] (size (Yep x)))`, called as `(wrap o)` from the impl's `size`. The diagnostic is a `type error` located on a line of `wrap` or of the impl's `size`, with the other F-PR clauses | A, e2e | A chain that follows the dispatch arm only: this re-entry passes through a free-function instance | RED today on the category (`undefined function: wrap`). Green with T4 |
-| F-PR-3 | A re-entry whose type doubles: `(impl Size (Two :Size a :Size b) …)` over `(deftype (Two a b) (MkTwo [:a x :b y]))`, whose body reaches `(size (MkTwo t t))`, demanded at `(Two Int Int)`. The F-PR clauses, with the timeout as the subject | F, e2e, **held** (§10) | A depth count that is reached only after types of exponential size have been built: a hang or exhaustion in place of the refusal | Not written. Refused today at codegen (`undefined function`); after T4 the depth limit alone does not refuse it in bounded time, so the cell would exhaust the suite's memory and not fail an assertion |
+| F-PR-2 | The same through a constrained helper: `(defn wrap [:Size x] (size (Yep x)))`, called as `(wrap o)` from the impl's `size`. The diagnostic is a `type error` located on a line of `wrap` or of the impl's `size`, with the other F-PR clauses. At the REPL the helper and the impl are entered in one `(begin …)`, because each refers to the other; entered as separate forms the declaration itself is refused (`no impl of trait`) | A, e2e | A chain that follows the dispatch arm only: this re-entry passes through a free-function instance | RED today on the category (`undefined function: wrap`). Green with T4 |
+| F-PR-3 | A re-entry whose type doubles at each step | — | — | **Never written** (user, 2026-11-17). No second limit is admitted; the shape is an accepted named risk (§12) |
 | F-PR-4 | A growing re-entry through two implementations, each dispatching to the other at its own value wrapped | A, e2e, when constructible | A chain keyed on one template | Not constructible today in either order (`no impl of trait`, ACT-0985). `test` writes it after T2 and reports; the chain's module row 6 covers it until then |
 | T-DEPTH-a | **Spec §3.10: the depth limit is at least 64.** Fixture D below at 64 levels: `(size v63)` yields 64, in `--run`, `--link` and the REPL | A, e2e | A count that refuses the 64th instance; a mint that exhausts the compile worker's stack before the limit (ACT-1067 shows that stack is small); an instance symbol for a 64-deep type that the object writer or linker rejects | RED today: `undefined function: Size.size$…/Opt` (ACT-1034's nested face; probed at 2, 64 and 65). Green with T4 |
 | T-DEPTH-b | The design's constant: fixture D at 65 levels is refused with F-PR's clauses, located at the impl's `(size x)` line | A, e2e, a design guard ([monomorphisation §3.10.3](../../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch)) | A limit that is never reached, so T-DEPTH-a's fixture proves nothing about depth; a refusal raised at codegen | RED today on the category. Green with T4. It moves with the constant: spec admits any limit of 64 or more |
+| T-DEPTH-c | **The limit counts implementation instantiations, not method instances.** Fixture D's type and trait with two members: `sa` as `(sb o)` and `sb` as `(match o [Nope 0 (Yep x) (add-i64 1 (sa x))])`, and an `Int` implementation of both. Each level puts two method instances and one implementation instantiation on the chain. At 64 levels `(sa v63)` yields 64 in every mode; at 65 it is refused with F-PR's clauses | A, e2e | A count of method instances, which refuses at 33 levels; a chain of 128 mints that exhausts the compile worker's stack | RED today (`undefined function`, ACT-1034). Green with T4. Lands before W3 |
 | T-FR | **Spec §3.10, the function rule, both directions.** `(defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))` is a type error at its definition, every mode. `(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))` yields 1 for `(f (pick 0))`, and adding `(f (Yep "s"))` is a type mismatch | A, e2e | The implementation rule applied to a function's own recursive call: `g` is then accepted and reaches the chain, and `f` is instantiated at two types | Passes on arrival (§5.6) and after T4 |
-| Q7-S | On the T4 tree, no test outside F-PR to F-PR-4 and T-DEPTH-b fails with the depth diagnostic | A, suite, `qa` | The chain refusing a committed program, a `stdlib/` module, an example or the exemplar | A full run after T4; any hit returns to `qa` before the cell is changed |
+| Q7-S | On the T4 tree, no test outside F-PR, F-PR-2, F-PR-4, T-DEPTH-b and T-DEPTH-c's 65-level leg fails with the depth diagnostic | A, suite, `qa` | The chain refusing a committed program, a `stdlib/` module, an example or the exemplar | A full run after T4; any hit returns to `qa` before the cell is changed |
 
 **Fixture Q7.** No prelude; `(import [primitives [*]])`.
 
@@ -1104,7 +1139,7 @@ correction.
   enclosing one.
 - **The F-PR family asserts a category, a location and termination, not
   wording.** `test` reports the text it observes. The exact line is pinned
-  only where one successor site exists (F-PR, F-PR-3).
+  only where one successor site exists (F-PR).
 - **T-Q7's neighbours stay accepted:** T-1034-d and T-1034-e (the
   enclosing implementation at its own instantiation), A1 and A2
   (constraint-mediated) and C1 (a different implementation).
@@ -1160,8 +1195,8 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
 | T-D5 | The marginal halves that ACT-1049 forced unarmed run armed and balance | F, e2e, existing cells re-armed by `test` | A stack-placed value still reaching the armed check | Green after B1; `tests/vec_set_owning_old_element.rs` and `tests/synthetic_accessor_input_release.rs` name the halves |
 | X-D5 | The three cells that read `stack_slot` leave with the mechanism: both `tests/s105_residual_attribution.rs` cells that assert its value, and the field-presence assertion in `tests/ownership_fences.rs` | M, `test` | An observer of a retired mechanism kept as a gate | Removed in B1's change-set; `tests/perf/s105_*.py` read the field by name and are checked by `test` |
 | T-D4 | A one-word single-constructor ADT as a `Vec` element, a field of another ADT, a closure capture, a traced argument and the program result: values, REPL §1.5 display, and allocations equal to frees under the armed check, every mode | F, e2e | A consumer that still reads the word as the field: `(Box <address>)`, an unreleased result, a missing element function | Passes before D4 (no allocation) and after it (balanced) |
-| T-D7 | **R12's falsifier.** At the REPL, a function with live callers and a captured value of the old body is redefined at the same language type with different inferred modes. The redefinition publishes; later calls through each caller and through the captured value return the right values; the session balances under the armed check against a twin whose redefinition keeps its modes; a restart on the saved source agrees | A, e2e | Callers compiled against the old summary miscount after the patch; the old body freed while a captured value holds it; restart differing from the session | RED today on the §18.1.2 rejection; green with D7 |
-| T-D7-b | T-D7 for an overload member, a generic realization and an impl method (§18.7) | A, e2e | A slot kind that keeps its own comparison | as T-D7 |
+| T-D7 | **R12's falsifier.** At the REPL, a function is redefined at the same language type with different inferred modes. It has two kinds of live dependent: a direct caller, and a function compiled before the replacement that takes the function as a value and calls it (REPL §18.1: calls and callable values that refer through the slot). The redefinition turn reports no error; later calls through both routes return the new body's values; the session balances under the armed check against a twin whose redefinition keeps its modes; a restart on the saved source agrees | A, e2e | Callers compiled against the old summary miscount after the patch; a value route that keeps the old body; restart differing from the session | RED today on the §18.1.2 rejection; green with D7 |
+| T-D7-b | T-D7 for a generic realization and an impl method (§18.7) | A, e2e; the impl-method leg is F | A slot kind that keeps its own comparison | Generic: RED today, refused as `cannot rematerialize prior instance … changed the realization key or ABI`; green with D7. Impl method: passes on arrival and stays. Today's gate does not cover an impl method: the trace shows the summary move from `Borrowed` to `Owned`, the redefinition publishes and the session balances |
 | X-D7 | `repl_redefinition::same_type_ownership_abi_change_is_rejected_before_slot_patch` is replaced by T-D7; `caller_free_type_change_publishes` stays. `cache::cache_restored_sum_field_projection_keeps_ownership_abi` keeps its assertion and re-points its `// spec:` line from the removed REPL §18.1.2 to §18.1 | M, `test` | A `// spec:` anchor to a removed section: `spec_link_check.py` reports both today | With D7; the link check then reports none |
 
 - **T-D7 fixture properties.** The pair must change modes: for example
@@ -1169,6 +1204,21 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
   The cell asserts the premise from `CRANELISP_OWNERSHIP_TRACE` (the two
   summaries differ) before it asserts balance; a pair with equal modes
   proves nothing. A second leg runs moves off.
+- **No cell holds a closure across the redefinition.** The REPL has no
+  top-level value binding, so no value outlives the turn that made it and
+  no legal session frees an old body under a live value. REPL §18.1's
+  observable is the slot route, which the second dependent exercises.
+- **Residual, not written: a member of a multi-signature family.** Awaiting
+  the user's approval (§6).
+  - *Observed today, one armed program:* a family whose one-argument member
+    changes from `v` to `[1]` publishes, and its caller returns the new
+    value.
+  - *Why no cell:* the trace prints no summary for a family member, so the
+    premise cannot be asserted, and the restart clause fails on ACT-1068
+    whatever D7 does.
+  - *What covers the risk:* row D7 removes the mode read from the types a
+    slot comparison would need, which is a compile-time guard for every
+    slot kind.
 - **Spark density and the borrowed-sibling carrier** need no new condition:
   the default emission is byte-identical (golden lane), and a pre-bump
   cache record is a miss (existing version cell). `test` removes any cell
@@ -1218,7 +1268,7 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
 | M-1038 | ACT-1038 | [Trace runtime §5](../../design/intrinsics/trace-runtime.md#5-evidence) rows, each flipped by removing its check; the backend row for a trace-form site emitting the gate | A, module, `dev` | With D8's change-sets |
 | T-1039 | ACT-1039 | The committed all-modes cell, plus an imported-module leg (5 frames today) | A, e2e | `--run` leg RED then green; the imported leg is the control |
 | T-0973 | ACT-0973 | The two committed guards; a nested and a root-level child each refuse in every mode; the entry placement loads; a non-entry module importing `platform.<name>` works | A, e2e | Green |
-| T-0973-c | ACT-0973 | A module cached as an entry, then imported as a dependency, refuses and does not restore | A, e2e | RED or green on arrival (`test` reports), green after |
+| T-0973-c | ACT-0973 | A module cached as an entry, then imported as a dependency, refuses and does not restore | A, e2e | RED today: with the platform found on both invocations the cached module is restored and the program exits 0 (observed at `2c690be5`). The landed cells fail before that, on a platform path the second invocation does not set (§14.3). Green with ACT-0973's correction |
 | T-1016 | ACT-1016 | The three committed guards and the acyclic re-export control | A, e2e, existing | Green |
 | T-0985 | ACT-0985 | The committed cell with the implementation-first control | A, e2e, existing | Green |
 | T-1001 | ACT-1001 | `impl_ambiguous_trait_names_both_candidates_neg` with `impl_unknown_trait_diagnostic_control` | A, e2e, existing | Green |
@@ -1259,22 +1309,19 @@ to a computed name, as [backend §7](../../design/backend/backend.md) states.
 | M-LAY | The widened layout census rejects a planted offset constant outside its owner and passes the clean tree (row R10-9) | M, module | `dev`(intrinsics) |
 | G-0 | `cargo nextest run --no-fail-fast` reports zero failures on a fresh build of the final tree, or each remaining RED is carried on recorded evidence | A, suite | `qa` at the Phase 5 exit |
 
-## 10. Clauses held on an open question
+## 10. Open questions and what they hold
 
-No ruled question holds anything. `test` writes nothing in the "Held"
-column until the answer is recorded in the
-[sprint plan](../../sprints/SPRINT.md) Notes.
+No cell is held.
 
-| Open, and with whom | Released now, valid under either answer | Held |
+| Question | State | Effect on evidence |
 |---|---|---|
-| **Is a second limit, on the size of an instance's type, admitted?** With the user, through `sprint`. Spec §3.10 states one limit, on depth. [Monomorphisation §3.10.3 and §13](../../design/typecheck/monomorphisation.md#13-residuals-and-triggered-extensions) show by analysis that a re-entry whose type doubles reaches depth 64 only after types of about 2^64 nodes | F-PR, F-PR-2, T-DEPTH-a, T-DEPTH-b and every T-Q7 cell: each grows by one node per level, so depth bounds its cost | F-PR-3, the whole cell. With a size limit: the F-PR clauses within the timeout, and which limit the diagnostic names is the ruling's to say. Without one: no cell, and the shape is a recorded unprotected risk |
-| **Does the depth limit count implementation instantiations or method instances?** Returned to `spec` and `design`(typecheck) through `sprint` (§6); it reaches the user only if they disagree. Spec §3.10 limits "a chain of implementation instantiations"; the design counts implementation-method instances | T-DEPTH-a and T-DEPTH-b: one member, so the units agree | T-DEPTH-c: two members that call each other at each level, at a type nested 33 deep. Counted by instantiation it is 33 deep and runs; counted by method instance it is refused |
+| Is a second limit, on the size of an instance's type, admitted? | **Ruled no** (user, 2026-11-17). The doubling shape is an accepted named risk | F-PR-3 is never written; the risk is in §12 |
+| Does the depth limit count implementation instantiations or method instances? | **Settled:** implementation instantiations ([monomorphisation §3.10.3](../../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch)) | T-DEPTH-c is released (§9.1) |
+| Does a member that re-enters itself at its own implementation instantiation, at other method-level type variables, count toward the depth? | Queued for the user by `design`(typecheck), which counts it | None. No S124 cell has a member with method-level variables, where the two readings differ. A cell is allocated when it is ruled |
+| What category does the multi-arity `main` refusal carry? | Queued for the user by `design`(int) | None. T-Q9-b asserts the location and no category |
 
-- **The typecheck change-sets do not wait.** Neither question changes the
-  chain's shape. The first adds a second check before a key is derived;
-  the second changes what the one integer counts.
-- **Where the scribed text leaves the observation open,** beside the two
-  rows above. None holds a cell; each is returned to `spec` (§6).
+- **Where the scribed text leaves the observation open,** beside the rows
+  above. None holds a cell; each is returned to `spec` (§6).
   - *Whether a non-parametric implementation counts toward the depth.* The
     cells read it as not counting (fixture D). The design's behaviour
     conforms under either reading, because spec fixes a floor and not the
@@ -1304,6 +1351,13 @@ returns its clause map and the cells have been read against the new prose.
 | Spec §10.6, the heading | Still cleared; the former cell is recorded as evidence of the `IO _` return requirement only | The new rows and the arity refusal are uncovered |
 | REPL §5.1, item 2 and the heading | Still cleared; the tag records that `type_error_arg_mismatch` asserts no location | The former citation never evidenced the item |
 
+**Edited at the W1 exit.**
+
+| Row | Edit | Why |
+|---|---|---|
+| Spec §3.10, the function-recursion bullet | Raised to `[Tested+Neg …]` on the fold canary and three T-FR cells | T-FR passes in every mode: a growing recursive call and a second instantiation are both refused |
+| REPL §15.4, the heading | Names rule 1's nonconformance for a multi-signature function | ACT-1068. Rule 1's own citations stand: they observe the forms they name |
+
 **Restored when.**
 
 | Row | Restored when |
@@ -1317,9 +1371,8 @@ returns its clause map and the cells have been read against the new prose.
 | REPL §14.2, the `/sh` sentence | T-1061 is green and O-1061 is recorded |
 | REPL §15.4 rule 2 and the authorship note | Carried with ACT-1005: REPRO-1005-b is RED until that correction. F-1005-d covers only the macro exception. The note's `begin` cells are restored to it with rule 2 |
 | REPL §18.1 and its first bullet, §18.7 | T-D7 and T-D7-b are green |
-| Spec §3.10, the function-recursion bullet | Raised to `[Tested+Neg …]` when T-FR is green |
 | Spec §3.10, the implementation re-entry row | T-Q7-a to T-Q7-d are green |
-| Spec §3.10, the depth-limit row | T-DEPTH-a, F-PR and F-PR-2 are green; F-PR-4 when constructible. T-DEPTH-c joins them when the counting unit is settled (§10). F-PR-3 is not a condition of this row: it evidences a second limit the row does not state |
+| Spec §3.10, the depth-limit row | T-DEPTH-a, T-DEPTH-c, F-PR and F-PR-2 are green; F-PR-4 when constructible |
 | Spec §3.10, the reporting row | F-PR is green in its batch legs, its no-caller control and its REPL leg |
 | Spec §3.10, the heading | Not restored while a child bullet is uncovered (candidate filtering has been since S121) |
 | Spec §10.6, the two new rows | T-Q9-a; T-Q9-b |
@@ -1337,9 +1390,7 @@ carried by name; REPL §15.4 rule 2 is expected to be one.
 allocated: S124-Q7 as re-ruled B with its depth limit and reporting rule,
 S124-Q8, S124-Q9, row D12, and ACT-1063 and ACT-1065 in scope.
 
-- **The evidence wave can start now.** No released cell waits on a ruling,
-  and none changes under either answer to §10's two open questions.
-  `test` generates fixture D's value by a `let` chain (§9.1).
+- **The evidence wave ran and is accepted** (§14).
 - **Testable.** Every in-scope change has a condition with an observation
   seam that exists or is designed with its detection proof. No approved
   surface is unobservable. Every ruled question and approved row has its
@@ -1347,14 +1398,11 @@ S124-Q8, S124-Q9, row D12, and ACT-1063 and ACT-1065 in scope.
 - **Conditions on advancing.**
   1. *Order.* The evidence wave runs before row D1's step 1, with
      REPRO-1062 first.
-  2. *The counting unit* (§10) is settled between `spec` and
-     `design`(typecheck) before `dev`(typecheck) fixes what the chain's
-     integer counts in T4. It is a reading of two texts; it reaches the
-     user only if they disagree.
+  2. *The counting unit* is settled as the implementation instantiation
+     (§10).
 - **Not conditions.**
-  - The type-size question holds F-PR-3 alone. If it is unanswered when
-    the typecheck wave exits, the doubling shape is carried as a named,
-    user-visible risk and not as a RED.
+  - The type-size question is ruled: no second limit, and the doubling
+    shape is an accepted named risk with no cell.
   - ACT-1067's correction is unscheduled. Its reproduction is RED from the
     evidence wave and is carried by `sprint`'s decision, like the rows of
     §3 marked "Carried".
@@ -1397,7 +1445,8 @@ S124-Q8, S124-Q9, row D12, and ACT-1063 and ACT-1065 in scope.
     time* by the depth limit (`design`(typecheck), by analysis). After T4
     the face is a compiler that exhausts memory or time on a program the
     specification refuses; before T4 it is today's codegen refusal. No
-    cell observes it (F-PR-3, held). The user should see it.
+    cell observes it. Accepted by the user on 2026-11-17; its falsifier is
+    a non-contrived program that reaches it.
   - *A chain of 64 mints may not fit the compile worker's stack.* Not
     observed; ACT-1067 shows the stack is exhausted by 56 nested source
     forms in the debug build. T-DEPTH-a observes it after T4.
@@ -1463,3 +1512,132 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
   doubling shape were not run: each is a reading.
 - Counts are single runs unless a row gives a rate. Every §8.2 subject
   failed on each of its runs.
+
+## 14. Evidence wave acceptance (W1 exit)
+
+**Accepted. The correction waves can start, and nothing returns to `test`
+before W2.** Four cell groups fail to observe their clause and return to
+`test` before the waves that correct them (§14.3). One new defect was
+found and is filed (ACT-1068).
+
+- **Read against:** `test`'s commits `f36bbfb3`, `135ad1c2`, `e708be86`,
+  `d900970e` and `2c690be5`, its clause map, and its full run on
+  `2c690be5`: 7,423 run, 7,156 passed, 267 failed, 1 skipped.
+- **What `qa` did:** partitioned that run's log against the opening guard
+  list; read the first failing assertion of every failing test; read the
+  source of the cells that looked wrong; re-ran twelve cells; and ran
+  about twenty scratch programs on the debug build, one also on the
+  release build of 2026-11-15.
+- **Limit.** The source of a passing cell was read only where its row made
+  a claim that the failing set could not confirm. A control that passes for
+  a reason other than the one its row states is not excluded.
+
+### 14.1 The failing set
+
+| Class | Count | Traces to |
+|---|---|---|
+| Opening filed guards | 44 | §1. All 44 still fail; none passed |
+| S124 cells failing on their stated assertion | 216 | The filings and approved rows below |
+| S124 cells failing on setup | 6 | §14.3: the three `s124_0973_cached_entry` legs, `s124_f_pr_helper_repl_demand` and the two `s124_q7_d` REPL legs |
+| `citation_drift::project_documents_conform_to_the_checked_in_declaration` | 1 | Maintenance check (§6, `sprint` item 4). Its two siblings pass |
+| Anything else | 0 | No genuine regression |
+
+Both `user_samples` tests passed in this run. They stay run-dependent
+until ACT-1061 is corrected (§5.1).
+
+The 222 new failures, by filing or approved row:
+
+| Traces to | New | Opening guards of the same filing |
+|---|---|---|
+| ACT-1034, with the S124-Q7 and depth conditions | 58 | 4 |
+| ACT-1063 | 38 | — |
+| ACT-1056 | 17 | 6 |
+| ACT-1062 | 12 | — |
+| ACT-1065 | 11 | — |
+| ACT-1036 | 10 | 1 |
+| ACT-0997 | 9 | 2 |
+| ACT-1057 | 8 | 5 |
+| Row D3, the S124-Q4 and module conditions (T-SUP, T-EXP0, T-ALIAS) | 8 | — |
+| ACT-0973 | 7 | 2 |
+| ACT-1066 | 7 | — |
+| ACT-1005 | 6 | — |
+| ACT-1050 | 6 | 12 |
+| Row D12, S124-Q8 and Q9 (T-Q8, T-Q9-a) | 6 | — |
+| ACT-1055 | 4 | 2 |
+| ACT-0977 | 3 | — |
+| ACT-1059 | 3 | — |
+| ACT-1064 | 2 | — |
+| ACT-1067 | 2 | — |
+| Row D7 (T-D7, T-D7-b) | 2 | — |
+| ACT-0981 | 1 | — |
+| ACT-1061 | 1 | — |
+| ACT-1068 | 1 | — |
+
+The other opening guards are ACT-1016 (3), ACT-1038 (2), ACT-0985,
+ACT-1001, ACT-1018, ACT-1039 and ACT-1052 (1 each). T-Q7-d's three
+`Opt`-first legs, counted under ACT-1034, stop first at
+ACT-0985's refusal, as §9.1 expects.
+
+### 14.2 Row groups
+
+"Accepted" means every RED leg was read failing on the row's assertion and
+every control and fence passed in the full run.
+
+| Rows | Judgment | Note for the correcting wave |
+|---|---|---|
+| REPRO-1062-a to d | Accepted | W5 turns them green; the accessor leg also needs the accessor producer |
+| REPRO-1064, REPRO-1005-a to c, F-1005-d | Accepted | Each subject stops at its first assertion (the saved form, the restart lock, the order); the restart values run only once that passes |
+| REPRO-1066 | Accepted | W2. Green with B1 and no other change, or it returns to `qa` |
+| REPRO-1063, REPRO-1063-p | Accepted | W6, row B12 |
+| REPRO-1065-a to c, e, T-1065-f | Accepted | W4 |
+| REPRO-0977, REPRO-0981, REPRO-1067 | Accepted | Carried RED past S124. REPRO-0977 has a timer-race leg in place of `timeout`. REPRO-0981 has no impl-method twin (§3.2) |
+| REPRO-R1 with the S124-Q2 controls, T-Q3, REPRO-R3, R3-risk, T-R2-a to c | Accepted | W7 |
+| T-1061 | Accepted | W8 |
+| REPRO-0915-loc, T-Q8, T-Q9-a, T-Q9-b | Accepted | W8 |
+| T-1034-b to e | Accepted | W3 |
+| T-1034-a | **Returned** | The `begin` leg passes: its call is in a later turn (§2.1, §14.3) |
+| T-Q7-a to c; T-Q7-d under `--run` and `--link` | Accepted | W3. T-Q7-c's one-form-per-turn REPL leg is RED on ACT-1034 (§9.1) |
+| T-Q7-d, REPL legs | **Returned** | Fail on setup (§14.3) |
+| F-PR; F-PR-2 under `--run` and `--link` | Accepted | W3. The location clauses follow the category assertion and have not executed |
+| F-PR-2, REPL leg | **Returned** | Fails on setup (§14.3) |
+| T-DEPTH-a, T-DEPTH-b | Accepted | W3. Neither fails by stack overflow |
+| T-FR, F-0975, F-0934 | Accepted, all green | They stay green through every wave |
+| T-D7, T-D7-b | Accepted as §9.4 now states them | W8. The impl-method legs pass today and stay. The publication assertion matches one refusal text (§14.3) |
+| T-1050-a | Accepted | W4 |
+| T-1038-a, T-1038-b | Accepted | W6. The `trace_declines` clause follows the frame count and has not executed |
+| T-1039, T-0973, T-1016, T-0985, T-1001, T-1036 | Accepted | Existing assertions unchanged |
+| T-0973-c | **Returned** | Fails on setup (§14.3) |
+| T-SUP, T-DUP, T-EXP0, T-ALIAS | Accepted | W7 |
+| T-MNT-a, T-MNT-b, T-Q4-a, T-Q4-b, T-D10, and T-REG's rename, dotted and mount legs | Accepted as RED on the parser's refusal only | W7. Their collision, idempotence, route and persistence clauses have not executed. `qa` reads them on the first tree whose parser accepts the forms, before W7 is accepted |
+
+### 14.3 Returned to `test`
+
+None of these blocks W2. Each item lands before the wave it names.
+
+| Before | Item |
+|---|---|
+| W3 | **T-1034-a, `begin` leg.** Put the call `(size (Yep 3))` inside the `begin`. Keep today's cell as its control |
+| W3 | **F-PR-2, REPL leg.** Enter the helper and the impl in one `begin`, after the type, trait and `Int` impl. Today the declaration turn is refused with `no impl of trait`, so no F-PR clause runs. With the `begin`, the demand turn is refused at codegen: RED on the category |
+| W3 | **T-Q7-d, REPL legs.** Enter the two impls in one `begin`. Entered one per turn, each refers to an impl not yet declared and both turns are refused, in either order |
+| W3 | **T-DEPTH-c** (§9.1), new |
+| W5 | **T-D4** (§9.4). It was missing from §6's earlier handoff row; it passes before D4 and after it |
+| The wave that takes ACT-1068 | **REPRO-1068** (§3.12): the by-arity, file-loaded and other-module legs; `class=enumeration-miss`; the name without `_partial`; the control with the same `import` as the subject |
+| W8 | **T-0973-c.** `run_again()` clears the platform path, so the second invocation fails with `platform 'stdio' not found`. Set it on both invocations |
+| W8 | **T-D7.** Assert that the redefinition turn prints no `Error:`; the generic leg's refusal has another text and reaches the value assertion instead |
+| W7 | Rename `s124_modules_same_mount_same_form_control` and `…_later_turn_control`: they are acceptance legs that fail today, not controls |
+
+In their corrections' change-sets, as before: X-D5 and T-D5 (W2), F-PR-4
+(W3, after T2), T-1063-b (W6), T-1065-d (W7), X-D7 (W8). O-1018, O-1038
+and O-1061 are `qa`'s readings on the corrected trees.
+
+### 14.4 Residuals this acceptance adds
+
+- **A multi-signature family's mode-changing redefinition has no cell**
+  (§9.4). Awaiting the user's approval.
+- **Clauses behind a first RED have not executed.** A cell stops at its
+  first failing assertion, so the later clauses of F-PR, T-1038-a,
+  REPRO-1064 and the mount and rename cells are unproven until their
+  corrections land. Each wave's adequacy pass reads them then.
+- **ACT-1068 is unscheduled** and deletes authored source in every session
+  that defines anything beside a multi-signature function.
+

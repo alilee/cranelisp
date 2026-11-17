@@ -122,6 +122,16 @@ matrix is required merely because axes can be named.
   signature type} as an axis with the local cell as the twin. A cell whose
   fixture imports every type the signature mentions into the calling module
   never asks the foreign-type question.
+- Where a mechanism derives a per-parameter fact of a parametric type
+  (field types, drop glue, match binders, accessors), carry declared
+  parameter order × field mention order as an axis, including a parameter no
+  field mentions. The in-order type is the twin
+  ([ACT-1062](../../sprints/actions/ACT-1062-match-field-binder-takes-another-parameters-type-intake.md)).
+- Where a mechanism enumerates a module's definitions (regeneration,
+  listing, caching, redefinition), carry the definition form as an axis:
+  single-signature, multi-signature by arity and by type, macro-produced and
+  `begin`-grouped, with the single-signature function as the twin
+  ([ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md)).
 - For a strategy-bearing fix, name the negative-space module cells from the
   design's claim before the fix lands; a unit test authored from the diff
   validates the fix's model of itself.
@@ -264,8 +274,10 @@ the fine-grained forward/back trace; this plan does not duplicate every name.
 ## Active allocation and unresolved evidence
 
 [S124 evidence](s124-evidence-delta.md) owns the current sprint's allocation:
-the opening failing set, the ACT-1034 attribution and the reproductions for
-the carried defects and the frontend audit. [S123 evidence](s123-evidence-delta.md)
+the opening failing set, the ACT-1034 attribution, the reproductions for
+the carried defects and the frontend audit, and the
+[acceptance of the evidence wave](s124-evidence-delta.md#14-evidence-wave-acceptance-w1-exit)
+with what each correction wave still owes. [S123 evidence](s123-evidence-delta.md)
 owns the previous sprint's allocation, including the evidence the S123 panic,
 agent and environment rulings re-point. [S122 evidence](s122-evidence-delta.md) owns the prior per-stream
 allocation, executing checkpoints, bounded closures and remaining gates; its

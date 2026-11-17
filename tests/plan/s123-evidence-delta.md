@@ -1672,8 +1672,8 @@ projects. Neither is a 6a change: both match the W5 logs.
 - **`ring4p`'s ownership-ABI refusal: spec-conformant; the demo is stale.**
   - Replacing `(defn f [:Int x] x)` with `(defn f [:Int x] (+ x 1))` leaves
     the language type unchanged and moves the `ModeSummary` result from
-    `AliasOf(0)` to `Fresh`. [§18.1.2](../../repl/spec/18-redefinition.md#1812-interim-ownership-abi-compatibility-gate)
-    requires that refusal even without callers, with the old body kept live.
+    `AliasOf(0)` to `Fresh`. The interim ownership-ABI gate of the REPL redefinition specification
+    (section 18.1.2, retired in S124) required that refusal even without callers, with the old body kept live.
     The diagnostic carries all three required items, and `(f 41)` stays 41.
   - Control: `(+ x 1)` to `(+ x 2)` (`Fresh` to `Fresh`) is accepted and
     late-binds to 43. A doc-only edit is accepted. The reverse,
@@ -1980,7 +1980,8 @@ Restored on 2026-11-16. Annotations only; the requirement prose is unchanged.
   - §9.2.3 is Tested+Neg for the fixed-parameter shape, with the four K-9
     acceptance REDs.
   - §9.9.1 names the location RED.
-- `repl/spec/18-redefinition.md` §18.1.2's 6b re-grade stands.
+- The 6b re-grade of the REPL redefinition specification's interim
+  ownership-ABI section (18.1.2, retired in S124) stands.
 - The export link in ACT-1056 no longer embeds the old annotation.
 - The spec reconcile shows 0 dead citations and 0 cleared awaiting QA. The
   link check shows 0 malformed and 0 mis-cited.
