@@ -4627,3 +4627,56 @@ fn race_with_inline_bind_lambda_branch_compiles_under_lenient() {
         .output()
         .assert_exit(111);
 }
+
+// spec: spec/02-grammar.md §2.3
+// defect: class=input-depth-stack-exhaustion locus=compiler::recursive_source_traversal found=S124 owner=/dev
+#[test]
+fn s124_1067_subject() {
+    let mut expr = String::from("0");
+    for _ in 0..64 {
+        expr = format!("(add-i64 1 {expr})");
+    }
+    let src = format!("(import [primitives [*]]) (defn main [] (Pure {expr}))");
+    let out = Cranelisp::new().file("p.cl", &src).run("p.cl").output();
+    assert!(
+        !out.stderr.contains("overflowed its stack"),
+        "{}",
+        out.stderr
+    );
+    out.assert_exit(64);
+}
+
+// spec: spec/02-grammar.md §2.3
+// defect: class=input-depth-stack-exhaustion locus=compiler::recursive_source_traversal found=S124 owner=/dev
+#[test]
+fn s124_1067_uncalled() {
+    let mut expr = String::from("x");
+    for _ in 0..100 {
+        expr = format!("(add-i64 1 {expr})");
+    }
+    let src = format!("(import [primitives [*]]) (defn f [x] {expr}) (defn main [] (Pure 5))");
+    let out = Cranelisp::new().file("p.cl", &src).run("p.cl").output();
+    assert!(
+        !out.stderr.contains("overflowed its stack"),
+        "{}",
+        out.stderr
+    );
+    out.assert_exit(5);
+}
+
+// spec: spec/02-grammar.md §2.3
+#[test]
+fn s124_1067_control() {
+    let mut expr = String::from("0");
+    for _ in 0..48 {
+        expr = format!("(add-i64 1 {expr})");
+    }
+    let src = format!("(import [primitives [*]]) (defn main [] (Pure {expr}))");
+    let out = Cranelisp::new().file("p.cl", &src).run("p.cl").output();
+    assert!(
+        !out.stderr.contains("overflowed its stack"),
+        "{}",
+        out.stderr
+    );
+    out.assert_exit(48);
+}

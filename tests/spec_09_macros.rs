@@ -1316,7 +1316,7 @@ fn macro_multi_clause_nullary_non_sexp_rejected_at_definition_neg() {
 // defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
 #[test]
 fn macro_return_mismatch_located_at_definition_neg() {
-    let out = unused_macro_run("(defmacro bad [x] 42)");
+    let out = unused_macro_run("(defmacro bad [x]\n 42)");
     assert!(
         !out.status.success(),
         "non-Sexp macro accepted: {}{}",
@@ -1326,8 +1326,8 @@ fn macro_return_mismatch_located_at_definition_neg() {
     assert_macro_return_mismatch(&out);
     let diagnostic = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        diagnostic.contains("app.cl:1:"),
-        "mismatch must name line 1: {diagnostic}"
+        diagnostic.contains("app.cl:2:"),
+        "mismatch must name the body on line 2: {diagnostic}"
     );
 }
 
@@ -1362,4 +1362,428 @@ fn macro_nullary_quoted_body_control() {
         .with_prelude(PreludeVariant::None)
         .output()
         .assert_exit(7);
+}
+
+fn s124_value(cr: helpers::e2e::Cranelisp, program: &str, mode: &str, expected: i32) {
+    let out = match mode {
+        "run" => cr.file("p.cl", program).run("p.cl").output(),
+        "link" => cr.file("p.cl", program).link_then_run("p.cl").output(),
+        _ => cr
+            .file("p.cl", program)
+            .cli_flag("p.cl")
+            .stdin("(main)\n")
+            .output(),
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    if mode == "repl" {
+        assert!(
+            out.status.success() && out.stdout.contains(&format!(":primitives/Int {expected}")),
+            "{diag}"
+        );
+    } else {
+        assert_eq!(out.status.code(), Some(expected % 256), "{diag}");
+    }
+    assert!(
+        !diag.contains("undefined function") && !diag.contains("GOT-slot carrier"),
+        "{diag}"
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+// defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
+#[test]
+fn s124_1066_scalar_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (quote-sexp (SexpInt 3)))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+// defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
+#[test]
+fn s124_1066_scalar_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (quote-sexp (SexpInt 3)))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+// defect: class=check-domain-overreach locus=crates/cranelisp-intrinsics/src/drop.rs::atomic_dec_rc found=S124 owner=/dev
+#[test]
+fn s124_1066_scalar_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (quote-sexp (SexpInt 3)))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+#[test]
+fn s124_1066_string_control_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (quote-sexp (SexpStr "abc")))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+#[test]
+fn s124_1066_string_control_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (quote-sexp (SexpStr "abc")))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+#[test]
+fn s124_1066_string_control_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (quote-sexp (SexpStr "abc")))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+#[test]
+fn s124_1066_value_control_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+#[test]
+fn s124_1066_value_control_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.11.1
+#[test]
+fn s124_1066_value_control_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]]) (import [macros [*]])
+(defn k [s] (match s [(SexpList xs) 5 _ 99]))
+(defn main [] (Pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/09-macros.md §9.2.2
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+#[test]
+fn s124_r1_trailing() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [] (quote 7) (quote 9))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+#[test]
+fn s124_r1_rest_tail() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [&r x] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+#[test]
+fn s124_r1_spaced_rest() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [& r x] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+#[test]
+fn s124_r1_two_rest() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [&r &s] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+#[test]
+fn s124_r1_nested_tail() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [[&r x]] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+#[test]
+fn s124_r1_nested_two() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [[&r &s]] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_clause_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m ([] (quote 1) 2))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_missing_name_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [x &] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_rest_destructure_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [& [a b]] (quote 7))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(
+        !out.status.success(),
+        "malformed macro accepted: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(out.stderr.contains("p.cl:1:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_destructure_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [[a b] & r] (quote 7))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    out.assert_exit(0);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_rest_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [x &r] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    out.assert_exit(0);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_nested_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [[x &r]] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    out.assert_exit(0);
+}
+
+// spec: spec/09-macros.md §9.2.2
+#[test]
+fn s124_r1_zero_control() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m [] (quote 1))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    out.assert_exit(0);
+}
+
+// spec: spec/09-macros.md §9.9.1
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S124 owner=/dev
+#[test]
+fn s124_q3_clauses() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro m
+ ([] (quote 7))
+ ([x]
+ 42)
+ ([x y] (quote 9)))
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(!out.status.success(), "{}{}", out.stdout, out.stderr);
+    assert!(out.stderr.contains("p.cl:4:"), "{}", out.stderr);
+}
+
+// spec: spec/09-macros.md §9.9.1
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S124 owner=/dev
+#[test]
+fn s124_q3_shorthand() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            r#"(defmacro n [x]
+ 42)
+(defn main [] (primitives/Pure 0))"#,
+        )
+        .run("p.cl")
+        .output();
+    assert!(!out.status.success(), "{}{}", out.stdout, out.stderr);
+    assert!(out.stderr.contains("p.cl:2:"), "{}", out.stderr);
 }

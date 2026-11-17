@@ -694,3 +694,72 @@ fn race_loser_logging_effect_cancelled_permit_reused_by_trailing_effect() {
         FAST + D_MS,
     );
 }
+
+// spec: spec/10-io.md §10.12.7
+// defect: class=cancellation-scope-escape locus=crates/cranelisp-intrinsics::launched_strand_supervision found=S124 owner=/dev
+#[test]
+fn s124_0977_race() {
+    run_prog(r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 3000 3) (other 50 4)) tail))"#).assert_exit(54).assert_stdout_eq(r#""#);
+}
+
+// spec: spec/10-io.md §10.12.7
+// defect: class=cancellation-scope-escape locus=crates/cranelisp-intrinsics::launched_strand_supervision found=S124 owner=/dev
+#[test]
+fn s124_0977_select() {
+    run_prog(r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (select [(fan 3 3000 3) (other 50 4)]) tail))"#).assert_exit(54).assert_stdout_eq(r#""#);
+}
+
+// spec: spec/10-io.md §10.12.7
+#[test]
+fn s124_0977_winner_control() {
+    run_prog(r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 50 3) (other 3000 4)) tail))"#).assert_exit(53).assert_stdout_eq(r#"LLL"#);
+}
+
+// spec: spec/10-io.md §10.12.7
+#[test]
+fn s124_0977_launched_control() {
+    run_prog(r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (race (fan 3 50 3) (other 200 4)))"#).assert_exit(53).assert_stdout_eq(r#"LLL"#);
+}
+
+// spec: spec/10-io.md §10.12.7
+#[test]
+fn s124_0977_inline_control() {
+    run_prog(r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (race (bind (poll-log 7 1 400 "D") (fn [x] (Pure (add-i64 x 3)))) (other 50 4)))"#).assert_exit(54).assert_stdout_eq(r#""#);
+}
+
+// spec: spec/10-io.md §10.12.7
+// defect: class=cancellation-scope-escape locus=crates/cranelisp-intrinsics::launched_strand_supervision found=S124 owner=/dev
+#[test]
+fn s124_0977_timeout() {
+    run_prog(r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 3000 3) (sleep 50)) (fn [_] (tail 54))))"#).assert_exit(54).assert_stdout_eq(r#""#);
+}

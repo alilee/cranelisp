@@ -2019,3 +2019,673 @@ fn io_internal_ctors_stay_excluded_from_exhaustiveness_neg() {
     out.assert_stdout_contains(":primitives/Int 5")
         .assert_stdout_does_not_contain("Bind");
 }
+
+fn s124_value(cr: helpers::e2e::Cranelisp, program: &str, mode: &str, expected: i32) {
+    let out = match mode {
+        "run" => cr.file("p.cl", program).run("p.cl").output(),
+        "link" => cr.file("p.cl", program).link_then_run("p.cl").output(),
+        _ => cr
+            .file("p.cl", program)
+            .cli_flag("p.cl")
+            .stdin("(main)\n")
+            .output(),
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    if mode == "repl" {
+        assert!(
+            out.status.success() && out.stdout.contains(&format!(":primitives/Int {expected}")),
+            "{diag}"
+        );
+    } else {
+        assert_eq!(out.status.code(), Some(expected % 256), "{diag}");
+    }
+    assert!(
+        !diag.contains("undefined function") && !diag.contains("GOT-slot carrier"),
+        "{diag}"
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (bind (Pure 5))] (k (fn [v] (Pure v)))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (bind (Pure 5))] (k (fn [v] (Pure v)))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (bind (Pure 5))] (k (fn [v] (Pure v)))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_ap_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (ap (bind (Pure 5))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_ap_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (ap (bind (Pure 5))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_ap_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (ap (bind (Pure 5))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_vec_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (bind (Pure [1 2 3 4 5]))] (k (fn [v] (Pure (vec-len v))))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_vec_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (bind (Pure [1 2 3 4 5]))] (k (fn [v] (Pure (vec-len v))))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_bind_vec_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (bind (Pure [1 2 3 4 5]))] (k (fn [v] (Pure (vec-len v))))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_race_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (race (Pure 5))] (k (Pure 5))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_race_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (race (Pure 5))] (k (Pure 5))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+#[test]
+fn s124_1063_p_race_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (race (Pure 5))] (k (Pure 5))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+#[test]
+fn s124_1063_p_add_control_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (add-i64 2)] (Pure (k 3))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+#[test]
+fn s124_1063_p_add_control_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (add-i64 2)] (Pure (k 3))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+#[test]
+fn s124_1063_p_add_control_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (add-i64 2)] (Pure (k 3))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+#[test]
+fn s124_1063_p_user_control_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (then (Pure 5))] (k (fn [v] (Pure v)))))"#,
+        "run",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+#[test]
+fn s124_1063_p_user_control_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (then (Pure 5))] (k (fn [v] (Pure v)))))"#,
+        "link",
+        5,
+    );
+}
+
+// spec: spec/03-types.md §3.2.1
+#[test]
+fn s124_1063_p_user_control_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [*]])
+(defn ap [k] (k (fn [v] (Pure v))))
+(defn then [io f] (bind io f))
+(defn main [] (let [k (then (Pure 5))] (k (fn [v] (Pure v)))))"#,
+        "repl",
+        5,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_a_bind() {
+    s124_value(
+        Cranelisp::new().use_workspace_platforms(),
+        r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [Pure add-i64]])
+(defn bind [io f] (primitives/bind io (fn [x] (f (add-i64 x 100))))) (defn main [] (bind (poll-read 1 1 3) (fn [a] (bind (poll-read 2 1 4) (fn [b] (Pure (add-i64 a b)))))))"#,
+        "run",
+        207,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_a_then() {
+    s124_value(
+        Cranelisp::new().use_workspace_platforms(),
+        r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [Pure add-i64]])
+(defn then [io f] (primitives/bind io (fn [x] (f (add-i64 x 100))))) (defn main [] (then (poll-read 1 1 3) (fn [a] (then (poll-read 2 1 4) (fn [b] (Pure (add-i64 a b)))))))"#,
+        "run",
+        207,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_bare_bind_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_bare_then_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_let_control_bind_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_arity_control_bind_run() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_imported_bind_run() {
+    s124_value(
+        Cranelisp::new().file(
+            "m.cl",
+            r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
+        ),
+        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_imported_then_run() {
+    s124_value(
+        Cranelisp::new().file(
+            "m.cl",
+            r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
+        ),
+        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_prelude_bind_run() {
+    s124_value(
+        Cranelisp::new()
+            .file(
+                "m.cl",
+                r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
+            )
+            .prelude("(export [primitives [bind]])"),
+        r#"(import [primitives [Pure add-i64]]) (import [m [bind]]) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_prelude_then_run() {
+    s124_value(
+        Cranelisp::new()
+            .file(
+                "m.cl",
+                r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
+            )
+            .prelude("(export [primitives [bind]])"),
+        r#"(import [primitives [Pure add-i64]]) (import [m [then]]) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        "run",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_bare_bind_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_bare_then_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_let_control_bind_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_arity_control_bind_link() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_imported_bind_link() {
+    s124_value(
+        Cranelisp::new().file(
+            "m.cl",
+            r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
+        ),
+        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_imported_then_link() {
+    s124_value(
+        Cranelisp::new().file(
+            "m.cl",
+            r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
+        ),
+        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_prelude_bind_link() {
+    s124_value(
+        Cranelisp::new()
+            .file(
+                "m.cl",
+                r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
+            )
+            .prelude("(export [primitives [bind]])"),
+        r#"(import [primitives [Pure add-i64]]) (import [m [bind]]) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_prelude_then_link() {
+    s124_value(
+        Cranelisp::new()
+            .file(
+                "m.cl",
+                r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
+            )
+            .prelude("(export [primitives [bind]])"),
+        r#"(import [primitives [Pure add-i64]]) (import [m [then]]) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        "link",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_bare_bind_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_bare_then_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_let_control_bind_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_arity_control_bind_repl() {
+    s124_value(
+        Cranelisp::new(),
+        r#"(import [primitives [Pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_imported_bind_repl() {
+    s124_value(
+        Cranelisp::new().file(
+            "m.cl",
+            r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
+        ),
+        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_imported_then_repl() {
+    s124_value(
+        Cranelisp::new().file(
+            "m.cl",
+            r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
+        ),
+        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::is_bind_var found=S124 owner=/dev
+#[test]
+fn s124_1065_prelude_bind_repl() {
+    s124_value(
+        Cranelisp::new()
+            .file(
+                "m.cl",
+                r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
+            )
+            .prelude("(export [primitives [bind]])"),
+        r#"(import [primitives [Pure add-i64]]) (import [m [bind]]) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_prelude_then_repl() {
+    s124_value(
+        Cranelisp::new()
+            .file(
+                "m.cl",
+                r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
+            )
+            .prelude("(export [primitives [bind]])"),
+        r#"(import [primitives [Pure add-i64]]) (import [m [then]]) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        "repl",
+        106,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+// defect: class=routing-misclassify locus=src/bind_chain_analysis.rs::effect_descriptor found=S124 owner=/dev
+#[test]
+fn s124_1065_e_poll_read() {
+    s124_value(
+        Cranelisp::new().use_workspace_platforms(),
+        r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn slow [t c d] (bind (poll-read t c d) (fn [x] (bind (poll-read t c d) (fn [y] (Pure (add-i64 x y)))))))
+(defn go [poll-read] (bind (poll-read 1 1 150) (fn [a] (bind (poll-read 2 1 150) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))) (defn main [] (go slow))"#,
+        "run",
+        0,
+    );
+}
+
+// spec: spec/04-expressions.md §4.6
+#[test]
+fn s124_1065_e_rd() {
+    s124_value(
+        Cranelisp::new().use_workspace_platforms(),
+        r#"(platform poll-pool)
+(import [platform.poll-pool [poll-read poll-log]])
+(import [primitives [*]])
+(defn slow [t c d] (bind (poll-read t c d) (fn [x] (bind (poll-read t c d) (fn [y] (Pure (add-i64 x y)))))))
+(defn go [rd] (bind (rd 1 1 150) (fn [a] (bind (rd 2 1 150) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))) (defn main [] (go slow))"#,
+        "run",
+        0,
+    );
+}

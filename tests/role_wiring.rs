@@ -182,15 +182,15 @@ fn role_wiring_gate_detects_shared_and_local_faults_and_clears_a_sound_copy() {
 
     // W1a — prose and machine declaration diverge.
     let prose_drift = scratch_copy(base, "prose-role-drift");
-    let claude = prose_drift.join("AGENTS.md");
-    let body = fs::read_to_string(&claude).expect("read AGENTS.md plant target");
+    let root_memory = prose_drift.join("AGENTS.md");
+    let body = fs::read_to_string(&root_memory).expect("read AGENTS.md plant target");
     let stripped = body
         .lines()
         .filter(|line| !line.starts_with("| `docs` |"))
         .collect::<Vec<_>>()
         .join("\n");
     assert_ne!(body, stripped, "PLANT DID NOT APPLY (W1 prose)");
-    fs::write(&claude, stripped).expect("write prose plant");
+    fs::write(&root_memory, stripped).expect("write prose plant");
     let run = run_gate(&prose_drift);
     assert_eq!(run.code, Some(1), "W1 prose fault passed\n\n{}", run.output);
     assert!(

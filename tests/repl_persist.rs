@@ -6587,3 +6587,393 @@ fn w4_removed_file_without_definition_control() {
     );
     out.assert_ok();
 }
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=artifact-underkey locus=src/save.rs::impl_enumeration found=S124 owner=/dev
+#[test]
+fn s124_1064_subject_entered() {
+    let cr = Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [*]]) (deftype Box [:Int v]) (defn mk [] (Box 3))",
+        )
+        .file(
+            "b.cl",
+            r#"(import [primitives [*]]) (deftype Box [:Int v]) (defn mk [] (Box 4))"#,
+        )
+        .user(
+            r#"(import [primitives [*]])
+(import [a []]) (import [b []])
+(deftrait Sz (sz [x] Int))
+"#,
+        );
+    let first = cr
+        .stdin(
+            r#"(impl Sz a/Box (defn sz [_] 1))
+(impl Sz b/Box (defn sz [_] 20))
+"#,
+        )
+        .output()
+        .assert_ok();
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.contains("a/Box") && saved.contains("b/Box"),
+        "both impls must persist: {saved}"
+    );
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(sz (a/mk))\n(sz (b/mk))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=artifact-underkey locus=src/save.rs::impl_enumeration found=S124 owner=/dev
+#[test]
+fn s124_1064_subject_loaded() {
+    let cr = Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [*]]) (deftype Box [:Int v]) (defn mk [] (Box 3))",
+        )
+        .file(
+            "b.cl",
+            r#"(import [primitives [*]]) (deftype Box [:Int v]) (defn mk [] (Box 4))"#,
+        )
+        .user(
+            r#"(import [primitives [*]])
+(import [a []]) (import [b []])
+(deftrait Sz (sz [x] Int))
+(impl Sz a/Box (defn sz [_] 1))
+(impl Sz b/Box (defn sz [_] 20))
+"#,
+        );
+    let first = cr.stdin(r#"(defn extra [] 5)"#).output().assert_ok();
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.contains("a/Box") && saved.contains("b/Box"),
+        "both impls must persist: {saved}"
+    );
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(sz (a/mk))\n(sz (b/mk))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+#[test]
+fn s124_1064_control_entered() {
+    let cr = Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [*]]) (deftype Box [:Int v]) (defn mk [] (Box 3))",
+        )
+        .file(
+            "b.cl",
+            r#"(import [primitives [*]]) (deftype Crate [:Int v]) (defn mk [] (Crate 4))"#,
+        )
+        .user(
+            r#"(import [primitives [*]])
+(import [a []]) (import [b []])
+(deftrait Sz (sz [x] Int))
+"#,
+        );
+    let first = cr
+        .stdin(
+            r#"(impl Sz a/Box (defn sz [_] 1))
+(impl Sz b/Crate (defn sz [_] 20))
+"#,
+        )
+        .output()
+        .assert_ok();
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.contains("a/Box") && saved.contains("b/Crate"),
+        "both impls must persist: {saved}"
+    );
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(sz (a/mk))\n(sz (b/mk))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+#[test]
+fn s124_1064_control_loaded() {
+    let cr = Cranelisp::new()
+        .file(
+            "a.cl",
+            "(import [primitives [*]]) (deftype Box [:Int v]) (defn mk [] (Box 3))",
+        )
+        .file(
+            "b.cl",
+            r#"(import [primitives [*]]) (deftype Crate [:Int v]) (defn mk [] (Crate 4))"#,
+        )
+        .user(
+            r#"(import [primitives [*]])
+(import [a []]) (import [b []])
+(deftrait Sz (sz [x] Int))
+(impl Sz a/Box (defn sz [_] 1))
+(impl Sz b/Crate (defn sz [_] 20))
+"#,
+        );
+    let first = cr.stdin(r#"(defn extra [] 5)"#).output().assert_ok();
+    let saved = first.read_tmp("user.cl");
+    assert!(
+        saved.contains("a/Box") && saved.contains("b/Crate"),
+        "both impls must persist: {saved}"
+    );
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(sz (a/mk))\n(sz (b/mk))\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=partial-record-update locus=src/save.rs::multi_definition_record found=S124 owner=/dev
+#[test]
+fn s124_1005_a_begin() {
+    let first = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [add-i64 Pure Int]])
+(begin (defn f [] 1) (defn g [] 10))
+(defn g [] 20)
+"#,
+        )
+        .output()
+        .assert_ok();
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f)\n(g)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=partial-record-update locus=src/save.rs::multi_definition_record found=S124 owner=/dev
+#[test]
+fn s124_1005_a_macro() {
+    let first = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [add-i64 Pure Int]])
+(defmacro mk2 [a b] `(begin (defn ~a [] 1) (defn ~b [] 10)))
+(mk2 f g)
+(defn g [] 20)
+"#,
+        )
+        .output()
+        .assert_ok();
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f)\n(g)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+#[test]
+fn s124_1005_a_unchanged_control() {
+    let first = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [add-i64 Pure Int]])
+(begin (defn f [] 1) (defn g [] 10))
+
+"#,
+        )
+        .output()
+        .assert_ok();
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f)\n(g)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 10")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+#[test]
+fn s124_1005_a_plain_control() {
+    let first = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [add-i64 Pure Int]])
+(defn f [] 1)
+(defn g [] 10)
+(defn g [] 20)
+"#,
+        )
+        .output()
+        .assert_ok();
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f)\n(g)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+#[test]
+fn s124_1005_a_both_control() {
+    let first = Cranelisp::new()
+        .stdin(
+            r#"(import [primitives [add-i64 Pure Int]])
+(begin (defn f [] 1) (defn g [] 10))
+(defn f [] 2)
+(defn g [] 20)
+"#,
+        )
+        .output()
+        .assert_ok();
+    first
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f)\n(g)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=authored-order-loss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_1005_b_names() {
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(defn z [] 1)
+(defn y [] 2)
+(defn x [] 3)"#,
+        )
+        .output()
+        .assert_ok();
+    let saved = out.read_tmp("user.cl");
+    let positions = [r#"(defn z"#, r#"(defn y"#, r#"(defn x"#].map(|s| {
+        saved
+            .find(s)
+            .unwrap_or_else(|| panic!("missing {s}: {saved}"))
+    });
+    assert!(
+        positions.windows(2).all(|p| p[0] < p[1]),
+        "authored order: {saved}"
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=authored-order-loss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_1005_b_kinds() {
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(defn z [] 1)
+(deftype T K)
+(defn y [] 2)
+(defmacro m [] (quote 7))
+(defn x [] 3)"#,
+        )
+        .output()
+        .assert_ok();
+    let saved = out.read_tmp("user.cl");
+    let positions = [
+        r#"(defn z"#,
+        r#"(deftype T"#,
+        r#"(defn y"#,
+        r#"(defmacro m"#,
+        r#"(defn x"#,
+    ]
+    .map(|s| {
+        saved
+            .find(s)
+            .unwrap_or_else(|| panic!("missing {s}: {saved}"))
+    });
+    assert!(
+        positions.windows(2).all(|p| p[0] < p[1]),
+        "authored order: {saved}"
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=authored-order-loss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_1005_b_redefine() {
+    let out = Cranelisp::new()
+        .stdin(
+            r#"(defn z [] 1)
+(defmacro m [] (quote 41))
+(defn z [] 2)"#,
+        )
+        .output()
+        .assert_ok();
+    let saved = out.read_tmp("user.cl");
+    let positions = [r#"(defn z"#, r#"(defmacro m"#].map(|s| {
+        saved
+            .find(s)
+            .unwrap_or_else(|| panic!("missing {s}: {saved}"))
+    });
+    assert!(
+        positions.windows(2).all(|p| p[0] < p[1]),
+        "authored order: {saved}"
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+// defect: class=authored-order-loss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_1005_c_structural_order() {
+    let out=Cranelisp::new().file("user/sub.cl", "(defn q [] 2)").stdin("(import [primitives [add-i64]])\n(defn z [] 1)\n(export [primitives [add-i64]])\n(mod sub)\n(import [primitives [Pure]])\n").output().assert_ok();
+    let s = out.read_tmp("user.cl");
+    let m = s.find("(mod ").expect(&s);
+    let e = s.find("(export ").expect(&s);
+    let i = s.find("(import ").expect(&s);
+    assert!(m < e && e < i, "{s}");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4
+#[test]
+fn s124_1005_d_macro_dependency_fence() {
+    let out=Cranelisp::new().stdin("(import [primitives [add-i64]])\n(defn f [] 1)\n(defmacro m [] (quote 41))\n(defn f [] (add-i64 (m) 1))\n").output().assert_ok();
+    let s = out.read_tmp("user.cl");
+    assert!(
+        s.find("(defmacro m").expect(&s) < s.find("(defn f").expect(&s),
+        "{s}"
+    );
+    out.run_again()
+        .cli_flag("--no-cache")
+        .stdin("(f)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
+}
