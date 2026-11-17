@@ -2260,3 +2260,124 @@ fn s124_1073_file_control_run() {
 fn s124_1073_file_control_link() {
     s124_refused_cluster_file("link");
 }
+
+fn s124_same_cluster_overload(reverse: bool, free_control: bool, mode: &str) {
+    let header = "(deftype (Opt a) Nope (Yep [:a v]))\n(deftrait Size (size [self] Int))\n";
+    let helper = "(defn h3 ([x] 1) ([x k] 2))\n";
+    let caller = if free_control {
+        "(defn g [o] (match o [Nope 0 (Yep x) (h3 x)]))\n"
+    } else {
+        "(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (h3 x)])))\n"
+    };
+    let definitions = if reverse {
+        format!("{header}{caller}{helper}")
+    } else {
+        format!("{header}{helper}{caller}")
+    };
+    let name = if free_control { "g" } else { "size" };
+    let main = format!("(defn main [] (Pure (add-i64 40 ({name} (Yep 3)))))");
+    let program = format!("(import [primitives [*]])\n{definitions}{main}\n");
+    let cr = Cranelisp::new();
+    let out = match mode {
+        "run" => cr.file("p.cl", &program).run("p.cl").output(),
+        "link" => cr.file("p.cl", &program).link_then_run("p.cl").output(),
+        "repl" => cr
+            .stdin(&format!(
+                "(import [primitives [*]])\n(begin {definitions}{main})\n(main)\n"
+            ))
+            .output(),
+        _ => unreachable!(),
+    };
+    if mode == "repl" {
+        out.assert_ok()
+            .assert_stdout_contains(":primitives/Int 41")
+            .assert_stdout_does_not_contain("error:");
+    } else {
+        out.assert_exit(41);
+    }
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 earlier-turn control
+#[test]
+fn s124_1074_earlier_turn_control_repl() {
+    Cranelisp::new().stdin("(import [primitives [*]])\n(deftype (Opt a) Nope (Yep [:a v]))\n(deftrait Size (size [self] Int))\n(defn h3 ([x] 1) ([x k] 2))\n(impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (h3 x)])))\n(size (Yep 3))\n")
+        .output().assert_ok().assert_stdout_contains(":primitives/Int 1").assert_stdout_does_not_contain("error:");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 subject, forward declarations
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_1074_subject_forward_run() {
+    s124_same_cluster_overload(false, false, "run");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 subject, forward declarations
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_1074_subject_forward_link() {
+    s124_same_cluster_overload(false, false, "link");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 subject, forward declarations
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_1074_subject_forward_repl() {
+    s124_same_cluster_overload(false, false, "repl");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 free_control, forward declarations
+#[test]
+fn s124_1074_free_control_forward_run() {
+    s124_same_cluster_overload(false, true, "run");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 free_control, forward declarations
+#[test]
+fn s124_1074_free_control_forward_link() {
+    s124_same_cluster_overload(false, true, "link");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 free_control, forward declarations
+#[test]
+fn s124_1074_free_control_forward_repl() {
+    s124_same_cluster_overload(false, true, "repl");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 subject, reverse declarations
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_1074_subject_reverse_run() {
+    s124_same_cluster_overload(true, false, "run");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 subject, reverse declarations
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_1074_subject_reverse_link() {
+    s124_same_cluster_overload(true, false, "link");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 subject, reverse declarations
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_1074_subject_reverse_repl() {
+    s124_same_cluster_overload(true, false, "repl");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 free_control, reverse declarations
+#[test]
+fn s124_1074_free_control_reverse_run() {
+    s124_same_cluster_overload(true, true, "run");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 free_control, reverse declarations
+#[test]
+fn s124_1074_free_control_reverse_link() {
+    s124_same_cluster_overload(true, true, "link");
+}
+
+// spec: spec/05-definitions.md §5.13.1 — ACT-1074 free_control, reverse declarations
+#[test]
+fn s124_1074_free_control_reverse_repl() {
+    s124_same_cluster_overload(true, true, "repl");
+}
