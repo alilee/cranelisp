@@ -92,7 +92,7 @@ the consuming dec sequences (those stay per-module by design).
   emits ZERO IR when its env gate is off (the codegen-time gate lives in the
   backend). `reuse_hit`/`reuse_miss` print `0` — placeholder honesty; their
   runtime writer lands at increment-II slot-reuse (`ownership-codegen.md` §6.5).
-  `stack_slot`/`rc_nonatomic`/`rc_atomic` in `[RC_STATS]` are **codegen-time**
+  `rc_nonatomic`/`rc_atomic` in `[RC_STATS]` are **codegen-time**
   counts (backend is the writer) — honestly `0` in a separate `--link` run.
 - **Reactor `host` is a raw `*mut Reactor`, NOT derived from `&Reactor`** (B1
   provenance, `build_host_ctx`): poll-fns reborrow `&mut` and mutate through it,

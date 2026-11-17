@@ -155,16 +155,15 @@ pub(crate) fn tally_rc_dec() {
 // H2 (S102 increment I) — per-mechanism attribution counters
 // ---------------------------------------------------------------------------
 //
-// The B3 read path landed three ownership mechanisms (borrow-elision B3.2,
-// confined non-atomic RC B3.3, escape→stack-slot B3.4). The `[RC_STATS]`
-// surface attributes them per-mechanism for the I-G3/I-G7 acceptance gates.
+// The `[RC_STATS]` surface attributes the ownership mechanisms per-mechanism
+// for the I-G3/I-G7 acceptance gates.
 //
 // These are **codegen-time** counts (accumulated while the backend LOWERS a
 // program), NOT runtime tallies — so there is no emitted IR call and the
 // byte-identical-off discipline is untouched (a stat-family printed
 // unconditionally never perturbs the compiled code). The backend
 // (`cranelisp-backend`, which depends on this crate) is the sole writer,
-// pushing via [`tally_stack_slot`] / [`tally_rc_emit`] at emission time; this
+// pushing via [`tally_rc_emit`] at emission time; this
 // crate OWNS the counters because it owns the process-exit print surface (the
 // backend cannot: no dependency edge points the other way). In `--run`/JIT the
 // compile and run share one process, so the counts are populated before the
@@ -176,9 +175,6 @@ pub(crate) fn tally_rc_dec() {
 // track work (`design/backend/ownership-codegen.md` §6). They print as `0` so
 // the counter FAMILY is present; they gain a writer when reuse lands.
 
-/// Backend-emitted stack-slot allocations (B3.4 escape→stack-slot). Codegen-
-/// time, process-global, monotone.
-static STACK_SLOT_HITS: AtomicU64 = AtomicU64::new(0);
 /// Total emitted inline RC ops (B3.3 arm-discrimination denominator).
 static RC_EMIT_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Emitted RC ops that took the NON-ATOMIC arm (B3.3 confined RC).
@@ -191,7 +187,7 @@ static RC_EMIT_NONATOMIC: AtomicU64 = AtomicU64::new(0);
 // `reuse_hit` / `reuse_miss` are the drop-guided-reuse / COW discriminator
 // (`design/backend/ownership-codegen.md` §6.5). Because reuse permission is
 // **dynamic** (rc==1 per call), the hit/miss split at a COW/reuse site is a
-// RUNTIME tally (like `rc_inc`/`rc_dec`, not the codegen-time `stack_slot` /
+// RUNTIME tally (like `rc_inc`/`rc_dec`, not the codegen-time
 // `rc_nonatomic` family): the backend emits a `runtime/reuse_hit` /
 // `runtime/reuse_miss` catalog-helper call on the in-place-reuse / copy arm of
 // every `emit_vec_set_cow_core` / `emit_vec_push_cow_core` site, ONLY under its
@@ -218,13 +214,6 @@ static REUSE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 // so `/qa`'s L-D5 attribution lane reads the per-extern pair population.
 static STR_LEN_ADAPT_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Tally one backend-emitted stack-slot allocation (B3.4). Called from
-/// `cranelisp-backend::heap::emit_stack_alloc` at codegen time.
-#[inline]
-pub fn tally_stack_slot() {
-    STACK_SLOT_HITS.fetch_add(1, Ordering::Relaxed);
-}
-
 /// Tally one emitted inline RC op, discriminating the non-atomic arm (B3.3
 /// confined RC) from the atomic arm. Called once per emitted inc/dec from
 /// `cranelisp-backend::heap::use_nonatomic_arm` at codegen time.
@@ -234,13 +223,6 @@ pub fn tally_rc_emit(nonatomic: bool) {
     if nonatomic {
         RC_EMIT_NONATOMIC.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-/// Codegen-time stack-slot-hit count (B3.4). The print surface's source for
-/// `stack_slot=…`; also read back by the backend's `heap::stack_slot_hits`
-/// accessor so its unit matrix reads the single source of truth.
-pub fn stack_slot_hits() -> u64 {
-    STACK_SLOT_HITS.load(Ordering::Relaxed)
 }
 
 /// Tally one drop-guided-reuse / COW **hit** (in-place reuse arm taken at
@@ -258,7 +240,7 @@ pub(crate) fn tally_reuse_miss() {
 }
 
 /// Runtime `(reuse_hit, reuse_miss)` tallies (§6.5). `#[cfg(test)]`: unlike the
-/// codegen-time `stack_slot_hits`/`rc_emit_counts` (which the backend reads back
+/// codegen-time `rc_emit_counts` (which the backend reads back
 /// as the SSOT for its H2 unit matrix), the reuse split is a RUNTIME tally, so
 /// the backend never reads it — the only consumer is this crate's own counter
 /// unit tests. Kept off both the public surface AND the non-test build (no
@@ -293,8 +275,7 @@ pub fn rc_emit_counts() -> (u64, u64) {
 /// (`rc_inc rc_dec allocs deallocs`) keep their order and position so every
 /// existing token/regex parser matches; the per-mechanism family is appended.
 ///
-/// Grammar (`design/backend/ownership-codegen.md` §13.2): `stack_slot` =
-/// codegen stack-slot hits (B3.4); `reuse_hit`/`reuse_miss` = increment-II
+/// Grammar (`design/backend/ownership-codegen.md` §13.2.1): `reuse_hit`/`reuse_miss` = increment-II
 /// placeholders (always `0` until slot-reuse lands, §6); `rc_nonatomic`/
 /// `rc_atomic` = emitted-op arm split (B3.3), consumer computes the share
 /// `rc_nonatomic / (rc_nonatomic + rc_atomic)`; `alloc_bytes` = per-run alloc
@@ -319,7 +300,6 @@ fn rc_stats_line() -> String {
     // unconditionally, alongside `ALLOC_COUNT`) — no new hot-path cost; only this
     // at-exit print (itself only wired when `CRANELISP_RC_STATS` is set) reads it.
     let alloc_bytes = alloc::bytes_allocated();
-    let stack_slot = STACK_SLOT_HITS.load(Ordering::Relaxed);
     let reuse_hit = REUSE_HIT_COUNT.load(Ordering::Relaxed);
     let reuse_miss = REUSE_MISS_COUNT.load(Ordering::Relaxed);
     let rc_nonatomic = RC_EMIT_NONATOMIC.load(Ordering::Relaxed);
@@ -329,7 +309,7 @@ fn rc_stats_line() -> String {
     let str_len_adapt = STR_LEN_ADAPT_COUNT.load(Ordering::Relaxed);
     format!(
         "[RC_STATS] rc_inc={inc} rc_dec={dec} allocs={allocs} deallocs={deallocs} \
-         stack_slot={stack_slot} reuse_hit={reuse_hit} reuse_miss={reuse_miss} \
+         reuse_hit={reuse_hit} reuse_miss={reuse_miss} \
          rc_nonatomic={rc_nonatomic} rc_atomic={rc_atomic} str-len_adapt={str_len_adapt} \
          alloc_bytes={alloc_bytes}"
     )

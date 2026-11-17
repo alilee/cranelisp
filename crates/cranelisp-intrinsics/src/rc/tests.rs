@@ -227,41 +227,6 @@ fn s99_measurement_gates_off_by_default() {
 // must NOT move; the reuse placeholders that must stay 0).
 // ---------------------------------------------------------------------------
 
-// --- stack-slot counter (B3.4) ---
-
-// spec: design/backend/ownership-codegen.md §13.2 — stack_slot hit tally advances
-#[test]
-fn h2_tally_stack_slot_advances_the_counter() {
-    let h0 = stack_slot_hits();
-    tally_stack_slot();
-    assert_eq!(
-        stack_slot_hits(),
-        h0 + 1,
-        "one stack-slot tally must advance by 1"
-    );
-    tally_stack_slot();
-    tally_stack_slot();
-    assert_eq!(
-        stack_slot_hits(),
-        h0 + 3,
-        "two more tallies must advance by 2"
-    );
-}
-
-// spec: design/backend/ownership-codegen.md §13.2 — NEGATIVE: no tally ⇒ no move
-#[test]
-fn h2_stack_slot_counter_does_not_move_without_a_tally() {
-    let h0 = stack_slot_hits();
-    // A non-stack mechanism firing (an RC-emit tally) must NOT touch stack_slot.
-    tally_rc_emit(false);
-    tally_rc_emit(true);
-    assert_eq!(
-        stack_slot_hits(),
-        h0,
-        "stack_slot must not advance when only RC-emit tallies fire"
-    );
-}
-
 // --- non-atomic-op-share counter (B3.3): the arm discrimination ---
 
 // spec: design/backend/ownership-codegen.md §13.2 — atomic arm bumps total only
@@ -318,7 +283,6 @@ fn h2_stats_line_carries_the_per_mechanism_family() {
         "rc_dec=",
         "allocs=",
         "deallocs=", // the pre-H2 fields, order kept
-        "stack_slot=",
         "reuse_hit=",
         "reuse_miss=",
         "rc_nonatomic=",
@@ -337,10 +301,28 @@ fn h2_stats_line_carries_the_per_mechanism_family() {
         "leading field order changed: {line}"
     );
     let deallocs_at = line.find("deallocs=").unwrap();
-    let stack_at = line.find("stack_slot=").unwrap();
+    let family_at = line.find("reuse_hit=").unwrap();
     assert!(
-        stack_at > deallocs_at,
+        family_at > deallocs_at,
         "per-mechanism family must follow the original four"
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §13.2.1 — NEGATIVE: stack placement
+// retired (§4, packet row D5), so the line reports no `stack_slot` field and the
+// family opens directly after `deallocs`.
+#[test]
+fn h2_stats_line_has_no_stack_slot_field() {
+    let line = rc_stats_line();
+    assert!(
+        !line.contains("stack_slot"),
+        "retired stack_slot field still printed: {line}"
+    );
+    let after_deallocs = &line[line.find("deallocs=").unwrap()..];
+    let next_field = after_deallocs.split_whitespace().nth(1).unwrap();
+    assert!(
+        next_field.starts_with("reuse_hit="),
+        "the field after deallocs must be reuse_hit, got `{next_field}`: {line}"
     );
 }
 
