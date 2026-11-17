@@ -7004,43 +7004,128 @@ fn s124_1005_b_restart_value_control() {
         .assert_stdout_does_not_contain("[errors:");
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4 — T-D7-b partial reduction
-// defect: class=partial-record-update locus=src/save.rs::multi_definition_record found=S124 owner=/dev — provisional; filing/attribution returned to QA
-#[test]
-fn s124_overload_definition_survives_restart_partial() {
-    let out = Cranelisp::new()
-        .stdin(
-            "(import [primitives [*]])\n(defn f ([:Int n] n) ([:String s] (str-len s)))\n(f 7)\n",
-        )
-        .output()
-        .assert_ok()
-        .assert_stdout_contains(":primitives/Int 7");
-    let saved = out.read_tmp("user.cl");
-    assert!(
-        saved.contains("(defn f"),
-        "overload must be recorded: {saved}"
-    );
-    out.run_again()
-        .cli_flag("--no-cache")
-        .stdin("(f 7)\n")
+fn s124_persist_family(leg: &str) {
+    let by_arity = matches!(leg, "arity" | "other_module");
+    let single = matches!(leg, "single_entered_control" | "single_loaded_control");
+    let definition = if single {
+        "(defn f [:Int n] n)"
+    } else if by_arity {
+        "(defn g ([n] n) ([a b] (add-i64 a b)))"
+    } else {
+        "(defn f ([:Int n] n) ([:String s] (str-len s)))"
+    };
+    let calls = if single {
+        "(f 7)\n"
+    } else if by_arity {
+        "(g 7)\n(g 1 2)\n"
+    } else {
+        "(f 7)\n(f \"ab\")\n"
+    };
+    let source = format!("(import [primitives [*]])\n{definition}\n");
+    let loaded = matches!(leg, "loaded" | "single_loaded_control");
+    let other = leg == "other_module";
+    let cr = Cranelisp::new();
+    let first = if other {
+        cr.file("m.cl", &source)
+            .stdin(&format!("/mod m\n{calls}(defn extra [] 5)\n"))
+    } else if loaded {
+        cr.user(&source)
+            .stdin(&format!("{calls}(defn extra [] 5)\n"))
+    } else {
+        cr.stdin(&format!("{source}{calls}"))
+    };
+    let out = first
         .output()
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 7")
-        .assert_stdout_does_not_contain("[errors:");
+        .assert_stdout_does_not_contain("[errors:")
+        .assert_stdout_does_not_contain("error:");
+    if !single {
+        assert!(
+            out.stdout.contains(if by_arity {
+                ":primitives/Int 3"
+            } else {
+                ":primitives/Int 2"
+            }),
+            "{}",
+            out.stdout
+        );
+    }
+    let saved = out.read_tmp(if other { "m.cl" } else { "user.cl" });
+    let name = if by_arity { "g" } else { "f" };
+    assert!(
+        saved.contains(&format!("(defn {name}")),
+        "family must remain in regenerated source ({leg}): {saved}"
+    );
+    if other || loaded {
+        assert!(saved.contains("(defn extra"), "{saved}");
+    }
+    let restart_input = format!(
+        "{}{calls}{}",
+        if other { "/mod m\n" } else { "" },
+        if other || loaded { "(extra)\n" } else { "" }
+    );
+    let restart = out
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin(&restart_input)
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("[errors:")
+        .assert_stdout_does_not_contain("error:");
+    if !single {
+        assert!(
+            restart.stdout.contains(if by_arity {
+                ":primitives/Int 3"
+            } else {
+                ":primitives/Int 2"
+            }),
+            "both clauses must survive: {}",
+            restart.stdout
+        );
+    }
+    if other || loaded {
+        restart.assert_stdout_contains(":primitives/Int 5");
+    }
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4 — single-signature control
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1068 entered
+// defect: class=enumeration-miss locus=src/save.rs::function_section found=S124 owner=/dev
+#[test]
+fn s124_overload_definition_survives_restart() {
+    s124_persist_family("entered");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1068 arity
+// defect: class=enumeration-miss locus=src/save.rs::function_section found=S124 owner=/dev
+#[test]
+fn s124_1068_arity_family_survives_restart() {
+    s124_persist_family("arity");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1068 loaded
+// defect: class=enumeration-miss locus=src/save.rs::function_section found=S124 owner=/dev
+#[test]
+fn s124_1068_file_loaded_family_survives_regeneration() {
+    s124_persist_family("loaded");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1068 other_module
+// defect: class=enumeration-miss locus=src/save.rs::function_section found=S124 owner=/dev
+#[test]
+fn s124_1068_other_module_family_survives_regeneration() {
+    s124_persist_family("other_module");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1068 single_entered_control
 #[test]
 fn s124_single_definition_restart_control() {
-    let out = Cranelisp::new()
-        .stdin("(defn f [:primitives/Int n] n)\n(f 7)\n")
-        .output()
-        .assert_ok()
-        .assert_stdout_contains(":primitives/Int 7");
-    out.run_again()
-        .cli_flag("--no-cache")
-        .stdin("(f 7)\n")
-        .output()
-        .assert_ok()
-        .assert_stdout_contains(":primitives/Int 7");
+    s124_persist_family("single_entered_control");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.4 — REPRO-1068 single_loaded_control
+#[test]
+fn s124_1068_file_loaded_single_control() {
+    s124_persist_family("single_loaded_control");
 }
