@@ -219,6 +219,44 @@ fn invalid_qualified_impl_trait_does_not_fall_back_to_same_bare_trait() {
     );
 }
 
+// spec: 08-modules §8.6.5 — an impl head whose spelling names two visible
+// traits reports the resolver's ambiguity with both canonical candidates; a
+// head naming no trait still reads `unknown trait`.
+#[test]
+fn ambiguous_impl_head_names_both_candidates_and_missing_head_is_unknown() {
+    let mut tc = tf_prims();
+    let tma = ModuleFullPath::from("tma");
+    let tmb = ModuleFullPath::from("tmb");
+    for module in [&tma, &tmb] {
+        tc.set_current_module(module.clone());
+        tc.register_trait_decl_self(&disp_decl("T")).unwrap();
+    }
+    tc.set_current_module(ModuleFullPath::from("user"));
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+    seed_glob_import(&mut tc, &tma);
+    seed_glob_import(&mut tc, &tmb);
+    let int = || TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int")));
+
+    let err = tc
+        .register_trait_impl_self(&disp_impl("T", int()))
+        .unwrap_err();
+    let msg = err.message();
+    assert!(
+        msg.contains("ambiguous") && msg.contains("tma/T") && msg.contains("tmb/T"),
+        "{msg}"
+    );
+    assert!(!msg.contains("unknown trait"), "{msg}");
+    assert!(!tc.has_impl(&TraitName::from("T"), &TypeName::from("Int")));
+
+    let missing = tc
+        .register_trait_impl_self(&disp_impl("Absent", int()))
+        .unwrap_err();
+    assert!(
+        missing.message().contains("unknown trait: Absent"),
+        "{missing:?}"
+    );
+}
+
 // spec: 07-traits §7.3 — impl methods must match the declaration's arity.
 #[test]
 fn impl_method_too_few_parameters_rejected_before_enrollment() {

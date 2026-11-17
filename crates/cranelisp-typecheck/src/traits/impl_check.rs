@@ -71,7 +71,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let resolved =
             self.scope_resolve(state, &written_name, span)
                 .map_err(|error| match error {
-                    cranelisp_types::ResolveError::PrivateInaccessible { .. } => {
+                    cranelisp_types::ResolveError::PrivateInaccessible { .. }
+                    | cranelisp_types::ResolveError::Ambiguous { .. } => {
                         CranelispError::from(error)
                     }
                     _ => CranelispError::TypeError {
