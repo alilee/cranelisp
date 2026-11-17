@@ -5909,3 +5909,157 @@ fn s124_modules_same_mount_same_form() {
     out.assert_stdout_contains(":primitives/Int 7")
         .assert_stdout_does_not_contain("Error:");
 }
+
+#[derive(Clone, Copy)]
+enum CandidateSelectionLeg {
+    PolymorphicCall,
+    PolymorphicValue,
+    OneCandidate,
+    MonomorphicCall,
+}
+
+fn s124_selected_candidate_value(mode: &str, leg: CandidateSelectionLeg) {
+    let monomorphic = matches!(leg, CandidateSelectionLeg::MonomorphicCall);
+    let mut fixture = Cranelisp::new()
+        .file(
+            "m.cl",
+            if monomorphic {
+                "(defn conv [a] (primitives/add-i64 a 100))"
+            } else {
+                "(defn conv [a f] (f (primitives/add-i64 a 100)))"
+            },
+        )
+        .file("n.cl", "(defn conv [s] (primitives/str-len s))");
+    if mode != "link" {
+        fixture = fixture.cli_flag("--no-cache");
+    }
+    let second_import = if matches!(leg, CandidateSelectionLeg::OneCandidate) {
+        ""
+    } else {
+        "(import [n [conv]])\n"
+    };
+    let definitions = format!(
+        "(import [primitives [Pure add-i64]])\n(import [m [conv]])\n{second_import}{}",
+        if matches!(leg, CandidateSelectionLeg::PolymorphicValue) {
+            "(defn app [g] (g 5 (fn [x] (add-i64 x 1))))\n"
+        } else {
+            ""
+        },
+    );
+    let expression = match leg {
+        CandidateSelectionLeg::PolymorphicValue => "(app conv)",
+        CandidateSelectionLeg::MonomorphicCall => "(conv 5)",
+        _ => "(conv 5 (fn [x] (add-i64 x 1)))",
+    };
+    fixture = match mode {
+        "repl" => fixture
+            .repl()
+            .stdin(&format!("{definitions}{expression}\n")),
+        "run" | "link" => {
+            let fixture = fixture.file(
+                "p.cl",
+                &format!("{definitions}(defn main [] (Pure {expression}))\n"),
+            );
+            if mode == "run" {
+                fixture.run("p.cl")
+            } else {
+                fixture.link_then_run("p.cl")
+            }
+        }
+        _ => unreachable!(),
+    };
+    let out = fixture.output();
+    let diagnostics = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !diagnostics.contains("undefined function")
+            && !diagnostics.contains("reached codegen without a mono"),
+        "selected candidate must have a concrete callable instance: {diagnostics}"
+    );
+    let expected = if monomorphic { 105 } else { 106 };
+    if mode == "repl" {
+        out.assert_ok()
+            .assert_stdout_contains(&format!(":primitives/Int {expected}"))
+            .assert_stdout_does_not_contain("[errors:")
+            .assert_stdout_does_not_contain("error:");
+    } else {
+        out.assert_exit(expected);
+    }
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic callable from two candidates
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+#[test]
+fn s124_1075_polymorphic_call_run() {
+    s124_selected_candidate_value("run", CandidateSelectionLeg::PolymorphicCall);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic callable from two candidates
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+#[test]
+fn s124_1075_polymorphic_call_link() {
+    s124_selected_candidate_value("link", CandidateSelectionLeg::PolymorphicCall);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic callable from two candidates
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+#[test]
+fn s124_1075_polymorphic_call_repl() {
+    s124_selected_candidate_value("repl", CandidateSelectionLeg::PolymorphicCall);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic value by the expected function type
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+#[test]
+fn s124_1075_polymorphic_value_run() {
+    s124_selected_candidate_value("run", CandidateSelectionLeg::PolymorphicValue);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic value by the expected function type
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+#[test]
+fn s124_1075_polymorphic_value_link() {
+    s124_selected_candidate_value("link", CandidateSelectionLeg::PolymorphicValue);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic value by the expected function type
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+#[test]
+fn s124_1075_polymorphic_value_repl() {
+    s124_selected_candidate_value("repl", CandidateSelectionLeg::PolymorphicValue);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 control — the same polymorphic callable with one candidate
+#[test]
+fn s124_1075_one_candidate_control_run() {
+    s124_selected_candidate_value("run", CandidateSelectionLeg::OneCandidate);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 control — the same polymorphic callable with one candidate
+#[test]
+fn s124_1075_one_candidate_control_link() {
+    s124_selected_candidate_value("link", CandidateSelectionLeg::OneCandidate);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 control — the same polymorphic callable with one candidate
+#[test]
+fn s124_1075_one_candidate_control_repl() {
+    s124_selected_candidate_value("repl", CandidateSelectionLeg::OneCandidate);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 control — select a monomorphic callable from two candidates
+#[test]
+fn s124_1075_monomorphic_control_run() {
+    s124_selected_candidate_value("run", CandidateSelectionLeg::MonomorphicCall);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 control — select a monomorphic callable from two candidates
+#[test]
+fn s124_1075_monomorphic_control_link() {
+    s124_selected_candidate_value("link", CandidateSelectionLeg::MonomorphicCall);
+}
+
+// spec: spec/08-modules.md §8.6.5 — ACT-1075 control — select a monomorphic callable from two candidates
+#[test]
+fn s124_1075_monomorphic_control_repl() {
+    s124_selected_candidate_value("repl", CandidateSelectionLeg::MonomorphicCall);
+}
