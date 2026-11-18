@@ -2963,7 +2963,7 @@ fn restored_parent_with_a_missed_child(
     let child = mod_path("P.c");
     sched.register_module(child.clone(), no_sexps(), true);
     sched.register_module_cached_no_object(parent.clone(), HashSet::new(), vec![child.clone()]);
-    sched.end_restore(&parent);
+    sched.end_restore(&parent, &Ok(()));
     (parent, child)
 }
 
@@ -3039,7 +3039,7 @@ fn restored_parent_whose_children_hit_is_terminal_only_after_the_walk() {
     assert!(sched.is_ready_for_declaration(&parent));
     assert!(!sched.is_typechecked(&parent), "the walk has not returned");
 
-    sched.end_restore(&parent);
+    sched.end_restore(&parent, &Ok(()));
     drop(hold);
     assert!(sched.is_typechecked(&parent));
 }
@@ -3064,7 +3064,7 @@ fn a_failed_missed_child_refuses_the_restored_parent() {
     before.register_module(child.clone(), no_sexps(), true);
     before.notify_module_failed(&child, child_error());
     before.register_module_cached_no_object(parent.clone(), HashSet::new(), vec![child.clone()]);
-    before.end_restore(&parent);
+    before.end_restore(&parent, &Ok(()));
     assert!(before.is_failed(&parent), "failed before the walk ended");
     assert_eq!(before.refusing_dependency(&parent), Some(child));
 }
@@ -3093,7 +3093,7 @@ fn restored_parent_object_loaded_while_waiting_completes_in_memory_with_the_pare
     let child = mod_path("P.c");
     sched.register_module(child.clone(), no_sexps(), true);
     let hold = sched.register_module_cached(parent.clone(), HashSet::new(), vec![child.clone()]);
-    sched.end_restore(&parent);
+    sched.end_restore(&parent, &Ok(()));
     drop(hold);
     let CachedLoadAnswer::Claimed(claim) = sched.try_claim_cached_load(&parent) else {
         unreachable!("invariant: the released load is claimable");
@@ -3113,4 +3113,146 @@ fn restored_parent_object_loaded_while_waiting_completes_in_memory_with_the_pare
 
     sched.notify_typecheck_done(&child);
     assert!(sched.lock().modules[&parent].inmem_done);
+}
+
+// spec: design/int/int.md §6.11 A restored parent — a walk that fails before
+// enrolling a declared child refuses the restored parent: it never turns
+// terminal, even when an earlier child it did enrol completes later. The twin
+// whose walk enrolled every child completes after them.
+#[test]
+fn a_failed_restore_walk_fails_the_restored_parent_past_an_earlier_child_in_flight() {
+    let parent = mod_path("P");
+    let enrolled = mod_path("P.a");
+    let unenrolled = mod_path("P.b");
+    let restore = |sched: &CompileScheduler| {
+        sched.register_module(enrolled.clone(), no_sexps(), true);
+        sched.force_typecheck_working_for_test(&enrolled);
+        sched.register_module_cached_no_object(
+            parent.clone(),
+            HashSet::new(),
+            vec![enrolled.clone(), unenrolled.clone()],
+        );
+    };
+
+    let failed = CompileScheduler::new();
+    restore(&failed);
+    let walk_error = CranelispError::ModuleError {
+        message: "cannot read module 'P.b'".into(),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    };
+    failed.end_restore(&parent, &Err(walk_error));
+    assert!(
+        failed.is_failed(&parent),
+        "the failed walk refuses the parent"
+    );
+    assert!(!failed.is_ready_for_declaration(&parent));
+    assert_eq!(
+        failed.take_settled_restorations(),
+        vec![parent.clone()],
+        "the failure hook runs"
+    );
+    let error = failed.lock().modules[&parent]
+        .error
+        .as_ref()
+        .map(wrapped_message);
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|m| m.contains("cannot read module 'P.b'")),
+        "the parent keeps the walk's cause: {error:?}"
+    );
+    failed.notify_typecheck_done(&enrolled);
+    assert!(
+        !failed.is_typechecked(&parent),
+        "the earlier child does not complete it"
+    );
+    assert!(failed.is_failed(&parent));
+
+    let enrolled_all = CompileScheduler::new();
+    restore(&enrolled_all);
+    enrolled_all.register_module(unenrolled.clone(), no_sexps(), true);
+    enrolled_all.end_restore(&parent, &Ok(()));
+    enrolled_all.notify_typecheck_done(&enrolled);
+    assert!(
+        !enrolled_all.is_typechecked(&parent),
+        "waits on the second child"
+    );
+    enrolled_all.notify_typecheck_done(&unenrolled);
+    assert!(enrolled_all.is_typechecked(&parent));
+}
+
+/// A cache-restored parent `P` with an object, declaring the in-flight `P.c`,
+/// its walk ended and its load released.
+fn restored_parent_with_an_object_and_a_missed_child(
+    sched: &CompileScheduler,
+) -> (ModuleFullPath, ModuleFullPath) {
+    let parent = mod_path("P");
+    let child = mod_path("P.c");
+    sched.register_module(child.clone(), no_sexps(), true);
+    let hold = sched.register_module_cached(parent.clone(), HashSet::new(), vec![child.clone()]);
+    sched.end_restore(&parent, &Ok(()));
+    drop(hold);
+    (parent, child)
+}
+
+/// The cached-load readers all see `parent`'s failure: the claim, the
+/// execution wait, and the in-memory completion.
+fn assert_cached_load_refused(sched: &CompileScheduler, parent: &ModuleFullPath) {
+    assert!(sched.is_failed(parent));
+    assert!(
+        matches!(
+            sched.claim_or_await_cached_load(parent),
+            CachedLoadAnswer::Unavailable
+        ),
+        "the claim does not report the object loaded"
+    );
+    assert!(
+        sched.wait_cached_loads_settled().is_err(),
+        "no execution readiness past the parent's failure"
+    );
+    assert!(!sched.lock().modules[parent].inmem_done);
+}
+
+// spec: design/int/int.md §6.11 A restored parent — a child that fails after
+// the restored parent's object loaded refuses the parent, and the load does
+// not report it ready.
+#[test]
+fn restored_parent_loaded_then_child_failed_stays_refused() {
+    let sched = CompileScheduler::new();
+    let (parent, child) = restored_parent_with_an_object_and_a_missed_child(&sched);
+    let CachedLoadAnswer::Claimed(claim) = sched.try_claim_cached_load(&parent) else {
+        unreachable!("invariant: the released load is claimable");
+    };
+    claim.complete_loaded(&[]);
+    sched.notify_module_failed(
+        &child,
+        CranelispError::ModuleError {
+            message: "child body".into(),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        },
+    );
+    assert_cached_load_refused(&sched, &parent);
+}
+
+// spec: design/int/int.md §6.11 A restored parent — a child that fails while
+// the restored parent's object load is claimed refuses the parent, and the
+// load completing afterwards neither completes it in memory nor reports it
+// ready.
+#[test]
+fn restored_parent_child_failed_then_load_completed_stays_refused() {
+    let sched = CompileScheduler::new();
+    let (parent, child) = restored_parent_with_an_object_and_a_missed_child(&sched);
+    let CachedLoadAnswer::Claimed(claim) = sched.try_claim_cached_load(&parent) else {
+        unreachable!("invariant: the released load is claimable");
+    };
+    sched.notify_module_failed(
+        &child,
+        CranelispError::ModuleError {
+            message: "child body".into(),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        },
+    );
+    claim.complete_loaded(&[]);
+    assert_ne!(sched.module_pool(&parent), Some(ModulePool::Complete));
+    assert_cached_load_refused(&sched, &parent);
 }

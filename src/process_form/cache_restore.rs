@@ -123,10 +123,9 @@ pub(super) fn try_cache_hit_load<'a>(
     let load_hold = register_cached_with_scheduler(ctx, dep, dep_file, restored)?;
     let walked = walk_restored_module(ctx, dep, &specs, load_hold.as_ref());
     // The restore ends at publication: `dep` turns terminal through the wait
-    // on its declared children that the walk enrolled (`design/int/int.md`
-    // §6.11, A restored parent). It ends on a failed walk too, as the
-    // terminal registration it replaces did.
-    ctx.scheduler.end_restore(dep);
+    // on its declared children that the walk enrolled, or fails with a walk
+    // that did not enrol them (`design/int/int.md` §6.11, A restored parent).
+    ctx.scheduler.end_restore(dep, &walked);
     if let Some(shared) = ctx.shared_state {
         crate::session_v4::index_worker::on_restorations_settled(shared);
     }

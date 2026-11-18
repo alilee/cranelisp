@@ -412,14 +412,20 @@ impl ModuleState {
     /// The one classification of this module's cached-object load, read by
     /// the claim, the ladder's scan and the execution wait
     /// (`design/int/int.md` §7.1).
+    ///
+    /// A failed module's cached load is failed whatever its progress: a
+    /// restored parent refused by a child may already hold its object in
+    /// memory.
     fn cached_load_state(&self) -> CachedLoadState {
+        if self.pool == ModulePool::Failed && self.cached_object_load != CachedObjectLoad::Absent {
+            return CachedLoadState::Failed;
+        }
         if self.inmem_done {
             return CachedLoadState::Loaded;
         }
         match self.cached_object_load {
             CachedObjectLoad::Absent => CachedLoadState::NotCachedObject,
             CachedObjectLoad::Loaded => CachedLoadState::Loaded,
-            _ if self.pool == ModulePool::Failed => CachedLoadState::Failed,
             CachedObjectLoad::Held => CachedLoadState::Held,
             CachedObjectLoad::Released => CachedLoadState::Claimable,
             CachedObjectLoad::Claimed => CachedLoadState::Claimed,
@@ -1066,11 +1072,14 @@ impl CompileScheduler {
         }
     }
 
-    /// End `module`'s restore once its walk has enrolled every declared child:
-    /// it completes when no child is still in flight, and otherwise waits on
-    /// them (`design/int/int.md` §6.11, *A restored parent*). A no-op for a
-    /// module that is not a restored parent awaiting its walk.
-    pub(crate) fn end_restore(&self, module: &ModuleFullPath) {
+    /// End `module`'s restore once its walk has returned
+    /// (`design/int/int.md` §6.11, *A restored parent*). After a walk that
+    /// enrolled every declared child, the module completes when no child is
+    /// still in flight and otherwise waits on them. After a failed walk, it
+    /// fails with `walk`'s cause: a child the walk did not enrol is not
+    /// registered, so its readiness cannot be read. A no-op for a module that
+    /// is not a restored parent awaiting its walk.
+    pub(crate) fn end_restore(&self, module: &ModuleFullPath, walk: &Result<(), CranelispError>) {
         let mut state = self.lock();
         let awaiting_walk = state.modules.get(module).is_some_and(|ms| {
             ms.pool == ModulePool::TypecheckBlocked
@@ -1078,7 +1087,19 @@ impl CompileScheduler {
                 && ms.blocked_on.is_none()
         });
         if awaiting_walk {
-            Self::advance_restored_parent_locked(&mut state, module);
+            match walk {
+                Ok(()) => Self::advance_restored_parent_locked(&mut state, module),
+                Err(cause) => {
+                    let error = CranelispError::ModuleError {
+                        message: format!(
+                            "restoring module '{module}' from cache failed: {}",
+                            wrapped_message(cause)
+                        ),
+                        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                    };
+                    Self::notify_module_failed_locked(&mut state, module, error);
+                }
+            }
         }
         drop(state);
         self.notify_settled();
@@ -1744,7 +1765,9 @@ impl CompileScheduler {
             for sym in symbols {
                 ms.jit_reserved.remove(sym);
             }
-            ms.inmem_done = ms.awaited_children.is_none();
+            // Neither a restored parent still waiting on its children nor
+            // one a child refused is complete in memory (§6.1.2).
+            ms.inmem_done = ms.pool.is_terminal_typecheck();
             if ms.cached_object_load == CachedObjectLoad::Claimed {
                 ms.cached_object_load = CachedObjectLoad::Loaded;
             }

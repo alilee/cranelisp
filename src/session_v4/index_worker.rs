@@ -2319,7 +2319,7 @@ mod tests {
             std::collections::HashSet::new(),
             vec![child.clone()],
         );
-        shared.scheduler.end_restore(&parent);
+        shared.scheduler.end_restore(&parent, &Ok(()));
         shared
             .importable_indices
             .arm(vec![parent.clone(), child.clone()]);
