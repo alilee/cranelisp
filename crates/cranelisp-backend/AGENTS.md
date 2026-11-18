@@ -11,9 +11,13 @@ and the designs it indexes; this memory links to them and does not restate them.
   (`Cargo.toml`). This is the only crate that names Cranelift types.
 - Mode is the `Module` instance, never a parameter. `compile_to_module` is
   generic over `M: Module + CodeFinalizer` and emits the same CLIF for
-  `JITModule` and `ObjectModule`. There is no object-compile entry: the object
-  path is `compile_to_module::<ObjectModule>` plus the caller's
+  the JIT's module and `ObjectModule`. There is no object-compile entry: the
+  object path is `compile_to_module::<ObjectModule>` plus the caller's
   `finish().emit()`.
+- **The JIT compiles every call far.** `Jit::jit_module` returns a wrapper
+  that clears `colocated` on every callee before compiling; a bare `JITModule`
+  is not a `CodeFinalizer`
+  ([JIT/object convergence §3](../../design/backend/jit-object-convergence.md#3-call-reach-in-the-jit-act-1070)).
 
 ## Rules an edit must not break
 

@@ -14,8 +14,9 @@
 //!
 //! - [`compile_to_module`] — the sole CLIF emission path. Generic over
 //!   `M: Module + CodeFinalizer`: the same body emits byte-identical CLIF
-//!   whether `M` is a `JITModule` (priority/REPL workers, per-symbol
-//!   cardinality) or an `ObjectModule` (nice workers, per-module cardinality).
+//!   whether `M` is the JIT's module from [`jit::Jit::jit_module`]
+//!   (priority/REPL workers, per-symbol cardinality) or an `ObjectModule`
+//!   (nice workers, per-module cardinality).
 //!   **Mode is the `Module` instance the caller passes, never a parameter.**
 //!   There is no separate object-compile entry — the object path is
 //!   `compile_to_module::<ObjectModule>` followed by the **caller** finalising
@@ -345,15 +346,18 @@ pub struct DropGlueArtifact {
 ///
 /// `cranelift_module::Module` does NOT expose `finalize_definitions` or
 /// `get_finalized_function` — those are inherent methods on specific
-/// implementations (`JITModule`) and absent from others (`ObjectModule`,
-/// whose output is bytes via `finish().emit()`, not runtime pointers).
+/// implementations (`cranelift_jit::JITModule`) and absent from others
+/// (`ObjectModule`, whose output is bytes via `finish().emit()`, not runtime
+/// pointers).
 ///
 /// Per `design/backend/compile-to-module.md` §9.1.6 and `/arch` Decision 23,
 /// the JIT/Object split is a capability difference expressed on the `Module`
 /// implementation — not a mode parameter on `compile_to_module`. This trait
-/// provides that capability: `JITModule` implements it with the real
-/// operations; `ObjectModule` implements it with no-ops that surface `None`
-/// so the GOT-slot write phase stores no pointer in object mode.
+/// provides that capability: the JIT's module ([`jit::Jit::jit_module`])
+/// implements it with the real operations; `ObjectModule` implements it with
+/// no-ops that surface `None` so the GOT-slot write phase stores no pointer in
+/// object mode. A bare `JITModule` does not implement it, because it compiles
+/// near calls (`design/backend/jit-object-convergence.md` §3).
 ///
 /// Any new `Module` implementation that `compile_to_module` is asked to
 /// target must provide an impl — either the "real" one (if it has runtime
@@ -361,7 +365,7 @@ pub struct DropGlueArtifact {
 /// an emitter that produces bytes).
 pub trait CodeFinalizer {
     /// Finalize pending definitions so that code pointers become readable.
-    /// For `JITModule`: patches relocations, makes mmap'd pages executable.
+    /// For the JIT's module: patches relocations, makes mmap'd pages executable.
     /// For `ObjectModule`: no-op (bytes are emitted via a later `finish()`).
     ///
     /// Called once per `compile_to_module` invocation after all `define_function`
@@ -394,7 +398,7 @@ pub trait CodeFinalizer {
     ///   Slots with no entry remain zero (empty slots are not currently
     ///   produced by typecheck — every defined function gets a slot).
     ///
-    /// For `JITModule`: no-op. `Jit::new` binds each module's
+    /// For the JIT's module: no-op. `Jit::new` binds each module's
     /// `__cranelisp_got_{M}` symbol to the runtime `SymbolTable.got.base_ptr()`
     /// in the JIT symbol lookup. The `.o` data definition is irrelevant in JIT
     /// mode (no `.o` is emitted).
@@ -418,33 +422,6 @@ pub trait CodeFinalizer {
         slot_count: usize,
         slot_funcs: &[(usize, FuncId)],
     ) -> Result<(), CranelispError>;
-}
-
-impl CodeFinalizer for cranelift_jit::JITModule {
-    fn finalize_for_code_read(&mut self) -> Result<(), CranelispError> {
-        self.finalize_definitions()
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to finalize JIT definitions: {e}"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })
-    }
-
-    fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8> {
-        Some(self.get_finalized_function(func_id))
-    }
-
-    fn define_module_got_data(
-        &mut self,
-        _name: &str,
-        _slot_count: usize,
-        _slot_funcs: &[(usize, FuncId)],
-    ) -> Result<(), CranelispError> {
-        // No-op: `Jit::new` binds the JIT-mode `__cranelisp_got_{M}` symbol
-        // to the runtime SymbolTable.got.base_ptr(). The `.o` data section
-        // GOT shape is unused in JIT mode — no `.o` is emitted. See `/arch`
-        // Decision 23 (two-GOT model).
-        Ok(())
-    }
 }
 
 impl CodeFinalizer for cranelift_object::ObjectModule {
@@ -620,7 +597,7 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// `module.define_module_got_data(...)` to emit the per-module
 /// `__cranelisp_got_{M}` data symbol. The implementation is `Module`-impl-
 /// specific:
-/// - `JITModule`: no-op (`Jit::new` binds this symbol to the runtime
+/// - the JIT's module: no-op (`Jit::new` binds this symbol to the runtime
 ///   `SymbolTable.got.base_ptr()`).
 /// - `ObjectModule`: declares the symbol as `Linkage::Export` with a
 ///   zero-initialized slab of at least `GOT_TABLE_SIZE` slots and writes a
@@ -753,7 +730,7 @@ where
     )?;
 
     // Step 4: Finalize definitions.
-    // For JITModule: patches relocations, makes code pages executable.
+    // For the JIT's module: patches relocations, makes code pages executable.
     // For ObjectModule: no-op (bytes emitted at a later `finish()` call).
     module.finalize_for_code_read()?;
 
@@ -1107,7 +1084,7 @@ fn attribute_body_codegen_error(
 /// Step 4a (S111 R5 §3.1 / `/arch` Decision 23 Bug B fix): emit the per-module
 /// GOT data symbol `__cranelisp_got_{M}`. For ObjectModule this defines a
 /// `Linkage::Export` data symbol with relocation initializers against
-/// each defined function's local symbol; for JITModule this is a no-op
+/// each defined function's local symbol; for the JIT's module this is a no-op
 /// because the JIT-mode definition lives outside `compile_to_module`.
 /// See `define_module_got_data` impls and §5.4 of compile-to-module.md.
 /// Pure extraction — same lock scope + drop point, byte-identical.
@@ -1223,7 +1200,7 @@ fn write_finalized_got_slots<M, C, L>(
                     slot,
                     ptr,
                     provenance: crate::got_observer::GotProvenance::Jit {
-                        // Use the JITModule address as a stable correlator —
+                        // Use the JIT address as a stable correlator —
                         // `module` is a generic `M: Module`, so we cast via a
                         // raw pointer to its address for diagnostic
                         // identification only. The observer must NOT

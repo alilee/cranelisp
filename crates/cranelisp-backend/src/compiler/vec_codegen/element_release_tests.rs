@@ -1,13 +1,13 @@
 use crate::compiler::{CompileContext, FnCompiler};
+use crate::jit::FarCallModule;
 use crate::test_support::{empty_tables, probe_glue_registry};
 use cranelift::prelude::*;
-use cranelift_jit::JITModule;
 use cranelift_module::Module;
 use cranelisp_types::{ConcreteType, CranelispError, ModuleFullPath, Span};
 use std::collections::HashMap;
 
 /// Run `probe` against a body compiler whose builder sits in an open block.
-fn with_compiler(probe: impl FnOnce(&mut FnCompiler<'_, JITModule>)) {
+fn with_compiler(probe: impl FnOnce(&mut FnCompiler<'_, FarCallModule>)) {
     let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
     let ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
     let tables = empty_tables();
@@ -37,7 +37,7 @@ fn with_compiler(probe: impl FnOnce(&mut FnCompiler<'_, JITModule>)) {
     let mut glue = probe_glue_registry(module_path, &ids);
     let mut compiler = FnCompiler::inner(
         builder,
-        jit.jit_module(),
+        jit.far_call_module(),
         ctx,
         crate::compiler::census::Frame::for_test(),
         &mut glue,

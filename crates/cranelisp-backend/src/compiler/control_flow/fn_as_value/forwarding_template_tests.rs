@@ -52,8 +52,8 @@ fn probe(captures: &[HeapCategory], params: usize, returned: usize) -> (Jit, *co
         .define_function(func, &mut ctx)
         .expect("define probe");
     module.clear_context(&mut ctx);
-    module.finalize_definitions().expect("finalize probe");
-    let code = jit.jit_module().get_finalized_function(func);
+    jit.finalize().expect("finalize probe");
+    let code = jit.get_finalized_ptr(func);
     (jit, code, clif)
 }
 

@@ -72,7 +72,7 @@ fn build_probe() -> Probe {
         .define_function(func, &mut ctx)
         .expect("define probe");
     module.clear_context(&mut ctx);
-    module.finalize_definitions().expect("finalize probe");
+    jit.finalize().expect("finalize probe");
     Probe {
         jit,
         func,
@@ -87,8 +87,8 @@ fn child_divides() {
     if !test_child::selected(CHILD) {
         return;
     }
-    let mut probe = build_probe();
-    let code = probe.jit.jit_module().get_finalized_function(probe.func);
+    let probe = build_probe();
+    let code = probe.jit.get_finalized_ptr(probe.func);
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(code) };
     let q = f(test_child::arg("A"), test_child::arg("B"));
     println!("{QUOTIENT}{q}");

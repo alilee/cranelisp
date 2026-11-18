@@ -138,7 +138,7 @@ fn render(combinator: IoCombinator, path: Path) -> String {
     builder.seal_block(entry);
     let values = builder.block_params(entry).to_vec();
 
-    let plan = FnCompiler::<cranelift_jit::JITModule>::plan_body(&call, &params, &[], "probe")
+    let plan = FnCompiler::<crate::jit::FarCallModule>::plan_body(&call, &params, &[], "probe")
         .expect("plan");
     let mut compiler = FnCompiler::inner(
         builder,

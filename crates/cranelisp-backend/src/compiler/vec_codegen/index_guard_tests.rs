@@ -139,7 +139,7 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
         .expect("define probe");
     module.clear_context(&mut ctx);
     registry.finish().expect("every glue entry reached Defined");
-    module.finalize_definitions().expect("finalize probe");
+    jit.finalize().expect("finalize probe");
     Probe {
         jit,
         func,
@@ -151,7 +151,7 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
 impl Probe {
     /// Call the probe. An out-of-range index ends the process.
     fn call(&mut self, vec: i64, idx: i64, val: i64) -> i64 {
-        let code = self.jit.jit_module().get_finalized_function(self.func);
+        let code = self.jit.get_finalized_ptr(self.func);
         let f: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(code) };
         f(vec, idx, val)
     }

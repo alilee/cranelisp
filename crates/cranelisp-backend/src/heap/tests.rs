@@ -74,10 +74,10 @@ mod rc_probe_tests {
     /// Build a one-arg function, run `emit` (given builder + module + the arg
     /// pointer), and return the CLIF text.
     fn clif_of(
-        emit: impl FnOnce(&mut FunctionBuilder, &mut cranelift_jit::JITModule, Value),
+        emit: impl FnOnce(&mut FunctionBuilder, &mut crate::jit::FarCallModule, Value),
     ) -> String {
         let mut jit = Jit::new_with_symbols(&[]).expect("jit construction");
-        let module = jit.jit_module();
+        let module = jit.far_call_module();
         let mut ctx = module.make_context();
         ctx.func.signature.params.push(AbiParam::new(types::I64));
         let mut fbc = FunctionBuilderContext::new();
@@ -95,7 +95,7 @@ mod rc_probe_tests {
         ctx.func.display().to_string()
     }
 
-    fn import(module: &mut cranelift_jit::JITModule, name: &str, params: usize) -> FuncId {
+    fn import(module: &mut crate::jit::FarCallModule, name: &str, params: usize) -> FuncId {
         let mut sig = module.make_signature();
         for _ in 0..params {
             sig.params.push(AbiParam::new(types::I64));

@@ -73,6 +73,134 @@ fn register_platform_effect_symbols<C, L>(
     }
 }
 
+/// The JIT's module: a `JITModule` that compiles every call far.
+///
+/// `cranelift-jit` 0.116 takes each function's code memory from the global
+/// allocator, so two functions of one JIT module can land any distance apart.
+/// A `colocated` call compiles pc-relative (±128 MB on aarch64, ±2 GB on
+/// x86-64) and cannot reach a callee placed beyond that range (ACT-1070).
+/// Every function definition passes through
+/// [`define_function_with_control_plane`](Module::define_function_with_control_plane),
+/// which clears `colocated` on each callee before compiling, so every call is an
+/// absolute address and an indirect branch, independent of placement. The CLIF
+/// a caller builds is unchanged; only the machine code differs.
+///
+/// `Jit` holds only this type, and `JITModule` does not implement
+/// [`CodeFinalizer`], so no function reaches `compile_to_module` through a
+/// module that compiles near calls
+/// (`design/backend/jit-object-convergence.md` §3).
+pub(crate) struct FarCallModule {
+    jit: JITModule,
+}
+
+impl Module for FarCallModule {
+    fn isa(&self) -> &dyn cranelift::codegen::isa::TargetIsa {
+        self.jit.isa()
+    }
+
+    fn declarations(&self) -> &cranelift_module::ModuleDeclarations {
+        self.jit.declarations()
+    }
+
+    fn declare_function(
+        &mut self,
+        name: &str,
+        linkage: Linkage,
+        signature: &cranelift::codegen::ir::Signature,
+    ) -> cranelift_module::ModuleResult<FuncId> {
+        self.jit.declare_function(name, linkage, signature)
+    }
+
+    fn declare_anonymous_function(
+        &mut self,
+        signature: &cranelift::codegen::ir::Signature,
+    ) -> cranelift_module::ModuleResult<FuncId> {
+        self.jit.declare_anonymous_function(signature)
+    }
+
+    fn declare_data(
+        &mut self,
+        name: &str,
+        linkage: Linkage,
+        writable: bool,
+        tls: bool,
+    ) -> cranelift_module::ModuleResult<cranelift_module::DataId> {
+        self.jit.declare_data(name, linkage, writable, tls)
+    }
+
+    fn declare_anonymous_data(
+        &mut self,
+        writable: bool,
+        tls: bool,
+    ) -> cranelift_module::ModuleResult<cranelift_module::DataId> {
+        self.jit.declare_anonymous_data(writable, tls)
+    }
+
+    fn define_function_with_control_plane(
+        &mut self,
+        func: FuncId,
+        ctx: &mut cranelift::codegen::Context,
+        ctrl_plane: &mut cranelift::codegen::control::ControlPlane,
+    ) -> cranelift_module::ModuleResult<()> {
+        for callee in ctx.func.dfg.ext_funcs.values_mut() {
+            callee.colocated = false;
+        }
+        self.jit
+            .define_function_with_control_plane(func, ctx, ctrl_plane)
+    }
+
+    /// Refused: precompiled bytes carry their own relocations, so their calls
+    /// cannot be made far.
+    fn define_function_bytes(
+        &mut self,
+        _func_id: FuncId,
+        _func: &cranelift::codegen::ir::Function,
+        _alignment: u64,
+        _bytes: &[u8],
+        _relocs: &[cranelift::codegen::FinalizedMachReloc],
+    ) -> cranelift_module::ModuleResult<()> {
+        Err(cranelift_module::ModuleError::Compilation(
+            cranelift::codegen::CodegenError::Unsupported(
+                "the JIT defines functions only from CLIF, so every call compiles far".into(),
+            ),
+        ))
+    }
+
+    fn define_data(
+        &mut self,
+        data_id: cranelift_module::DataId,
+        data: &cranelift_module::DataDescription,
+    ) -> cranelift_module::ModuleResult<()> {
+        self.jit.define_data(data_id, data)
+    }
+}
+
+impl crate::CodeFinalizer for FarCallModule {
+    fn finalize_for_code_read(&mut self) -> Result<(), CranelispError> {
+        self.jit
+            .finalize_definitions()
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to finalize JIT definitions: {e}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })
+    }
+
+    fn try_get_finalized_function(&self, func_id: FuncId) -> Option<*const u8> {
+        Some(self.jit.get_finalized_function(func_id))
+    }
+
+    /// No-op: `Jit::new` binds `__cranelisp_got_{M}` to the runtime
+    /// `SymbolTable.got.base_ptr()`, and the JIT emits no `.o` (Decision 23).
+    fn define_module_got_data(
+        &mut self,
+        _name: &str,
+        _slot_count: usize,
+        _slot_funcs: &[(usize, FuncId)],
+    ) -> Result<(), CranelispError> {
+        Ok(())
+    }
+}
+
 /// Counter incremented once per `Jit::drop` that successfully calls
 /// `unsafe JITModule::free_memory()`. Used by the unit tests below to
 /// confirm the reclaim path executes; also available under
@@ -129,7 +257,7 @@ pub(crate) fn jit_free_memory_call_count() -> u64 {
 pub struct Jit {
     /// Always `Some` during the JIT's useful life. `take()`n in `Drop` to
     /// invoke `unsafe free_memory()`.
-    module: Option<JITModule>,
+    module: Option<FarCallModule>,
     ctx: cranelift::codegen::Context,
     func_ctx: FunctionBuilderContext,
     /// Host-promised symbol map — the escape hatch consulted at module
@@ -167,7 +295,7 @@ impl Drop for Jit {
             // and Decision 31 in `design/arch/AGENTS.md` for the full
             // argument.
             unsafe {
-                module.free_memory();
+                module.jit.free_memory();
             }
         }
     }
@@ -314,7 +442,9 @@ impl Jit {
             }));
         }
 
-        let module = JITModule::new(builder);
+        let module = FarCallModule {
+            jit: JITModule::new(builder),
+        };
 
         let ctx = module.make_context();
         let func_ctx = FunctionBuilderContext::new();
@@ -359,13 +489,13 @@ impl Jit {
             .insert(name.to_string(), ptr as usize);
     }
 
-    /// Access the inner `JITModule` by shared reference.
+    /// Access the module by shared reference.
     ///
     /// Panics (via `unreachable!`) only if called after `Drop::drop` has taken
     /// the module, which cannot happen through the normal API: `&self` cannot
     /// coexist with `drop`.
     #[inline]
-    fn module(&self) -> &JITModule {
+    fn module(&self) -> &FarCallModule {
         self.module.as_ref().unwrap_or_else(|| {
             unreachable!(
                 "invariant: Jit::module is Some for the Jit's entire lifetime; \
@@ -374,9 +504,9 @@ impl Jit {
         })
     }
 
-    /// Access the inner `JITModule` by mutable reference.
+    /// Access the module by mutable reference.
     #[inline]
-    fn module_mut(&mut self) -> &mut JITModule {
+    fn module_mut(&mut self) -> &mut FarCallModule {
         self.module.as_mut().unwrap_or_else(|| {
             unreachable!(
                 "invariant: Jit::module is Some for the Jit's entire lifetime; \
@@ -480,6 +610,7 @@ impl Jit {
     /// Finalize all pending function definitions.
     pub(crate) fn finalize(&mut self) -> Result<(), CranelispError> {
         self.module_mut()
+            .jit
             .finalize_definitions()
             .map_err(|e| CranelispError::CodegenError {
                 message: format!("failed to finalize JIT definitions: {e}"),
@@ -489,7 +620,7 @@ impl Jit {
 
     /// Get the finalized code pointer for a function by FuncId.
     pub(crate) fn get_finalized_ptr(&self, func_id: FuncId) -> *const u8 {
-        self.module().get_finalized_function(func_id)
+        self.module().jit.get_finalized_function(func_id)
     }
 
     /// Finalize definitions and return the code pointer for a named function.
@@ -512,7 +643,7 @@ impl Jit {
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
-        Ok(self.module().get_finalized_function(func_id))
+        Ok(self.module().jit.get_finalized_function(func_id))
     }
 
     /// Look up a finalized function pointer by name and param count.
@@ -532,12 +663,22 @@ impl Jit {
                 message: format!("failed to look up function '{}': {e}", name),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
-        Ok(self.module().get_finalized_function(func_id))
+        Ok(self.module().jit.get_finalized_function(func_id))
     }
 
-    /// Get a mutable reference to the inner JIT module.
-    /// Needed by FnCompiler for declaring extern functions.
-    pub fn jit_module(&mut self) -> &mut JITModule {
+    /// The module every function of this JIT is compiled through; pass it
+    /// to [`compile_to_module`](crate::compile_to_module).
+    ///
+    /// No call in a function defined through this module depends on where
+    /// the JIT places code: every call compiles to an absolute address and
+    /// an indirect branch.
+    pub fn jit_module(&mut self) -> &mut (impl Module + crate::CodeFinalizer) {
+        self.module_mut()
+    }
+
+    /// The module by its concrete type, for in-crate tests that name it.
+    #[cfg(test)]
+    pub(crate) fn far_call_module(&mut self) -> &mut FarCallModule {
         self.module_mut()
     }
 
@@ -640,6 +781,9 @@ pub(crate) fn declare_intrinsics_generic<M: Module>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod call_reach_tests;
 
 #[cfg(test)]
 mod disasm_tests;

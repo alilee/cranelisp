@@ -570,7 +570,7 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
 /// context reads `tables` as module `user`.
 fn with_bake_compiler<R>(
     tables: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
-    body: impl FnOnce(&mut crate::compiler::FnCompiler<'_, cranelift_jit::JITModule, (), ()>) -> R,
+    body: impl FnOnce(&mut crate::compiler::FnCompiler<'_, crate::jit::FarCallModule, (), ()>) -> R,
 ) -> R {
     use cranelift::codegen::ir::{Function, UserFuncName};
     use cranelift::prelude::*;
@@ -607,7 +607,7 @@ fn with_bake_compiler<R>(
     );
     let mut compiler = crate::compiler::FnCompiler::inner(
         builder,
-        jit.jit_module(),
+        jit.far_call_module(),
         ctx,
         crate::compiler::census::Frame::for_test(),
         &mut glue,

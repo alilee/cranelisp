@@ -20,14 +20,14 @@ use crate::test_support::assert_raise_terminates;
 fn render(
     emit: impl FnOnce(
         &mut FunctionBuilder,
-        &mut cranelift_jit::JITModule,
+        &mut crate::jit::FarCallModule,
         PanicHandle,
         Value,
         Value,
     ) -> Value,
 ) -> (String, FuncId) {
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    let module = jit.jit_module();
+    let module = jit.far_call_module();
     let panic = PanicHandle::declare_alone(module);
     let mut ctx = module.make_context();
     ctx.func.signature.params.push(AbiParam::new(types::I64));
