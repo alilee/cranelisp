@@ -7,7 +7,6 @@ const EXPECTED_NAMES: &[&str] = &[
     "runtime/alloc",
     "runtime/dealloc",
     "runtime/panic",
-    "runtime/rc_underflow_check",
     "runtime/rc_dec_check",
     // S99 Wave 0.1 RC-op instrumentation tally helpers (env-gated via the
     // backend's `CRANELISP_RC_STATS` codegen gate; inert off). Added to the
@@ -23,7 +22,6 @@ const EXPECTED_NAMES: &[&str] = &[
     "runtime/reuse_miss",
     "runtime/extern_adapt_str_len",
     "runtime/alloc_string",
-    "runtime/string_read",
     "runtime/vec_new",
     "runtime/vec_drop",
     "runtime/free_io_node",
@@ -116,8 +114,8 @@ fn is_runtime_classification() {
     }
 }
 
-// spec: design/intrinsics/intrinsics-table.md §2.1 — the three rows whose
-// hand copies disagreed with their functions carry the derived values (P-16).
+// spec: design/intrinsics/intrinsics-table.md §2.1 — a row whose hand copy
+// disagreed with its function carries the derived values (P-16).
 #[test]
 fn corrected_rows_carry_their_functions_signatures() {
     let row = |name: &str| {
@@ -132,10 +130,6 @@ fn corrected_rows_carry_their_functions_signatures() {
         (2, false),
         "runtime/panic never returns, so it declares no result"
     );
-    let underflow = row("runtime/rc_underflow_check");
-    assert_eq!((underflow.param_count, underflow.has_return), (2, true));
-    let read = row("runtime/string_read");
-    assert_eq!((read.param_count, read.has_return), (3, false));
 }
 
 // spec: design/intrinsics/intrinsics-table.md §2.2 — the poll-leaf row keeps

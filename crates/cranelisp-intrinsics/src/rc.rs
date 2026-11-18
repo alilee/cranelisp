@@ -543,24 +543,5 @@ pub(crate) extern "C" fn rc_dec_check(ptr: i64) -> i64 {
     0
 }
 
-/// RC underflow check — called from JIT-generated inline dec code.
-///
-/// The backend emits `atomic_rmw(Sub, ...)` inline. After the sub, if the
-/// old RC value was <= 0 (underflow), the backend calls this function for
-/// diagnostic logging and debug assertion.
-///
-/// In release builds, this is a no-op (the JIT should not emit the call).
-///
-/// Linker symbol: `runtime/rc_underflow_check` (per runtime/* convention).
-#[unsafe(export_name = "runtime/rc_underflow_check")]
-pub extern "C-unwind" fn rc_underflow_check(ptr: i64, old_rc: i64) -> i64 {
-    debug_assert!(
-        old_rc > 0,
-        "RC underflow: ptr={ptr:#x} had rc={old_rc} before decrement"
-    );
-    rc_trace("UNDERFLOW", ptr, old_rc);
-    0
-}
-
 #[cfg(test)]
 mod tests;
