@@ -1398,8 +1398,7 @@ Status:
 - the failed-dependency refusal (ACT-1016 Face 1) is built at `f95f0a3a` for
   a whole-file rebuild; a fresh load is not covered (*Failed dependency*
   below);
-- the declaration readiness gate (ACT-1016 Face 2), redesigned in S124 W8,
-  is not in source at `f95f0a3a`.
+- the declaration readiness gate (ACT-1016 Face 2) is built at `870aacd8`.
 
 Private to `src/`; no public API, carrier, schema or ABI change.
 
@@ -1532,8 +1531,7 @@ a pool cluster fails its module, and a rebuild fails and locks it.
   still in flight at a fresh load (ACT-1016 Face 2). That module is not
   `Failed`; the declaration readiness gate below answers it.
 
-**Declaration readiness** (ACT-1016 Face 2; redesigned S124 W8, not in source
-at `f95f0a3a`).
+**Declaration readiness** (ACT-1016 Face 2; built at `870aacd8`).
 
 *The fault.* Neither Pass-0 handler waits on a module in flight. The export
 handler installs from any present table. The import handler's own fast path
@@ -1581,11 +1579,22 @@ table it loads as today. `refuse_failed_table` still runs first.
   terminal predicate.
 - **Publication wakes the declaration waiters.** When the fact is set, the
   scheduler releases every module waiting on `D` through a whole-module
-  dependency edge, as the terminal sweep does, and the eval thread's wait on
-  `D` ends on it too. A released waiter retries from the top, idempotently,
-  and its declaration now installs. Without this, a reader that arrived
-  before `D` published would keep its edge to `D` while `D` waits on its
-  children, and whether a cycle is reported would depend on arrival order.
+  dependency edge, as the terminal sweep does. The eval thread's wait at a
+  turn's dependency gap ends on it too. A released waiter retries from the
+  top, idempotently, and its declaration now installs. Without this, a reader
+  that arrived before `D` published would keep its edge to `D` while `D`
+  waits on its children, and whether a cycle is reported would depend on
+  arrival order.
+- **`/mod` is not a declaration read.** `/mod`'s load of `D` waits until
+  `D`'s in-memory code is complete, not until it publishes
+  ([§8.5.1](#851-mod-target), step 4). The switch makes `D` the module the
+  session's turns publish into. At publication a pool worker still drives
+  `D`'s attempt through its declared children to its terminal typecheck, so
+  a turn in `D` then would be a second writer of a module the pool is
+  driving, which Invariant SW
+  ([signature-body prepass](signature-body-prepass.md#invariant-sw--single-writer-single-orchestrator-per-module))
+  forbids. A declaration or a qualified
+  reference only reads `D`'s table, which publication has completed.
 - **Why a published table is a complete read** (spec §8.5.4 item 7). After
   publication the only work left in `D`'s attempt is driving its declared
   children. Every name `D` declares, defines or re-exports is in its live
@@ -1636,29 +1645,29 @@ timing: an install from `P`'s seeded table or from its published one.
 - Two runs of one program whose outcomes differ in whether a cycle is
   reported.
 
-*What `dev` builds* (`src/scheduler.rs`, `src/process_form.rs`,
-`src/process_form/dependency.rs`, `src/eval.rs`). The published fact and its
-resets; the predicate; both handlers reading it in place of the table-present
-test, with the in-flight wait of `dev`'s held patch; the release at
-publication on both paths; the qualified-reference gate's tracked branch.
+*As built (`870aacd8`).* The published fact, its resets and the predicate
+are in `src/scheduler.rs`. Both Pass-0 handlers and the qualified-reference
+gate's tracked branch read the predicate (`src/process_form/dependency.rs`).
+The release at publication runs on both paths. The eval thread's wait takes
+the readiness it needs (`src/eval.rs`): a turn's dependency gap waits for
+declaration readiness, and `/mod` waits for in-memory completion.
 
-*Module evidence (`dev`).* Arm each row RED on `f95f0a3a` where its seam
-exists.
+*Module evidence (landed with `870aacd8`).*
 
-- Extend `pass0_declaration_of_an_in_flight_module_waits_on_it` (the held
-  patch): for `import` and for `export`, a registered module with a table
-  that has neither published nor reached a terminal typecheck makes the
-  declaration wait and installs nothing. The `export` leg is RED today, and
-  so is the `import` leg, through the cache guard.
-- The positive: with the same module marked published and still
-  non-terminal, both declarations install its names and record no edge.
-- The fact: it is set by a whole cluster's publication, before the first
-  declared child is driven, on the worker and on the eval path; a macro
-  checkpoint does not set it; a new whole-source attempt clears it.
-- The release: a module blocked on `D` through a declaration is requeued when
-  `D` publishes, before `D` becomes terminal.
-- The qualified-reference gate reads the same predicate: for a published,
-  non-terminal module it answers loaded.
+- `pass0_declaration_of_an_in_flight_module_waits_on_it` and
+  `pass0_declaration_of_a_published_module_installs_its_names`
+  (`src/process_form/dependency.rs`). For `import` and `export`, an
+  unpublished, non-terminal module with a table makes the declaration wait
+  and install nothing. A published, non-terminal module installs its names
+  and records no edge.
+- In `src/scheduler/tests.rs`:
+  - `published_generation_is_ready_for_declaration_until_a_new_attempt`
+    covers the fact and its reset;
+  - `publication_requeues_whole_module_waiters_before_terminal` and
+    `block_on_a_published_module_requeues_not_strands` cover the release;
+  - `eval_dependency_wait_ends_at_publication` covers the eval wait.
+- `startup_child_export_of_its_parent_reads_the_published_parent`
+  (`src/session_v4/persistence_tests.rs`) covers row 1 at a fresh load.
 
 *End-to-end cells.*
 
@@ -1674,10 +1683,15 @@ exists.
   `persist_bug_user_cl_preserves_original_str_not_expanded_str_concat` and
   `persist_bug_macro_usage_in_defn_survives_session_restart`; and the
   §6.12 prelude cells.
-- For `qa` to allocate: the undecided program in `--run` and the REPL, and a
-  session save that closes it, both accepted under this design; and an
-  `(export [p [x]])` from a child, spelled by its parent's full path,
-  beside `super`.
+- For `qa` to allocate:
+  - the undecided program in `--run` and the REPL, and a session save that
+    closes it, both accepted under this design;
+  - an `(export [p [x]])` from a child, spelled by its parent's full path,
+    beside `super`;
+  - a repeat-run cell for the arrival-order falsifier;
+  - `/mod p` where `p` declares children that import `super`. A definition
+    turn in `p` right after the switch publishes, and the children's names
+    resolve.
 
 **Face 1 status.** The failed-dependency refusal above (*The check*, *Failed
 dependency*) is built at `f95f0a3a` for a whole-file rebuild, with
@@ -1734,10 +1748,9 @@ wait cycle before either member publishes, so `--run` and `--link`
 diagnostics do not change. An implicit-prelude cycle is the exception: a
 module does not wait on an in-flight prelude, so the scheduler sees no wait
 cycle. The static gate, this check or the failure exit's cycle precedence
-reports it ([§6.12](#612-the-implicit-prelude-dependency)). Until the
-declaration readiness gate is built, an `export` of a module still in flight
-at a fresh load reads its partial table without waiting, and reports the
-cycle as an unresolved name (ACT-1016 Face 2).
+reports it ([§6.12](#612-the-implicit-prelude-dependency)). An `export` of
+a module still in flight at a fresh load waits on it through the declaration
+readiness gate, so its cycle is a wait cycle too.
 
 **Cost.** The walk visits the targets' dependency closure once per check and
 computes each visited module's edges once. It runs for every prepared
@@ -1990,8 +2003,8 @@ asks, for a module `A` with the bit on, whether the prelude reaches `A`:
   edge is a wait at a fresh load, so the scheduler reports its cycle before
   one member compiles against the other (§6.11). The prelude edge is the one
   no module waits on (the barrier bullet above). The premise holds for an
-  `export` once §6.11's declaration readiness gate makes it a wait edge
-  (ACT-1016 Face 2, not in source at `f95f0a3a`).
+  `export` because §6.11's declaration readiness gate makes it a wait edge
+  (ACT-1016 Face 2, built at `870aacd8`).
 - **It changes a diagnostic, never an outcome.** The attempt has already
   failed, so an edge the walk over-approximates can mislabel a failure but
   cannot reject a program. The reader-quote shield, `cranelisp_types::quote_head`
@@ -3377,8 +3390,10 @@ passed its finding-scoped re-review.
 #### 7.6.3 Slot-layout identity (ACT-1052)
 
 **Status: built at `3c4c0f7b`, with the backend's `CACHE_SCHEMA_VERSION` 34
-and the `dependency_hashes` rustdoc correction at `f3f9cc47`.** Its warm-start
-cost is not accepted as measured (*Cost* below). Private to `src/`. No
+and the `dependency_hashes` rustdoc correction at `f3f9cc47`; the stored
+layout ends at a `.meta` rewrite at `c53a3f4b`.** Its warm-start cost is
+attributed and its remedy, the shared decode, is not in source at
+`c53a3f4b` (*Cost* below). Private to `src/`. No
 public API change: `CachedModuleRef::dependency_hashes` stays a map of opaque
 strings and `check_manifest` is unchanged ([BC](../arch/bounded-contexts.md)
 §6, the cached object's validity record). It changes what a persisted value
@@ -3436,38 +3451,58 @@ source hash together with a fingerprint of its authored slot layout.
 - *A typed layout field on the manifest.* Returns to `arch`'s gate and buys
   nothing the opaque key does not.
 
-**Cost.** As built, validating a module whose members are not yet loaded
-decodes each such member's `.meta` once per session
-(`ObjectCache::stored_layout`), and each validation fingerprints every member
-the session holds a table for. `dev` measured an exemplar warm `--run`
-(debug) at about 0.96 s before and 1.23 s after, with the memo. A rise of
-over a quarter on the path the cache exists to make fast is material, so the
-design does not accept it unattributed.
+**Cost.** `dev` measured an exemplar warm `--run` (debug) at about 0.96 s
+before the change and 1.23 s after it. A rise of over a quarter on the path
+the cache exists to make fast is material.
 
-- **Attribute first.** `dev` profiles one warm start before choosing a
-  remedy. Two candidates:
-  - *the stored half.* A warm start validates an importer before its members
-    restore, so each member's `.meta` is decoded for its layout and decoded
-    again by its own restore;
-  - *the live half.* Every validation fingerprints each live member afresh,
-    and a member appears in the record of every module above it.
-- **The cheaper key source for the stored half.** A member's own manifest
-  entry records the member's derivation key when its entry is written, as
-  the one record that already travels with its `.meta`. The current key of a
-  member the session holds no table for is then its current source hash with
-  the layout half of that recorded key, read from the manifest already in
-  memory, and no `.meta` is decoded for validation. The key form stays
-  int's, carried as a self entry in the member's own `dependency_hashes`
-  (opaque, no API change); the rule "the module itself is never a member"
-  changes with it, and the memo deletes. This changes a persisted value's
-  meaning, so it needs `dev`(backend)'s schema bump, routed through
-  `sprint`.
-- **For the live half,** a member's fingerprint is computed once per
-  generation of its table, not once per record that names it. The memo must
-  end when the member publishes a generation; `dev` proposes where it lives
-  with the profile, and `design` reviews it before it is built.
-- **Falsifier.** After the profiled remedy, the warm start remains materially
-  above 0.96 s; the cost is then elsewhere and is profiled again.
+- **Attribution** (`dev`'s profile of a warm debug `--run
+  exemplar/tests.cl`). The run made 37 cache checks over 1,030 member keys,
+  in about 400 ms.
+  - The stored half takes about 300 to 308 ms: 36 decodes of a member's
+    `.meta`, made only to read its layout.
+  - The modules' own restore decodes the same files again, about 302 ms in
+    35 decodes. That cost predates the change.
+  - The live half, fingerprinting loaded members, takes 7 to 8 ms.
+  - Re-reading and hashing source takes about 90 ms, which predates the
+    change.
+
+  The added cost is therefore a second decode of a file the session decodes
+  anyway.
+- **The remedy: one decode per stored `.meta`.** `ObjectCache` holds the
+  decoded stored module, not only its layout. Validation's rule 2 reads the
+  layout from it, and the member's metadata restore takes the same value
+  instead of reading the file again. The held value exists only while the
+  session holds no table for the member. It ends when the session first
+  holds a table for the member, whether by that restore or by a fresh load,
+  and when its `.meta` is rewritten (`ObjectCache::write_meta`, as built at
+  `c53a3f4b`). Validation reads a live table whenever one exists (rule 1),
+  so it never needs a held value after that point. Correctness never depends
+  on the hold, because a missing value is decoded from the file. It uses the
+  backend's public `try_load_cached_module` and `CachedModule` unchanged, so
+  it is private to `src/`. It changes no persisted value, no schema and no
+  public item.
+- **Why this meets the bar.** The decodes return to one per restored member,
+  which is the count before the change. What remains of the added cost is
+  the live half, 7 to 8 ms, which is not material. The live half therefore
+  gets no memo.
+- **Not taken: a manifest self-key.** Recording each member's derivation key
+  in its own manifest entry would remove validation's decode, but the
+  member's restore would still decode the file. It saves a decode only for a
+  member that validation reads and the session never restores: one in 36
+  here. It needs a schema bump in `dev` (backend) and a change to the rule
+  "the module itself is never a member". *Trigger:* a profile in which
+  validation decodes a material number of members that are never restored.
+- **Falsifier.** With the shared decode, the warm start stays materially
+  above 0.96 s, or the profile shows more than one decode for a restored
+  member. The cost is then elsewhere and is profiled again.
+- **What `dev` builds** (`src/cache.rs`, `src/process_form/cache_restore.rs`).
+  The held decoded module in place of the held layout, the take at the
+  metadata restore, and the end when the session first holds a table.
+  Module rows:
+  - a validation followed by the member's restore decodes the file once;
+  - a rewrite between them makes the restore read the new file;
+  - a member loaded fresh after validation holds no decoded value;
+  - `a_stored_meta_overwrite_is_read_by_the_next_validation` stays green.
 
 **Constraints for `dev`.**
 
@@ -3688,7 +3723,10 @@ to the entry module.
 4. **Load.** Otherwise load it through the language's load-on-reference: the
    dependency drive a qualified reference at the prompt runs
    (`drive_module_dep`, §6.2), then the eval thread's wait
-   (`register_dep_for_eval`). Build the eval thread's `ModuleCompiler` once
+   (`register_dep_for_eval`). The wait ends when the module's in-memory code
+   is complete, not at its publication, because the switch makes it the
+   module turns publish into ([§6.11](#611-module-cycles-at-publication),
+   *`/mod` is not a declaration read*). Build the eval thread's `ModuleCompiler` once
    for `eval.rs` and `/mod`; do not add another inline construction. A
    cache hit takes step 2's recompile. On success, switch; `sync_watcher`
    after the turn watches the file (REPL §14.1). On failure, report the load
@@ -4030,16 +4068,20 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `2dec7450`, the regeneration corrections at `74aa7a52`, D7 at `7cceedc4`,
   the entry-module fact at `109f008b`, ACT-1061 at `b3e3887e`, ACT-1036 at
   `e294852f`, ACT-1052 at `3c4c0f7b` with the backend's bump at `f3f9cc47`,
-  and ACT-1016 Face 1 at `f95f0a3a`. Checked against `f3f9cc47`, the
-  declaration readiness gate (ACT-1016 Face 2) and ACT-0973's refusal are
-  not in source.
-  - *Still open in W8's rows:* the readiness gate
-    ([§6.11](#611-module-cycles-at-publication), *Declaration readiness*);
-    ACT-0973's refusal, built as a patch and held because
-    `exemplar/solver.cl` declares `(platform stdio)` outside the entry,
-    which spec §10.9.1 forbids, so the exemplar is the correction; ACT-1052's
-    warm-start cost ([§7.6.3](#763-slot-layout-identity-act-1052), *Cost*);
-    and Face 1's fresh-load gap (§6.11, *Failed dependency*).
+  ACT-1016 Face 1 at `f95f0a3a`, the declaration readiness gate (ACT-1016
+  Face 2) at `870aacd8`, the definition origin across a dependency retry at
+  `98ea54a0`, and the end of a stored layout at a `.meta` rewrite at
+  `c53a3f4b`. Checked against `c53a3f4b`, ACT-0973's refusal is not in
+  source.
+  - *Still open in W8's rows:*
+    - ACT-0973's refusal, built as a patch and held because
+      `exemplar/solver.cl` declares `(platform stdio)` outside the entry,
+      which spec §10.9.1 forbids, so the exemplar is the correction;
+    - ACT-1052's shared decode
+      ([§7.6.3](#763-slot-layout-identity-act-1052), *Cost*);
+    - the refusal of a `main` whose result type is not fixed
+      ([io-integration §1](io-integration.md#1-running-a-program));
+    - Face 1's fresh-load gap (§6.11, *Failed dependency*).
   - *Designed, not scheduled:* a qualified reference through a mount loads
     the mount's owner (ACT-1079,
     [§6.13](#613-import-and-export-entries-and-export-mounts-s124)), with

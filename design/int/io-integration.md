@@ -54,6 +54,13 @@ contract is `design/arch/platform-interface.md`.
       its REPL-only fields; the span is the one fact both readers share,
       taken from one attribution
       ([Principle 7](../arch/principles/07-single-source-of-truth.md)).
+    - *Across a dependency retry* (built at `98ea54a0`). An attempt that
+      stops at a dependency gap resumes from a continuation. The
+      continuation carries, for each form already expanded, the written
+      top-level form it came from, so a definition expanded before the gap
+      keeps its origin span, introspection source and macro origin. Cells:
+      `tests/spec_10_io.rs::s124_main_macro_before_dependency_retry_location_run`
+      and `_link`.
     - *No synthetic fallback.* A bound `main` with no recorded span is an
       invariant violation, not a refusal. The entry is never cache-restored
       ([result owner §3.2.1](result-owner.md#321-reach-in-production)), so
@@ -68,6 +75,43 @@ contract is `design/arch/platform-interface.md`.
       for its shape, never by selecting the zero-argument arm, and locates it
       at the written `defn` form's line. It renders today's category for this
       refusal, `codegen error`, which the spec does not fix.
+  - **A `main` whose result type is not fixed** (S124 W8; not in source at
+    `c53a3f4b`). The gate refuses a `main` whose type keeps a type variable,
+    such as `(defn main [] (Pure None))` of type `∀a. (Fn [] (IO (Option a)))`.
+    The refusal is the ambiguity type error of `spec/03-types.md` §3.11,
+    located at `main`'s definition origin like the gate's other refusals.
+    - *Why the spec decides it.* In `spec/03-types.md`:
+      - the definition itself is sound and code-less until a use pins it
+        (§3.11.3; §3.11.4, disposition 1);
+      - the batch runner's call of `main` produces a runtime value with
+        nothing to pin `a`, so it is disposition 2;
+      - no type variable is ever defaulted (§3.11), and §3.11.1 exempts
+        neither a determinate representation nor a phantom variable;
+      - §3.3.4 already rejects `(defn main [] (Pure (g)))`, whose runtime
+        result keeps an unresolved variable.
+
+      In `spec/10-io.md`, the exit code depends on the inner type
+      (§10.6.1), which this `main` does not fix. The `IO _` of §10.6 leaves
+      the inner type unconstrained; it does not admit a type variable.
+    - *Where.* In `exe::validate_main`, after the return-dispatch check and
+      the shape check. It reads `main`'s scheme type and refuses when the
+      type contains a variable (`Type::contains_var`, already public). It is
+      a `type error`, as `unresolved_dispatch_error` is. The message names
+      `main` and its type, and asks for a `:Type` annotation. The words are
+      `dev`'s. `--run` and `--link` share the gate. The REPL has no `main`
+      requirement (`spec/10-io.md` §10.6.2) and does not change.
+    - *What it repairs.* Today the gate accepts the shape. The entry's
+      `main` is then a template with no compiled code, and
+      `read_main_entry` hits its invariant, which exits 101. With the
+      refusal, an accepted `main` has a type with no variable, so typecheck
+      has published concrete code for it. The invariant remains an
+      invariant. *Falsifier:* an accepted `main` that reaches it.
+    - *Evidence.* RED:
+      `tests/spec_10_io.rs::s124_result_polymorphic_main_does_not_panic_run`;
+      control `s124_concrete_option_main_control_run`. The unit row for
+      `dev`: `validate_main` refuses a nullary `main` of type
+      `(Fn [] (IO (Option a)))` as a located type error and accepts
+      `(Fn [] (IO (Option Int)))`.
   - **A trait method named `main` is not `main`** (`spec/10-io.md` §10.6). The
     gate reads only the entry table's `main` binding. A trait method's
     binding lives under its canonical name, and the bare `main` holds only a
