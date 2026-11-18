@@ -4200,3 +4200,98 @@ fn s124_1063_balance_select_link() {
 fn s124_1063_balance_select_repl() {
     s124_1063_heap_payload_balance("select", "repl");
 }
+
+// spec: spec/10-io.md §10.6 — "The return type of main MUST be IO _ (IO of any type)".
+// Whether an unconstrained result variable is runnable or needs a located refusal
+// is not explicit here. This cell asserts only that user input cannot reach a
+// host panic; the concrete Option result below is its control.
+// defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev
+#[test]
+fn s124_result_polymorphic_main_does_not_panic_run() {
+    let out = Cranelisp::new()
+        .file("p.cl", "(defn main [] (primitives/Pure primitives/None))\n")
+        .run("p.cl")
+        .output();
+    let text = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.status.code().is_some()
+            && out.status.code() != Some(101)
+            && !text.contains("panicked at")
+            && !text.contains("internal error:")
+            && !text.contains("invariant:"),
+        "a result-polymorphic main must not panic in the compiler: status={}\n{text}",
+        out.status
+    );
+}
+
+// spec: spec/10-io.md §10.6, §10.6.1 — concrete Option result controls the polymorphic-main probe.
+#[test]
+fn s124_concrete_option_main_control_run() {
+    let out = Cranelisp::new()
+        .file(
+            "p.cl",
+            "(defn main [] (primitives/Pure (primitives/Some 7)))\n",
+        )
+        .run("p.cl")
+        .output()
+        .assert_ok()
+        .assert_stderr_empty();
+    assert!(out.stdout.is_empty(), "{}", out.stdout);
+}
+
+fn main_macro_before_dependency_retry(mode: &str, retry: bool) {
+    let tail = if retry {
+        "(defn helper [] (late/id 0))"
+    } else {
+        "(defn helper [] (primitives/Pure 0))"
+    };
+    let source =
+        format!("\n(defmacro mk [n] `(defn ~n [x] (primitives/Pure x)))\n\n(mk main)\n{tail}\n");
+    let cr = Cranelisp::new()
+        .file("p.cl", &source)
+        .file("late.cl", "(defn id [x] (primitives/Pure x))\n");
+    let out = if mode == "link" {
+        cr.link("p.cl").output()
+    } else {
+        cr.run("p.cl").output()
+    };
+    assert_eq!(out.status.code(), Some(1), "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.contains("main must be a zero-argument function"),
+        "premise: compilation reaches the main gate, not a dependency/setup failure: {}",
+        out.stderr
+    );
+    let start = source.find("(mk main)").unwrap();
+    let end = start + "(mk main)".len();
+    assert!(
+        out.stderr.contains("p.cl:4:1:") && out.stderr.contains(&format!("at {start}..{end}:")),
+        "main refusal must name the written macro call at p.cl:4:1 ({start}..{end}): {}",
+        out.stderr
+    );
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5; spec/10-io.md §10.6 — synthesised main retains its triggering form across retry.
+// defect: class=check-gate-leak locus=src/process_form.rs::BuiltProgram::extend found=S124 owner=/dev
+#[test]
+fn s124_main_macro_before_dependency_retry_location_run() {
+    main_macro_before_dependency_retry("run", true);
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5; spec/10-io.md §10.6 — synthesised main retains its triggering form across retry.
+// defect: class=check-gate-leak locus=src/process_form.rs::BuiltProgram::extend found=S124 owner=/dev
+#[test]
+fn s124_main_macro_before_dependency_retry_location_link() {
+    main_macro_before_dependency_retry("link", true);
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5; spec/10-io.md §10.6 — twin with no unloaded dependency after the macro call.
+#[test]
+fn s124_main_macro_without_dependency_retry_location_control_run() {
+    main_macro_before_dependency_retry("run", false);
+}
+
+// spec: repl/spec/05-error-presentation.md §5.5; spec/10-io.md §10.6 — twin with no unloaded dependency after the macro call.
+#[test]
+fn s124_main_macro_without_dependency_retry_location_control_link() {
+    main_macro_before_dependency_retry("link", false);
+}
