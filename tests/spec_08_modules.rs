@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 use std::time::Duration;
 
 // =============================================================================
@@ -6325,4 +6325,124 @@ fn s124_1079_b_control_link() {
 #[test]
 fn s124_1079_b_control_repl() {
     s124_unloaded_mount_owner("repl", true, true);
+}
+
+fn s124_declared_child_graph(returns_to_parent: bool) -> Cranelisp {
+    Cranelisp::new()
+        .file("P.cl", "(mod c)\n(defn x [] 1)\n")
+        .file("P/c.cl", "(import [z [zf]])\n(defn cf [] (zf))\n")
+        .file(
+            "z.cl",
+            if returns_to_parent {
+                "(import [P [x]])\n(defn zf [] (primitives/add-i64 (x) 10))\n"
+            } else {
+                "(defn zf [] 10)\n"
+            },
+        )
+}
+
+fn s124_declared_child_batch_outcomes(returns_to_parent: bool) -> Vec<bool> {
+    [
+        "(import [P [x]])",
+        "(import [z [zf]])",
+        "(import [P.c [cf]])",
+    ]
+    .iter()
+    .map(|import| {
+        let source = format!("{import}\n(defn main [] (primitives/Pure (P.c/cf)))\n");
+        let out = s124_declared_child_graph(returns_to_parent)
+            .file("app.cl", &source)
+            .run("app.cl")
+            .output();
+        let value = if returns_to_parent { 11 } else { 10 };
+        let accepted = out.status.code() == Some(value);
+        assert!(
+            accepted
+                || (out.status.code() == Some(1)
+                    && combined(&out).contains("circular dependency detected")),
+            "route {import} must reach the value or cycle assertion: status={} {}",
+            out.status,
+            combined(&out)
+        );
+        accepted
+    })
+    .collect()
+}
+
+// spec: spec/08-modules.md §8.10.2 — REPRO-1081: one graph has one batch outcome, independent of its entry route.
+// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev
+#[test]
+fn s124_declared_child_graph_batch_routes_agree() {
+    let outcomes = s124_declared_child_batch_outcomes(true);
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        "the same graph must agree across P, z, P.c entry routes (true=value, false=cycle): {outcomes:?}");
+}
+
+// spec: spec/08-modules.md §8.10.2 — REPRO-1081 control removes only z's return edge to P.
+#[test]
+fn s124_declared_child_graph_batch_acyclic_control() {
+    assert_eq!(s124_declared_child_batch_outcomes(false), vec![true; 3]);
+}
+
+fn s124_declared_child_repl_outcomes(returns_to_parent: bool) -> Vec<bool> {
+    ["(z/zf)", "(P.c/cf)"]
+        .iter()
+        .map(|first| {
+            let out = s124_declared_child_graph(returns_to_parent)
+                .stdin(&format!("{first}\n/quit\n"))
+                .output()
+                .assert_ok();
+            let text = combined(&out);
+            let accepted = text.contains(if returns_to_parent {
+                ":primitives/Int 11"
+            } else {
+                ":primitives/Int 10"
+            });
+            assert!(
+                accepted || text.contains("circular dependency detected"),
+                "route {first} must reach the value or cycle assertion: {text}"
+            );
+            accepted
+        })
+        .collect()
+}
+
+// spec: spec/08-modules.md §8.10.2 — REPRO-1081: cold REPL orders agree with each other and the batch routes.
+// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev
+#[test]
+fn s124_declared_child_graph_repl_orders_agree() {
+    let mut outcomes = s124_declared_child_repl_outcomes(true);
+    outcomes.extend(s124_declared_child_batch_outcomes(true));
+    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        "REPL z-first, child-first and batch routes must agree (true=value, false=cycle): {outcomes:?}");
+}
+
+// spec: spec/08-modules.md §8.10.2 — REPRO-1081 control: both cold REPL orders produce 10 without the return edge.
+#[test]
+fn s124_declared_child_graph_repl_acyclic_control() {
+    assert_eq!(s124_declared_child_repl_outcomes(false), vec![true; 2]);
+}
+
+// spec: spec/08-modules.md §8.10.2 — REPRO-1081: a cycle-refused module cannot evaluate next turn without a save.
+// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev
+#[test]
+fn s124_declared_child_graph_neg_failed_module_evaluates_next_turn() {
+    for first in ["(z/zf)", "(P.c/cf)"] {
+        let out = s124_declared_child_graph(true)
+            .stdin(&format!("{first}\n(P.c/cf)\n(z/zf)\n/quit\n"))
+            .output()
+            .assert_ok();
+        let text = combined(&out);
+        assert!(
+            text.contains("circular dependency detected")
+                || text.matches(":primitives/Int 11").count() == 3,
+            "route must consistently accept or reach the cycle gate: {text}"
+        );
+        if text.contains("circular dependency detected") {
+            assert!(
+                !text.contains(":primitives/Int 11"),
+                "cycle-refused module must not evaluate in a later turn without a save: {text}"
+            );
+        }
+    }
 }
