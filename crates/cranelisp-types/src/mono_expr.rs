@@ -819,10 +819,12 @@ impl MonoExpr {
     /// bodies whose field `Var`s carry the generic ctor template's `Type::Var`;
     /// generic / best-effort templates; REPL `__expr`; non-concretized
     /// macro-clause bodies). Every non-concrete / absent node type is filled
-    /// with a placeholder (`ConcreteType::Int`, read ONLY via
-    /// `signature_heap_category`, never the deleted `classify(Var)` panic), so
-    /// the walk yields a total `MonoExpr`. Byte-identical to the strict builder
-    /// on a fully-concrete body (every `node_ty` succeeds; carriers identical).
+    /// with a placeholder (`ConcreteType::Int`), so the walk yields a total
+    /// `MonoExpr`. The placeholder is a fabricated type, not knowledge
+    /// (`design/arch/safety-invariants.md` row R18, instance 3): the backend
+    /// reader that classified by signature is deleted, and a consumer must
+    /// not classify a node by it. Byte-identical to the strict builder on a
+    /// fully-concrete body (every `node_ty` succeeds; carriers identical).
     ///
     /// **STAGED RETIREMENT (S119 ruling, register row R-11 / FIXME 0913;
     /// `design/arch/concrete-boundary-type.md` §3.1.1).** The

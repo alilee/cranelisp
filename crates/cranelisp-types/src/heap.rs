@@ -37,42 +37,41 @@ const _: () = assert!(HeapHeader::ALLOC_SIZE_OFFSET == 0);
 const _: () = assert!(HeapHeader::RC_OFFSET == 8);
 
 // ---------------------------------------------------------------------------
-// R5 value-representation flattening — the single-sourced Copy/value-layout
-// predicate (increment II; `design/arch/ownership-inference.md` §6.3,
-// `design/backend/ownership-codegen.md` §7.1).
+// The Copy/value-layout predicate: a release-tier fact
+// (`design/arch/ownership-inference.md` §6.3, `design/arch/interfaces.md`
+// §"R5 value-representation flattening"). Its one consumer is typecheck's
+// `Copy` classification. No lowering reads it: the dev tier lays every such
+// value out as a heap value (Principle 27).
 // ---------------------------------------------------------------------------
 
-/// Maximum machine-word size of a value-flattened concrete type in the first R5
-/// landing — **one word (8 bytes)**.
+/// Maximum machine-word size of a value-eligible concrete type: **one word
+/// (8 bytes)**.
 ///
-/// Every ABI surface in the system is uniformly `i64` today (params, returns,
-/// `Vec` slots, ADT fields, closure captures, GOT-dispatched signatures), so a
-/// one-word value **is** its word and crosses every existing boundary with
-/// **zero ABI change** — no boxing-at-edges, no multi-slot parameter lowering
-/// (`design/backend/ownership-codegen.md` §7.2). Multi-word flattening is the
-/// designed extension, deferred with a named trigger; bumping this constant is a
-/// representation change and therefore a `CACHE_SCHEMA_VERSION`-bump event.
+/// Every ABI surface is uniformly `i64` (parameters, returns, `Vec` slots, ADT
+/// fields, closure captures, GOT-dispatched signatures), so a one-word value
+/// could cross every existing boundary as its word, with no ABI change. A
+/// larger bound changes which types typecheck classifies `Copy`, and those
+/// modes are persisted, so changing this constant is a
+/// `CACHE_SCHEMA_VERSION`-bump event.
 pub const VALUE_LAYOUT_MAX_WORDS: usize = 1;
 
 /// The value-representation verdict for a concrete type.
 ///
-/// A [`Some`] result from [`value_layout`] means the type is **Copy-eligible and
-/// value-flattenable within the size bound**: it is laid out inline (in
-/// registers, `Vec` slots, or parent-ADT fields) with **no header, no refcount,
-/// no drop glue** — the backend's `HeapCategory::Value` arm
-/// (`design/backend/ownership-codegen.md` §7.1). A [`None`] means the type keeps
-/// its current heap/scalar representation verbatim.
+/// A [`Some`] result from [`value_layout`] means the type is **Copy-eligible
+/// within the size bound**: it could be laid out inline with no header, no
+/// refcount and no drop glue. A [`None`] means it could not. The verdict is a
+/// fact about the type, not a description of the emitted layout: the dev
+/// lowering gives a `Some` ADT the ordinary heap layout.
 ///
-/// This is a **classification result** (the `HeapCategory` analogue), not a
-/// persisted DTO — it is recomputed from the type defs on every compile and
-/// never serialised. `#[non_exhaustive]` because the multi-word extension
-/// (§7.2) will add layout detail (alignment / tag-word placement); consumers
-/// read it as `ValueLayout { words, .. }`.
+/// This is a **classification result**, not a persisted DTO: it is recomputed
+/// from the type definitions on every compile and never serialised.
+/// `#[non_exhaustive]` because a multi-word bound would add layout detail;
+/// consumers read it as `ValueLayout { words, .. }`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValueLayout {
-    /// Number of machine words the flattened representation occupies
-    /// (`≤ VALUE_LAYOUT_MAX_WORDS`). In the first landing this is always `1`: a
+    /// Number of machine words the inline representation would occupy
+    /// (`≤ VALUE_LAYOUT_MAX_WORDS`). Under the one-word bound this is always `1`: a
     /// value is a scalar, or a single-constructor **single-value-field** wrapper
     /// such as `(Cell Int)` whose one field flattens to one word. A 0-field or
     /// ≥2-field product is **not** value-eligible (`None`) — see [`value_layout`].
@@ -84,50 +83,45 @@ pub struct ValueLayout {
 ///
 /// `Some(ValueLayout { words })` ⟺ the type is **Copy-eligible** — a scalar, or
 /// a single-constructor ADT with **exactly one field** that is itself
-/// value-eligible (transitively) **∧** the whole flattens to
-/// `≤ VALUE_LAYOUT_MAX_WORDS` words (always exactly `1` in the first landing).
-/// `None` ⟺ the type keeps today's heap/scalar representation.
+/// value-eligible (transitively) **∧** the whole fits in
+/// `≤ VALUE_LAYOUT_MAX_WORDS` words (always exactly `1` under the one-word
+/// bound). `None` ⟺ the type is not Copy-eligible.
 ///
-/// **Single-field is a soundness invariant, not just a size bound.** A 0-field
-/// (0-word) or ≥2-field product is `None` even when its word-count would fit,
-/// because the flattening the backend implements is *the identity move of a
-/// single value word* — the shape typecheck's `Copy`, the backend's
-/// `HeapCategory::Value` arm, `value_construct`, and match field-binding all
-/// read from THIS predicate. Admitting 0-word or multi-field shapes here splits
-/// those consumers and reintroduces the Copy-on-a-heap-object UAF (the Wave-3a
-/// /review Blockers; see `adt_layout_words`).
+/// **Single-field is a soundness rule, not just a size bound.** A 0-field
+/// (0-word) or ≥2-field product is `None` even when its word count would fit.
+/// The only inline representation the verdict licenses is *the identity move
+/// of a single value word*, and a lowering that reads the verdict must
+/// implement exactly that shape (see `adt_layout_words`).
 ///
-/// # Why this lives in `cranelisp-types` (soundness single-sourcing)
+/// # Consumers, and why this lives in `cranelisp-types`
 ///
-/// Two crates must agree on this verdict or the system is **unsound**, not
-/// merely inconsistent: typecheck's `Copy` mode classifier (a param moded
-/// `Copy` whose representation the backend did *not* flatten is a pointer
-/// bit-copied with no `rc_inc` — a missing-inc use-after-free) and the
-/// backend's layout decision (`HeapCategory::classify`'s `Value` arm). Two
-/// independently-maintained copies of a soundness-**coupled** pure predicate is
-/// the Principle-7 mirror-defect class, so **one** predicate lives here beside
-/// [`HeapHeader`] and both consumers delegate to it (spine §6.3 ruling,
-/// resolving FIXME 0468). The backend derives **no** flattening predicate of
-/// its own — its `HeapCategory::classify` `ADT` arm reads this carrier's
-/// verdict exactly as typecheck's mode classifier does.
+/// The one consumer is typecheck's `Copy` mode classification. The dev lowering
+/// reads the verdict nowhere and counts every ADT it admits as a heap value
+/// (`design/arch/interfaces.md` §"R5 value-representation flattening"). The
+/// predicate is retained as a release-tier fact with its producer tests.
 ///
-/// # Monotone-sound conservatism (first landing)
+/// A lowering that lays a type out inline must agree with typecheck on this
+/// verdict or the system is unsound: a parameter moded `Copy` whose value is in
+/// fact a heap object is bit-copied with no `rc_inc`, a use-after-free. Any
+/// such reader therefore delegates to this predicate and derives none of its
+/// own (Principle 7).
 ///
-/// Returning `None` is *always* sound (it keeps today's lowering — spine §6.1
-/// monotone soundness); only precision is lost. The first landing is
-/// deliberately conservative in these ways, each a `None`:
-/// - **multi-constructor** ADTs (a tag word alongside the payload — §7.1);
-/// - **0-field or ≥2-field** single-ctor products (not the single-value-word
-///   shape the backend flattens — a soundness exclusion, see `adt_layout_words`);
+/// # Monotone-sound conservatism
+///
+/// Returning `None` is always sound (monotone soundness,
+/// `design/arch/ownership-inference.md` §6.1); only precision is lost. Each of
+/// these is a `None`:
+/// - **multi-constructor** ADTs (a tag word alongside the payload);
+/// - **0-field or ≥2-field** single-constructor products (the soundness rule
+///   above);
 /// - **`Vec`** and other built-in heap collections (heap identity);
 /// - **generic** ADT fields whose stored constructor-scheme type is not already
-///   fully concrete (no per-instantiation substitution in the first landing —
-///   `(Cell Int)`-style monomorphic products only, §7.2). A field whose type
-///   fails [`ConcreteType::from_type`] makes the whole type ineligible.
+///   fully concrete: the walk performs no per-instantiation substitution, so
+///   only `(Cell Int)`-style monomorphic products are eligible. A field whose
+///   type fails [`ConcreteType::from_type`] makes the whole type ineligible.
 ///
-/// `type_defs` is the per-module symbol-table view both crates already hold (the
-/// same `Option<&SymbolTables>` `HeapCategory::classify` takes); `None`
-/// classifies every ADT as ineligible (conservative — the pre-typecheck stages).
+/// `type_defs` is the per-module symbol-table view; `None` classifies every
+/// ADT as ineligible (the conservative answer, used before typecheck).
 /// This table adapter delegates to [`value_layout_with_lookup`]; callers with
 /// staged declarations supply their coherent lookup through that entry point.
 pub fn value_layout<C, L>(
@@ -145,8 +139,8 @@ where
 
 /// Calculate the shared Copy/value layout using the caller's declaration view.
 ///
-/// Typecheck can supply staged declarations while backend uses [`value_layout`]
-/// over its code-generation tables. Both entry points use the same eligibility,
+/// Typecheck supplies staged declarations here; [`value_layout`] is the adapter
+/// over published tables. Both entry points use the same eligibility,
 /// constructor-key projection and recursive walk documented by [`value_layout`].
 ///
 /// `lookup` probes an exact module and storage key, returning an owned binding
@@ -209,9 +203,8 @@ where
     C: CodeStore,
     F: Fn(&ModuleFullPath, &Symbol) -> Option<Binding<C>>,
 {
-    // `Vec` is a built-in heap collection (not registered via deftype) — never a
-    // flattened value. A `Vec` OF value elements is handled by the backend's
-    // null-elem-fn path, not by the `Vec` itself flattening (§7.3).
+    // `Vec` is a built-in heap collection (not registered via deftype) and has
+    // heap identity whatever its element type.
     if fqtn.name.as_ref() == "Vec" {
         return None;
     }
@@ -219,7 +212,7 @@ where
     // Cycle guard (compiler-DoS bound): a type already on the current resolution
     // path is (mutually-)recursive and therefore unbounded-size — it can never be
     // a `≤ VALUE_LAYOUT_MAX_WORDS` inline value, so `None` is exactly the correct
-    // (monotone-sound) verdict: keep today's heap lowering. Without this, a
+    // (monotone-sound) verdict. Without this, a
     // self-referential concrete product (`Stream [:Int head :Stream tail]`) or an
     // A-holds-B / B-holds-A pair recurses forever → stack overflow.
     if !visited.insert(fqtn.clone()) {
@@ -237,38 +230,25 @@ where
             let ctor_names = type_ctor_names_from_binding(&binding, fqtn, &|key| {
                 lookup(&fqtn.module, key).is_some()
             })?;
-            // Single-constructor only — a multi-ctor ADT needs a tag word
-            // alongside the payload, excluded from the first landing (§7.1).
+            // Single-constructor only: a multi-constructor ADT needs a tag
+            // word alongside the payload.
             let [ctor_name] = ctor_names.as_slice() else {
                 return None;
             };
             ctor_field_concrete_types(&lookup(&fqtn.module, ctor_name)?)?
         };
 
-        // R5 first landing (§7.1): EXACTLY ONE field, itself value-eligible. The
-        // flattened representation is that single field's one word, and it is
-        // RC-free by INDUCTION — a value-eligible field carries no heap
-        // reference, so a bit-copy of the flattened value duplicates no owned
-        // pointer. This single-field ∧ value-field shape is a SOUNDNESS
-        // requirement, not mere precision: it is the ONE predicate all three
-        // consumers implement, so single-sourcing it here keeps them in lockstep
-        // (the Wave-3a /review Blockers, both the Copy-on-a-heap-object class the
-        // co-land exists to prevent):
-        //   * **0-field / 0-word** (`(deftype U (U))`, or `(deftype P (P [:U u]))`
-        //     whose sole field U is nullary = 0 words): the OLD `sum ≤ 1` rule
-        //     returned `Some(0)`, so typecheck's `value_layout(..).is_some()` →
-        //     `Copy` (no caller `rc_inc`) while the backend, seeing a non-1-word
-        //     result, kept P a heap object with RC → a heap value handed across a
-        //     Copy edge with no inc → temporary leak; an aliased/returned Copy
-        //     param dangles when its true owner decs to 0 → UAF (Blocker 1).
-        //   * **≥2-field-but-≤1-word** (`(deftype M (M [:Int x :U u]))`, Int 1 +
-        //     U 0 = 1 word): the OLD rule flattened it by word-count, but the
-        //     backend `value_construct` (keys on `field_vals.len()==1`) kept the
-        //     ≥2-field construction on the heap while the match `is_value` path
-        //     bound EVERY field to the scrutinee word → a garbage pointer + leak
-        //     (Blocker 2).
-        // Requiring `[ft]` ∧ `layout_words(ft).is_some()` collapses construction,
-        // match, typecheck `Copy`, and backend `classify` to one agreed shape.
+        // Exactly one field, itself value-eligible. The inline representation
+        // is that field's one word, and it is RC-free by induction: a
+        // value-eligible field carries no heap reference, so a bit-copy
+        // duplicates no owned pointer. Counting words instead is unsound in two
+        // ways a single-word reader cannot represent:
+        //   * a 0-word product (`(deftype U (U))`, or `(deftype P (P [:U u]))`)
+        //     would be `Copy` with no word to move;
+        //   * a ≥2-field product of one word in total
+        //     (`(deftype M (M [:Int x :U u]))`) would bind every field to the
+        //     one word.
+        // Pinned by `heap/value_layout_tests.rs`.
         let [ft] = field_types.as_slice() else {
             return None;
         };
@@ -287,9 +267,9 @@ where
 /// # The single ctor-name resolver (FIXME 0528 — Principle-7 mirror cure)
 ///
 /// This table adapter shares one `Binding`→ctor-name-list projection with
-/// [`value_layout_with_lookup`]. The backend's heap classifiers delegate here,
-/// keeping the defined-type/product-facet switch and canonical-key preference
-/// identical across all layout consumers.
+/// [`value_layout_with_lookup`]. The backend's heap classification delegates
+/// here, keeping the defined-type/product-facet switch and canonical-key
+/// preference identical across all layout consumers.
 pub fn type_ctor_names<C, L>(table: &SymbolTable<C, L>, fqtn: &FQTypeName) -> Option<Vec<Symbol>>
 where
     C: CodeStore,

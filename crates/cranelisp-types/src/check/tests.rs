@@ -9,8 +9,8 @@
 //!
 //! NOTE: `MethodResolutions` itself is NOT serde_json-round-trippable — its
 //! `HashMap<Span, _>` fields use a struct key, which serde_json rejects (json
-//! map keys must be strings). It is a transient in-memory compile-input DTO
-//! (`ObjectCompileInput`), never JSON-cached, so this is a latent footgun
+//! map keys must be strings). It is a transient in-memory compile-input DTO,
+//! never JSON-cached, so this is a latent footgun
 //! rather than a live defect; the tests below exercise its population
 //! semantics directly and round-trip only the string-keyable value carriers.
 

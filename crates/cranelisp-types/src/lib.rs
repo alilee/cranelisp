@@ -104,14 +104,14 @@
 //! - **Heap layout** ([`HeapHeader`], [`NULLARY_TAG_THRESHOLD`]) — the
 //!   `#[repr(C)]` header `(alloc_size, rc)` shared between backend codegen
 //!   and the intrinsics runtime; offsets are compile-time constants. Plus the
-//!   R5 value-representation predicate ([`value_layout`],
+//!   Copy/value-layout predicate ([`value_layout`],
 //!   [`value_layout_with_lookup`], [`ValueLayout`],
-//!   [`VALUE_LAYOUT_MAX_WORDS`]) — the single-sourced Copy/value-layout
-//!   verdict both typecheck's `Copy` mode classifier and backend's
-//!   `HeapCategory::Value` arm delegate to (soundness-coupled; spine §6.3) —
-//!   with a lookup input for staged declarations or a table adapter for codegen.
+//!   [`VALUE_LAYOUT_MAX_WORDS`]) — a release-tier fact whose one consumer is
+//!   typecheck's `Copy` mode classification; no lowering reads it, and one
+//!   that does must delegate to it. It takes a lookup input for staged
+//!   declarations or a table adapter for published tables.
 //!   [`type_ctor_names`] and the layout walk share one constructor-key
-//!   projection, also consumed by the backend heap classifiers. The
+//!   projection, also consumed by the backend's heap classification. The
 //!   instantiation-substituting ctor-field projection
 //!   ([`ctor_field_types_at`], [`CtorFieldsAtError`]) — concrete-or-refuse,
 //!   never fabricating (S119; register rows R-6/R-16).
@@ -345,11 +345,9 @@ pub use ownership::{Mode, ModeSummary, ParamFlow, ResultMode, ownership_analysis
 // to live).
 pub use got::GotTable;
 pub use heap::HeapHeader;
-// R5 value-representation flattening — the single-sourced Copy/value-layout
-// predicate consumed by BOTH typecheck's `Copy` mode classifier and backend's
-// `HeapCategory::Value` arm (soundness-coupled — a `Copy`-moded param the
-// backend did NOT flatten is a UAF; one predicate, both delegate). See
-// `design/arch/ownership-inference.md` §6.3 + BC §7.
+// The Copy/value-layout predicate: consumed by typecheck's `Copy` mode
+// classification and by no lowering. See `design/arch/interfaces.md`
+// §"R5 value-representation flattening".
 pub use heap::{
     VALUE_LAYOUT_MAX_WORDS, ValueLayout, type_ctor_names, value_layout, value_layout_with_lookup,
 };

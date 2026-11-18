@@ -97,8 +97,10 @@ use serde::{Deserialize, Serialize};
 /// `Owned` is the `Default` — the Decision-24 conservative point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Mode {
-    /// Value-representation eligible — no RC identity at all (scalars in
-    /// increment I; Copy-flattened ADTs are increment II, spine §6.3).
+    /// Value-representation eligible: a scalar, or an ADT the
+    /// [`value_layout`](crate::value_layout) predicate admits. For such an ADT
+    /// the mode is a release-tier fact; the dev lowering gives it the ordinary
+    /// heap layout and counts it.
     Copy,
     /// Callee only reads; caller retains ownership and emits no transfer inc,
     /// callee emits no param dec.

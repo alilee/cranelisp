@@ -175,8 +175,9 @@ Use the read-throughs; never re-pattern the lifecycle set:
 ## Single-source predicates coupled to soundness
 
 - `value_layout`/`value_layout_with_lookup` (`heap.rs`) is the Copy and
-  value-flattening verdict that typecheck's `Copy` classifier and backend's
-  `HeapCategory::Value` arm both delegate to; divergence is a use-after-free.
+  value-layout verdict. Its one consumer is typecheck's `Copy` classifier; no
+  lowering reads it, and one that does must delegate to it, because divergence
+  is a use-after-free.
   Single-field-only is a soundness rule, not a size bound; changing
   `VALUE_LAYOUT_MAX_WORDS` is a cache-schema bump. Each lookup releases its
   table or staging guard before returning, and the walk drops metadata before
