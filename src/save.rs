@@ -533,9 +533,11 @@ fn generate_platforms(specs: &[PlatformSpec]) -> String {
 /// Merge and generate a single `(import [...])` form.
 /// Filters out the implicit prelude import.
 ///
-/// Specs for one module under one alias merge: their entries concatenate with
-/// equal entries removed, `[*]` absorbs, and a name-less spec adds nothing to
-/// a list (`design/int/int.md` §6.13).
+/// Each module and alias gets at most one glob pair and at most one list
+/// pair, rendered in first-appearance order: a glob cannot absorb a list,
+/// since a rename binds a local name the glob does not. A list's entries
+/// concatenate with equal entries removed, and a name-less spec renders only
+/// when nothing else names its module and alias (`design/int/int.md` §6.13).
 fn generate_imports(specs: &[ImportSpec]) -> String {
     let mut groups: Vec<(&ModuleFullPath, Option<&ModuleName>, ImportNames)> = Vec::new();
     let user_authored = specs.iter().filter(|s| {
@@ -543,14 +545,32 @@ fn generate_imports(specs: &[ImportSpec]) -> String {
     });
     for spec in user_authored {
         let alias = spec.alias.as_ref();
-        match groups
-            .iter_mut()
-            .find(|(path, group_alias, _)| **path == spec.module_path && *group_alias == alias)
-        {
-            Some((_, _, names)) => merge_names(names, &spec.names),
-            None => groups.push((&spec.module_path, alias, spec.names.clone())),
+        let same_route = |path: &ModuleFullPath, group_alias: Option<&ModuleName>| {
+            *path == spec.module_path && group_alias == alias
+        };
+        let is_glob = |names: &ImportNames| *names == ImportNames::Glob;
+        let route_named = groups
+            .iter()
+            .any(|(path, group_alias, _)| same_route(path, *group_alias));
+        let existing = groups.iter().position(|(path, group_alias, names)| {
+            same_route(path, *group_alias) && is_glob(names) == is_glob(&spec.names)
+        });
+        match (existing, &spec.names) {
+            (Some(_), ImportNames::Glob) => {}
+            (Some(index), incoming) => merge_list(&mut groups[index].2, incoming),
+            (None, ImportNames::None) if route_named => {}
+            (None, names) => groups.push((&spec.module_path, alias, names.clone())),
         }
     }
+    // A name-less pair that a later glob joined adds nothing to it.
+    let globbed: Vec<(&ModuleFullPath, Option<&ModuleName>)> = groups
+        .iter()
+        .filter(|(_, _, names)| *names == ImportNames::Glob)
+        .map(|(path, alias, _)| (*path, *alias))
+        .collect();
+    groups.retain(|(path, alias, names)| {
+        !(*names == ImportNames::None && globbed.contains(&(*path, *alias)))
+    });
     if groups.is_empty() {
         return String::new();
     }
@@ -561,18 +581,21 @@ fn generate_imports(specs: &[ImportSpec]) -> String {
     format!("(import [{}])", parts.join(" "))
 }
 
-/// Merge `incoming` into `merged`, the names list of an earlier spec for the
-/// same module and alias.
-fn merge_names(merged: &mut ImportNames, incoming: &ImportNames) {
+/// Merge `incoming`, a list or name-less spec, into `merged`, the list pair
+/// of an earlier spec for the same module and alias.
+fn merge_list(merged: &mut ImportNames, incoming: &ImportNames) {
     match (&mut *merged, incoming) {
-        (ImportNames::Glob, _) | (_, ImportNames::None) => {}
-        (_, ImportNames::Glob) | (ImportNames::None, _) => *merged = incoming.clone(),
+        (_, ImportNames::None) => {}
+        (ImportNames::None, _) => *merged = incoming.clone(),
         (ImportNames::Specific(entries), ImportNames::Specific(new_entries)) => {
             for entry in new_entries {
                 if !entries.contains(entry) {
                     entries.push(entry.clone());
                 }
             }
+        }
+        (ImportNames::Glob, _) | (_, ImportNames::Glob) => {
+            unreachable!("invariant: a glob forms its own pair and never joins a list")
         }
     }
 }
@@ -600,6 +623,9 @@ fn render_pair(
     };
     let names_list = match names {
         ImportNames::Glob => "[*]".to_string(),
+        // `[*]` is the glob only as the sole element (spec §8.3.2), so a lone
+        // `*` entry keeps its rename form; beside others it is the operator.
+        ImportNames::Specific(entries) if is_lone_star(entries) => "[(* *)]".to_string(),
         ImportNames::Specific(entries) => {
             let rendered: Vec<String> = entries.iter().map(render_entry).collect();
             format!("[{}]", rendered.join(" "))
@@ -607,6 +633,10 @@ fn render_pair(
         ImportNames::None => "[]".to_string(),
     };
     format!("{module_spec} {names_list}")
+}
+
+fn is_lone_star(entries: &[ImportEntry]) -> bool {
+    matches!(entries, [only] if render_entry(only) == "*")
 }
 
 /// A names-list entry as written: a `Name` whose `local` is the member its
@@ -1435,23 +1465,108 @@ mod tests {
         assert_eq!(generate_imports(&specs), "(import [core [foo bar]])");
     }
 
+    fn import_spec(module: &str, names: ImportNames) -> ImportSpec {
+        ImportSpec {
+            module_path: module.into(),
+            alias: None,
+            names,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    fn export_spec(module: &str, names: ImportNames) -> ExportSpec {
+        ExportSpec {
+            module_path: module.into(),
+            alias: None,
+            names,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    fn names(entries: &[ImportEntry]) -> ImportNames {
+        ImportNames::Specific(entries.to_vec())
+    }
+
+    fn rename(source: &str, local: &str) -> ImportEntry {
+        ImportEntry::Name {
+            source: Symbol::from(source),
+            local: Symbol::from(local),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.3.10–§8.3.11; repl/spec/15-session-persistence.md
+    // §15.4 rule 1; design/int/int.md §6.13 (merging specs) — a glob and a
+    // list for one module stay separate pairs in first-appearance order, so
+    // a rename beside a glob survives.
     #[test]
-    fn merge_imports_glob_wins() {
-        let specs = vec![
-            ImportSpec {
-                module_path: "core".into(),
-                alias: None,
-                names: ImportNames::Specific(vec![crate::imports::plain_entry("foo")]),
-                span: Span::SYNTHETIC,
-            },
-            ImportSpec {
-                module_path: "core".into(),
-                alias: None,
-                names: ImportNames::Glob,
-                span: Span::SYNTHETIC,
-            },
-        ];
-        assert_eq!(generate_imports(&specs), "(import [core [*]])");
+    fn merge_imports_keeps_a_glob_and_a_list_apart() {
+        let glob = import_spec("m", ImportNames::Glob);
+        let renamed = import_spec("m", names(&[rename("f", "g")]));
+        let plain = import_spec("m", names(&[crate::imports::plain_entry("f")]));
+        for (specs, expected) in [
+            (
+                vec![glob.clone(), renamed.clone()],
+                "(import [m [*] m [(f g)]])",
+            ),
+            (
+                vec![renamed.clone(), glob.clone()],
+                "(import [m [(f g)] m [*]])",
+            ),
+            (vec![glob.clone(), plain.clone()], "(import [m [*] m [f]])"),
+            (
+                vec![glob.clone(), renamed.clone(), glob.clone(), plain.clone()],
+                "(import [m [*] m [(f g) f]])",
+            ),
+        ] {
+            assert_eq!(generate_imports(&specs), expected, "{specs:?}");
+        }
+    }
+
+    // spec: design/int/int.md §6.13 (merging specs) — two equal lists render
+    // one pair; a name-less spec adds no pair beside a glob or a list, in
+    // either order, and alone renders `[]`.
+    #[test]
+    fn merge_imports_equal_lists_and_name_less_specs_add_no_pair() {
+        let glob = import_spec("m", ImportNames::Glob);
+        let list = import_spec("m", names(&[crate::imports::plain_entry("f")]));
+        let name_less = import_spec("m", ImportNames::None);
+        for (specs, expected) in [
+            (vec![list.clone(), list.clone()], "(import [m [f]])"),
+            (vec![glob.clone(), name_less.clone()], "(import [m [*]])"),
+            (vec![name_less.clone(), glob.clone()], "(import [m [*]])"),
+            (vec![list.clone(), name_less.clone()], "(import [m [f]])"),
+            (vec![name_less.clone(), list.clone()], "(import [m [f]])"),
+            (vec![name_less.clone()], "(import [m []])"),
+        ] {
+            assert_eq!(generate_imports(&specs), expected, "{specs:?}");
+        }
+    }
+
+    // spec: spec/08-modules.md §8.3.2; repl/spec/15-session-persistence.md §15.4
+    // rule 1; design/int/int.md §6.13 (a lone `*` entry) — a list whose sole
+    // entry is `*` renders it in rename form, for an import and an export, so
+    // it does not read back as the glob; beside another entry `*` stays bare.
+    #[test]
+    fn a_lone_star_entry_renders_in_rename_form() {
+        let star = crate::imports::plain_entry("*");
+        let lone = names(std::slice::from_ref(&star));
+        let multi = names(&[crate::imports::plain_entry("+"), star.clone()]);
+        assert_eq!(
+            generate_imports(&[import_spec("m", lone.clone())]),
+            "(import [m [(* *)]])"
+        );
+        assert_eq!(
+            generate_exports(&[export_spec("m", lone)]),
+            "(export [m [(* *)]])"
+        );
+        assert_eq!(
+            generate_imports(&[import_spec("m", multi.clone())]),
+            "(import [m [+ *]])"
+        );
+        assert_eq!(
+            generate_exports(&[export_spec("m", multi)]),
+            "(export [m [+ *]])"
+        );
     }
 
     #[test]
