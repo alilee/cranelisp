@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W4 accepted; W5 next
+**Status**: PHASE 5 LANGUAGE — W5 accepted; W6 next
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -353,6 +353,20 @@ The third-deferral groups and ACT-1067 (Notes).
 - **CEN-4 met after W4:** zero census records from any program in all four
   partitions, each with frames; the two remaining records are backend module
   fixtures. B4 is licensed.
+- **W5 accepted by `qa` (`7697cad3`):** B4 (`152a0def`, `1d965ed5`) deletes
+  the non-concrete arms; B5 / row D4 (`441e31ea`) makes one-word
+  single-constructor values heap values in backend and display; cache schema
+  32. Census at HEAD: 225,515 frames, zero records from programs. Suite
+  7,609 run, 192 failed, nothing unattributed (delta §14). ACT-1069 and
+  ACT-1072 closed. Row C: nothing owed. REPRO-1062-e/-f stay RED (no
+  correction scheduled). ACT-1018 re-measured at 2.
+- **Filed at W5 exit:** ACT-1076 (trait dispatch selects on the first
+  argument, not the `self` position; crash, wrong value or refusal, including
+  two spec §7.1.4 examples; predates S124), ACT-1077 (a same-named local
+  leaves an unrelated bind chain sequential).
+- **Awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
+  member (`cranelisp-types`; raised by review of `951622cf`, half-fixed in
+  `240b3a8a`). Not started.
 - **Filed during Phase 5, scheduling with the user unless stated:** ACT-1068
   (save omits multi-signature functions), ACT-1069 (trace formats a one-word
   ADT as a pointer; fixed by D4/B5 in W5), ACT-1070 (JIT direct call out of
