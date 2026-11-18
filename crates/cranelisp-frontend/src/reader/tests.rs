@@ -250,11 +250,15 @@ fn test_signed_numbers_and_spaced_operator_runs_unchanged() {
     assert_symbol(&parse_one("+"), "+");
     assert_symbol(&parse_one("+="), "+=");
     let forms = parse("(+* 1)").unwrap();
-    let Sexp::List(items, _) = &forms[0] else { panic!("{forms:?}") };
+    let Sexp::List(items, _) = &forms[0] else {
+        panic!("{forms:?}")
+    };
     assert_symbol(&items[0], "+*");
     assert_int(&items[1], 1);
     let forms = parse("(-> x f)").unwrap();
-    let Sexp::List(items, _) = &forms[0] else { panic!("{forms:?}") };
+    let Sexp::List(items, _) = &forms[0] else {
+        panic!("{forms:?}")
+    };
     assert_symbol(&items[0], "->");
 }
 
