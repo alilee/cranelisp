@@ -311,7 +311,7 @@ fn rejected_redefinition_retains_exact_caller_answer_line() {
 #[test]
 fn macro_arity_diagnostic_carries_no_internal_artifacts() {
     repl(
-        "(defmacro mycond ([] 0) ([t b &rest] `(if ~t ~b (mycond ~@rest))))\n\
+        "(defmacro mycond ([] (quote 0)) ([t b &rest] `(if ~t ~b (mycond ~@rest))))\n\
          (mycond true 1 false)\n",
     )
     .assert_ok()

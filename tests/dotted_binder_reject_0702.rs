@@ -423,7 +423,7 @@ fn defmacro_private_dotted_head_rejected_binder_neg() {
 // spec: spec/05-definitions.md §5.5 — a bare `defmacro` head binds normally.
 #[test]
 fn defmacro_bare_head_accepts_twin_green() {
-    let out = repl_prims("(defmacro ab [] 0)\n");
+    let out = repl_prims("(defmacro ab [] (quote 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.to_lowercase().contains("error"),
