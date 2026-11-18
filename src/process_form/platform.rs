@@ -70,6 +70,28 @@ pub(crate) fn layout_hash_gate(
     }
 }
 
+/// Only the session's entry module may declare a platform (`spec/10-io.md`
+/// §10.9.1); any other module's form is a compile-time error located at the
+/// form. Decided by module identity, never by the shape of the module's name
+/// (`design/int/io-integration.md` §2.1). `entry` is `None` only for a
+/// compiling context without session state, which has no entry.
+pub(crate) fn platform_declaration_scope(
+    module: &ModuleFullPath,
+    entry: Option<&ModuleFullPath>,
+    spec: &PlatformSpec,
+) -> Result<(), CranelispError> {
+    if entry == Some(module) {
+        return Ok(());
+    }
+    Err(CranelispError::ModuleError {
+        message: format!(
+            "platform '{}' is declared in module '{module}', which is not the entry module; only the entry module may declare a platform — declare it there and use (import [platform.{} [...]]) here",
+            spec.name, spec.name
+        ),
+        location: cranelisp_types::ErrorLocation::from_span(spec.span),
+    })
+}
+
 /// Handle platform forms: load DLL, pre-resolve associated type modules, and
 /// register type signatures.
 ///
@@ -90,17 +112,14 @@ pub(crate) fn layout_hash_gate(
 /// `BlockAction::Continue` once every referenced type module is present and the
 /// platform is fully registered.
 ///
-/// Platform declarations in non-entry modules (submodules) are silently
-/// ignored per spec §10.9.1 — only the entry module may load platforms.
+/// A platform form outside the session's entry module is refused before
+/// anything loads (`platform_declaration_scope`).
 pub(super) fn handle_platform(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     spec: &PlatformSpec,
 ) -> Result<BlockAction, CranelispError> {
-    // Submodules (paths containing '.') cannot load platforms.
-    if module.as_ref().contains('.') {
-        return Ok(BlockAction::Continue);
-    }
+    platform_declaration_scope(module, ctx.shared_state.map(|s| &s.entry_module), spec)?;
 
     // Load + validate the DLL (without registering sigs yet) so we can read its
     // descriptor sig strings to discover the associated type modules.

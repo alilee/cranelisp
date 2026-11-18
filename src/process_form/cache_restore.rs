@@ -74,6 +74,19 @@ pub(super) fn try_cache_hit_load<'a>(
     // honours the extract-before-move ordering invariant).
     let mut specs = extract_cached_specs(dep, &cached);
 
+    // A table that records a platform declaration restores only for the
+    // entry; for any other module the fresh build refuses the form, so the
+    // restore must miss rather than load the platform (`design/int/
+    // io-integration.md` §2.1, restore parity).
+    let entry = ctx.shared_state.map(|shared| &shared.entry_module);
+    if specs
+        .platforms
+        .iter()
+        .any(|spec| super::platform::platform_declaration_scope(dep, entry, spec).is_err())
+    {
+        return Ok(false);
+    }
+
     // A writer-side impl record publishes its discovery shell into the trait's
     // HOME table. Make those homes available before consuming/installing the
     // writer cache; if a home is not itself cache-restorable, treat the writer
@@ -87,7 +100,7 @@ pub(super) fn try_cache_hit_load<'a>(
     install_cached_table(ctx, dep, cached);
 
     // Re-resolve platform fn ptrs. A failure aborts the cache-hit (miss).
-    if !reresolve_cached_platforms(ctx, dep, &specs.platforms) {
+    if !reresolve_cached_platforms(ctx, &specs.platforms) {
         return Ok(false);
     }
 
@@ -459,20 +472,12 @@ fn install_cached_table(
 /// are non-fatal at the cache-hit level (we treat them as "platform missing —
 /// fall back to full rebuild" per `design/int/int.md` §7.1); we abandon the
 /// cache-hit attempt and let the normal load path retry.
-fn reresolve_cached_platforms(
-    ctx: &ModuleCompiler,
-    dep: &ModuleFullPath,
-    cached_platforms: &[PlatformSpec],
-) -> bool {
+fn reresolve_cached_platforms(ctx: &ModuleCompiler, cached_platforms: &[PlatformSpec]) -> bool {
     let shared = match ctx.shared_state {
         Some(s) => s,
         None => return true,
     };
     for spec in cached_platforms {
-        // Submodules cannot load platforms (spec §10.9.1) — skip.
-        if dep.as_ref().contains('.') {
-            continue;
-        }
         match crate::platform::load_and_register_platform(
             ctx.symbol_tables,
             ctx.module_aliases,

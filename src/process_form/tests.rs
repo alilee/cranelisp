@@ -431,6 +431,34 @@ fn recognize_skips_colon_prefixed_type_annotation() {
 // deleted in S81 W-G item 0303 — Principle 7 dedup). The int FQ-autoload
 // boundary calls `cranelisp_types::substitute_module_alias` directly.
 
+// spec: spec/10-io.md §10.9.1; design/int/io-integration.md §2.1 — only the
+// session's entry module may declare a platform, decided by identity, not by
+// the shape of the module's name: a root-level or nested non-entry module is
+// refused at the form, and the entry (whatever its name) is admitted.
+#[test]
+fn platform_declaration_scope_is_the_entry_module() {
+    use super::platform::platform_declaration_scope;
+    let spec = cranelisp_types::PlatformSpec {
+        name: "stdio".to_string(),
+        span: Span { start: 3, end: 19 },
+    };
+    let entry = ModuleFullPath::from("app");
+    for module in ["helper", "nested.helper", "user"] {
+        let refusal =
+            platform_declaration_scope(&ModuleFullPath::from(module), Some(&entry), &spec)
+                .expect_err(module);
+        let message = refusal.to_string();
+        assert!(
+            message.contains("platform") && message.contains("entry") && message.contains(module),
+            "{module}: {message}"
+        );
+        assert_eq!(refusal.span(), spec.span, "{module}: located at the form");
+    }
+    assert!(platform_declaration_scope(&entry, Some(&entry), &spec).is_ok());
+    let nested_entry = ModuleFullPath::from("app.main");
+    assert!(platform_declaration_scope(&nested_entry, Some(&nested_entry), &spec).is_ok());
+}
+
 // -----------------------------------------------------------------
 // Layout-hash gate (platform-interface.md §5.5.4) — drives the WIRED
 // type-definition-drift detection (handle_platform) with mismatched and
