@@ -6,113 +6,18 @@ fn build_name_type(name: &str) -> TypeExpr {
 
 use cranelisp_types::TopLevel;
 
-/// Test-only adapter: builds a synthetic batch program from one or more
-/// source forms by calling `build_form`/`build_expr` and re-packaging the
-/// resulting `ParsedEntry` values into the legacy `Vec<TopLevel>` shape
-/// the existing assertions match against. The orchestrator now owns this
-/// re-packaging at runtime; the adapter exists only to preserve test
-/// surface during the Wave 3a-β cutover.
 type Program = Vec<TopLevel>;
 
-fn parsed_entry_to_top_level(entry: ParsedEntry) -> TopLevel {
-    use cranelisp_types::Defn;
-    match entry {
-        ParsedEntry::Def {
-            name,
-            variants,
-            visibility,
-            docstring,
-            span,
-        } => TopLevel::Defn(Defn {
-            name,
-            docstring,
-            variants,
-            visibility,
-            span,
-        }),
-        ParsedEntry::TypeDef {
-            name,
-            type_params,
-            constructors,
-            visibility,
-            docstring,
-            span,
-        } => {
-            // The legacy TopLevel::TypeDef carries type_params as Vec<Symbol>.
-            let type_params_as_symbols: Vec<Symbol> = type_params
-                .into_iter()
-                .map(|t| Symbol::from(t.as_ref()))
-                .collect();
-            TopLevel::TypeDef {
-                name,
-                docstring,
-                type_params: type_params_as_symbols,
-                constructors,
-                visibility,
-                span,
-            }
-        }
-        ParsedEntry::TraitDecl { decl } => TopLevel::TraitDecl(decl),
-        ParsedEntry::TraitImpl { impl_ } => TopLevel::TraitImpl(impl_),
-        ParsedEntry::Macro { .. } | ParsedEntry::Constructor { .. } => {
-            unreachable!(
-                "test adapter: parser-only entries (Macro/Constructor) should not appear in TopLevel-shaped assertions"
-            )
-        }
-        _ => unreachable!("test adapter: unknown ParsedEntry variant"),
-    }
-}
-
-/// Route through the PRODUCTION classifier so the test adapter cannot drift
-/// from the prod router (FIXME 0678, audit R3). The former verbatim head-list
-/// mirror is deleted — this delegates to `is_top_level_form_sexp` /
-/// `classify_head`, the single source of the top-level head vocabulary.
-fn is_top_level_form(sexp: &Sexp) -> bool {
-    super::is_top_level_form_sexp(sexp)
-}
-
+/// A whole source sequence, through the production sequence entry.
 fn parse_and_build_program(input: &str) -> Result<Program, CranelispError> {
-    let sexps = crate::reader::parse(input)?;
-    let mut out = Vec::new();
-    for s in sexps {
-        if matches!(s, Sexp::Comment(_, _)) {
-            continue;
-        }
-        if is_top_level_form(&s) {
-            // Top-level form: route through build_form and propagate
-            // errors. Drop per-deftype Constructor entries — they were
-            // not in the legacy `Program` shape; the TypeDef entry
-            // alone carries the constructor list inline for assertion.
-            let entries = build_form(&s)?;
-            for entry in entries {
-                if matches!(entry, ParsedEntry::Constructor { .. }) {
-                    continue;
-                }
-                out.push(parsed_entry_to_top_level(entry));
-            }
-        } else {
-            let expr = build_expr(&s)?;
-            out.push(TopLevel::Expr(expr));
-        }
-    }
-    Ok(out)
+    build_forms(&crate::reader::parse(input)?)
 }
 
+/// The first `TopLevel` the production sequence entry yields for `input`.
 fn parse_and_build_repl(input: &str) -> Result<TopLevel, CranelispError> {
-    let sexps = crate::reader::parse(input)?;
-    assert!(!sexps.is_empty(), "expected at least one sexp");
-    if is_top_level_form(&sexps[0]) {
-        let mut entries = build_form(&sexps[0])?;
-        entries.retain(|e| !matches!(e, ParsedEntry::Constructor { .. }));
-        assert!(
-            !entries.is_empty(),
-            "expected at least one TopLevel-shaped entry"
-        );
-        Ok(parsed_entry_to_top_level(entries.remove(0)))
-    } else {
-        let expr = build_expr(&sexps[0])?;
-        Ok(TopLevel::Expr(expr))
-    }
+    let mut program = parse_and_build_program(input)?;
+    assert!(!program.is_empty(), "expected at least one TopLevel entry");
+    Ok(program.remove(0))
 }
 
 fn parse_and_build_expr(input: &str) -> Result<Expr, CranelispError> {
@@ -619,9 +524,8 @@ fn build_fn_body_annotation() {
     }
 }
 
-// spec: 03-types.md §3.9 / §2.3.8 (AP-3) — a match-arm BODY may carry a
-// `:Type body` ascription (the arm bracket then has an odd element count,
-// which the consume-based loop handles). Previously died at the parity gate.
+// spec: 03-types.md §3.9 / §2.3.8 — a match-arm body may carry a `:Type body`
+// ascription.
 #[test]
 fn build_match_arm_body_annotation() {
     match parse_and_build_expr("(match 5 [n :Int n])").unwrap() {
@@ -722,11 +626,8 @@ fn test_build_match_with_var_pattern() {
     }
 }
 
-// spec: 02-grammar §2.3.7 — an odd match-arm count is rejected. Post-0591
-// (AP-3) the fixed even-count parity check is gone (an arm body may be a
-// two-token `:Type body` ascription, so `pattern body` is not always a
-// 2-token pair); the consume-based `build_match_arms` loop reports the
-// unpaired final pattern (`Green` here) as "match arm missing body".
+// spec: 02-grammar §2.3.7 — an unpaired final pattern (`Green`) is rejected as
+// "match arm missing body".
 #[test]
 fn test_build_match_odd_arms_rejected() {
     let err = parse_and_build_expr("(match x [Red 1 Green])").unwrap_err();
@@ -4443,5 +4344,96 @@ mod value_level_qualified_binder {
             "the reject names the qualified spelling + the bare requirement; got: {}",
             e.message(),
         );
+    }
+}
+
+/// Each fixed-arity operand position checks its arity by index or length now
+/// that an annotated operand is one node (`design/frontend/enforcement-matrices.md`
+/// §1). Every row keeps that position's message and span.
+mod fixed_arity_positions {
+    use super::*;
+
+    fn reject(src: &str) -> CranelispError {
+        parse_and_build_program(src).expect_err(src)
+    }
+
+    // spec: 05-definitions §5.1, 04-expressions §4.2, §4.5, §4.6 — a surplus or
+    // missing operand rejects at the form with the position's own message.
+    #[test]
+    fn surplus_and_missing_operands_reject_with_the_position_message() {
+        // The span is the whole form, or the variant list for a variant row.
+        for (src, message, located) in [
+            (
+                "(defn f [x] x 9)",
+                "defn has extra forms after body",
+                "(defn f [x] x 9)",
+            ),
+            (
+                "(defn f ([x] x 9))",
+                "defn variant requires params and body",
+                "([x] x 9)",
+            ),
+            (
+                "(defn f ([x]))",
+                "defn variant requires params and body",
+                "([x])",
+            ),
+            (
+                "(if a b c d)",
+                "if requires condition, then, and else branches",
+                "(if a b c d)",
+            ),
+            (
+                "(if a b)",
+                "if requires condition, then, and else branches",
+                "(if a b)",
+            ),
+            ("(fn [x] x 9)", "fn is single-arity", "(fn [x] x 9)"),
+            (
+                "(match x [a 1] 9)",
+                "match requires scrutinee and arms",
+                "(match x [a 1] 9)",
+            ),
+            (
+                "(match x)",
+                "match requires scrutinee and arms",
+                "(match x)",
+            ),
+        ] {
+            let e = reject(src);
+            assert!(e.message().contains(message), "{src}: {}", e.message());
+            let start = src.find(located).unwrap() as u32;
+            let span = e.span();
+            assert_eq!(
+                (span.start, span.end),
+                (start, start + located.len() as u32),
+                "{src}"
+            );
+        }
+    }
+
+    // spec: 02-grammar §2.3.8 — an annotated operand is one node at each position
+    #[test]
+    fn annotated_operands_fill_exactly_one_position() {
+        for src in [
+            "(defn f [x] :Int x)",
+            "(defn f ([x] :Int x))",
+            "(if :Bool a :Int 1 :Int 2)",
+            "(fn [x] :Int x)",
+            "(match :Int x [a :Int 1])",
+        ] {
+            parse_and_build_program(src).unwrap_or_else(|e| panic!("{src}: {e:?}"));
+        }
+    }
+
+    // spec: 04-expressions §4.6 — an arm spans its pattern through its body
+    #[test]
+    fn match_arm_span_runs_from_pattern_to_body_end() {
+        let src = "(match x [a 1 b :Int 22])";
+        let Expr::Match { arms, .. } = parse_and_build_expr(src).unwrap() else {
+            panic!("expected match")
+        };
+        let spans: Vec<_> = arms.iter().map(|a| (a.span.start, a.span.end)).collect();
+        assert_eq!(spans, vec![(10, 13), (14, 23)]);
     }
 }

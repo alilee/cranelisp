@@ -481,7 +481,7 @@ fn build_form_inner(sexp: &Sexp) -> Result<Vec<ParsedEntry>, CranelispError> {
 /// single-sourced in the reader (BC §1 invariant 9; Principle 7).
 pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
     // Desugar the reader-quote family over the whole slice ONCE, up front —
-    // before annotated-node consumption and per-form dispatch (spec §9.4.4;
+    // before per-form dispatch (spec §9.4.4;
     // `design/frontend/quasiquote-fold.md` §1.1). `expand_quasiquotes`
     // preserves structure (each slice element maps to exactly one element, and
     // an `Sexp::Annotated` remains one node), so desugar-then-build is
@@ -491,18 +491,11 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
         .iter()
         .map(crate::quasiquote::expand_quasiquotes)
         .collect::<Result<Vec<_>, _>>()?;
-    let sexps = &desugared[..];
-    let mut out: Vec<TopLevel> = Vec::with_capacity(sexps.len());
-    let mut i = 0;
-    while i < sexps.len() {
-        // The reader has already folded an annotation with its subject. The
-        // non-annotated path below retains per-form top-level dispatch.
-        let sexp = &sexps[i];
+    let mut out: Vec<TopLevel> = Vec::with_capacity(desugared.len());
+    for sexp in &desugared {
         if matches!(sexp, Sexp::Comment(_, _)) {
-            i += 1;
             continue;
         }
-
         if is_top_level_form_sexp(sexp) {
             for entry in build_form_inner(sexp)? {
                 if let Some(tl) = parsed_entry_to_top_level(entry) {
@@ -512,7 +505,6 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
         } else {
             out.push(TopLevel::Expr(build_expr(sexp)?));
         }
-        i += 1;
     }
     Ok(out)
 }
@@ -520,9 +512,7 @@ pub fn build_forms(sexps: &[Sexp]) -> Result<Vec<TopLevel>, CranelispError> {
 /// Detect a top-level form head (`defn`/`deftype`/`deftrait`/`impl`/`defmacro`
 /// and their `-` variants) so [`build_forms`] knows whether to route a sexp to
 /// [`build_form`] or treat it as a bare expression. The head vocabulary is
-/// single-sourced via [`head_is_top_level_form`] → [`classify_head`] (FIXME
-/// 0678) — the test adapter routes through the SAME predicate, so the two
-/// routers cannot drift.
+/// single-sourced via [`head_is_top_level_form`] → [`classify_head`].
 pub(crate) fn is_top_level_form_sexp(sexp: &Sexp) -> bool {
     if let Sexp::List(children, _) = sexp
         && let Some(Sexp::Symbol(head, _)) = children.first()
@@ -652,10 +642,10 @@ pub(crate) fn parse_defn(
             if body_start >= children.len() {
                 return Err(parse_err("defn missing body", span));
             }
-            let (body, consumed) = build_one_expr_at(children, body_start)?;
-            if body_start + consumed != children.len() {
+            if body_start + 1 != children.len() {
                 return Err(parse_err("defn has extra forms after body", span));
             }
+            let body = build_expr(&children[body_start])?;
             vec![DefnVariant { params, body, span }]
         }
         Sexp::List(..) => children[next..]
@@ -698,15 +688,11 @@ fn build_defn_variant(sexp: &Sexp) -> Result<DefnVariant, CranelispError> {
     if children.len() < 2 {
         return Err(parse_err("defn variant requires params and body", span));
     }
-    let params = build_annotated_params(&children[0])?;
-    // The clause body may carry a `:Type body` ascription (BC §1 invariant 9;
-    // spec §2.3.8 — `:Type` binds the immediately-following form in ALL
-    // positions, so a multi-arity clause body parses like the single-arity
-    // body, FV-6). Consume the reader-folded node through the shared helper.
-    let (body, consumed) = build_one_expr_at(children, 1)?;
-    if 1 + consumed != children.len() {
+    if children.len() != 2 {
         return Err(parse_err("defn variant requires params and body", span));
     }
+    let params = build_annotated_params(&children[0])?;
+    let body = build_expr(&children[1])?;
     Ok(DefnVariant { params, body, span })
 }
 
@@ -1794,17 +1780,10 @@ fn build_trace(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
 }
 
 fn build_apply(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
-    // A leading `:Type` inside a parenthesized list annotates the SINGLE
-    // following element — it is NOT the application callee and NOT an
-    // annotation of the whole list (spec §2.3.8; BC §1 invariant 9). The
-    // reader binds `:Type` to the next form, yielding a one-element list whose
-    // sole element is that `Annotate`; the list is then the ordinary
-    // application of that one annotated element. We therefore build the head
-    // element through the same annotated-node helper (`build_one_expr_at`)
-    // used for arguments — when the head is not annotated it builds exactly
-    // like `build_expr`, so the common `(f arg ...)` shape is unchanged.
-    let (callee, consumed) = build_one_expr_at(children, 0)?;
-    let args = build_args_with_annotations(&children[consumed..])?;
+    // A leading `:Type` annotates the callee element only, never the whole list
+    // (spec §2.3.8): the reader has already folded it into that one node.
+    let callee = build_expr(&children[0])?;
+    let args = build_args(&children[1..])?;
     Ok(Expr::Apply {
         callee: Box::new(callee),
         args,
@@ -1855,8 +1834,8 @@ fn build_let_bindings(
         if i >= items.len() {
             return Err(parse_err("let binding missing value", items[i - 1].span()));
         }
-        let (value, consumed) = build_one_expr_at(items, i)?;
-        i += consumed;
+        let value = build_expr(&items[i])?;
+        i += 1;
         bindings.push((name.into(), value));
     }
     Ok(bindings)
@@ -1867,35 +1846,17 @@ fn build_let_bindings(
 // ---------------------------------------------------------------------------
 
 fn build_if(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
-    // (if cond then else) — each of the three operands may carry a `:Type form`
-    // ascription (spec §2.3.8 — `:Type` binds the immediately-following form in
-    // ALL positions, an `if` branch included). Consume each through the
-    // annotated-node consumer (0591 AP-4) rather than a positional
-    // `children[n]` that a leading annotation would offset.
-    let arity_err = || parse_err("if requires condition, then, and else branches", span);
-    let mut pos = 1;
-    if pos >= children.len() {
-        return Err(arity_err());
-    }
-    let (cond, c) = build_one_expr_at(children, pos)?;
-    pos += c;
-    if pos >= children.len() {
-        return Err(arity_err());
-    }
-    let (then_branch, c) = build_one_expr_at(children, pos)?;
-    pos += c;
-    if pos >= children.len() {
-        return Err(arity_err());
-    }
-    let (else_branch, c) = build_one_expr_at(children, pos)?;
-    pos += c;
-    if pos != children.len() {
-        return Err(arity_err());
-    }
+    // (if cond then else)
+    let [_, cond, then_branch, else_branch] = children else {
+        return Err(parse_err(
+            "if requires condition, then, and else branches",
+            span,
+        ));
+    };
     Ok(Expr::If {
-        cond: Box::new(cond),
-        then_branch: Box::new(then_branch),
-        else_branch: Box::new(else_branch),
+        cond: Box::new(build_expr(cond)?),
+        then_branch: Box::new(build_expr(then_branch)?),
+        else_branch: Box::new(build_expr(else_branch)?),
         span,
         inferred_type: None,
     })
@@ -1927,18 +1888,15 @@ fn build_fn(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
             span,
         ));
     }
-    let params = build_annotated_params(&children[1])?;
-    // The body may carry a `:Type body` ascription (spec §2.3.8 — `:Type` binds
-    // the immediately-following form in ALL positions; the `fn` body is not
-    // special). Route it through the annotated-node consumer (0591 AP-2).
-    let (body, consumed) = build_one_expr_at(children, 2)?;
-    if 2 + consumed != children.len() {
+    if children.len() != 3 {
         return Err(parse_err(
             "fn is single-arity: it takes one [params] bracket and a body \
              (use defn for multiple arities, spec §4.5)",
             span,
         ));
     }
+    let params = build_annotated_params(&children[1])?;
+    let body = build_expr(&children[2])?;
     Ok(Expr::Lambda {
         params,
         body: Box::new(body),
@@ -1953,30 +1911,11 @@ fn build_fn(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
 
 fn build_match(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
     // (match scrutinee [pattern body pattern body ...])
-    //
-    // The scrutinee may carry a `:Type form` annotation (BC §1 invariant 9;
-    // spec §2.3.8 — `:Type` is reader-macro-like, binding the immediately
-    // following form in ALL positions, including a match scrutinee). Consume
-    // it through the same annotated-node consumer (`build_one_expr_at`)
-    // used for call arguments and vec literals so the annotated scrutinee
-    // groups into ONE `Expr::Annotate` rather than presenting as extra
-    // children that defeat a positional arity guard (FIXME 0389).
-    //
-    // Minimum shape: `(match <scrutinee...> [arms])` — at least the `match`
-    // head, one scrutinee token, and the arms bracket.
-    if children.len() < 3 {
+    let [_, scrutinee, arms] = children else {
         return Err(parse_err("match requires scrutinee and arms", span));
-    }
-    let (scrutinee, consumed) = build_one_expr_at(children, 1)?;
-    let arms_pos = 1 + consumed;
-    if arms_pos + 1 != children.len() {
-        return Err(parse_err("match requires scrutinee and arms", span));
-    }
-    let (bracket_items, _bracket_span) = expect_bracket(&children[arms_pos])?;
-    // No fixed parity check: an arm BODY may carry a `:Type body` ascription
-    // (spec §2.3.8), so `pattern body` is not always a 2-token pair. The
-    // consume-based `build_match_arms` loop reports an unpaired final pattern as
-    // "match arm missing body" (0591 AP-3).
+    };
+    let scrutinee = build_expr(scrutinee)?;
+    let (bracket_items, _bracket_span) = expect_bracket(arms)?;
     let arms = build_match_arms(bracket_items)?;
     Ok(Expr::Match {
         scrutinee: Box::new(scrutinee),
@@ -1997,13 +1936,9 @@ fn build_match_arms(items: &[Sexp]) -> Result<Vec<MatchArm>, CranelispError> {
         if i >= items.len() {
             return Err(parse_err("match arm missing body", pat_span));
         }
-        // The arm body may carry a `:Type body` ascription (spec §2.3.8) — one
-        // represented as one node. Route it through the shared consumer so
-        // the body groups into ONE `Expr::Annotate` (0591 AP-3).
-        let (body, consumed) = build_one_expr_at(items, i)?;
-        let body_end = items[i + consumed - 1].span().end;
-        let arm_span = Span::new(pat_span.start, body_end);
-        i += consumed;
+        let body = build_expr(&items[i])?;
+        let arm_span = Span::new(pat_span.start, items[i].span().end);
+        i += 1;
         arms.push(MatchArm {
             pattern,
             body,
@@ -2081,7 +2016,7 @@ fn build_pattern(sexp: &Sexp) -> Result<Pattern, CranelispError> {
 // ---------------------------------------------------------------------------
 
 fn build_vec_lit(children: &[Sexp], span: Span) -> Result<Expr, CranelispError> {
-    let elements = build_args_with_annotations(children)?;
+    let elements = build_args(children)?;
     Ok(Expr::VecLit {
         elements,
         span,
@@ -2130,52 +2065,30 @@ fn trait_ref_from_name(name: &str) -> TraitRef {
     }
 }
 
-/// Build one expression from a slice at `pos`.
+/// Build the body at `children[pos]` and require it to be the last child, so
+/// `(form … body junk)` is an error located at `junk` rather than a silent drop.
 ///
-/// An annotation is already one recursive `Sexp::Annotated` node, so every
-/// expression position consumes exactly one item.
-fn build_one_expr_at(items: &[Sexp], pos: usize) -> Result<(Expr, usize), CranelispError> {
-    let expr = build_expr(&items[pos])?;
-    Ok((expr, 1))
-}
-
-/// Build the single trailing body-expression at `children[pos..]`, routing it
-/// through the annotated-node consumer (so `:Type body` ascription works —
-/// spec §2.3.8) and rejecting any form left after it (so `(form … body junk)` is
-/// a LOCATED error, not a silent drop).
-///
-/// The ONE seam for every single-body operand position — let-body,
-/// impl-method body, trait-default body, `trace` operand
-/// (`design/frontend/enforcement-matrices.md` §1; Principle 7 single-source,
-/// Principle 18 enforce-where-built). Mirrors the tail-consumption discipline
-/// `parse_defn` / `build_defn_variant` already have on their own bodies.
+/// The one seam for every single-body operand position — let body, impl-method
+/// body, `trace` operand (`design/frontend/enforcement-matrices.md` §1).
 fn build_body_to_end(children: &[Sexp], pos: usize, ctx: &str) -> Result<Expr, CranelispError> {
-    if pos >= children.len() {
+    let Some(body) = children.get(pos) else {
         return Err(parse_err(
             &format!("{ctx}: missing body expression"),
             children.last().map(Sexp::span).unwrap_or(Span::SYNTHETIC),
         ));
-    }
-    let (expr, consumed) = build_one_expr_at(children, pos)?;
-    if pos + consumed != children.len() {
+    };
+    if let Some(extra) = children.get(pos + 1) {
         return Err(parse_err(
             &format!("{ctx}: unexpected trailing form after body"),
-            children[pos + consumed].span(),
+            extra.span(),
         ));
     }
-    Ok(expr)
+    build_expr(body)
 }
 
-/// Build arguments, including reader-folded `Sexp::Annotated` operands.
-fn build_args_with_annotations(items: &[Sexp]) -> Result<Vec<Expr>, CranelispError> {
-    let mut args = Vec::new();
-    let mut i = 0;
-    while i < items.len() {
-        let (expr, consumed) = build_one_expr_at(items, i)?;
-        args.push(expr);
-        i += consumed;
-    }
-    Ok(args)
+/// Build every item as one expression; an annotated operand is one node.
+fn build_args(items: &[Sexp]) -> Result<Vec<Expr>, CranelispError> {
+    items.iter().map(build_expr).collect()
 }
 
 // ---------------------------------------------------------------------------
