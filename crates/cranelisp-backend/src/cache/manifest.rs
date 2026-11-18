@@ -27,7 +27,7 @@ use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Span};
 // `cache_format_version` is the field name on `CacheManifest` (kept stable
 // for on-disk JSON compatibility). The constant value comes from
 // `CACHE_SCHEMA_VERSION` post-Sprint-58 §14.2 rename.
-use super::CACHE_SCHEMA_VERSION as CACHE_FORMAT_VERSION;
+use super::CACHE_FORMAT_VERSION;
 
 /// Global cache manifest. Maps module paths to source hashes and
 /// stores global invalidation keys.

@@ -552,7 +552,7 @@ where
 }
 
 /// Threshold constant for discriminating nullary tags from heap pointers.
-pub const NULLARY_THRESHOLD_I64: i64 = NULLARY_TAG_THRESHOLD as i64;
+pub(crate) const NULLARY_THRESHOLD_I64: i64 = NULLARY_TAG_THRESHOLD as i64;
 
 // ---------------------------------------------------------------------------
 // Heap classification — relocated from cranelisp-types per S69 Sub 38

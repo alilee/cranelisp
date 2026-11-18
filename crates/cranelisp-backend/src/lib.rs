@@ -21,11 +21,6 @@
 //!   `compile_to_module::<ObjectModule>` followed by the **caller** finalising
 //!   (`obj_module.finish().emit()`); see the §"Object file contract" notes in
 //!   this source and the [`CodeFinalizer`] trait.
-//! - [`load_object`] — loads `.o` bytes into a fresh `cache::linker::Linker`
-//!   and returns a [`LinkerArtefact`] (the `Arc<Linker>` retention root +
-//!   per-symbol address map). It has no production caller: the live JIT-mode
-//!   cache hit is [`cache::load_cached_object`], driven by int against its own
-//!   linker.
 //! - [`produce_disasm`] — on-demand machine-code disassembly (REPL `/disasm`).
 //!   The caller supplies `code_size` (it received it in [`CompilationArtifacts`]);
 //!   backend never re-derives it. Factored out of the always-created path
@@ -159,7 +154,7 @@ pub mod exe;
 pub mod got_observer;
 pub mod heap;
 pub mod jit;
-pub mod primitives_inline;
+pub(crate) mod primitives_inline;
 mod raise;
 
 // Platform-interface schema generator (platform-interface.md §5.5/§6.0; BC §3
@@ -181,15 +176,6 @@ pub use code::Code;
 // `Linker::get_symbol`.
 pub mod error;
 pub use error::{CompilationError, LinkerError};
-
-// Return-shape DTO for `load_object` — `LinkerArtefact`. `compile_to_module`
-// has no artefact shape (it writes the GOT slot directly + returns
-// `CompilationArtifacts` by value). `ObjectArtefact` is a not-currently-
-// produced typed shape (see `artefact.rs` and the delete-candidate note
-// there) — the object path returns `.o` bytes via the caller's
-// `finish().emit()`, not through a backend-constructed artefact.
-pub mod artefact;
-pub use artefact::{LinkerArtefact, ObjectArtefact};
 
 use std::collections::HashMap;
 
@@ -1248,51 +1234,6 @@ fn write_finalized_got_slots<M, C, L>(
             );
         }
     }
-}
-
-// =========================================================================
-// Free function — `load_object`
-// =========================================================================
-
-/// Load object bytes into a fresh `Linker` and return a `LinkerArtefact`
-/// containing the `Arc<Linker>` retention root + per-symbol pointer map for
-/// the module's GOT-slotted callables.
-///
-/// **No production caller.** It registers no externals (intrinsic symbols,
-/// GOT base symbols, multi-module resolution), so it cannot serve the live
-/// cache hit; int drives its own `Linker` through
-/// [`cache::load_cached_object`] instead. Its public-API fate is an open
-/// `arch`/user question (`design/backend/compile-to-module.md` §10, §14).
-pub fn load_object<C, L>(
-    module: &ModuleFullPath,
-    object_bytes: &[u8],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> Result<artefact::LinkerArtefact, CranelispError>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    let mut linker = crate::cache::linker::Linker::new()?;
-    linker.load_object(module.as_ref(), object_bytes)?;
-
-    // Walk the module's symbol table to identify defined function symbols;
-    // ask the linker for each address. Per Decision 36, the symbols are
-    // stored under their bare names.
-    let mut ptrs: std::collections::HashMap<Symbol, *const u8> = std::collections::HashMap::new();
-    if let Some(st) = symbol_tables.get(module) {
-        for (name, entry) in st.all_symbols() {
-            if entry.callable_got_slot().is_some()
-                && let Ok(addr) = linker.get_symbol(name.as_ref())
-            {
-                ptrs.insert(name.clone(), addr);
-            }
-        }
-    }
-
-    Ok(artefact::LinkerArtefact {
-        linker: std::sync::Arc::new(linker),
-        ptrs,
-    })
 }
 
 // =========================================================================

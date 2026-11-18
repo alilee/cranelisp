@@ -29,7 +29,7 @@
 //! This crate-internal root holds the genuine multi-submodule orchestration
 //! helpers ([`CachedModule`], [`module_cache_path`], [`try_load_cached_module`],
 //! [`load_cached_object`]) and the version consts ([`CACHE_SCHEMA_VERSION`],
-//! [`CACHE_FORMAT_VERSION`], [`BUILD_ID`]). The canonical home of every cache
+//! `CACHE_FORMAT_VERSION`, [`BUILD_ID`]). The canonical home of every cache
 //! type is exactly one submodule.
 //!
 //! # Cache invariants (internal implementation invariants)
@@ -51,7 +51,7 @@
 //!    a stale cache surfaces as `serialize::CacheStale` and the caller
 //!    recompiles — no implicit "use stale cache anyway" fallback.
 //! 4. **One version number covers the manifest and the sidecars.**
-//!    [`CACHE_FORMAT_VERSION`] is an alias of [`CACHE_SCHEMA_VERSION`]. A
+//!    `CACHE_FORMAT_VERSION` is an alias of [`CACHE_SCHEMA_VERSION`]. A
 //!    version-mismatched manifest invalidates all cached modules atomically; a
 //!    mismatched sidecar invalidates only that one module.
 //! 5. **No re-codegen on cache-hit.** Cache-hit modules skip
@@ -131,7 +131,7 @@ pub const BUILD_ID: &str = env!("CRANELISP_BUILD_ID");
 
 /// The manifest's format version: an alias of [`CACHE_SCHEMA_VERSION`], so the
 /// manifest and every sidecar are versioned by one number.
-pub const CACHE_FORMAT_VERSION: u32 = CACHE_SCHEMA_VERSION;
+pub(crate) const CACHE_FORMAT_VERSION: u32 = CACHE_SCHEMA_VERSION;
 
 /// Compute the cache directory path for module files.
 ///

@@ -9,7 +9,7 @@
 //! **Forbidden pattern — no serde-shape change without a `CACHE_SCHEMA_VERSION`
 //! bump.** Any change to a `#[derive(Serialize, Deserialize)]` shape that
 //! affects on-disk bytes MUST bump `super::CACHE_SCHEMA_VERSION`;
-//! [`deserialise_meta`] rejects mismatched versions with
+//! `deserialise_meta` rejects mismatched versions with
 //! [`CacheStale::SchemaMismatch`] and the caller treats it as a cache miss.
 //! Skipping the bump silently corrupts user cache directories — fail-loud over
 //! fail-silent.
@@ -331,7 +331,7 @@ pub(crate) fn result_mode_param_index(result: cranelisp_types::ResultMode) -> Op
 /// pointer state — they are re-derived on cache-hit per §14.3. The runtime
 /// address for an addressable callable lives in the GOT (per its `got_slot`)
 /// and is re-populated on cache-hit by codegen / platform reload.
-pub fn serialise_meta<C, L>(
+pub(crate) fn serialise_meta<C, L>(
     table: &SymbolTable<C, L>,
     schema_version: u32,
 ) -> Result<Vec<u8>, CranelispError>
@@ -388,7 +388,7 @@ where
 ///   §14.3 step 5. (The runtime address for each addressable callable is
 ///   re-populated into the GOT slot on cache-hit by codegen / platform
 ///   reload — there is no separate `fn_ptr` field on the entry.)
-pub fn deserialise_meta(
+pub(crate) fn deserialise_meta(
     bytes: &[u8],
     expected_schema_version: u32,
     path: &Path,

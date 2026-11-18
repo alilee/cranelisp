@@ -15,7 +15,7 @@
 //! (`LinkerWrite`). The `Redefinition` variant is published for int, which
 //! detects the redefinition at its own write site; because `GotEvent` has no
 //! public constructor, int records that event directly into its consumer ring
-//! rather than through [`emit`].
+//! rather than through `emit`.
 //!
 //! Production batch (`--link`, non-trace `--run`) does NOT register an
 //! observer and pays one relaxed-load null check per emit site (one
@@ -168,7 +168,7 @@ pub fn register_got_observer(observer: Option<GotObserver>) {
 /// the `Redefinition` tag from its symbol-table write site without
 /// going through any indirection.
 #[inline]
-pub fn emit(tag: GotEventTag, event: &GotEvent) {
+pub(crate) fn emit(tag: GotEventTag, event: &GotEvent) {
     let raw = OBSERVER_SLOT.load(Ordering::Acquire);
     if raw.is_null() {
         return;

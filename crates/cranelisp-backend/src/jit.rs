@@ -85,11 +85,10 @@ fn register_platform_effect_symbols<C, L>(
 pub(crate) static JIT_FREE_MEMORY_CALL_COUNT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Public read accessor for the `Jit::drop` reclaim counter. Lets the
-/// integration layer's reclaim tests (Decision 31 Scenario 2 verification
-/// in `src/code.rs::tests`) assert the underlying free path actually
-/// fired without exposing the static directly.
-pub fn jit_free_memory_call_count() -> u64 {
+/// Read accessor for the `Jit::drop` reclaim counter, for the `Code` reclaim
+/// tests.
+#[cfg(test)]
+pub(crate) fn jit_free_memory_call_count() -> u64 {
     JIT_FREE_MEMORY_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed)
 }
 

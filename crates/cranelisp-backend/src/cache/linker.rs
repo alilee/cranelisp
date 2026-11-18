@@ -11,7 +11,7 @@
 //! the last reference drops. The public surface is `Linker::new` /
 //! `Linker::get_symbol` / `Linker::register_symbol` (`get_symbol` returns the
 //! typed `Result<*const u8, LinkerError>` per Decision 37); `load_object` is
-//! `pub(crate)` and is reached from the crate-root `load_object` free function.
+//! `pub(crate)` and is reached through `cache::load_cached_object`.
 //!
 //! Primary target: Mach-O aarch64 (macOS ARM). Also supports ELF aarch64 (Linux ARM).
 //!
@@ -221,9 +221,7 @@ impl Linker {
     /// Load an object file: parse sections, copy code to executable memory,
     /// resolve relocations, and register defined symbols.
     ///
-    /// `pub(crate)`: the public cache-hit entry is `cache::load_cached_object`
-    /// (the crate-root `load_object` also drives it but has no production
-    /// caller).
+    /// `pub(crate)`: the public cache-hit entry is `cache::load_cached_object`.
     pub(crate) fn load_object(
         &mut self,
         module_name: &str,
