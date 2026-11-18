@@ -86,16 +86,6 @@ exceeding that limit. A growing re-entry is accepted when declared; the error
 is reported when an instance is demanded, in the REPL on the turn that first
 demands it.
 
-**Counting-unit gap — unresolved.** The ruling names the depth of a chain of
-implementation instantiations. [Typecheck design §3.10.3](../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch)
-instead counts occurrences of one template on one in-progress chain, with
-`RECURRENCE_BOUND` set to 64. A chain passing through distinct templates can
-exceed 64 implementation instantiations before any one template exceeds 64
-occurrences. These are different counting units; the design's recurrence
-count has not been adopted as the meaning of the normative depth limit.
-The coordinator must return this gap to the user before a boundary test or
-design can claim agreement with §3.10.
-
 ## S124-Q8: What location must a “no main” refusal report?
 
 **Closed — user ruling, 2026-11-17**, candidate B, recorded as “S124-Q8
