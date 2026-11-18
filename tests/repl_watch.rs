@@ -765,9 +765,10 @@ fn s124_1061_save_without_notification() {
     s124_sh_reload(Some("real/math.cl"));
 }
 
-// spec: repl/spec/14-file-watching.md §14.2 — T-1061, watched-path control
+// spec: repl/spec/14-file-watching.md §14.2 — T-1061, watched-path late-notice subject
+// defect: class=notification-only-detection locus=src/watch.rs::poll_changes found=S124 owner=/dev
 #[test]
-fn s124_1061_watched_save_control() {
+fn s124_1061_watched_save_subject() {
     s124_sh_reload(Some("math.cl"));
 }
 
