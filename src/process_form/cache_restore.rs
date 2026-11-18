@@ -166,7 +166,12 @@ fn cache_validity_check(
     let dep_source = std::fs::read_to_string(dep_file).ok()?;
     let source_hash = cache_manifest::hash_source(&dep_source);
 
-    let sources = ModuleSources::new(ctx.project_root, ctx.lib_dirs);
+    let sources = ModuleSources::new(
+        ctx.project_root,
+        ctx.lib_dirs,
+        ctx.symbol_tables,
+        &shared.cache,
+    );
     let CacheValidity::Valid { record } = shared.cache.validate(dep, &source_hash, &sources) else {
         return None;
     };

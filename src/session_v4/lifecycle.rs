@@ -3070,6 +3070,8 @@ impl CompilerSession {
         let sources = crate::cache::dependency_record::ModuleSources::new(
             &self.shared.project_root,
             &lib_dirs,
+            &self.shared.symbol_tables,
+            &self.shared.cache,
         );
         if !matches!(
             self.shared.cache.validate(module, &hash, &sources),

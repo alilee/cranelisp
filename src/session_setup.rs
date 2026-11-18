@@ -161,7 +161,7 @@ impl CacheState {
         let record = DependencyRecord::from_manifest(&entry.dependency_hashes);
         let Some(current) = record
             .members()
-            .map(|(member, _)| Some((member.clone(), sources.current_hash(member)?)))
+            .map(|(member, _)| Some((member.clone(), sources.current_key(member)?)))
             .collect::<Option<HashMap<ModuleFullPath, String>>>()
         else {
             return CacheValidity::Stale;
@@ -666,7 +666,12 @@ mod manifest_convergence_tests {
             cs.validate(
                 &ModuleFullPath::from("user"),
                 "kept-hash",
-                &ModuleSources::new(tmp.path(), &[]),
+                &ModuleSources::new(
+                    tmp.path(),
+                    &[],
+                    &dashmap::DashMap::new(),
+                    &crate::cache::ObjectCache::new(None, None),
+                ),
             ),
             CacheValidity::Valid {
                 record: DependencyRecord::default()

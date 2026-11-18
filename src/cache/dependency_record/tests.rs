@@ -247,6 +247,11 @@ impl Session {
     }
 }
 
+/// The derivation key of a walked member whose live table assigns no slot.
+fn key(source_hash: &str) -> String {
+    AuthoredSlotLayout(BTreeMap::new()).derivation_key(source_hash)
+}
+
 fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
     expected
         .iter()
@@ -261,7 +266,7 @@ fn fresh_chain_records_the_transitive_member() {
     session.fresh("d", "hash-d", &["e"]);
     assert_eq!(
         record_of(session.build("m", &["d"])),
-        pairs(&[("d", "hash-d"), ("e", "hash-e")])
+        pairs(&[("d", &key("hash-d")), ("e", &key("hash-e"))])
     );
 }
 
@@ -271,7 +276,7 @@ fn restored_member_contributes_its_stored_record_without_walking_its_table() {
     session.restored("d", "hash-d", &[("e", "hash-e")]);
     assert_eq!(
         record_of(session.build("m", &["d"])),
-        pairs(&[("d", "hash-d"), ("e", "hash-e")])
+        pairs(&[("d", &key("hash-d")), ("e", "hash-e")])
     );
 }
 
@@ -284,7 +289,7 @@ fn hashes_are_the_versions_this_session_loaded() {
     session.restored("d", "hash-d", &[("e", "recorded-e")]);
     assert_eq!(
         record_of(session.build("m", &["d", "e"])),
-        pairs(&[("d", "hash-d"), ("e", "loaded-e")])
+        pairs(&[("d", &key("hash-d")), ("e", &key("loaded-e"))])
     );
 }
 
@@ -296,7 +301,7 @@ fn a_cycle_back_to_the_module_is_not_a_member() {
     session.restored("r", "hash-r", &[("m", "hash-m")]);
     assert_eq!(
         record_of(session.build("m", &["d", "r"])),
-        pairs(&[("d", "hash-d"), ("r", "hash-r")])
+        pairs(&[("d", &key("hash-d")), ("r", &key("hash-r"))])
     );
 }
 
@@ -323,7 +328,10 @@ fn loaded_prelude_is_recorded_with_its_own_edges() {
     );
     assert_eq!(
         record_of(outcome),
-        pairs(&[("prelude", "hash-prelude"), ("text", "hash-text")])
+        pairs(&[
+            ("prelude", &key("hash-prelude")),
+            ("text", &key("hash-text"))
+        ])
     );
 }
 
@@ -335,7 +343,7 @@ fn a_fresh_member_with_the_fallback_bit_reaches_the_prelude() {
     session.shared.prelude_fallback.insert(m("d"), true);
     assert_eq!(
         record_of(session.build("m", &["d"])),
-        pairs(&[("d", "hash-d"), ("prelude", "hash-prelude")])
+        pairs(&[("d", &key("hash-d")), ("prelude", &key("hash-prelude"))])
     );
 }
 
@@ -386,7 +394,7 @@ fn a_child_written_before_its_parent_settles_is_recorded_once_it_has() {
     record_deferred_entries(&session.shared);
     assert_eq!(
         persisted_record(&session, "p.test"),
-        Some(pairs(&[("p", "hash-p")]))
+        Some(pairs(&[("p", &key("hash-p"))]))
     );
 }
 
@@ -671,9 +679,12 @@ mod callee_modules {
             "g",
             &["e"],
         );
+        let d_key = AuthoredSlotLayout::of(&session.shared.symbol_tables.get(&m("d")).unwrap())
+            .derivation_key("hash-d");
+        assert_ne!(d_key, key("hash-d"), "`g`'s slot is part of `d`'s layout");
         assert_eq!(
             record_of(session.build("m", &["d"])),
-            pairs(&[("d", "hash-d"), ("e", "hash-e")])
+            pairs(&[("d", &d_key), ("e", &key("hash-e"))])
         );
     }
 
@@ -747,7 +758,11 @@ mod lookup_dependencies {
             .record_lookup_dependency(m("e"));
         assert_eq!(
             record_of(session.build("m", &["d"])),
-            pairs(&[("d", "hash-d"), ("e", "hash-e"), ("f", "hash-f")])
+            pairs(&[
+                ("d", &key("hash-d")),
+                ("e", &key("hash-e")),
+                ("f", &key("hash-f"))
+            ])
         );
     }
 
@@ -781,7 +796,7 @@ mod lookup_dependencies {
             .record_lookup_dependency(m("e"));
         assert_eq!(
             record_of(session.build("m", &["d"])),
-            pairs(&[("d", "hash-d"), ("e", "hash-e")])
+            pairs(&[("d", &key("hash-d")), ("e", "hash-e")])
         );
     }
 }
@@ -833,4 +848,172 @@ fn the_cache_validity_edges_keep_a_null_import() {
         ),
         ["prelude"]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Slot-layout identity (`design/int/int.md` §7.6.3, ACT-1052)
+// ---------------------------------------------------------------------------
+
+mod slot_layout {
+    use cranelisp_types::{
+        CallableOrigin, CallableTarget, ConcreteType, DefnVariant, Expr, FQSymbol, InstanceLink,
+        MonoDefnVariant, MonoExpr, Realization, Scheme, Symbol, Type,
+    };
+
+    use super::callee_modules::concrete;
+    use super::*;
+
+    const SOURCE: &str = "(defn f [] 1)";
+
+    /// A project holding `dep.cl`, whose current key `ModuleSources` reads
+    /// against `tables` and the cache directory.
+    struct Project {
+        root: tempfile::TempDir,
+        cache_dir: tempfile::TempDir,
+        tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    }
+
+    impl Project {
+        fn new() -> Self {
+            let project = Project {
+                root: tempfile::tempdir().unwrap(),
+                cache_dir: tempfile::tempdir().unwrap(),
+                tables: dashmap::DashMap::new(),
+            };
+            std::fs::write(project.root.path().join("dep.cl"), SOURCE).unwrap();
+            project
+        }
+
+        fn current_key(&self) -> Option<String> {
+            let cache = ObjectCache::new(Some(self.cache_dir.path().to_path_buf()), None);
+            ModuleSources::new(self.root.path(), &[], &self.tables, &cache).current_key(&m("dep"))
+        }
+    }
+
+    fn hash() -> String {
+        cranelisp_backend::cache::manifest::hash_source(SOURCE)
+    }
+
+    /// `dep`'s table defining `f`; after `moves` language-type changes with no
+    /// caller, `f`'s earlier slots are retired and it holds a fresh one.
+    fn table_with_f_after(moves: usize) -> SessionSymbolTable {
+        let mut table = SessionSymbolTable::new_with_params(m("dep"));
+        concrete(&mut table, "f", &[]);
+        for _ in 0..moves {
+            table.retire_abi_changing(&Symbol::from("f")).unwrap();
+            concrete(&mut table, "f", &[]);
+        }
+        table
+    }
+
+    /// Install a minted `(id Int)` instance and the synthetic `__expr`.
+    fn add_restaged_slots(table: &mut SessionSymbolTable) {
+        concrete(table, crate::worker::SYNTHETIC_EXPR_WRAPPER, &[]);
+        let template = FQSymbol {
+            module: m("dep"),
+            symbol: Symbol::from("id"),
+        };
+        let template_scheme = Scheme {
+            type_vars: vec![0],
+            constraints: Default::default(),
+            ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Int)),
+        };
+        let link = InstanceLink::from_type_args(
+            CallableTarget::Binding(template),
+            vec![ConcreteType::Int],
+        );
+        let name = link.instance_key(&template_scheme).unwrap();
+        let ast = DefnVariant {
+            params: Vec::new(),
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        };
+        let view = MonoDefnVariant {
+            name,
+            params: Vec::new(),
+            body: MonoExpr::lenient_from_expr(
+                &ast.body,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            ),
+            span: Span::SYNTHETIC,
+            mode_summary: None,
+        };
+        table
+            .install_instance(
+                link,
+                Scheme {
+                    type_vars: Vec::new(),
+                    constraints: Default::default(),
+                    ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+                },
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                Realization::Body { view, code: None },
+                Some(ast),
+                Vec::new(),
+                Visibility::Public,
+            )
+            .unwrap();
+    }
+
+    // spec: design/int/int.md §7.6.3 — the current key of an unchanged source
+    // and layout matches the recorded key; a moved authored slot with the
+    // same source does not, so an importer compiled against the old slot
+    // misses (ACT-1052).
+    #[test]
+    fn a_moved_authored_slot_changes_the_key_and_an_unchanged_one_does_not() {
+        let recorded = AuthoredSlotLayout::of(&table_with_f_after(0)).derivation_key(&hash());
+        let project = Project::new();
+        project.tables.insert(m("dep"), table_with_f_after(0));
+        assert_eq!(project.current_key(), Some(recorded.clone()));
+
+        project.tables.insert(m("dep"), table_with_f_after(2));
+        assert_ne!(project.current_key(), Some(recorded));
+    }
+
+    // spec: design/int/int.md §7.6.3 — minted instances and `__expr` are
+    // restaged by every recompile, so their slots are not part of the layout.
+    #[test]
+    fn minted_instances_and_the_expression_wrapper_are_not_layout() {
+        let plain = table_with_f_after(0);
+        let mut restaged = table_with_f_after(0);
+        add_restaged_slots(&mut restaged);
+        assert!(restaged.all_symbols().count() > plain.all_symbols().count());
+        assert_eq!(
+            AuthoredSlotLayout::of(&restaged),
+            AuthoredSlotLayout::of(&plain)
+        );
+    }
+
+    // spec: design/int/int.md §7.6.3 — a member being built fresh holds an
+    // empty live table, which matches no recorded layout; a member with no
+    // live table and no stored `.meta` has no key.
+    #[test]
+    fn a_fresh_build_and_an_absent_member_are_misses() {
+        let recorded = AuthoredSlotLayout::of(&table_with_f_after(0)).derivation_key(&hash());
+        let project = Project::new();
+        assert_eq!(project.current_key(), None, "no live table, no .meta");
+
+        project
+            .tables
+            .insert(m("dep"), SessionSymbolTable::new_with_params(m("dep")));
+        assert_ne!(project.current_key(), Some(recorded));
+    }
+
+    // spec: design/int/int.md §7.6.3 — a key never equals a bare source hash,
+    // so a record written before keys carried the layout is a miss.
+    #[test]
+    fn a_key_is_never_a_bare_source_hash() {
+        let project = Project::new();
+        project.tables.insert(m("dep"), table_with_f_after(0));
+        assert_ne!(project.current_key(), Some(hash()));
+    }
 }

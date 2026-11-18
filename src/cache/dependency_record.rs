@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CodeStore, ExportSpec, ImportSpec, LinkerStore, ModDecl, ModuleFullPath, SymbolTable,
+    CallableTarget, CodeStore, ExportSpec, ImportSpec, Life, LinkerStore, ModDecl, ModuleFullPath,
+    SymbolTable,
 };
 
 use crate::callee_edges::binding_callees;
@@ -21,8 +22,9 @@ use crate::session_v4::SharedState;
 
 const PRELUDE: &str = "prelude";
 
-/// Source hash of every module in one module's transitive dependency closure,
-/// keyed by module path. The module itself is never a member.
+/// The derivation key of every module in one module's transitive dependency
+/// closure, keyed by module path (`design/int/int.md` §7.6.3). The module
+/// itself is never a member.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DependencyRecord(BTreeMap<ModuleFullPath, String>);
 
@@ -46,6 +48,64 @@ impl DependencyRecord {
 
     pub(crate) fn members(&self) -> impl Iterator<Item = (&ModuleFullPath, &str)> {
         self.0.iter().map(|(module, hash)| (module, hash.as_str()))
+    }
+}
+
+/// The slot assignments another module's object can embed: each codegen
+/// target of a table and its GOT slot, excluding minted instances and the
+/// synthetic `__expr` — the slots the entry preload releases because the
+/// from-source recompile restages them (`design/int/int.md` §7.6.3). Retired
+/// slots are not part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthoredSlotLayout(BTreeMap<String, usize>);
+
+impl AuthoredSlotLayout {
+    pub(crate) fn of<C: CodeStore, L: LinkerStore>(table: &SymbolTable<C, L>) -> Self {
+        let synthetic = crate::worker::SYNTHETIC_EXPR_WRAPPER;
+        let mut ordinals: BTreeMap<String, usize> = BTreeMap::new();
+        let mut layout = BTreeMap::new();
+        for (target, arm) in table.codegen_targets() {
+            let (owner, kind) = match &target {
+                CallableTarget::Binding(owner) => (owner, "fn"),
+                CallableTarget::OverloadArm { owner, .. } => (owner, "arm"),
+                CallableTarget::MacroClause { owner, .. } => (owner, "clause"),
+                _ => continue,
+            };
+            if owner.symbol.as_ref() == synthetic {
+                continue;
+            }
+            let Life::Concrete {
+                slot, minted_from, ..
+            } = &arm.life
+            else {
+                continue;
+            };
+            if minted_from.is_some() {
+                continue;
+            }
+            // Arm and clause ids are generation-local; their order within
+            // the declaration is what a rebuild of the same text reproduces.
+            let owner_key = format!("{kind} {owner}");
+            let ordinal = ordinals.entry(owner_key.clone()).or_default();
+            layout.insert(format!("{owner_key} #{ordinal}"), slot.index());
+            *ordinal += 1;
+        }
+        AuthoredSlotLayout(layout)
+    }
+
+    /// The member's derivation key under this layout. Its form is private and
+    /// never equals a bare source hash, so a record written before keys
+    /// carried the layout is a miss.
+    pub(crate) fn derivation_key(&self, source_hash: &str) -> String {
+        let rendered = self
+            .0
+            .iter()
+            .map(|(target, slot)| format!("{target}={slot}\n"))
+            .collect::<String>();
+        format!(
+            "{source_hash}+slots:{}",
+            cranelisp_backend::cache::manifest::hash_source(&rendered)
+        )
     }
 }
 
@@ -205,8 +265,10 @@ pub(crate) enum RecordOutcome {
 
 /// Build `module`'s record from the versions this session loaded (Principle
 /// 26): a restored member contributes itself and its own validated record
-/// without its table being walked; a fresh member contributes its stashed hash
-/// and the edges of its typechecked table.
+/// without its table's edges being walked; a fresh member contributes the
+/// edges of its typechecked table. Each walked member is keyed by its stashed
+/// source hash and the authored slot layout of its live table now; an
+/// inherited member keeps the key its restored record holds.
 ///
 /// A prelude edge whose table the session never loaded is dropped: no prelude
 /// file resolved, so the fallback had no table to consult.
@@ -232,10 +294,15 @@ pub(crate) fn build_dependency_record(
                 source_hash,
                 record,
             }) => {
+                let Some(table) = shared.symbol_tables.get(&member) else {
+                    return RecordOutcome::Unsettled { member };
+                };
+                let key = AuthoredSlotLayout::of(&table).derivation_key(&source_hash);
+                drop(table);
                 for (inner, hash) in record.0 {
                     inherited.entry(inner).or_insert(hash);
                 }
-                walked.insert(member, source_hash);
+                walked.insert(member, key);
             }
             Some(LoadedSource::Fresh { source_hash }) => {
                 let typechecked = shared
@@ -247,7 +314,9 @@ pub(crate) fn build_dependency_record(
                 };
                 let fallback = shared.prelude_fallback.get(&member).is_some_and(|bit| *bit);
                 pending.extend(ModuleEdges::of_table(&member, &table, fallback).0);
-                walked.insert(member, source_hash);
+                let key = AuthoredSlotLayout::of(&table).derivation_key(&source_hash);
+                drop(table);
+                walked.insert(member, key);
             }
             None => return RecordOutcome::Unsettled { member },
         }
@@ -326,30 +395,56 @@ impl LoadedSource {
     }
 }
 
-/// The source each recorded member would load from now, resolved exactly as
-/// the loading handlers resolve it.
+/// The current derivation key of each recorded member: the source it would
+/// load from now, resolved exactly as the loading handlers resolve it, and
+/// the authored slot layout of the version the session would link an
+/// importer against (`design/int/int.md` §7.6.3). Every validity query reads
+/// it; no caller compares layouts itself.
 pub(crate) struct ModuleSources<'a> {
     project_root: &'a Path,
     lib_dirs: &'a [PathBuf],
+    tables: &'a dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    cache: &'a crate::cache::ObjectCache,
 }
 
 impl<'a> ModuleSources<'a> {
-    pub(crate) fn new(project_root: &'a Path, lib_dirs: &'a [PathBuf]) -> Self {
+    /// `tables` is read one member at a time under a read guard; the caller
+    /// must hold no mutable guard on it.
+    pub(crate) fn new(
+        project_root: &'a Path,
+        lib_dirs: &'a [PathBuf],
+        tables: &'a dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+        cache: &'a crate::cache::ObjectCache,
+    ) -> Self {
         ModuleSources {
             project_root,
             lib_dirs,
+            tables,
+            cache,
         }
     }
 
-    /// `None` when the member cannot be resolved or read, which is a miss.
-    pub(crate) fn current_hash(&self, module: &ModuleFullPath) -> Option<String> {
+    /// `None` when the member cannot be resolved or read, or has neither a
+    /// live table nor a stored `.meta`, which is a miss.
+    pub(crate) fn current_key(&self, module: &ModuleFullPath) -> Option<String> {
         let file = if module.as_ref() == PRELUDE {
             crate::session_setup::resolve_prelude(self.project_root, self.lib_dirs)
         } else {
             crate::pipeline::resolve_module_file(module, self.project_root, self.lib_dirs)
         }?;
         let source = std::fs::read_to_string(file).ok()?;
-        Some(cranelisp_backend::cache::manifest::hash_source(&source))
+        let source_hash = cranelisp_backend::cache::manifest::hash_source(&source);
+        Some(self.layout(module)?.derivation_key(&source_hash))
+    }
+
+    /// The layout of the member's live table when the session holds one (a
+    /// terminal, restored or preloaded table, or a fresh build's incomplete
+    /// one, which matches nothing); otherwise that of its stored `.meta`.
+    fn layout(&self, module: &ModuleFullPath) -> Option<AuthoredSlotLayout> {
+        if let Some(table) = self.tables.get(module) {
+            return Some(AuthoredSlotLayout::of(&table));
+        }
+        self.cache.stored_layout(module)
     }
 }
 

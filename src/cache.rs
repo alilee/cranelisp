@@ -33,7 +33,9 @@ use crate::session_setup::{CacheState, CacheValidity};
 
 pub(crate) mod dependency_record;
 
-use dependency_record::{DeferredEntry, DependencyRecord, LoadedSource, ModuleSources};
+use dependency_record::{
+    AuthoredSlotLayout, DeferredEntry, DependencyRecord, LoadedSource, ModuleSources,
+};
 
 /// The on-disk object cache, owned by `SharedState`.
 ///
@@ -61,6 +63,12 @@ pub struct ObjectCache {
     /// `Mutex` because nice workers append from multiple threads while
     /// the initiator may iterate at link-time.
     compiled_o_paths: Mutex<Vec<PathBuf>>,
+
+    /// The authored slot layout of each stored `.meta` decoded for validation
+    /// (`design/int/int.md` §7.6.3), once per session. Read only for a member
+    /// the session holds no table for; this session writes a `.meta` only for
+    /// a module whose table it holds, so an entry cannot go stale.
+    stored_layouts: dashmap::DashMap<ModuleFullPath, Option<AuthoredSlotLayout>>,
 }
 
 impl ObjectCache {
@@ -77,7 +85,23 @@ impl ObjectCache {
             dir,
             state: Mutex::new(state),
             compiled_o_paths: Mutex::new(Vec::new()),
+            stored_layouts: dashmap::DashMap::new(),
         }
+    }
+
+    /// The authored slot layout of `module`'s stored `.meta`, decoded at most
+    /// once per session; `None` when caching is disabled or no valid `.meta`
+    /// is stored.
+    pub(crate) fn stored_layout(&self, module: &ModuleFullPath) -> Option<AuthoredSlotLayout> {
+        if let Some(layout) = self.stored_layouts.get(module) {
+            return layout.clone();
+        }
+        let layout = self.dir.as_deref().and_then(|dir| {
+            let cached = cranelisp_backend::cache::try_load_cached_module(dir, module).ok()??;
+            Some(AuthoredSlotLayout::of(&cached.symbol_table))
+        });
+        self.stored_layouts.insert(module.clone(), layout.clone());
+        layout
     }
 
     /// Whether caching is enabled for this session.
@@ -310,7 +334,11 @@ mod tests {
         let cache = ObjectCache::new(None, None);
         let m = ModuleFullPath::from("user");
         assert_eq!(
-            cache.validate(&m, "anyhash", &ModuleSources::new(tmp.path(), &[])),
+            cache.validate(
+                &m,
+                "anyhash",
+                &ModuleSources::new(tmp.path(), &[], &dashmap::DashMap::new(), &cache)
+            ),
             CacheValidity::Stale,
             "disabled cache must always miss"
         );
@@ -412,17 +440,40 @@ mod tests {
             project: tempfile::TempDir,
             lib: tempfile::TempDir,
             cache_dir: tempfile::TempDir,
+            /// The live tables of `dep` and the prelude, which assign no slot.
+            tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+        }
+
+        /// The derivation key of a member whose live table assigns no slot.
+        fn key(source: &str) -> String {
+            let table = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("m"));
+            crate::cache::dependency_record::AuthoredSlotLayout::of(&table)
+                .derivation_key(&manifest::hash_source(source))
         }
 
         impl Fixture {
             /// A project whose sources are those `user`'s entry recorded; the
             /// prelude lives in a lib dir.
             fn cached() -> Self {
+                Self::recorded_as(key(DEP_SOURCE), key(PRELUDE_SOURCE))
+            }
+
+            /// A project whose `user` entry recorded `dep` and the prelude
+            /// under `dep_key` and `prelude_key`.
+            fn recorded_as(dep_key: String, prelude_key: String) -> Self {
                 let fixture = Fixture {
                     project: tempfile::tempdir().unwrap(),
                     lib: tempfile::tempdir().unwrap(),
                     cache_dir: tempfile::tempdir().unwrap(),
+                    tables: dashmap::DashMap::new(),
                 };
+                for module in ["dep", "prelude"] {
+                    let module = ModuleFullPath::from(module);
+                    fixture.tables.insert(
+                        module.clone(),
+                        crate::code::SessionSymbolTable::new_with_params(module),
+                    );
+                }
                 fixture.write("dep.cl", DEP_SOURCE);
                 std::fs::write(fixture.lib.path().join("prelude.cl"), PRELUDE_SOURCE).unwrap();
                 let mut entry = CacheManifest::new_for_host();
@@ -430,8 +481,8 @@ mod tests {
                     &ModuleFullPath::from("user"),
                     manifest::hash_source(USER_SOURCE),
                     HashMap::from([
-                        ("dep".to_string(), manifest::hash_source(DEP_SOURCE)),
-                        ("prelude".to_string(), manifest::hash_source(PRELUDE_SOURCE)),
+                        ("dep".to_string(), dep_key),
+                        ("prelude".to_string(), prelude_key),
                     ]),
                 );
                 manifest::write_manifest(fixture.cache_dir.path(), &entry).unwrap();
@@ -451,7 +502,7 @@ mod tests {
                 cache.validate(
                     &ModuleFullPath::from("user"),
                     &manifest::hash_source(USER_SOURCE),
-                    &ModuleSources::new(self.project.path(), &lib_dirs),
+                    &ModuleSources::new(self.project.path(), &lib_dirs, &self.tables, &cache),
                 )
             }
         }
@@ -463,6 +514,18 @@ mod tests {
             };
             let members: Vec<&str> = record.members().map(|(m, _)| m.as_ref()).collect();
             assert_eq!(members, ["dep", "prelude"]);
+        }
+
+        // spec: design/int/int.md §7.6.3 — a record written before keys
+        // carried the slot layout (S123 and earlier: bare source hashes) is a
+        // miss even with every source unchanged.
+        #[test]
+        fn a_record_of_bare_source_hashes_is_stale() {
+            let fixture = Fixture::recorded_as(
+                manifest::hash_source(DEP_SOURCE),
+                manifest::hash_source(PRELUDE_SOURCE),
+            );
+            assert_eq!(fixture.validate_user(), CacheValidity::Stale);
         }
 
         #[test]

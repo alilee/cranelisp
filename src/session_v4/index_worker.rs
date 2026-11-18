@@ -956,7 +956,12 @@ fn try_branch_b(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let sources = ModuleSources::new(&shared.project_root, &lib_dirs);
+    let sources = ModuleSources::new(
+        &shared.project_root,
+        &lib_dirs,
+        &shared.symbol_tables,
+        &shared.cache,
+    );
     if !matches!(
         shared.cache.validate(module, &source_hash, &sources),
         CacheValidity::Valid { .. }
