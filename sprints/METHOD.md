@@ -54,6 +54,36 @@ The override exists because several S66 decisions landed via `arch` answering `s
 
 Seven phases. Root `AGENTS.md` §Delivery maps them onto the ordering the package requires.
 
+### Delivery principles
+
+Six named rules decide scope and escalation inside an increment (user,
+2026-11-19). `sprint` applies them without returning each case to the user;
+what still returns is listed after them.
+
+- **Reproduce first.** Reproduce before anything else. A problem is captured
+  as a committed failing test so it is not lost; its severity is judged from
+  that test. Outside the focus module the test is the whole obligation.
+- **Focus module.** One focus module is clean and green per sprint. The user
+  names it in Phase 1 and it rotates between sprints. Clean and green means:
+  no failing test attributed to the module, no build warning from it, no open
+  review finding on it. Defects attributed to other modules are carried on
+  their failing tests.
+- **Consistent spec.** A spec problem that blocks a conforming test or a
+  simple reproduction is resolved immediately. The user arbitrates it; `spec`
+  scribes it. A spec that is silent without blocking a test is recorded as an
+  open question and current behaviour stands.
+- **Public-API changes.** Public-API changes are batched and reviewed by
+  `arch` against its architectural quality criteria, and escalated to the
+  user when larger changes are required. Root `AGENTS.md` §Roles states the
+  gate.
+- **Clean house.** A module getting a larger change has its carried defects
+  considered for inclusion, whether or not it is the focus module.
+- **No decay.** A sprint leaves every module it touches no worse: a
+  regression the sprint causes is fixed in the sprint, in whichever module.
+
+The user still decides: the focus module, every phase transition, a push, a
+blocking spec problem, and a public-API change `arch` escalates.
+
 ### 2.1 Phase table
 
 | Phase | Name | Roles | Outputs | Checkpoint for advancement |
@@ -158,8 +188,8 @@ work. Missing required dispatch tooling is escalated to the user.
 1. **Defects discovered in Phase 5 are addressed in Phase 5** — fix, defer with explicit rationale, or close Phase 5 short. Conscious and recorded. Phase 6 does not retroactively reopen it.
 2. **Speculative refactoring deferred; emergent refactoring mandatory in-sprint.** When the current work has made cleanup cheap — third duplicate, file over budget, a `mirror` comment — extract in-sprint.
 3. **Interim architecture is avoided, not deferred.** If a feature would require throwaway infrastructure a later increment replaces, do not build it.
-4. **The backlog is drained, not parked (user, S91).** Phase 1 pulls in every open filing unless there is a genuine reason to defer. Genuine reasons: explicitly release-tier work; a hard dependency on a not-yet-started track; a trigger whose condition is unmet. "Scheduled elsewhere in the roadmap" is not one. Present the deferral list with a reason per item so the user can challenge it.
-5. **2× escalation.** Items deferred once may be deferred again with rationale. Items deferred twice ship in the current sprint or require explicit user sign-off for a third deferral. Applies to filings, ignored tests, and review findings.
+4. **The focus module's backlog is drained, not parked.** Phase 1 pulls in every open filing attributed to the focus module unless there is a genuine reason to defer: explicitly release-tier work; a hard dependency on a not-yet-started track; a trigger whose condition is unmet. Filings attributed to other modules are carried on their failing tests until their module is the focus or takes a larger change (§Delivery principles, *focus module* and *clean house*). Present the carry list by module at each checkpoint. This narrows the S91 rule that every open filing is pulled in.
+5. **2× escalation, inside the focus module.** A focus-module item deferred once may be deferred again with rationale. Deferred twice, it ships in the current sprint or requires explicit user sign-off for a third deferral. Applies to filings, ignored tests, and review findings. An item carried because its module is not the focus is not a deferral under this rule.
 
 Size is not among these: the package's `sprint` contract already rules that decomposition comes before any carry, and that a carry needs evidence of unreachability rather than a judgment that the target is far.
 

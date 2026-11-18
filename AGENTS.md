@@ -63,7 +63,7 @@ Cranelisp dispatches the shared role package pinned as a submodule at `.agents`.
 | Role | Owns here | Notes |
 |---|---|---|
 | `spec` | `spec/` | Scribe: the user arbitrates every normative question |
-| `arch` | `design/arch/`, `crates/cranelisp-types/`, every crate's public API | Technical steward for decisions crossing crate boundaries; the user approves every inter-crate public-API change |
+| `arch` | `design/arch/`, `crates/cranelisp-types/`, every crate's public API | Technical steward for decisions crossing crate boundaries; reviews every inter-crate public-API change and escalates larger ones to the user |
 | `design` | `design/{crate}/` | Narrow-deployed — one crate-shaped surface per invocation |
 | `dev` | `crates/{crate}/src/`, `src/`, `stdlib/`, `exemplar/` | Narrow-deployed |
 | `review` | no directory | Narrow-deployed; runs in a fresh named subagent that did not author the change |
@@ -85,20 +85,22 @@ has no adapter here. No dispatched role's contract routes work to it.
 
 **Narrow deployment.** `design`, `dev` and `review` are dispatched to exactly one crate-shaped surface per invocation, named in the dispatch. Cross-surface work is sequential invocations coordinated by `sprint`; any interface change goes through `arch` first.
 
-**Inter-crate public-API user gate.** Every proposed change to the public API
-between crates requires the user's explicit review and approval before
-implementation starts. This includes additions, removals, renames, signature,
-generic, bound, variant, field or visibility changes, facade re-exports, and a
-new or removed cross-crate consumer edge. `arch` presents the exact proposed
-delta, affected producers and consumers, compatibility and schema/ABI impact,
-and the expected `public-api.txt` effect. The generated baselines are
-regenerated once per phase, at its checkpoint. A non-empty diff returns to the
-user for confirmation before the phase advances. An unchanged baseline
-(+0/−0) is recorded as verification evidence and requires no user
-confirmation. This does not waive prior approval for semantic contract changes
-that the baseline cannot represent. A phase, wave or general architecture
-approval does not satisfy a required gate; an unapproved or mismatching delta
-stops the work and returns to the user.
+**Inter-crate public-API gate.** A change to the public API between crates —
+an addition, removal, rename, a signature, generic, bound, variant, field or
+visibility change, a facade re-export, a new or removed cross-crate consumer
+edge, or a change of meaning the baseline cannot represent — is batched by
+module and reviewed by `arch` before implementation starts. `arch` states the
+exact delta, affected producers and consumers, compatibility and schema/ABI
+impact and the expected `public-api.txt` effect, and judges it against its
+architectural quality criteria (`design/arch/AGENTS.md` §Public-API
+discipline) for the effect on each module's simplicity and maintainability.
+`arch` approves a batch that meets them. It escalates to the user, with a
+brief, when a larger change is required: a significant step change to a
+module's surface or contract. The generated baselines are regenerated once
+per phase, at its checkpoint. `arch` compares the diff with the approved
+batches and reports it to the user at the checkpoint; a line outside an
+approved batch stops the work and returns to `arch`. A phase, wave or general
+architecture approval does not satisfy this gate.
 
 **Models.** The pinned shared package owns each subordinate role's provider,
 model and effort; see `.agents/CONSUMING.md` §Role allocation and dispatch.
