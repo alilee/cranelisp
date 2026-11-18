@@ -157,7 +157,6 @@ where
             return Ok(None);
         }
         let elem_type = self.vec_elem_type(&args[0]);
-        let elem_category = elem_type.as_ref().map(|t| self.heap_category(t));
         let vec_val = arg_vals[0];
         let result = match name {
             "vec-len" => {
@@ -167,6 +166,7 @@ where
             }
             "vec-get" => {
                 let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                let elem_category = self.elem_category(&elem_type, span)?;
                 // The core duplicates the element before the vector is
                 // released, so the element survives a last-reference teardown.
                 let elem = emit_vec_get_core(
@@ -470,7 +470,6 @@ where
         elem_type: &Option<ConcreteType>,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let elem_category = elem_type.as_ref().map(|t| self.heap_category(t));
         match (name, params.len()) {
             ("vec-len", 1) => {
                 let vec_drop_id =
@@ -495,6 +494,7 @@ where
                             location: ErrorLocation::from_span(span),
                         })?;
                 let dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
+                let elem_category = self.elem_category(elem_type, span)?;
                 let elem = emit_vec_get_core(
                     builder,
                     self.module,
@@ -628,7 +628,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
     panic_id: cranelift_module::FuncId,
-    elem_category: Option<HeapCategory>,
+    elem_category: HeapCategory,
     vec_val: Value,
     idx_val: Value,
     span: Span,
@@ -651,13 +651,13 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     // The projected element is duplicated: the result owns it independently of
     // the vector, which its reader then releases.
     match elem_category {
-        Some(HeapCategory::AlwaysHeap) => {
+        HeapCategory::AlwaysHeap => {
             heap::emit_rc_inc(builder, module, elem);
         }
-        Some(HeapCategory::Mixed) => {
+        HeapCategory::Mixed => {
             heap::emit_rc_inc_guarded(builder, module, elem);
         }
-        Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
+        HeapCategory::NeverHeap | HeapCategory::Value => {}
     }
 
     Ok(elem)

@@ -479,7 +479,7 @@ fn vec_get_clif() -> String {
         &mut builder,
         module,
         panic,
-        Some(crate::heap::HeapCategory::AlwaysHeap),
+        crate::heap::HeapCategory::AlwaysHeap,
         vec_val,
         idx_val,
         Span::SYNTHETIC,

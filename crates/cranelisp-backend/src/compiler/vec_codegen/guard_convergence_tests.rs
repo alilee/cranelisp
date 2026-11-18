@@ -354,7 +354,7 @@ fn mixed_vec_get_clif() -> String {
         &mut builder,
         module,
         panic_id,
-        Some(HeapCategory::Mixed),
+        HeapCategory::Mixed,
         vec_val,
         idx_val,
         Span::SYNTHETIC,

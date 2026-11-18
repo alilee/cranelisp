@@ -94,7 +94,7 @@ fn vec_get_bounds_raise_ends_its_block() {
             builder,
             module,
             panic,
-            Some(HeapCategory::AlwaysHeap),
+            HeapCategory::AlwaysHeap,
             vec,
             idx,
             Span::SYNTHETIC,

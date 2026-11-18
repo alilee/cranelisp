@@ -420,6 +420,54 @@ fn a_defn_parameter_the_scheme_does_not_type_is_refused_and_records_one_absent()
     );
 }
 
+/// Compile a defn with `params` against `scheme`, expecting the parameter
+/// channel's refusal, and return its message.
+fn refused_defn_frame(name: &str, params: &[&str], scheme: Type) -> String {
+    let mut table = SymbolTable::new(user());
+    declare_frame(&mut table, name, params, scheme, Partition::Plain);
+    let tables = tables_with(table);
+    let refused = try_compile(
+        &tables,
+        &defn(name, params, int(0, 1)),
+        &HashMap::new(),
+        &no_edit,
+    )
+    .expect_err("a scheme not typing exactly the parameters is refused");
+    assert_located(&refused, Span::SYNTHETIC);
+    refused.to_string()
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 (B4′),
+// §9 (edge) — a two-parameter defn whose scheme types one parameter is
+// refused, and records one absent per parameter of the refused list: two.
+#[test]
+fn a_two_parameter_short_scheme_records_two_absent() {
+    let scheme = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+    let refused = refused_defn_frame("census_absent_short2", &["x", "y"], scheme);
+    assert!(refused.contains("has 2 parameter(s)"), "{refused}");
+    assert!(refused.contains("types 1"), "{refused}");
+    assert_eq!(
+        tally_of("census_absent_short2"),
+        expect(&[("absent Plain absent -", 2), ("frame Plain - -", 1)])
+    );
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.3, §7.4 (B4′),
+// §9 (NEGATIVE) — a scheme with more parameter types than the defn has
+// parameters is a located invariant error, never an ignored excess, with one
+// absent record per parameter.
+#[test]
+fn an_excess_scheme_is_refused_and_records_one_absent_per_parameter_neg() {
+    let scheme = Type::Fn(vec![Type::Int, Type::String], Box::new(Type::Int));
+    let refused = refused_defn_frame("census_absent_excess", &["x"], scheme);
+    assert!(refused.contains("has 1 parameter(s)"), "{refused}");
+    assert!(refused.contains("types 2"), "{refused}");
+    assert_eq!(
+        tally_of("census_absent_excess"),
+        expect(&[("absent Plain absent -", 1), ("frame Plain - -", 1)])
+    );
+}
+
 // spec: design/backend/non-concrete-release-contract.md §7.3 (NEGATIVE) — a
 // scalar parameter the scheme types is not absent.
 #[test]

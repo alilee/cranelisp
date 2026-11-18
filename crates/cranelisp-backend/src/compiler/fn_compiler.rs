@@ -769,9 +769,11 @@ where
 /// The parameter types of the codegen target `defn`, read once from its
 /// selected arm's `scheme` where the target is selected
 /// (`non-concrete-release-contract.md` §7.4 step 2). A `Concrete` arm's scheme
-/// is concrete, so a scheme that types no parameter, or types one with a
-/// residual type, is a located invariant error. A parameter the scheme leaves
-/// untyped records an absent binder under `census` first (§7.3).
+/// is concrete, so a scheme that does not type exactly the defn's parameters,
+/// or types one with a residual type, is a located invariant error. A refused
+/// parameter list records one absent binder per parameter under `census`
+/// first (§7.3); a residual type records none, because no producer delivers
+/// one in a `Concrete` arm.
 pub(crate) fn defn_param_types(
     defn: &Defn,
     scheme: &Type,
@@ -789,8 +791,9 @@ pub(crate) fn defn_param_types(
         Type::Fn(params, _) => params,
         _ => &[],
     };
-    if declared.len() < arity {
-        for _ in declared.len()..arity {
+    if declared.len() != arity {
+        // The refusal introduces none of the parameters, so each is absent.
+        for _ in 0..arity {
             census::record(census, || Record::Absent);
         }
         return Err(invariant(format!(
@@ -798,7 +801,7 @@ pub(crate) fn defn_param_types(
             declared.len()
         )));
     }
-    declared[..arity]
+    declared
         .iter()
         .map(|ty| {
             ConcreteType::from_type(ty)

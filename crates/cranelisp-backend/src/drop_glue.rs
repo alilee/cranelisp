@@ -450,9 +450,13 @@ impl DropGlueRegistry {
         match ty {
             ConcreteType::String => Ok(GlueShape::String),
             ConcreteType::Fn(..) => Ok(GlueShape::Closure),
-            ConcreteType::ADT(name, args) if is_vec(name) => Ok(GlueShape::Vec(
-                args.first().cloned().unwrap_or(ConcreteType::Int),
-            )),
+            ConcreteType::ADT(name, args) if is_vec(name) => match args.as_slice() {
+                [elem] => Ok(GlueShape::Vec(elem.clone())),
+                _ => Err(self.error(format!(
+                    "drop glue for '{name}' requires exactly one element type, received {}: {ty:?}",
+                    args.len()
+                ))),
+            },
             ConcreteType::ADT(name, _) if is_io(name) => Ok(GlueShape::Io),
             ConcreteType::ADT(name, args) => Ok(GlueShape::Adt(self.ctor_shapes(
                 symbol_tables,
@@ -1378,6 +1382,57 @@ mod tests {
         assert!(
             err.to_string().contains("non-owning type requested"),
             "{err}"
+        );
+    }
+
+    // spec: design/backend/non-concrete-release-contract.md §7.4 (remaining
+    // narrowings, drop-glue Vec arm, NEGATIVE) — a Vec key without exactly one
+    // element type is malformed and refused, never released as a `Vec Int`;
+    // the well-formed key in the same registry keeps its element type.
+    #[test]
+    fn a_vec_key_without_one_element_type_is_refused_neg() {
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
+        let mut module = object_module();
+        let dealloc = declare_dealloc(&mut module);
+        let mut registry = DropGlueRegistry::new(module_path, dealloc, None);
+
+        for malformed in [
+            adt("primitives", "Vec", vec![]),
+            adt(
+                "primitives",
+                "Vec",
+                vec![ConcreteType::String, ConcreteType::Int],
+            ),
+        ] {
+            let err = registry.shape(&tables, &malformed).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("requires exactly one element type"),
+                "{err}"
+            );
+            // The refusal reaches the release seam's single entry point too.
+            let err = registry
+                .request_if_owning(&mut module, &tables, malformed)
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("requires exactly one element type"),
+                "{err}"
+            );
+        }
+        // A scalar element builds its shape, and the element needs no release.
+        let vec_of_int = adt("primitives", "Vec", vec![ConcreteType::Int]);
+        assert!(matches!(
+            registry.shape(&tables, &vec_of_int).unwrap(),
+            GlueShape::Vec(ConcreteType::Int)
+        ));
+        assert_eq!(
+            registry
+                .request_if_owning(&mut module, &tables, ConcreteType::Int)
+                .unwrap(),
+            None
         );
     }
 
