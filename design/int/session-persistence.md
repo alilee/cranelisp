@@ -151,7 +151,7 @@ successful definition. Otherwise that module is not written (§2.4.3).
   ([session transaction §7.3.1](session-transaction.md#731-the-whole-file-rebuild)).
 - **Every kind, one key.** The publication writer covers functions, types,
   traits and impls alike. Each record is keyed by the live-turn projection
-  (`definition_result_symbol`), which rehydration also uses; a `begin` member
+  (`session_v4::definition_identity`), which rehydration also uses; a `begin` member
   or expansion product takes the outer authored form (§1.4).
 
 #### 2.4.2 Backing-file rehydration
@@ -172,11 +172,9 @@ A cache hit requires the file's hash to equal the manifest
   (§1.4). Structural forms are excluded.
 - **Key.** A form's key is the one a live turn records for it, so the two
   paths share one derivation. A name-slot form keys by its name. An `impl`
-  today keys by the live-turn projection (`definition_result_symbol`) over
-  its written trait and target slots. Designed for S124 (not in source), an
-  `impl` keys by its module's written-impl record whose authored label equals
-  the form's, and takes that record's settled pair
-  ([int §6.13](int.md#613-import-and-export-entries-and-export-mounts-s124)).
+  keys by its module's written-impl record whose authored label equals the
+  form's, and takes that record's settled pair (§12.3;
+  [int §6.13](int.md#613-import-and-export-entries-and-export-mounts-s124)).
   A form that cannot be keyed is skipped, and §2.4.3 reports it.
 - **Liveness.** A keyed form is rehydrated only if the key names a live
   entry. For an ordinary entry, the key is in the module's table. For an
@@ -388,35 +386,23 @@ So "impls written in M" is not "shells in M's table".
 
 ### 12.3 Enumeration
 
-`generate_impls` collects `Trait.Type` keys from three rows into one sorted
-set, and renders each through the same gated reader the declaration sections
-use:
+`generate_impls` enumerates one row: M's table's `written_trait_impls` with
+`impl_module == M` (row D10, as built at `42e6d929`). This row holds every
+impl written in M, including one restored from cache. A missing source is
+therefore reported under §2.4.3 rather than skipped. An impl of M's trait
+written in another module N is legally excluded, and its source is recorded
+under N.
 
-| Row | Source | Covers |
-|---|---|---|
-| 1 | shells in M's table with `impl_module == M` | impls of M's own traits written in M |
-| 2 | M's introspection records whose dotted key names an `(impl …)` form (`record_is_impl_form`) | impls of imported traits written in M |
-| 3 | M's table's `written_trait_impls` | every impl written in M, including one restored from cache, so a missing record is reported under §2.4.3 rather than skipped |
-
-An impl reachable by several rows yields the same key and renders once. An
-impl of M's trait written in another module N is legally excluded: rows 1 and
-3 omit it, and its source is recorded under N. Rows 1 and 3 take the key from the settled trait and `impl_type` names. Row
-2 and rehydration use the live-turn key, built from the written head names.
-The two keys agree because a written head name is the declared name:
-`TypeRef` and `TraitRef` hold the qualifier apart from the name, the
-language has no type synonyms, and renamed import and export entries
-(spec §8.3.5) are not yet accepted
-([ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md)).
-Accepting renames breaks that premise, and impl identity must then come from
-one determinant; otherwise every regeneration of a module holding such an
-impl is refused. A disagreement surfaces as a §2.4.3 refusal, never as a
-silent drop. The S124 design (not in source) makes the module's written-impl
-records that determinant. The design keys every row by the settled pair, held
-injectively, and so enumerates from row 3 alone and removes rows 1 and 2
-([int §6.13](int.md#613-import-and-export-entries-and-export-mounts-s124)).
-The bare `Trait.Type` key does not separate two impls of one trait, written in
-one module, for two same-named types from different modules. With the bare
-key, those two impls collapse into one set entry.
+- **Key.** Each record keys by its settled pair through
+  `session_v4::impl_identity`, so a renamed import (spec §8.3.5) keys the
+  same impl as its declared name does
+  ([int §6.13](int.md#613-import-and-export-entries-and-export-mounts-s124)).
+- **Rehydration and the live turn** reach the record by the form's authored
+  label. They make one keyed read under the exactly-one rule
+  (`session_v4::match_impl_record`) and take the record's settled pair. A
+  label that matches no record or several is no match. The form then stays
+  unkeyed and is reported under §2.4.3; neither record is picked.
+- **Order.** The rows sort by trait name, type name and identity.
 
 ### 12.3.1 Completeness guard
 

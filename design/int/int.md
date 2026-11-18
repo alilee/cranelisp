@@ -1523,7 +1523,8 @@ a pool cluster fails its module, and a rebuild fails and locks it.
   export's readiness gate below answers it.
 
 **An `export` waits like an `import`** (ACT-1016 Face 2; designed S124, not in
-source at `4b58ab93`).
+source at `42e6d929`, where `handle_export` still installs from any present
+table).
 
 - **Rule.** `handle_export` installs from a source table only when that module
   has reached a terminal typecheck, through the same readiness predicate
@@ -1545,6 +1546,21 @@ source at `4b58ab93`).
 - **Not changed.** The signature barrier's members still exclude export
   targets (§6.12, *Not taken*). The wait is the body-free dependency wait an
   import already takes.
+- **An export from `super` waits as an import from `super` does.** A declared
+  child is driven only after its parent's generation publishes (the FIXME
+  0342 deferral in `process_cluster_once`). The gate therefore holds a
+  child's `(export [super [x]])` to the readiness predicate that
+  `(import [super [x]])` meets. The order is different when the parent's own
+  forms reach the child first. A qualified reference `p.child/x` in the
+  parent's cluster auto-loads the child at that reference (spec §8.5.4). The
+  child then meets a parent that is still in flight. Without the gate, the
+  child installs from the parent's seeded table. With the gate, the child
+  waits on a parent that is waiting on it. That is a wait cycle, which the
+  scheduler reports (spec §8.10.2, §8.5.4 item 6). Spec §8.3.8 permits the
+  rejection for the import form. Under this design that fixture is refused
+  as a cycle. Whether the spec requires the fixture to be accepted is for
+  `qa` to determine, and if it does, the user rules (§8.10.2 against the
+  §8.3.8 limitation).
 - **Falsifier.** After the change, any leg of Face 2 that reports a name not
   found in `a` or `b`, or that completes without naming the cycle.
 - **Evidence (for `qa`).** The two committed Face 2 cells and the acyclic
@@ -1821,10 +1837,33 @@ asks, for a module `A` with the bit on, whether the prelude reaches `A`:
   failing module's exit fires. The walk therefore collects each parsed file's
   aliases into a walk-local set, with the keys and targets Pass 0 derives,
   and substitutes through the one `cranelisp_types::substitute_module_alias`.
-  Every alias the session writes today is private to its declaring module, so
-  a file's own declarations are every alias its qualifiers can read.
-  Falsifier: a public module alias, such as a spec §8.4.4 export mount,
-  becomes writable, and the walk does not collect it.
+- **A qualifier through another module's mount resolves at the fixpoint.**
+  Spec §8.4.4 export mounts are public aliases (S124), so a file's qualifier
+  can read an alias that another file declares. Spec §8.5.4 item 6 requires
+  such a qualified cycle to be reported. The walk must therefore not depend
+  on the order in which it visits files:
+  - A walked file's qualifier that does not substitute to a module file stays
+    *pending*. The walk does not drop it as a leaf.
+  - The walk also follows an edge from the writing file to the qualifier's
+    owner. The owner is the longest proper prefix that resolves to a module
+    file (`p` for `p.s`). Spec §8.4.4 steps 2–3 resolve the mount there, so
+    the qualifier depends on the owner.
+  - When a visit adds aliases, the walk substitutes every pending qualifier
+    again through the enlarged set. A qualifier that now names a module is
+    followed as an edge from the file that wrote it.
+  - The walk stops when the queue is empty and no pending qualifier
+    resolves. The alias set only grows and the qualifiers are finite, so the
+    walk terminates. Its result is the least fixpoint, which does not depend
+    on queue order.
+
+  A name-less mount stays no edge (§6.13): the cycle runs through the
+  qualifier, not through the export. As built at `42e6d929`,
+  `prelude_reach_cycle` substitutes each qualifier once, at its file's visit.
+  If the prelude imports `p` and writes `p.s/y` while `p` declares
+  `(export [(x s) []])`, the walk visits the prelude before `p`, and
+  `p.s/y` becomes a leaf. The walk misses `x -> prelude -> x`, and `x`'s own
+  error stands. The source's doc comment records this narrower behaviour;
+  this design does not accept it.
 - **The report.** When the walk reaches `A`, the attempt fails with
   `circular dependency detected: A -> prelude -> … -> A`, rendered by
   `scheduler::CycleError::render`, at the location of the error it replaces.
@@ -1969,6 +2008,12 @@ seam exists.
   - Over-reach negatives, each keeping `x`'s own error:
     - the prelude names `x/one` only inside a quoted macro template;
     - `x` is a declared child of a module the prelude exports.
+  - Mount reach (S124; RED on `42e6d929`). The prelude imports `p [z]` and
+    calls `p.s/y`, and `p.cl` declares `(export [(x s) []])`. The walk
+    reports `x -> prelude -> x`. A second leg has a prelude that writes
+    `p.s/y` without importing `p`, and reports the same cycle through the
+    owner edge. As controls, with `p`'s mount targeting another module `w`,
+    or with the mount absent, `x`'s own error stands.
 - The plan: a save of a null-importing `x` orders `x` before the prelude and
   both succeed (probe N3); a save of the prelude succeeds (probe N4).
 - The helper end:
@@ -1997,7 +2042,9 @@ End to end:
 
 ### 6.13 Import and export entries and export mounts (S124)
 
-**Status: designed S124; not in source at `4b58ab93`.** The carrier is packet
+**Status: landed at `42e6d929` (rows D3, D10).** Two regeneration rules
+below (*Regeneration*) were wrong in this design and are corrected here; the
+source still follows the earlier wording. The carrier is packet
 row D3 ([import and export entries](../arch/interfaces.md#import-and-export-entries-s124-target)):
 a names list is `None`, `Glob` or `Specific` of `ImportEntry` values, each a
 `Name { source, local }` or a `MemberGlob(parent)`, and `ExportSpec` gains its
@@ -2069,13 +2116,36 @@ record still keys every export target, as it keys every import (§7.6).
 
 **Other consumers.**
 
-- *Regeneration (`src/save.rs`).* A `Name` entry renders as its `source` when
-  `local` equals `cranelisp_types::bare_member_name(source)`, and as
-  `(source local)` otherwise, so `Shade.Blue` and `Some` keep their written
-  form and a rename keeps its rename. A `MemberGlob` renders as `Parent.*`.
-  Merging two specs for one module concatenates their entries with equal
-  entries removed; `Glob` absorbs. An export with a mount renders
-  `(m alias)` as its specifier.
+- *Regeneration (`src/save.rs`).* The rule is that a regenerated names list
+  binds exactly what its specs bound (REPL §15.4 rule 1). Import and export
+  share the entry renderer.
+  - **Entries.** A `Name` entry renders as its `source` when `local` equals
+    `cranelisp_types::bare_member_name(source)`, and as `(source local)`
+    otherwise, so `Shade.Blue` and `Some` keep their written form and a
+    rename keeps its rename. A `MemberGlob` renders as `Parent.*`.
+  - **A lone `*` entry renders as `(* *)`.** `[*]` is the glob only when `*`
+    is the list's sole element (spec §8.3.2), so a `Specific` list whose one
+    entry would render as `*` renders it in rename form. In a list of two or
+    more entries `*` renders bare; spec §8.3.2 reads it there as the operator.
+    The earlier design omitted this distinction. Under it,
+    `(import [m [(* *)]])` regenerates as the glob `(import [m [*]])`, and
+    the same error widens an export.
+  - **Merging specs for one module and alias.** A glob and a specific list
+    stay separate. Each module and alias gets at most one glob group and at
+    most one list group. The specific entries concatenate into the list
+    group, with equal entries removed. A name-less spec contributes nothing
+    to the group that already exists for that module and alias. When no
+    group exists it forms a list group, which renders as `[]`. Each group
+    renders as its own pair, in the order it first appeared. Two pairs for
+    one module are valid (spec §8.3.9, §8.3.10), and their effects union
+    (§8.3.11). The earlier design let `Glob` absorb the list, which drops
+    every rename: `(import [m [*] m [(f g)]])` regenerated as
+    `(import [m [*]])`, so `g` was unbound after a restart. A glob cannot
+    absorb a list and keep its effect. A rename binds a local name that the
+    glob does not bind, and the entries cannot share the glob's list,
+    because there `*` would read as the operator.
+  - An export with a mount renders `(m alias)` as its specifier. Export
+    specs are rendered one pair per spec and are not merged.
 - *Restore (`process_form/cache_restore.rs`).* The re-export dependencies it
   derives from `exports` carry the entries unchanged, and the mounts install
   through the writer above.
@@ -2229,6 +2299,33 @@ orders and on both routes, and to different targets refuse in both orders; a
 second import alias for one spelling refuses (R-A2); a name-less export loads
 nothing and a bare `(export [m []])` is accepted with no mount; regeneration
 round-trips each entry shape and the equal-target pair.
+
+**The two regeneration corrections.** `dev` (`src/`) changes the merge and
+the renderer in `src/save.rs` to the *Regeneration* rules above. The unit rows
+go at `generate_imports` and `generate_exports`. Rows marked RED must fail on
+`42e6d929`; the controls pass there and after:
+
+- RED: `m [*]` merged with `m [(f g)]` renders both pairs in the order they
+  first appeared, for both input orders. RED: `m [*]` with `m [f]` renders
+  both pairs. Control: two equal lists render one pair;
+- RED: a lone `Name("*", "*")` renders `[(* *)]`, for an import and for an
+  export. Control: `[+ *]` renders unchanged;
+- control: a name-less spec merged with a glob, and merged with a list, adds
+  no pair.
+
+The e2e cells for `qa` to allocate are REPL persistence cells, run cold
+after a restart on the regenerated file:
+
+- **Rename survives a glob.** `m.cl` defines `f`. The turn
+  `(import [m [*] m [(f g)]])` is followed by `(defn h [] (g))`. After the
+  restart, `h` evaluates. As a control, the same cell with the two pairs in
+  separate `import` forms.
+- **Selective `*` stays selective.** `m.cl` defines `*` and `other`, and the
+  importer null-imports the prelude so that bare `*` is `m`'s. After
+  `(import [m [(* *)]])` and the restart, `*` resolves and bare `other` is an
+  undefined-name error. The export leg puts `(export [m [(* *)]])` in the
+  backing module, and an importer of it does not see `other` after the
+  restart.
 
 ---
 
@@ -2597,8 +2694,29 @@ graph changes, even though the direct dependency's own source does not.
   - every lookup dependency: each module whose table answered a qualified
     reference while M compiled ([lookup dependencies](#762-lookup-dependencies)).
 
-  The restore walk loads a subset of these edges ([cache-hit flow](#71-cache-hit-flow-inside-register_module)).
-  It skips name-less imports, the implicit prelude and lookup dependencies.
+  The restore walk loads a subset of these edges, the **load edges**
+  ([cache-hit flow](#71-cache-hit-flow-inside-register_module)):
+  - each import and each export whose names list loads, resolved through the
+    module's declared children. The null-import rule is `names_load` in
+    `src/imports.rs`, which every int reader of "does this spec load" calls:
+    the Pass-0 handlers, the reload edges, the static closure, test
+    selection and the restore walk. A name-less import or export is no load
+    edge;
+  - every callee module;
+  - every declared child, which the walk enrols.
+
+  The load edges exclude lookup dependencies and compiler-owned modules. They
+  also exclude the prelude, which the injection loads when the fallback bit
+  is on (§6.5) rather than the walk. As built at `42e6d929`, the set is
+  composed inline in `cache_restore.rs::walk_restored_module`; no one
+  function returns it. The reload edges (`dependency_record::reload_edges`)
+  are a different set, with the prelude and lookup dependencies and without
+  declared children. A consumer outside the walk, such as `arch`'s proposed
+  traced-module set ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)),
+  must not compose its own copy. When the user decides §5.1, the walk's
+  composition moves into one crate-private enumerator in
+  `cache/dependency_record.rs`, which the walk and that consumer both read.
+  No consumer needs it before then.
   Define the edge set once (Principle 7). The fallback bit has one structural rule, shared by
   the restore environment and the index writer. Two kinds of module are
   excluded:
@@ -3102,7 +3220,7 @@ passed its finding-scoped re-review.
 
 #### 7.6.3 Slot-layout identity (ACT-1052)
 
-**Status: designed S124; not in source at `4b58ab93`.** Private to `src/`. No
+**Status: designed S124; not in source at `42e6d929`.** Private to `src/`. No
 public API change: `CachedModuleRef::dependency_hashes` stays a map of opaque
 strings and `check_manifest` is unchanged ([BC](../arch/bounded-contexts.md)
 §6, the cached object's validity record). It changes what a persisted value
@@ -3724,8 +3842,11 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   S124-Q8 ruling, the scoping of ACT-1063 and ACT-1065, and row D12 with
   its category condition (`sprints/SPRINT.md`, Notes), and to `arch`'s S124 contracts
   ([approved changes](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
-  None was in source at `4b58ab93`; ACT-1050 and ACT-1065 landed at
-  `32e434dc` (W4).
+  ACT-1050 and ACT-1065 landed at `32e434dc` (W4), D4 at `441e31ea`, and
+  D3 and D10 at `42e6d929`. Checked against `42e6d929`, the export
+  readiness gate, D7, ACT-0973, ACT-1036 and ACT-1052 are not in source.
+  - *Open from the review of `42e6d929`:* the two regeneration corrections
+    and the cycle-precedence mount reach, stated in §6.13 and §6.12.
   - *Cached-object validity (ACT-1052):* [§7.6.3](#763-slot-layout-identity-act-1052).
     The record keys each member by source hash and authored slot layout.
   - *Import and export entries and mounts (D3; ACT-0997, ACT-1055,
@@ -3819,9 +3940,8 @@ in source. Each owning filing stays the tracker; this list is the design intent.
       `design`(backend)'s. Changing the bootstrap state alone would send
       these combinators down the wrapper's Vec arm, so it must not land
       alone. After ACT-1065 the pass no longer reads this state (§3.7).
-  - *Unlanded S123 rows in `src/`.* R10-3 deletes `src/cache_writer.rs`, the
-    only consumer of the backend's cache-packet family, in the backend's
-    R10 change-set. K11-d moves the root's test-only `lenient_from_expr`
+  - *S123 rows in `src/`.* R10-3 landed at `1e4b0ce4`, deleting the root's
+    cache-packet writer with the backend's family. K11-d moves the root's test-only `lenient_from_expr`
     calls to the types `test_support` path; the root's dev-dependency on
     `cranelisp-types` enables `test-support`. D2, D5, D6, D9, R10-1, R10-2,
     R10-5 to R10-7 and K11-a to K11-c have no consumer in `src/` (read

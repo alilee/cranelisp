@@ -23,7 +23,7 @@ contract is `design/arch/platform-interface.md`.
   - **What "the entry defines `main`" means.** The entry module's table binds
     `main`. Every refusal about that binding is located (below); an entry
     whose table binds no `main` takes the unlocated refusal (S124-Q8).
-  - **Location (S124, ACT-1036; not in source at `4b58ab93`).** Every
+  - **Location (S124, ACT-1036; not in source at `42e6d929`).** Every
     refusal the gate raises about an existing `main` is located at the
     written top-level form that declared it (REPL §5.5, §5.1): the wrong
     shape, and a `main` that is not a function. The refusal stays at this
@@ -239,7 +239,7 @@ never sees a panic, chooses no panic status and formats no panic text.
 The frontend extracts `(platform …)` forms, and `process_form` routes each one
 to `handle_platform` (`src/process_form/platform.rs`).
 
-**Entry only (S124, ACT-0973; not in source at `4b58ab93`).** A `platform`
+**Entry only (S124, ACT-0973; not in source at `42e6d929`).** A `platform`
 form in any module other than the session's entry module is a compile-time
 error located at the form (`spec/10-io.md` §10.9.1). The handler decides it by
 comparing the compiling module with the session's entry module, never by the

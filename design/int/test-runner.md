@@ -278,6 +278,8 @@ left to read, and the runner has no error slot:
 
 1. Clear the calling thread's runtime-error slot.
 2. Call the captured pointer while holding the cloned code owner (Principle 22).
+   The runner compiles no form, so a test never runs inside a `(trace …)`
+   wrapper (REPL §16.2, *Tracing*, and §16.4).
 3. If the error slot is now set, the outcome is **panic**. No owner is created
    and no release glue runs, because a trap produces no result (result-owner §5).
 4. Otherwise build the owner from the prepared target. That step cannot fail.

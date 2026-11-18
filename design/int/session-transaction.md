@@ -97,7 +97,7 @@ compiled slot's contract is the same for every mode summary
 "Modes are not slot ABI"). `RedefKind` is decided by the language type alone
 (§2.1), and "ABI" in this document means the language type.
 
-**S124 (packet row D7; not in source at `4b58ab93`).** Two binary sites still
+**S124 (packet row D7; not in source at `42e6d929`).** Two binary sites still
 compare summaries, and both delete:
 
 - the guard's same-type arm in `redefine::validate_guarded_redefinition`,

@@ -64,14 +64,10 @@ therefore asks backend's own question before any keyed lookup:
 3. `NeverHeap` ⇒ the inert arm; no keyed lookup is attempted;
 4. `AlwaysHeap | Mixed` ⇒ the owning arm; a keyed miss is a hard error (§5).
 
-**S124 (packet row D4, approved; not in source at `4b58ab93`).** Source still
-has a fourth variant, `HeapCategory::Value`, which int matches with `NeverHeap`
-in both classification sites (the fresh and cached owner, and the linked
-startup). D4 removes it: a one-word single-constructor value then classifies
-`AlwaysHeap` or `Mixed` and owns. Int deletes its `Value` arms in the backend's
-D4 change-set, so the match stays exhaustive and no int arm outlives the
-variant. The result owner needs nothing else: the owning arm already serves
-these types once the backend emits their glue.
+**Packet row D4 (landed at `441e31ea`).** `HeapCategory` has three variants. A
+one-word single-constructor value classifies `AlwaysHeap` or `Mixed` and owns.
+Both int classification sites in `src/result_owner.rs` match the three
+variants exhaustively, so a variant added later fails to compile there.
 
 - `Mixed` (a nullary-or-boxed ADT) owns: its glue exists and handles the bare
   tag internally. Int does not replicate that guard.
