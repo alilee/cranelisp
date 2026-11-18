@@ -6628,3 +6628,118 @@ fn s124_declared_child_alias_graph_repl_acyclic_control() {
         vec![true; 2]
     );
 }
+
+// §8.5.4 edge 4: "If the module loads but does not export the named member,
+// the error is \"module X has no member Y\"". The import proves zz is present;
+// only the reference's qualifier differs between subject and control.
+fn s124_missing_member_diagnostic(mode: &str, alias: bool) {
+    let qualifier = if alias { "z" } else { "zz" };
+    let builder = Cranelisp::new().file("zz.cl", "(defn zf [] 7)\n");
+    let import = "(import [(zz z) [zf]])";
+    let call = format!("({qualifier}/nope)");
+    let out = match mode {
+        "repl" => builder
+            .stdin(&format!("{import}\n{call}\n/quit\n"))
+            .output()
+            .assert_ok(),
+        "run" | "link" => {
+            let builder = builder.file(
+                "app.cl",
+                &format!("{import}\n(defn main [] (primitives/Pure {call}))\n"),
+            );
+            let out = if mode == "run" {
+                builder.run("app.cl")
+            } else {
+                builder.link("app.cl")
+            }
+            .output();
+            assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+            out
+        }
+        _ => unreachable!(),
+    };
+    let text = combined(&out);
+    assert!(
+        text.contains("module 'zz' has no member 'nope'"),
+        "{mode} {qualifier}/nope must report the absent member of zz: {text}"
+    );
+    assert!(!text.contains("referenced by 'z/...' not found"), "{text}");
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
+// defect: class=wrong-scope-lookup locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
+// Open: design/int/int.md §6.3.1, the gap names the written alias.
+#[test]
+fn s124_missing_member_alias_neg_run() {
+    s124_missing_member_diagnostic("run", true);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
+#[test]
+fn s124_missing_member_unaliased_control_run() {
+    s124_missing_member_diagnostic("run", false);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
+// defect: class=wrong-scope-lookup locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
+// Open: design/int/int.md §6.3.1, the gap names the written alias.
+#[test]
+fn s124_missing_member_alias_neg_link() {
+    s124_missing_member_diagnostic("link", true);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
+#[test]
+fn s124_missing_member_unaliased_control_link() {
+    s124_missing_member_diagnostic("link", false);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
+// defect: class=wrong-scope-lookup locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
+// Open: design/int/int.md §6.3.1, the gap names the written alias.
+#[test]
+fn s124_missing_member_alias_neg_repl() {
+    s124_missing_member_diagnostic("repl", true);
+}
+
+// spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
+#[test]
+fn s124_missing_member_unaliased_control_repl() {
+    s124_missing_member_diagnostic("repl", false);
+}
+
+fn s124_qualified_in_flight_repl(returns_to_parent: bool) {
+    for attempt in 1..=3 {
+        let out = s124_declared_child_graph(returns_to_parent)
+            .file("P/c.cl", "(defn cf [] (z/zf))\n")
+            .timeout(std::time::Duration::from_secs(10))
+            .stdin("(z/zf)\n/quit\n")
+            .output()
+            .assert_ok();
+        let expected = if returns_to_parent {
+            ":primitives/Int 11"
+        } else {
+            ":primitives/Int 10"
+        };
+        assert!(
+            out.stdout.contains(expected),
+            "attempt {attempt}: the first qualified turn must evaluate: {}",
+            combined(&out)
+        );
+        assert!(!combined(&out).contains("Error"), "{}", combined(&out));
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 edges 1 and 6 — a qualified reference waits for an in-flight module.
+// defect: class=shared-state-write-race locus=src/process_form.rs::qualified-dependency-drive found=S124 owner=/dev fixed=S124/9580856a
+// The qualified child formerly requeued forever when z's table existed but was not ready.
+#[test]
+fn s124_declared_child_qualified_in_flight_repl_completes() {
+    s124_qualified_in_flight_repl(true);
+}
+
+// spec: spec/08-modules.md §8.5.4 — removing z's return edge to P still evaluates the qualified turn.
+#[test]
+fn s124_declared_child_qualified_in_flight_repl_acyclic_control() {
+    s124_qualified_in_flight_repl(false);
+}
