@@ -10,8 +10,9 @@ filed_at: 2026-11-18
 refers_to:
   - spec/08-modules.md §8.6.4
   - spec/08-modules.md §8.6.5
-  - crates/cranelisp-typecheck/src/candidate_selection.rs
-  - crates/cranelisp-backend/src/compiler/apply.rs
+  - crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites
+  - design/typecheck/monomorphisation.md §3.1
+  - tests/spec_08_modules.rs
   - tests/spec_10_io.rs
   - tests/plan/s124-evidence-delta.md
 ---
@@ -58,7 +59,7 @@ attributing T-1065-f, which stayed RED after ACT-1065's correction.
   subject. T-1065-f's program fails identically with
   `CRANELISP_NO_IO_SCHEDULE=1` and with a three-parameter `bind`.
 
-## Attribution: provisional
+## Attribution
 
 - **Predates S124 W3.** The release build of 00:11 on 2026-11-18, before
   T1, refuses the subject and the identity leg with the
@@ -67,16 +68,23 @@ attributing T-1065-f, which stayed RED after ACT-1065's correction.
   the spelling and a polymorphic selected candidate. Each control removes
   one of the two and passes. The origin of either candidate (prelude,
   import, local definition, primitive) does not matter.
-- **Hypothesis, not observed at its seam:** the typechecker selects the
-  candidate and does not publish the selected callee's concrete instance
-  for that call site, so the backend's keyed read misses. The value leg's
-  message names the missing instance. Neither the selection record nor the
-  backend's read was dumped.
-- **Owner: typecheck, provisional.** `dev`(typecheck) probes the selection
-  seam first. If typecheck publishes the selected callee and its instance
-  for the site, the attribution returns to `qa` for the backend.
-- **Refuted if** a monomorphic selected candidate fails the same way, or a
-  polymorphic candidate with no second candidate does.
+- **Mechanism, read at its seam** by `dev`(typecheck), `design`(typecheck)
+  and `qa` (2026-11-18, `84719eb6`). Candidate selection writes the selected
+  identity to the callee's `var_refs` verdict. The monomorphisation
+  collectors in `program/mono_collect.rs` require that verdict and then
+  resolve the written spelling again to name the template. With two
+  declarations sharing the spelling that second resolution does not return
+  the selected one, so no instance is minted and the backend's keyed read
+  misses. [Monomorphisation §3.1](../../design/typecheck/monomorphisation.md#31-components)
+  states the rule the correction follows: a collector takes the callee's
+  identity from its verdict.
+- **Not dumped.** The collectors' output for the subject was read from
+  source, not printed. `dev`'s module row at the collector is that
+  observation.
+- **Owner: typecheck.** The backend's read is correct for what it is given.
+- **Refuted if** a monomorphic selected candidate fails the same way, a
+  polymorphic candidate with no second candidate does, or the collector is
+  shown to demand the selected template for the subject.
 - **Why coverage missed it.** The §8.6.5 band is recorded as partly
   assessed. No cell selects a polymorphic function by rule 3; the
   committed candidate-set cells select monomorphic functions, accessors or
@@ -88,8 +96,7 @@ attributing T-1065-f, which stayed RED after ACT-1065's correction.
 
 `test`, in `tests/spec_08_modules.rs`, citing
 `// spec: spec/08-modules.md §8.6.5` and
-`// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev`
-(locus provisional):
+`// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev`:
 
 - the subject above in `--run`, `--link` and the REPL, value 106, asserting
   no `undefined function` text;
@@ -103,7 +110,13 @@ attributing T-1065-f, which stayed RED after ACT-1065's correction.
 and locus as above in place of `routing-misclassify` and `is_bind_var`.
 Their assertions do not change.
 
-`dev`(typecheck) owes a module row at the seam its probe names.
+The twelve cells are committed (`de60dc3c`): the six subject legs fail on
+their assertion and the six control legs pass (`qa`, full run at
+`84719eb6`). They and the three T-1065-f cells carry the earlier
+`candidate_selection.rs` locus; `test` replaces it with the one above.
+
+`dev`(typecheck) owes a module row at the collector: two declarations of
+one spelling, the polymorphic one selected, its instance demanded.
 
 ## Disposition
 

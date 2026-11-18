@@ -100,9 +100,8 @@ owed.
   corrects the helper once for both callers or reports why the generator
   differs.
 - **Owners:** `dev`(`src/`) for the display reader; `dev`(backend) for the
-  descriptor baker, with row B10 and
-  [ACT-1069](ACT-1069-trace-formats-one-word-adt-argument-as-tag-or-pointer-intake.md),
-  which correct the same baker's one-word case.
+  descriptor baker, with row B10. The baker's one-word case left with value
+  flattening (packet row D4, `441e31ea`).
 - **Cells (`test`), REPRO-1062-e and REPRO-1062-f** of the evidence delta
   §9.1, in `tests/match_field_parameter_order.rs`, with this filing's
   `// defect:` class and the locus of each reader.
