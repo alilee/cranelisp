@@ -333,19 +333,34 @@ pub fn load_cached_object(
     Ok(fn_addrs)
 }
 
-/// Atomic file write: write to temp file then rename.
-/// Prevents concurrent readers from seeing partial writes.
+/// Atomic file write: write a temporary beside `path`, flush it and rename it
+/// onto `path`, so a reader never sees a partial file. Concurrent writers of
+/// one target never share a temporary, so each publishes whole bytes and the
+/// last rename wins. A failed step removes the temporary.
 pub(crate) fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp_path = path.with_extension("tmp");
-    let mut f = std::fs::File::create(&tmp_path)?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    let temporary = write_temporary(path);
+    let mut file = std::fs::File::create_new(&temporary)?;
+    let written = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    let published = written.and_then(|()| std::fs::rename(&temporary, path));
+    if published.is_err() {
+        // Best effort: readers open only the target, never a temporary.
+        let _ = std::fs::remove_file(&temporary);
+    }
+    published
+}
+
+/// A name beside `path` that no other write, in this process or another, uses.
+fn write_temporary(path: &std::path::Path) -> std::path::PathBuf {
+    static NEXT_WRITE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let write = NEXT_WRITE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{write}.tmp", std::process::id()));
+    path.with_file_name(name)
 }
 
 #[cfg(test)]

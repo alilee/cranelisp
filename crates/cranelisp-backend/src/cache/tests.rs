@@ -213,6 +213,58 @@ fn test_atomic_write_creates_parents() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
 }
 
+// spec: design/backend/module-caching.md §7 — a writer's temporary is its
+//       own: a temporary another writer (here, another process) has beside
+//       the target is neither truncated nor renamed away by this write.
+#[test]
+fn atomic_write_leaves_another_writers_temporary_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.meta");
+    let others = path.with_extension("tmp");
+    std::fs::write(&others, b"another writer, mid-write").unwrap();
+
+    atomic_write(&path, b"mine").unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), b"mine");
+    assert_eq!(
+        std::fs::read(&others).ok().as_deref(),
+        Some(&b"another writer, mid-write"[..]),
+        "the other writer's temporary is untouched"
+    );
+}
+
+// spec: design/backend/module-caching.md §7 — concurrent writes of one
+//       target each publish a whole file: the target ends as one writer's
+//       bytes, every write succeeds and no temporary is left behind.
+#[test]
+fn atomic_write_concurrent_writers_each_publish_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    let contents: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 64 * 1024]).collect();
+
+    std::thread::scope(|scope| {
+        for bytes in &contents {
+            let path = &path;
+            scope.spawn(move || {
+                for _ in 0..16 {
+                    atomic_write(path, bytes).expect("every concurrent write succeeds");
+                }
+            });
+        }
+    });
+
+    let published = std::fs::read(&path).unwrap();
+    assert!(
+        contents.contains(&published),
+        "the target is one writer's whole bytes"
+    );
+    let entries: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, vec![std::ffi::OsString::from("manifest.json")]);
+}
+
 // spec: design/backend/module-caching.md §13 — end-to-end: compile .o, load via linker, execute
 #[test]
 fn test_compile_load_and_execute_cached_module() {
