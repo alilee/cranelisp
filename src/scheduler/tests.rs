@@ -3345,3 +3345,48 @@ fn a_failed_walk_fails_a_restored_module_without_declared_children() {
     drop(hold);
     assert!(walked.is_typechecked(&module));
 }
+
+// spec: design/int/int.md §6.11 A restored parent, failure paths ("a load that
+// fails while the parent waits fails the parent with the load error. A child
+// that completes later does not complete it") — the twin whose claimed load
+// completes is complete once the child is.
+#[test]
+fn restored_parent_claimed_load_failed_while_waiting_fails_the_parent() {
+    let failed = CompileScheduler::new();
+    let (parent, child) = restored_parent_with_an_object_and_a_missed_child(&failed);
+    let CachedLoadAnswer::Claimed(claim) = failed.try_claim_cached_load(&parent) else {
+        unreachable!("invariant: the released load is claimable");
+    };
+    claim.complete_failed(CranelispError::CodegenError {
+        message: "relocation against 'P/x' failed".into(),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    });
+    assert_cached_load_refused(&failed, &parent);
+    let error = failed.lock().modules[&parent]
+        .error
+        .as_ref()
+        .map(wrapped_message);
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|m| m.contains("relocation against 'P/x' failed")),
+        "the parent fails with the load error: {error:?}"
+    );
+    failed.notify_typecheck_done(&child);
+    assert!(
+        !failed.is_typechecked(&parent),
+        "the child completing later does not complete it"
+    );
+    assert_cached_load_refused(&failed, &parent);
+
+    let loaded = CompileScheduler::new();
+    let (parent, child) = restored_parent_with_an_object_and_a_missed_child(&loaded);
+    let CachedLoadAnswer::Claimed(claim) = loaded.try_claim_cached_load(&parent) else {
+        unreachable!("invariant: the released load is claimable");
+    };
+    claim.complete_loaded(&[]);
+    assert!(!loaded.is_failed(&parent));
+    loaded.notify_typecheck_done(&child);
+    assert!(loaded.is_typechecked(&parent));
+    assert!(loaded.lock().modules[&parent].inmem_done);
+}

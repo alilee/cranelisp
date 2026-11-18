@@ -692,3 +692,90 @@ fn register_cached_submodules(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::try_cache_hit_load;
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ModuleFullPath};
+    use std::path::Path;
+
+    fn session(root: &Path) -> CompilerSession {
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: false,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 1,
+            run_mode: RunMode::Repl,
+        };
+        let mut s = CompilerSession::new(settings, root.to_path_buf(), "user").unwrap();
+        s.set_lib_dirs(Vec::new());
+        s
+    }
+
+    /// A project whose cache holds a valid entry for `P`. With `ghost`, `P`'s
+    /// stored table also declares a child `P.ghost` that has no file: the
+    /// entry still validates, since neither `P`'s source nor its slot layout
+    /// changed, and the restore walk fails to enrol the child.
+    fn cached_project(ghost: bool) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("P.cl"), "(defn x [] 1)\n").unwrap();
+        let mut warm = session(root.path());
+        warm.eval("(import [P [x]])").unwrap();
+        warm.wait_object_complete().unwrap();
+        warm.shutdown();
+        if ghost {
+            let meta = root.path().join(".cranelisp-cache/P.meta.json");
+            let stored = std::fs::read_to_string(&meta).unwrap();
+            let declared = stored.replacen(
+                "\"submodules\": []",
+                r#""submodules": [{"name": "ghost", "visibility": "Public", "inline_body": null, "span": {"start": 0, "end": 0}}]"#,
+                1,
+            );
+            assert_ne!(declared, stored, "precondition: the stored table is edited");
+            std::fs::write(&meta, declared).unwrap();
+        }
+        root
+    }
+
+    // spec: design/int/int.md §6.11 A restored parent, failure paths ("a
+    // failed walk fails the parent") — the restore passes its walk's failure
+    // to the scheduler, which fails the module with the walk's cause; the twin
+    // whose walk succeeds is complete when the restore returns.
+    #[test]
+    fn a_failed_restore_walk_fails_the_restored_module() {
+        let module = ModuleFullPath::from("P");
+        let user = ModuleFullPath::from("user");
+        for ghost in [true, false] {
+            let root = cached_project(ghost);
+            let mut s = session(root.path());
+            let file = root.path().join("P.cl");
+            let restored =
+                s.with_eval_compiler(&user, |ctx| try_cache_hit_load(ctx, &module, &file));
+            assert!(
+                s.shared.scheduler.is_cached_module(&module),
+                "ghost={ghost}: precondition: `P` is restored from the cache"
+            );
+            if ghost {
+                let error = restored.expect_err("the walk's failure is returned");
+                assert!(
+                    error.to_string().contains("submodule 'P.ghost' not found"),
+                    "{error}"
+                );
+                assert!(
+                    s.shared.scheduler.is_failed(&module),
+                    "the restore fails `P`"
+                );
+                assert!(!s.shared.scheduler.is_typechecked(&module));
+            } else {
+                assert!(restored.unwrap());
+                assert!(
+                    s.shared.scheduler.is_typechecked(&module),
+                    "`P` is complete"
+                );
+            }
+            s.shutdown();
+        }
+    }
+}
