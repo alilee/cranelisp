@@ -97,20 +97,23 @@ compiled slot's contract is the same for every mode summary
 "Modes are not slot ABI"). `RedefKind` is decided by the language type alone
 (§2.1), and "ABI" in this document means the language type.
 
-**S124 (packet row D7; not in source at `42e6d929`).** Two binary sites still
-compare summaries, and both delete:
+**As built (packet row D7, `7cceedc4`).** No binary site compares summaries.
 
-- the guard's same-type arm in `redefine::validate_guarded_redefinition`,
-  with its diagnostic and the summary formatter that serves only it;
-- the rematerialization decision in `worker.rs`, whose "ABI compatible" test
-  becomes `RedefKind` alone: a realization keeps its slot when its key is
-  unchanged and its kind is not `AbiChanging`.
-
-The binary deletes both consumers in the change-set that removes
-`ModeSummary::{abi_eq, abi_eq_opt, is_abi_conservative}` from the types crate,
-after `qa` has allocated the mode-change redefinition cell.
-
-- **Grade.** Asserted with a named falsifier until that cell runs
+- The guard in `redefine::validate_guarded_redefinition` has no same-type
+  mode arm, diagnostic or summary formatter.
+- The rematerialization decision in `worker.rs` reads `RedefKind` alone: a
+  realization keeps its slot when its key is unchanged and its kind is not
+  `AbiChanging`.
+- `ModeSummary::{abi_eq, abi_eq_opt, is_abi_conservative}` left the types
+  crate in the same change-set.
+- Module rows:
+  `redefine::tests::same_type_replacement_is_admitted_whatever_its_modes`
+  and `worker::tests::same_type_mode_change_rematerializes_instance_in_its_slot`,
+  both RED against the prior comparison;
+  `worker::tests::ordinary_replacement_preparation_rematerializes_prior_instance`
+  pins the kept slot.
+- **Grade.** Asserted with a named falsifier until `qa`'s mode-change
+  redefinition cell runs
   ([safety invariants](../arch/safety-invariants.md) row R12): a same-type
   redefinition that changes the inferred modes, with live callers and a
   captured callable value, must balance under the armed check in the REPL,

@@ -1389,17 +1389,17 @@ installed without a record. This is an unverified lead.
 
 ### 6.11 Module cycles at publication
 
-Status: **designed 2026-09-29** (ACT-1013); the macro-checkpoint site and the
-prelude edge **designed 2026-09-30**. Two follow-on corrections were
-**designed 2026-09-30**:
+Status:
 
-- the Pass-0 fail-fast (ACT-1014's helper end) is **implemented** at source
-  `f0d1006f…`, uncommitted. Its finding-scoped review found no blocking or
-  required finding, and QA judged ACT-1014 adequate and closed it
-  ([helper-end adequacy](../../tests/plan/s122-evidence-delta.md#act-1014-helper-end--final-adequacy-2026-09-30),
-  2026-09-30);
-- the failed-dependency refusal (ACT-1016 Face 1) is **not implemented**. The
-  user carried ACT-1016 to S123 on 2026-09-30.
+- the publication check (ACT-1013), its macro-checkpoint site and the prelude
+  edge are built;
+- the Pass-0 fail-fast (ACT-1014's helper end) is built; QA closed ACT-1014
+  ([helper-end adequacy](../../tests/plan/s122-evidence-delta.md#act-1014-helper-end--final-adequacy-2026-09-30));
+- the failed-dependency refusal (ACT-1016 Face 1) is built at `f95f0a3a` for
+  a whole-file rebuild; a fresh load is not covered (*Failed dependency*
+  below);
+- the declaration readiness gate (ACT-1016 Face 2), redesigned in S124 W8,
+  is not in source at `f95f0a3a`.
 
 Private to `src/`; no public API, carrier, schema or ABI change.
 
@@ -1462,10 +1462,20 @@ a pool cluster fails its module, and a rebuild fails and locks it.
   its established reference, the modules its plan pass rebuilds after `M`.
   The walk skips them, because their live tables still hold the pre-plan
   generation. An increment and a fresh load carry none.
-- **Failed dependency** (ACT-1016 Face 1). For a whole-source attempt (a
-  fresh load or a rebuild), a new-edge target that stands `Failed` refuses
-  the cluster before the walk. Two kinds of target are exempt: an unsettled
-  member, and the prelude reached only through the fallback bit.
+- **Failed dependency** (ACT-1016 Face 1). For a whole-file rebuild, a
+  new-edge target that stands `Failed` refuses the cluster before the walk.
+  Two kinds of target are exempt: an unsettled member, and the prelude
+  reached only through the fallback bit.
+  - *As built (`f95f0a3a`).* The check runs for `WholeSource` provenance,
+    which only a rebuild carries; a first registration at a fresh load is
+    `Increment` provenance and is not checked. At a fresh load a dependency
+    wait fails fast on a failed module, so the gap is a module whose
+    qualified reference resolves, with no wait, against a name a failed
+    module's table still holds (a Pass-0 re-export). Such a module compiles
+    at a restart and is refused by a session rebuild. *Falsifier:* `qa`
+    reproduces that disagreement. *Trigger and remedy:* the same check runs
+    for a first registration, which needs the provenance to tell a first
+    registration from a REPL turn.
   - The error is that module's own error, as the scheduler's fail-fast sites
     return it (spec §8.5.4 item 5). It records the module as `M`'s failure
     dependency.
@@ -1518,58 +1528,161 @@ a pool cluster fails its module, and a rebuild fails and locks it.
     dependent only after its dependency is fully processed.
   - Like the qualified fail-fast, it does not consult unsettled members. The
     error may therefore come from a later member's earlier attempt.
-- **Not covered by this rule:** an `export` of a module that is still in
-  flight at a fresh load (ACT-1016 Face 2). That module is not `Failed`; the
-  export's readiness gate below answers it.
+- **Not covered by this rule:** an `import` or `export` of a module that is
+  still in flight at a fresh load (ACT-1016 Face 2). That module is not
+  `Failed`; the declaration readiness gate below answers it.
 
-**An `export` waits like an `import`** (ACT-1016 Face 2; designed S124, not in
-source at `42e6d929`, where `handle_export` still installs from any present
-table).
+**Declaration readiness** (ACT-1016 Face 2; redesigned S124 W8, not in source
+at `f95f0a3a`).
 
-- **Rule.** `handle_export` installs from a source table only when that module
-  has reached a terminal typecheck, through the same readiness predicate
-  `handle_import` uses. Otherwise it takes the dependency path: register the
-  module if it is not registered, then wait on it through the ordinary
-  dependency wait. The two handlers share one predicate (Principle 7).
-- **Why.** The export fast path tests only that a table exists. A module that
-  is still typechecking has a seeded table, so an export of it installs from
-  an incomplete table and reports `'g' not found in module 'b'`. That is the
-  Round 4 shape `handle_import` was corrected for (Sprint 60), here without a
-  race: on Face 2's fixture `b` is waiting on `a` when `a` exports `b`, so the
-  incomplete table is certain, not timing-dependent.
-- **Effect.** The export becomes a wait edge, so at a fresh load the
-  scheduler's acyclicity check reports `a -> b -> a` before either installs
-  from the other. Spec §8.10.1 puts `export` in the dependency graph, and this
-  makes the §6.12 premise ("every other dependency edge is a wait at a fresh
-  load") true for exports. The reload leg is already answered by the
-  publication check (ACT-1016 record, 2026-11-15).
+*The fault.* Neither Pass-0 handler waits on a module in flight. The export
+handler installs from any present table. The import handler's own fast path
+requires a terminal typecheck, but a non-terminal module with a table falls
+through to `try_cache_hit_load`, whose guard answers "satisfied" for any
+present table, and the import installs from it. A module in flight holds a
+seeded table without its definitions, so on Face 2's fixture `a`'s
+`(export [b [g]])` reports `'g' not found in module 'b'` while `b` waits on
+`a`. Requiring a terminal typecheck in both handlers is not the fix: a parent
+whose generation has published is still non-terminal while it drives its
+declared children, so every child's `(import [super …])` then waits on a
+parent that waits on it, and a legal program is refused as a cycle
+(`superp.test -> superp -> superp.test`; measured by `dev` on `f95f0a3a`).
+
+*What the spec makes legal* (spec §8.3.8, §8.4.0, §8.5.4, §8.10):
+
+| Program | Spec reading | Outcome |
+|---|---|---|
+| A child imports or exports names of its parent (`super`, or the parent's full path), and the parent reaches the child only by declaring it | §8.3.8: a one-directional child → parent import is supported; `super` only names the parent. §8.4.0: an export is the same operation as an import | accepted in every mode |
+| As above, and the parent also reaches the child through an import, an export or a qualified reference (`p.child/x`) | §8.3.8's mutual configuration; a qualified reference is an edge at parity with an import (§8.5.4 item 6). §8.10.2 requires the error | a circular-dependency error naming the path |
+| Two modules that are not parent and child, each reaching the other through an import, an export or a qualified reference | §8.10.1 puts `export` in the graph; §8.10.2 and §8.5.4 item 6 require the path, never an unresolved name | a circular-dependency error naming the path |
+
+QA's ACT-1016 record reads the middle row the same way.
+
+*The predicate.* A Pass-0 `import` or `export` of module `D` installs from
+`D`'s table exactly when `D` is **ready for declaration**: its typecheck is
+terminal, or its current generation has **published**. Otherwise, when `D`
+has a table, the declaration waits on `D` through the ordinary dependency
+edge (`block_dep`), whose acyclicity check names any cycle; when `D` has no
+table it loads as today. `refuse_failed_table` still runs first.
+
+- **The published fact.** The scheduler records, per module, that its current
+  generation has published. It is set at the one site where a whole cluster's
+  outcome is `Done` and published, in `finish_pass2`, before
+  `drive_submodules` drives any declared child; both the worker and the eval
+  entry pass through it (Principle 11). A macro checkpoint does not set it:
+  a checkpoint publishes clauses, not the generation. Every new whole-source
+  attempt of the module starts with the fact off: a registration, a rebuild's
+  reset and a failure reset.
+- **One home.** The predicate is a scheduler query read under the same lock
+  as the terminal-pool test. Both Pass-0 handlers read it, and so does the
+  tracked branch of the qualified-reference gate (`fq_module_is_loaded`),
+  whose own documentation says it mirrors the import gate (Principle 7). The
+  signature barrier and every other terminal-typecheck reader keep the
+  terminal predicate.
+- **Publication wakes the declaration waiters.** When the fact is set, the
+  scheduler releases every module waiting on `D` through a whole-module
+  dependency edge, as the terminal sweep does, and the eval thread's wait on
+  `D` ends on it too. A released waiter retries from the top, idempotently,
+  and its declaration now installs. Without this, a reader that arrived
+  before `D` published would keep its edge to `D` while `D` waits on its
+  children, and whether a cycle is reported would depend on arrival order.
+- **Why a published table is a complete read** (spec §8.5.4 item 7). After
+  publication the only work left in `D`'s attempt is driving its declared
+  children. Every name `D` declares, defines or re-exports is in its live
+  table, which is what a terminal read sees of `D`. A child's later
+  publication writes only that child's own records into `D`'s table, such as
+  an implementation of `D`'s trait, and a reader reads those at typecheck
+  as it reads any module's.
+- **`try_cache_hit_load`'s guard is unchanged.** The handlers no longer reach
+  it with a table. Its other callers keep its answer: a parent's drive of a
+  child already in flight, which must not wait, and the prelude injection,
+  which never waits (§6.12).
 - **Not changed.** The signature barrier's members still exclude export
   targets (§6.12, *Not taken*). The wait is the body-free dependency wait an
-  import already takes.
-- **An export from `super` waits as an import from `super` does.** A declared
-  child is driven only after its parent's generation publishes (the FIXME
-  0342 deferral in `process_cluster_once`). The gate therefore holds a
-  child's `(export [super [x]])` to the readiness predicate that
-  `(import [super [x]])` meets. The order is different when the parent's own
-  forms reach the child first. A qualified reference `p.child/x` in the
-  parent's cluster auto-loads the child at that reference (spec §8.5.4). The
-  child then meets a parent that is still in flight. Without the gate, the
-  child installs from the parent's seeded table. With the gate, the child
-  waits on a parent that is waiting on it. That is a wait cycle, which the
-  scheduler reports (spec §8.10.2, §8.5.4 item 6). Spec §8.3.8 permits the
-  rejection for the import form. Under this design that fixture is refused
-  as a cycle. Whether the spec requires the fixture to be accepted is for
-  `qa` to determine, and if it does, the user rules (§8.10.2 against the
-  §8.3.8 limitation).
-- **Falsifier.** After the change, any leg of Face 2 that reports a name not
-  found in `a` or `b`, or that completes without naming the cycle.
-- **Evidence (for `qa`).** The two committed Face 2 cells and the acyclic
-  re-export control. A `dev` unit row shows the export handler blocking on a
-  registered, non-terminal module instead of installing from it.
+  import already takes. Declared children are still no edge in any graph
+  (§6.9).
+
+*Effect.* An export to a module in flight becomes a wait edge. At a fresh
+load the scheduler therefore reports `a -> b -> a` before either module
+installs from the other, which makes the §6.12 premise ("every other
+dependency edge is a wait at a fresh load") true for exports. The reload leg
+is answered by the publication check. For the parent and child cycle, `p`'s
+qualified reference drives `p.child` before `p` publishes, so the child's
+declaration of `super` waits on an unpublished `p` that waits on it, and the
+scheduler reports `p -> p.child -> p`.
+
+*Undecided by the spec* (for `sprint`, to `spec` and the user). Parent `P`
+declares `(mod c)`; `c` imports `z`; `z`, which is not `P`'s child, imports
+`P`; `P` reaches neither `c` nor `z` except through the declaration. Spec
+§8.10.1 lists `mod` in the dependency graph, which makes `P → c → z → P` a
+cycle; read the same way, the direct `super` import of row 1 would be a
+cycle, which §8.3.8 accepts. The spec does not say whether §8.3.8's
+acceptance covers only a child's direct dependency on its parent, or means a
+`mod` declaration never closes a cycle back to the declaring parent. This
+design does not answer that question. It keeps the one answer int's other
+three graphs already give (declared children are no edge, so the program is
+accepted), because a fresh load that refused it would diverge from a session
+save, which the publication check accepts. If the user rules it a cycle, the
+declared-child edge enters the one shared edge predicate, and all four graphs
+change together; this gate does not change. Today's source answers by
+timing: an install from `P`'s seeded table or from its published one.
+
+*Falsifiers.*
+
+- A leg of Face 2 that reports a name not found in `a` or `b`, or completes
+  without naming the cycle.
+- A row-1 program refused as a cycle, or a row-2 program that compiles or
+  reports an unresolved name.
+- Two runs of one program whose outcomes differ in whether a cycle is
+  reported.
+
+*What `dev` builds* (`src/scheduler.rs`, `src/process_form.rs`,
+`src/process_form/dependency.rs`, `src/eval.rs`). The published fact and its
+resets; the predicate; both handlers reading it in place of the table-present
+test, with the in-flight wait of `dev`'s held patch; the release at
+publication on both paths; the qualified-reference gate's tracked branch.
+
+*Module evidence (`dev`).* Arm each row RED on `f95f0a3a` where its seam
+exists.
+
+- Extend `pass0_declaration_of_an_in_flight_module_waits_on_it` (the held
+  patch): for `import` and for `export`, a registered module with a table
+  that has neither published nor reached a terminal typecheck makes the
+  declaration wait and installs nothing. The `export` leg is RED today, and
+  so is the `import` leg, through the cache guard.
+- The positive: with the same module marked published and still
+  non-terminal, both declarations install its names and record no edge.
+- The fact: it is set by a whole cluster's publication, before the first
+  declared child is driven, on the worker and on the eval path; a macro
+  checkpoint does not set it; a new whole-source attempt clears it.
+- The release: a module blocked on `D` through a declaration is requeued when
+  `D` publishes, before `D` becomes terminal.
+- The qualified-reference gate reads the same predicate: for a published,
+  non-terminal module it answers loaded.
+
+*End-to-end cells.*
+
+- Turn GREEN: `tests/spec_08_modules.rs::export_closed_cycle_run_reports_cycle_neg`,
+  `export_closed_cycle_startup_reports_cycle_neg` and
+  `s124_modules_super_cycle_neg_run`, `_link` and `_repl`.
+- Stay GREEN: in `tests/spec_08_modules.rs`, `super_import_resolves_parent_fn`,
+  `super_import_resolves_parent_type_constructor`,
+  `mod_test_child_super_imported_parent_trait_resolves_as_constraint`,
+  `s124_modules_super_run`, `_link` and `_repl`,
+  `export_dependency_without_cycle_control`, `module_cycle_detection_neg`
+  and the `fq_ref_cycle_*` cells; in `tests/repl_persist.rs`,
+  `persist_bug_user_cl_preserves_original_str_not_expanded_str_concat` and
+  `persist_bug_macro_usage_in_defn_survives_session_restart`; and the
+  §6.12 prelude cells.
+- For `qa` to allocate: the undecided program in `--run` and the REPL, and a
+  session save that closes it, both accepted under this design; and an
+  `(export [p [x]])` from a child, spelled by its parent's full path,
+  beside `super`.
 
 **Face 1 status.** The failed-dependency refusal above (*The check*, *Failed
-dependency*) is designed and carried by ACT-1016 Face 1. It lands in S124
-with its session row pair; the design is unchanged.
+dependency*) is built at `f95f0a3a` for a whole-file rebuild, with
+`worker::tests::failed_dependency_refusal::*` (the positive row RED with the
+refusal disabled). Its fresh-load gap is stated under *Failed dependency*.
 - **As implemented.** Both Pass-0 handlers in `src/process_form/dependency.rs`
   call one table check before they install or wait. `handle_import` calls it
   after the private-submodule check, and `handle_export` calls it before it
@@ -1621,11 +1734,10 @@ wait cycle before either member publishes, so `--run` and `--link`
 diagnostics do not change. An implicit-prelude cycle is the exception: a
 module does not wait on an in-flight prelude, so the scheduler sees no wait
 cycle. The static gate, this check or the failure exit's cycle precedence
-reports it ([§6.12](#612-the-implicit-prelude-dependency)). QA falsified the
-wait premise for `export` on 2026-09-30. An `export` of a module still in
-flight at a fresh load reads its partial table without waiting, and in every
-mode reports the cycle as an unresolved name. That is ACT-1016 Face 2,
-carried to S123.
+reports it ([§6.12](#612-the-implicit-prelude-dependency)). Until the
+declaration readiness gate is built, an `export` of a module still in flight
+at a fresh load reads its partial table without waiting, and reports the
+cycle as an unresolved name (ACT-1016 Face 2).
 
 **Cost.** The walk visits the targets' dependency closure once per check and
 computes each visited module's edges once. It runs for every prepared
@@ -1637,10 +1749,9 @@ passes the prepare step. Falsifiers:
 - after a completed turn or plan, the live tables of modules whose latest
   attempt compiled contain a cycle. A failed attempt's table keeps its Pass-0
   declarations and publishes no generation;
-- once the failed-dependency refusal is implemented, a whole-source
-  generation publishes while a module it has an edge to stands `Failed`. An
-  unsettled member and the prelude reached through the bit are the
-  exceptions;
+- a whole-file rebuild publishes while a module it has an edge to stands
+  `Failed`. An unsettled member and the prelude reached through the bit are
+  the exceptions;
 - a Pass-0 `import` or `export` of a module standing `Failed` reports an
   unresolved name.
 
@@ -1677,8 +1788,8 @@ the turn's staged edges and owed lookups, never its earlier generations.
   - With the fail-fast planted absent, the positive row is RED on all four
     legs and the negative stays GREEN (`dev`'s report,
     `.local/s122-helper-followon-dev-result.md`).
-- Failed dependency, when the S123 carry of ACT-1016 schedules Face 1. Arm
-  the positive leg RED on the source it starts from.
+- Failed dependency, built at `f95f0a3a` as
+  `worker::tests::failed_dependency_refusal::*`:
   - A rebuild of `M` whose staged callee is in `w`, while `w` stands `Failed`
     and `w`'s table still holds the called name, is refused with `w`'s error,
     and `w` becomes `M`'s failure dependency.
@@ -1856,14 +1967,21 @@ asks, for a module `A` with the bit on, whether the prelude reaches `A`:
     walk terminates. Its result is the least fixpoint, which does not depend
     on queue order.
 
+  - A substitution can reveal another owner: with `p` mounting `q` as `s`
+    and `q` mounting `x` as `t`, `p.s.t/y` substitutes to `q.t/y`, whose
+    owner is `q`. The walk follows that owner as an edge from the writing
+    file, as it follows the first, and keeps the rewritten qualifier
+    pending.
+
   A name-less mount stays no edge (§6.13): the cycle runs through the
-  qualifier, not through the export. As built at `42e6d929`,
-  `prelude_reach_cycle` substitutes each qualifier once, at its file's visit.
-  If the prelude imports `p` and writes `p.s/y` while `p` declares
-  `(export [(x s) []])`, the walk visits the prelude before `p`, and
-  `p.s/y` becomes a leaf. The walk misses `x -> prelude -> x`, and `x`'s own
-  error stands. The source's doc comment records this narrower behaviour;
-  this design does not accept it.
+  qualifier, not through the export. *As built at `2dec7450`:* the pending
+  set, the re-substitution and the first owner edge. The revealed owner is
+  not followed: a substitution that does not name a module file never
+  enqueues its new owner, so a chain of mounts misses the cycle (`review` of
+  `2dec7450`; ACT-1079, *The cycle walk*). It is not observable while
+  ACT-1079's resolver refusal stands, and it is corrected with that
+  resolver, with its module row (§6.13, *A qualified reference through a
+  mount*).
 - **The report.** When the walk reaches `A`, the attempt fails with
   `circular dependency detected: A -> prelude -> … -> A`, rendered by
   `scheduler::CycleError::render`, at the location of the error it replaces.
@@ -1871,9 +1989,9 @@ asks, for a module `A` with the bit on, whether the prelude reaches `A`:
 - **Why only the prelude edge.** The premise is that every other dependency
   edge is a wait at a fresh load, so the scheduler reports its cycle before
   one member compiles against the other (§6.11). The prelude edge is the one
-  no module waits on (the barrier bullet above). QA falsified the premise for
-  an `export` of an in-flight module (ACT-1016 Face 2). A wait answers it:
-  §6.11's export readiness gate makes an export a wait edge (S124).
+  no module waits on (the barrier bullet above). The premise holds for an
+  `export` once §6.11's declaration readiness gate makes it a wait edge
+  (ACT-1016 Face 2, not in source at `f95f0a3a`).
 - **It changes a diagnostic, never an outcome.** The attempt has already
   failed, so an edge the walk over-approximates can mislabel a failure but
   cannot reject a program. The reader-quote shield, `cranelisp_types::quote_head`
@@ -2008,12 +2126,16 @@ seam exists.
   - Over-reach negatives, each keeping `x`'s own error:
     - the prelude names `x/one` only inside a quoted macro template;
     - `x` is a declared child of a module the prelude exports.
-  - Mount reach (S124; RED on `42e6d929`). The prelude imports `p [z]` and
+  - Mount reach (built at `2dec7450`). The prelude imports `p [z]` and
     calls `p.s/y`, and `p.cl` declares `(export [(x s) []])`. The walk
     reports `x -> prelude -> x`. A second leg has a prelude that writes
     `p.s/y` without importing `p`, and reports the same cycle through the
     owner edge. As controls, with `p`'s mount targeting another module `w`,
     or with the mount absent, `x`'s own error stands.
+  - Chained mount (with ACT-1079's correction; RED on `f95f0a3a`). The
+    prelude writes `p.s.t/y`, `p` mounts `q` as `s` and `q` mounts `x` as
+    `t`. The walk reports the `x` and prelude cycle whichever file it visits
+    first.
 - The plan: a save of a null-importing `x` orders `x` before the prelude and
   both succeed (probe N3); a save of the prelude succeeds (probe N4).
 - The helper end:
@@ -2042,10 +2164,11 @@ End to end:
 
 ### 6.13 Import and export entries and export mounts (S124)
 
-**Status: landed at `42e6d929` (rows D3, D10).** Two regeneration rules
-below (*Regeneration*) were wrong in this design and are corrected here; the
-source still follows the earlier wording. The carrier is packet
-row D3 ([import and export entries](../arch/interfaces.md#import-and-export-entries-s124-target)):
+**Status: landed at `42e6d929` (rows D3, D10); the two regeneration
+corrections (*Regeneration*) at `74aa7a52`.** A qualified reference through a
+mount whose owner is not loaded is designed below and not scheduled
+(ACT-1079). The carrier is packet
+row D3 ([import and export entries](../arch/interfaces.md#import-and-export-entries)):
 a names list is `None`, `Glob` or `Specific` of `ImportEntry` values, each a
 `Name { source, local }` or a `MemberGlob(parent)`, and `ExportSpec` gains its
 mount `alias`. The frontend is the only producer and derives `local`
@@ -2084,6 +2207,39 @@ one helper over either spec, so imports and exports cannot answer
 differently. A qualified reference through a mount auto-loads its
 target (spec §8.5.4), as one through an import alias does. The dependency
 record still keys every export target, as it keys every import (§7.6).
+
+**A qualified reference through a mount loads the mount's owner** (ACT-1079;
+designed S124 W8, not scheduled: the user has not pulled ACT-1079 into S124).
+
+- **Rule.** Spec §8.5.4 makes a qualified name self-sufficient, and §8.6.6
+  resolves a mount at the longest dot-separated prefix that is a known module,
+  then restarts on the rewritten path. A reference therefore loads each owner
+  its resolution needs, in turn, and never fails because an owner was not
+  loaded. For `p.s.t/y`, with `p` mounting `q` as `s` and `q` mounting `x` as
+  `t`: `p` loads, `p.s.t` becomes `q.t`, `q` loads, `q.t` becomes `x`, and
+  `x` loads.
+- **Where.** The qualified-reference gap protocol (§6.3), at
+  `drive_module_dep`, which both gap paths reach. When a gap's module path
+  resolves to no module file, the driver loads the owner instead: the
+  longest proper prefix that resolves to a module file, by the same rule the
+  §6.12 walk uses. The cluster retries from the top, as after any gap, and
+  resolution substitutes through the now-loaded owner's mounts. A path with
+  no file-backed prefix keeps today's located "not found" refusal (spec
+  §8.5.4 item 3). Each owner load is an ordinary dependency edge, so a cycle
+  through an owner is reported like any other.
+- **Termination.** Each retry loads a module not loaded before, and modules
+  are finite. A rewritten path that names no file and whose owner is already
+  loaded with no mount for the next segment is the refusal. The §8.6.6
+  depth limit bounds the substitution itself.
+- **No inter-crate change is assumed.** The gap already names the rewritten
+  path (`q.t` in ACT-1079's subject B). If typecheck turns out to report such
+  a path as a hard error instead of a gap, that is a return to `arch`, not a
+  binary work-around.
+- **The cycle walk.** The §6.12 walk's revealed-owner edge lands with this
+  correction, because only then is it observable.
+- **Evidence.** ACT-1079's REPRO-1079-a to -c and its two `dev` module rows:
+  a path whose file-backed prefix declares the mount resolves with that
+  prefix unloaded, and through two mounts; the walk visits a revealed owner.
 
 **Export mounts — the writer** ([alias contract](../arch/module-alias-scoped-lookup.md)
 §5.1; `arch` names the binary as its owner).
@@ -2300,9 +2456,9 @@ second import alias for one spelling refuses (R-A2); a name-less export loads
 nothing and a bare `(export [m []])` is accepted with no mount; regeneration
 round-trips each entry shape and the equal-target pair.
 
-**The two regeneration corrections.** `dev` (`src/`) changes the merge and
-the renderer in `src/save.rs` to the *Regeneration* rules above. The unit rows
-go at `generate_imports` and `generate_exports`. Rows marked RED must fail on
+**The two regeneration corrections** (built at `74aa7a52`). The merge and
+the renderer in `src/save.rs` follow the *Regeneration* rules above. The unit
+rows are at `generate_imports` and `generate_exports`. Rows marked RED fail on
 `42e6d929`; the controls pass there and after:
 
 - RED: `m [*]` merged with `m [(f g)]` renders both pairs in the order they
@@ -3220,11 +3376,13 @@ passed its finding-scoped re-review.
 
 #### 7.6.3 Slot-layout identity (ACT-1052)
 
-**Status: designed S124; not in source at `42e6d929`.** Private to `src/`. No
+**Status: built at `3c4c0f7b`, with the backend's `CACHE_SCHEMA_VERSION` 34
+and the `dependency_hashes` rustdoc correction at `f3f9cc47`.** Its warm-start
+cost is not accepted as measured (*Cost* below). Private to `src/`. No
 public API change: `CachedModuleRef::dependency_hashes` stays a map of opaque
 strings and `check_manifest` is unchanged ([BC](../arch/bounded-contexts.md)
 §6, the cached object's validity record). It changes what a persisted value
-means, so `CACHE_SCHEMA_VERSION` is bumped in the same change-set.
+means, which the schema bump records.
 
 **The fault.** An importer's object embeds the GOT slot index of each
 callable it calls in a dependency. A REPL language-type change with no caller
@@ -3278,10 +3436,38 @@ source hash together with a fingerprint of its authored slot layout.
 - *A typed layout field on the manifest.* Returns to `arch`'s gate and buys
   nothing the opaque key does not.
 
-**Cost.** Validating a module whose members are not yet loaded decodes each
-such member's `.meta` once. `dev` measures a warm start of the exemplar before
-and after; a per-session memo of decoded layouts is added only if that
-measurement shows a material cost.
+**Cost.** As built, validating a module whose members are not yet loaded
+decodes each such member's `.meta` once per session
+(`ObjectCache::stored_layout`), and each validation fingerprints every member
+the session holds a table for. `dev` measured an exemplar warm `--run`
+(debug) at about 0.96 s before and 1.23 s after, with the memo. A rise of
+over a quarter on the path the cache exists to make fast is material, so the
+design does not accept it unattributed.
+
+- **Attribute first.** `dev` profiles one warm start before choosing a
+  remedy. Two candidates:
+  - *the stored half.* A warm start validates an importer before its members
+    restore, so each member's `.meta` is decoded for its layout and decoded
+    again by its own restore;
+  - *the live half.* Every validation fingerprints each live member afresh,
+    and a member appears in the record of every module above it.
+- **The cheaper key source for the stored half.** A member's own manifest
+  entry records the member's derivation key when its entry is written, as
+  the one record that already travels with its `.meta`. The current key of a
+  member the session holds no table for is then its current source hash with
+  the layout half of that recorded key, read from the manifest already in
+  memory, and no `.meta` is decoded for validation. The key form stays
+  int's, carried as a self entry in the member's own `dependency_hashes`
+  (opaque, no API change); the rule "the module itself is never a member"
+  changes with it, and the memo deletes. This changes a persisted value's
+  meaning, so it needs `dev`(backend)'s schema bump, routed through
+  `sprint`.
+- **For the live half,** a member's fingerprint is computed once per
+  generation of its table, not once per record that names it. The memo must
+  end when the member publishes a generation; `dev` proposes where it lives
+  with the profile, and `design` reviews it before it is built.
+- **Falsifier.** After the profiled remedy, the warm start remains materially
+  above 0.96 s; the cost is then elsewhere and is profiled again.
 
 **Constraints for `dev`.**
 
@@ -3291,9 +3477,6 @@ measurement shows a material cost.
 - The key's string form is private. It must not be equal to any
   source-hash-only string, so a record written before the change is a miss
   even without the schema bump.
-- The backend's rustdoc on `dependency_hashes` says "source hashes"; it is
-  corrected with the change (a factual correction, no API change), routed
-  to `dev`(backend) through `sprint`.
 
 **Gaps it does not close.** §7.6's gaps 2 and 3 apply to the layout half as to
 the hash half: a write-time read can record a layout the importer was not
@@ -3843,16 +4026,30 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   its category condition (`sprints/SPRINT.md`, Notes), and to `arch`'s S124 contracts
   ([approved changes](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
   ACT-1050 and ACT-1065 landed at `32e434dc` (W4), D4 at `441e31ea`, and
-  D3 and D10 at `42e6d929`. Checked against `42e6d929`, the export
-  readiness gate, D7, ACT-0973, ACT-1036 and ACT-1052 are not in source.
-  - *Open from the review of `42e6d929`:* the two regeneration corrections
-    and the cycle-precedence mount reach, stated in §6.13 and §6.12.
+  D3 and D10 at `42e6d929`. W8 landed the cycle-precedence mount reach at
+  `2dec7450`, the regeneration corrections at `74aa7a52`, D7 at `7cceedc4`,
+  the entry-module fact at `109f008b`, ACT-1061 at `b3e3887e`, ACT-1036 at
+  `e294852f`, ACT-1052 at `3c4c0f7b` with the backend's bump at `f3f9cc47`,
+  and ACT-1016 Face 1 at `f95f0a3a`. Checked against `f3f9cc47`, the
+  declaration readiness gate (ACT-1016 Face 2) and ACT-0973's refusal are
+  not in source.
+  - *Still open in W8's rows:* the readiness gate
+    ([§6.11](#611-module-cycles-at-publication), *Declaration readiness*);
+    ACT-0973's refusal, built as a patch and held because
+    `exemplar/solver.cl` declares `(platform stdio)` outside the entry,
+    which spec §10.9.1 forbids, so the exemplar is the correction; ACT-1052's
+    warm-start cost ([§7.6.3](#763-slot-layout-identity-act-1052), *Cost*);
+    and Face 1's fresh-load gap (§6.11, *Failed dependency*).
+  - *Designed, not scheduled:* a qualified reference through a mount loads
+    the mount's owner (ACT-1079,
+    [§6.13](#613-import-and-export-entries-and-export-mounts-s124)), with
+    the §6.12 walk's revealed-owner edge.
   - *Cached-object validity (ACT-1052):* [§7.6.3](#763-slot-layout-identity-act-1052).
     The record keys each member by source hash and authored slot layout.
   - *Import and export entries and mounts (D3; ACT-0997, ACT-1055,
     ACT-1056):* [§6.13](#613-import-and-export-entries-and-export-mounts-s124).
-  - *Export cycles (ACT-1016):* Face 2 is the export readiness gate and Face 1
-    the designed failed-dependency refusal, both in [§6.11](#611-module-cycles-at-publication).
+  - *Export cycles (ACT-1016):* Face 2 is the declaration readiness gate and
+    Face 1 the failed-dependency refusal, both in [§6.11](#611-module-cycles-at-publication).
   - *Mode-ABI gate removed (D7; ACT-0953):*
     [session transaction §2.4](session-transaction.md#24-ownership-modes-are-not-compared).
   - *Platform forms outside the entry (ACT-0973):*
@@ -3976,9 +4173,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     2026-11-17). D10 is the impl-identity part of §6.13.
   - **Order and dependencies.**
     1. Independent of the other surfaces, in any order: ACT-1036, ACT-0973,
-       ACT-1016 (Face 2 then Face 1), ACT-1052. ACT-1052 carries a
-       cache-schema bump; ACT-1016 lands before D3 because both edit the
-       export handler.
+       ACT-1016, ACT-1052. ACT-1052 carries a cache-schema bump. ACT-0973's
+       refusal lands after the exemplar moves its platform declaration to
+       its entry.
     2. D3: after the types carrier and the frontend producer, as one
        callee-first migration with its own schema bump. The impl-identity
        part (row D10) lands in D3's migration and shares D3's bump. The mount

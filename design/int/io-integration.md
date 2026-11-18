@@ -23,7 +23,7 @@ contract is `design/arch/platform-interface.md`.
   - **What "the entry defines `main`" means.** The entry module's table binds
     `main`. Every refusal about that binding is located (below); an entry
     whose table binds no `main` takes the unlocated refusal (S124-Q8).
-  - **Location (S124, ACT-1036; not in source at `42e6d929`).** Every
+  - **Location (S124, ACT-1036; built at `e294852f`).** Every
     refusal the gate raises about an existing `main` is located at the
     written top-level form that declared it (REPL §5.5, §5.1): the wrong
     shape, and a `main` that is not a function. The refusal stays at this
@@ -81,14 +81,12 @@ contract is `design/arch/platform-interface.md`.
     the missing `main`, and carries no form span. That means no line and
     column and no `at 0..0`. It keeps its error category (REPL §5.1 item 1;
     the exception lifts the location only).
-    - *One producer.* Four sites raise this refusal today, with three texts
-      and two categories: `validate_main`; `read_main_entry`, which is
-      reached when `trampoline` skips the gate because the entry table is
-      absent; `link_by_name`'s absent-table arm; and `entry_main_got_slot`.
-      The gate becomes the only producer. It runs in `--run` and `--link`
-      whether or not the entry table exists, and an absent table counts as
-      an entry with no `main`. After the gate, a missing `main` in the other
-      three sites is an invariant violation, not a user refusal.
+    - *One producer* (built at `e294852f`). The gate, now crate-private, is
+      the only producer. It runs in `--run` and `--link` whether or not the
+      entry table exists, and an absent table counts as an entry with no
+      `main`. After the gate, a missing `main` at `read_main_entry`,
+      `link_by_name`'s absent-table arm and `entry_main_got_slot` is an
+      invariant violation, not a user refusal.
     - *The file.* The gate receives the entry module's source path, which
       registration already holds. A missing entry file never reaches the
       gate ([int §6.1.1](int.md#611-a-missing-entry-source-file)).
@@ -107,8 +105,8 @@ contract is `design/arch/platform-interface.md`.
       the working directory, so the two renderings name a file the same way
       and share that helper. The message names `main` and the form batch
       mode requires; its words are `dev`'s.
-    - *The category is `module error`.* Today the refusal shows `codegen
-      error` or `module error` by site. Of the two, `module error` names
+    - *The category is `module error`.* Before `e294852f` the refusal showed
+      `codegen error` or `module error` by site. Of the two, `module error` names
       the subject the refusal is about, the entry module's contents. `codegen
       error` names a stage that has not failed, which REPL §5.5 keeps out of
       the user's vocabulary. The category is the renderer's constant for
@@ -239,7 +237,7 @@ never sees a panic, chooses no panic status and formats no panic text.
 The frontend extracts `(platform …)` forms, and `process_form` routes each one
 to `handle_platform` (`src/process_form/platform.rs`).
 
-**Entry only (S124, ACT-0973; not in source at `42e6d929`).** A `platform`
+**Entry only (S124, ACT-0973; not in source at `f3f9cc47`).** A `platform`
 form in any module other than the session's entry module is a compile-time
 error located at the form (`spec/10-io.md` §10.9.1). The handler decides it by
 comparing the compiling module with the session's entry module, never by the
@@ -250,7 +248,13 @@ shape of the module's name
   changes. It moves onto the shared session state beside the other
   session-wide facts, so the dependency handler reaches it through the
   compiling context's shared-state handle, as it reaches every other session
-  fact. `/mod` changes the REPL's current module, not the entry.
+  fact. `/mod` changes the REPL's current module, not the entry. Built at
+  `109f008b`.
+- **Held.** The refusal is built as a patch and not landed:
+  `exemplar/solver.cl`, which `exemplar/main.cl` imports, declares
+  `(platform stdio)`. Spec §10.9.1 makes that an error, so the exemplar moves
+  the declaration to its entry (a `dev`(exemplar) change), and the refusal
+  lands after it.
 - **Order.** The refusal precedes the DLL load and the platform's recording
   on the table, so a refused form loads nothing and is not persisted.
 - **Replaces** the source's skip of any module whose path contains `.`. That
