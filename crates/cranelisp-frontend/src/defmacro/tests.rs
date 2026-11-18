@@ -209,7 +209,120 @@ fn parse_bracket_destructure() {
     }
 }
 
+// -- clause shape: one body, rest last and at most once (§9.2.1, §9.2.2) --
+
+/// The span of the first occurrence of `needle` in `src`, as the reader assigns it.
+fn span_of(src: &str, needle: &str) -> (u32, u32) {
+    let start = src.find(needle).expect("needle in source") as u32;
+    (start, start + needle.len() as u32)
+}
+
+fn shape_error_span(src: &str) -> (u32, u32) {
+    let e = parse_defmacro(&parse_one(src)).expect_err(src);
+    (e.span().start, e.span().end)
+}
+
+// spec: 09-macros.md §9.2.1 — the shorthand clause has exactly one body
+#[test]
+fn shorthand_form_after_body_rejects_at_that_form() {
+    let src = "(defmacro m [] 1 2)";
+    assert_eq!(shape_error_span(src), span_of(src, "2"));
+    let info = parse_defmacro(&parse_one("(defmacro m [x] x)")).unwrap();
+    assert!(matches!(&info.clauses[0].body_sexp, Sexp::Symbol(s, _) if s == "x"));
+}
+
+// spec: 09-macros.md §9.2.2 — a rest parameter is last, at top level and in a
+// bracket pattern alike
+#[test]
+fn rest_parameter_placements_accepted() {
+    for src in [
+        "(defmacro m [& r] r)",
+        "(defmacro m [x & r] r)",
+        "(defmacro m [[a & r] b] b)",
+        "(defmacro m [[a & r] & s] s)",
+    ] {
+        let info = parse_defmacro(&parse_one(src)).unwrap_or_else(|e| panic!("{src}: {e:?}"));
+        assert_eq!(info.clauses.len(), 1, "{src}");
+    }
+    let info = parse_defmacro(&parse_one("(defmacro m [[a & r] & s] s)")).unwrap();
+    let clause = &info.clauses[0];
+    assert_eq!(clause.rest_param.as_ref().map(|s| s.as_ref()), Some("s"));
+    assert!(matches!(&clause.fixed_params[..],
+        [MacroParam::Bracket { fixed, rest: Some(r) }] if fixed.len() == 1 && r.as_ref() == "r"));
+}
+
+// spec: 09-macros.md §9.2.2 — an item after the rest parameter rejects at that item
+#[test]
+fn item_after_rest_parameter_rejects_at_that_item() {
+    for (src, item) in [
+        ("(defmacro m [& r x] x)", "x]"),
+        ("(defmacro m [& r & s] s)", "& s"),
+        ("(defmacro m [[& r a]] a)", "a]"),
+        ("(defmacro m [[& r & s]] s)", "& s"),
+        ("(defmacro m [&r [a]] a)", "[a]"),
+    ] {
+        let (start, _) = span_of(src, item);
+        assert_eq!(shape_error_span(src).0, start, "{src}");
+    }
+}
+
+// spec: 09-macros.md §9.2.1 (S124-Q2) — a rest parameter binds a symbol only;
+// the reader rejects `&` before a bracket, at the `&`
+#[test]
+fn rest_parameter_before_bracket_rejects_at_the_ampersand() {
+    let src = "(defmacro m [& [a b]] (quote 7))";
+    let e = crate::reader::parse(src).expect_err(src);
+    assert_eq!(e.span().start, span_of(src, "&").0);
+}
+
 // -- synthesize_macro_clause_defn --
+
+/// Every `Sexp::Annotated` node in `sexp` whose annotation is `macros/Sexp`.
+fn sexp_annotations(sexp: &Sexp) -> Vec<&Sexp> {
+    let mut found = Vec::new();
+    let mut stack = vec![sexp];
+    while let Some(node) = stack.pop() {
+        match node {
+            Sexp::Annotated {
+                annotation,
+                subject,
+                ..
+            } => {
+                if matches!(annotation.as_ref(), Sexp::Symbol(s, _) if s == "macros/Sexp") {
+                    found.push(node);
+                }
+                stack.push(subject);
+            }
+            Sexp::List(items, _) | Sexp::Bracket(items, _) => stack.extend(items),
+            _ => {}
+        }
+    }
+    found
+}
+
+// spec: 09-macros.md §9.2.3, §9.9.1 (S124-Q3) — every clause shape constrains
+// its body to `Sexp` with one annotation located at the body
+#[test]
+fn every_clause_shape_annotates_its_body_at_the_body_span() {
+    for src in [
+        "(defmacro m [] 42)",
+        "(defmacro m [& r] 42)",
+        "(defmacro m [x] 42)",
+        "(defmacro m [[a] & r] 42)",
+    ] {
+        let info = parse_defmacro(&parse_one(src)).unwrap();
+        let clause = &info.clauses[0];
+        let defn = synthesize_macro_clause_defn("m", 0, clause, info.span);
+        let found = sexp_annotations(&defn);
+        assert_eq!(found.len(), 1, "{src}: {defn:?}");
+        let Sexp::Annotated { subject, span, .. } = found[0] else {
+            unreachable!()
+        };
+        let body = span_of(src, "42");
+        assert_eq!((span.start, span.end), body, "{src}");
+        assert!(matches!(subject.as_ref(), Sexp::Int(42, _)), "{src}");
+    }
+}
 
 // spec: 09-macros.md section 9.2 -- synthesized defn structure
 #[test]
@@ -242,13 +355,14 @@ fn synthesize_zero_arg_clause() {
     };
     let result = synthesize_macro_clause_defn("const", 0, &clause, Span::SYNTHETIC);
 
-    // Should be (defn- __macro_const_clause_0 [...] 42)
+    // Should be (defn- __macro_const_clause_0 [...] :macros/Sexp 42)
     assert!(is_list_headed_by(&result, "defn-"));
-    // Body should be the integer directly (no match chain)
-    if let Sexp::List(ch, _) = &result {
-        // ch[3] is the body
-        assert!(matches!(&ch[3], Sexp::Int(42, _)));
-    }
+    // No match chain: the body is the annotated literal itself
+    let Sexp::List(ch, _) = &result else {
+        panic!("expected synthesized defn list")
+    };
+    assert!(matches!(&ch[3], Sexp::Annotated { subject, .. }
+        if matches!(subject.as_ref(), Sexp::Int(42, _))));
 }
 
 // spec: 09-macros.md section 9.2.2 -- rest param in synthesized defn

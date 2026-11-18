@@ -99,85 +99,68 @@ pub fn flatten_begin(sexp: Sexp) -> Vec<Sexp> {
 // Macro parameter parsing
 // ---------------------------------------------------------------------------
 
-/// Parse param items from a slice (used for both top-level and bracket patterns).
-///
-/// The reader parses `&rest` or `& rest` as a single symbol `"&rest"` (ampersand prefix),
-/// so rest params appear as symbols starting with `&`.
+/// Parse a clause's top-level parameter list: names and bracket patterns, then
+/// an optional rest name.
 fn parse_param_items(items: &[Sexp]) -> Result<(Vec<MacroParam>, Option<Symbol>), CranelispError> {
-    let mut fixed_params = Vec::new();
-    let mut rest_param = None;
-    let mut i = 0;
-
-    while i < items.len() {
-        match &items[i] {
-            Sexp::Symbol(s, sym_span) if s.starts_with('&') && s.len() > 1 => {
-                // Reader produces "&rest" as a single symbol.
-                let rest_name = &s[1..];
-                crate::ast_builder::reject_reserved_binder_name(rest_name, *sym_span)?;
-                // A defmacro param is a local binder (spec §5 binder-positions
-                // table) — a qualified spelling rejects.
-                crate::ast_builder::reject_qualified_binder_head(rest_name, *sym_span)?;
-                rest_param = Some(rest_name.into());
-                i += 1;
-            }
-            Sexp::Symbol(pname, sym_span) => {
-                crate::ast_builder::reject_reserved_binder_name(pname, *sym_span)?;
-                crate::ast_builder::reject_qualified_binder_head(pname, *sym_span)?;
-                fixed_params.push(MacroParam::Name(pname.as_str().into()));
-                i += 1;
-            }
-            Sexp::Bracket(inner, _) => {
-                let (bracket_fixed, bracket_rest) = parse_bracket_pattern(inner)?;
-                fixed_params.push(MacroParam::Bracket {
-                    fixed: bracket_fixed,
-                    rest: bracket_rest,
-                });
-                i += 1;
-            }
-            other => {
-                return Err(CranelispError::ParseError {
-                    message: "defmacro param must be a symbol or bracket pattern".to_string(),
-                    location: ErrorLocation::from_span(other.span()),
-                });
-            }
+    parse_param_sequence(items, |item| match item {
+        Sexp::Bracket(inner, _) => {
+            let (fixed, rest) = parse_param_sequence(inner, |item| {
+                parse_param_name(item, "bracket destructuring param must be a symbol")
+            })?;
+            Ok(MacroParam::Bracket { fixed, rest })
         }
-    }
-    Ok((fixed_params, rest_param))
+        other => parse_param_name(other, "defmacro param must be a symbol or bracket pattern")
+            .map(MacroParam::Name),
+    })
 }
 
-/// Parse a bracket destructuring pattern's inner items.
-///
-/// The reader parses `&rest` or `& rest` as `"&rest"`, so rest params appear as
-/// symbols starting with `&`.
-fn parse_bracket_pattern(inner: &[Sexp]) -> Result<(Vec<Symbol>, Option<Symbol>), CranelispError> {
+/// The one parameter-sequence rule (spec §9.2.2), shared by the top-level list
+/// and a bracket pattern: fixed items, then at most one rest parameter, which
+/// must be last. The reader spells `&rest` and `& rest` as one symbol `"&rest"`.
+fn parse_param_sequence<T>(
+    items: &[Sexp],
+    mut fixed_item: impl FnMut(&Sexp) -> Result<T, CranelispError>,
+) -> Result<(Vec<T>, Option<Symbol>), CranelispError> {
     let mut fixed = Vec::new();
-    let mut rest = None;
-    let mut j = 0;
-
-    while j < inner.len() {
-        match &inner[j] {
-            Sexp::Symbol(s, sym_span) if s.starts_with('&') && s.len() > 1 => {
-                let rest_name = &s[1..];
-                crate::ast_builder::reject_reserved_binder_name(rest_name, *sym_span)?;
-                crate::ast_builder::reject_qualified_binder_head(rest_name, *sym_span)?;
-                rest = Some(rest_name.into());
-                j += 1;
-            }
-            Sexp::Symbol(pname, sym_span) => {
-                crate::ast_builder::reject_reserved_binder_name(pname, *sym_span)?;
-                crate::ast_builder::reject_qualified_binder_head(pname, *sym_span)?;
-                fixed.push(pname.as_str().into());
-                j += 1;
-            }
-            other => {
+    for (i, item) in items.iter().enumerate() {
+        if let Sexp::Symbol(s, span) = item
+            && let Some(rest_name) = s.strip_prefix('&')
+            && !rest_name.is_empty()
+        {
+            if let Some(after) = items.get(i + 1) {
                 return Err(CranelispError::ParseError {
-                    message: "bracket destructuring param must be a symbol".to_string(),
-                    location: ErrorLocation::from_span(other.span()),
+                    message: format!(
+                        "defmacro rest parameter '{rest_name}' must be the last parameter, \
+                         but '{}' follows it",
+                        after.format_flat()
+                    ),
+                    location: ErrorLocation::from_span(after.span()),
                 });
             }
+            crate::ast_builder::reject_reserved_binder_name(rest_name, *span)?;
+            // A defmacro param is a local binder (spec §5 binder-positions
+            // table) — a qualified spelling rejects.
+            crate::ast_builder::reject_qualified_binder_head(rest_name, *span)?;
+            return Ok((fixed, Some(rest_name.into())));
         }
+        fixed.push(fixed_item(item)?);
     }
-    Ok((fixed, rest))
+    Ok((fixed, None))
+}
+
+/// A fixed parameter name, checked as a binder.
+fn parse_param_name(item: &Sexp, not_a_symbol: &str) -> Result<Symbol, CranelispError> {
+    match item {
+        Sexp::Symbol(pname, span) => {
+            crate::ast_builder::reject_reserved_binder_name(pname, *span)?;
+            crate::ast_builder::reject_qualified_binder_head(pname, *span)?;
+            Ok(pname.as_str().into())
+        }
+        other => Err(CranelispError::ParseError {
+            message: not_a_symbol.to_string(),
+            location: ErrorLocation::from_span(other.span()),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +240,12 @@ pub fn parse_defmacro(sexp: &Sexp) -> Result<DefmacroInfo, CranelispError> {
                 return Err(CranelispError::ParseError {
                     message: "defmacro requires a body after params".to_string(),
                     location: ErrorLocation::from_span(span),
+                });
+            }
+            if let Some(extra) = children.get(next_idx + 2) {
+                return Err(CranelispError::ParseError {
+                    message: "defmacro: unexpected trailing form after body".to_string(),
+                    location: ErrorLocation::from_span(extra.span()),
                 });
             }
             let (fixed_params, rest_param) = parse_param_items(items)?;
@@ -349,10 +338,14 @@ fn parse_single_clause(sexp: &Sexp) -> Result<MacroClause, CranelispError> {
 ///     [(macros/SCons param1 __t1__)
 ///       (match __t1__
 ///         [(macros/SCons param2 __t0__)
-///           <body>]
+///           :macros/Sexp <body>]
 ///         [_ (macros/SexpInt 0)])]
 ///     [_ (macros/SexpInt 0)]))
 /// ```
+///
+/// The body is annotated `macros/Sexp` in every clause shape, including a
+/// clause with no parameters (no match chain), so a body of another type is
+/// a type error located at the body.
 ///
 /// Type names in annotations are module-qualified (`macros/SList`,
 /// `macros/Sexp`) because Sprint 66 Wave 3a-α tightened typecheck to
@@ -386,18 +379,12 @@ pub fn synthesize_macro_clause_defn(
     let fn_name = format!("__macro_{name}_clause_{clause_idx}");
     let args_name = "__args__";
 
-    // Build the match chain body.
-    let has_params = !clause.fixed_params.is_empty() || clause.rest_param.is_some();
-    let body = if has_params {
-        build_macro_param_chain(
-            args_name,
-            &clause.fixed_params,
-            &clause.rest_param,
-            clause.body_sexp.clone(),
-        )
-    } else {
-        clause.body_sexp.clone()
-    };
+    let body = build_macro_param_chain(
+        args_name,
+        &clause.fixed_params,
+        &clause.rest_param,
+        constrain_to_sexp(&clause.body_sexp),
+    );
 
     // Build: (defn __macro_name_clause_N [: (macros/SList macros/Sexp) __args__] <body>)
     // Synthetic trees bypass the reader's annotation fold, so construct the
@@ -427,6 +414,21 @@ pub fn synthesize_macro_clause_defn(
         ],
         span,
     )
+}
+
+/// `:macros/Sexp <body>`, carrying the body's own source span.
+///
+/// This one node constrains every clause shape to return `Sexp` (spec §9.2.3),
+/// and typecheck reports a mismatch at the annotation's span, so the error
+/// names the offending body inside the `defmacro` form (§9.9.1). It is the one
+/// synthesised node with a source span; the dead match arms keep synthetic
+/// spans and agree with it.
+fn constrain_to_sexp(body: &Sexp) -> Sexp {
+    Sexp::Annotated {
+        annotation: Box::new(synth::sym("macros/Sexp")),
+        subject: Box::new(body.clone()),
+        span: body.span(),
+    }
 }
 
 // ---------------------------------------------------------------------------
