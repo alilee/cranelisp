@@ -4089,3 +4089,114 @@ fn s124_1065_d_renamed_primitive_bind_keeps_overlap() {
         "renamed primitive must overlap: renamed {renamed}ms, direct {direct}ms, serial {serial}ms"
     );
 }
+
+fn s124_1063_heap_payload_balance(primitive: &str, mode: &str) {
+    use helpers::marginal::{Child, MarginalPair};
+    let application = |callee: &str| match primitive {
+        "bind" => format!("({callee} (Pure [1 2 3]) (fn [v] (Pure (vec-len v))))"),
+        "race" => {
+            format!("(bind ({callee} (Pure [1 2 3]) (Pure [1 2 3])) (fn [v] (Pure (vec-len v))))")
+        }
+        "select" => {
+            format!("(bind ({callee} [(Pure [1 2 3]) (Pure [1 2 3])]) (fn [v] (Pure (vec-len v))))")
+        }
+        _ => unreachable!(),
+    };
+    let child = |body: String| {
+        let program = format!("(import [primitives [*]])\n(defn main [] {body})\n");
+        let child = match mode {
+            "run" => Child::new(&program),
+            "link" => Child::new(&program).link_then_run(),
+            _ => Child::repl(&format!("{program}(main)\n")),
+        };
+        child.env("CRANELISP_RC_DEC_CHECK", "1")
+    };
+    let pair = MarginalPair::new(
+        &format!("T-1063-b {primitive} {mode}"),
+        child(application(primitive)),
+        child(format!("(let [k {primitive}] {})", application("k"))),
+    )
+    .measure();
+    eprintln!("{}", pair.report());
+    for half in [pair.control(), pair.subject()] {
+        assert_eq!(
+            half.exit_code(),
+            Some(if mode == "repl" { 0 } else { 3 }),
+            "{}\n{}{}",
+            pair.report(),
+            half.stdout,
+            half.stderr
+        );
+        if mode == "repl" {
+            assert!(
+                half.stdout.contains(":primitives/Int 3"),
+                "{}{}",
+                half.stdout,
+                half.stderr
+            );
+        }
+        assert_eq!(
+            half.allocs,
+            half.deallocs,
+            "no-prelude direct/value heap payload must balance: {}",
+            pair.report()
+        );
+    }
+    pair.assert_balanced(
+        "the value wrapper must dispose the same heap payloads as the direct call",
+    );
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b bind: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_bind_run() {
+    s124_1063_heap_payload_balance("bind", "run");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b bind: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_bind_link() {
+    s124_1063_heap_payload_balance("bind", "link");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b bind: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_bind_repl() {
+    s124_1063_heap_payload_balance("bind", "repl");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b race: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_race_run() {
+    s124_1063_heap_payload_balance("race", "run");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b race: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_race_link() {
+    s124_1063_heap_payload_balance("race", "link");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b race: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_race_repl() {
+    s124_1063_heap_payload_balance("race", "repl");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b select: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_select_run() {
+    s124_1063_heap_payload_balance("select", "run");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b select: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_select_link() {
+    s124_1063_heap_payload_balance("select", "link");
+}
+
+// spec: spec/03-types.md §3.2.1; spec/12-runtime.md §12.3.1 — T-1063-b select: direct/value heap-payload balance
+#[test]
+fn s124_1063_balance_select_repl() {
+    s124_1063_heap_payload_balance("select", "repl");
+}
