@@ -1,6 +1,7 @@
 use super::*;
 use cranelisp_types::{
-    CallableOrigin, ConcreteType, MonoDefnVariant, MonoExpr, Realization, Scheme, Span, Visibility,
+    CallableOrigin, ConcreteType, DefnVariant, Expr, MonoDefnVariant, MonoExpr, Realization,
+    Scheme, Span, SynthSpec, TemplateBody, TemplateKind, Visibility,
 };
 use std::collections::HashMap;
 
@@ -83,6 +84,67 @@ fn register_product_named(
         Visibility::Public,
     )
     .expect("install product constructor fixture");
+    tables.insert(m, st);
+}
+
+/// [`register_product_named`] for a type declaring the parameters
+/// `type_vars`, in declaration order: its constructor is a template.
+fn register_parametric_product(
+    tables: &DashMap<ModuleFullPath, SymbolTable>,
+    module: &str,
+    name: &str,
+    type_vars: &[cranelisp_types::TypeId],
+    param_names: Vec<Symbol>,
+    field_types: Vec<Type>,
+) {
+    let m = ModuleFullPath::from(module);
+    let mut st = tables
+        .remove(&m)
+        .map(|(_, t)| t)
+        .unwrap_or_else(|| SymbolTable::new(m.clone()));
+    let adt = Type::ADT(
+        fqtn(module, name),
+        type_vars.iter().map(|&id| Type::Var(id)).collect(),
+    );
+    let type_def = cranelisp_types::TypeDefInfo {
+        name: fqtn(module, name),
+        type_params: type_vars
+            .iter()
+            .map(|id| Symbol::from(format!("t{id}")))
+            .collect(),
+        constructors: vec![Symbol::from(name)],
+    };
+    st.install_template(
+        Symbol::from(name),
+        Scheme {
+            type_vars: type_vars.to_vec(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(field_types.clone(), Box::new(adt)),
+        },
+        param_names,
+        None,
+        0,
+        CallableOrigin::Ctor {
+            type_name: fqtn(module, name),
+            tag: 0,
+            field_count: field_types.len(),
+            internal: false,
+            type_def: Some(Box::new(type_def)),
+        },
+        TemplateBody::Synth(SynthSpec::new(DefnVariant {
+            params: vec![],
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        })),
+        TemplateKind::Parametric,
+        vec![],
+        Visibility::Public,
+    )
+    .expect("install parametric product constructor fixture");
     tables.insert(m, st);
 }
 
@@ -206,37 +268,151 @@ fn platform_effect_roots_excludes_scalars() {
     );
 }
 
-// ── subst_for_ctor_fields: identity self-map elision (FIXME 0284) ──────────
+// ── ctor_field_types_at: pairing by declared parameter (ACT-1062) ──────────
 
-// A polymorphic type instantiated at its OWN residual type var produces a
-// positional mapping `{field_var -> Var(field_var)}` — the same id on both
-// sides. `cranelisp_types::apply` treats `{id -> Var(id)}` as an
-// occurs-check violation and `debug_assert!`-panics on it. The baker must
-// NOT emit that no-op mapping. This is the bake-side root of the trace
-// ADT-render crash (e.g. tracing `mk : (Fn [] (Option a))`).
-#[test]
-fn subst_skips_identity_self_map() {
-    // Option-shaped: None has no fields, Some has one field of type `a`
-    // (Var(0)). Instantiated at `[Var(0)]` — its own var.
-    let field_type_lists = vec![vec![], vec![Type::Var(0)]];
-    let subst = subst_for_ctor_fields(&field_type_lists, &[Type::Var(0)]);
-    assert!(
-        !subst.contains_key(&0),
-        "identity self-map {{0 -> Var(0)}} must be elided, not inserted: {subst:?}"
-    );
-    // And applying the (empty) subst to the field type must not panic and
-    // must leave the residual var intact (rendered bare downstream).
-    let resolved = cranelisp_types::apply(&subst, &Type::Var(0));
-    assert_eq!(resolved, Type::Var(0));
+fn adt(name: &str, args: Vec<Type>) -> Type {
+    Type::ADT(fqtn("user", name), args)
 }
 
-// A non-identity instantiation is still recorded (the elision is narrow:
-// only `{id -> Var(id)}` is skipped, concrete and cross-var maps stand).
+// spec: design/backend/trace-codegen.md §3 — `(deftype (P a b) (MkP [:b y
+//       :a x]))` at `(P Int String)`: `y` takes `b`'s argument and `x` takes
+//       `a`'s, whatever order the fields mention them in.
 #[test]
-fn subst_keeps_concrete_and_cross_var_maps() {
-    let field_type_lists = vec![vec![Type::Var(0)], vec![Type::Var(1)]];
-    // Var(0) -> Int (concrete), Var(1) -> Var(2) (cross-var, not identity).
-    let subst = subst_for_ctor_fields(&field_type_lists, &[Type::Int, Type::Var(2)]);
-    assert_eq!(subst.get(&0), Some(&Type::Int), "concrete map kept");
-    assert_eq!(subst.get(&1), Some(&Type::Var(2)), "cross-var map kept");
+fn ctor_fields_out_of_order_product_take_their_parameters_types() {
+    let (a, b) = (Type::Var(0), Type::Var(1));
+    let got = ctor_field_types_at(
+        &[b, a.clone()],
+        &[Type::Var(0), Type::Var(1)],
+        &[Type::Int, Type::String],
+    );
+    assert_eq!(got, Ok(vec![Type::String, Type::Int]));
+}
+
+// spec: design/backend/trace-codegen.md §3 — a sum whose constructors
+//       disagree on first appearance: each constructor's fields are decided
+//       by its own declared parameters, not by an order across constructors.
+#[test]
+fn ctor_fields_of_a_sum_are_decided_per_constructor() {
+    // (deftype (E a b) (L [:b l]) (R [:a r])) at (E Int String).
+    let params = [Type::Var(0), Type::Var(1)];
+    let args = [Type::Int, Type::String];
+    assert_eq!(
+        ctor_field_types_at(&[Type::Var(1)], &params, &args),
+        Ok(vec![Type::String]),
+        "L's field mentions b"
+    );
+    assert_eq!(
+        ctor_field_types_at(&[Type::Var(0)], &params, &args),
+        Ok(vec![Type::Int]),
+        "R's field mentions a"
+    );
+}
+
+// spec: design/backend/trace-codegen.md §3 — a parameter no field mentions
+//       does not shift the later pairings.
+#[test]
+fn ctor_fields_skip_an_unmentioned_parameter() {
+    // (deftype (R a b) (MkR [:b y])) at (R Int String) yields [String].
+    let got = ctor_field_types_at(
+        &[Type::Var(1)],
+        &[Type::Var(0), Type::Var(1)],
+        &[Type::Int, Type::String],
+    );
+    assert_eq!(got, Ok(vec![Type::String]));
+}
+
+// spec: design/backend/trace-codegen.md §3 — a nested field type is
+//       substituted throughout.
+#[test]
+fn ctor_fields_substitute_inside_a_nested_field_type() {
+    let got = ctor_field_types_at(
+        &[adt("Option", vec![Type::Var(1)])],
+        &[Type::Var(0), Type::Var(1)],
+        &[Type::Int, Type::String],
+    );
+    assert_eq!(got, Ok(vec![adt("Option", vec![Type::String])]));
+}
+
+// spec: design/backend/trace-codegen.md §3 — an argument count that differs
+//       from the declared count is a keying error.
+#[test]
+fn ctor_fields_refuse_an_argument_count_mismatch() {
+    let got = ctor_field_types_at(&[Type::Var(0)], &[Type::Var(0), Type::Var(1)], &[Type::Int]);
+    assert_eq!(
+        got,
+        Err(ParamPairingError::Arity {
+            declared: 2,
+            supplied: 1
+        })
+    );
+}
+
+// spec: design/backend/trace-codegen.md §3 — a declared parameter that is not
+//       a variable must equal its argument; equal passes, unequal is refused.
+#[test]
+fn ctor_fields_check_a_concrete_declared_parameter() {
+    let params = [Type::Int, Type::Var(1)];
+    assert_eq!(
+        ctor_field_types_at(&[Type::Var(1)], &params, &[Type::Int, Type::Bool]),
+        Ok(vec![Type::Bool])
+    );
+    assert_eq!(
+        ctor_field_types_at(&[Type::Var(1)], &params, &[Type::String, Type::Bool]),
+        Err(ParamPairingError::Mismatch { position: 0 })
+    );
+}
+
+// spec: design/backend/trace-codegen.md §3 — the identity elision of FIXME
+//       0284: a type instantiated at its own residual variable maps nothing,
+//       so `apply` never sees `{id -> Var(id)}` and the field stays residual.
+#[test]
+fn ctor_fields_elide_the_identity_pairing() {
+    // Option-shaped `Some` at `(Option a)` with `a` its own variable.
+    let got = ctor_field_types_at(&[Type::Var(0)], &[Type::Var(0)], &[Type::Var(0)]);
+    assert_eq!(got, Ok(vec![Type::Var(0)]));
+}
+
+// spec: design/backend/trace-codegen.md §3 — a pairing to another variable
+//       is kept; the elision is only the identity.
+#[test]
+fn ctor_fields_keep_a_cross_variable_pairing() {
+    let got = ctor_field_types_at(&[Type::Var(0)], &[Type::Var(0)], &[Type::Var(2)]);
+    assert_eq!(got, Ok(vec![Type::Var(2)]));
+}
+
+// spec: design/backend/trace-codegen.md §3 — the declared parameters are the
+//       arguments of the scheme's result ADT, for a data and a nullary
+//       constructor alike.
+#[test]
+fn declared_params_read_the_scheme_result() {
+    let result = adt("P", vec![Type::Var(0), Type::Var(1)]);
+    let data = Type::Fn(vec![Type::Var(1)], Box::new(result.clone()));
+    assert_eq!(declared_params(&data), &[Type::Var(0), Type::Var(1)]);
+    assert_eq!(declared_params(&result), &[Type::Var(0), Type::Var(1)]);
+    assert!(declared_params(&Type::Int).is_empty());
+}
+
+// spec: design/backend/trace-codegen.md §3 — the schema walk names each
+//       field with the argument of the parameter it mentions: `(P Int
+//       String)` for `(deftype (P a b) (P [:b y :a x]))` lists `y` as a
+//       String and `x` as an Int.
+#[test]
+fn schema_walk_pairs_an_out_of_order_product_by_declared_parameter() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    register_parametric_product(
+        &tables,
+        "shapes",
+        "P",
+        &[0, 1],
+        vec![Symbol::from("y"), Symbol::from("x")],
+        vec![Type::Var(1), Type::Var(0)],
+    );
+
+    let root = Type::ADT(fqtn("shapes", "P"), vec![Type::Int, Type::String]);
+    let text = generate_schema(&tables, &[root]);
+
+    assert!(
+        text.contains("(P 0 ((y primitives/String) (x primitives/Int)))"),
+        "fields take their declared parameters' arguments; got:\n{text}",
+    );
 }

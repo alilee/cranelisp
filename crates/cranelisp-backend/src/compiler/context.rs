@@ -46,6 +46,10 @@ pub(crate) struct CtorField {
 pub(crate) struct CtorMeta {
     pub tag: usize,
     pub fields: Vec<CtorField>,
+    /// The declared parameters of the type this constructor builds, in
+    /// declaration order: the arguments of its scheme's result ADT. A field
+    /// takes the argument of the parameter it mentions (ACT-1062).
+    pub params: Vec<Type>,
 }
 
 /// A constructor whose scheme supplies fewer field types than it declares
@@ -407,7 +411,15 @@ where
                     .take(*field_count)
                     .map(|ty| CtorField { ty: ty.clone() })
                     .collect();
-                Some(Ok((type_name.clone(), CtorMeta { tag: *tag, fields })))
+                let params = crate::schema::declared_params(&callable.arm.scheme.ty).to_vec();
+                Some(Ok((
+                    type_name.clone(),
+                    CtorMeta {
+                        tag: *tag,
+                        fields,
+                        params,
+                    },
+                )))
             }
             _ => None,
         }
@@ -582,7 +594,7 @@ fn keying_drift(detail: String) -> CranelispError {
 }
 
 /// [`keying_drift`] located at the reference that made the read.
-fn keying_drift_at(reference: Span, detail: String) -> CranelispError {
+pub(super) fn keying_drift_at(reference: Span, detail: String) -> CranelispError {
     CranelispError::CodegenError {
         message: format!("internal invariant violation (keying drift): {detail}"),
         location: ErrorLocation::from_span(reference),

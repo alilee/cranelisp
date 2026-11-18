@@ -21,9 +21,10 @@
 //!    **arena blob** matching the `DisplayDescriptor` ABI owned by
 //!    `cranelisp-intrinsics::trace` (FIXME 0254). The blob replaces the leaked
 //!    `Box<Type>` second arg to `cranelisp_trace_format`; the intrinsic walks it
-//!    with zero symbol-table access. Polymorphic ADT fields are baked after
-//!    substituting the call site's concrete type args (the same substitution
-//!    `src/display.rs::build_adt_subst` does — replicated here, not imported).
+//!    with zero symbol-table access. Polymorphic ADT fields are baked at the
+//!    call site's type args, each field taking the argument of the declared
+//!    parameter it mentions (`schema::ctor_field_types_at`, shared with the
+//!    platform schema walk).
 //!
 //! 3. **Both-modes emission.** The blob is emitted as a read-only data symbol
 //!    via `declare_anonymous_data` + `define_data`, then its address is
@@ -119,14 +120,12 @@
 //!    and who resolves the symbol (JITModule patch vs `ld`). There is no
 //!    JIT-only / object-only branch in this file.
 
-use std::collections::HashMap;
-
 use cranelift::codegen::ir::{StackSlotData, StackSlotKind};
 use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_intrinsics::trace::DescriptorKind;
-use cranelisp_types::{CranelispError, ErrorLocation, FQTypeName, MonoExpr, Span, Type, TypeId};
+use cranelisp_types::{CranelispError, ErrorLocation, FQTypeName, MonoExpr, Span, Type};
 
 use super::{FnCompiler, TracedFnInfo};
 
@@ -269,18 +268,6 @@ impl DescriptorBlob {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Concrete-type-arg substitution — the closure-walk substitution shared with
-// the platform schema generator (BC §3, platform-interface.md §6.0).
-//
-// The substitution primitives (`collect_var_ids`, `subst_for_ctor_fields`) live
-// once in `crate::schema` (their canonical home); this baker consumes them so
-// the walk is a single routine across the two emitters (the descriptor blob here
-// + the schema text there). The shared asset is the WALK, not the output form.
-// ════════════════════════════════════════════════════════════════════════════
-
-use crate::schema::subst_for_ctor_fields;
-
-// ════════════════════════════════════════════════════════════════════════════
 // Discovery — swap ALL symbol tables (S76 §5).
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -353,30 +340,6 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    /// Build a substitution from a polymorphic ADT's constructor-field type
-    /// vars to the call site's concrete `type_args`. Replicates
-    /// `src/display.rs::build_adt_subst`: collect the var ids used across the
-    /// type's constructor fields (in first-occurrence order) and map them
-    /// positionally to `type_args`.
-    fn build_adt_subst(
-        &self,
-        fqtn: &FQTypeName,
-        type_args: &[Type],
-    ) -> Result<HashMap<TypeId, Type>, CranelispError> {
-        let Some(type_def) = self.ctx.lookup_type_def(fqtn) else {
-            return Ok(HashMap::new());
-        };
-        let metas = self.ctx.constructor_metas(&type_def)?;
-        // Reuse the shared closure-walk substitution (canonical home
-        // `crate::schema`) so the baker and the schema generator compute the
-        // positional var→arg mapping identically.
-        let field_type_lists: Vec<Vec<Type>> = metas
-            .iter()
-            .map(|meta| meta.fields.iter().map(|f| f.ty.clone()).collect())
-            .collect();
-        Ok(subst_for_ctor_fields(&field_type_lists, type_args))
-    }
-
     /// Bake a single type's display descriptor into `blob`, returning the byte
     /// offset of the descriptor record (the blob root for that type).
     ///
@@ -393,6 +356,7 @@ where
         memo: &mut BakeMemo,
         ty: &Type,
         depth: usize,
+        span: Span,
     ) -> Result<usize, CranelispError> {
         if depth >= MAX_DESCRIPTOR_DEPTH {
             let d = blob.reserve_desc();
@@ -446,9 +410,9 @@ where
                 }
                 memo.in_progress.push(ty.clone());
                 let off = if fqtn.name.as_ref() == "Vec" {
-                    self.bake_vec(blob, memo, type_args.first(), depth)?
+                    self.bake_vec(blob, memo, type_args.first(), depth, span)?
                 } else {
-                    self.bake_adt(blob, memo, fqtn, type_args, depth)?
+                    self.bake_adt(blob, memo, fqtn, type_args, depth, span)?
                 };
                 memo.in_progress.retain(|t| t != ty);
                 memo.done.push((ty.clone(), off));
@@ -464,11 +428,12 @@ where
         memo: &mut BakeMemo,
         elem: Option<&Type>,
         depth: usize,
+        span: Span,
     ) -> Result<usize, CranelispError> {
         let root = blob.reserve_desc();
         blob.set_kind(root, DescriptorKind::Vec);
         if let Some(elem_ty) = elem {
-            let child = self.bake_descriptor(blob, memo, elem_ty, depth + 1)?;
+            let child = self.bake_descriptor(blob, memo, elem_ty, depth + 1, span)?;
             blob.set_self_rel(root + OFF_CHILD0, child);
         }
         Ok(root)
@@ -487,6 +452,7 @@ where
         fqtn: &FQTypeName,
         type_args: &[Type],
         depth: usize,
+        span: Span,
     ) -> Result<usize, CranelispError> {
         let root = blob.reserve_desc();
         blob.set_kind(root, DescriptorKind::Adt);
@@ -507,9 +473,6 @@ where
                 .map(|c| c.as_ref() == type_name)
                 .unwrap_or(false);
 
-        // Concrete-type substitution for polymorphic fields.
-        let subst = self.build_adt_subst(fqtn, type_args)?;
-
         // Bake child field descriptors FIRST (so their offsets exist), tracking
         // per-constructor (tag, ctor_name, Vec<field_desc_off>).
         struct CtorBake {
@@ -519,10 +482,21 @@ where
         }
         let mut ctor_bakes: Vec<CtorBake> = Vec::with_capacity(metas.len());
         for (ctor_name, meta) in type_def.constructors.iter().zip(metas.iter()) {
-            let mut field_descs = Vec::with_capacity(meta.fields.len());
-            for field in &meta.fields {
-                let concrete = cranelisp_types::apply(&subst, &field.ty);
-                let fd = self.bake_descriptor(blob, memo, &concrete, depth + 1)?;
+            let declared: Vec<Type> = meta.fields.iter().map(|f| f.ty.clone()).collect();
+            let field_types = crate::schema::ctor_field_types_at(
+                &declared,
+                &meta.params,
+                type_args,
+            )
+            .map_err(|refusal| {
+                super::context::keying_drift_at(
+                    span,
+                    format!("trace descriptor for constructor '{fqtn}.{ctor_name}': {refusal}"),
+                )
+            })?;
+            let mut field_descs = Vec::with_capacity(field_types.len());
+            for field_ty in &field_types {
+                let fd = self.bake_descriptor(blob, memo, field_ty, depth + 1, span)?;
                 field_descs.push(fd);
             }
             ctor_bakes.push(CtorBake {
@@ -611,9 +585,9 @@ where
         let mut memo = BakeMemo::new();
         let mut param_roots = Vec::with_capacity(tf.param_types.len());
         for pty in &tf.param_types {
-            param_roots.push(self.bake_descriptor(&mut blob, &mut memo, pty, 0)?);
+            param_roots.push(self.bake_descriptor(&mut blob, &mut memo, pty, 0, span)?);
         }
-        let result_root = self.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0)?;
+        let result_root = self.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0, span)?;
 
         // Read-only, non-thread-local anonymous data.
         let data_id = self

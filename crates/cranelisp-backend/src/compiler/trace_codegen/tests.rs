@@ -566,16 +566,14 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
     );
 }
 
-/// Drive `bake_descriptor_blob` for a `TracedFnInfo` whose param/result is
-/// the recursive `IntList` ADT through a real (throwaway) `FnCompiler` over
-/// a JIT module, returning the emitted blob's byte length and descriptor
-/// record count.
-fn bake_recursive_intlist_blob_size() -> (usize, usize) {
+/// Run `body` against a real (throwaway) `FnCompiler` over a JIT module whose
+/// context reads `tables` as module `user`.
+fn with_bake_compiler<R>(
+    tables: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+    body: impl FnOnce(&mut crate::compiler::FnCompiler<'_, cranelift_jit::JITModule, (), ()>) -> R,
+) -> R {
     use cranelift::codegen::ir::{Function, UserFuncName};
     use cranelift::prelude::*;
-
-    let (tables, intlist_ty) = recursive_intlist_tables();
-    let module_path = ModuleFullPath::from("user");
 
     let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
     let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
@@ -586,8 +584,8 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     let ctx = crate::compiler::CompileContext {
         func_ids: &func_ids,
         func_arities: &func_arities,
-        symbol_tables: &tables,
-        current_module: module_path.clone(),
+        symbol_tables: tables,
+        current_module: ModuleFullPath::from("user"),
         alloc_func_id: intrinsic_ids.alloc,
         dealloc_func_id: intrinsic_ids.dealloc.unwrap(),
         alloc_string_func_id: intrinsic_ids.alloc_string,
@@ -616,46 +614,102 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
         1,
         crate::compiler::ownership_plan::OwnershipPlan::default(),
     );
+    body(&mut compiler)
+}
 
-    let tf = TracedFnInfo {
-        name: "user/sum".to_string(),
-        module_path,
-        got_slot: 0,
-        arity: 1,
-        param_types: vec![intlist_ty.clone()],
-        result_type: intlist_ty,
+/// Drive `bake_descriptor_blob` for a `TracedFnInfo` whose param/result is
+/// the recursive `IntList` ADT, returning the emitted blob's byte length and
+/// descriptor record count.
+fn bake_recursive_intlist_blob_size() -> (usize, usize) {
+    let (tables, intlist_ty) = recursive_intlist_tables();
+    let module_path = ModuleFullPath::from("user");
+    with_bake_compiler(&tables, |compiler| {
+        let tf = TracedFnInfo {
+            name: "user/sum".to_string(),
+            module_path,
+            got_slot: 0,
+            arity: 1,
+            param_types: vec![intlist_ty.clone()],
+            result_type: intlist_ty,
+        };
+
+        // Bake via the production path; then re-bake the same type set into a
+        // standalone blob to count records (the production blob is consumed by
+        // define_data, so re-run bake_descriptor for the count).
+        let _set = compiler
+            .bake_descriptor_blob(&tf, cranelisp_types::Span::SYNTHETIC)
+            .expect("bake_descriptor_blob");
+
+        // Re-bake into a standalone DescriptorBlob to measure size + record count.
+        let mut blob = DescriptorBlob::new();
+        let mut memo = BakeMemo::new();
+        let p = compiler
+            .bake_descriptor(
+                &mut blob,
+                &mut memo,
+                &tf.param_types[0],
+                0,
+                cranelisp_types::Span::SYNTHETIC,
+            )
+            .expect("bake param");
+        let _r = compiler
+            .bake_descriptor(
+                &mut blob,
+                &mut memo,
+                &tf.result_type,
+                0,
+                cranelisp_types::Span::SYNTHETIC,
+            )
+            .expect("bake result");
+        // `done` records one entry per distinct ADT baked (Int/Bool/etc are not
+        // memoized — only compound ADT/Vec types are). For IntList the distinct
+        // ADT set is {IntList} ⇒ exactly one done-entry, and the param + result
+        // (both IntList) SHARE it (DAG).
+        assert_eq!(
+            memo.done.len(),
+            1,
+            "exactly one distinct ADT baked (IntList)"
+        );
+        assert_eq!(
+            p, _r,
+            "param and result are the same type ⇒ DAG-shared (same blob offset)"
+        );
+        (blob.buf.len(), memo.done.len())
+    })
+}
+
+// spec: design/backend/trace-codegen.md §3 — the baker turns a type whose
+//       arguments do not pair with its constructors' declared parameters into
+//       a keying error located at the trace form, not a mis-typed descriptor.
+#[test]
+fn bake_refuses_an_instantiation_whose_arguments_do_not_pair() {
+    let (tables, _) = recursive_intlist_tables();
+    let fqtn = cranelisp_types::FQTypeName {
+        module: ModuleFullPath::from("user"),
+        name: cranelisp_types::TypeName::from("IntList"),
     };
-
-    // Bake via the production path; then re-bake the same type set into a
-    // standalone blob to count records (the production blob is consumed by
-    // define_data, so re-run bake_descriptor for the count).
-    let _set = compiler
-        .bake_descriptor_blob(&tf, cranelisp_types::Span::SYNTHETIC)
-        .expect("bake_descriptor_blob");
-
-    // Re-bake into a standalone DescriptorBlob to measure size + record count.
-    let mut blob = DescriptorBlob::new();
-    let mut memo = BakeMemo::new();
-    let p = compiler
-        .bake_descriptor(&mut blob, &mut memo, &tf.param_types[0], 0)
-        .expect("bake param");
-    let _r = compiler
-        .bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0)
-        .expect("bake result");
-    // `done` records one entry per distinct ADT baked (Int/Bool/etc are not
-    // memoized — only compound ADT/Vec types are). For IntList the distinct
-    // ADT set is {IntList} ⇒ exactly one done-entry, and the param + result
-    // (both IntList) SHARE it (DAG).
-    assert_eq!(
-        memo.done.len(),
-        1,
-        "exactly one distinct ADT baked (IntList)"
+    // `IntList` declares no parameter; one argument is an arity mismatch.
+    let mis_instantiated = Type::ADT(fqtn, vec![Type::Int]);
+    let span = cranelisp_types::Span::new(7, 19);
+    let err = with_bake_compiler(&tables, |compiler| {
+        let mut blob = DescriptorBlob::new();
+        let mut memo = BakeMemo::new();
+        compiler
+            .bake_descriptor(&mut blob, &mut memo, &mis_instantiated, 0, span)
+            .expect_err("an unpairable instantiation is refused")
+    });
+    let CranelispError::CodegenError { message, location } = err else {
+        panic!("expected a codegen error, got {err:?}");
+    };
+    assert!(
+        message.contains("keying drift") && message.contains("user/IntList.Nil"),
+        "names the constructor and the keying class: {message}"
     );
     assert_eq!(
-        p, _r,
-        "param and result are the same type ⇒ DAG-shared (same blob offset)"
+        format!("{location:?}"),
+        format!("{:?}", ErrorLocation::from_span(span)),
+        "located at the trace form"
     );
-    (blob.buf.len(), memo.done.len())
 }
 
 #[test]

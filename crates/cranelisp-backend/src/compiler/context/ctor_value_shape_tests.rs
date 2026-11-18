@@ -19,6 +19,7 @@ fn meta(field_count: usize) -> CtorMeta {
         fields: (0..field_count)
             .map(|_| CtorField { ty: Type::Int })
             .collect(),
+        params: Vec::new(),
     }
 }
 

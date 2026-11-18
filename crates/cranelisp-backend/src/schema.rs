@@ -33,9 +33,9 @@
 //! lifetime). Forcing one serialization on two consumers that legitimately
 //! differ would over-couple them (Principle 6).
 //!
-//! This module is the canonical home of the substitution primitives
-//! (`collect_var_ids`, `subst_for_ctor_fields`); `trace_codegen` consumes them
-//! through these `pub(crate)` re-exports so the walk lives once.
+//! This module is the home of the shared rule that types a constructor's
+//! fields at an instantiation ([`ctor_field_types_at`]); `trace_codegen`
+//! consumes it so the rule lives once.
 //!
 //! # One generator, multiple callers
 //!
@@ -56,83 +56,82 @@ use std::collections::BTreeMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CallableOrigin, FQTypeName, ModuleFullPath, Subst, Symbol, SymbolTable, Type, TypeId, apply,
+    CallableOrigin, FQTypeName, ModuleFullPath, Subst, Symbol, SymbolTable, Type, apply,
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// Substitution primitives — shared with the trace DisplayDescriptor baker.
+// Constructor field types at an instantiation — shared with the trace
+// DisplayDescriptor baker.
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Collect unique `Type::Var` ids from a type in order of first occurrence.
-///
-/// Canonical home of the substitution helper the trace baker also needs
-/// (`trace_codegen` re-uses it via the `pub(crate)` export); kept here so the
-/// closure-walk substitution lives once (BC §3, platform-interface.md §6.0).
-pub(crate) fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
-    match ty {
-        Type::Var(id) => {
-            if !ids.contains(id) {
-                ids.push(*id);
-            }
+/// Why a constructor's declared parameters cannot be paired with an
+/// instantiation's type arguments. Either is a keying error: typecheck never
+/// produces such an instantiation of a well-formed constructor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParamPairingError {
+    Arity { declared: usize, supplied: usize },
+    Mismatch { position: usize },
+}
+
+impl std::fmt::Display for ParamPairingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParamPairingError::Arity { declared, supplied } => write!(
+                f,
+                "the type declares {declared} parameter(s) but is instantiated at {supplied}"
+            ),
+            ParamPairingError::Mismatch { position } => write!(
+                f,
+                "the declared parameter at position {position} is not a variable and differs from its argument"
+            ),
         }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_var_ids(p, ids);
-            }
-            collect_var_ids(ret, ids);
-        }
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
-            for a in args {
-                collect_var_ids(a, ids);
-            }
-        }
-        Type::Int | Type::Bool | Type::String | Type::Float => {}
     }
 }
 
-/// Build the positional substitution from a polymorphic type's
-/// constructor-field type vars to a call/instantiation site's concrete
-/// `type_args`.
-///
-/// Collects the var ids used across the type's constructor fields (in
-/// first-occurrence order) and maps them positionally to `type_args` — the same
-/// rule `trace_codegen::build_adt_subst` and `src/display.rs::build_adt_subst`
-/// use. `field_type_lists` is the per-constructor field-type lists of the type
-/// being instantiated.
-pub(crate) fn subst_for_ctor_fields(field_type_lists: &[Vec<Type>], type_args: &[Type]) -> Subst {
-    let mut var_ids = Vec::new();
-    for fields in field_type_lists {
-        for ty in fields {
-            collect_var_ids(ty, &mut var_ids);
-        }
+/// The declared parameters of the type a constructor builds: the arguments of
+/// its scheme's result ADT (`Fn(fields, ADT(name, params))`, or a bare
+/// `ADT(name, params)` when nullary). Empty for a scheme of any other shape.
+pub(crate) fn declared_params(scheme: &Type) -> &[Type] {
+    let result = match scheme {
+        Type::Fn(_, ret) => ret.as_ref(),
+        other => other,
+    };
+    match result {
+        Type::ADT(_, params) => params,
+        _ => &[],
+    }
+}
+
+/// One constructor's field types at an instantiation: each type argument is
+/// paired with the declared parameter in its position (ACT-1062), the rule
+/// `cranelisp_types::ctor_field_types_at` applies over concrete types. Shared
+/// by the trace descriptor baker and the schema walk.
+pub(crate) fn ctor_field_types_at(
+    fields: &[Type],
+    params: &[Type],
+    args: &[Type],
+) -> Result<Vec<Type>, ParamPairingError> {
+    if params.len() != args.len() {
+        return Err(ParamPairingError::Arity {
+            declared: params.len(),
+            supplied: args.len(),
+        });
     }
     let mut subst = Subst::new();
-    for (i, &id) in var_ids.iter().enumerate() {
-        if let Some(arg) = type_args.get(i) {
-            // Skip an identity self-mapping `{id -> Var(id)}`. It carries no
-            // information (substituting a var for itself is a no-op), but
-            // `cranelisp_types::apply` treats `{id -> Var(id)}` as an
-            // occurs-check violation and `debug_assert!`-panics on it (a panic
-            // that, when this baker runs on a `nice-worker` thread, aborts the
-            // process — observed as the trace ADT-render crash, FIXME 0284).
-            //
-            // This arises whenever a polymorphic type is instantiated at its
-            // own residual type vars — e.g. tracing `mk : (Fn [] (Option a))`
-            // where `a` is unconstrained: the call-site `type_args` for the
-            // result `(Option a)` is `[Var(a)]`, and the positional mapping is
-            // `{ctor_field_var -> Var(a)}` with the same id on both sides.
-            // Omitting the no-op keeps `apply` bounded and the field type
-            // resolves to the residual `TypeVar` descriptor (rendered bare),
-            // which is the correct fallback for an un-instantiated field.
-            if let Type::Var(arg_id) = arg
-                && *arg_id == id
-            {
-                continue;
+    for (position, (param, arg)) in params.iter().zip(args).enumerate() {
+        match param {
+            // `apply` treats `{id -> Var(id)}` as an occurs-check violation and
+            // panics on it (FIXME 0284): a type instantiated at its own residual
+            // variable maps nothing, and the field stays residual.
+            Type::Var(id) if *arg == Type::Var(*id) => {}
+            Type::Var(id) => {
+                subst.insert(*id, arg.clone());
             }
-            subst.insert(id, arg.clone());
+            declared if declared == arg => {}
+            _ => return Err(ParamPairingError::Mismatch { position }),
         }
     }
-    subst
+    Ok(fields.iter().map(|ty| apply(&subst, ty)).collect())
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -151,9 +150,10 @@ struct WalkedCtor {
 }
 
 /// Read a type's constructors (named + typed fields) from the symbol tables,
-/// applying `subst` to each field type. Returns `None` if the type def is not
-/// found (the caller treats it as a leaf — its layout is the ABI or it is
-/// unresolved).
+/// each field typed at `type_args` by [`ctor_field_types_at`]. Returns `None`
+/// if the type def is not found or a constructor's parameters do not pair
+/// with `type_args` (the caller treats it as a leaf; a keying miss yields a
+/// wrong layout hash, which the DLL load refuses).
 ///
 /// Constructors are uniformly `ModuleEntry::Def { kind: DefKind::Constructor {
 /// tag, field_count, .. }, param_names, scheme }` — field names from
@@ -183,16 +183,7 @@ where
     let info = type_entry.type_def_info()?.clone();
     drop(table);
 
-    // Gather per-constructor (name, tag, field (name, ty)) lists.
-    // First pass collects raw (pre-subst) field-type lists so we can build the
-    // positional substitution across ALL constructors (matching the baker).
-    struct Raw {
-        name: Symbol,
-        tag: usize,
-        field_names: Vec<Symbol>,
-        field_types: Vec<Type>,
-    }
-    let mut raws: Vec<Raw> = Vec::with_capacity(info.constructors.len());
+    let mut ctors: Vec<WalkedCtor> = Vec::with_capacity(info.constructors.len());
 
     let table = symbol_tables.get(&fqtn.module)?;
     for ctor_name in &info.constructors {
@@ -219,12 +210,15 @@ where
                 tag, field_count, ..
             } = &callable.origin
         {
-            // Sum/enum constructor Def: names from param_names, types from
-            // the scheme's Fn params (nullary → no Fn → empty).
-            let field_types: Vec<Type> = match &callable.arm.scheme.ty {
-                Type::Fn(params, _) => params.clone(),
-                _ => Vec::new(),
+            // Names from param_names, types from the scheme's Fn params
+            // (nullary → no Fn → empty).
+            let scheme = &callable.arm.scheme.ty;
+            let declared_fields: &[Type] = match scheme {
+                Type::Fn(params, _) => params,
+                _ => &[],
             };
+            let field_types =
+                ctor_field_types_at(declared_fields, declared_params(scheme), type_args).ok()?;
             let names: Vec<Symbol> = (0..*field_count)
                 .map(|i| {
                     callable
@@ -235,33 +229,13 @@ where
                         .unwrap_or_else(|| Symbol::from(format!("_{i}")))
                 })
                 .collect();
-            raws.push(Raw {
+            ctors.push(WalkedCtor {
                 name: ctor_name.clone(),
                 tag: *tag,
-                field_names: names,
-                field_types,
+                fields: names.into_iter().zip(field_types).collect(),
             });
         }
     }
-    drop(table);
-
-    // Build the positional subst from ALL constructors' field-var ids → args.
-    let field_type_lists: Vec<Vec<Type>> = raws.iter().map(|r| r.field_types.clone()).collect();
-    let subst = subst_for_ctor_fields(&field_type_lists, type_args);
-
-    let ctors = raws
-        .into_iter()
-        .map(|r| WalkedCtor {
-            name: r.name,
-            tag: r.tag,
-            fields: r
-                .field_names
-                .into_iter()
-                .zip(r.field_types.iter())
-                .map(|(n, ty)| (n, apply(&subst, ty)))
-                .collect(),
-        })
-        .collect();
     Some(ctors)
 }
 
