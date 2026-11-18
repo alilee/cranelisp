@@ -15,6 +15,23 @@ fn test_rc_trace_enabled_default_false() {
     let _ = is_rc_trace_enabled();
 }
 
+// spec: 12-runtime §12.3.2 — RC underflow panics on zero (debug assertions)
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "RC underflow")]
+fn test_underflow_check_panics_on_zero() {
+    rc_underflow_check(0x1234, 0);
+}
+
+// spec: 12-runtime §12.3.2 — RC underflow check passes on positive count
+#[cfg(debug_assertions)]
+#[test]
+fn test_underflow_check_ok_on_positive() {
+    // Should not panic when old_rc > 0.
+    rc_underflow_check(0x1234, 1);
+    rc_underflow_check(0x1234, 5);
+}
+
 // spec: 12-runtime §12.3.2 — A1 (safety-invariants §4 R8): rc_inc fires the
 // stale-inc liveness assert at the offending inc of a freed pointer (the
 // inc-half of the FIXME-0494 dec-half check). Debug-only; nextest runs each

@@ -149,6 +149,12 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             extern "C" fn(*const u8, usize) -> !,
             runtime: true
         ),
+        catalog_row!(
+            "runtime/rc_underflow_check",
+            crate::rc::rc_underflow_check,
+            extern "C-unwind" fn(i64, i64) -> i64,
+            runtime: true
+        ),
         // Emitted before each inline dec only under the codegen-time
         // `CRANELISP_RC_DEC_CHECK` gate; registered unconditionally so the symbol
         // resolves when the gate is on (FIXME 0494).
@@ -194,6 +200,12 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             "runtime/alloc_string",
             crate::heap_string::heap_alloc_string,
             extern "C" fn(*const u8, i64) -> i64,
+            runtime: true
+        ),
+        catalog_row!(
+            "runtime/string_read",
+            crate::heap_string::string_read,
+            extern "C" fn(i64, *mut *const u8, *mut i64),
             runtime: true
         ),
         catalog_row!(

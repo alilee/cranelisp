@@ -2,9 +2,9 @@
 //!
 //! `HeapString` layout is owned by this crate. The backend treats strings as
 //! opaque heap pointers — all heap-layout knowledge lives here. This module
-//! holds the **backend-emitted-call target** `runtime/alloc_string`, the
-//! Rust-path reader `string_read`, and the `HeapString` layout type. The
-//! user-callable string operations (`str-concat`, `str-len`,
+//! holds the **backend-emitted-call targets** for the runtime/string family:
+//! `runtime/alloc_string`, `runtime/string_read`, and the `HeapString` layout
+//! type. The user-callable string operations (`str-concat`, `str-len`,
 //! `substring`, …) physically live in `cranelisp-primitives::string`
 //! (FIXME 0180 close, Sprint 67 Wave 3).
 //!
@@ -134,8 +134,9 @@ pub extern "C" fn heap_alloc_string(bytes_ptr: *const u8, byte_len: i64) -> i64 
 /// Read a string's bytes for display/formatting. Writes pointer and length
 /// to the provided out-parameters.
 ///
-/// A Rust-path operation for the binary's value formatter. No emitted code
-/// calls it, so it has no catalog row and no exported symbol name.
+/// Used by the binary crate's ValueFormatter — NOT called from JIT code
+/// directly (its JIT name `runtime/string_read` is reserved for future use).
+#[unsafe(export_name = "runtime/string_read")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn string_read(s: i64, out_ptr: *mut *const u8, out_len: *mut i64) {
     // SAFETY: `s` is a valid HeapString base pointer; out_ptr/out_len are valid.
