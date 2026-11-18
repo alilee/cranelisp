@@ -2571,7 +2571,7 @@ impl CompilerSession {
         self.validate_entry_main(&ModuleFullPath::from(module_name))?;
         // §16.6: refuse a program that references `discover-tests` before any
         // of it runs (`design/int/test-runner.md` §7.3).
-        crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
+        self.refuse_dev_session_externs()?;
 
         // Look up main's compiled code on its symbol-table entry (G6). ONE read
         // yields the callable address, the declared result type, AND the code
@@ -2644,6 +2644,22 @@ impl CompilerSession {
                 unreachable!("invariant: batch registration resolved the entry module's file")
             });
         crate::exe::validate_main(table.as_deref(), &dispatch, main_origin, &entry_file)
+    }
+
+    /// The §16.6 batch refusal of a dev-session-only extern, located through
+    /// the session's definition origins and each module's file
+    /// (`design/int/test-runner.md` §7.3).
+    pub(crate) fn refuse_dev_session_externs(&self) -> Result<(), CranelispError> {
+        crate::exe::refuse_dev_session_externs(
+            &self.shared.symbol_tables,
+            &self.shared.definition_origins,
+            |module| {
+                self.shared
+                    .typecheck_products
+                    .get(module)
+                    .and_then(|product| product.file_path.clone())
+            },
+        )
     }
 
     /// One read of the entry module's `main` entry, yielding everything the
@@ -3113,7 +3129,7 @@ impl CompilerSession {
         self.validate_entry_main(&module)?;
         // §16.6: refuse a program that references `discover-tests` before
         // anything is written (`design/int/test-runner.md` §7.3).
-        crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
+        self.refuse_dev_session_externs()?;
         Ok(self.link_accepted_entry(&module, module_name, output_override)?)
     }
 

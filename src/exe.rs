@@ -701,9 +701,12 @@ pub fn first_dispatch_within(
 /// and is never rejected here.
 ///
 /// Bodies restored from the module cache are scanned too: a restored entry
-/// keeps its `ast`.
+/// keeps its `ast`, whose declaration span locates the refusal where the
+/// restore recorded no definition origin.
 pub(crate) fn refuse_dev_session_externs(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    definition_origins: &dashmap::DashMap<FQSymbol, Span>,
+    module_file: impl Fn(&ModuleFullPath) -> Option<std::path::PathBuf>,
 ) -> Result<(), CranelispError> {
     // Is FQ `fq` a dev-session-only `PrimitiveExtern` (the structural
     // confirmation: named in the single-source list AND its home entry really is
@@ -720,10 +723,10 @@ pub(crate) fn refuse_dev_session_externs(
             })
     };
 
+    let mut named: Option<DevSessionReference> = None;
     for st_entry in symbol_tables.iter() {
         let module = st_entry.key();
-        let st = st_entry.value();
-        for (caller, entry) in st.all_symbols() {
+        for (caller, entry) in st_entry.value().all_symbols() {
             if let Some(callable) = entry.callable()
                 && let Life::Concrete {
                     ast: Some(variant), ..
@@ -733,27 +736,83 @@ pub(crate) fn refuse_dev_session_externs(
                     &resolves_to_dev_session_extern,
                 )
             {
-                return Err(dev_session_extern_error(&sym, module, caller));
+                let function = FQSymbol {
+                    module: module.clone(),
+                    symbol: caller.clone(),
+                };
+                let span = definition_origins
+                    .get(&function)
+                    .map(|origin| *origin)
+                    .or((variant.span != Span::SYNTHETIC).then_some(variant.span));
+                let candidate = DevSessionReference {
+                    function,
+                    span,
+                    sym,
+                };
+                if named.as_ref().is_none_or(|best| candidate.precedes(best)) {
+                    named = Some(candidate);
+                }
             }
         }
     }
-    Ok(())
+    match named {
+        None => Ok(()),
+        Some(reference) => {
+            let file = module_file(&reference.function.module);
+            Err(dev_session_extern_error(&reference, file))
+        }
+    }
+}
+
+/// One function body's reference to a dev-session-only extern, with the
+/// written form that defined the function when one is known.
+struct DevSessionReference {
+    function: FQSymbol,
+    span: Option<Span>,
+    sym: cranelisp_types::Symbol,
+}
+
+impl DevSessionReference {
+    /// The refusal names one function whatever the table order: a located
+    /// candidate before an unlocated one, then the first by module path, then
+    /// the earliest origin in that module (`design/int/test-runner.md` §7.3).
+    fn precedes(&self, other: &Self) -> bool {
+        let key = |r: &Self| {
+            (
+                r.span.is_none(),
+                r.function.module.clone(),
+                r.span.map(|span| span.start),
+                r.function.symbol.clone(),
+            )
+        };
+        key(self) < key(other)
+    }
 }
 
 /// The one §16.6 refusal: the primitive, one referencing function, the REPL
 /// as where it is available and `--test` as the way to run the tests.
+/// Located at the referencing function's written form in its module's file;
+/// an unlocated function keeps the synthetic location (§7.3, Residual).
 fn dev_session_extern_error(
-    sym: &cranelisp_types::Symbol,
-    module: &ModuleFullPath,
-    caller: &cranelisp_types::Symbol,
+    reference: &DevSessionReference,
+    module_file: Option<std::path::PathBuf>,
 ) -> CranelispError {
+    let DevSessionReference {
+        function: FQSymbol { module, symbol },
+        span,
+        sym,
+    } = reference;
+    let location = match span {
+        Some(span) => ErrorLocation::from_span_file(*span, module_file),
+        None => ErrorLocation::from_span(Span::SYNTHETIC),
+    };
     CranelispError::CodegenError {
         message: format!(
-            "`{module}/{caller}` references `{sym}`, which is available only in the \
+            "`{module}/{symbol}` references `{sym}`, which is available only in the \
              REPL. Remove the reference; to have the compiler discover and run the \
              program's tests, use `cranelisp --test`.",
         ),
-        location: ErrorLocation::from_span(Span::SYNTHETIC),
+        location,
     }
 }
 
@@ -1303,6 +1362,17 @@ mod tests {
         ty: Type,
         body: Expr,
     ) {
+        install_user_fn_declared_at(table, name, ty, body, Span::SYNTHETIC);
+    }
+
+    /// A user function whose declaration (its `DefnVariant`) spans `declared`.
+    fn install_user_fn_declared_at(
+        table: &mut crate::code::SessionSymbolTable,
+        name: &str,
+        ty: Type,
+        body: Expr,
+        declared: Span,
+    ) {
         let param_count = match &ty {
             Type::Fn(params, _) => params.len(),
             _ => 0,
@@ -1313,7 +1383,7 @@ mod tests {
         let variant = DefnVariant {
             params: params.clone(),
             body,
-            span: Span::SYNTHETIC,
+            span: declared,
         };
         let mono_body = cranelisp_types::MonoExpr::lenient_from_expr(
             &variant.body,
@@ -2007,7 +2077,8 @@ mod tests {
         install_user_fn_with_body(&mut runner, "run-all", body);
         tables.insert(ModuleFullPath::from("runner"), runner);
 
-        let err = refuse_dev_session_externs(&tables).unwrap_err();
+        let err =
+            refuse_dev_session_externs(&tables, &dashmap::DashMap::new(), |_| None).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 for token in ["discover-tests", "runner/run-all", "REPL", "--test"] {
@@ -2063,7 +2134,7 @@ mod tests {
         );
         tables.insert(ModuleFullPath::from("runner"), runner);
         assert!(
-            refuse_dev_session_externs(&tables).is_ok(),
+            refuse_dev_session_externs(&tables, &dashmap::DashMap::new(), |_| None).is_ok(),
             "an unused import of discover-tests does not drag it into the link"
         );
     }
@@ -2099,7 +2170,8 @@ mod tests {
         install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
 
-        let err = refuse_dev_session_externs(&tables).unwrap_err();
+        let err =
+            refuse_dev_session_externs(&tables, &dashmap::DashMap::new(), |_| None).unwrap_err();
         assert!(
             matches!(&err, CranelispError::CodegenError { message, .. } if message.contains("discover-tests")),
             "FQ body reference must be rejected naming the symbol: {err:?}"
@@ -2134,7 +2206,7 @@ mod tests {
         install_user_fn_with_body(&mut safe, "guarded", body);
         tables.insert(ModuleFullPath::from("safe"), safe);
         assert!(
-            refuse_dev_session_externs(&tables).is_ok(),
+            refuse_dev_session_externs(&tables, &dashmap::DashMap::new(), |_| None).is_ok(),
             "an extern that links must not be rejected"
         );
     }
@@ -2164,7 +2236,7 @@ mod tests {
         install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
         assert!(
-            refuse_dev_session_externs(&tables).is_ok(),
+            refuse_dev_session_externs(&tables, &dashmap::DashMap::new(), |_| None).is_ok(),
             "a user FQ symbol (user/discover-tests, a UserFn) is not a dev-session extern"
         );
     }
@@ -2191,6 +2263,149 @@ mod tests {
             crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         install_user_fn_with_body(&mut user, "main", body);
         tables.insert(ModuleFullPath::from("user"), user);
-        assert!(refuse_dev_session_externs(&tables).is_ok());
+        assert!(refuse_dev_session_externs(&tables, &dashmap::DashMap::new(), |_| None).is_ok());
+    }
+
+    /// `(discover-tests [])`, the body of every referencing fixture below.
+    fn discover_tests_call() -> Expr {
+        Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("discover-tests"), Span::SYNTHETIC)),
+            args: vec![Expr::VecLit {
+                elements: vec![],
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            }],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        }
+    }
+
+    /// Install into `tables` a module `module` whose functions `(name,
+    /// declared)` each call `discover-tests`, beside the `primitives` table.
+    fn referencing_module(
+        tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+        module: &str,
+        functions: &[(&str, Span)],
+    ) {
+        let mut table =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from(module));
+        for (name, declared) in functions {
+            install_user_fn_declared_at(
+                &mut table,
+                name,
+                Type::Fn(vec![], Box::new(Type::Int)),
+                discover_tests_call(),
+                *declared,
+            );
+        }
+        tables.insert(ModuleFullPath::from(module), table);
+    }
+
+    fn fq(module: &str, symbol: &str) -> FQSymbol {
+        FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(symbol),
+        }
+    }
+
+    fn module_file(module: &ModuleFullPath) -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from(format!("/proj/{module}.cl")))
+    }
+
+    fn refusal(
+        tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+        origins: &dashmap::DashMap<FQSymbol, Span>,
+    ) -> (String, ErrorLocation) {
+        match refuse_dev_session_externs(tables, origins, module_file) {
+            Err(CranelispError::CodegenError { message, location }) => (message, location),
+            other => panic!("expected the §16.6 refusal, got {other:?}"),
+        }
+    }
+
+    // spec: repl/spec/05-error-presentation.md §5.5 — the refusal is located at
+    // the written top-level form that defined the function it names, in that
+    // function's module file (design/int/test-runner.md §7.3 Location; §10
+    // refusal row 4). The origin record wins over the declaration span.
+    #[test]
+    fn refusal_is_located_at_the_referencing_function_origin_in_its_module_file() {
+        let tables = dashmap::DashMap::new();
+        tables.insert(
+            ModuleFullPath::from("primitives"),
+            primitives_table_with_extern("discover-tests"),
+        );
+        referencing_module(&tables, "runner", &[("run-all", Span::new(3, 9))]);
+        let origins = dashmap::DashMap::new();
+        origins.insert(fq("runner", "run-all"), Span::new(20, 64));
+
+        let (message, location) = refusal(&tables, &origins);
+        assert!(message.contains("runner/run-all"), "{message}");
+        assert_eq!(location.span, Span::new(20, 64));
+        assert_eq!(
+            location.file,
+            Some(std::path::PathBuf::from("/proj/runner.cl"))
+        );
+    }
+
+    // spec: repl/spec/05-error-presentation.md §5.5 — a definition with no
+    // origin record (a cache-restored one) is located at its declaration span
+    // (design/int/test-runner.md §7.3 Location; §10 refusal row 4).
+    #[test]
+    fn refusal_without_an_origin_is_located_at_the_declaration_span() {
+        let tables = dashmap::DashMap::new();
+        tables.insert(
+            ModuleFullPath::from("primitives"),
+            primitives_table_with_extern("discover-tests"),
+        );
+        referencing_module(&tables, "restored", &[("probe", Span::new(7, 51))]);
+
+        let (_, location) = refusal(&tables, &dashmap::DashMap::new());
+        assert_eq!(location.span, Span::new(7, 51));
+        assert_eq!(
+            location.file,
+            Some(std::path::PathBuf::from("/proj/restored.cl"))
+        );
+    }
+
+    // spec: design/int/test-runner.md §7.3 Which function — a located candidate
+    // before an unlocated one, then the first by module path, then the earliest
+    // origin in that module; the choice does not depend on table order (§10
+    // refusal row 4).
+    #[test]
+    fn refusal_names_a_function_independent_of_table_order() {
+        let origins = dashmap::DashMap::new();
+        origins.insert(fq("m-b", "late"), Span::new(90, 99));
+        origins.insert(fq("m-b", "early"), Span::new(10, 19));
+        origins.insert(fq("m-c", "only"), Span::new(1, 9));
+        origins.insert(fq("m-d", "only"), Span::new(1, 9));
+        // `m-a` sorts first but its one function is unlocated.
+        let build = |order: &[&str]| {
+            let tables = dashmap::DashMap::new();
+            tables.insert(
+                ModuleFullPath::from("primitives"),
+                primitives_table_with_extern("discover-tests"),
+            );
+            for module in order {
+                let functions: &[(&str, Span)] = match *module {
+                    "m-a" => &[("unlocated", Span::SYNTHETIC)],
+                    "m-b" => &[("late", Span::SYNTHETIC), ("early", Span::SYNTHETIC)],
+                    _ => &[("only", Span::SYNTHETIC)],
+                };
+                referencing_module(&tables, module, functions);
+            }
+            tables
+        };
+        for order in [
+            ["m-a", "m-b", "m-c", "m-d"],
+            ["m-d", "m-c", "m-b", "m-a"],
+            ["m-c", "m-a", "m-d", "m-b"],
+        ] {
+            let (message, location) = refusal(&build(&order), &origins);
+            assert!(
+                message.contains("`m-b/early`"),
+                "order {order:?}: {message}"
+            );
+            assert_eq!(location.span, Span::new(10, 19), "order {order:?}");
+        }
     }
 }

@@ -168,7 +168,7 @@ impl CompilerSession {
             }
             None => self.selection_inputs().chain_modules()?,
         };
-        crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
+        self.refuse_dev_session_externs()?;
         let ready = self.shared.scheduler.wait_cached_loads_settled()?;
         let Discovery { tests, warnings } =
             discovery::scan_modules(&self.shared.symbol_tables, &modules);
