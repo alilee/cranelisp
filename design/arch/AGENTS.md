@@ -118,54 +118,73 @@ crate. [Source conventions](../../src/AGENTS.md) apply to source work.
 `pub(crate)` is the default; each public item needs rustdoc explaining the
 cross-boundary promise. The root [inter-crate public-API gate](../../AGENTS.md#roles)
 owns what counts as a change, the baseline-regeneration timing and the
-checkpoint report. This section owns the criteria, the escalation test and the
-record.
+checkpoint report. This section owns the criteria, the obligations, the
+escalation test and the record.
 
-**Criteria.** `arch` approves a batch when every change in it holds all six.
-The concern is the effect on each touched module's simplicity and
-maintainability.
+**Criteria.** `arch` asks three questions of each change, for every module
+whose surface or contract it touches. It approves the change when the honest
+answer to each is yes. The bullets name evidence `arch` looks at, for example;
+they are not further criteria.
 
-1. **A consumer decides it.** An added item has a named consumer in another
-   crate that needs it now. A removed or narrowed item has none
-   ([Principle 02](principles/02-narrow-interfaces.md)).
-2. **The surface does not grow without replacing something.** A module's
-   surface gets smaller or stays the same size. An addition is admitted when
-   it removes a consumer-side derivation, wrapper or second copy of the same
-   fact ([Principle 06](principles/06-complexity-has-a-budget.md),
-   [Principle 07](principles/07-single-source-of-truth.md),
-   [Principle 24](principles/24-resolve-once.md)).
-3. **The fact stays with its owner.** The item lives in the crate that owns
-   its behaviour, and no crate dependency is added or reversed
-   ([Principle 15](principles/15-facade-types-live-with-behavior.md),
-   [Principle 03](principles/03-dependency-flows-toward-stability.md)).
-4. **A public value has one meaning.** Every producer gives it that meaning
-   and no consumer has to work out which form it holds. Where a
-   representation can enforce it, the representation does
-   ([Principle 20](principles/20-model-invariants-by-representation.md),
-   [Principle 18](principles/18-enforce-invariants-structurally.md)). No
-   change lowers an invariant's grade in the
-   [safety register](safety-invariants.md).
-5. **Test access stays off the default surface.** An item only tests call is
-   crate-private, or sits behind the owning crate's `test-support` feature
-   ([Principle 05](principles/05-testability-is-structural.md)).
-6. **A persisted or ABI shape changes with its version.** The schema or ABI
-   version moves in the change-set that changes the shape
-   ([Principle 14](principles/14-ffi-layout-discipline.md)).
+1. **Bounded context** — does the module maintain its cohesive and coherent
+   intent?
+   - The item lives with the behaviour that owns its fact, and no datum or
+     responsibility changes owner
+     ([bounded contexts](bounded-contexts.md),
+     [Principle 15](principles/15-facade-types-live-with-behavior.md)).
+   - No crate dependency is added or reversed
+     ([Principle 03](principles/03-dependency-flows-toward-stability.md)).
+   - An added item serves a consumer in another crate that needs it now; a
+     removed item has none
+     ([Principle 02](principles/02-narrow-interfaces.md)).
+2. **Simple API** — does the public API simply and clearly align with and
+   express the module's intent, for example by one obvious path to each
+   outcome?
+   - An addition replaces a consumer-side derivation, wrapper or second copy
+     and does not add a second path
+     ([Principle 06](principles/06-complexity-has-a-budget.md),
+     [Principle 07](principles/07-single-source-of-truth.md),
+     [Principle 24](principles/24-resolve-once.md)).
+   - A consumer uses what it is given without naming, wrapping, narrowing or
+     discarding it.
+   - Test-only access is off the default surface
+     ([Principle 05](principles/05-testability-is-structural.md)).
+3. **Strongly typed** — do the definitions use type representation so that
+   invalid states cannot be expressed?
+   - A public value has one meaning from every producer, and no consumer
+     works out which form it holds.
+   - A distinction or invariant a representation can carry is carried by it,
+     not by a convention, an unconstrained collection or an option with one
+     inhabitant in use
+     ([Principle 20](principles/20-model-invariants-by-representation.md),
+     [Principle 18](principles/18-enforce-invariants-structurally.md)).
+   - No invariant's grade in the [safety register](safety-invariants.md)
+     drops.
+
+Where a better-typed or simpler realisation exists at similar cost, `arch`
+states it exactly and approves that one. Where it would be a larger change,
+`arch` says so in the record and does not widen the row.
+
+**Obligations.** These are mechanical and hold whatever the answers.
+
+- A persisted or ABI shape changes with its schema or ABI version, in the
+  same change-set
+  ([Principle 14](principles/14-ffi-layout-discipline.md)).
+- A change that needs a specification change, or behaviour the specification
+  does not already require, waits for the user's ruling
+  ([root delivery rule](../../AGENTS.md#delivery)).
 
 **Escalation.** `arch` sends a change to the user with a brief, and does not
-approve it, when any of these holds:
+approve it, when:
 
-- it moves a responsibility or the ownership of a datum between modules, so
-  a [bounded-context](bounded-contexts.md) statement changes;
-- it adds a crate dependency, or a mechanism new to a facade: a public
-  type, trait or entry point that replaces nothing;
-- it changes behaviour the specification does not already require, or needs
-  a specification change;
-- it changes what an out-of-tree platform author compiles against;
-- it fails a criterion and `arch` still recommends it.
+- after the change the honest answer to one of the three questions is no for
+  a touched module, and `arch` still recommends it; or
+- the change alters a module's intent: its
+  [bounded-context](bounded-contexts.md) statement changes, including what an
+  out-of-tree platform author compiles against.
 
 The brief states the delta, the modules whose surface or contract steps, the
-criterion at issue, the alternatives and `arch`'s recommendation.
+question at issue, the alternatives and `arch`'s recommendation.
 
 **Batch record.** The last section of
 [boundary types](interfaces.md#approved-changes-not-yet-in-source-s124) holds

@@ -750,7 +750,8 @@ single-constructor value classifies as a heap value. The binary's display walk
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
 decided change that no phase checkpoint has reported yet. The user approved the rows marked
-*user*; `arch` approved the rows dated 2026-11-19 against the criteria. The exact delta of a
+*user*; `arch` approved the rows dated 2026-11-19 against the three questions (bounded
+context, simple API, strongly typed) and re-read each against them on that date. The exact delta of a
 *user* row is in the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and
 R10-10) or the [S123 packet](../../sprints/s123-api-packet.md) Part B (K11 and R10-1 to
 R10-8), and is not restated. S123 row R10-6 is superseded by R10-9 and does not land. A
@@ -767,6 +768,8 @@ design that needs a public change outside these rows stops and returns to `arch`
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
 | ACT-1084 | `ResolutionGap::MacroInMem` removed. It has no producer | types | the binary's two match arms and one module test; stale comments in frontend and `tests/process_form_dispatch.rs` | types −1 | `arch`, 2026-11-19 | [resolution gaps](#resolution-gaps) |
 | Trace reader | `cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos` removed with its catalog entry. It has no caller | intrinsics | backend drops the name from `is_extern_primitive`; [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) conventions table and [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) | intrinsics −1 | `arch`, 2026-11-19 | [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) |
+| B13 (ACT-1070) | `Jit::jit_module` returns `&mut (impl cranelift_module::Module + CodeFinalizer)`, not `&mut JITModule`. `impl CodeFinalizer for cranelift_jit::JITModule` is removed. The returned module is a crate-private wrapper that compiles every call far. No public type is added. The method's rustdoc states the promise: no call in a function defined through this module depends on where the JIT places code | backend | none; the binary's four callers pass the value straight to `compile_to_module` and do not name its type | backend −4, 1 changed, +0 | `arch`, 2026-11-19 | [JIT/object convergence §3](../backend/jit-object-convergence.md#3-call-reach-in-the-jit-act-1070) |
+| B10 (ACT-1039, ACT-1078) | `compile_to_module` gains `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules a trace form in `module_path` covers besides `module_path`. Passed at every call | backend | the binary's three production callers, from int's one load-edge enumerator; test callers in backend and the binary | backend 1 changed; no persisted shape | `arch`, 2026-11-19, after the user's ruling on the covered set the same day | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
 | K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
 Build order. `arch` builds the types changes; `dev` builds each other surface, one surface
@@ -786,6 +789,12 @@ per invocation.
 - **Gap module** has a typecheck step only: `substitute_module_alias` in the member-absent
   arm of `resolve_qualified`, with its module test. The binary changes nothing unless a
   reader is found that substitutes again.
+- **B13** is one backend change-set with no order against another row. `design`(backend)
+  restates its §3 delta to this row first. The wrapper, its `Module` and `CodeFinalizer`
+  implementations and any accessor the crate's own tests need are `pub(crate)`.
+- **B10** follows [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend): the
+  binary's enumerator lands first with the restore walk as its consumer; then one commit
+  changes the backend's entry and every caller.
 - **K11-a** lands last, alone, after every other row and after the baselines are regenerated
   in the present format, so its contraction is not mixed with a functional delta
   ([baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close)).
@@ -794,17 +803,46 @@ Declined, `arch`, 2026-11-19:
 
 - **`CallableOrigin::TraitMethod` carrying its member** (`member: Symbol`; types +1,
   schema bump). Typecheck writes the origin and is the only reader that wants the member,
-  so the field would grow a shared persisted type for one crate's interior (criteria 1 and
-  2). Typecheck recovers the member by matching each of the trait's members' mangled entry
+  so the field would grow a shared persisted type for one crate's interior (bounded
+  context). The field would not remove an invalid state: a member the trait lacks is as
+  expressible as an entry no member names (strongly typed). Typecheck recovers the member by matching each of the trait's members' mangled entry
   name, and refuses an entry no member names. Grade: asserted. Reopened by a second reader
   in another crate, or by two members of one trait mangling to one entry.
+
+- **A public `jit::FarJitModule`** with public `Module` and `CodeFinalizer` implementations,
+  as [JIT/object convergence §3](../backend/jit-object-convergence.md#3-call-reach-in-the-jit-act-1070)
+  proposed for row B13. No crate outside the backend names the JIT's module type, so the
+  name has no consumer (bounded context), and the binary's one path is to pass the value
+  to `compile_to_module`, which an opaque return expresses and a nameable `Module` does
+  not (simple API). The opaque wrapper carries the same type guarantee: with the
+  `JITModule` implementation removed, a module that compiles near calls cannot be passed
+  to `compile_to_module` (strongly typed). The wrapper itself is approved as row
+  B13's crate-private mechanism. Reopened by a consumer in another crate that must name
+  the type, for example to store the module or to pass it as an explicit type argument.
+- **A Cranelift upgrade for a contiguous JIT code arena**, as the remedy for ACT-1070. Row
+  B13 makes call reach independent of placement on the selected version, and its cost is a
+  constant per local call in the dev tier
+  ([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)). No later
+  version was assessed. Reopened by a second fault that follows from allocator-placed JIT
+  code, or by an upgrade selected for another reason.
+
+Better-typed realisations that are larger changes, `arch`, 2026-11-19. Each row stands as
+approved; none is widened.
+
+- **Gap module.** A written qualifier and a resolved module share `ModuleFullPath`, so a gap
+  naming an alias stays expressible and the rule is measured. The structural form is a
+  distinct type for a written qualifier wherever source text carries one, which changes
+  the AST in types and its readers in frontend, typecheck and the binary.
+- **D13, `install_extern`.** Seven positional parameters remain, and `param_names` can
+  disagree in length with the scheme's arity. The structural form is one extern spec
+  value shared with the sibling `install_*` entries.
 
 Escalated to the user, 2026-11-19:
 
 - **A typed batch outcome for a `--link` refusal with no position**
   ([int §7.7](../int/int.md#77-one-generation-beside-an-entry-act-1083)). The delta is one
   variant of the root library's `BatchError` beside `MissingMain`, with one new arm in the
-  binary's formatter. It meets the criteria. It is escalated because the rendering it
+  binary's formatter. The answer to each of the three questions is yes. It is escalated because the rendering it
   serves needs a specification change: REPL §5.1 and §5.5 except only the missing-`main`
   refusal from the location requirement. The variant is approved when the user rules for
   that exception and is not built before.
