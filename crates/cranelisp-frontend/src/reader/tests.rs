@@ -226,6 +226,38 @@ fn test_parse_operator_not_equal() {
     assert_symbol(&parse_one("!="), "!=");
 }
 
+// spec: 01-lexical §1.4.2 — `operator_char+ !digit` binds every operator run,
+// however it begins: a `+`- or `-`-led run followed by a digit rejects at the
+// run, as a `*`-led one does.
+#[test]
+fn test_operator_run_followed_by_digit_rejects_for_every_entry() {
+    for (src, end) in [("+*1", 2), ("-*1", 2), ("->1", 2), ("**1", 2), ("+=7", 2)] {
+        let err = parse(src).expect_err(src).to_string();
+        assert!(
+            err.contains("operator symbol must not be immediately followed by a digit")
+                && err.contains(&format!("0..{end}")),
+            "{src}: {err}"
+        );
+    }
+}
+
+// spec: 01-lexical §1.4.2 / §1.3.1 — a sign immediately followed by a digit is
+// still a number; a bare sign and a spaced run are still operators.
+#[test]
+fn test_signed_numbers_and_spaced_operator_runs_unchanged() {
+    assert_int(&parse_one("+3"), 3);
+    assert_int(&parse_one("-3"), -3);
+    assert_symbol(&parse_one("+"), "+");
+    assert_symbol(&parse_one("+="), "+=");
+    let forms = parse("(+* 1)").unwrap();
+    let Sexp::List(items, _) = &forms[0] else { panic!("{forms:?}") };
+    assert_symbol(&items[0], "+*");
+    assert_int(&items[1], 1);
+    let forms = parse("(-> x f)").unwrap();
+    let Sexp::List(items, _) = &forms[0] else { panic!("{forms:?}") };
+    assert_symbol(&items[0], "->");
+}
+
 // -- Interior operator chars inside alphabetic symbols (D-name, S87) --
 //
 // spec: 01-lexical §1.4.1 — an alphabetic symbol may embed operator

@@ -299,7 +299,7 @@ fn read_form(r: &mut Reader) -> Result<Sexp, CranelispError> {
         Some(b) if is_digit(b) => read_number(r),
         Some(b'+') => read_plus_or_operator(r),
         Some(b'-') => read_minus_or_number(r),
-        Some(b) if is_operator_char(b) => read_operator(r),
+        Some(b) if is_operator_char(b) => read_operator(r, r.pos as u32),
         Some(b) if is_symbol_start(b) => read_symbol_or_keyword(r),
         Some(b) => Err(r.error(&format!("unexpected character: '{}'", b as char))),
     }
@@ -553,11 +553,7 @@ fn read_plus_or_operator(r: &mut Reader) -> Result<Sexp, CranelispError> {
         return read_number_from(r, false);
     }
 
-    // Operator: consume remaining operator chars
-    consume_operator_chars(r);
-    let end = r.pos as u32;
-    let text = &r.src[start as usize..r.pos];
-    Ok(Sexp::Symbol(text.to_string(), Span::new(start, end)))
+    read_operator(r, start)
 }
 
 // ---------------------------------------------------------------------------
@@ -578,19 +574,17 @@ fn read_minus_or_number(r: &mut Reader) -> Result<Sexp, CranelispError> {
         return read_number_from(r, true);
     }
 
-    // Operator: consume remaining operator chars
-    consume_operator_chars(r);
-    let end = r.pos as u32;
-    let text = &r.src[start as usize..r.pos];
-    Ok(Sexp::Symbol(text.to_string(), Span::new(start, end)))
+    read_operator(r, start)
 }
 
 // ---------------------------------------------------------------------------
 // Operator symbols
 // ---------------------------------------------------------------------------
 
-fn read_operator(r: &mut Reader) -> Result<Sexp, CranelispError> {
-    let start = r.pos as u32;
+/// The one operator tail. Every operator run, whether it began with `+`, `-` or
+/// another operator character at `start`, consumes the rest of the run here and
+/// is checked by the same rules.
+fn read_operator(r: &mut Reader, start: u32) -> Result<Sexp, CranelispError> {
     consume_operator_chars(r);
     let end = r.pos as u32;
     let text = &r.src[start as usize..r.pos];
