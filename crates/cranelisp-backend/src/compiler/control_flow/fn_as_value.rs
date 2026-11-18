@@ -14,6 +14,7 @@ use cranelisp_types::{
     Span, Symbol, Type,
 };
 
+use crate::compiler::apply::HostPromisedLowering;
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
@@ -215,6 +216,12 @@ where
                 ConcreteType::Fn(_, result) => Some(*result),
                 _ => None,
             });
+        let operand_types = fn_type
+            .and_then(|ty| ConcreteType::from_type(ty).ok())
+            .and_then(|ty| match ty {
+                ConcreteType::Fn(params, _) => Some(params),
+                _ => None,
+            });
         self.compile_fn_wrapper_body(
             wrapper_func_id,
             name,
@@ -223,6 +230,7 @@ where
             vec_elem.as_ref(),
             ctor_result.as_ref(),
             target_fq,
+            operand_types.as_deref(),
         )?;
 
         // Allocate a closure with zero captures: [header | code_ptr].
@@ -405,7 +413,9 @@ where
     ///
     /// `vec_elem` is the vec-query element type recovered from the value-use
     /// site (`vec_query_elem_from_fn_type`), threaded to `emit_wrapper_call`'s
-    /// vec-query arm (§12.7).
+    /// vec-query arm (§12.7). `operand_types` are the value site's parameter
+    /// types, which a host-promised target's lowering reads (§12.1).
+    #[allow(clippy::too_many_arguments)]
     fn compile_fn_wrapper_body(
         &mut self,
         func_id: cranelift_module::FuncId,
@@ -417,7 +427,10 @@ where
         // S110 W2 (§4): the target's STORAGE key — drives `emit_wrapper_call`'s
         // S10/S15/S16/S17 keyed reads.
         target_fq: Option<&FQSymbol>,
+        operand_types: Option<&[ConcreteType]>,
     ) -> Result<(), CranelispError> {
+        let host_promised =
+            target_fq.and_then(|fq| self.host_promised_lowering_at(fq).map(|l| (fq, l)));
         let mut inner_ctx = self.module.make_context();
         let mut inner_func_ctx = FunctionBuilderContext::new();
 
@@ -451,19 +464,36 @@ where
             &block_params[1..],
         );
 
-        let result = self.emit_wrapper_call(
-            &mut builder,
-            target_name,
-            &user_params,
-            span,
-            vec_elem,
-            ctor_result,
-            target_fq,
-        )?;
-
-        builder.ins().return_(&[result]);
-        builder.seal_all_blocks();
-        builder.finalize();
+        if let Some((fq, lowering)) = host_promised {
+            let operand_types = operand_types.ok_or_else(|| CranelispError::CodegenError {
+                message: format!(
+                    "internal invariant violation: the value use of '{fq}' reached codegen \
+                     without a function type"
+                ),
+                location: ErrorLocation::from_span(span),
+            })?;
+            self.finish_host_promised_wrapper(
+                builder,
+                lowering,
+                fq,
+                operand_types,
+                &user_params,
+                span,
+            )?;
+        } else {
+            let result = self.emit_wrapper_call(
+                &mut builder,
+                target_name,
+                &user_params,
+                span,
+                vec_elem,
+                ctor_result,
+                target_fq,
+            )?;
+            builder.ins().return_(&[result]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
 
         self.module
             .define_function(func_id, &mut inner_ctx)
@@ -578,9 +608,8 @@ where
             .and_then(|fq| self.ctx.got_entry_at(fq))
             .ok_or_else(|| CranelispError::CodegenError {
                 message: format!(
-                    "fn-as-value wrapper for '{target_name}' reached codegen with \
-                     no GOT-slot carrier (S110 W2 keyed read; \
-                     backend-keyed-consumer.md §1.2/§10)"
+                    "internal invariant violation: the value use of '{target_name}' \
+                     has no GOT slot to call through"
                 ),
                 location: ErrorLocation::from_span(span),
             })?;
@@ -702,7 +731,7 @@ where
                         );
                     }
                     // Named builtin resolved by the typechecker.
-                    if is_extern_primitive_in_wrapper(jit_name) {
+                    if crate::compiler::apply::is_extern_primitive(jit_name) {
                         return emit_extern_call_in_wrapper(
                             builder,
                             self.module,
@@ -743,14 +772,16 @@ where
                             }
                         }
                     }
-                    // Unknown builtin: treat as extern.
-                    return emit_extern_call_in_wrapper(
-                        builder,
-                        self.module,
-                        jit_name,
-                        all_args,
-                        span,
-                    );
+                    // No rule claims the name. A host-promised target was
+                    // lowered before this call (§12.1 rule 4), so a by-name
+                    // import here could only bind a host-process symbol.
+                    return Err(CranelispError::CodegenError {
+                        message: format!(
+                            "internal invariant violation: the partial application of \
+                             builtin '{jit_name}' matches no wrapper rule"
+                        ),
+                        location: ErrorLocation::from_span(span),
+                    });
                 }
                 _ => {} // SigDispatch, AutoCurry — fall through to emit_wrapper_call
             }
@@ -767,6 +798,62 @@ where
             None,
             target_fq,
         )
+    }
+
+    /// The host-promised target of a partial application, keyed by the
+    /// curry carrier, or by the `BuiltinFn` carrier's name in `primitives`
+    /// when the apply has none.
+    fn curry_host_promised_target(
+        &self,
+        target_fq: Option<&FQSymbol>,
+        trait_resolution: Option<&ResolvedCall>,
+    ) -> Option<(FQSymbol, HostPromisedLowering)> {
+        let fq = match (target_fq, trait_resolution) {
+            (Some(fq), _) => fq.clone(),
+            (None, Some(ResolvedCall::BuiltinFn { name })) => FQSymbol {
+                module: ModuleFullPath::from("primitives"),
+                symbol: Symbol::from(name.as_ref()),
+            },
+            (None, _) => return None,
+        };
+        let lowering = self.host_promised_lowering_at(&fq)?;
+        Some((fq, lowering))
+    }
+
+    /// Finish a wrapper whose target is a host-promised primitive (§12.1 rule
+    /// 4): its one saturated call lowers through direct application's
+    /// lowering, in an inner compiler over the wrapper's builder that compiles
+    /// no expression and consults no plan.
+    fn finish_host_promised_wrapper(
+        &mut self,
+        builder: FunctionBuilder<'_>,
+        lowering: HostPromisedLowering,
+        fq: &FQSymbol,
+        operand_types: &[ConcreteType],
+        operands: &[Value],
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        let no_body = MonoExpr::IntLit {
+            value: 0,
+            span,
+            ty: ConcreteType::Int,
+        };
+        let plan = Self::plan_body(&no_body, &[], &[], fq.symbol.as_ref())?;
+        let mut inner = FnCompiler::inner(
+            builder,
+            self.module,
+            self.ctx.clone(),
+            self.census.clone(),
+            self.glue,
+            operands.len(),
+            plan,
+        );
+        inner.current_fn_name = self.current_fn_name.clone();
+        let result = inner.lower_host_promised(lowering, fq, operand_types, operands, span)?;
+        inner.builder.ins().return_(&[result]);
+        inner.builder.seal_all_blocks();
+        inner.builder.finalize();
+        Ok(())
     }
 
     // --- Auto-curry codegen ---
@@ -835,6 +922,7 @@ where
             vec_elem.as_ref(),
             target_fq,
             target_closure.is_some(),
+            args.first().map(MonoExpr::ty),
         )?;
 
         // 2. Build drop glue for heap-typed captures.
@@ -922,7 +1010,15 @@ where
         // `applied_count`; dispatch through its embedded `CODE_PTR` rather than
         // a table symbol.
         target_is_closure_capture: bool,
+        // The first applied argument's type, which a host-promised target's
+        // lowering reads (§12.1).
+        first_applied_type: Option<&ConcreteType>,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
+        let host_promised = if target_is_closure_capture {
+            None
+        } else {
+            self.curry_host_promised_target(target_fq, trait_resolution)
+        };
         // Mono-discriminated span name (FIXME 0347 defect 1).
         let wrapper_name = format!(
             "__curry_{target_name}_{}{}_{}__",
@@ -979,6 +1075,26 @@ where
         // The target is called with the environment's reference: the
         // environment keeps it alive across the call and its drop glue
         // releases it (§3.3), so the template neither duplicates nor drops it.
+        if let Some((fq, lowering)) = host_promised {
+            let operand_types: Vec<ConcreteType> =
+                first_applied_type.cloned().into_iter().collect();
+            self.finish_host_promised_wrapper(
+                builder,
+                lowering,
+                &fq,
+                &operand_types,
+                &all_args,
+                span,
+            )?;
+            self.module
+                .define_function(wrapper_func_id, &mut ctx)
+                .map_err(|e| CranelispError::CodegenError {
+                    message: format!("failed to define auto-curry wrapper: {e}"),
+                    location: ErrorLocation::from_span(span),
+                })?;
+            return Ok(wrapper_func_id);
+        }
+
         let result = if target_is_closure_capture {
             let target_val = heap::heap_load(
                 &mut builder,
@@ -1081,42 +1197,6 @@ where
         let glue_name = crate::compiler::curry_drop_glue_name(&self.inner_fn_discriminator(), span);
         self.emit_capture_dec_glue(&glue_name, span, &heap_indices)
     }
-}
-
-/// Check if a primitive name is an extern (call-based) primitive,
-/// mirroring the `is_extern_primitive` function in apply.rs.
-/// Used by the auto-curry wrapper which compiles in a separate context.
-fn is_extern_primitive_in_wrapper(name: &str) -> bool {
-    matches!(
-        name,
-        "str-concat"
-            | "str-eq"
-            | "str-len"
-            | "string-identity"
-            | "int-to-string"
-            | "float-to-string"
-            | "bool-to-string"
-            | "parse-int"
-            | "sconcat"
-            | "quote-sexp"
-            | "substring"
-            | "char-at"
-            | "split"
-            | "join"
-            | "replace"
-            | "trim"
-            | "starts-with?"
-            | "ends-with?"
-            | "contains?"
-            | "to-upper"
-            | "to-lower"
-            | "cranelisp_trace_name"
-            | "cranelisp_trace_params"
-            | "cranelisp_trace_result"
-            | "cranelisp_trace_children"
-            | "cranelisp_trace_nanos"
-            | "cranelisp_trace_first_child_nanos"
-    )
 }
 
 /// Emit an extern function call inside a wrapper function body.

@@ -1701,6 +1701,11 @@ where
     /// (`0` — the first-poll "not yet armed" sentinel). All scalars ⇒ null drop glue.
     fn compile_sleep(&mut self, node: &MonoExpr, span: Span) -> Result<Value, CranelispError> {
         let arg_vals = self.compile_operands(node)?.values;
+        self.emit_sleep_node(&arg_vals, span)
+    }
+
+    /// The `sleep` timer leaf over its evaluated operand.
+    fn emit_sleep_node(&mut self, arg_vals: &[Value], span: Span) -> Result<Value, CranelispError> {
         let [d_ms] = arg_vals[..] else {
             return Err(CranelispError::CodegenError {
                 message: "sleep takes exactly one (Int milliseconds) argument".into(),
@@ -2168,7 +2173,7 @@ where
 ///   §4b conventions table. A Trace accessor call normally takes the Trace-typed
 ///   intercept in `compile_builtin_fn_call` first; one that reaches this arm by
 ///   its intrinsic name is consumed, which matches each of the six.
-fn is_extern_primitive(name: &str) -> bool {
+pub(crate) fn is_extern_primitive(name: &str) -> bool {
     matches!(
         name,
         "str-concat"
@@ -2312,6 +2317,96 @@ impl IoCombinator {
     }
 }
 
+/// How a host-promised primitive lowers (`compile-to-module.md` §12.1), named
+/// by its resolved storage symbol: the one classification direct application
+/// and both wrappers share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostPromisedLowering {
+    /// An inline IO combinator, which mints its IO node.
+    Io(IoCombinator),
+    /// A Trace field accessor, which imports its intrinsic by ABI name.
+    TraceAccessor(&'static str),
+    /// Any other host promise, imported by its entry key.
+    Import,
+}
+
+impl HostPromisedLowering {
+    fn of_symbol(symbol: &str) -> Self {
+        if let Some(combinator) = IoCombinator::from_builtin_name(symbol) {
+            Self::Io(combinator)
+        } else if let Some(abi_name) = trace_accessor_abi_name(symbol) {
+            Self::TraceAccessor(abi_name)
+        } else {
+            Self::Import
+        }
+    }
+}
+
+impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    /// The lowering of the host-promised primitive `fq` names, or `None` for an
+    /// entry of any other life. Exhaustive over [`Life`], so a new slot-less
+    /// life decides its wrapper rule here before it compiles.
+    pub(crate) fn host_promised_lowering_at(&self, fq: &FQSymbol) -> Option<HostPromisedLowering> {
+        let (_, entry) = self.ctx.entry_at(fq)?;
+        match &entry.callable()?.arm.life {
+            Life::HostPromised => Some(HostPromisedLowering::of_symbol(fq.symbol.as_ref())),
+            Life::Declared { .. }
+            | Life::Template { .. }
+            | Life::Concrete { .. }
+            | Life::Inline { .. } => None,
+        }
+    }
+
+    /// Lower one saturated call to the host-promised primitive `fq` over its
+    /// owned, evaluated operands, through the lowerings direct application
+    /// uses. `operand_types` are the operands' concrete types; an IO
+    /// combinator's result disposer derives from the first.
+    pub(crate) fn lower_host_promised(
+        &mut self,
+        lowering: HostPromisedLowering,
+        fq: &FQSymbol,
+        operand_types: &[ConcreteType],
+        operands: &[Value],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let first = || {
+            operand_types
+                .first()
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: format!(
+                        "internal invariant violation: '{fq}' reached codegen with no operand type"
+                    ),
+                    location: ErrorLocation::from_span(span),
+                })
+        };
+        match lowering {
+            HostPromisedLowering::Io(IoCombinator::Bind) => {
+                let disposer = self.result_disposer_for_io(first()?, span)?;
+                self.compile_bind_inline(operands, disposer, span)
+            }
+            HostPromisedLowering::Io(IoCombinator::Race) => {
+                let disposer = self.result_disposer_for_io(first()?, span)?;
+                self.compile_race(operands, disposer, span)
+            }
+            HostPromisedLowering::Io(IoCombinator::Select) => {
+                let disposer = self.result_disposer_for_select(first()?, span)?;
+                self.compile_select(operands, disposer, span)
+            }
+            HostPromisedLowering::Io(IoCombinator::Sleep) => self.emit_sleep_node(operands, span),
+            HostPromisedLowering::TraceAccessor(abi_name) => {
+                self.compile_extern_call(abi_name, operands, span)
+            }
+            HostPromisedLowering::Import => {
+                self.compile_extern_call(fq.symbol.as_ref(), operands, span)
+            }
+        }
+    }
+}
+
 /// The byte payload baked for a platform fn-name handle (S81 / FIXME 0327, the
 /// dispatch funnel step 2/4): the FQ name as UTF-8 with a trailing NUL — the
 /// self-describing C-string convention the trampoline fault guard reads (step 3)
@@ -2360,6 +2455,9 @@ fn is_trace_typed_concrete(ty: &ConcreteType) -> bool {
 
 #[cfg(test)]
 mod trace_accessor_tests;
+
+#[cfg(test)]
+mod host_promised_tests;
 
 #[cfg(test)]
 mod platform_fn_name_stamp_tests;

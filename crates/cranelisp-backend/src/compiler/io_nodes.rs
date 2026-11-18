@@ -40,7 +40,16 @@ where
         expr: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let payload = canonical_payload(expr.ty(), "IO", span)?.clone();
+        self.result_disposer_for_io(expr.ty(), span)
+    }
+
+    /// The result disposer of an `(IO a)` operand of type `io`.
+    pub(crate) fn result_disposer_for_io(
+        &mut self,
+        io: &ConcreteType,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let payload = canonical_payload(io, "IO", span)?.clone();
         self.result_disposer_for_type(payload)
     }
 
@@ -49,7 +58,16 @@ where
         branches: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        let branch = canonical_payload(branches.ty(), "Vec", span)?;
+        self.result_disposer_for_select(branches.ty(), span)
+    }
+
+    /// The result disposer of a `(Vec (IO a))` branch operand of type `branches`.
+    pub(crate) fn result_disposer_for_select(
+        &mut self,
+        branches: &ConcreteType,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let branch = canonical_payload(branches, "Vec", span)?;
         let payload = canonical_payload(branch, "IO", span)?.clone();
         self.result_disposer_for_type(payload)
     }

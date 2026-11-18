@@ -193,8 +193,10 @@ fn kc_n4_value_seam_entry_miss_hard_errors() {
     };
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("no GOT-slot carrier") && msg.contains("bar"),
-        "value-seam entry-miss must name the reference; got: {msg}"
+        msg.contains("internal invariant violation")
+            && msg.contains("bar")
+            && !msg.contains("carrier"),
+        "value-seam entry-miss is an internal invariant failure naming the reference; got: {msg}"
     );
 }
 
