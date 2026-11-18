@@ -759,14 +759,14 @@ fn s124_sh_reload(target: Option<&str>) {
 }
 
 // spec: repl/spec/14-file-watching.md §14.2 — T-1061, notification withheld
-// defect: class=notification-only-detection locus=src/watch.rs::poll_changes found=S124 owner=/dev
+// defect: class=notification-only-detection locus=src/watch.rs::poll_changes found=S124 owner=/dev fixed=S124/b3e3887e
 #[test]
 fn s124_1061_save_without_notification() {
     s124_sh_reload(Some("real/math.cl"));
 }
 
 // spec: repl/spec/14-file-watching.md §14.2 — T-1061, watched-path late-notice subject
-// defect: class=notification-only-detection locus=src/watch.rs::poll_changes found=S124 owner=/dev
+// defect: class=notification-only-detection locus=src/watch.rs::poll_changes found=S124 owner=/dev fixed=S124/b3e3887e
 #[test]
 fn s124_1061_watched_save_subject() {
     s124_sh_reload(Some("math.cl"));

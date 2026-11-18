@@ -1282,36 +1282,42 @@ fn s124_mode_redefinition(kind: &str, moves_off: bool) {
 }
 
 // spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+// fixed=S124/7cceedc4 — the same-type mode gate formerly refused this replacement.
 #[test]
 fn s124_d7_single_moves_on() {
     s124_mode_redefinition("single", false);
 }
 
 // spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+// fixed=S124/7cceedc4 — the same-type mode gate formerly refused this replacement.
 #[test]
 fn s124_d7_single_moves_off() {
     s124_mode_redefinition("single", true);
 }
 
 // spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+// fixed=S124/7cceedc4 — the same-type mode gate formerly refused this replacement.
 #[test]
 fn s124_d7_generic_moves_on() {
     s124_mode_redefinition("generic", false);
 }
 
 // spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+// fixed=S124/7cceedc4 — the same-type mode gate formerly refused this replacement.
 #[test]
 fn s124_d7_generic_moves_off() {
     s124_mode_redefinition("generic", true);
 }
 
 // spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+// fixed=S124/7cceedc4 — impl-method fence: this twin already passed before the gate was removed.
 #[test]
 fn s124_d7_impl_moves_on() {
     s124_mode_redefinition("impl", false);
 }
 
 // spec: repl/spec/18-redefinition.md §18.1, §18.7 — T-D7 / T-D7-b, old-compiled fn-as-value route
+// fixed=S124/7cceedc4 — impl-method fence: this twin already passed before the gate was removed.
 #[test]
 fn s124_d7_impl_moves_off() {
     s124_mode_redefinition("impl", true);

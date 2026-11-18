@@ -6292,8 +6292,8 @@ fn reexport_chain_saved_with_cycle(extra_b: &str, export_edge: bool) -> e2e::CrO
 }
 
 // spec: repl/spec/14-file-watching.md §14.6; spec/08-modules.md §8.10.3 — failed dependencies refuse dependents.
-// defect: class=silent-accept locus=src/session_v4/lifecycle.rs::run_reload_plan found=S122 owner=/dev
-// ACT-1016 face 1; control: reload_failed_reexport_dependency_missing_name_control.
+// defect: class=silent-accept locus=src/session_v4/lifecycle.rs::run_reload_plan found=S122 owner=/dev fixed=S124/f95f0a3a
+// ACT-1016 face 1 formerly accepted a dependent of a failed re-export; control: reload_failed_reexport_dependency_missing_name_control.
 #[test]
 fn reload_failed_reexport_dependency_matches_restart_neg() {
     let session = reexport_chain_saved_with_cycle("", false);
@@ -6329,7 +6329,7 @@ fn reload_failed_reexport_dependency_missing_name_control() {
 
 // spec: spec/08-modules.md §8.10.1–§8.10.2 — reload reports export edges as cycles.
 // defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev fixed=S122/aed0fcb1
-// ACT-1016 face 2; control: export_dependency_without_cycle_control in spec_08_modules.
+// ACT-1016 face 2 formerly swallowed an export-closed cycle; control: export_dependency_without_cycle_control in spec_08_modules.
 // Regression guard: reload was last seen RED at d056842f.
 #[test]
 fn reload_export_closed_cycle_reports_cycle_neg() {

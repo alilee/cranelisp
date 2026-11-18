@@ -29,8 +29,8 @@ use helpers::e2e::Cranelisp;
 
 // spec: design/int/int.md §7.6; design/int/session-transaction.md §7.1;
 // repl/spec/00-cli-invocation.md §0.6 — K-6 in tests/plan/s123-evidence-delta.md §3.7.
-// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::DependencyRecord found=S123 owner=/dev
-// ACT-1052: provisional until design(int) places the fix.
+// defect: class=artifact-underkey locus=src/cache/dependency_record.rs::DependencyRecord found=S123 owner=/dev fixed=S124/3c4c0f7b
+// ACT-1052: restoring a reverted dependency formerly left importer calls using its intervening ABI.
 #[test]
 fn cache_restored_text_after_abi_change_preserves_importer_calls_across_modes() {
     cache_edit_and_revert_importer_calls("(defn f [] \"s\")", "primitives/String");

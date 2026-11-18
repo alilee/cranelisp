@@ -898,7 +898,8 @@ fn batch_main_bool_return_is_rejected() {
 // non-`IO` `main` is located at the user's `main` form: here line 2, so the
 // location is `user.cl:2:…` and never the synthetic `1:1` / `0..0`. The refusal
 // text itself stays as `batch_main_pure_int_return_is_rejected` pins it.
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S122 owner=/dev — provisional: both refusal arms raise at Span::SYNTHETIC; design(int) places the refusal and QA confirms the class
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S122 owner=/dev fixed=S124/e294852f
+// Both refusal arms formerly raised at Span::SYNTHETIC.
 #[test]
 fn batch_main_non_io_return_refusal_is_located_at_main() {
     let program = "(import [primitives [Int]])\n(defn main [] 5)\n";
@@ -3486,21 +3487,21 @@ fn s124_located_entry_refusal(src: &str, line: usize, text: &str, mode: &str) {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_missing_empty_run() {
     s124_missing_main(r#""#, "run");
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_missing_definitions_run() {
     s124_missing_main(r#"(defn helper [] 5)"#, "run");
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_missing_trait_method_run() {
     s124_missing_main(
@@ -3510,7 +3511,7 @@ fn s124_main_missing_trait_method_run() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_arity_run() {
     s124_located_entry_refusal(
@@ -3524,7 +3525,7 @@ fn s124_main_location_arity_run() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_macro_run() {
     s124_located_entry_refusal(
@@ -3538,7 +3539,7 @@ fn s124_main_location_macro_run() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_macro_produced_run() {
     s124_located_entry_refusal(
@@ -3553,7 +3554,7 @@ fn s124_main_location_macro_produced_run() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_overload_run() {
     s124_located_entry_refusal(
@@ -3589,21 +3590,21 @@ fn s124_main_control_7_run() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_missing_empty_link() {
     s124_missing_main(r#""#, "link");
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_missing_definitions_link() {
     s124_missing_main(r#"(defn helper [] 5)"#, "link");
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — T-Q8 / T-Q9-a
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_missing_trait_method_link() {
     s124_missing_main(
@@ -3613,7 +3614,7 @@ fn s124_main_missing_trait_method_link() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_arity_link() {
     s124_located_entry_refusal(
@@ -3627,7 +3628,7 @@ fn s124_main_location_arity_link() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_macro_link() {
     s124_located_entry_refusal(
@@ -3641,7 +3642,7 @@ fn s124_main_location_macro_link() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_macro_produced_link() {
     s124_located_entry_refusal(
@@ -3656,7 +3657,7 @@ fn s124_main_location_macro_produced_link() {
 }
 
 // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 — REPRO-0915-loc / T-Q9-b
-// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::classify_main_return_type found=S124 owner=/dev fixed=S124/e294852f
 #[test]
 fn s124_main_location_overload_link() {
     s124_located_entry_refusal(
@@ -4224,14 +4225,14 @@ fn result_polymorphic_main_is_located_ambiguity(mode: &str) {
 }
 
 // spec: spec/03-types.md §3.11.1; spec/10-io.md §10.6 — an unpinned main result is a located ambiguity.
-// defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev fixed=S124/098f0980
 #[test]
 fn s124_result_polymorphic_main_does_not_panic_run() {
     result_polymorphic_main_is_located_ambiguity("run");
 }
 
 // spec: spec/03-types.md §3.11.1; spec/10-io.md §10.6 — an unpinned main result is a located ambiguity.
-// defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev fixed=S124/098f0980
 #[test]
 fn s124_result_polymorphic_main_is_located_ambiguity_link() {
     result_polymorphic_main_is_located_ambiguity("link");
@@ -4284,14 +4285,14 @@ fn main_macro_before_dependency_retry(mode: &str, retry: bool) {
 }
 
 // spec: repl/spec/05-error-presentation.md §5.5; spec/10-io.md §10.6 — synthesised main retains its triggering form across retry.
-// defect: class=check-gate-leak locus=src/process_form.rs::BuiltProgram::extend found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/process_form.rs::BuiltProgram::extend found=S124 owner=/dev fixed=S124/98ea54a0
 #[test]
 fn s124_main_macro_before_dependency_retry_location_run() {
     main_macro_before_dependency_retry("run", true);
 }
 
 // spec: repl/spec/05-error-presentation.md §5.5; spec/10-io.md §10.6 — synthesised main retains its triggering form across retry.
-// defect: class=check-gate-leak locus=src/process_form.rs::BuiltProgram::extend found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/process_form.rs::BuiltProgram::extend found=S124 owner=/dev fixed=S124/98ea54a0
 #[test]
 fn s124_main_macro_before_dependency_retry_location_link() {
     main_macro_before_dependency_retry("link", true);

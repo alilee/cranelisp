@@ -545,8 +545,8 @@ fn platform_entry_placement_loads_control() {
 }
 
 // spec: spec/10-io.md §10.9.1 — root-level non-entry platform declaration is an error.
-// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev
-// ACT-0973; control: platform_entry_placement_loads_control.
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
+// ACT-0973 formerly accepted a non-entry platform declaration; control: platform_entry_placement_loads_control.
 #[test]
 fn platform_root_non_entry_declaration_rejected_neg() {
     let out = platform_placement(Some("helper"));
@@ -562,8 +562,8 @@ fn platform_root_non_entry_declaration_rejected_neg() {
 }
 
 // spec: spec/10-io.md §10.9.1 — nested non-entry platform declaration is an error.
-// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev
-// ACT-0973; control: platform_entry_placement_loads_control.
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
+// ACT-0973 formerly accepted a non-entry platform declaration; control: platform_entry_placement_loads_control.
 #[test]
 fn platform_nested_non_entry_declaration_rejected_neg() {
     let out = platform_placement(Some("nested.helper"));
@@ -626,30 +626,35 @@ fn s124_0973_entry_repl() {
 }
 
 // spec: spec/10-io.md §10.9.1 — T-0973 root
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
 #[test]
 fn s124_0973_root_link() {
     s124_platform_placement(Some("helper"), "link");
 }
 
 // spec: spec/10-io.md §10.9.1 — T-0973 root
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
 #[test]
 fn s124_0973_root_repl() {
     s124_platform_placement(Some("helper"), "repl");
 }
 
 // spec: spec/10-io.md §10.9.1 — T-0973 nested
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
 #[test]
 fn s124_0973_nested_link() {
     s124_platform_placement(Some("nested.helper"), "link");
 }
 
 // spec: spec/10-io.md §10.9.1 — T-0973 nested
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
 #[test]
 fn s124_0973_nested_repl() {
     s124_platform_placement(Some("nested.helper"), "repl");
 }
 
 // spec: spec/10-io.md §10.9.1 — T-0973-c, cached entry becomes dependency
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
 #[test]
 fn s124_0973_cached_entry_run() {
     let first = Cranelisp::new()
@@ -688,6 +693,7 @@ fn s124_0973_cached_entry_run() {
 }
 
 // spec: spec/10-io.md §10.9.1 — T-0973-c, cached entry becomes dependency
+// defect: class=silent-accept locus=src/process_form/platform.rs::handle_platform found=S122 owner=/dev fixed=S124/68f042d5
 #[test]
 fn s124_0973_cached_entry_link() {
     let first = Cranelisp::new()

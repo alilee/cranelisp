@@ -4640,8 +4640,8 @@ fn export_cycle_fixture() -> Cranelisp {
 }
 
 // spec: spec/08-modules.md §8.10.1–§8.10.3 — export edges close cycles too.
-// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev
-// ACT-1016 face 2; control: export_dependency_without_cycle_control.
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev fixed=S124/870aacd8
+// ACT-1016 face 2 formerly swallowed an export-closed cycle; control: export_dependency_without_cycle_control.
 #[test]
 fn export_closed_cycle_run_reports_cycle_neg() {
     let out = export_cycle_fixture().run("main.cl").output();
@@ -4656,8 +4656,8 @@ fn export_closed_cycle_run_reports_cycle_neg() {
 }
 
 // spec: spec/08-modules.md §8.10.1–§8.10.3 — startup observes export cycles.
-// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev
-// ACT-1016 face 2; control: export_dependency_without_cycle_control.
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S122 owner=/dev fixed=S124/870aacd8
+// ACT-1016 face 2 formerly swallowed an export-closed cycle; control: export_dependency_without_cycle_control.
 #[test]
 fn export_closed_cycle_startup_reports_cycle_neg() {
     let out = export_cycle_fixture().repl().stdin("/quit\n").output();
@@ -5449,21 +5449,21 @@ fn s124_modules_super_repl() {
 }
 
 // spec: spec/08-modules.md §8.5.4 item 6 — ACT-1016 super-export cycle; acyclic control: s124_modules_super_run
-// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev fixed=S124/870aacd8
 #[test]
 fn s124_modules_super_cycle_neg_run() {
     s124_super_reexport("run", true);
 }
 
 // spec: spec/08-modules.md §8.5.4 item 6 — ACT-1016 super-export cycle; acyclic control: s124_modules_super_link
-// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev fixed=S124/870aacd8
 #[test]
 fn s124_modules_super_cycle_neg_link() {
     s124_super_reexport("link", true);
 }
 
 // spec: spec/08-modules.md §8.5.4 item 6 — ACT-1016 super-export cycle; acyclic control: s124_modules_super_repl
-// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev fixed=S124/870aacd8
 #[test]
 fn s124_modules_super_cycle_neg_repl() {
     s124_super_reexport("repl", true);
