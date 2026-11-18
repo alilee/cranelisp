@@ -1473,3 +1473,66 @@ fn manifest_to_descriptors_lifts_poll_shape_descriptor() {
     // scheduling_class derived from token:0,cardinality:0 → Commutative.
     assert_eq!(d.scheduling_class, SchedulingClass::Commutative);
 }
+
+// ---------------------------------------------------------------------
+// Auto-trait compile fence — design/arch/AGENTS.md §Baseline-diff discipline,
+// ACT-0955 order step 1. An author's effect closure is `Send + Sync`, so the
+// marshalling values it captures must be. A regression fails to compile here.
+// ---------------------------------------------------------------------
+
+fn assert_send<T: Send>() {}
+fn assert_sync<T: Sync>() {}
+
+fn cladt_send_when_param_send<T: CLAdtType + Send>() {
+    assert_send::<CLAdt<T>>();
+}
+fn cladt_sync_when_param_sync<T: CLAdtType + Sync>() {
+    assert_sync::<CLAdt<T>>();
+}
+fn clio_send_when_param_send<CL: CLType + Send>() {
+    assert_send::<CLIO<CL>>();
+}
+fn clio_sync_when_param_sync<CL: CLType + Sync>() {
+    assert_sync::<CLIO<CL>>();
+}
+fn clowned_send_when_param_send<T: CLHeap + Send>() {
+    assert_send::<CLOwned<T>>();
+}
+fn clowned_sync_when_param_sync<T: CLHeap + Sync>() {
+    assert_sync::<CLOwned<T>>();
+}
+
+struct FenceMarker;
+impl CLAdtType for FenceMarker {
+    const TYPE_NAME: &'static str = "fence/Marker";
+}
+
+fn assert_send_and_sync<T: Send + Sync>() {
+    assert_send::<T>();
+    assert_sync::<T>();
+}
+
+// spec: design/arch/AGENTS.md §Baseline-diff discipline — K11-a auto-trait fence
+#[test]
+fn marshalling_types_are_send_and_sync_compile_fence() {
+    assert_send_and_sync::<CLInt>();
+    assert_send_and_sync::<CLBool>();
+    assert_send_and_sync::<CLFloat>();
+    assert_send_and_sync::<CLString>();
+
+    cladt_send_when_param_send::<FenceMarker>();
+    cladt_sync_when_param_sync::<FenceMarker>();
+    clio_send_when_param_send::<CLInt>();
+    clio_sync_when_param_sync::<CLInt>();
+    clowned_send_when_param_send::<CLString>();
+    clowned_sync_when_param_sync::<CLString>();
+
+    assert_send_and_sync::<CLAdt<FenceMarker>>();
+    assert_send_and_sync::<CLIO<CLInt>>();
+    assert_send_and_sync::<CLIO<CLBool>>();
+    assert_send_and_sync::<CLIO<CLFloat>>();
+    assert_send_and_sync::<CLIO<CLString>>();
+    assert_send_and_sync::<CLIO<CLAdt<FenceMarker>>>();
+    assert_send_and_sync::<CLOwned<CLString>>();
+    assert_send_and_sync::<CLOwned<CLAdt<FenceMarker>>>();
+}
