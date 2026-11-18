@@ -6,7 +6,7 @@
 //! targets this crate owns. The data previously lived in
 //! `cranelisp_backend::jit::intrinsic_symbols()` (enumerated by Rust path inside
 //! backend); it relocates here verbatim — same names, same fn pointers, same
-//! `(param_count, has_return)` arities, same `is_runtime` classification — with
+//! `(param_count, has_return)` arities — with
 //! the `ptr` expressions now naming in-crate Rust paths. Backend becomes a reader
 //! of this table, not the owner (S76 W1b switches its readers).
 //!
@@ -107,11 +107,6 @@ pub struct IntrinsicEntry {
     pub param_count: usize,
     /// Whether the fn returns an `i64` (false = void).
     pub has_return: bool,
-    /// `runtime/`-prefixed infrastructure (true) vs user-visible-named
-    /// backend-emitted target (false). Classificatory metadata only — no
-    /// dispatch consumer today; retained because the catalog design needs the
-    /// runtime-vs-primitive split it encodes (BC §4b invariant 11).
-    pub is_runtime: bool,
 }
 
 /// The published flat Import-catalog of this crate's backend-emitted-call
@@ -135,19 +130,16 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             "runtime/alloc",
             crate::alloc::heap_alloc,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/dealloc",
             crate::alloc::heap_dealloc,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/panic",
             crate::panic::runtime_panic,
             extern "C" fn(*const u8, usize) -> !,
-            runtime: true
         ),
         // Emitted before each inline dec only under the codegen-time
         // `CRANELISP_RC_DEC_CHECK` gate; registered unconditionally so the symbol
@@ -156,7 +148,6 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             "runtime/rc_dec_check",
             crate::rc::rc_dec_check,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         // RC-stats tally helpers, emitted only under the backend's codegen-time
         // `CRANELISP_RC_STATS` gate (inert off); registered unconditionally.
@@ -164,61 +155,51 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             "runtime/rc_stat_inc",
             crate::rc::rc_stat_inc,
             extern "C" fn() -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/rc_stat_dec",
             crate::rc::rc_stat_dec,
             extern "C" fn() -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/reuse_hit",
             crate::rc::reuse_hit_stat,
             extern "C" fn() -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/reuse_miss",
             crate::rc::reuse_miss_stat,
             extern "C" fn() -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/extern_adapt_str_len",
             crate::rc::extern_adapt_str_len_stat,
             extern "C" fn() -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/alloc_string",
             crate::heap_string::heap_alloc_string,
             extern "C" fn(*const u8, i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/vec_new",
             crate::vec_runtime::vec_new,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "runtime/vec_drop",
             crate::vec_runtime::vec_drop,
             extern "C" fn(i64, i64),
-            runtime: true
         ),
         catalog_row!(
             "runtime/free_io_node",
             crate::drop::free_io_node,
             extern "C" fn(i64),
-            runtime: true
         ),
         catalog_row!(
             "runtime/run_io",
             crate::io::cranelisp_run_io,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         // `sleep`'s timer poll-fn: an address-only row whose pointer the backend
         // bakes as a poll-node `code_ptr` (`intrinsics-table.md` §2.2).
@@ -228,25 +209,21 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             "cranelisp_ivar_create",
             crate::ivar::ivar_create,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_ivar_spark",
             crate::ivar::ivar_spark,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_ivar_force",
             crate::ivar::ivar_force,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_ivar_dealloc",
             crate::ivar::ivar_dealloc,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         // The backend create-gate's reservation primitive (lenient-eval.md §3.6.1):
         // returns 1 (granted) or 0 (over budget).
@@ -254,99 +231,83 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             "cranelisp_spark_budget_try_reserve",
             crate::ivar::spark_budget_try_reserve,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         // Vec COW targets the backend emits; not user-callable.
         catalog_row!(
             "vec-set-copy",
             crate::vec_runtime::vec_set_copy,
             extern "C" fn(i64, i64, i64, i64) -> i64,
-            runtime: false
         ),
         catalog_row!(
             "vec-push-copy",
             crate::vec_runtime::vec_push_copy,
             extern "C" fn(i64, i64, i64) -> i64,
-            runtime: false
         ),
         catalog_row!(
             "vec-push-grow",
             crate::vec_runtime::vec_push_grow,
             extern "C" fn(i64, i64) -> i64,
-            runtime: false
         ),
         // The `(trace ...)` runtime family (BC §4b invariant 12; `design/arch/tracing.md`).
         catalog_row!(
             "cranelisp_trace_enter",
             crate::trace::cranelisp_trace_enter,
             extern "C" fn(i64, i64, i64, i64),
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_exit",
             crate::trace::cranelisp_trace_exit,
             extern "C" fn(i64, i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_swap_got",
             crate::trace::cranelisp_trace_swap_got,
             extern "C" fn(i64, i64, i64, i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_restore_got",
             crate::trace::cranelisp_trace_restore_got,
             extern "C" fn(i64, i64),
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_collect_trace",
             crate::trace::cranelisp_collect_trace,
             extern "C" fn() -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_first_child_nanos",
             crate::trace::cranelisp_trace_first_child_nanos,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_name",
             crate::trace::cranelisp_trace_name,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_params",
             crate::trace::cranelisp_trace_params,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_result",
             crate::trace::cranelisp_trace_result,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_children",
             crate::trace::cranelisp_trace_children,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_nanos",
             crate::trace::cranelisp_trace_nanos,
             extern "C" fn(i64) -> i64,
-            runtime: true
         ),
         catalog_row!(
             "cranelisp_trace_format",
             crate::trace::cranelisp_trace_format,
             extern "C" fn(i64, i64) -> i64,
-            runtime: true
         ),
     ]
 }

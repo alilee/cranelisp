@@ -89,31 +89,6 @@ fn every_ptr_is_non_null() {
     }
 }
 
-/// `is_runtime` classification: `runtime/`-prefixed names + the IVar and
-/// trace families are runtime infrastructure (true); the `vec-*-copy` /
-/// `vec-push-grow` COW targets are user-visible-named (false). Documents the
-/// classification's intent.
-#[test]
-fn is_runtime_classification() {
-    for e in intrinsics_table() {
-        let want = e.name.starts_with("runtime/")
-            || e.name.starts_with("cranelisp_ivar_")
-            || e.name.starts_with("cranelisp_trace_")
-            || e.name == "cranelisp_collect_trace"
-            || e.name == "cranelisp_spark_budget_try_reserve";
-        assert_eq!(
-            e.is_runtime, want,
-            "{} is_runtime classification (runtime/ + ivar + trace are true; vec COW false)",
-            e.name
-        );
-    }
-    // Pin the explicit false set — the user-visible-named backend targets.
-    for name in ["vec-set-copy", "vec-push-copy", "vec-push-grow"] {
-        let e = intrinsics_table().iter().find(|e| e.name == name).unwrap();
-        assert!(!e.is_runtime, "{name} must be is_runtime: false");
-    }
-}
-
 // spec: design/intrinsics/intrinsics-table.md §2.1 — a row whose hand copy
 // disagreed with its function carries the derived values (P-16).
 #[test]
@@ -142,7 +117,6 @@ fn poll_leaf_row_declares_three_words_and_a_result() {
         .find(|e| e.name == "runtime/sleep_pollfn")
         .expect("no entry for runtime/sleep_pollfn");
     assert_eq!((leaf.param_count, leaf.has_return), (3, true));
-    assert!(leaf.is_runtime);
 }
 
 // ---------------------------------------------------------------------
@@ -166,7 +140,6 @@ mod catalog {{
         pub ptr: *const u8,
         pub param_count: usize,
         pub has_return: bool,
-        pub is_runtime: bool,
     }}
     pub struct HostCtx;
     pub struct Waker;
@@ -243,9 +216,9 @@ fn assert_refused(label: &str, row: &str, code: &str) {
 #[test]
 fn derivation_accepts_matched_rows() {
     let rows = r#"
-        catalog_row!("w", word, extern "C" fn(i64) -> i64, runtime: true),
-        catalog_row!("n", nothing, extern "C" fn(i64), runtime: true),
-        catalog_row!("d", diverge, extern "C" fn(i64) -> !, runtime: true),
+        catalog_row!("w", word, extern "C" fn(i64) -> i64),
+        catalog_row!("n", nothing, extern "C" fn(i64)),
+        catalog_row!("d", diverge, extern "C" fn(i64) -> !),
     "#;
     if let Some(stderr) = compile_planted_row("control", rows) {
         panic!("the matched control must compile:\n{stderr}");
@@ -258,7 +231,7 @@ fn derivation_accepts_matched_rows() {
 fn derivation_refuses_a_wrong_arity() {
     assert_refused(
         "arity",
-        r#"catalog_row!("w", word, extern "C" fn(i64, i64) -> i64, runtime: true)"#,
+        r#"catalog_row!("w", word, extern "C" fn(i64, i64) -> i64)"#,
         "E0605",
     );
 }
@@ -270,12 +243,12 @@ fn derivation_refuses_a_wrong_arity() {
 fn derivation_refuses_a_wrong_return() {
     assert_refused(
         "void-return",
-        r#"catalog_row!("n", nothing, extern "C" fn(i64) -> i64, runtime: true)"#,
+        r#"catalog_row!("n", nothing, extern "C" fn(i64) -> i64)"#,
         "E0605",
     );
     assert_refused(
         "diverging-return",
-        r#"catalog_row!("d", diverge, extern "C" fn(i64) -> i64, runtime: true)"#,
+        r#"catalog_row!("d", diverge, extern "C" fn(i64) -> i64)"#,
         "E0605",
     );
 }
@@ -286,12 +259,12 @@ fn derivation_refuses_a_wrong_return() {
 fn derivation_refuses_narrow_words() {
     assert_refused(
         "narrow-param",
-        r#"catalog_row!("b", narrow, extern "C" fn(bool) -> i64, runtime: true)"#,
+        r#"catalog_row!("b", narrow, extern "C" fn(bool) -> i64)"#,
         "E0277",
     );
     assert_refused(
         "narrow-return",
-        r#"catalog_row!("h", half, extern "C" fn(i64) -> i32, runtime: true)"#,
+        r#"catalog_row!("h", half, extern "C" fn(i64) -> i32)"#,
         "E0277",
     );
 }
@@ -303,7 +276,7 @@ fn derivation_refuses_narrow_words() {
 fn derivation_refuses_a_poll_return() {
     assert_refused(
         "poll-return",
-        r#"catalog_row!("p", leaf, catalog::PollFn, runtime: true)"#,
+        r#"catalog_row!("p", leaf, catalog::PollFn)"#,
         "E0277",
     );
 }

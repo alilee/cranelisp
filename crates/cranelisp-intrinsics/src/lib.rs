@@ -159,7 +159,7 @@
 //! ruling; Principle 6 — no `unsafe` where a fn suffices).
 //!
 //! Relation to the **retired** `cranelisp_backend::jit::intrinsic_symbols()`:
-//! the data relocated here verbatim (same names/ptrs/arities/`is_runtime`);
+//! the data relocated here verbatim (same names/ptrs/arities);
 //! backend becomes a *reader* of this catalog, not the owner. The §"Symbol
 //! survival" / per-module `#[export_name]` ABI is UNCHANGED — the table
 //! republishes the established names, it does not redefine them.

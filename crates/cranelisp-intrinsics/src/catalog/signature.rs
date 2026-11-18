@@ -60,15 +60,14 @@ impl_signature!(3; A, B, C);
 impl_signature!(4; A, B, C, D);
 
 /// One catalog row:
-/// `catalog_row!(name, path::to::function, fn-pointer type, runtime: bool)`.
+/// `catalog_row!(name, path::to::function, fn-pointer type)`.
 macro_rules! catalog_row {
-    ($name:literal, $function:path, $fn_ty:ty, runtime: $is_runtime:expr) => {
+    ($name:literal, $function:path, $fn_ty:ty $(,)?) => {
         $crate::catalog::IntrinsicEntry {
             name: $name,
             ptr: ($function as $fn_ty) as *const u8,
             param_count: <$fn_ty as $crate::catalog::signature::CAbiSignature>::PARAM_COUNT,
             has_return: <$fn_ty as $crate::catalog::signature::CAbiSignature>::HAS_RETURN,
-            is_runtime: $is_runtime,
         }
     };
 }
@@ -87,7 +86,6 @@ macro_rules! poll_leaf_row {
             ptr: ($function as $crate::catalog::PollFn) as *const u8,
             param_count: 3,
             has_return: true,
-            is_runtime: true,
         }
     };
 }
