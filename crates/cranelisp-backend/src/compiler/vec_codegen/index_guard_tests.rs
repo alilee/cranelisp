@@ -123,7 +123,7 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
                 idx_val,
                 new_val,
                 inc_fn_ptr,
-                panic_id: panic,
+                panic,
                 source,
             },
             Span::SYNTHETIC,
@@ -144,7 +144,7 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
         jit,
         func,
         clif,
-        panic,
+        panic: panic.func_id(),
     }
 }
 
@@ -455,12 +455,7 @@ fn the_vec_set_lowering_probes_and_keeps_both_arms() {
 fn vec_get_clif() -> String {
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
     let module = jit.jit_module();
-    let mut panic_sig = module.make_signature();
-    panic_sig.params.push(AbiParam::new(types::I64));
-    panic_sig.params.push(AbiParam::new(types::I64));
-    let panic = module
-        .declare_function("runtime/panic", Linkage::Import, &panic_sig)
-        .expect("declare runtime/panic");
+    let panic = crate::raise::PanicHandle::declare_alone(module);
     let mut ctx = module.make_context();
     ctx.func.signature.params.push(AbiParam::new(types::I64));
     ctx.func.signature.params.push(AbiParam::new(types::I64));

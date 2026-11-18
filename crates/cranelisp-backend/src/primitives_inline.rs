@@ -30,7 +30,7 @@
 //! ```
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Module};
+use cranelift_module::Module;
 
 use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
@@ -42,7 +42,7 @@ use crate::raise::{self, PanicSource};
 /// - `Some(Ok(value))` — the symbol matched the inline table; `value` is the
 ///   result of the inline emission.
 /// - `Some(Err(_))` — the symbol matched but inline emission failed (e.g.,
-///   arity mismatch, `panic_func_id` missing for `div-i64`).
+///   arity mismatch, `panic` missing for `div-i64`).
 /// - `None` — the symbol is NOT in the inline table; the caller MUST fall
 ///   through to the standard GOT-indirect call path. This is not an error.
 ///
@@ -66,14 +66,14 @@ pub(crate) fn try_emit_inline_primitive<M: Module>(
     args: &[Value],
     span: Span,
     module: &mut M,
-    panic_func_id: Option<FuncId>,
+    panic: Option<crate::raise::PanicHandle>,
 ) -> Option<Result<Value, CranelispError>> {
     let result = match name {
         // Integer arithmetic
         "add-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().iadd(l, r)),
         "sub-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().isub(l, r)),
         "mul-i64" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().imul(l, r)),
-        "div-i64" => emit_checked_div(builder, name, args, span, module, panic_func_id),
+        "div-i64" => emit_checked_div(builder, name, args, span, module, panic),
 
         // Float arithmetic
         "add-f64" => emit_binary_float(builder, name, args, span, |b, l, r| b.ins().fadd(l, r)),
@@ -108,7 +108,7 @@ pub(crate) fn try_emit_inline_primitive<M: Module>(
 
         // Bitwise integer operations (FIXME 0416, S91). Each maps 1:1 to a
         // Cranelift instruction over i64 (the `Int` representation; no bitcast).
-        // All are total over i64 — no panic guard, `module`/`panic_func_id`
+        // All are total over i64 — no panic guard, `module`/`panic`
         // unused. Shift counts are masked mod 64 by Cranelift's `ishl`/`sshr`,
         // so codegen does NOT emit an explicit `band(amt, 63)`.
         "bit-and" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().band(l, r)),
@@ -287,11 +287,11 @@ fn emit_checked_div<M: Module>(
     args: &[Value],
     span: Span,
     module: &mut M,
-    panic_func_id: Option<FuncId>,
+    panic: Option<crate::raise::PanicHandle>,
 ) -> Result<Value, CranelispError> {
     require_args(name, args, 2, span)?;
 
-    let panic_id = raise::declared(panic_func_id, span)?;
+    let panic = raise::declared(panic, span)?;
 
     let lhs = args[0];
     let rhs = args[1];
@@ -305,7 +305,7 @@ fn emit_checked_div<M: Module>(
 
     builder.switch_to_block(zero_block);
     builder.seal_block(zero_block);
-    raise::emit_raise(builder, module, panic_id, PanicSource::DivisionByZero, span)?;
+    raise::emit_raise(builder, module, panic, PanicSource::DivisionByZero, span)?;
 
     builder.switch_to_block(divide_block);
     builder.seal_block(divide_block);

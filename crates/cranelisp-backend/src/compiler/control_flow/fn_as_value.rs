@@ -718,7 +718,7 @@ where
                             all_args,
                             span,
                             self.module,
-                            self.ctx.panic_func_id,
+                            self.ctx.panic,
                         ) {
                             Some(result) => return result,
                             None => {

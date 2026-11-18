@@ -145,8 +145,8 @@ where
     pub dealloc_func_id: FuncId,
     /// FuncId for runtime/alloc_string. None in Ring 0 (no strings).
     pub alloc_string_func_id: Option<FuncId>,
-    /// FuncId for runtime/panic. A panic site with `None` is a located codegen error (backend.md §7).
-    pub panic_func_id: Option<FuncId>,
+    /// The declared panic funnel. A panic site with `None` is a located codegen error (backend.md §7).
+    pub panic: Option<crate::raise::PanicHandle>,
     /// FuncId for runtime/vec_new. None in Ring 0 (no Vecs).
     pub vec_new_func_id: Option<FuncId>,
     /// FuncId for runtime/vec_drop. None in Ring 0 (no Vecs).
@@ -171,7 +171,7 @@ where
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,
             alloc_string_func_id: self.alloc_string_func_id,
-            panic_func_id: self.panic_func_id,
+            panic: self.panic,
             vec_new_func_id: self.vec_new_func_id,
             vec_drop_func_id: self.vec_drop_func_id,
         }

@@ -77,7 +77,7 @@ fn build_probe() -> Probe {
         jit,
         func,
         clif,
-        panic,
+        panic: panic.func_id(),
     }
 }
 

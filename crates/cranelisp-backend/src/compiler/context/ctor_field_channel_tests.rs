@@ -206,7 +206,7 @@ fn read(
         alloc_func_id: None,
         dealloc_func_id: FuncId::from_u32(0),
         alloc_string_func_id: None,
-        panic_func_id: None,
+        panic: None,
         vec_new_func_id: None,
         vec_drop_func_id: None,
     };
@@ -518,7 +518,7 @@ fn a_type_with_a_short_constructor_has_no_constructor_metadata_neg() {
         alloc_func_id: None,
         dealloc_func_id: FuncId::from_u32(0),
         alloc_string_func_id: None,
-        panic_func_id: None,
+        panic: None,
         vec_new_func_id: None,
         vec_drop_func_id: None,
     };
@@ -550,7 +550,7 @@ fn a_short_declaration_builds_no_constructor_record_neg() {
         alloc_func_id: None,
         dealloc_func_id: FuncId::from_u32(0),
         alloc_string_func_id: None,
-        panic_func_id: None,
+        panic: None,
         vec_new_func_id: None,
         vec_drop_func_id: None,
     };

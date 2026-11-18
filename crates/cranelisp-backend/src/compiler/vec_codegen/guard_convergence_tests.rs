@@ -331,12 +331,7 @@ fn elem_adapter_clif(guarded: bool) -> String {
 fn mixed_vec_get_clif() -> String {
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
     let module = jit.jit_module();
-    let mut panic_sig = module.make_signature();
-    panic_sig.params.push(AbiParam::new(types::I64));
-    panic_sig.params.push(AbiParam::new(types::I64));
-    let panic_id = module
-        .declare_function("runtime/panic", Linkage::Import, &panic_sig)
-        .expect("declare panic import");
+    let panic_id = crate::raise::PanicHandle::declare_alone(module);
 
     let mut ctx = module.make_context();
     ctx.func.signature.params.push(AbiParam::new(types::I64));

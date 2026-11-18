@@ -820,7 +820,7 @@ where
             &arg_vals,
             span,
             self.module,
-            self.ctx.panic_func_id,
+            self.ctx.panic,
         ) {
             Some(result) => result,
             None => {

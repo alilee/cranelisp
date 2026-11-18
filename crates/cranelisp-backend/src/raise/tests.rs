@@ -6,40 +6,29 @@
 use std::path::{Path, PathBuf};
 
 use cranelift::prelude::*;
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::Span;
 
+use super::{PANIC_SYMBOL, PanicHandle};
 use crate::heap::HeapCategory;
 use crate::jit::Jit;
 use crate::test_support::assert_raise_terminates;
 
-/// A JIT module that declares only `runtime/panic`, as its catalog entry
-/// does: two parameters and no result.
-fn module_with_panic() -> (Jit, FuncId) {
-    let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
-    let module = jit.jit_module();
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    let panic = module
-        .declare_function("runtime/panic", Linkage::Import, &sig)
-        .expect("declare runtime/panic");
-    (jit, panic)
-}
-
-/// Render `(a, b) -> i64` whose body is `emit(builder, module, panic, a, b)`.
+/// Render `(a, b) -> i64` whose body is `emit(builder, module, panic, a, b)`
+/// in a module that declares only `runtime/panic`, as its catalog entry does.
 fn render(
     emit: impl FnOnce(
         &mut FunctionBuilder,
         &mut cranelift_jit::JITModule,
-        FuncId,
+        PanicHandle,
         Value,
         Value,
     ) -> Value,
 ) -> (String, FuncId) {
-    let (mut jit, panic) = module_with_panic();
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
     let module = jit.jit_module();
+    let panic = PanicHandle::declare_alone(module);
     let mut ctx = module.make_context();
     ctx.func.signature.params.push(AbiParam::new(types::I64));
     ctx.func.signature.params.push(AbiParam::new(types::I64));
@@ -58,7 +47,7 @@ fn render(
     builder.ins().return_(&[result]);
     builder.seal_all_blocks();
     builder.finalize();
-    (ctx.func.display().to_string(), panic)
+    (ctx.func.display().to_string(), panic.func_id())
 }
 
 // spec: design/backend/backend.md §7 "One emission helper" — the division
@@ -170,23 +159,52 @@ fn match_failure_raise_ends_its_block() {
 }
 
 // ---------------------------------------------------------------------------
-// Census: the raise helper is the only emitter of a call to runtime/panic.
+// The handle: only `raise` holds the declared id.
 // ---------------------------------------------------------------------------
 
-/// The file that holds the one raise emitter.
+// spec: design/backend/backend.md §7 "No second path to the id" — the
+// declaration loop hands `runtime/panic` to `raise`, so the by-name map that
+// seeds every compile's `func_ids` does not contain it.
+#[test]
+fn the_declared_panic_is_held_only_as_the_handle() {
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
+    let ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).expect("declare");
+    assert!(ids.panic.is_some(), "the loop claims the panic funnel");
+    assert!(
+        !ids.by_name
+            .contains_key(&cranelisp_types::Symbol::from(PANIC_SYMBOL)),
+        "the by-name map must not yield the panic id"
+    );
+}
+
+// spec: design/backend/backend.md §7 "No second path to the id" — `claim`
+// wraps the panic funnel's entry and no other.
+#[test]
+fn claim_wraps_only_the_panic_entry() {
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
+    let declared = PanicHandle::declare_alone(jit.jit_module()).func_id();
+    assert_eq!(
+        super::claim(PANIC_SYMBOL, declared).map(PanicHandle::func_id),
+        Some(declared)
+    );
+    assert!(super::claim("runtime/alloc", declared).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Census: no production source outside `raise` names the panic funnel.
+// ---------------------------------------------------------------------------
+
+/// The file that holds the handle and the one raise emitter.
 const RAISE_HOME: &str = "src/raise.rs";
 
-/// Each `declare_func_in_func(<first argument>` in `text` whose first argument
-/// names a panic function id. Making a `FuncRef` for `runtime/panic` is the
-/// step every call to it needs.
-fn panic_func_refs(text: &str) -> usize {
-    text.match_indices("declare_func_in_func(")
-        .filter(|(at, needle)| {
-            let rest = &text[at + needle.len()..];
-            let arg = rest.split([',', ')']).next().unwrap_or_default();
-            arg.contains("panic")
-        })
-        .count()
+/// Mentions of the panic funnel's name in `text`, outside comment lines. A
+/// by-name declaration must spell it, and Cranelift answers a re-declaration
+/// with the declared id, which would bypass the handle.
+fn panic_symbol_mentions(text: &str) -> usize {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .map(|line| line.matches(PANIC_SYMBOL).count())
+        .sum()
 }
 
 fn is_test_source(path: &Path) -> bool {
@@ -212,12 +230,12 @@ fn production_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-// spec: design/arch/safety-invariants.md R13 — the emitted half's
-// falsifier is an emitted `runtime/panic` call followed by reachable code. No
-// production source outside the raise helper's home makes a `FuncRef` for
-// `runtime/panic`, so every call goes through the helper, which terminates.
+// spec: design/arch/safety-invariants.md R13 — the handle makes reuse of the
+// declared id unwritable outside `raise`; the residual is a by-name
+// re-declaration, so no production source outside `raise` spells the name.
+// Blind spot: a name that is computed and never spelled (backend.md §7).
 #[test]
-fn raise_helper_is_the_only_panic_call_emitter() {
+fn panic_symbol_is_named_only_in_raise() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     production_sources(&root.join("src"), &mut files);
@@ -225,30 +243,30 @@ fn raise_helper_is_the_only_panic_call_emitter() {
         .iter()
         .filter(|p| !p.ends_with(RAISE_HOME))
         .filter_map(|p| {
-            let n = panic_func_refs(&std::fs::read_to_string(p).expect("read source"));
+            let n = panic_symbol_mentions(&std::fs::read_to_string(p).expect("read source"));
             (n > 0).then(|| format!("{} ({n})", p.strip_prefix(root).unwrap_or(p).display()))
         })
         .collect();
     assert!(
         offenders.is_empty(),
-        "runtime/panic FuncRefs outside {RAISE_HOME}: {offenders:?}"
+        "{PANIC_SYMBOL} named outside {RAISE_HOME}: {offenders:?}"
     );
     let home = std::fs::read_to_string(root.join(RAISE_HOME)).expect("read raise home");
-    assert_eq!(
-        panic_func_refs(&home),
-        1,
-        "{RAISE_HOME} holds exactly one runtime/panic emitter"
+    assert!(
+        panic_symbol_mentions(&home) > 0,
+        "{RAISE_HOME} names the funnel"
     );
 }
 
-// spec: design/arch/safety-invariants.md R13 — detection proof for
-// the census: it finds a planted emitter in both spellings the crate uses, and
-// does not count a FuncRef for another intrinsic.
+// spec: design/arch/safety-invariants.md R13 — detection proof for the
+// census: a planted by-name declaration is found; a comment and another
+// intrinsic's declaration are not.
 #[test]
-fn panic_call_census_detects_a_planted_emitter() {
-    let planted = "let r = module.declare_func_in_func(panic_id, builder.func);\n\
-                   let s = self\n    .module\n    .declare_func_in_func(self.ctx.panic_func_id.unwrap(), f);";
-    assert_eq!(panic_func_refs(planted), 2);
-    let other = "let r = module.declare_func_in_func(vec_drop_func_id, builder.func);";
-    assert_eq!(panic_func_refs(other), 0);
+fn panic_symbol_census_detects_a_planted_declaration() {
+    let planted =
+        "let id = module\n    .declare_function(\"runtime/panic\", Linkage::Import, &sig)?;";
+    assert_eq!(panic_symbol_mentions(planted), 1);
+    let silent = "// calls runtime/panic\n\
+                  let id = module.declare_function(\"runtime/alloc\", Linkage::Import, &sig)?;";
+    assert_eq!(panic_symbol_mentions(silent), 0);
 }

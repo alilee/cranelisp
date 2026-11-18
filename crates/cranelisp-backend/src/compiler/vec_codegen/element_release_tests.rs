@@ -22,7 +22,7 @@ fn with_compiler(probe: impl FnOnce(&mut FnCompiler<'_, JITModule>)) {
         alloc_func_id: ids.alloc,
         dealloc_func_id: ids.dealloc.unwrap(),
         alloc_string_func_id: ids.alloc_string,
-        panic_func_id: ids.panic,
+        panic: ids.panic,
         vec_new_func_id: ids.vec_new,
         vec_drop_func_id: ids.vec_drop,
     };

@@ -1047,7 +1047,7 @@ where
                 )
             }),
             alloc_string_func_id: intrinsic_ids.alloc_string,
-            panic_func_id: intrinsic_ids.panic,
+            panic: intrinsic_ids.panic,
             vec_new_func_id: intrinsic_ids.vec_new,
             vec_drop_func_id: intrinsic_ids.vec_drop,
         };

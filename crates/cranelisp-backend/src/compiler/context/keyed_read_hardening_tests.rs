@@ -22,7 +22,7 @@ fn with_context<R>(read: impl FnOnce(&CompileContext<'_>) -> R) -> R {
         alloc_func_id: None,
         dealloc_func_id: FuncId::from_u32(0),
         alloc_string_func_id: None,
-        panic_func_id: None,
+        panic: None,
         vec_new_func_id: None,
         vec_drop_func_id: None,
     };

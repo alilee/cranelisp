@@ -28,8 +28,8 @@ pub(crate) struct VecSetCow {
     /// Per-element-type RC inc fn pointer for the runtime copy helper's
     /// retained-element incs (iconst 0 for NeverHeap).
     pub inc_fn_ptr: Value,
-    /// `runtime/panic`, called by the index guard.
-    pub panic_id: cranelift_module::FuncId,
+    /// The panic funnel, called by the index guard.
+    pub panic: crate::raise::PanicHandle,
     pub source: OwnedSource,
 }
 
@@ -165,14 +165,14 @@ where
                 len
             }
             "vec-get" => {
-                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                let panic = crate::raise::declared(self.ctx.panic, span)?;
                 let elem_category = self.elem_category(&elem_type, span)?;
                 // The core duplicates the element before the vector is
                 // released, so the element survives a last-reference teardown.
                 let elem = emit_vec_get_core(
                     &mut self.builder,
                     self.module,
-                    panic_id,
+                    panic,
                     elem_category,
                     vec_val,
                     arg_vals[1],
@@ -182,7 +182,7 @@ where
                 elem
             }
             "vec-set" => {
-                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                let panic = crate::raise::declared(self.ctx.panic, span)?;
                 let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
                 let source = self.owned_source(&elem_type, span)?;
                 emit_vec_set_cow_core(
@@ -193,7 +193,7 @@ where
                         idx_val: arg_vals[1],
                         new_val: arg_vals[2],
                         inc_fn_ptr,
-                        panic_id,
+                        panic,
                         source,
                     },
                     span,
@@ -481,7 +481,7 @@ where
                 Ok(len)
             }
             ("vec-get", 2) => {
-                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                let panic = crate::raise::declared(self.ctx.panic, span)?;
                 let vec_drop_id =
                     self.ctx
                         .vec_drop_func_id
@@ -494,7 +494,7 @@ where
                 let elem = emit_vec_get_core(
                     builder,
                     self.module,
-                    panic_id,
+                    panic,
                     elem_category,
                     params[0],
                     params[1],
@@ -507,7 +507,7 @@ where
                 Ok(elem)
             }
             ("vec-set", 3) => {
-                let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+                let panic = crate::raise::declared(self.ctx.panic, span)?;
                 let inc_fn_ptr = self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
                 // Wrapper / curry body: params arrive OWNED (consuming-closure
                 // protocol), so the copy branch must release the source Vec's
@@ -522,7 +522,7 @@ where
                         idx_val: params[1],
                         new_val: params[2],
                         inc_fn_ptr,
-                        panic_id,
+                        panic,
                         source,
                     },
                     span,
@@ -577,7 +577,7 @@ fn missing_element_type(operation: &str, span: Span) -> CranelispError {
 fn emit_vec_index_guard<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
-    panic_id: cranelift_module::FuncId,
+    panic: crate::raise::PanicHandle,
     vec_val: Value,
     idx_val: Value,
     span: Span,
@@ -601,7 +601,7 @@ fn emit_vec_index_guard<M: Module>(
     crate::raise::emit_raise(
         builder,
         module,
-        panic_id,
+        panic,
         crate::raise::PanicSource::VecIndexOutOfBounds,
         span,
     )?;
@@ -623,13 +623,13 @@ fn emit_vec_index_guard<M: Module>(
 pub(crate) fn emit_vec_get_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
-    panic_id: cranelift_module::FuncId,
+    panic: crate::raise::PanicHandle,
     elem_category: HeapCategory,
     vec_val: Value,
     idx_val: Value,
     span: Span,
 ) -> Result<Value, CranelispError> {
-    emit_vec_index_guard(builder, module, panic_id, vec_val, idx_val, span)?;
+    emit_vec_index_guard(builder, module, panic, vec_val, idx_val, span)?;
 
     // Load data_ptr.
     let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
@@ -678,11 +678,11 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         idx_val,
         new_val,
         inc_fn_ptr,
-        panic_id,
+        panic,
         source,
     } = op;
 
-    emit_vec_index_guard(builder, module, panic_id, vec_val, idx_val, span)?;
+    emit_vec_index_guard(builder, module, panic, vec_val, idx_val, span)?;
 
     let in_place = |builder: &mut FunctionBuilder, module: &mut M| {
         emit_vec_set_in_place(

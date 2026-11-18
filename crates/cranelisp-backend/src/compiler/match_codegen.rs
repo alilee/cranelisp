@@ -394,11 +394,11 @@ where
     /// Raise `"match failed"`: every arm's test failed.
     fn emit_match_panic(&mut self) -> Result<(), CranelispError> {
         let span = Span::new(0, 0);
-        let panic_id = crate::raise::declared(self.ctx.panic_func_id, span)?;
+        let panic = crate::raise::declared(self.ctx.panic, span)?;
         crate::raise::emit_raise(
             &mut self.builder,
             self.module,
-            panic_id,
+            panic,
             crate::raise::PanicSource::MatchFailed,
             span,
         )

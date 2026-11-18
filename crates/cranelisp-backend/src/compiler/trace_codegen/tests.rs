@@ -513,7 +513,7 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
         alloc_func_id: iid.alloc,
         dealloc_func_id: iid.dealloc.unwrap(),
         alloc_string_func_id: iid.alloc_string,
-        panic_func_id: iid.panic,
+        panic: iid.panic,
         vec_new_func_id: iid.vec_new,
         vec_drop_func_id: iid.vec_drop,
     };
@@ -570,7 +570,7 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
         alloc_func_id: intrinsic_ids.alloc,
         dealloc_func_id: intrinsic_ids.dealloc.unwrap(),
         alloc_string_func_id: intrinsic_ids.alloc_string,
-        panic_func_id: intrinsic_ids.panic,
+        panic: intrinsic_ids.panic,
         vec_new_func_id: intrinsic_ids.vec_new,
         vec_drop_func_id: intrinsic_ids.vec_drop,
     };

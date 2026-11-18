@@ -761,8 +761,8 @@ fn define_symbol_settles_host_promised_import() {
 
 // spec: design/arch/bounded-contexts.md §4b invariant 11 — `declare_intrinsics_generic`
 // reads `cranelisp_intrinsics::intrinsics_table()`, declaring one FuncId per
-// catalog record. Confirms the re-point preserves the full intrinsic set and
-// the 6 convenience accessors are populated.
+// catalog record. Every record but the panic funnel lands in the by-name map;
+// the funnel is held only as `raise`'s handle (backend.md §7).
 #[test]
 fn declare_intrinsics_generic_covers_the_catalog() {
     let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
@@ -772,17 +772,17 @@ fn declare_intrinsics_generic_covers_the_catalog() {
     let catalog = cranelisp_intrinsics::intrinsics_table();
     assert_eq!(
         ids.by_name.len(),
-        catalog.len(),
-        "one declared FuncId per intrinsics_table() record",
+        catalog.len() - 1,
+        "one declared FuncId per intrinsics_table() record but the panic funnel",
     );
-    for entry in catalog {
+    for entry in catalog.iter().filter(|e| e.name != "runtime/panic") {
         assert!(
             ids.by_name.contains_key(&Symbol::from(entry.name)),
             "intrinsic '{}' must be declared",
             entry.name,
         );
     }
-    // The 6 convenience accessors map to the named runtime intrinsics.
+    // The convenience accessors map to the named runtime intrinsics.
     assert!(ids.alloc.is_some(), "runtime/alloc accessor");
     assert!(ids.dealloc.is_some(), "runtime/dealloc accessor");
     assert!(ids.alloc_string.is_some(), "runtime/alloc_string accessor");

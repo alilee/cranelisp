@@ -404,7 +404,9 @@ impl Jit {
             alloc_string: generic_ids
                 .alloc_string
                 .expect("runtime/alloc_string must be declared"),
-            panic: generic_ids.panic.expect("runtime/panic must be declared"),
+            panic: generic_ids
+                .panic
+                .expect("the panic funnel must be declared"),
             vec_new: generic_ids
                 .vec_new
                 .expect("runtime/vec_new must be declared"),
@@ -562,7 +564,7 @@ pub(crate) struct IntrinsicIds {
     pub alloc: FuncId,
     pub dealloc: FuncId,
     pub alloc_string: FuncId,
-    pub panic: FuncId,
+    pub panic: crate::raise::PanicHandle,
     pub vec_new: FuncId,
     pub vec_drop: FuncId,
 }
@@ -576,13 +578,14 @@ pub(crate) struct IntrinsicIds {
 /// Internal (`pub(crate)`) — returned from `declare_intrinsics_generic`.
 #[derive(Default)]
 pub(crate) struct IntrinsicFuncIds {
-    /// All intrinsics indexed by JIT symbol name.
+    /// All intrinsics indexed by JIT symbol name, except the panic funnel,
+    /// which is held only as [`panic`](Self::panic).
     pub by_name: HashMap<Symbol, FuncId>,
     // Convenience accessors for commonly-used intrinsics (used directly by FnCompiler).
     pub alloc: Option<FuncId>,
     pub dealloc: Option<FuncId>,
     pub alloc_string: Option<FuncId>,
-    pub panic: Option<FuncId>,
+    pub panic: Option<crate::raise::PanicHandle>,
     pub vec_new: Option<FuncId>,
     pub vec_drop: Option<FuncId>,
 }
@@ -615,14 +618,18 @@ pub(crate) fn declare_intrinsics_generic<M: Module>(
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
 
+        // The panic funnel goes to `raise` and never into the by-name map.
+        if let Some(panic) = crate::raise::claim(entry.name, func_id) {
+            ids.panic = Some(panic);
+            continue;
+        }
         ids.by_name.insert(Symbol::from(entry.name), func_id);
 
-        // Set convenience accessors for the 6 special intrinsics.
+        // Set convenience accessors for the special intrinsics.
         match entry.name {
             "runtime/alloc" => ids.alloc = Some(func_id),
             "runtime/dealloc" => ids.dealloc = Some(func_id),
             "runtime/alloc_string" => ids.alloc_string = Some(func_id),
-            "runtime/panic" => ids.panic = Some(func_id),
             "runtime/vec_new" => ids.vec_new = Some(func_id),
             "runtime/vec_drop" => ids.vec_drop = Some(func_id),
             _ => {}
