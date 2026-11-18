@@ -340,17 +340,11 @@ pipeline synthesizes rather than the user writes: field accessors, constructor
 bodies and trait-method instances.
 
 1. **Parameters carry their signature's concrete type.** The frame takes each
-   parameter's type from the body's signature. Deriving it from the body is
-   not an admissible source for a heap parameter of a synthetic body. An
-   unrecorded type is admissible only for a binder that owns no heap
-   reference.
-   - A missing signature type in a synthetic frame becomes a located error,
-     but only after it is measured that none reaches the fallback over the
-     corpus. Until then a reaching frame is a producer gap for `arch`, not
-     a refusal to add. S124 builds both halves: the census's absent arm is
-     the measurement, and concrete binder types make the fallback
-     unrepresentable ([release contract](non-concrete-release-contract.md)
-     §7.3, §7.4 step 2).
+   parameter's type from the body's signature, and every binder records a
+   concrete type; an occurrence is not a source. A missing signature type is
+   a located refusal that the census counts
+   ([release contract](non-concrete-release-contract.md) §7.3, §7.4 step 2;
+   built at S124 B4).
 2. **A counted node agrees with its binder.** A scrutinee, operand or result
    occurrence carries the same concrete type as its binder's record. The
    scrutinee release reads the node and a drop reads the binder, so both must
@@ -361,8 +355,8 @@ bodies and trait-method instances.
 4. **Counted positions are concrete.** The residual-variable faces of
    FIXME 0903, a generic accessor's `self` and generic trait-method instances,
    stay under
-   [non-concrete-release-contract.md](non-concrete-release-contract.md). A fix
-   for G-1 must not widen its shallow-release arm to any further type.
+   [non-concrete-release-contract.md](non-concrete-release-contract.md), whose
+   shallow-release arm was deleted at S124 B4; no fix may reintroduce one.
 5. **An owned element is released by its type** (R1).
    - An operation that discharges an element it owns releases that element
      through the element type's canonical glue. For example, the in-place

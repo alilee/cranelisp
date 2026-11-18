@@ -15,7 +15,7 @@ tests cite them. §0 records each mechanism's disposition under
 [Principle 27](../arch/principles/27-dev-tier-optimises-only-against-blow-up.md):
 the dev tier keeps an optimisation only against a change of growth rate.
 Verified against source on 2026-11-16, and §0, §1, §4 and §13 again after
-S124 B1 on 2026-11-17. The increment ladders, as-built
+S124 B1 on 2026-11-17, and §2.1 and §7 at `152a0def` on 2026-11-18. The increment ladders, as-built
 narratives and falsified analyses are in Git history.
 
 **Governing authority:** [the ownership spine](../arch/ownership-inference.md)
@@ -89,9 +89,10 @@ derives no ownership, escape, confinement or uniqueness of its own.
 `CRANELISP_NO_OWNERSHIP=1` forces the conservative point everywhere.
 Typecheck's ownership pass does not run, so no site facts exist, and every
 consumer takes its absent-fact arm. The backend reads the same polarity
-(`ownership_analysis_off`) in two places: the ownership plan, which selects
-moves off ([uniform counting](uniform-counting.md) §2.1), and the cache
-manifest. The toggle is the permanent differential oracle switch; the default
+(`ownership_analysis_off`) in the ownership plan, which selects moves off
+([uniform counting](uniform-counting.md) §2.1), and the cache manifest. Until
+B5 it is also read by `HeapCategory::classify`, which flattens only
+analysis-on (§7); that read leaves with flattening. The toggle is the permanent differential oracle switch; the default
 is analysis-on.
 
 ### 2.2 Absent facts select the existing code
@@ -327,35 +328,58 @@ current design. What the retirement must respect:
   baker renders those types as heap values (§7.5), and Vecs of them gain
   element functions (§7.3).
 - **It changes the public surface.** `HeapCategory::Value` is a public
-  variant, so its removal goes through `arch` and the user's API gate.
+  variant; its removal is approved as packet row D4
+  ([interfaces](../arch/interfaces.md#heap-classification)).
 - Spec §12.1's descriptive layouts should not describe flattening after S124
   (`spec`).
 
-The retirement is one change-set, after the R-1 close
-([release contract](non-concrete-release-contract.md) §7.7), because the
-census and the close claim diffs scoped against the layout they were measured
-on:
+The retirement is change-set B5, after the R-1 close
+([release contract](non-concrete-release-contract.md) §7.7, row 5), because
+the census and the close claim diffs scoped against the layout they were
+measured on. The close's step 2 landed at B4 (`152a0def`), so B5 is unblocked.
+It is one commit spanning the backend and the binary: between a backend-only
+and a binary-only commit the display either prints a heap pointer as a field
+or reads a field as a pointer, so neither half is a valid tree alone.
 
 - **Classification.** `HeapCategory::classify` stops delegating to
-  `value_layout`. A one-word single-constructor ADT then classifies like any
-  other single-data-constructor ADT, as a heap value (packet row D4).
-- **Deleted:** the `Value` variant (public, row D4) and every arm naming it,
-  which the exhaustive matches enumerate (§7.6): the match lowering's
-  inline field read, the identity-move construction in `compiler/apply.rs`,
-  and the `Value` alternatives in capture, glue, Vec, dependent-spark, trace
-  and duplicate classification. Removing the variant makes the broken build the
-  checklist.
+  `value_layout`, and with it drops its read of `ownership_analysis_off`
+  (§2.1). A one-word single-constructor ADT then classifies like any other
+  single-data-constructor ADT, as a heap value, in either toggle polarity.
+- **Deleted in the backend:** the `Value` variant and every site naming it.
+  Removing the variant makes the broken build the checklist: the match
+  lowering's inline field read, `value_construct`'s identity move in
+  `compiler/apply.rs` (with it the shared decision of
+  [compile-to-module](compile-to-module.md) §2.6.3), and the `Value`
+  alternatives in capture, glue, Vec, dependent-spark, trace, apply-site and
+  duplicate classification, with the module tests that assert the category.
 - **Gained, with no new code:** a Vec of these types gets element functions,
   and a field of this type inside another ADT gets its glue, like any heap
   type (§7.3).
-- **Consumers outside the crate** are the binary's `result_owner.rs` and
-  `display.rs` (row D4).
-- **Closes ACT-1069** (§7.5): its trace cells pass on this tree with no change
-  made for them. A cell still RED there refutes the attribution and returns
-  to `qa`.
+- **The binary's two consumers.** `result_owner.rs` names the variant, so the
+  broken build lists its two arms. `display.rs` does **not**: its
+  flattened-word arm asks `cranelisp_types::value_layout` directly, which
+  stays published and compiles unchanged, so the build is silent about the
+  one consumer whose survival is wrong. That arm is deleted in the same
+  commit, and the display renders the type through its ordinary
+  nullary-or-heap branch; its module rows are re-shaped as heap values. The
+  binary's design is [int §16.0](../int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
+  *`HeapCategory::Value` removed (D4)*, and
+  [result owner §1.1](../int/result-owner.md#11-classification-is-a-shared-predicate-not-an-absence-test).
+  After B5 the only reader of `value_layout` is typecheck's `Copy`
+  classifier; a new representation reader of it outside typecheck is a
+  reject (§10).
+- **Closes ACT-1069** (§7.5): its trace cells, the small-payload leg and the
+  two controls pass in every mode on the B5 tree with no change made for
+  them. A cell still RED there refutes the attribution and returns to `qa`,
+  who disposes of the record.
 - **`CACHE_SCHEMA_VERSION` is bumped** in the change-set (§7.4).
-- §7.1–§7.6 then describe a mechanism that does not exist, and reduce to a
-  stub for their cited numbers.
+- **Emission acceptance:** an attributed golden re-baseline, scoped to frames
+  that handle a value of a type `value_layout` admits, directly, as a Vec
+  element or as an ADT field, and to those fields' glue. Any other frame's
+  diff is unattributed and blocks.
+- §7.1–§7.6 and compile-to-module §2.6.3 then describe a mechanism that does
+  not exist, and reduce to stubs for their cited numbers in the design pass
+  after B5.
 
 ### 7.1 `HeapCategory::Value` and its single source
 
@@ -489,6 +513,8 @@ half, in the same change-set:
 - A backend-local escape, strand or uniqueness analysis duplicating typecheck's.
 - An emission change on a fact-absent path (§2.2).
 - GOT slot-hole reclamation.
+- After B5, a representation decision read from `value_layout` anywhere
+  outside typecheck's `Copy` classifier (§7).
 
 ---
 

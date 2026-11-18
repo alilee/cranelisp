@@ -8,8 +8,8 @@ operation it emits, the disposition of each non-concrete face, and the open
 backend work that completes it. It absorbed the S121 C4 visit design; that
 visit's delivered bundles are recorded here as current mechanism and its open
 bundles as §7. Source was re-verified on 2026-11-15, for §7 on 2026-11-16,
-for §5.3 on 2026-11-17 at `1a3ab46e`, and for §4, §7.3, §7.4, §7.7 and §9 on
-2026-11-18 at `1db7b1d8`. *When* a reference is
+for §5.3 on 2026-11-17 at `1a3ab46e`, and for §4, §7.1, §7.3, §7.4, §7.7
+and §9 on 2026-11-18 at `152a0def`. *When* a reference is
 moved, duplicated or dropped is [uniform counting](uniform-counting.md), built
 at S123 W2; this contract governs whether an RC operation may be emitted on a
 value at all. §6 and §7.6 are retired with the provenance classification and
@@ -192,8 +192,8 @@ Every measured face has exactly one disposition.
 | # | Face | Disposition | State |
 |---|---|---|---|
 | **1** | Constructor template's own residual parameter | The template frame emits nothing on it (I-CT′, §4.1) | **Structural:** `Life::Template` carries no slot and no view, so a residual-parameter constructor frame is not a codegen target. Evidence reconciliation of the constructor census partition stays open under FIXME 0931 |
-| **2** | Synthetic accessor of a generic product (F1) | Canonical glue after the frame is monomorphised per concrete instantiation | Producer obligation (typecheck), met: an accessor instance is minted at the demanded concrete instantiation, and the CEN-4 reading compiled `Accessor` frames with no record from a program (§7.3). The backend fallback arms retire in §7.4 step 2 |
-| **3** | Generic trait-method instance (F2) | Same as face 2: the instance key widens to the full concrete instantiation | Producer obligation (typecheck); its backend arm closes with §7.4 (FIXME 0903) |
+| **2** | Synthetic accessor of a generic product (F1) | Canonical glue after the frame is monomorphised per concrete instantiation | Producer obligation (typecheck), met: an accessor instance is minted at the demanded concrete instantiation, and the CEN-4 reading compiled `Accessor` frames with no record from a program (§7.3). The backend fallback arms were deleted at §7.4 step 2 |
+| **3** | Generic trait-method instance (F2) | Same as face 2: the instance key widens to the full concrete instantiation | Producer obligation (typecheck); its backend arm was deleted at §7.4 step 2 (FIXME 0903) |
 | **4** | IO's existential `Bind` | Runtime-directed teardown, with the `Pure` payload stamped at construction | **Delivered** (§5) |
 | **5** | Typecheck's lenient-view result root | Canonical glue once the view carries the node's real type, with unconstrained parameters explicitly defaulted | Producer obligation (typecheck) |
 
@@ -405,11 +405,12 @@ disagree with what a constructor carries, so none exists.
 
 §7.3 and §7.4 deliver the end state of
 [the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category).
-The census (§7.3) and close step 1 (§7.4) are built; close step 2 (§7.4) is
-designed and licensed, not built. §7.1 and §7.2 are not on that path and stay
-open; §7.6 is retired. None is accepted as residual. Order and dependencies
-are §7.7. Source read for this section: `main` at `4b58ab93`, 2026-11-16;
-§7.3, §7.4 and §7.7 again at `1db7b1d8`, 2026-11-18.
+The census (§7.3) and both close steps (§7.4) are built, except three
+narrowings step 2 left, which change-set B4′ closes (§7.4, *What remains of
+step 2*). §7.1 and §7.2 are not on that path and stay open; §7.6 is retired.
+None is accepted as residual. Order and dependencies are §7.7. Source read
+for this section: `main` at `4b58ab93`, 2026-11-16; §7.3, §7.4 and §7.7 again
+at `152a0def`, 2026-11-18.
 
 ### 7.1 Consume the lifecycle exhaustively (partial)
 
@@ -429,8 +430,9 @@ cannot lower is a compile error in this crate.
 | `Declared` | nothing | located refusal: settlement did not run (a compiler-invariant breach) |
 | `Broken { slot, error }` | nothing; no production path constructs it, and no trap stub exists to fill the slot ([ownership codegen](ownership-codegen.md) §8.1) | — |
 
-`defn_param_types` then reads a witness-checked concrete scheme, so the
-parameter channel cannot deliver a residual type — the structural half of §7.4.
+`defn_param_types` reads only a `Concrete` arm's scheme, which the types
+crate's arm validation holds concrete (`LifecycleError::NonConcreteSlot`), so
+the parameter channel cannot deliver a residual type (§7.4 step 2).
 
 **Cache-load validation.** The load boundary additionally validates, per entry,
 claim uniqueness, `slot ⇒ scheme.is_concrete()`, origin × state legality and
@@ -464,23 +466,34 @@ reader, not redaction candidates; nothing is suppressed for confidentiality.
 **Status: built.** The heading's "(open)" stays only because other documents
 cite its anchor.
 
-A permanent census of every point at which codegen emits, or silently skips,
-an RC operation on a word whose category it cannot name, and of every
-constructor field read whose instantiation is not concrete. §7.4 adds a
-refusal or deletes an arm only once the census measures zero traffic through
-it. It is a developer instrument whose nouns R-4 forbids in user output, so it
-is compiled into debug builds only (§8 reject 14). Built at S124 B2 and B2′
-(`compiler/census.rs`; `1a3ab46e`, frame record `3ca6086e`).
+A permanent census of every refusal that replaced a non-concrete RC arm or
+field read, counted where a producer could still deliver the fault, with one
+frame record per compiled target as its denominator. It was built to measure
+the arms before they were deleted; after the close (§7.4) its record points
+are the refusals, so a producer regression shows as traffic in its partition
+as well as a compile error. It is a developer instrument whose nouns R-4
+forbids in user output, so it is compiled into debug builds only (§8 reject
+14). Built at S124 B2 and B2′ (`compiler/census.rs`; `1a3ab46e`, frame record
+`3ca6086e`); the retain and release points left with their arms at B4
+(`152a0def`).
 
-**Record points — one per arm, the field read, and the frame.**
+**Record points — the parameter channels, the field read, and the frame.**
 
 | Point | Where it is recorded | What one record means |
 |---|---|---|
-| Retain | `rc_emission::signature_heap_category`'s `Err` arm. Every categorisation passes through it: duplicates, `is_heap_type`, Vec elements, captures, dependent-spark and apply-site results | a residual type licensed as `Mixed` |
-| Release | the shallow guarded decrement in `FnCompiler::emit_release` | a residual-typed value released without its glue. The release first asks `is_heap_type` (the §3.5 gate order), so each release record comes with one retain record for the same word |
-| Absent | the two parameter-typing fallbacks, when they yield no type: a defn parameter whose selected scheme supplies none, and a lambda parameter whose `Lambda` node type is not a function type, after the body-derived type is also absent | a binder introduced untyped, which every later duplicate and drop of it then skips |
+| Absent | the two parameter channels' refusals: in `defn_param_types`, a defn whose selected scheme is not a function type over exactly its parameters; in the lambda lowering, a `Lambda` node whose type is not a function type over exactly its parameters | one parameter of a refused list. Both channels record one per parameter, because the refusal introduces none of them; the defn channel's excess refusal and per-parameter count are B4′ (§7.4) |
 | Field | `CompileContext::ctor_field_types`, the match lowering's one field-type read, once per call; and its pattern-constructor read, when that read refuses a short declaration | a constructor's field types read at an instantiation of the class below |
 | Frame | `census::Frame::of_target`, where the codegen target is selected and its partition assigned, once per target compiled | one frame compiled under the census, in its partition: the denominator a zero reading is read against |
+
+**What has no record point.** A record point exists only where a producer can
+deliver the fault the refusal catches. A residual type in a defn's scheme
+cannot: `defn_param_types` reads only a `Concrete` arm, whose scheme the types
+crate holds concrete at mint and again at cache load
+([total concreteness](../arch/total-concreteness.md) §2). Its conversion
+failure is a located invariant error with no record; the property's grade and
+falsifier are the types crate's, and a backend count would be a second
+detector of a fact it does not own (Principle 7). A step that made a point
+unconstructable deleted the point with its arm.
 
 **Field-read instantiation class.** Each field record carries one of three
 classes, decided from the declaration and the scrutinee's type before any
@@ -503,38 +516,30 @@ no record point. Concrete records are counted in the tally only; the census
 file receives a line for the residual and absent classes and the short shape.
 
 **Which classes the match lowering can produce.** The match passes the field
-read its scrutinee's counted type: the binder's recorded type when that is
-concrete, otherwise the scrutinee node's type. Both are concrete by
-construction, because a `MonoExpr` node carries a `ConcreteType`. So:
+read its scrutinee's counted type: the binder's recorded type for an owned or
+captured occurrence, otherwise the scrutinee node's type. Both are
+`ConcreteType`s by representation, so:
 
 - **residual** cannot arise through the match lowering. Its fixture plants it
   at the field-read seam directly, where step 1 refuses it at the reference's
   span;
 - **absent** arises only when the counted type is a node's placeholder — the
   `Int` a view builder writes for a type it does not have (safety register
-  R18) — or an ADT carrying the wrong number of arguments. A residual binder
-  falls through to that placeholder, which is why an accessor matching on its
-  own residual parameter (family F1) lands in the absent class, not the
-  residual one. No real codegen target has a residual parameter: a
-  `Concrete` arm's scheme must be concrete (the types crate's arm
-  validation), and a residual-parameter constructor or accessor is a slotless
-  `Template`. In production, absent-class traffic therefore means a view node
-  carrying the placeholder, which is typecheck's R-2 correction.
-
-The absent arm is recorded where the absence is created, not at the early
-returns of `emit_dup` and `emit_release`. A match-field binder is stored
-untyped on purpose when its field owns no heap (`match_codegen::heap_field_type`),
-so a count at the early return would include every scalar field. A capture
-inherits its binder's type and creates no absence of its own.
+  R18) — or an ADT carrying the wrong number of arguments. No codegen target
+  has a residual parameter (*What has no record point*), and a
+  residual-parameter constructor or accessor is a slotless `Template`. In
+  production, absent-class traffic therefore means a view node carrying the
+  placeholder, which is typecheck's R-2 correction.
 
 **Key.** Each record carries the requesting frame's `CallableOrigin`
-partition (`Ctor`, `Accessor`, `TraitMethod` or `Plain`), the point, the type
-shape (bare `Var`; `ADT(<concrete>, [Var…])`; residual `Fn`; absent), for a
-field record its instantiation class, and the frame's symbol. The partition is handed to the body compiler where the codegen
-target is selected and is inherited by every inner compiler of that frame:
-lambdas, spark thunks and wrappers. A minted instance carries its template's
-origin, so an accessor or trait-method instance records in its template's
-partition. No new carrier is needed
+partition (`Ctor`, `Accessor`, `TraitMethod` or `Plain`), the point, the shape
+(`absent` for an absent record; `full` or `short` declaration for a field
+record), for a field record its instantiation class, and the frame's symbol.
+The partition is handed to the body compiler where the codegen target is
+selected and is inherited by every inner compiler of that frame: lambdas,
+spark thunks and wrappers. A minted instance carries its template's origin, so
+an accessor or trait-method instance records in its template's partition. No
+new carrier is needed
 ([the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category)).
 
 **Output.** In a debug build an in-process tally counts every record.
@@ -574,87 +579,67 @@ when it runs:
   produced it, for example by running the module tests alone under the
   census and bisecting them. A record not attributed to a named test counts.
 
-**Both detection legs, for each point, land in the instrument's change-set.**
-The corpus traffic that proved the S119 scaffold is gone, so each leg is a
-planted unit fixture through the production per-body path
-(`test_support::probe_defn_clif` and its siblings), observed as a change in the
-in-process tally:
-
-- positive — a directly constructed frame plants the arm: a residual-typed
-  parameter that is duplicated (retain) and dropped (release, recording one
-  retain and one release), and a `Lambda` node whose type is not a function
-  type, with an unused parameter (absent). For the field point: a match on a
-  generic product whose scrutinee carries no arguments (absent), and a
-  residual instantiation planted at the field-read seam (residual), which the
-  match cannot produce. The no-arguments fixture records its field read and
-  is then refused by the scrutinee's release, whose glue needs the arguments.
-  It plants the point; it is not a program that reaches emission. Each records
-  exactly once, in the expected partition, point, shape and class;
-- negative — each fixture's concrete twin leaves the arm tallies and the
-  residual and absent field classes unchanged; the field twin records once in
-  the concrete class, which is also the proof that the point executes.
-
-**Step 1's criterion** was zero field records in the residual and absent
-classes and zero short shapes. The first reading (CEN-3, on the B2 tree) met
-it, and step 1 landed directly after the census. The design had expected
-family F1, `Grid.cells` among it, in that reading; the expectation was
-refuted, because an accessor of a generic product is a template and each
-instance a program demands is compiled at a concrete instantiation.
-
-**Flip criterion for §7.4 step 2.** Across the full default suite and the
-`spec_*` corpus there must be zero records from programs at **every** point
-and in every partition, in a reading that:
+**A valid zero reading** is zero records from programs at every point and in
+every partition, across the full default suite and the `spec_*` corpus, in a
+run that:
 
 - is valid under the cache condition above;
 - carries frame records, showing a non-zero frame count in the `Plain`,
   `Accessor` and `TraitMethod` partitions. The `Ctor` partition may have no
   frames, because face 1 is closed by representation (§4);
-- comes from a run in which the ACT-1034 cells pass. Before typecheck row T4
-  (`3a2692e3`) those programs were refused before emission and contributed no
-  `TraitMethod` traffic, so a `TraitMethod` frame count above zero is
-  necessary but not sufficient;
-- comes from a run whose every failing test traces to an open filing or an
-  approved S124 row and fails on that row's own assertion: no untraced RED,
-  in the root `AGENTS.md` §Testing sense of a genuine regression. The failing
-  set need not equal the opening tree's, because S124 adds filed RED cells by
-  design. The clause exists because an untraced failure can be a regression
-  that stops frames compiling, which empties the population without
-  producing a record.
+- passes the ACT-1034 cells, whose programs are the `TraitMethod`
+  population; a `TraitMethod` frame count above zero is necessary but not
+  sufficient;
+- has no untraced RED in the root `AGENTS.md` §Testing sense: every failing
+  test traces to an open filing or an approved row and fails on that row's
+  own assertion. An untraced failure can be a regression that stops frames
+  compiling, which empties the population without producing a record.
 
-**What the zero does not cover.** A filed RED cell whose program is refused
-before emission compiles no frame for the refused definition, so its traffic
-is outside the reading. This is accepted, not a gap in the criterion: after
-step 2 an untyped binder in such a program is a located refusal, not a silent
-skip, so the exposure is a compile error on a cell that is already RED, and
-the census counts it when that program first compiles.
+A filed RED cell whose program is refused before emission compiles no frame
+for the refused definition, so its traffic is outside the reading. This is
+accepted: an untyped binder in such a program is a located refusal, so the
+exposure is a compile error on a cell that is already RED, and the census
+counts it when that program first compiles.
 
-Step 2 refuses in every partition, so a `Plain` record is a legal program that
-step 2 would break. The census reading zero is the criterion; a code reading
-is not. The absent-arm records in `Plain` before W4 (600 in 39 frames on the
-T4 tree) were ACT-1050's subject: the binary's bind-chain pass rewrote node
-spans, so the inline `bind` continuation's `Lambda` node lost its function
-type. That was corrected at `32e434dc` (W4), upstream of the backend.
+**Both detection legs, for each point, are planted unit fixtures** through the
+production per-body path (`test_support::probe_defn_clif` and its siblings),
+observed as a change in the in-process tally (`compiler/census/tests.rs`):
 
-**Met by CEN-4** (`dev`'s full run at `8667a868`, read by `qa` in the
-[evidence delta](../../tests/plan/s124-evidence-delta.md) §14.5): every
-partition compiled frames, no program produced a record, the ACT-1034 cells
-passed, and no failing test lacked a filing. Step 2 is licensed. The two
-records the run did contain are backend module fixtures, excluded under
-*What the reading counts*; step 2's change-set adapts one of them (§7.4
-step 2, *Fixtures*).
+- positive — absent: a defn with a parameter and a non-function scheme, and a
+  `Lambda` node whose type is not a function type, each refused at its span
+  and recording one absent record in its partition. Field: a match on a
+  generic product whose scrutinee carries no arguments (absent class), a
+  residual instantiation planted at the field-read seam (residual class), and
+  a short declaration (short shape), each refused. Each records exactly once,
+  in the expected partition, point, shape and class;
+- negative — each fixture's concrete twin compiles and records only its frame;
+  the field twin records once in the concrete class, which is also the proof
+  that the point executes. A residual-typed defn parameter, in every
+  partition, is refused and records only its frame (*What has no record
+  point*).
 
-**After the close** the arms are gone and the record points become the located
-refusals that replace them (§7.4 steps 1 and 2). The census keeps counting there, so a
-producer regression shows as traffic in its partition as well as a compile
-error. That is the permanently measured detector the close's grade relies on.
+**Readings.** CEN-3 (B2 tree) met step 1's criterion, zero residual and absent
+field classes and zero short shapes; it refuted the expectation that family
+F1, `Grid.cells` among it, would appear, because an accessor of a generic
+product is a template whose demanded instances compile at concrete
+instantiations. CEN-4 (`dev`'s full run at `8667a868`, read by `qa` in the
+[evidence delta](../../tests/plan/s124-evidence-delta.md) §14.5) was the valid
+zero reading that licensed step 2. Its two records were backend module
+fixtures; step 2 adapted one (§7.4 step 2, *Fixtures*). The 600 absent records
+in 39 `Plain` frames on the earlier T4 tree were ACT-1050's, a bind-chain pass
+that dropped an inline `bind` continuation's function type, corrected
+upstream at `32e434dc`. On the B4 tree (`152a0def`) `dev` reports no record
+from any program; the remaining non-frame records are the census's own legs,
+the field-channel fixtures and the short-declaration fixture. `qa` has not
+read that run.
 
 ### 7.4 The R-1 structural close (open)
 
-**Status: step 1 built, step 2 open.**
+**Status: built** (the heading keeps "(open)" for its cited anchor): step 1 at row D1 and step 2 at B4 (`152a0def`), except
+three narrowings step 2 left, which B4′ closes (*What remains of step 2*).
 
-Two change-sets, each gated on its own §7.3 criterion: step 1 on zero
-residual and absent field reads, step 2 on zero records at every point. Both
-criteria are met.
+Two change-sets, each gated on its own §7.3 reading: step 1 on zero residual
+and absent field reads, step 2 on zero records at every point.
 
 **The refusal frame is not a precondition.** §7.2 (FIXME 0915) governs how a
 refusal reads, and it carries past S124 by the user's ruling. Each step adds a
@@ -710,13 +695,13 @@ step 1 corrected).
   helper for both callers (Principle 7). The schema walk's output is hashed
   into the platform layout hash, so that change-set reports whether any
   platform-visible type mentions its parameters out of declaration order;
-  if none does, the hash is unchanged. Neither reader can reach a category
-  once step 2 lands, because the classifier accepts only a `ConcreteType`.
+  if none does, the hash is unchanged. Neither reader can reach a category,
+  because the classifier accepts only a `ConcreteType`.
 
 **Why step 1 preceded step 2.** Step 2 types every match field through step
 1's accessor (the step 2 table), so it could not be built first.
 
-#### Step 2 — binder types are concrete, and the arms are deleted
+#### Step 2 — binder types are concrete, and the arms are deleted (B4, built)
 
 > **Ruling.** Every binder's recorded type in a compiled frame — a body binder,
 > a scope-chain slot and a capture — is a `ConcreteType`, never an optional
@@ -729,8 +714,8 @@ handed:
 
 | Binder | Type source |
 |---|---|
-| defn parameter | the selected arm's concrete scheme, converted once where the codegen target is selected. A scheme that is not a function type for a defn with parameters is a located invariant error |
-| lambda parameter | the `Lambda` node's `ConcreteType::Fn`. A `Lambda` node whose type is not a function type is a located producer refusal |
+| defn parameter | the selected arm's concrete scheme, converted once where the codegen target is selected (`defn_param_types`). A function-type scheme must type exactly the defn's parameters, and a non-function scheme is admitted only for a defn with none; anything else is a located invariant error at the defn |
+| lambda parameter | the `Lambda` node's `ConcreteType::Fn`. A `Lambda` node whose type is not a function type over exactly its parameters is a located producer refusal at the lambda |
 | `let` binder | the initializer node's type |
 | match variable | the scrutinee's type |
 | match field | step 1's accessor, scalar fields included. "Untyped" no longer encodes "owns no heap" |
@@ -760,21 +745,43 @@ conversion points above. None of these reaches a category.
 
 | Site | Current source | Disposition |
 |---|---|---|
-| `drop_glue.rs`, Vec arm of `shape()`: `unwrap_or(ConcreteType::Int)` | live | located refusal |
-| `vec_codegen::resolve_elem_inc_fn_ptr` and its `_into` twin: missing element type "assume `NeverHeap`" | live | located refusal |
+| `drop_glue.rs`, Vec arm of `shape()`: `unwrap_or(ConcreteType::Int)` | live | located refusal (B4′) |
+| `vec_codegen::emit_vec_get_core`: an absent element category skips the element increment | live; unreachable, because both callers resolve the release adapter first, which refuses a missing element type | the core takes a `HeapCategory`, not an option (B4′) |
+| `vec_codegen::resolve_elem_inc_fn_ptr` and its `_into` twin: missing element type "assume `NeverHeap`" | **delivered** at B4 — located refusal (`element_release_tests.rs`) | — |
 | `vec_codegen::request_elem_dec_adapter`: missing element type | **delivered** — located refusal (`element_release_tests.rs`) | — |
 | `compiler/context.rs`: `unwrap_or(Type::Int)` on the constructor field read | **delivered** — deleted by step 1 | — |
 | `fn_compiler.rs`: the dead `variable_types` `unwrap_or(Type::Int)` arm | **delivered** — absent from source | — |
 
 With concrete Vec types an element type is missing only for a `Vec` carrying no
 argument, which is a malformed `ConcreteType`. The `("vec-len", 1)`
-value-position arm of `emit_vec_query_into` must share its siblings' refusal,
-never a local default (§8 reject 6).
+value-position arm of `emit_vec_query_into` shares its siblings' refusal
+through the release resolver, never a local default (§8 reject 6).
 
-**Emission acceptance:** step 2 is byte-identical. Every site it changes was
-measured at zero traffic, and every other binder records the type it already
-used. A non-empty golden diff from step 2 is traffic the census missed. It
-contributes zero new refusals.
+**What remains of step 2 (B4′).** One byte-identical change-set closes the
+narrowings B4 left:
+
+1. the drop-glue Vec arm and `emit_vec_get_core`'s optional category (the
+   table above);
+2. `defn_param_types` refuses a scheme with more parameter types than the
+   defn has parameters. B4 refuses only a short scheme and ignores the
+   excess, while the lambda channel refuses both. The callee's Cranelift
+   signature takes its arity from the defn, so an excess is a scheme and a
+   body disagreeing about the function's arity, never a legal program;
+3. the defn channel records one absent record per parameter of a refused
+   list, as the lambda channel does (§7.3 record-point table). B4 records one
+   per untyped parameter only.
+
+Each lands with its unit fixture beside the existing ones: the excess scheme
+refused at the defn with one absent record per parameter, a two-parameter
+short scheme recording two, and the glue registry refusing a Vec with no
+argument. *Falsifier:* any suite program that reaches one of these refusals,
+observed as a non-empty census reading or a new RED. B4′ stays out of B5's
+change-set, whose acceptance class is a re-baseline (§7.7).
+
+**Emission acceptance:** step 2 is byte-identical, and B4′ with it. Every
+site they change was measured at zero traffic, and every other binder records
+the type it already used. A non-empty golden diff from either is traffic the
+census missed. Neither contributes a new refusal.
 
 **What the representation cannot see.** A concrete but wrong type: the
 lenient builders' `Int` placeholder on synthetic-body nodes (safety register
@@ -783,27 +790,17 @@ by the producer (R-2), typecheck's to correct; no backend instrument observes
 it.
 
 **Fixtures.** A module test that builds a frame by hand in a shape no
-producer emits is malformed input once step 2 lands, and is refused like a
-producer's. Step 2's change-set gives each such fixture its producer's shape
-and leaves its assertion unchanged. The one known instance is
+producer emits is malformed input, refused like a producer's; it takes its
+producer's shape and keeps its assertion. B4 gave
 `compiler::control_flow::lambda::tests::lambda_returning_its_capture_hands_the_caller_a_live_reference`,
-whose `Lambda` node carries no type: it gets a function-typed node. It is the
-source of CEN-4's one absent-arm record, so after the change the module tests
-alone under the census produce no arm record outside the census's own legs.
-Step 1's short-declaration
-negative keeps its record: it is a refusal fixture, and its record is the
-refusal's census line.
+CEN-4's one absent-arm record, a function-typed `Lambda` node. Step 1's
+short-declaration negative keeps its record: it is a refusal fixture, and its
+record is the refusal's census line.
 
-**Grade after the close:** structural for the three arms and the field
-channel. No RC entry point accepts a value without a concrete type, a
+**Grade:** structural for the three arms and the field channel. No RC entry point accepts a value without a concrete type, a
 `Concrete` entry requires a witness-checked concrete scheme, and no fallback
 arm exists. The census is the permanently measured detector. §3.5's falsifier
 remains the one asserted property, and a wrong concrete type is R18's.
-
-**Cost.** Step 2 changes the binder record and the RC entry points across the
-body compiler's ownership stratum, which carries the crate's largest review
-cost ([backend.md](backend.md) §3). It migrates callee-first: change the record
-and the entry points' parameter type, and the broken build is the checklist.
 
 ### 7.5 Typecheck producer obligations
 
@@ -828,15 +825,18 @@ the declaration corrections ACT-0974 made are primitives'.
 
 The backend change-sets of the S124 close, in order. Landed: stack-placement
 retirement with row D5 (`b0f48914`, `8f44040e`), the census (`1a3ab46e`) and
-its frame record (`3ca6086e`), and close step 1 (`3deee350`, `24c42430`). The
-producer corrections the zero read waited on landed on other surfaces: typecheck
-row T4 for ACT-1034 (`3a2692e3`) and ACT-1050's in the binary (`32e434dc`).
-The zero read is CEN-4 (§7.3).
+its frame record (`3ca6086e`), close step 1 (`3deee350`, `24c42430`) and close
+step 2 at B4 (`152a0def`). The producer corrections the zero read waited on
+landed on other surfaces: typecheck row T4 for ACT-1034 (`3a2692e3`) and
+ACT-1050's in the binary (`32e434dc`). The zero read is CEN-4 (§7.3).
 
 | # | Change-set | Depends on | Emission acceptance class |
 |---|---|---|---|
-| 4 | Close step 2: concrete binder types, the three arms deleted, the remaining narrowings, the hand-built fixture adapted (§7.4) | the zero read, met | byte-identical; zero new refusals |
-| 5 | Value-flattening retirement, row D4 ([ownership codegen](ownership-codegen.md) §7) | 4 | attributed re-baseline; `CACHE_SCHEMA_VERSION` bump |
+| 4′ | B4′: the narrowings step 2 left (§7.4, *What remains of step 2*) | 4, landed | byte-identical; zero new refusals |
+| 5 | Value-flattening retirement, row D4, with the binary's display arm ([ownership codegen](ownership-codegen.md) §7) | 4, landed | attributed re-baseline; `CACHE_SCHEMA_VERSION` bump |
+
+Rows 4′ and 5 are independent; they stay separate change-sets because their
+acceptance classes differ.
 
 The lifecycle disposition with its cache-load arms (§7.1) and the refusal frame
 (§7.2) are not on this path. They stay open, byte-identical when they land.
@@ -888,17 +888,17 @@ In addition to [transitive-drop-glue.md](transitive-drop-glue.md) §11:
 
 Rows sit beside their production owner per the crate's sibling convention. The
 delivered rows (the IO arm, the `Pure` stamp and the platform-return tag
-dispatch, the shared nullary guard, the census with its frame record, and
-step 1's field channel) are in source and are not repeated.
+dispatch, the shared nullary guard, the census with its frame record, step 1's
+field channel, and step 2's binder types, census refusals and element
+increment refusal) are in source and are not repeated.
 
 | Submodule | Positive | Edge | Negative |
 |---|---|---|---|
 | lifecycle disposition (§7.1) | each `Concrete × Realization` arm lowers as tabled; `defined_symbols` equals the `Concrete × Body` projection | `FacadeOf` is a name-alias with no per-instance body | exhaustive, no `_ =>`; `Template` in value position and `Declared` at codegen are located refusals |
 | `cache/serialize` (§7.1) | a legal restored entry loads | tombstones conserve | each legality violation is a `CacheStale` recompile, never an `assert!` |
 | `error` frame (§7.2) | one prefix, real span, unmangled subject | a refusal inside a monomorphised instance renders the instantiation as types | no `0..0` from the glue registry; no `module/module/` doubling |
-| binder types (§7.4 step 2) | every binder kind records its source's `ConcreteType` (the step 2 table) | an unused heap parameter of a defn and of a lambda is released at introduction | a `Lambda` node whose type is not a function type is a located refusal; a defn with parameters and a non-function scheme is a located invariant error |
-| census after step 2 (§7.3) | where step 2 replaces an arm with a located refusal, the point keeps recording there and its planted fixture asserts the refusal and one record in its partition | a point step 2 makes unconstructable loses its planted fixture with its arm | each concrete twin is neither refused nor recorded |
-| `vec_codegen` element inc pointer (§7.4) | a concrete element resolves its adapter | a scalar element needs none | a missing element type is a located refusal |
+| defn parameter channel (B4′, §7.4) | a scheme typing exactly the defn's parameters compiles | a two-parameter short scheme records two absent records | a scheme with more parameter types than parameters is a located invariant error with one absent record per parameter |
+| drop-glue Vec shape (B4′, §7.4) | a `Vec` with a concrete element builds its shape | a scalar element builds a shape with no element release | a `Vec` carrying no argument is a located refusal |
 | category before counting (§3.5) | — | — | no RC emission is reachable without a preceding category gate |
 
 E2e acceptance is `qa`'s.

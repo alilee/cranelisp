@@ -357,7 +357,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | RC discipline | `ring2-rc.md` | The calling convention as emitted, extern consumption, the IO extern's balance and the RC emission primitives. |
 | Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count, and each one's disposition under Principle 27 (§0): confined atomicity retired at S123 W4 and stack placement at S124 B1; value flattening, the spark density axis and the borrowed-sibling carrier retire in S124, each with its change-set designed. Also the reuse counters, the redefinition slots and the supporting contracts. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
-| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the census with its frame record and the constructor field channel (built), concrete binder types (open) (§7.3–§7.4, order §7.7). The lifecycle disposition and refusal frame stay open. |
+| Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the census with its frame record, the constructor field channel and concrete binder types (built), and the narrowings B4 left (B4′) (§7.3–§7.4, order §7.7). The lifecycle disposition and refusal frame stay open. |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
 | Binding-indirection consume | `binding-indirection-consume.md` | Retired (S123 W2); a stub kept for cited section numbers until those citations move. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
@@ -375,8 +375,8 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
 
 | # | Change-set | Design | Waits on |
 |---|---|---|---|
-| B4 | Close step 2: concrete binder types, the three arms deleted, the hand-built lambda fixture given a typed node | [release contract](non-concrete-release-contract.md) §7.4 | — : the §7.3 flip criterion is met by CEN-4 (B1, B2, B2′ and B3 landed; release contract §7.7) |
-| B5 | Value-flattening retirement, row D4; closes ACT-1069 | [ownership codegen](ownership-codegen.md) §7 | B4 |
+| B4′ | The narrowings close step 2 left: the drop-glue Vec arm's default, `emit_vec_get_core`'s optional category, and the defn parameter channel refusing an excess scheme with one absent record per parameter | [release contract](non-concrete-release-contract.md) §7.4, *What remains of step 2* | — (B4 landed at `152a0def`); byte-identical, so it stays out of B5's change-set |
+| B5 | Value-flattening retirement, row D4, with the binary's display arm in the same commit; closes ACT-1069 | [ownership codegen](ownership-codegen.md) §7 | — (B4 landed at `152a0def`) |
 | B6 | Row D2, then the panic handle (P-15) | §7 above | — ; the handle follows D2 |
 | B7 | Rows R10-1, -2, -3, -5, -7 as one contraction (R10-6 is superseded by R10-9, B11) | [BC §3](../arch/bounded-contexts.md#3-backend-cratescranelisp-backend) | B6's D2 |
 | B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | the types change of D6, in the same change-set |
@@ -387,7 +387,7 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
 
 - B6 to B10 and B12 have no dependency on the close; `sprint` places them. Each
   emission-affecting one carries its own scoped re-baseline, so keep them out
-  of the B4 and B5 change-sets.
+  of the B4′ and B5 change-sets.
 - `CACHE_SCHEMA_VERSION` is bumped by B5 and B8, and by two change-sets that
   land on other surfaces but must edit this crate's constant: row D3's and
   ACT-1052's ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache
