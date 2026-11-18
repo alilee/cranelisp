@@ -114,7 +114,7 @@ fn warm_residue_of(dir: &Path, entry: &str) -> (i64, String) {
 #[test]
 fn sudoku_warm_serial_solve_retains_nothing() {
     let td = exemplar_scratch();
-    let (retained, stderr) = warm_residue_of(td.path(), "solver.cl");
+    let (retained, stderr) = warm_residue_of(td.path(), "smoke.cl");
     assert_eq!(
         retained, 0,
         "a warm serial Sudoku solve MUST release everything it allocates (the warm \
@@ -146,7 +146,7 @@ fn warm_cache_hit_control_carries_no_ambient_residual() {
     let td = exemplar_scratch();
     std::fs::write(
         td.path().join("warm_control.cl"),
-        // Same platform + prelude surface as solver.cl, same module graph
+        // Same platform + prelude surface as smoke.cl, same module graph
         // (importing `solve` compiles the whole exemplar tree), zero solve work.
         "(platform stdio)\n\
          (import [primitives [Pure]])\n\
