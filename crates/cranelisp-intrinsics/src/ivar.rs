@@ -54,6 +54,10 @@ static FORCE_SPIN_ITERS: AtomicU64 = AtomicU64::new(0);
 /// returns `0` — the over-budget branch, `lenient-eval.md` §3.6.2) instead of
 /// sparking.
 static SPARK_SERIAL_CONTINUES: AtomicU64 = AtomicU64::new(0);
+/// Create-gate sites declined because the calling thread records a trace
+/// (`trace-runtime.md` §2). Kept apart from `SPARK_SERIAL_CONTINUES` so a trace
+/// decline is distinguishable from a budget or depth decline.
+static SPARK_TRACE_DECLINES: AtomicU64 = AtomicU64::new(0);
 /// S104 Wave 0 — count of spark bodies *currently executing* (a worker running a
 /// thunk in `ivar_force`'s claim-win arm), and its high-water mark. This is the
 /// utilization signal M-dynamic will later read (measurement-only in Wave 0):
@@ -111,7 +115,7 @@ extern "C" fn print_spark_stats() {
     eprintln!(
         "[SPARK_STATS] spawns={} serial_continues={} peak_executing={} \
          force_calls={} force_fastpath_resolved={} force_claim_wins={} \
-         force_spin_waits={} force_spin_iters={}",
+         force_spin_waits={} force_spin_iters={} trace_declines={}",
         SPARK_SPAWNS.load(Ordering::Relaxed),
         SPARK_SERIAL_CONTINUES.load(Ordering::Relaxed),
         SPARK_PEAK_EXECUTING.load(Ordering::Relaxed),
@@ -120,6 +124,7 @@ extern "C" fn print_spark_stats() {
         FORCE_CLAIM_WINS.load(Ordering::Relaxed),
         FORCE_SPIN_WAITS.load(Ordering::Relaxed),
         FORCE_SPIN_ITERS.load(Ordering::Relaxed),
+        SPARK_TRACE_DECLINES.load(Ordering::Relaxed),
     );
 }
 
@@ -486,6 +491,10 @@ impl Drop for SparkDepthGuard {
 /// completion via [`InFlightGuard`]'s drop. Returns `0` if over budget — the
 /// caller MUST take the direct arm and allocate nothing.
 ///
+/// Also returns `0`, reserving nothing, while the calling thread holds the
+/// trace role: evaluation inside a trace's dynamic extent is sequential
+/// (spec §4.12.2). Other threads keep their parallelism.
+///
 /// All-or-nothing and TOCTOU-free: the `n` permits are committed in a single CAS
 /// so `cap` is a genuine bound, not a soft target that N concurrent sites each
 /// blow past. The over-budget path is **load-only** (no RMW) — keeping the
@@ -498,6 +507,12 @@ pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     let cap = *SPARK_BUDGET as isize;
     let n = n as isize;
     let stats = spark_stats_enabled();
+    if crate::trace::this_thread_records() {
+        if stats {
+            SPARK_TRACE_DECLINES.fetch_add(1, Ordering::Relaxed);
+        }
+        return 0;
+    }
     // Structural hierarchical decline — depth-allowance form (§2.8.4, gate G3,
     // Wave 2e): if this thread's spark-nesting depth has reached MAX_DEPTH, every
     // nested candidate takes the inline/direct arm — independent of the concurrent

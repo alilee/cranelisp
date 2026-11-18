@@ -1,11 +1,12 @@
-//! The pure, codegen-baked **value formatter** for `(trace ...)` (the
+//! The codegen-baked **value formatter** for `(trace ...)` (the
 //! `DisplayDescriptor` ABI + [`cranelisp_trace_format`]).
 //!
-//! Split out of `trace.rs` (HIGH-3, FIXME 0370): this is the one self-contained,
-//! *pure* protocol in the trace machinery. It shares ZERO state with the GOT-swap
-//! / trace-stack / drop-glue code that remains in `trace.rs` — it is a pure walk
-//! of a backend-baked descriptor blob against a runtime heap value, with no
-//! symbol-table access and no thread-local state (BC §4b invariant 12).
+//! Split out of `trace.rs` (HIGH-3, FIXME 0370). Its descriptor walk is the one
+//! self-contained, *pure* protocol in the trace machinery: a walk of a
+//! backend-baked descriptor blob against a runtime heap value, with no
+//! symbol-table access and no thread-local state (BC §4b invariant 12). The
+//! extern entry adds one read, the trace role, and formats only for the
+//! recording thread.
 //!
 //! # DisplayDescriptor — the codegen-baked, self-contained value-render contract
 //!
@@ -175,33 +176,47 @@ unsafe fn read_blob_str<'a>(ptr: *const i32) -> &'a str {
 // ── The pure descriptor-driven formatter ───────────────────────────────────────
 
 /// Format a runtime value as a cranelisp heap String, driven entirely by a
-/// backend-baked [`DisplayDescriptor`].
+/// backend-baked [`DisplayDescriptor`], for the thread that records a trace.
 ///
 /// `value` is the runtime value (an `i64` scalar or a heap pointer);
 /// `descriptor_ptr` is a `*const DisplayDescriptor` (the blob root for this
-/// value's static type). Returns a heap `String` (alloc-base pointer, RC=1) —
-/// the same shape `alloc_string` produces.
+/// value's static type).
 ///
-/// **Purity (BC §4b invariant 12).** This intrinsic performs ZERO symbol-table
-/// access and holds NO thread-local state. Everything `format_value` used to
-/// resolve from the live `symbol_tables` (ADT constructor names, field layouts,
-/// single-ctor suppression) is baked into the descriptor at codegen. It reuses
-/// only the heap-layout reads intrinsics already owns (`HeapString` len/bytes,
-/// `HeapVec` len/data, the base-pointer ADT tag/field offsets).
+/// On the thread holding the trace role, returns a fresh heap `String`
+/// (alloc-base pointer, RC=1), the shape `alloc_string` produces. On any other
+/// thread, returns `0` and allocates nothing: a wrapper reached outside the
+/// trace's extent records nothing, so its formatted words would have no
+/// consumer. A caller must accept `0`; the emitted wrapper passes the word to
+/// [`crate::trace::cranelisp_trace_enter`] or
+/// [`crate::trace::cranelisp_trace_exit`], which ignore it off that thread.
+///
+/// **Purity (BC §4b invariant 12).** The descriptor walk behind this entry
+/// performs no symbol-table access and holds no thread-local state; the entry
+/// alone reads the trace role. Everything the walk needs (ADT constructor
+/// names, field layouts, single-ctor suppression) is baked into the descriptor
+/// at codegen, and it reuses only the heap-layout reads intrinsics owns.
 ///
 /// Arity is `(2, true)` — backend's `declare_trace_extern("cranelisp_trace_format",
 /// 2, true)` is unchanged.
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_format(value: i64, descriptor_ptr: i64) -> i64 {
-    let s = if descriptor_ptr == 0 {
+    if !crate::trace::this_thread_records() {
+        return 0;
+    }
+    alloc_string(format_with_descriptor(value, descriptor_ptr).as_bytes()) as i64
+}
+
+/// The pure descriptor walk behind [`cranelisp_trace_format`]: render `value`
+/// by the descriptor at `descriptor_ptr`, or bare when there is none.
+pub(crate) fn format_with_descriptor(value: i64, descriptor_ptr: i64) -> String {
+    if descriptor_ptr == 0 {
         // Defensive: no descriptor -> bare value.
         format!("{value}")
     } else {
         // SAFETY: backend guarantees descriptor_ptr is a valid blob-root
         // DisplayDescriptor for the static type of `value`.
         unsafe { render_value(value, descriptor_ptr as *const DisplayDescriptor) }
-    };
-    alloc_string(s.as_bytes()) as i64
+    }
 }
 
 /// Render `value` per `desc` to a Rust `String` (no `:Type` prefix).

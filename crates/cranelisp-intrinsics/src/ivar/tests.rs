@@ -1163,3 +1163,59 @@ fn claimant_panic_ends_the_process_while_a_joiner_waits() {
     end.assert_panicked_with("backoff boom");
     assert!(!end.stderr.contains("RESUMED"), "{}", end.stderr);
 }
+
+// ---------------------------------------------------------------------------
+// The strict trace extent (design/intrinsics/trace-runtime.md §2; M-1038)
+// ---------------------------------------------------------------------------
+
+// spec: spec/04-expressions.md §4.12.2 — no spark is admitted on the thread
+// that records a trace, and nothing is reserved; a thread that does not record,
+// with budget available, keeps its parallelism.
+#[test]
+fn spark_admission_declines_on_the_recording_thread_only() {
+    let _role = crate::trace::RecordingRole::acquire();
+    let before = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    assert_eq!(
+        spark_budget_try_reserve(1),
+        0,
+        "the recording thread is declined"
+    );
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        before,
+        "nothing reserved"
+    );
+    let granted = std::thread::spawn(|| spark_budget_try_reserve(1))
+        .join()
+        .expect("non-recording thread");
+    assert_eq!(granted, 1, "a thread that does not record is granted");
+    IN_FLIGHT_SPARKS.fetch_sub(1, Ordering::SeqCst);
+}
+
+#[test]
+fn child_declines_one_spark_while_recording() {
+    if !selected("child_declines_one_spark_while_recording") {
+        return;
+    }
+    let _role = crate::trace::RecordingRole::acquire();
+    assert_eq!(spark_budget_try_reserve(1), 0);
+}
+
+// spec: design/intrinsics/trace-runtime.md §2 — with spark statistics on, a
+// trace decline advances the appended `trace_declines` field and not
+// `serial_continues`.
+#[test]
+fn trace_decline_is_counted_apart_from_budget_declines() {
+    let end = test_child::run(
+        &child("child_declines_one_spark_while_recording"),
+        &[("CRANELISP_SPARK_STATS", "1")],
+    );
+    assert_eq!(end.code, Some(0), "{}", end.stderr);
+    let line = end
+        .stderr
+        .lines()
+        .find(|l| l.starts_with("[SPARK_STATS]"))
+        .unwrap_or_else(|| panic!("no statistics line:\n{}", end.stderr));
+    assert!(line.contains(" serial_continues=0 "), "{line}");
+    assert!(line.ends_with(" trace_declines=1"), "{line}");
+}

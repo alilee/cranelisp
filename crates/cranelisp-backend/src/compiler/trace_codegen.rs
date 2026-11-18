@@ -863,16 +863,13 @@ where
             swap_results.push((GotGroupRelocs { got_data_id }, saved_got_val));
         }
 
-        // Compile the body expression.
-        // Disable sparkability analysis inside trace bodies — trace must
-        // execute sequentially to produce deterministic trace trees.
-        let saved_trace = self.in_trace_body;
-        self.in_trace_body = true;
+        // Compile the body expression. Its spark sites keep the ordinary
+        // create-gate, which declines while this thread records
+        // (trace-codegen.md §2).
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
         let body_result = self.compile_expr(body)?;
         self.in_tail_position = saved_tail;
-        self.in_trace_body = saved_trace;
 
         // Discard body result (dec RC if it is heap-allocated).
         // The trace result is the Trace ADT, not the body's value.

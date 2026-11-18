@@ -256,15 +256,15 @@ where
         // This is reached ONLY on the non-tail, non-TCO-self-call arm: the two
         // TCO self-call fast paths above `return` early, so a tail self-jump can
         // never reach the spark/force barrier (§2.5.3 — a jump to the loop header
-        // would bypass the force). Trace bodies and `CRANELISP_NO_LENIENT` suppress
-        // sparking exactly as the `let` site does (§2.3, §2.4). When ≥2 arguments
+        // would bypass the force). `CRANELISP_NO_LENIENT` suppresses sparking
+        // exactly as the `let` site does (§2.4); inside a trace's extent the
+        // create-gate declines at run time (trace-codegen.md §2). When ≥2 arguments
         // are independently worth sparking, create+spark an IVar per sparkable
         // argument here (Phase 1); the dispatch below then FORCES each at its
         // left-to-right position (Phase 2, the barrier) before any call code is
         // emitted, and feeds the forced values through the unchanged apply
         // lowering (Phase 3). See `maybe_force_sparked_arg`.
         if !*LENIENT_DISABLED
-            && !self.in_trace_body
             && !self.suppress_spark_gate
             && IoCombinator::of_call(resolved_call).is_none()
         {

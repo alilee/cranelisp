@@ -696,3 +696,28 @@ fn first_swap_pushes_trace_root_frame() {
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
     SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
 }
+
+// spec: spec/04-expressions.md §4.12.2 — off the recording thread a wrapper's
+// enter and exit receive zero words and record nothing: no frame is pushed and
+// nothing is allocated (M-1038).
+#[test]
+fn enter_and_exit_off_the_recording_thread_record_nothing() {
+    let _role = RecordingRole::acquire();
+    let frames = lock_trace_stack().len();
+    let name = b"user/f";
+    let params = [0i64];
+    std::thread::spawn(move || {
+        let allocs = crate::alloc::alloc_count();
+        cranelisp_trace_enter(
+            name.as_ptr() as i64,
+            name.len() as i64,
+            1,
+            params.as_ptr() as i64,
+        );
+        assert_eq!(cranelisp_trace_exit(7, 0), 7, "the result passes through");
+        assert_eq!(crate::alloc::alloc_count(), allocs, "nothing allocated");
+    })
+    .join()
+    .expect("non-recording thread");
+    assert_eq!(lock_trace_stack().len(), frames, "no frame pushed");
+}

@@ -66,10 +66,9 @@ where
         body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        // Check if lenient evaluation applies.
-        // Skip sparkability analysis inside trace bodies — trace must
-        // execute sequentially to produce deterministic trace trees.
-        if !*LENIENT_DISABLED && !self.in_trace_body && !self.suppress_spark_gate {
+        // Check if lenient evaluation applies. Inside a trace's extent the
+        // create-gate declines at run time (trace-codegen.md §2).
+        if !*LENIENT_DISABLED && !self.suppress_spark_gate {
             // Admission filter (lenient-eval.md §2.8.2 / §2.8.6): M-static (the
             // default) admits only recursive-SCC ∧ non-tail candidates via the
             // single-sourced classifier; `CRANELISP_SPARK_ADMIT=syntactic` selects

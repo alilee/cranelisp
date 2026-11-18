@@ -107,11 +107,6 @@ where
     /// Number of parameters of the current function.
     pub(crate) fn_param_count: usize,
 
-    /// Whether we are compiling inside a `(trace ...)` body.
-    /// When true, sparkability analysis is disabled — trace bodies must
-    /// execute sequentially to produce deterministic trace trees.
-    pub(crate) in_trace_body: bool,
-
     /// Sparked apply-arguments for the function application currently being
     /// dispatched (lenient-eval.md §4.4). When `Some((args_ptr, map))`, the
     /// apply whose argument slice has base pointer `args_ptr` had its arguments
@@ -176,7 +171,6 @@ where
             tail_loop_block: None,
             in_tail_position: false,
             fn_param_count,
-            in_trace_body: false,
             sparked_args: None,
             mstatic_recursive_cache: std::cell::RefCell::new(None),
             gate_arm_disc: String::new(),

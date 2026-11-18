@@ -1,6 +1,10 @@
 use super::*;
+use cranelisp_intrinsics::handle::Owned;
 use cranelisp_intrinsics::heap_string::{alloc_string, read_string_as_str};
-use cranelisp_intrinsics::trace::cranelisp_trace_format;
+use cranelisp_intrinsics::trace::{
+    consume_trace_call, cranelisp_collect_trace, cranelisp_trace_format,
+    cranelisp_trace_restore_got, cranelisp_trace_swap_got,
+};
 use cranelisp_types::{
     CallableArmDraft, CallableOrigin, ConcreteType, DefnVariant, Expr, ModuleFullPath,
     MonoDefnVariant, MonoExpr, Realization, Scheme, Span, Symbol, SymbolTable, TemplateBody,
@@ -18,10 +22,27 @@ use std::collections::HashMap;
 // — the cross-crate ABI is in agreement (FIXME 0254 + 0255).
 
 /// Run `cranelisp_trace_format` on a baked blob root and read back the result.
+///
+/// The formatter renders only on the thread that records a trace (packet row
+/// D8), so the call holds the trace role, taken and released through the
+/// entries a trace form calls: a swap of a GOT buffer this test owns with no
+/// slot wrapped, then restore and collect.
 fn fmt(value: i64, blob: &DescriptorBlob, root: usize) -> String {
+    let mut got = vec![0i64; cranelisp_types::GOT_TABLE_SIZE];
+    let got_base = got.as_mut_ptr() as i64;
+    let no_slots = std::ptr::NonNull::<u32>::dangling().as_ptr() as i64;
+    let no_wrappers = std::ptr::NonNull::<i64>::dangling().as_ptr() as i64;
+    let saved = cranelisp_trace_swap_got(got_base, 0, no_slots, no_wrappers);
     let ptr = unsafe { blob.buf.as_ptr().add(root) } as i64;
     let s_heap = cranelisp_trace_format(value, ptr);
-    unsafe { read_string_as_str(s_heap) }.to_string()
+    assert_ne!(
+        s_heap, 0,
+        "the recording thread receives a formatted String"
+    );
+    let rendered = unsafe { read_string_as_str(s_heap) }.to_string();
+    cranelisp_trace_restore_got(got_base, saved);
+    consume_trace_call(unsafe { Owned::from_abi(cranelisp_collect_trace()) });
+    rendered
 }
 
 #[test]

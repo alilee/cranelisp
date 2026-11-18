@@ -18,7 +18,7 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> i64 {
 // ── DisplayDescriptor — blob-building helpers for tests ───────────────────
 //
 // These build descriptor blobs *by hand* into a Vec<u8>, exactly as backend
-// (FIXME 0255) will, then exercise `cranelisp_trace_format` against them.
+// (FIXME 0255) will, then exercise the descriptor walk against them.
 // The builder mirrors the documented arena-blob encoding: records and data
 // packed contiguously, cross-links as self-relative i32 offsets.
 
@@ -84,12 +84,9 @@ impl BlobBuilder {
     }
 }
 
-/// Read back the heap String produced by `cranelisp_trace_format`.
+/// Render through the descriptor walk the formatting entry wraps.
 fn read_format_result(value: i64, desc_ptr: i64) -> String {
-    let s_heap = cranelisp_trace_format(value, desc_ptr);
-    let s = unsafe { crate::heap_string::read_string_as_str(s_heap) }.to_string();
-    unsafe { crate::alloc::dealloc(s_heap as *mut u8) };
-    s
+    format_with_descriptor(value, desc_ptr)
 }
 
 // spec: spec/04-expressions.md §4.12.2 / §12.9 — scalar trace formatting
@@ -356,4 +353,39 @@ fn descriptor_repr_is_24_bytes() {
     // Pins the cross-crate ABI record size + alignment (backend reads it).
     assert_eq!(std::mem::size_of::<DisplayDescriptor>(), 24);
     assert_eq!(std::mem::align_of::<DisplayDescriptor>(), 4);
+}
+
+// ── The formatting entry formats only for the recording thread (§3) ────────
+
+fn int_descriptor() -> BlobBuilder {
+    let mut b = BlobBuilder::new();
+    let d = b.reserve_desc();
+    b.set_desc_kind(d, DescriptorKind::Int);
+    b
+}
+
+// spec: spec/04-expressions.md §4.12.2 — a wrapper reached off the recording
+// thread formats nothing and allocates nothing (M-1038).
+#[test]
+fn format_entry_declines_off_the_recording_thread() {
+    let b = int_descriptor();
+    let allocs = crate::alloc::alloc_count();
+    assert_eq!(cranelisp_trace_format(42, b.root_ptr() as i64), 0);
+    assert_eq!(crate::alloc::alloc_count(), allocs, "nothing allocated");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — on the recording thread the entry
+// returns the rendered String.
+#[test]
+fn format_entry_renders_on_the_recording_thread() {
+    let b = int_descriptor();
+    let _role = crate::trace::RecordingRole::acquire();
+    let s_heap = cranelisp_trace_format(42, b.root_ptr() as i64);
+    assert_ne!(s_heap, 0);
+    // SAFETY: a non-zero result is a fresh HeapString this test owns.
+    assert_eq!(
+        unsafe { crate::heap_string::read_string_as_str(s_heap) },
+        "42"
+    );
+    unsafe { crate::alloc::dealloc(s_heap as *mut u8) };
 }

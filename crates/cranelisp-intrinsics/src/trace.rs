@@ -2,8 +2,8 @@
 //!
 //! This is the intrinsics-hosted home for the 12 `cranelisp_trace_*`
 //! backend-emitted-call function bodies, the trace stack, the GOT-swap
-//! machinery, the `Trace` ADT field accessors, and the **pure
-//! descriptor-driven value formatter** ([`cranelisp_trace_format`]).
+//! machinery, the `Trace` ADT field accessors, and the descriptor-driven value
+//! formatter ([`cranelisp_trace_format`]), whose descriptor walk is pure.
 //!
 //! Per the 2026-06-04 user ruling (canonical: `design/arch/tracing.md`,
 //! TARGET STATE; BC §4b invariant 12) the `(trace ...)` runtime lives here,
@@ -165,6 +165,17 @@ thread_local! {
 
 fn current_thread_id() -> u64 {
     THIS_THREAD_ID.with(|&id| id)
+}
+
+/// Whether the calling thread holds the trace role, and so records
+/// (`tracing.md` §4.2). The one reader of the role word for the formatting
+/// entry, enter, exit and spark admission.
+///
+/// A relaxed load suffices: only this thread writes its own id into the word
+/// or clears it, and a stale view of another thread's change reads 0 or a
+/// foreign id, both "not recording".
+pub(crate) fn this_thread_records() -> bool {
+    TRACE_THREAD_ID.load(Ordering::Relaxed) == current_thread_id()
 }
 
 // ── Trace stack ───────────────────────────────────────────────────────────────
@@ -502,7 +513,9 @@ pub extern "C" fn cranelisp_trace_restore_got(got_base: i64, saved_got: i64) {
 }
 
 /// Called by wrapper functions at the entry of each traced call.
-/// No-op if the calling thread is not the trace thread.
+/// No-op if the calling thread is not the trace thread; there every parameter
+/// String word is 0, because [`cranelisp_trace_format`] formats nothing off the
+/// recording thread.
 ///
 /// Raises `TRACE_BODY_RUNNING` (the nested-trace boundary flag) — the first
 /// enter after role-acquire marks the body as actively executing.
@@ -519,7 +532,7 @@ pub extern "C" fn cranelisp_trace_enter(
     params_count: i64,
     params_array_ptr: i64,
 ) {
-    if TRACE_THREAD_ID.load(Ordering::Relaxed) != current_thread_id() {
+    if !this_thread_records() {
         return;
     }
     // The body is now actively executing on this thread; a subsequent swap_got
@@ -557,14 +570,15 @@ pub extern "C" fn cranelisp_trace_enter(
 /// Pops the current frame, builds a TraceCall ADT, and pushes it into the
 /// parent frame.
 /// Returns `result` unchanged.
-/// No-op (returns `result`) if the calling thread is not the trace thread.
+/// No-op (returns `result`) if the calling thread is not the trace thread;
+/// there `result_str_ptr` is 0.
 ///
 /// Parameters:
 /// - `result`: the original return value (passed through unchanged)
 /// - `result_str_ptr`: cranelisp String heap ptr for the formatted result (RC=1)
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_trace_exit(result: i64, result_str_ptr: i64) -> i64 {
-    if TRACE_THREAD_ID.load(Ordering::Relaxed) != current_thread_id() {
+    if !this_thread_records() {
         return result;
     }
     let mut stack = lock_trace_stack();
@@ -870,6 +884,35 @@ pub fn consume_trace_call(handle: Owned) {
     intrinsics_rc::consume_shallow(tresult);
     consume_slist_of_trace(tchildren);
     unsafe { intrinsics_alloc::dealloc(ptr as *mut u8) };
+}
+
+/// The trace role held by the calling thread for a test's extent, acquired
+/// and released through the same entries a trace form calls: a swap of a GOT
+/// buffer the guard owns, then restore and collect.
+#[cfg(test)]
+pub(crate) struct RecordingRole {
+    got: Box<[i64]>,
+    saved: i64,
+}
+
+#[cfg(test)]
+impl RecordingRole {
+    pub(crate) fn acquire() -> Self {
+        let mut got = vec![0i64; GOT_TABLE_SIZE].into_boxed_slice();
+        let no_slots = ptr::NonNull::<u32>::dangling().as_ptr() as i64;
+        let no_wrappers = ptr::NonNull::<i64>::dangling().as_ptr() as i64;
+        let saved = cranelisp_trace_swap_got(got.as_mut_ptr() as i64, 0, no_slots, no_wrappers);
+        assert_ne!(saved, SENTINEL_SAVED_GOT, "the trace role was free");
+        Self { got, saved }
+    }
+}
+
+#[cfg(test)]
+impl Drop for RecordingRole {
+    fn drop(&mut self) {
+        cranelisp_trace_restore_got(self.got.as_mut_ptr() as i64, self.saved);
+        consume_trace_call(crate::handle::test_owned(cranelisp_collect_trace()));
+    }
 }
 
 #[cfg(test)]
