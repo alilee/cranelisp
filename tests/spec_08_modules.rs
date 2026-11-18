@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 use std::time::Duration;
 
 // =============================================================================
@@ -6328,9 +6328,20 @@ fn s124_1079_b_control_repl() {
 }
 
 fn s124_declared_child_graph(returns_to_parent: bool) -> Cranelisp {
+    s124_declared_child_graph_with_alias(returns_to_parent, false)
+}
+
+fn s124_declared_child_graph_with_alias(returns_to_parent: bool, alias: bool) -> Cranelisp {
     Cranelisp::new()
         .file("P.cl", "(mod c)\n(defn x [] 1)\n")
-        .file("P/c.cl", "(import [z [zf]])\n(defn cf [] (zf))\n")
+        .file(
+            "P/c.cl",
+            if alias {
+                "(import [(z zz) []])\n(defn cf [] (zz/zf))\n"
+            } else {
+                "(import [z [zf]])\n(defn cf [] (zf))\n"
+            },
+        )
         .file(
             "z.cl",
             if returns_to_parent {
@@ -6342,6 +6353,13 @@ fn s124_declared_child_graph(returns_to_parent: bool) -> Cranelisp {
 }
 
 fn s124_declared_child_batch_outcomes(returns_to_parent: bool) -> Vec<bool> {
+    s124_declared_child_batch_outcomes_with_alias(returns_to_parent, false)
+}
+
+fn s124_declared_child_batch_outcomes_with_alias(
+    returns_to_parent: bool,
+    alias: bool,
+) -> Vec<bool> {
     [
         "(import [P [x]])",
         "(import [z [zf]])",
@@ -6350,7 +6368,7 @@ fn s124_declared_child_batch_outcomes(returns_to_parent: bool) -> Vec<bool> {
     .iter()
     .map(|import| {
         let source = format!("{import}\n(defn main [] (primitives/Pure (P.c/cf)))\n");
-        let out = s124_declared_child_graph(returns_to_parent)
+        let out = s124_declared_child_graph_with_alias(returns_to_parent, alias)
             .file("app.cl", &source)
             .run("app.cl")
             .output();
@@ -6359,11 +6377,17 @@ fn s124_declared_child_batch_outcomes(returns_to_parent: bool) -> Vec<bool> {
         assert!(
             accepted
                 || (out.status.code() == Some(1)
-                    && combined(&out).contains("circular dependency detected")),
+                    && (combined(&out).contains("circular dependency detected")
+                        || (alias
+                            && combined(&out)
+                                .contains("module 'zz' referenced by 'zz/...' not found")))),
             "route {import} must reach the value or cycle assertion: status={} {}",
             out.status,
             combined(&out)
         );
+        if alias {
+            eprintln!("route {import}: accepted={accepted} {}", combined(&out));
+        }
         accepted
     })
     .collect()
@@ -6387,10 +6411,14 @@ fn s124_declared_child_graph_batch_acyclic_control() {
 }
 
 fn s124_declared_child_repl_outcomes(returns_to_parent: bool) -> Vec<bool> {
+    s124_declared_child_repl_outcomes_with_alias(returns_to_parent, false)
+}
+
+fn s124_declared_child_repl_outcomes_with_alias(returns_to_parent: bool, alias: bool) -> Vec<bool> {
     ["(z/zf)", "(P.c/cf)"]
         .iter()
         .map(|first| {
-            let out = s124_declared_child_graph(returns_to_parent)
+            let out = s124_declared_child_graph_with_alias(returns_to_parent, alias)
                 .stdin(&format!("{first}\n/quit\n"))
                 .output()
                 .assert_ok();
@@ -6401,9 +6429,14 @@ fn s124_declared_child_repl_outcomes(returns_to_parent: bool) -> Vec<bool> {
                 ":primitives/Int 10"
             });
             assert!(
-                accepted || text.contains("circular dependency detected"),
+                accepted
+                    || text.contains("circular dependency detected")
+                    || (alias && text.contains("module 'zz' referenced by 'zz/...' not found")),
                 "route {first} must reach the value or cycle assertion: {text}"
             );
+            if alias {
+                eprintln!("route {first}: accepted={accepted} {text}");
+            }
             accepted
         })
         .collect()
@@ -6552,5 +6585,46 @@ fn s124_parent_switch_definition_with_two_super_children_survives_restart() {
         ],
         "{}",
         second.stdout
+    );
+}
+
+// spec: spec/08-modules.md §8.10.2 — ACT-1081 route agreement also holds for a file-local module alias.
+// defect: class=mode-divergence locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_declared_child_alias_graph_batch_routes_agree() {
+    let outcomes = s124_declared_child_batch_outcomes_with_alias(true, true);
+    assert!(
+        outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        "aliased graph must agree across P, z, P.c entry routes (true=value, false=refused): {outcomes:?}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.2 — ACT-1081 alias control removes only z's return edge to P.
+#[test]
+fn s124_declared_child_alias_graph_batch_acyclic_control() {
+    assert_eq!(
+        s124_declared_child_batch_outcomes_with_alias(false, true),
+        vec![true; 3]
+    );
+}
+
+// spec: spec/08-modules.md §8.10.2 — ACT-1081 aliased graph agrees across cold REPL orders and batch routes.
+// defect: class=mode-divergence locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_declared_child_alias_graph_repl_orders_agree() {
+    let mut outcomes = s124_declared_child_repl_outcomes_with_alias(true, true);
+    outcomes.extend(s124_declared_child_batch_outcomes_with_alias(true, true));
+    assert!(
+        outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        "aliased REPL z-first, child-first and batch routes must agree (true=value, false=refused): {outcomes:?}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.2 — ACT-1081 alias control gives 10 in both cold REPL orders.
+#[test]
+fn s124_declared_child_alias_graph_repl_acyclic_control() {
+    assert_eq!(
+        s124_declared_child_repl_outcomes_with_alias(false, true),
+        vec![true; 2]
     );
 }
