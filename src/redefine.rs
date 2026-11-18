@@ -292,19 +292,8 @@ pub(crate) fn validate_guarded_redefinition(
         return Ok(());
     }
 
-    let same_language_type = LanguageType::of(prior) == LanguageType::of(staged);
-    if same_language_type {
-        if cranelisp_types::ModeSummary::abi_eq_opt(prior.mode_summary(), staged.mode_summary()) {
-            return Ok(());
-        }
-        return Err(CranelispError::TypeError {
-            message: format!(
-                "cannot redefine {target}: language type is unchanged; old ownership ABI: {}; proposed ownership ABI: {}; the proposed replacement changes the ownership ABI",
-                format_ownership_abi(prior),
-                format_ownership_abi(staged),
-            ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
+    if LanguageType::of(prior) == LanguageType::of(staged) {
+        return Ok(());
     }
 
     let blockers = blocking_dependents(symbol_tables, &target);
@@ -490,31 +479,6 @@ fn format_callable_language_type(binding: &Binding<Code>) -> String {
             format!("{{{}}}", signatures.join(", "))
         }
         _ => "<non-callable>".to_string(),
-    }
-}
-
-fn format_ownership_abi(binding: &Binding<Code>) -> String {
-    let arity = binding
-        .callable()
-        .and_then(|callable| match &callable.arm.scheme.ty {
-            Type::Fn(params, _) => Some(params.len()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    match binding.mode_summary() {
-        Some(summary) => {
-            let params = (0..arity)
-                .map(|index| format!("{:?}", summary.param_mode(index)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("params [{params}], result {:?}", summary.result)
-        }
-        None => {
-            let params = std::iter::repeat_n("Owned", arity)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("params [{params}], result Fresh")
-        }
     }
 }
 
@@ -1270,6 +1234,84 @@ mod tests {
             vec![fq("user", "__macro_m_clause_0"), fq("user", "g")],
             "the eval wrapper is excluded; the macro clause is kept"
         );
+    }
+
+    fn with_mode_summary(
+        mut binding: Binding<Code>,
+        summary: Option<cranelisp_types::ModeSummary>,
+    ) -> Binding<Code> {
+        let Decl::Callable(callable) = &mut binding.declaration else {
+            panic!("mode-summary fixture must be a single callable");
+        };
+        let Life::Concrete { mode_summary, .. } = &mut callable.arm.life else {
+            panic!("mode-summary fixture must be concrete");
+        };
+        *mode_summary = summary;
+        binding
+    }
+
+    // spec: repl/spec/18-redefinition.md §18.1; design/int/session-transaction.md
+    // §2.4 — a same-language-type replacement is admitted whatever its
+    // inferred ownership modes, even with a live caller; the language type
+    // alone still refuses.
+    #[test]
+    fn same_type_replacement_is_admitted_whatever_its_modes() {
+        use cranelisp_types::{Mode, ModeSummary, ResultMode};
+        let module = ModuleFullPath::from("user");
+        let target = fq("user", "f");
+        let tables = SymbolTables::new();
+        let mut user = SessionSymbolTable::new_with_params(module.clone());
+        install_concrete_fixture(&mut user, "f", fn_ty(vec![Type::Int], Type::Int), vec![], 0);
+        install_concrete_fixture(
+            &mut user,
+            "caller",
+            fn_ty(vec![Type::Int], Type::Int),
+            vec![target.clone()],
+            1,
+        );
+        let prior = with_mode_summary(
+            user.get("f").expect("fixture installed").clone(),
+            Some(ModeSummary {
+                param_modes: vec![Mode::Borrowed],
+                result: ResultMode::AliasOf(0),
+                ..ModeSummary::default()
+            }),
+        );
+        tables.insert(module.clone(), user);
+        let staging = SessionSymbolTable::new_with_params(module.clone());
+        let name = Symbol::from("f");
+        let guard = |staged: &Binding<Code>| {
+            validate_guarded_redefinition(
+                &tables,
+                &module,
+                &name,
+                &staging,
+                &staging,
+                Some(&prior),
+                staged,
+            )
+        };
+
+        for staged_summary in [
+            None,
+            Some(ModeSummary {
+                param_modes: vec![Mode::Owned],
+                result: ResultMode::Fresh,
+                ..ModeSummary::default()
+            }),
+        ] {
+            let staged = with_mode_summary(
+                concrete_def(fn_ty(vec![Type::Int], Type::Int), 0),
+                staged_summary.clone(),
+            );
+            assert!(
+                guard(&staged).is_ok(),
+                "same type with modes {staged_summary:?} must publish in place"
+            );
+        }
+        let changed = concrete_def(fn_ty(vec![Type::String], Type::Int), 0);
+        let refusal = guard(&changed).expect_err("control: a type change with a caller refuses");
+        assert!(refusal.to_string().contains("user/caller"), "{refusal}");
     }
 
     // spec: design/int/session-transaction.md §"GOT exhaustion" (obligation 3)

@@ -206,15 +206,17 @@ Use the read-throughs; never re-pattern the lifecycle set:
 ## Ownership vocabulary
 
 - **Never index `ModeSummary` vectors.** `param_mode`, `param_flow` and
-  `spark_op` are the one home for ⊤-on-absence; compare ABI only with
-  `abi_eq`/`abi_eq_opt` (`None` is all-conservative).
+  `spark_op` are the one home for ⊤-on-absence.
+- **There is no ABI comparison of summaries.** A compiled slot's contract does
+  not depend on its summary, so nothing compares two summaries' mode halves
+  ([ownership inference §5](../../design/arch/ownership-inference.md#5-mode-summaries-module-caching-and-the-r3-redefinition-model-part-4)).
+  Do not reintroduce one for a dev-tier consumer.
 - **`ResultMode::Fresh` is the `Default` but the result axis's strongest
-  claim**, not its conservative point: backend elides the return protect on a
-  present `Fresh`. The axis's ⊤ is `MayAliasAny`, and the conservative whole
-  summary is `None`. `ModeSummary::default()` and `is_abi_conservative()` are
-  caller-side ABI statements, not substitutes for absence, and no producer may
-  mint a summary as a fallback. `ownership.rs` module rustdoc §Monotone
-  defaults is the one home; read it before touching a `result` arm.
+  claim**, not its conservative point. The axis's ⊤ is `MayAliasAny`, and the
+  conservative whole summary is `None`. `ModeSummary::default()` is not a
+  substitute for absence, and no producer may mint a summary as a fallback.
+  `ownership.rs` module rustdoc §Monotone defaults is the one home; read it
+  before touching a `result` arm.
 - `ownership_analysis_off()` is read once per process and is a backend cache
   global key.
 - **`ViewBuildError` routing is load-bearing.** `NotConcrete` may fall back to
@@ -265,7 +267,8 @@ Use the read-throughs; never re-pattern the lifecycle set:
 - Payload structs of those sums remain non-exhaustive, and cross-crate
   construction goes through the sanctioned constructors and funnels.
 - A variant added to `ResultMode` re-runs the `_ =>` and `== Fresh` escape
-  search (`ownership.rs` rustdoc §Exhaustiveness discipline).
+  search (`ownership.rs` rustdoc §Exhaustiveness discipline); no production
+  equality read exists.
 
 ## Tests
 

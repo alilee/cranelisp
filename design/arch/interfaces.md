@@ -272,15 +272,13 @@ not a backend input and no function converts it into one. The backend's input is
   stay produced, published and persisted for the release tier
   ([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)).
 - `ResultMode` is a closed sum without `#[non_exhaustive]`, so a new variant forces each
-  consumer match to be revisited. One equality read against `Fresh` escapes that forcing and
-  fails safe: `ModeSummary::is_abi_conservative`, reached only by the live-redefinition gate.
-  Re-run the wildcard and equality census when adding a variant.
-- **Approved S124 removal (packet row D7):** `ModeSummary::{abi_eq, abi_eq_opt,
-  is_abi_conservative}` leave the surface with their only consumer, the binary's
-  mode-difference refusal, which the user retired with REPL §18.1.2 on 2026-11-16
+  consumer match to be revisited. An equality read against `Fresh` would escape that
+  forcing; none exists in production. Re-run the wildcard and equality census when adding a
+  variant.
+- **The surface offers no ABI comparison of summaries.** A compiled slot's contract does not
+  depend on its summary, so a same-type live redefinition publishes whatever its inferred
+  modes
   ([ownership inference §5](ownership-inference.md#5-mode-summaries-module-caching-and-the-r3-redefinition-model-part-4)).
-  A same-type live redefinition then publishes whatever its inferred modes. This is a
-  semantic change the baseline cannot show.
 - Every variant is serde-visible on persisted summaries, so a change takes a
   `CACHE_SCHEMA_VERSION` bump.
 - Ruling and semantics: [ownership inference](ownership-inference.md).
@@ -719,7 +717,6 @@ design that needs a public change outside these rows stops and returns to `arch`
 | Row | Change | Owning surface | Other surfaces that change | Contract |
 |---|---|---|---|---|
 | D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed. Waits on the user's approval of one further delta the row does not name: `SymbolTable::install_extern` loses the matching parameter | types | backend cache validation; primitives (the one production caller of `install_extern`); test callers in backend, typecheck and the binary | [safety invariants](safety-invariants.md) row R5 |
-| D7 | `ModeSummary::{abi_eq, abi_eq_opt, is_abi_conservative}` removed | types | binary (`redefine.rs`, `worker.rs`) | [ownership-inference carriers](#ownership-inference-carriers) |
 | D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | [safety invariants](safety-invariants.md) row R5 |
 | D12 | `session_v4::BatchError` added; `CompilerSession::trampoline` and `link_by_name` return it. A missing `main` is rendered with its error category and no location (S124-Q8) | binary (root library) | — (sole consumer is the binary target `src/main.rs`) | [BC §6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle), known architectural constraints |
 | K11-b | `IntrinsicEntry::is_runtime` removed | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 11 |
@@ -729,9 +726,7 @@ design that needs a public change outside these rows stops and returns to `arch`
 
 Order between rows that the designs respect:
 
-- D7 follows `spec`'s removal of REPL §18.1.2 and `qa`'s allocation of the mode-change
-  redefinition cell.
-- D6 and D7 have no architectural dependency on another row; their place is `sprint`'s.
+- D6 has no architectural dependency on another row; its place is `sprint`'s.
   D9 lands in D6's change-set, a callee-first migration from types through its callers.
 - D6 bumps `CACHE_SCHEMA_VERSION` in its own change-set.
 - D12 has no order against another row.

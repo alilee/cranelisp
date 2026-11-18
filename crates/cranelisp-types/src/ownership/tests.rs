@@ -1,7 +1,7 @@
 //! Sibling unit tests for the ownership carrier types (Principle 23) —
-//! pinning the ⊤-on-absence accessor contract, the ABI-surface comparison,
+//! pinning the ⊤-on-absence accessor contract, full-`Eq` change detection,
 //! and the serde conservative-default round-trip that
-//! `design/typecheck/ownership-inference.md` §13.1 items 1–5 bind CS-A to.
+//! `design/typecheck/ownership-inference.md` §13.1 binds the carrier to.
 
 use super::*;
 
@@ -56,9 +56,9 @@ fn spark_op_absent_reads_true() {
 // summary is NOT the absence fallback — ownership.rs §Monotone defaults) ---
 
 #[test]
-fn default_summary_is_abi_conservative() {
+fn default_summary_is_the_caller_side_point() {
     let s = ModeSummary::default();
-    assert!(s.is_abi_conservative());
+    assert!(s.param_modes.is_empty());
     assert_eq!(s.result, ResultMode::Fresh);
     assert!(!s.result_unique);
     assert_eq!(Mode::default(), Mode::Owned);
@@ -107,109 +107,41 @@ fn eq_detects_advisory_half_change() {
         a, b,
         "advisory-half change must be Eq-visible (fixpoint re-entry)"
     );
-    // ...but NOT abi-visible.
-    assert!(a.abi_eq(&b), "advisory-only change is never ABI-changing");
-}
-
-// --- abi_eq: (param_modes, result) only, through ⊤-on-absence (item 5) ---
-
-#[test]
-fn abi_eq_ignores_advisory_and_normalises_absence() {
-    // [] and [Owned, Owned] are the same ABI surface.
-    let bare = ModeSummary::default();
-    let explicit = ModeSummary {
-        param_modes: vec![Mode::Owned, Mode::Owned],
-        ..Default::default()
-    };
-    assert!(bare.abi_eq(&explicit));
-    assert!(explicit.abi_eq(&bare));
-
-    // A mode difference IS an ABI difference.
-    let borrowed = ModeSummary {
-        param_modes: vec![Mode::Borrowed],
-        ..Default::default()
-    };
-    assert!(!bare.abi_eq(&borrowed));
-
-    // A result-mode difference IS an ABI difference.
-    let proj = ModeSummary {
-        result: ResultMode::ProjectionOf(0),
-        ..Default::default()
-    };
-    assert!(!bare.abi_eq(&proj));
-}
-
-#[test]
-fn abi_eq_opt_treats_none_as_conservative() {
-    let conservative = ModeSummary {
-        param_modes: vec![Mode::Owned],
-        ..Default::default()
-    };
-    let borrowed = ModeSummary {
-        param_modes: vec![Mode::Borrowed],
-        ..Default::default()
-    };
-    assert!(ModeSummary::abi_eq_opt(None, None));
-    assert!(ModeSummary::abi_eq_opt(Some(&conservative), None));
-    assert!(ModeSummary::abi_eq_opt(None, Some(&conservative)));
-    assert!(!ModeSummary::abi_eq_opt(None, Some(&borrowed)));
-    assert!(!ModeSummary::abi_eq_opt(Some(&borrowed), None));
-    assert!(ModeSummary::abi_eq_opt(Some(&borrowed), Some(&borrowed)));
 }
 
 // --- MayAliasOf (S111 §3.7) — the COW result point ---
 
 // spec: design/arch/ownership-inference.md §3.7 — MayAliasOf is a distinct
-// serde-visible variant; it is NON-conservative (protect kept) and never
-// ABI-equal to Fresh.
+// serde-visible variant, equal neither to Fresh nor to the unconditional
+// claims at the same index.
 #[test]
-fn may_alias_of_is_non_conservative_and_serde_stable() {
+fn may_alias_of_is_distinct_and_serde_stable() {
     let cow = ModeSummary {
         result: ResultMode::MayAliasOf(0),
         ..Default::default()
     };
-    // The binary `== Fresh` escape reads (is_abi_conservative here,
-    // return_is_fresh_by_summary in backend) are safe-direction: MayAliasOf is
-    // NOT Fresh ⇒ classified non-conservative ⇒ protect kept.
-    assert!(
-        !cow.is_abi_conservative(),
-        "MayAliasOf(0) result is not the Fresh conservative point"
-    );
     // Serde round-trip preserves the variant + payload.
     let json = serde_json::to_string(&cow).unwrap();
     let back: ModeSummary = serde_json::from_str(&json).unwrap();
     assert_eq!(back.result, ResultMode::MayAliasOf(0));
-    // ABI-distinct from Fresh (an R3 ABI-changing redefinition) and from the
-    // unconditional AliasOf/ProjectionOf at the same index.
-    let fresh = ModeSummary::default();
-    assert!(!cow.abi_eq(&fresh));
-    let alias = ModeSummary {
-        result: ResultMode::AliasOf(0),
-        ..Default::default()
-    };
-    assert!(!cow.abi_eq(&alias));
+    assert_ne!(cow.result, ResultMode::Fresh);
+    assert_ne!(cow.result, ResultMode::AliasOf(0));
+    assert_ne!(cow.result, ResultMode::ProjectionOf(0));
 }
 
 // --- MayAliasAny (S121 §19.2) — the result axis's ⊤ ---
 
 // spec: design/typecheck/ownership-inference.md §19.2 — MayAliasAny is a
-// distinct, index-less, serde-visible unit variant; NON-conservative for the
-// `== Fresh` binaries (protect kept), ABI-distinct from Fresh and from every
-// indexed may-alias point; the `Default` stays Fresh.
+// distinct, index-less, serde-visible unit variant, equal neither to Fresh
+// nor to any indexed may-alias point; the `Default` stays Fresh.
 #[test]
-fn may_alias_any_is_top_indexless_non_conservative_and_serde_stable() {
+fn may_alias_any_is_top_indexless_distinct_and_serde_stable() {
     let top = ModeSummary {
         result: ResultMode::MayAliasAny,
         ..Default::default()
     };
     // Defaults are unchanged by the addition.
     assert_eq!(ResultMode::default(), ResultMode::Fresh);
-    // The two `== Fresh` escape reads classify it non-conservative.
-    assert!(
-        !top.is_abi_conservative(),
-        "MayAliasAny is the result ⊤, never the Fresh conservative point"
-    );
-    assert!(!ModeSummary::abi_eq_opt(Some(&top), None));
     // Serde: a unit variant with no payload; the persisted spelling is pinned
     // because it is the schema-27 cache shape.
     let json = serde_json::to_string(&top).unwrap();
@@ -219,19 +151,10 @@ fn may_alias_any_is_top_indexless_non_conservative_and_serde_stable() {
     );
     let back: ModeSummary = serde_json::from_str(&json).unwrap();
     assert_eq!(back.result, ResultMode::MayAliasAny);
-    assert!(back.abi_eq(&top));
-    // ABI-distinct from Fresh and from the indexed conditional points — a
-    // MayAliasOf(k) → MayAliasAny redefinition IS an R3 ABI change.
-    assert!(!top.abi_eq(&ModeSummary::default()));
+    assert_eq!(back, top);
+    assert_ne!(top, ModeSummary::default());
     for k in 0..2 {
-        let indexed = ModeSummary {
-            result: ResultMode::MayAliasOf(k),
-            ..Default::default()
-        };
-        assert!(
-            !top.abi_eq(&indexed),
-            "MayAliasAny must not ABI-equal MayAliasOf({k})"
-        );
+        assert_ne!(top.result, ResultMode::MayAliasOf(k));
     }
 }
 

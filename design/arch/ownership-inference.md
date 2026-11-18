@@ -14,8 +14,8 @@ pass (`crates/cranelisp-typecheck/src/ownership/`) and backend consumption of pu
 summaries exist in source. This document states the contract; it does not grade how much of
 each increment (§7) is delivered — the interior designs and the verification plan own that.
 Guarded redefinition governs §5, which also records the superseded R3 dependent-recompilation
-ruling. The interim live-redefinition restriction on mode changes is retired by user ruling
-(2026-11-16) and leaves source in S124 (§5, "Modes are not slot ABI"). §3.4 states which
+ruling. The interim live-redefinition restriction on mode changes was retired by user ruling
+(2026-11-16) and removed in S124 (§5, "Modes are not slot ABI"). §3.4 states which
 mechanisms the dev lowering keeps; sections that describe a mechanism outside that list record
 the release-tier design, not the dev lowering.
 **Provenance / measured basis:** the S99 ablation settlement (`sprints/archive/sprint-99.md`;
@@ -508,8 +508,8 @@ shared lowering. The current disposition of each built mechanism is
 
 **S124 retirements.** Each fails Principle 27's acid test — removing it changes a constant,
 not a growth rate. Stack placement (`8f44040e`), value flattening (`441e31ea`) and spark
-density (`4b8660c9`) have left source. The borrow-elision carrier and the mode-ABI gate are
-approved and still in source at `e6d566bf`:
+density (`4b8660c9`) have left source, and so has the mode-ABI gate. The borrow-elision
+carrier is approved and still in source at `e6d566bf`:
 
 | Mechanism | What leaves the dev lowering | What stays produced for the release tier |
 |---|---|---|
@@ -634,8 +634,8 @@ Candidate (b) — flipping the `:590` default — is REJECTED.**
 
 - **(a1) Vocabulary: `ResultMode::MayAliasOf(usize)`** joins the enum — "the result is either
   a fresh value or param *i*'s reference, decided dynamically; the consumer must never elide
-  protection on it, and must never assume it IS the param". ABI-bearing like its siblings
-  (compared by `abi_eq`). Serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION`
+  protection on it, and must never assume it IS the param". ABI-bearing like its siblings.
+  Serde-visible on persisted summaries ⇒ **`CACHE_SCHEMA_VERSION`
   19→20** + types `public-api.txt` regen + `interfaces.md` §"Ownership-inference carriers" +
   the [carrier shape](ownership-inference.md#33-the-carrier-fields), all in the implementing change-set (baseline-diff discipline).
   Consumer semantics:
@@ -752,10 +752,9 @@ Four axes, owners assigned:
    §Exhaustiveness discipline, recorded S111 Phase 3): the ONE production match
    (`transfer.rs:592–609`) gains the `MayAliasOf(k)` arm per §3.7; the two grep
    ESCAPES that compile silently are each verified safe-direction — backend
-   `return_is_fresh_by_summary` (`fn_compiler.rs:1722`; `== Fresh` ⇒ protect KEPT) and
-   `ModeSummary::is_abi_conservative` (`ownership.rs:201`; `== Fresh` ⇒ `MayAliasOf`
-   classifies non-conservative). `abi_eq` is variant-agnostic equality — safe by
-   construction. Sweep confirmed NO third escape (2026-07-17); `/review` re-runs the
+   `return_is_fresh_by_summary` (`== Fresh` ⇒ protect KEPT) and the types
+   `is_abi_conservative` predicate (`== Fresh` ⇒ `MayAliasOf` classifies non-conservative).
+   Both reads have since left source (the second with S124 packet row D7). Sweep confirmed NO third escape (2026-07-17); `/review` re-runs the
    `_ =>`/`== Fresh` grep on the landing change-set.
 3. **Producer axis** — `origin_to_result_mode` (`transfer.rs:237–252`): **BOTH
    `MayParam` arms publish `MayAliasOf(idx)`** — `projection:false` (was hard
@@ -869,9 +868,9 @@ position consumes its arguments whatever the callee's summary, so a compiled slo
 is the same for every mode summary. "ABI-changing" in §5.5 and §5.6 therefore means a change of
 language type. A same-type redefinition publishes in place whatever its inferred modes, and
 ACT-0953, which asked for an adaptation that preserves old callers across a mode change, is
-discharged by having nothing to adapt. REPL §18.1.2, its diagnostic and the binary's
-mode-difference refusal are removed in S124; at `4b58ab93` the refusal is still in
-`src/redefine.rs` and `src/worker.rs`. The premise's grade and falsifier are
+discharged by having nothing to adapt. REPL §18.1.2, its diagnostic, the binary's
+mode-difference refusal and the types predicates that served it (`ModeSummary::abi_eq`,
+`abi_eq_opt` and `is_abi_conservative`) were removed in S124. The premise's grade and falsifier are
 [safety invariants](safety-invariants.md) row R12. A release tier that specialises a slot by
 mode needs its own rule; Principle 27 places such specialisation outside the tiers that
 redefine live. Text in §3 that calls the mode vector ABI-bearing records the pre-uniform

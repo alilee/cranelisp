@@ -977,11 +977,7 @@ fn plan_demand_publication(
                 )
                 .ok_or_else(|| rematerialization_error(captured, "new instance disappeared"))?;
             let kind = crate::redefine::classify_redefinition(symbol.as_ref(), Some(prior), staged);
-            let abi_compatible = kind != crate::redefine::RedefKind::AbiChanging
-                && cranelisp_types::ModeSummary::abi_eq_opt(
-                    prior.mode_summary(),
-                    staged.mode_summary(),
-                );
+            let abi_compatible = kind != crate::redefine::RedefKind::AbiChanging;
             let decision = match captured.policy {
                 SameLanguageType
                     if captured.staged_key.as_ref() == Some(&captured.prior_key)

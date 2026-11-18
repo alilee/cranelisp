@@ -321,12 +321,13 @@ fn install_plain_template_fixture(
         .expect("plain template fixture must install");
 }
 
-// spec: design/int/s122-closure.md §2 — ordinary replacement preparation
-// rematerializes a prior generic instance even with no named caller.
+// spec: design/int/s122-closure.md §2; design/int/session-transaction.md §2.4
+// — ordinary replacement preparation rematerializes a prior generic instance
+// even with no named caller, in its slot while its realization key holds.
 #[test]
 fn ordinary_replacement_preparation_rematerializes_prior_instance() {
     use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
-    use cranelisp_types::{CodegenBehaviour, ConcreteType, MonoDemand, RetireReason};
+    use cranelisp_types::{CodegenBehaviour, ConcreteType, MonoDemand};
 
     let root = tempfile::tempdir().unwrap();
     let mut session = CompilerSession::new(
@@ -414,17 +415,23 @@ fn ordinary_replacement_preparation_rematerializes_prior_instance() {
         }
         other => panic!("expected replacement-materialized Int body, got {other:?}"),
     };
-    assert_ne!(
+    assert_eq!(
         new_slot, prior_slot,
-        "changed ownership ABI needs a fresh slot"
+        "an unchanged realization key keeps its slot whatever its modes"
     );
-    assert!(table.retired_slots().iter().any(|retired| {
-        retired.slot.index() == prior_slot
-            && matches!(
-                &retired.reason,
-                RetireReason::AbiChanging { symbol } if symbol == &instance_key
-            )
-    }));
+    assert!(
+        prepared
+            .decisions
+            .contains(&StagedPublicationDecision::PreserveAbi {
+                symbol: instance_key.clone(),
+            })
+    );
+    assert!(
+        !table
+            .retired_slots()
+            .iter()
+            .any(|retired| retired.slot.index() == prior_slot)
+    );
     assert!(
         prepared.targets.contains(&instance_target),
         "the successful demand target must join the ordinary compile batch"
@@ -596,6 +603,74 @@ fn ordinary_same_type_replacement_preparation_rematerializes_prior_instance() {
             })
     );
     assert!(prepared.targets.contains(&instance_target));
+    session.shutdown();
+}
+
+// spec: repl/spec/18-redefinition.md §18.1; design/int/session-transaction.md
+// §2.4 — a same-language-type generic edit whose realization infers different
+// ownership modes keeps that realization's slot and its live caller.
+#[test]
+fn same_type_mode_change_rematerializes_instance_in_its_slot() {
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+    use cranelisp_types::{CodegenBehaviour, ConcreteType, Mode, MonoDemand};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut session = CompilerSession::new(
+        SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        },
+        root.path().to_path_buf(),
+        "user",
+    )
+    .unwrap();
+    session.set_lib_dirs(Vec::new());
+    session.eval("(defn pick [x y] x)").unwrap();
+    session
+        .eval("(defn call-pick [] (pick \"a\" \"b\"))")
+        .unwrap();
+    session
+        .eval("(call-pick)")
+        .unwrap()
+        .unwrap()
+        .release_program_result();
+
+    let module = ModuleFullPath::from("user");
+    let demand = MonoDemand::from_type_args(
+        binding_target(&module, "pick"),
+        vec![ConcreteType::String, ConcreteType::String],
+        Span::SYNTHETIC,
+    );
+    let instance_key = {
+        let table = session.shared.symbol_tables.get(&module).unwrap();
+        demand_instance_key(&table, &demand)
+    };
+    let instance = |session: &CompilerSession| {
+        let table = session.shared.symbol_tables.get(&module).unwrap();
+        let binding = table.get(instance_key.as_ref()).unwrap();
+        (
+            binding.callable_got_slot().unwrap(),
+            binding.mode_summary().unwrap().param_mode(1),
+        )
+    };
+    let (prior_slot, prior_mode) = instance(&session);
+    assert_eq!(prior_mode, Mode::Borrowed);
+
+    session
+        .eval("(defn pick [x y] (let [w [y y]] x))")
+        .expect("a same-type replacement publishes whatever its modes");
+    let (slot, mode) = instance(&session);
+    assert_eq!(mode, Mode::Owned, "the replacement infers a different mode");
+    assert_eq!(slot, prior_slot, "the realization keeps its slot");
+    session
+        .eval("(call-pick)")
+        .unwrap()
+        .unwrap()
+        .release_program_result();
     session.shutdown();
 }
 

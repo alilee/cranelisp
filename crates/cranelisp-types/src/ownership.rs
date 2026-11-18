@@ -13,10 +13,14 @@
 //!
 //! # The two-class contract (spine §3.1/§3.2, R1)
 //!
-//! - **ABI-bearing half** (`param_modes`, `result`): caller and callee MUST
-//!   agree — a mode-vector mismatch is a leak or a double-free. This half
-//!   joins the R3 redefinition summary-diff gate ([`ModeSummary::abi_eq`])
-//!   and the ABI-epoch slot-versioning discipline (spine §5.6). A summary on a
+//! - **ABI-bearing half** (`param_modes`, `result`): the facts a lowering
+//!   that specialises a call by mode would need caller and callee to agree
+//!   on. No dev-tier emission reads them: every call position consumes its
+//!   arguments whatever the callee's summary, so a compiled slot's contract
+//!   does not depend on its summary and a same-type live redefinition
+//!   publishes whatever its inferred modes (spine §5). This crate therefore
+//!   offers no comparison of this half; a release tier that specialises by
+//!   mode needs its own rule. A summary on a
 //!   [`Realization::ExternShim`](crate::Realization::ExternShim) callable is
 //!   analysis input only: its primary entry realizes the uniform consuming
 //!   convention, so neither half binds that entry (spine §3.1).
@@ -27,10 +31,10 @@
 //! # Monotone defaults — ⊤-on-absence lives HERE and only here
 //!
 //! **A whole summary's conservative spelling is absence** (`mode_summary:
-//! None`): every consumer reads `None` as the Decision-24 point, and the
-//! callee-side return protect is elided ONLY on a PRESENT summary whose
-//! `result` is [`ResultMode::Fresh`] (backend `return_is_fresh_by_summary`).
-//! A present `Fresh` is therefore the analysis's STRONGEST result claim, never
+//! None`): every consumer reads `None` as the Decision-24 point. A present
+//! [`ResultMode::Fresh`] claims that the result reaches no parameter, which is
+//! what would let a consumer elide a return protect. It is therefore the
+//! analysis's STRONGEST result claim, never
 //! a fallback: it is publishable only as the output of a converged transfer
 //! walk — non-convergence publishes nothing
 //! (`design/typecheck/ownership-inference.md` §19.5). The result axis's own
@@ -59,15 +63,12 @@
 //! variant must force every consumer match to be revisited at compile time,
 //! whereas `#[non_exhaustive]` would compel exactly the `_ =>` wildcard arms
 //! that let a missed variant default silently — the unsound direction for a
-//! leak/double-free contract. Binary reads that survive a variant addition
-//! WITHOUT a compile error (`== ResultMode::Fresh` in
-//! [`ModeSummary::is_abi_conservative`] here and the backend's
-//! `return_is_fresh_by_summary`) must individually be safe-direction for ANY
-//! new variant, and every variant-adding change-set re-runs the escape grep
-//! (`_ =>` / `== Fresh` over `ResultMode`) to confirm no third binary read
-//! has appeared. (Exception recorded S111 Phase 3, with the pinned
-//! `MayAliasOf` diff — see `ResultMode`'s type-level docs; re-run S121 for
-//! `MayAliasAny`: the same two binaries, no third.)
+//! leak/double-free contract. An equality read (`== ResultMode::Fresh`)
+//! survives a variant addition WITHOUT a compile error, so it must
+//! individually be safe-direction for ANY new variant. No production
+//! equality read exists (census 2026-11-18), and every variant-adding
+//! change-set re-runs the escape grep (`_ =>` / `== Fresh` over
+//! `ResultMode`) to confirm none has appeared.
 //!
 //! # The master toggle
 //!
@@ -119,8 +120,8 @@ pub enum Mode {
 /// is a caller/callee agreement (spine §3.3, the 0467 folding rationale).
 /// `Fresh` is the `Default` — the Decision-24 as-built convention for a
 /// serde-absent field, NOT the axis's conservative point: a present `Fresh`
-/// is the strongest claim on this axis (the callee's return protect is
-/// elided on it). The axis's ⊤ is [`MayAliasAny`](Self::MayAliasAny); the
+/// is the strongest claim on this axis (it is what would let a consumer
+/// elide a return protect). The axis's ⊤ is [`MayAliasAny`](Self::MayAliasAny); the
 /// conservative spelling of a whole summary is absence (module docs
 /// §Monotone defaults).
 ///
@@ -221,15 +222,13 @@ pub enum ParamFlow {
 /// [`ModeSummary::default`] and short vectors read as conservative through
 /// the accessors (strict additivity, spine §3.3). That default is the
 /// CALLER-side conservative point only: `result` defaults to `Fresh`, which
-/// a present summary asserts as a strong claim (the callee's return protect
-/// is elided on it). A default / all-`Owned`-`Fresh` summary is therefore
+/// a present summary asserts as a strong claim. A default / all-`Owned`-`Fresh` summary is therefore
 /// not a substitute for absence, and no producer may mint one as a fallback
 /// — the conservative spelling of a whole summary is `None`
 /// (`design/typecheck/ownership-inference.md` §19.5).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ModeSummary {
-    // --- ABI-bearing half (input to the R3 summary-diff gate + §5.6 slot
-    // versioning; compared by `abi_eq`) ---
+    // --- ABI-bearing half (module docs §The two-class contract) ---
     /// One [`Mode`] per parameter, positional. Read via [`Self::param_mode`]
     /// (missing/short ⇒ `Owned`).
     #[serde(default)]
@@ -276,43 +275,6 @@ impl ModeSummary {
     /// — ⊤-on-absence read (missing/short ⇒ `true`, i.e. assume Crossing).
     pub fn spark_op(&self, i: usize) -> bool {
         self.spark_ops.get(i).copied().unwrap_or(true)
-    }
-
-    /// ABI-surface equality — compares `(param_modes, result)` ONLY, through
-    /// the ⊤-on-absence read (so `[]` and `[Owned, Owned]` are ABI-equal).
-    ///
-    /// The single definition serving the R3 summary-diff gate (`/int`'s
-    /// `AbiSurface` comparison) and every future consumer, so the ABI half is
-    /// never hand-picked field-by-field at two sites
-    /// (`design/typecheck/ownership-inference.md` §13.1 item 5 — the mirror
-    /// hazard). Advisory fields are deliberately NOT compared: an
-    /// advisory-only change is never ABI-changing.
-    pub fn abi_eq(&self, other: &Self) -> bool {
-        let n = self.param_modes.len().max(other.param_modes.len());
-        (0..n).all(|i| self.param_mode(i) == other.param_mode(i)) && self.result == other.result
-    }
-
-    /// `true` iff this summary's ABI half is the caller-side Decision-24
-    /// point (all params `Owned`, result `Fresh`) — i.e. CALLER-side-ABI
-    /// equivalent to carrying no summary (the R3 gate's `None ≡ ⊤` read via
-    /// [`Self::abi_eq_opt`]). Not substitutable for absence: the callee's
-    /// return protect distinguishes a present `Fresh` from `None` (module
-    /// docs §Monotone defaults). `MayAliasAny` answers `false`, like every
-    /// non-`Fresh` result.
-    pub fn is_abi_conservative(&self) -> bool {
-        self.param_modes.iter().all(|m| *m == Mode::Owned) && self.result == ResultMode::Fresh
-    }
-
-    /// ABI-surface equality over optional summaries, treating `None` as the
-    /// conservative point — the one home for the `None ≡ all-Owned/Fresh`
-    /// equivalence the R3 gate needs (a redefinition that goes from "no
-    /// summary" to an all-conservative summary is NOT an ABI change).
-    pub fn abi_eq_opt(a: Option<&ModeSummary>, b: Option<&ModeSummary>) -> bool {
-        match (a, b) {
-            (None, None) => true,
-            (Some(s), None) | (None, Some(s)) => s.is_abi_conservative(),
-            (Some(a), Some(b)) => a.abi_eq(b),
-        }
     }
 }
 
