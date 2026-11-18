@@ -83,8 +83,9 @@ pub struct CacheManifest {
 pub struct CachedModuleRef {
     /// Hex-encoded SHA-256 of the module's source text.
     pub source_hash: String,
-    /// Source hashes of every module in this module's transitive dependency
-    /// closure when it was cached (design/int/int.md §7.6).
+    /// Validity key of every module in this module's transitive dependency
+    /// closure when it was cached. Keys are opaque here: their form is int's
+    /// (design/int/int.md §7.6.3), and [`check_manifest`] only compares them.
     #[serde(default)]
     pub dependency_hashes: HashMap<String, String>,
 }
