@@ -1443,9 +1443,9 @@ Status:
 - the declaration readiness gate (ACT-1016 Face 2) is built at `870aacd8`;
 - route independence through a declared child (ACT-1081): rules 1 and 2 are
   built at `b8b6df58` and corrected at `9580856a`; rule 1 for a
-  cache-restored parent is built at `a205a29f`, and its failure paths are
-  designed and not built (*A restored parent* below); the error clause waits
-  on the user's ruling.
+  cache-restored parent is built at `a205a29f`, and its failure paths at
+  `9ea2b291` and `a812faaa` (*A restored parent* below);
+  the error clause waits on the user's ruling.
 
 Private to `src/`; no public API, carrier, schema or ABI change.
 
@@ -1683,8 +1683,8 @@ Whatever the answer, the outcome must not depend on the route
 
 **Route independence** (ACT-1081; designed 2026-11-18; rules 1 and 2 built
 at `b8b6df58`, corrected at `9580856a`; the restored-parent leg of rule 1 is
-designed and not built). Private to `src/`; no public API, carrier, schema or
-ABI change.
+built at `a205a29f`, `9ea2b291` and `a812faaa`). Private to `src/`; no
+public API, carrier, schema or ABI change.
 
 *The fault.* This section expected the program above to be accepted on
 every route; the source does not deliver that. `qa` measured it on
@@ -1902,7 +1902,8 @@ parent restored from cache too (§7.5).
   leaves the second face open. The wait is the fresh path's own lifecycle
   point, which §7.5 requires
   ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
-- **Failure paths (designed 2026-11-18; not built).** The parent's outcome
+- **Failure paths (designed 2026-11-18; built at `9ea2b291` and
+  `a812faaa`).** The parent's outcome
   is decided by its walk and its declared children. Its object load can only
   add a failure. The ordering of these events does not change the outcome.
   - *A failed walk fails the parent.* When the restore walk returns an
@@ -1930,15 +1931,16 @@ parent restored from cache too (§7.5).
     load error. A child that completes later does not complete it.
 - **As built (`a205a29f`; `src/scheduler.rs`,
   `src/process_form/cache_restore.rs`, `src/session_v4/index_worker.rs`).**
-  - The scheduler registers a restored parent that declares children as
-    published and blocked. It holds the declared children it awaits on the
-    module's state, and only a restored parent holds them. The release of
+  - The scheduler registers every restored module as published and not
+    terminal, with or without declared children (`a812faaa`). It holds the
+    declared children it awaits, possibly none, on the module's state, and
+    only a restored module holds them. The release of
     the wait reads them, and so do the end of the restore, the guard that
     keeps an object load from setting in-memory completion, and the
     failure transition. The design has no other reader.
-  - The restore ends the parent's restore after its walk returns. The parent
-    completes there if no child is still in flight, and otherwise waits on
-    the first one that is.
+  - The restore ends the parent's restore after its walk returns. A failed
+    walk fails it with the walk's cause. Otherwise it completes there if no
+    child is still in flight, and waits on the first one that is.
   - **Settled restorations.** A parent's wait often ends inside another
     module's transition, such as its child's publication or failure. No
     worker pass then runs the index's publication or failure hook for the
@@ -1959,24 +1961,29 @@ parent restored from cache too (§7.5).
       settled. A re-registered parent is therefore fed as it now stands.
   - Module rows: `restored_parent_whose_child_misses_completes_only_after_the_child`,
     `restored_parent_whose_children_hit_is_terminal_only_after_the_walk`,
-    `a_failed_missed_child_refuses_the_restored_parent`,
-    `restored_parent_without_declared_children_is_terminal_at_registration`
+    `a_failed_missed_child_refuses_the_restored_parent`
     and `restored_parent_object_loaded_while_waiting_completes_in_memory_with_the_parent`
     (`src/scheduler/tests.rs`);
     `a_restored_parent_completed_by_its_child_leaves_the_burndown` and
     `a_restored_parent_refused_by_its_child_leaves_the_burndown`
     (`src/session_v4/index_worker.rs`).
-- **What `dev` builds now:** the failure paths
-  (`src/process_form/cache_restore.rs`, `src/scheduler.rs`). Module rows:
-  - a walk that fails after enrolling a child that hits leaves the parent
-    failed with the walk's error, not terminal. Its negative is the same walk
-    succeeding, which leaves the parent terminal;
-  - a parent whose object load ends loaded while it waits, and whose missed
-    child then fails, is failed and not in memory;
-  - a parent whose missed child fails while its load is claimed, whose claim
-    then completes loaded, stays failed and not in memory;
-  - a parent whose claimed load fails while it waits is failed with the load
-    error, and a later completion of its child leaves it failed.
+- **Failure paths as built (`9ea2b291`; `src/process_form/cache_restore.rs`,
+  `src/scheduler.rs`).** The end of the restore takes the walk's result and
+  fails a restored parent that declares children with the walk's cause. A
+  failed module's cached load reads as failed whatever its progress, and a
+  load that completes after the refusal sets no in-memory completion. Module
+  rows (`src/scheduler/tests.rs`):
+  `a_failed_restore_walk_fails_the_restored_parent_past_an_earlier_child_in_flight`,
+  `restored_parent_loaded_then_child_failed_stays_refused` and
+  `restored_parent_child_failed_then_load_completed_stays_refused`. No row at
+  `96d4677c` pins a claimed load that fails while the parent waits.
+- **A restored module that declares no children (`a812faaa`).** It waits
+  for its walk like a parent does, so a failed walk fails it, as a fresh
+  module's failed dependency registration does. A reader on a cycle with it
+  still reads it at publication. Module row
+  `a_failed_walk_fails_a_restored_module_without_declared_children`
+  (`src/scheduler/tests.rs`); it replaces the row that pinned such a module
+  terminal at registration.
 - **Cells for `qa` to allocate:** the observation above in `--run`, `--link`
   and the REPL, with its two controls (cold; both of the child's files
   removed). Turn green: those legs. Stay green: the REPRO-1081 cells, the
@@ -3890,68 +3897,178 @@ record is a miss.
 
 ### 7.7 One generation beside an entry (ACT-1083)
 
-**Status: designed 2026-11-18; not built.** Private to `src/`. No public API,
-carrier, persisted field, schema or ABI change.
+**Status.** Retirement and the index's removal are built at `f2317af0`.
+Atomic object publication, the cache owner and the `--link` refusal were
+designed 2026-11-18 and are not built. Private to `src/`. No inter-crate
+public API, carrier, persisted field, schema or ABI change.
 
 - **The invariant.** A module's `.meta` and `.o` are one generation: one
-  writer wrote them from one table. A writer records a module's manifest entry
-  only after it has settled both files for that generation. A `.meta` with
-  codegen targets and no `.o` is a miss (§7.1), never an inconsistency.
-- **Who writes.** Only the nice worker's object pass writes a module's
-  `.meta`, `.o` and manifest entry. The index feed writes none of them
-  ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)).
-  `--link` writes only its own startup objects.
-- **Every `.meta` write retires the module's object first.**
-  `ObjectCache::write_meta` is the one `.meta` writer. It removes the module's
-  existing `.o` before it writes the `.meta`. The object pass then writes the
-  new `.o` when the table has codegen targets, and records the entry last, as
-  it does today.
+  object pass wrote them. A writer records a module's manifest entry only
+  after it has settled both files for that generation. A `.meta` with
+  codegen targets and no `.o` is a miss (§7.1), never an inconsistency. An
+  `.o` at its final path is always complete.
+- **Who writes.**
+  - Only the nice worker's object pass writes a module's `.meta`, `.o` and
+    manifest entry. The index feed writes none of them
+    ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)).
+    `--link` writes only its own startup objects.
+  - Within a process, the scheduler's object claim runs one pass per module
+    at a time. A turn that lands during a pass bumps the module's object
+    generation, so the module is claimed and rewritten again before
+    `wait_object_complete` returns and the manifest is flushed.
+  - Across processes, only the cache owner reads or writes the project's
+    cache directory (*One cache owner*, below).
+- **Every `.meta` write retires the module's object first** (built).
+  `ObjectCache::write_meta` is the one `.meta` writer. It removes the
+  module's existing `.o` before it writes the `.meta`.
   - A `.o` that is already absent is no error. Any other removal failure
     stops the write: no `.meta` is written and no entry is recorded, so the
     earlier generation stands whole.
-  - Every outcome then leaves one generation or a miss:
+  - The object pass stops on any failure before or at the `.meta` write: the
+    cache directory cannot be created, the old object cannot be retired, or
+    the `.meta` cannot be written. It writes no `.o` and records no entry.
+- **The object is published atomically** (not built). The pass writes the
+  `.o` bytes to a temporary file in the cache directory, flushes it to disk,
+  and renames it onto the object path. Only then does it record the entry.
+  - The temporary's name is unique to the writing process and to the write,
+    so no two writes share it.
+  - On a failed write or rename, the pass removes the temporary as far as
+    it can and records no entry. A temporary left by a killed process is
+    never read: restore reads only the object path.
+  - *The failure.* A direct write to the object path can stop part-way: a
+    short write, a full disk, or the process ending, as a `--test` child
+    does at a panic ([test runner §6.5](test-runner.md)). The restore treats
+    any non-empty object file as present (§7.1). An entry that is still
+    valid for the current sources can then key a truncated object. That
+    happens when the pass rewrote a restored module whose sources did not
+    change, as a REPL turn into it does, and the manifest kept the earlier
+    entry (*Unchanged*, below).
+  - *Likelihood and residual.* Rare: it needs a failure inside one write and
+    a still-valid entry. The impact is a load of a truncated object, which
+    is wrong or crashing code, not a miss.
+  - *Why this control.* It is the same temporary-and-rename shape the
+    backend uses for the `.meta` and the manifest. It removes the partial
+    state instead of detecting it, and costs one flush and one rename per
+    object written, on a nice worker. A restore-side check would need a
+    length or digest in the `.meta`, which is a persisted field in the
+    backend's format and goes to `arch` and the user. Int writes its own
+    helper rather than reach the backend's, which is private to that crate.
+  - A partial object left by a compiler built before this change is never
+    keyed. A new compiler binary fails the manifest's global keys and the
+    `.meta`'s build identity, so its first run misses on every entry (§7.3).
+- **Every outcome leaves one generation or a miss:**
 
-    | Outcome of the object pass | Today | With retirement |
-    |---|---|---|
-    | Object written | new pair, entry recorded | unchanged |
-    | No codegen targets after a generation that had them | the old `.o` beside the new `.meta`; the restore schedules a load of the old object (§7.5) | no `.o`; the restore registers nothing to load |
-    | Codegen or `.o` write fails | new `.meta` beside the old `.o`; an earlier entry can key them | `.meta` without its `.o`: a miss under any entry |
-    | Process ends between the steps | as the failure row | as the failure row |
+  | Outcome of the object pass | Files left | Entry |
+  |---|---|---|
+  | Object published | the new `.meta` and the new `.o` | recorded |
+  | No codegen targets | the new `.meta`, no `.o`; the restore registers nothing to load | recorded |
+  | Retirement fails | the earlier pair, untouched | none recorded |
+  | `.meta` write fails after retirement | the earlier `.meta`, no `.o` | none recorded |
+  | Codegen, emit, `.o` write or rename fails | the new `.meta`, no `.o`: a miss under any entry | none recorded |
+  | Process ends at any step | as the row for the step it reached | none recorded |
 
-  - The table's *today* rows are the same class as ACT-1083 at the
-    foreground writer. Not observed. Falsifier: after a cached cold run,
-    edit a module so that it defines only generic templates, run once, and
-    compare the next warm run with `--no-cache`; or make a restored module's
-    `.o` unwritable before a REPL turn rewrites it, and compare the next warm
-    run likewise.
-- **Why at the writer.** A detector at restore would need a generation stamp
-  in both files, which is a persisted field in the backend's format and goes
-  to `arch` and the user. Retiring the object inside the only `.meta` writer
-  makes a new `.meta` beside an older object unwritable through `ObjectCache`.
+- **Under `--link`, a pass that publishes no object fails the link** (not
+  built). The object pass records each module whose pass stopped, with the
+  failure's cause. The link refuses before it runs the system linker, with
+  an error that names the module and the cause, when any module has such a
+  record. Today the worker still marks the module's object work complete,
+  the link proceeds without that object, and the system linker can fail
+  later on an unresolved symbol that names neither. A later successful pass
+  for the module clears its record. The REPL and `--run` read no record:
+  the code they run is in memory, and a stopped pass is only a later miss.
+- **One cache owner per project directory** (not built).
+  - *What governs two processes today.* Nothing does. The REPL's session
+    lock is an in-session admission rule over failed modules
+    ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)); it is
+    not a lock between processes. The REPL, `--run`, `--link` and a `--test`
+    child each open `{project_root}/.cranelisp-cache` with no exclusion, and
+    the REPL and CLI specifications say nothing about two processes on one
+    project. Within the compiler's own process tree there is never a second
+    writer. The `--test` supervisor compiles nothing, its children run one at
+    a time, and a REPL's test child runs without the cache
+    ([test runner §6.5](test-runner.md)).
+  - *The failure.* Two user-launched processes on one project, such as a
+    REPL left open while `cranelisp --run` or `--test` runs in another
+    terminal, interleave freely. Process A writes `.meta` A; B retires the
+    object and writes `.meta` B; A writes object A and records its entry; B
+    exits before it writes its object. The disk now holds `.meta` B beside
+    object A. A reader can likewise decode one process's `.meta` and load the
+    other's object. The manifest is one file that each session writes whole
+    when its object work drains, so the last flush also replaces the other
+    process's entries.
+  - *Likelihood and residual.* The workflow is ordinary, because the
+    watcher invites an open REPL beside other commands. The impact is a
+    later warm run that silently executes code that differs from its
+    source. The residual is material.
+  - *The rule.* A session is the cache's transaction boundary. At
+    construction, before it reads the manifest, a session that uses the
+    cache tries to take an exclusive advisory lock on a lock file in the
+    project's cache directory, through the standard library's file lock,
+    without waiting.
+    - Taken: the session is the owner. It holds the lock for its life, and
+      the operating system releases it when the process ends, including at
+      a panic or a kill.
+    - Not taken, for any reason: the session uses a fresh private cache
+      directory, outside the project, removed when the session ends. It
+      reads nothing from the project's cache and writes nothing to it. This
+      covers `--link`, whose objects and startup objects are written to the
+      private directory, so `--link` keeps working.
+    - `--no-cache` sessions and the REPL's test child take no lock.
+  - *Why the session, and why this shape.* A per-module or per-pass lock
+    does not close the fault, because the manifest is a whole-session
+    snapshot and the last flush still overwrites the other process's
+    entries. A generation stamp in both files is a persisted field in the
+    backend's format. Waiting for the lock would hang a batch command behind
+    an open REPL. The private directory leaves every command's result
+    unchanged and costs the second process only a cold compile. The owner
+    pays one file open and one lock call per session.
+  - *Visible behaviour.* None beyond timing. The private directory is
+    reported under `CRANELISP_MODULE_TRACE`. `spec` may state the one-owner
+    rule in the CLI specification; no semantics change, so no ruling is
+    needed.
+  - *Out of contract.* A cache directory shared between hosts over a
+    network filesystem, whose advisory locks may not exclude, and a writer
+    that is not cranelisp.
+  - *Falsifiers.* Two concurrent sessions on one project, followed by a
+    warm run, give a result that differs from `--no-cache`. Or a single
+    session with no other process present compiles cold, which means the
+    lock is refused on that filesystem.
+- **Why at the writer and the session.** Each detector the faults above
+  admit needs a persisted field. Retirement makes a new `.meta` beside an
+  older object unwritable through `ObjectCache`. Atomic publication makes a
+  partial object unwritable at the object path. The owner lock makes a
+  second process's writes unreachable from the project directory.
 - **Unchanged.** The retained earlier entry of a deferred-then-dropped
   record (§7.6, *Defer, retry once, then drop*) still keys a rewritten pair.
   The pair is one generation; its soundness against that entry is §7.6.2's.
-- **Grade.** *Structural* for every `.meta` written through
-  `ObjectCache::write_meta`. The backend's `serialize::write_meta` is
-  public, so a call to it from `src/` outside `ObjectCache` is a review
-  reject (§12.1, item 20). *Measured* by REPRO-1083 and the module rows below.
-- **Warm-start cost.** One file removal per `.meta` write, on a nice worker.
-  The restore and validation read nothing more. A module rebuilds only where
-  its earlier generation was already unsound. *Expectation:* the exemplar's
-  warm debug `--run` stays in the 0.89 to 0.94 s band `qa` measured at
-  `2d3a5b3e` (§7.6.3). *Falsifier:* it rises materially above that band, or
-  a warm run rebuilds a module whose source and recorded members are
-  unchanged since a successful object pass.
+- **Grade.**
+  - *Structural* for every `.meta` written through `ObjectCache::write_meta`
+    and, once built, for every `.o` published by the object pass. The
+    backend's `serialize::write_meta` is public, so a call to it from `src/`
+    outside `ObjectCache`, or an object written straight to its final path,
+    is a review reject (§12.1, item 20).
+  - The owner rule is structural within the binary once built: the session
+    constructs its one `ObjectCache` at a single site, and that site decides
+    the directory. Exclusion between processes rests on the operating
+    system's advisory lock, which is *asserted with the falsifiers above*.
+  - *Measured* by REPRO-1083 and the module rows below.
+- **Warm-start cost.** One file removal per `.meta` write, and one flush and
+  rename per object written, all on a nice worker. The owner adds one lock
+  call per session. The restore and validation read nothing more. A module
+  rebuilds only where its earlier generation was already unsound.
+  *Expectation:* the exemplar's warm debug `--run` stays in the 0.89 to
+  0.94 s band `qa` measured at `2d3a5b3e` (§7.6.3). *Falsifier:* it rises
+  materially above that band, or a warm run rebuilds a module whose source
+  and recorded members are unchanged since a successful object pass.
 - **Residual: a rewrite while the module's own cached load is outstanding.**
   This is the review lead at `worker.rs::load_cached_module_via_linker`. The
   object load reads the `.meta` and the `.o` again from disk, and stores the
-  `.meta`'s slot assignments in the live GOT. Once the index write is gone,
-  only the object pass rewrites those files. It rewrites a restored module
-  only after a turn compiles into it. If that happens while the module's
-  cached load is still held, claimable or claimed, the load can read a
-  newer `.meta`. It can also find no `.o`, which with retirement is a load
-  failure that refuses code-running steps (§7.1), instead of a mismatched
-  pair.
+  `.meta`'s slot assignments in the live GOT. Only the object pass rewrites
+  those files, and it rewrites a restored module only after a turn compiles
+  into it. If that happens while the module's cached load is still held,
+  claimable or claimed, the load can read a newer `.meta`. It can also find
+  no `.o`, which is a load failure that refuses code-running steps (§7.1),
+  instead of a mismatched pair.
   - Not observed, and no run in ACT-1083 needs it.
   - *Falsifier:* a defining turn into a restored module, issued before its
     object load ends, then a code turn that calls it, differs from
@@ -3960,18 +4077,36 @@ carrier, persisted field, schema or ABI change.
     cached load, as a reload's settle wait does (§7.1, *A claim ends inside
     its registration*, ACT-0994), or the load takes its slot map from the
     restore's decode (§7.6.3, potential extension).
-- **What `dev` builds** (`src/cache.rs`; the index half is
-  [index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)).
-  The retirement inside `ObjectCache::write_meta`. Module rows:
-  - a `.meta` write for a module that has a `.o` leaves no `.o`. It turns
-    RED when the retirement is reverted;
-  - an object pass whose table has no codegen targets, after one whose table
-    had them, leaves no `.o`, and the restore registers the module with
-    nothing to load;
-  - an object pass whose `.o` write fails, after a valid earlier entry, is a
-    miss at the next validation and restore;
-  - negative: a successful object pass leaves the new `.o` and its entry,
-    and `a_stored_meta_overwrite_is_read_by_the_next_validation` stays green.
+- **As built (`f2317af0`; `src/cache.rs`, `src/session_v4/nice_worker.rs`).**
+  The retirement inside `ObjectCache::write_meta`, and the pass's stop on a
+  failed `.meta` write. Module rows:
+  `a_meta_write_retires_the_modules_object`,
+  `a_meta_left_without_its_object_is_a_miss_at_restore` and
+  `an_object_that_cannot_be_removed_stops_the_meta_write` (`src/cache.rs`);
+  `an_object_pass_with_no_codegen_targets_retires_the_earlier_object`
+  (`src/session_v4/nice_worker.rs`). The miss row removes the object outright,
+  so it does not exercise a failed write; the publication rows below do.
+- **What `dev` builds now** (`src/session_v4/nice_worker.rs`,
+  `src/cache.rs`, `src/session_v4/lifecycle.rs`). Module rows:
+  - *Publication.* A publication stopped after it has written part of the
+    bytes leaves no file at the object path, and the next restore is a miss.
+    `dev` chooses the seam that stops it. The row must turn RED when the
+    pass writes straight to the object path. Negative: a completed
+    publication leaves exactly the emitted bytes at the object path and no
+    temporary beside it.
+  - *Failure record.* A pass stopped at the `.meta` write, and one stopped at
+    the object write, each leave a record naming the module; a later
+    successful pass clears it. Under `--link`, a session holding a record
+    refuses the link with an error naming the module, before it runs the
+    system linker. Negative: a clean `--link` session holds no record and
+    links.
+  - *Owner.* With one session alive on a project root, a second session on
+    the same root uses a private directory, and leaves the project's cache
+    files byte for byte as they were. The row must turn RED when the lock is
+    removed. Negative: after the first session ends, a new session uses the
+    project's cache.
+  - Stay green: the rows built at `f2317af0`, and
+    `a_stored_meta_overwrite_is_read_by_the_next_validation`.
 
 ---
 
@@ -4453,7 +4588,9 @@ carries the rule; this list is the review checklist.
     ([bind-chain analysis §3.6](bind-chain-analysis.md#36-reconstruction)).
 20. **A cache artefact written beside another generation** — a `.meta`
     written other than through `ObjectCache::write_meta`, an index-branch
-    cache write, or a manifest entry recorded before its `.o` is settled
+    cache write, a manifest entry recorded before its `.o` is settled, an
+    `.o` written straight to its final path, or a session that reads or
+    writes the project's cache directory without holding its owner lock
     ([§7.7](#77-one-generation-beside-an-entry-act-1083)).
 
 ---
@@ -4529,15 +4666,18 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     leg) landed at `52de1aad`, and ACT-1081's rules 1 and 2 at `b8b6df58`
     and `9580856a`.
   - ACT-1081's restored-parent leg of rule 1 landed at `a205a29f` (§6.11,
-    *A restored parent*); its two failure paths are designed and not built.
-  - *Cached-object generation (ACT-1083), designed 2026-11-18, not built:*
-    the index pass writes no cache artefact
+    *A restored parent*), its failure paths for a parent that declares
+    children at `9ea2b291`, and the failed-walk rule for a restored module
+    that declares none at `a812faaa`.
+  - *Cached-object generation (ACT-1083):* the index pass writes no cache
+    artefact
     ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)),
-    and every `.meta` write retires the module's object first
-    ([§7.7](#77-one-generation-beside-an-entry-act-1083)).
-  - *Still open (read at `a205a29f`):*
-    - the failure paths of a restored parent (§6.11, *A restored parent*)
-      and ACT-1081's error clause, which waits on the user's ruling;
+    and every `.meta` write retires the module's object first; both landed
+    at `f2317af0`. Atomic object publication, the cache owner and the
+    `--link` refusal ([§7.7](#77-one-generation-beside-an-entry-act-1083))
+    are designed 2026-11-18 and not built.
+  - *Still open (read at `a812faaa`):*
+    - ACT-1081's error clause, which waits on the user's ruling;
     - the gap's module for an alias-spelled member-absent reference
       ([§6.3.1](#631-locating-a-gap-at-its-reference-site)), at `arch` and
       the user's gate;

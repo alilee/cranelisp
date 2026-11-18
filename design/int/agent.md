@@ -782,9 +782,8 @@ compiler in an isolated realm. Until then this section describes what is built.
     private substrate (§25.2), inside the containment catch (§25.4).
 - **No cache write.** Branch (c) writes no `.meta`, `.o` or manifest entry
   ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel),
-  ACT-1083; designed, not built). The built feed still writes a `.meta` and
-  a manifest entry for a clean, macro-free module, and `tests/search.rs`
-  pins that write until `test` restates those cells.
+  ACT-1083; built at `f2317af0`, with `tests/search.rs` restated at
+  `96d4677c`).
 
 ### 25.2 Private substrate
 

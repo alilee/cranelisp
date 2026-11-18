@@ -468,7 +468,10 @@ streams one record per test.
     goes to the inter-crate public-API gate. The as-built child keeps the
     one rule this design needs, that it never writes, without either change.
   - **A panic can end a child mid-write.** Cache writes are atomic (arch
-    §1.7), so the next child or session only misses.
+    §1.7), so the next child or session only misses. The object's atomic
+    publication is designed and not built
+    ([int §7.7](int.md#77-one-generation-beside-an-entry-act-1083)); until it
+    is, a child ended mid-write can leave a partial object.
 - **`discover-tests` in a child is refused** (user ruling, 2026-11-15). The
   child is a `--test` process, so `run_tests`' existing gate refuses a compiled
   reference before preparation (§7.3). Under `/run-tests` this is now the

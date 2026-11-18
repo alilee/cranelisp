@@ -50,10 +50,9 @@ total.
 
 ### 3.3 The cache channel
 
-The feed writes no cache artefact (ACT-1083). **Status: designed
-2026-11-18; not built.** The built branch (c) still writes a `.meta` and a
-manifest entry for a clean, macro-free module
-(`index_worker.rs::write_index_meta`). That write is removed.
+The feed writes no cache artefact (ACT-1083). **Status: built at
+`f2317af0`.** Branch (c) wrote a `.meta` and a manifest entry for a clean,
+macro-free module; that write is removed.
 
 - **The fault.** The write re-keyed a stale importer's manifest entry and
   rewrote its `.meta`, and left the `.o` that an earlier launch built under
@@ -103,13 +102,13 @@ manifest entry for a clean, macro-free module
     session rises materially above the first-session time with the write.
   - *Potential extension.* An index-private warm store, which a foreground
     compile never reads. *Trigger:* that falsifier observed.
-- **What `dev` builds** (`src/session_v4/index_worker.rs`). Delete
-  `write_index_meta` and its call. Delete the data only it reads: the
-  checked module's source hash, and the declaration edges and macro flag that
-  the private typecheck derives for the record. The record builder's
-  index-writer inputs go with them (int.md §7.6). `ModuleEdges::of_declarations`
-  then has no production caller beside `of_table`, and the index worker's
-  edge-record unit rows retire with the write. Module row M-1083:
+- **As built** (`f2317af0`; `src/session_v4/index_worker.rs`,
+  `src/cache/dependency_record.rs`). The write, its call and the data only it
+  read are gone: the checked module's source hash, and the declaration edges
+  and macro flag of the record. `ModuleEdges::of_declarations` is private to
+  `of_table`, and the index worker's edge-record unit rows retired with the
+  write. Module row M-1083,
+  `an_index_pass_over_a_stale_cached_module_writes_no_cache_artefact`:
   - an index pass over a module whose manifest entry is stale and whose `.o`
     exists leaves the entry, the `.meta` and the `.o` unchanged, and a
     validation of the module after it is stale. It turns RED when the write
@@ -121,17 +120,11 @@ manifest entry for a clean, macro-free module
   `cache_index_stale_importer_same_order_control`, and the K-6 cell
   `cache_restored_text_after_abi_change_preserves_importer_calls_across_modes`,
   whose loaded reading `qa` takes.
-- **Committed pins of the removed write.** These `tests/search.rs` cells
-  assert the write. They go to `qa` and `test` to restate against this
-  section:
-  - `search_branch_c_stale_meta_typechecks_writes_meta` asserts the `.meta`.
-  - `search_burndown_arms_at_repl_startup_neg_not_on_first_search` uses an
-    index `.meta` as its evidence that the burn-down ran.
-  - `search_cf2_neg_no_killed_worker_no_meta` uses one as its settle anchor.
-  - `search_index_to_import_is_meta_cache_hit` claims an import hit that the
-    object gate already refused. It passes on the trace text.
-  - `search_index_rebuild_from_meta_reproduces_results` names the `.meta`
-    as the carrier of the second session's rows.
+- **Former pins of the removed write.** `test` restated the
+  `tests/search.rs` cells that asserted or leaned on the index `.meta` at
+  `96d4677c`, among them
+  `search_branch_c_stale_meta_typechecks_without_cache_write` and
+  `search_index_to_import_compiles_without_index_cache`.
 
 ## 4. Relation to FIXME 0604
 
