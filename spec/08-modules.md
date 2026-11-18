@@ -329,7 +329,7 @@ The same rules apply symmetrically when consumers import from a renamed re-expor
 
 See §8.6.4 for candidate registration and structural route conflicts, and §8.6.5 for use-site selection.
 
-## 8.4 Export [S124 — partial: Tested crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_glob, tests/spec_08_modules::export_unmounted_control; a member glob in a mixed export list drops its neighbours (ACT-1056; RED tests/spec_08_modules::export_mixed_member_glob_keeps_function), and §8.4.4 mounting fails]
+## 8.4 Export [Tested+Neg crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract/tests.rs::test_export_glob, tests/spec_08_modules::export_unmounted_control, tests/spec_08_modules::export_mixed_member_glob_keeps_function, tests/spec_08_modules::s124_modules_exp0_run, tests/spec_08_modules::s124_modules_root_super_refusal_controls — `(export [super …])` from a child is evidenced only in a parent-and-child cycle, which fails (tests/spec_08_modules::s124_modules_super_run; ACT-1016)]
 
 The `export` special form brings names from other modules into the current module's scope as bare (unqualified) symbols **and** marks them public — part of the current module's public API (re-exposed to downstream consumers).
 
@@ -380,7 +380,7 @@ Re-exports all public names from `core` through the current module.
          primitives [vec-len vec-get vec-set]])
 ```
 
-### 8.4.4 Module Mounting on Export [Uncovered S124 — was S124 — mounting is rejected at parse (ACT-1056; RED tests/spec_08_modules::export_mount_reexports_and_exposes_unlisted_member, tests/spec_08_modules::export_mount_only_exposes_qualified_member, tests/spec_08_modules::export_mount_only_does_not_reexport_bare_names_neg); the mount-collision negatives are owed with the correction; tests/spec_08_modules::export_transitive_reexport_chain and tests/spec_08_modules::export_private_name_not_reexported cite this section but observe unmounted re-export]
+### 8.4.4 Module Mounting on Export [Tested+Neg tests/spec_08_modules::export_mount_reexports_and_exposes_unlisted_member, tests/spec_08_modules::export_mount_only_exposes_qualified_member, tests/spec_08_modules::export_mount_only_does_not_reexport_bare_names_neg, tests/spec_08_modules::s124_modules_mnt_child_before, tests/spec_08_modules::s124_modules_mnt_child_after, tests/spec_08_modules::s124_modules_mnt_different_same_form, tests/spec_08_modules::s124_modules_mnt_different_later_form, tests/spec_08_modules::s124_modules_mnt_different_later_turn, tests/spec_08_modules::s124_modules_mnt_same_target, tests/spec_08_modules::s124_modules_q4_equal_import_first, tests/spec_08_modules::s124_modules_q4_equal_export_first, tests/spec_08_modules::s124_modules_q4_conflict_import_first, tests/spec_08_modules::s124_modules_q4_conflict_export_first, tests/spec_08_modules::s124_modules_q4_conflict_turns, tests/spec_08_modules::s124_modules_exp0_run — every cell reaches the mount from a module that already loaded its owner; a reference through a mount whose owner is not yet loaded, and a mount of a mount, are refused (ACT-1079)]
 
 ```clojure
 (export [(core.string str) [concat join]])
@@ -660,7 +660,7 @@ Local bindings shadow module-scope names:
 
 This is permitted without error -- local bindings are lexically scoped and always take priority through the local environment layer.
 
-### 8.6.4 Module-Scope Candidate Registration [Uncovered S124 — was tests/spec_08_name_shadowing::def_over_import_repl_rejected, tests/spec_08_name_shadowing::deftrait_over_prelude_mode_parity_all_modes, tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides, tests/spec_06_pattern_matching::type_named_like_other_types_ctor_matches_its_own_ctors]
+### 8.6.4 Module-Scope Candidate Registration [Tested+Neg tests/spec_08_name_shadowing::def_over_import_repl_rejected, tests/spec_08_name_shadowing::deftrait_over_prelude_mode_parity_all_modes, tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides, tests/spec_06_pattern_matching::type_named_like_other_types_ctor_matches_its_own_ctors, tests/spec_08_modules::s124_modules_alias_conflict_file, tests/spec_08_modules::s124_modules_alias_conflict_turn, tests/spec_08_modules::s124_modules_alias_distinct_control, tests/spec_08_modules::s124_modules_mnt_different_later_form, tests/spec_08_modules::s124_modules_q4_conflict_import_first]
 
 A module-local declaration, an `import` or `export`, an implicit-prelude binding, and a derived type or trait member MAY expose the same unqualified spelling when they have distinct canonical identities. Registering the later declaration is not an ambiguity error, does not shadow an earlier module-scope declaration, and does not depend on textual order or compilation mode. Instead, the spelling denotes all such canonical candidates and is resolved separately at each use under §8.6.5.
 

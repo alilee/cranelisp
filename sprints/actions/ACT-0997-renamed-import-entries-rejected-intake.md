@@ -1,7 +1,7 @@
 ---
 id: ACT-0997
 title: Route the rejection of renamed import and export entries
-status: deferred
+status: resolved
 priority: normal
 from: qa
 to: qa
@@ -79,3 +79,13 @@ These are latent now only because no rename reaches the compiler:
   a renamed function import, and a renamed export. Both are rejected today
   with the same message; the export's says `import name`. Row D3 gives
   imports and exports one entry type, so the export is the equivalence twin.
+
+## Resolved at S124 (qa, 2026-11-18, `7888c515`)
+
+Row D3 and row D10 landed at `42e6d929`. The two committed guards, T-R2-a
+to T-R2-c, T-D10 and T-REG's rename leg pass in `qa`'s full run, with the
+regeneration cells added after review (`e023b47a`). The obligations of
+"Obligations a correction inherits" are evidenced by T-D10 and REPRO-1064.
+This file stays until `docs` and `audit` drop their links to it
+(`user/guide/modules.md`, `audits/cranelisp-frontend-s123.md`); `qa`
+deletes it then.

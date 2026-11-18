@@ -74,7 +74,7 @@ The heap layout of marshalled values follows the standard ADT representation def
 
 ## 9.2 Macro Definition [S124 — partial: Tested+Neg tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode, tests/annotation_fold_macro_arg_0708.rs::annotation_folds_in_macro_argument_position, tests/annotation_fold_macro_arg_0708.rs::macro_two_arg_call_without_annotation_control_green; §9.2.3 fails for a clause without a fixed parameter]
 
-### 9.2.1 Syntax [Uncovered S124 — was no annotation; S124 cell REPRO-R1 with its two S124-Q2 controls]
+### 9.2.1 Syntax [Tested+Neg tests/spec_09_macros::s124_r1_rest_tail, tests/spec_09_macros::s124_r1_spaced_rest, tests/spec_09_macros::s124_r1_two_rest, tests/spec_09_macros::s124_r1_nested_tail, tests/spec_09_macros::s124_r1_nested_two, tests/spec_09_macros::s124_r1_trailing, tests/spec_09_macros::s124_r1_rest_destructure_control, tests/spec_09_macros::s124_r1_destructure_control, tests/spec_09_macros::s124_r1_rest_control, tests/spec_09_macros::s124_r1_nested_control, tests/spec_09_macros::s124_r1_zero_control]
 
 ```ebnf
 defmacro_form  = '(' 'defmacro' name docstring? clause+ ')'
@@ -578,7 +578,7 @@ For cases where auto-gensym is not sufficient, macro authors MAY also use:
 
 ## 9.9 Macro Errors [S124 — partial: Tested tests/spec_09_macros::defmacro_malformed_no_params; §9.9.1 fails]
 
-### 9.9.1 Return Type Mismatch [Uncovered S124 — was tests/spec_09_macros::macro_return_mismatch_located_at_definition_neg and the §9.2.3 cells (RED, ACT-1057); the former S124 annotation reports synthetic attribution and missing rejection for a clause without a fixed parameter]
+### 9.9.1 Return Type Mismatch [Tested+Neg tests/spec_09_macros::macro_return_mismatch_located_at_definition_neg, tests/spec_09_macros::macro_rest_only_non_sexp_rejected_at_definition_neg, tests/spec_09_macros::s124_q3_clauses, tests/spec_09_macros::s124_q3_shorthand]
 
 If a macro body's inferred type is not `Sexp`, the implementation MUST report a compile-time error at the offending clause body within the `defmacro` form.
 

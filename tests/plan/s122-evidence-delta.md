@@ -345,7 +345,7 @@ the regression control; all three defects below are present in it.
     now says so.
   - It returns to the user under the K2 rule. QA recommends an S122 fix.
 - **Review finding 2, trace wrappers: confirmed defect, filed as
-  [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md).**
+  ACT-1038 (closed at S124; Git history).**
   - `(trace (fib 12))` records 2 of 465 `fib` frames. It leaks exactly two
     blocks per missing frame (926), because `fib`'s own body sparks and the
     trace-body spark exclusion is only lexical.

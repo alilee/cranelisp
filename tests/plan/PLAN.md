@@ -276,7 +276,7 @@ the fine-grained forward/back trace; this plan does not duplicate every name.
 [S124 evidence](s124-evidence-delta.md) owns the current sprint's allocation:
 the opening failing set, the ACT-1034 attribution, the reproductions for
 the carried defects and the frontend audit, and the
-[state of the evidence after each wave](s124-evidence-delta.md#14-the-evidence-after-wave-w5),
+[state of the evidence after each wave](s124-evidence-delta.md#14-the-evidence-after-waves-w6-and-w7),
 with the failing set and what each correction wave still owes. [S123 evidence](s123-evidence-delta.md)
 owns the previous sprint's allocation, including the evidence the S123 panic,
 agent and environment rulings re-point. [S122 evidence](s122-evidence-delta.md) owns the prior per-stream

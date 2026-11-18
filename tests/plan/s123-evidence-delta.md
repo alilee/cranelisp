@@ -1596,7 +1596,7 @@ The user decides each of the three rows Phase 5 added to §5:
 | ACT-1049 (closed at S124) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
 | [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
-| [ACT-1038](../../sprints/actions/ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
+| ACT-1038 (closed at S124; Git history), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
 | ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
 | §8.4 maintenance items | The projection-guard re-citation if S123 does not close it; the §17.4 combination cell |
 
@@ -1731,7 +1731,7 @@ acceptance (safety fence once fixed). *Owner:* `test` for the cells; `dev`
 for the unit rows when each fix is dispatched.
 
 **K-7 — a selective member entry binds its member
-([ACT-1055](../../sprints/actions/ACT-1055-selective-member-import-binds-nothing-intake.md);
+(ACT-1055 (closed at S124; Git history);
 [§8.3.11](../../spec/08-modules.md#8311-accessibility-after-import))**
 
 - *Harm:* a documented import form does nothing, and the only workaround,
@@ -1758,10 +1758,10 @@ for the unit rows when each fix is dispatched.
 - *Unit row (`dev`, `src/imports/tests.rs`):* a dotted specific entry
   yields one exposure whose local name is the bare member and whose source
   is `mathx/Shade.Blue`, and no exposure named `Shade`.
-- *Notation:* `// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev`.
+- *Notation:* `// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev`. <!-- doc-check: literal reason="Defect locus as it stood at S123; row D3 (42e6d929) removed the function" -->
 
 **K-8 — export mounts and mixed member-glob lists
-([ACT-1056](../../sprints/actions/ACT-1056-export-mount-and-member-glob-union-rejected-intake.md);
+(ACT-1056 (closed at S124; Git history);
 §8.4, §8.4.4, §8.3.11; audit R2)**
 
 - *Harm:* a specified re-export pattern cannot be written, and a mixed
@@ -1792,12 +1792,12 @@ for the unit rows when each fix is dispatched.
   unresolved name, not on a missing fixture module.
 - *Named residual:* §8.4.4's two mount-collision negatives belong to the
   correction's dispatch, once a mount can be represented.
-- *Notation:* `// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev`
+- *Notation:* `// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev` <!-- doc-check: literal reason="Defect locus as it stood at S123; row D3 (42e6d929) removed the function" -->
   on the mount cells, and `…::parse_names_list` on the union cells,
   provisional until `arch` frames the carrier.
 
 **K-9 — a macro without fixed parameters is held to `Sexp`
-([ACT-1057](../../sprints/actions/ACT-1057-macro-without-fixed-params-escapes-sexp-return-check-intake.md);
+(ACT-1057 (closed at S124; Git history);
 [§9.2.3](../../spec/09-macros.md#923-return-type-constraint), §9.9.1)**
 
 - *Harm:* an ill-typed macro is accepted, and invoking it aborts the

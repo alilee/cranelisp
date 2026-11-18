@@ -114,6 +114,19 @@ probes are in `.local/s122-helper-followon-qa-scratch/`.
   ([int §6.11](../../design/int/int.md#611-module-cycles-at-publication))
   corrected it there. The fresh-load face is unchanged.
 
+## A third instance of face 2 (qa, 2026-11-18, `7888c515`)
+
+`tests/spec_08_modules.rs::s124_modules_super_run` and its `--link` and REPL
+twins hold a
+parent that reads `p.child/x` while its child declares
+`(export [super [x]])`. That is a dependency cycle between `p` and
+`p.child` (spec §8.4.0, §8.10.3), closed by a qualified reference, so spec
+§8.5.4 item 6 requires a circular-dependency error naming the path. The
+compiler reports `'x' not found in module 'p'`, the face recorded above.
+The cells were written to assert the value 49; `test` re-points them
+([evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test)),
+and the cycle leg then traces here.
+
 ## Completion evidence
 
 1. `design`(int) states the correction, or records a disposition with `sprint`

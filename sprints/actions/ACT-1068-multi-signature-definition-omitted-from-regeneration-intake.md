@@ -17,7 +17,7 @@ refers_to:
 ## Observation
 
 Found by `test` while writing the overload leg of T-D7-b, and reduced to
-`tests/repl_persist.rs::s124_overload_definition_survives_restart_partial`.
+`tests/repl_persist.rs::s124_overload_definition_survives_restart`.
 Re-run and extended by `qa` on the debug build at `2c690be5`,
 2026-11-17, in scratch directories, no prelude, `(import [primitives [*]])`.
 

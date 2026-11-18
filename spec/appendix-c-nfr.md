@@ -111,7 +111,7 @@ The standard library SHOULD be able to provide alternative collection implementa
 
 ## C.3 Evaluation Properties [S11]
 
-### C.3.1 Lenient Evaluation [Uncovered S124 — was S11]
+### C.3.1 Lenient Evaluation [Tested tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::s124_1038_untraced_sparks_control — the strict-trace exception only; the calling-convention design constraint is not assessed]
 
 The parallel evaluation of independent `let` bindings, including the strict-trace exception, is governed by [§12.4.3](12-runtime.md#1243-lenient-evaluation).
 

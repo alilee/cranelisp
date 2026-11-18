@@ -17,7 +17,7 @@ refers_to:
 ## Observation
 
 QA found this on 2026-09-30 while attributing
-[ACT-1038](ACT-1038-traced-calls-on-spark-workers-leak-and-go-unrecorded-intake.md)
+ACT-1038 (closed at S124; Git history)
 with `target/debug/cranelisp`, built after `88bbbd12`. Each probe ran in a
 fresh directory with `CRANELISP_NO_LENIENT=1`, so no spark was involved.
 `main` returns the number of recorded frames as its exit code
@@ -118,6 +118,30 @@ argument and result text, and 40 when it has no child.
 - **`test`:** add the imported-module leg as the control (T-1039 of the
   [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#96-get-to-green-item-7)).
 - **`dev`(backend)** adds the selection row of trace codegen §1.
+
+## At the W6 exit (qa, 2026-11-18, `7888c515`)
+
+- **Not corrected.** Backend row B10's selection waits on the user's ruling
+  on which modules a trace form covers
+  ([tracing §5.1](../../design/arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)).
+  The all-modes cell and T-1039-w's `--run` and REPL legs fail in every
+  run; T-1039-w's `--link` leg fails in some.
+- **A form outside `main`, one probe each.** With `fib`, `work` as
+  `(fib 3)`, and `(defn profile [f] (match (trace (f)) [(TraceCall n p r c ns) (frames c)]))`:
+
+| Placement | `--run` cold and warm | `--link` cold and warm | REPL, entry file, cold and warm |
+|---|---|---|---|
+| All in the entry module | 0 | 5 | 0 |
+| `profile` and `frames` in an imported `u`; `fib` and `work` in the entry | 0 | 5 | 0 |
+
+  Spec §4.12.3 requires 5 in every cell. The library-held form records
+  its caller's functions under `--link` today, so the narrowing that
+  tracing §5.1 proposes would change that leg from 5 to 0.
+- **Held: T-1039-lib,** the library-held row above as a cell. Its expected
+  count is 5 if §4.12.3 stands and 0 under the proposed narrowing, so it is
+  written when the user has ruled.
+- **A second defect at the same seam** is
+  [ACT-1078](ACT-1078-cached-trace-form-object-references-unloaded-module-got-intake.md).
 
 ## Disposition
 

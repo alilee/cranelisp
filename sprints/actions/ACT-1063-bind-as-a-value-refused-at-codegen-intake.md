@@ -76,6 +76,15 @@ No prelude, `(import [primitives [*]])`, `--run`.
   backend row B12. It stays there: the correction is one surface, so the
   named-carry condition is not met.
 
+## At the W6 exit (qa, 2026-11-18, `7888c515`)
+
+Row B12 landed (`777412a7`, `3eea1589`). REPRO-1063 and REPRO-1063-p pass
+in every mode with their controls, 89 cells, and M-1063 is in the backend's
+module tests. **Open only for T-1063-b,** which `test` has not written. It
+is expected green on arrival: `qa`'s probe of `bind` and `race` with a
+`Vec` payload returns the direct call's value with allocations equal to
+frees under the armed check (value route 6 and 10, direct route 5 and 9).
+
 ## Completion evidence
 
 REPRO-1063 and REPRO-1063-p fail on the refusal and the abort, then pass in
