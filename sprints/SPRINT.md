@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W8 accepted; W6 open on two user gates; settling target waits on user scheduling decisions
+**Status**: PHASE 5 LANGUAGE — W8 accepted; approved work that needs no decision is exhausted; settling target waits on the user's decisions (list in Notes, `qa` §14 at `06741872`)
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -408,6 +408,31 @@ The third-deferral groups and ACT-1067 (Notes).
   alias names the alias as the module; correction is a semantic
   `ResolutionGap` row awaiting the user), ACT-1084 (dead `MacroInMem`
   variant; not scheduled).
+- **Standing state (`qa`, `06741872`, tree `79a8c94c`):** ACT-1083 corrected
+  (`f2317af0`; object publication atomic `3dbc3db5`; `--link` refuses a
+  stopped object pass `79a8c94c`); ACT-1052's guard now holds under load
+  (0 signals in 600 loaded runs; 24 in 300 before). Suite 7,810 run, 84
+  failed, nothing unattributed; census zero over 226,661 frames. Of the 82
+  non-maintenance failures: 12 carried on record, 1 ACT-1018 guard, 4 on the
+  traced-set ruling, 4 on the resolution-gap row, 61 in eleven filings with
+  neither a correction scheduled nor a recorded carry. Filed: ACT-1085 (two
+  processes on one project directory share the cache with nothing between
+  them; the cache-owner lock is designed in int §7.7 and not built).
+  Resolved filings ACT-1052 and ACT-1083 are kept until this file's links to
+  them are dropped at close.
+- **Decisions with the user, by what each unblocks:** (1) crash-class
+  ACT-1070, 1071, 1076, ACT-1062's two readers; (2) ACT-1068; (3) the
+  cache-owner lock (ACT-1085); (4) ACT-1073, 1074, 1075, 1079, 1077, 1080;
+  (5) which modules a trace form covers (ACT-1039, ACT-1078, B10's
+  remainder); (6) row D13 (B8); (7) the resolution-gap semantic row
+  (ACT-1082); (8) whether a `mod` declaration can close a cycle (ACT-1081's
+  outcome clause); (9) K11-c and K11-d as realised, R10-2 as a deletion;
+  (10) ACT-1036's cached-macro residual, ACT-1018's carry; (11) the 566
+  ignored-path checker findings; and the earlier items in these Notes.
+- **For the W9 integrated review brief:** `a812faaa`, `3dbc3db5` and
+  `79a8c94c` have had no independent review; ask whether a reader the restore
+  walk itself runs can wait on the module being walked, and whether a stop
+  can stay recorded for a module whose object a later pass publishes.
 - **Awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
   member (`cranelisp-types`; raised by review of `951622cf`, half-fixed in
   `240b3a8a`). Not started.
