@@ -40,7 +40,7 @@ pub fn rc_trace(op: &str, ptr: i64, rc: i64) {
     {
         if RC_TRACE_ENABLED.load(Ordering::Relaxed) {
             let tag = if ptr > 0x1000 {
-                unsafe { *((ptr as isize + 16) as *const i64) }
+                unsafe { *((ptr as isize + HeapHeader::SIZE as isize) as *const i64) }
             } else {
                 -1
             };

@@ -32,9 +32,13 @@
 //!      callback-borrows Vecs of owned HeapStrings through
 //!      [`vec_runtime::vec_strings_from_owned`] and
 //!      [`vec_runtime::with_vec_strings`], and reads the
-//!      **heap-layout-ABI consts** ([`heap_string::HeapString::LEN_OFFSET`] /
-//!      [`heap_string::HeapString::DATA_OFFSET`], [`vec_runtime::LEN_OFFSET`] /
-//!      [`vec_runtime::CAP_OFFSET`] / [`vec_runtime::DATA_PTR_OFFSET`]).
+//!      **heap-layout-ABI consts** [`heap_string::HeapString::LEN_OFFSET`] /
+//!      [`heap_string::HeapString::DATA_OFFSET`]. It reaches Vecs only through
+//!      `vec_runtime`'s functions, never its offsets.
+//!    - `cranelisp-backend` and `int` read the ADT and closure layouts
+//!      ([`alloc::HeapAdt`], [`alloc::HeapClosure`]) and the Vec offsets
+//!      ([`vec_runtime::LEN_OFFSET`], [`vec_runtime::CAP_OFFSET`],
+//!      [`vec_runtime::DATA_PTR_OFFSET`], [`vec_runtime::PAYLOAD_SIZE`]).
 //!    - `cranelisp-platform`'s `CLString::as_str` reaches string bytes through
 //!      [`heap_string::read_string_as_str`].
 //!    - `int` reads the allocation stats ([`alloc::alloc_count`],
@@ -45,12 +49,12 @@
 //!      classifies a test child's ending by [`panic::PANIC_REPORT_PREFIX`] and
 //!      [`panic::PANIC_EXIT_STATUS`].
 //!
-//!    Because `cranelisp-primitives` is a named Rust consumer, the heap-object
-//!    layout consts are intrinsics' **blessed, stable public ABI** — governed
-//!    by the baseline-diff discipline and by Principle 14 (FFI layout
-//!    discipline: evolution via explicit version bump, not source-level guards).
-//!    These consts are a settled contract; primitives holds no duplicate copies
-//!    (Principle 7). See FIXME 0245.
+//!    Because other crates read them, the heap-object layout consts are
+//!    intrinsics' **blessed, stable public ABI** — governed by the baseline-diff
+//!    discipline and by Principle 14 (FFI layout discipline: evolution via
+//!    explicit version bump, not source-level guards). Each layout is defined
+//!    once, here, and its readers hold its names, not copies of its numbers
+//!    (Principle 7; BC §4b invariant 2). See FIXME 0245.
 //!
 //! ## `JITBuilder::symbol` narrows to intrinsics only (Decision 0048)
 //!

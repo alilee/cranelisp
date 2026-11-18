@@ -240,3 +240,188 @@ fn surviving_counters_are_monotonic_process_lifetime_evidence() {
     assert_eq!(bytes_current(), live0, "live bytes fall back on release");
     assert!(alloc_count() >= a0 && dealloc_count() >= d0);
 }
+
+// ---------------------------------------------------------------------------
+// One defining module per layout (heap-layout.md §1, §4; evidence row M-LAY)
+// ---------------------------------------------------------------------------
+
+/// Offset constants whose numeric value is defined by the module they sit in.
+/// `alloc` and `heap_string` define theirs with `offset_of!`/`size_of`, so
+/// they need no entry. The IVar cell is private to `ivar`; the poll-state
+/// result slot is the reactor's protocol, not a heap layout.
+const LITERAL_OWNERS: &[(&str, &str)] = &[
+    ("vec_runtime.rs", "LEN_OFFSET"),
+    ("vec_runtime.rs", "CAP_OFFSET"),
+    ("vec_runtime.rs", "DATA_PTR_OFFSET"),
+    ("vec_runtime.rs", "PAYLOAD_SIZE"),
+    ("ivar.rs", "STATE_OFFSET"),
+    ("ivar.rs", "VALUE_OFFSET"),
+    ("ivar.rs", "THUNK_OFFSET"),
+    ("reactor.rs", "RESULT_SLOT_OFFSET"),
+];
+
+fn is_layout_constant_name(name: &str) -> bool {
+    name.contains("OFFSET") || name.ends_with("_START") || name.contains("PAYLOAD_SIZE")
+}
+
+/// True when `expr` holds an integer literal other than a field or capture
+/// index passed to `HeapAdt::field_offset` / `HeapClosure::capture_offset`.
+/// Digits inside identifiers (`i32`, `FIELD0_OFFSET`) are not literals.
+fn has_offset_literal(expr: &str) -> bool {
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let starts_literal = bytes[i].is_ascii_digit()
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'));
+        if starts_literal {
+            let before = expr[..i].trim_end();
+            if !(before.ends_with("field_offset(") || before.ends_with("capture_offset(")) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Every layout offset constant in `src` whose definition writes a number and
+/// whose module does not own it, as `file:line: NAME`.
+fn offset_literal_definitions(file: &str, src: &str) -> Vec<String> {
+    let body = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
+    let lines: Vec<&str> = body
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect();
+    let mut found = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let item = line.trim_start();
+        let item = item
+            .strip_prefix("pub(crate) ")
+            .or_else(|| item.strip_prefix("pub "))
+            .unwrap_or(item);
+        let Some(rest) = item.strip_prefix("const ") else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name == "_" || !is_layout_constant_name(name) {
+            continue;
+        }
+        if LITERAL_OWNERS.contains(&(file, name)) {
+            continue;
+        }
+        let mut statement = String::new();
+        for continuation in &lines[index..] {
+            statement.push_str(continuation);
+            statement.push(' ');
+            if continuation.contains(';') {
+                break;
+            }
+        }
+        let expr = statement
+            .split_once('=')
+            .map_or("", |(_, e)| e.split(';').next().unwrap_or(""));
+        if has_offset_literal(expr) {
+            found.push(format!("{file}:{}: {name}", index + 1));
+        }
+    }
+    found
+}
+
+fn crate_sources() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut pending = vec![root.clone()];
+    let mut sources = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path
+                    .file_name()
+                    .is_some_and(|n| n != "tests.rs" && n != "rc_balance.rs")
+            {
+                let relative = path.strip_prefix(&root).unwrap().to_string_lossy();
+                let text = std::fs::read_to_string(&path).expect("read source");
+                sources.push((relative.replace('\\', "/"), text));
+            }
+        }
+    }
+    sources
+}
+
+// spec: design/intrinsics/heap-layout.md §1 — every layout reader holds an
+// owner's name, not a number (M-LAY, clean tree).
+#[test]
+fn no_layout_offset_is_defined_outside_its_owner() {
+    let sources = crate_sources();
+    assert!(
+        sources.iter().any(|(f, _)| f == "alloc.rs"),
+        "census read the crate"
+    );
+    let found: Vec<String> = sources
+        .iter()
+        .flat_map(|(file, src)| offset_literal_definitions(file, src))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "layout offsets defined outside their owner: {found:#?}"
+    );
+}
+
+// spec: design/intrinsics/heap-layout.md §4 — the census rejects a planted
+// numeric offset in a reader, in each statement shape (M-LAY detection proof).
+#[test]
+fn the_layout_census_rejects_a_planted_offset() {
+    for (planted, name) in [
+        ("const FIELD0_OFFSET: usize = 24;", "FIELD0_OFFSET"),
+        ("    const VEC_LEN_OFFSET: isize = 16;", "VEC_LEN_OFFSET"),
+        (
+            "pub(crate) const CAPTURES_START: usize = 32;",
+            "CAPTURES_START",
+        ),
+        (
+            "const POLL_OFFSET: isize =\n    HeapHeader::SIZE as isize + 8;",
+            "POLL_OFFSET",
+        ),
+        ("const STATE_OFFSET: isize = 16;", "STATE_OFFSET"),
+    ] {
+        let source = format!("use x;\n{planted}\n");
+        assert_eq!(
+            offset_literal_definitions("trace.rs", &source),
+            [format!("trace.rs:2: {name}")],
+            "{planted}"
+        );
+    }
+}
+
+// spec: design/intrinsics/heap-layout.md §4 — derived readers, owners and
+// non-layout constants pass (M-LAY negative leg).
+#[test]
+fn the_layout_census_accepts_derived_and_owned_definitions() {
+    for (file, clean) in [
+        (
+            "trace.rs",
+            "const FIELD0_OFFSET: isize = HeapAdt::field_offset(0) as isize; // 24",
+        ),
+        (
+            "io.rs",
+            "const ENV_OFFSET: i64 = HeapClosure::capture_offset(0) as i64;",
+        ),
+        (
+            "drop.rs",
+            "const TAG_OFFSET: isize = HeapAdt::TAG_OFFSET as isize;",
+        ),
+        ("vec_runtime.rs", "pub const LEN_OFFSET: usize = 16;"),
+        ("trace.rs", "const GOT_BYTES: usize = GOT_TABLE_SIZE * 8;"),
+        ("trace.rs", "const _: () = assert!(TAG_OFFSET == 16);"),
+    ] {
+        assert!(
+            offset_literal_definitions(file, clean).is_empty(),
+            "{file}: {clean}"
+        );
+    }
+}

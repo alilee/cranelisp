@@ -5,12 +5,11 @@ use crate::alloc::alloc_with_rc;
 /// for the formatter tests (a local minimal copy of trace.rs's `alloc_adt`,
 /// kept here so the formatter's tests are self-contained).
 fn alloc_adt(tag: i64, fields: &[i64]) -> i64 {
-    let payload_size = (1 + fields.len()) * 8;
-    let base = alloc_with_rc(payload_size) as i64;
+    let base = alloc_with_rc(HeapAdt::payload_size(fields.len())) as i64;
     unsafe {
-        *((base as *mut u8).add(PAYLOAD_OFFSET) as *mut i64) = tag;
+        *((base as *mut u8).add(HeapAdt::TAG_OFFSET as usize) as *mut i64) = tag;
         for (i, &field) in fields.iter().enumerate() {
-            *((base as *mut u8).add(FIELD0_OFFSET + i * 8) as *mut i64) = field;
+            *((base as *mut u8).add(HeapAdt::field_offset(i) as usize) as *mut i64) = field;
         }
     }
     base

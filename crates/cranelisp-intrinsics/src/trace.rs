@@ -80,7 +80,7 @@ use std::time::Instant;
 
 use cranelisp_types::HeapHeader;
 
-use crate::alloc::alloc_with_rc;
+use crate::alloc::{HeapAdt, alloc_with_rc};
 use crate::handle::Owned;
 use crate::heap_string::alloc_string;
 use crate::{alloc as intrinsics_alloc, rc as intrinsics_rc};
@@ -103,10 +103,10 @@ fn lock_trace_stack() -> std::sync::MutexGuard<'static, Vec<TraceFrame>> {
 use cranelisp_types::GOT_TABLE_SIZE;
 const GOT_BYTES: usize = GOT_TABLE_SIZE * 8;
 
-// Heap layout constants (base-pointer convention, Decision 10)
-const PAYLOAD_OFFSET: usize = 16;
-const FIELD0_OFFSET: usize = 24;
-const FIELD1_OFFSET: usize = 32;
+// ADT offsets as this module's `usize` reads take them (`alloc::HeapAdt`).
+const TAG_OFFSET: usize = HeapAdt::TAG_OFFSET as usize;
+const FIELD0_OFFSET: usize = HeapAdt::field_offset(0) as usize;
+const FIELD1_OFFSET: usize = HeapAdt::field_offset(1) as usize;
 
 /// Threshold below which values are bare nullary tags, not heap pointers.
 const NULLARY_THRESHOLD: i64 = cranelisp_types::NULLARY_TAG_THRESHOLD as i64;
@@ -218,15 +218,13 @@ unsafe fn read_i64(base: i64, offset: usize) -> i64 {
 ///
 /// Returns the base pointer as i64.
 fn alloc_adt(tag: i64, fields: &[i64]) -> i64 {
-    let n_slots = 1 + fields.len(); // tag + fields
-    let payload_size = n_slots * 8;
-    let base = alloc_with_rc(payload_size) as i64;
-    // SAFETY: `base` was just allocated by `alloc_with_rc` with enough space
-    // for the payload header (16 bytes) plus `n_slots * 8` bytes of fields.
+    let base = alloc_with_rc(HeapAdt::payload_size(fields.len())) as i64;
+    // SAFETY: `base` was just allocated by `alloc_with_rc` with room for the
+    // tag and every field.
     unsafe {
-        write_i64(base, PAYLOAD_OFFSET, tag);
+        write_i64(base, TAG_OFFSET, tag);
         for (i, &field) in fields.iter().enumerate() {
-            write_i64(base, FIELD0_OFFSET + i * 8, field);
+            write_i64(base, HeapAdt::field_offset(i) as usize, field);
         }
     }
     base
@@ -234,12 +232,11 @@ fn alloc_adt(tag: i64, fields: &[i64]) -> i64 {
 
 /// Allocate a 3-slot ADT cell: [tag, field0, field1].
 fn alloc_adt_3(tag: i64, field0: i64, field1: i64) -> i64 {
-    let payload_size = 24; // tag(8) + field0(8) + field1(8)
-    let base = alloc_with_rc(payload_size) as i64;
-    // SAFETY: `base` was just allocated by `alloc_with_rc` with 24 bytes of
-    // payload, sufficient for tag + 2 fields at offsets 16, 24, and 32.
+    let base = alloc_with_rc(HeapAdt::payload_size(2)) as i64;
+    // SAFETY: `base` was just allocated by `alloc_with_rc` with room for the
+    // tag and two fields.
     unsafe {
-        write_i64(base, PAYLOAD_OFFSET, tag);
+        write_i64(base, TAG_OFFSET, tag);
         write_i64(base, FIELD0_OFFSET, field0);
         write_i64(base, FIELD1_OFFSET, field1);
     }
@@ -599,27 +596,25 @@ pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64 {
     }
     // SAFETY for all read_i64 calls below: `trace_adt` was verified above to
     // be a heap pointer (above NULLARY_TAG_THRESHOLD). It was allocated by
-    // `build_trace_call` with the 5-field TraceCall layout, so offsets 48
-    // and 56 are within bounds. Intermediate pointers (tchildren,
+    // `build_trace_call` with the 5-field TraceCall layout, so the children and
+    // nanos fields are within bounds. Intermediate pointers (tchildren,
     // first_child) are checked against NULLARY_THRESHOLD before
     // dereferencing.
 
-    // tchildren is at offset 48 (FIELD0_OFFSET + 3*8 = 24 + 24)
-    let tchildren = unsafe { read_i64(trace_adt, 48) };
+    let tchildren = unsafe { read_i64(trace_adt, TRACE_TCHILDREN_OFFSET) };
     let result = if tchildren < NULLARY_THRESHOLD {
         0 // SNil
     } else {
-        let scons_tag = unsafe { read_i64(tchildren, PAYLOAD_OFFSET) };
+        let scons_tag = unsafe { read_i64(tchildren, TAG_OFFSET) };
         if scons_tag != TAG_SCONS {
             0 // not SCons
         } else {
-            // head is at FIELD0_OFFSET (24) of the SCons
+            // The SCons head.
             let first_child = unsafe { read_i64(tchildren, FIELD0_OFFSET) };
             if first_child < NULLARY_THRESHOLD {
                 0
             } else {
-                // tnanos is at offset 56 (FIELD0_OFFSET + 4*8 = 24 + 32)
-                unsafe { read_i64(first_child, 56) }
+                unsafe { read_i64(first_child, TRACE_TNANOS_OFFSET) }
             }
         }
     };
@@ -677,11 +672,11 @@ pub extern "C" fn cranelisp_collect_trace() -> i64 {
 // TraceCall layout (base-pointer convention):
 // [alloc_size(+0) | rc(+8) | tag=0(+16) | tname(+24) | tparams(+32) | tresult(+40) | tchildren(+48) | tnanos(+56)]
 
-const TRACE_TNAME_OFFSET: usize = FIELD0_OFFSET; // 24
-const TRACE_TPARAMS_OFFSET: usize = FIELD0_OFFSET + 8; // 32
-const TRACE_TRESULT_OFFSET: usize = FIELD0_OFFSET + 16; // 40
-const TRACE_TCHILDREN_OFFSET: usize = FIELD0_OFFSET + 24; // 48
-const TRACE_TNANOS_OFFSET: usize = FIELD0_OFFSET + 32; // 56
+const TRACE_TNAME_OFFSET: usize = HeapAdt::field_offset(0) as usize;
+const TRACE_TPARAMS_OFFSET: usize = HeapAdt::field_offset(1) as usize;
+const TRACE_TRESULT_OFFSET: usize = HeapAdt::field_offset(2) as usize;
+const TRACE_TCHILDREN_OFFSET: usize = HeapAdt::field_offset(3) as usize;
+const TRACE_TNANOS_OFFSET: usize = HeapAdt::field_offset(4) as usize;
 
 /// RC-inc a heap value via the blessed `rc::rc_inc` entry point.
 ///

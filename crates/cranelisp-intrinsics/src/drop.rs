@@ -49,7 +49,7 @@ use cranelisp_types::{
     TAG_SEXP_FLOAT, TAG_SEXP_INT, TAG_SEXP_LIST, TAG_SEXP_STR, TAG_SEXP_SYM,
 };
 
-use crate::alloc;
+use crate::alloc::{self, HeapAdt, HeapClosure};
 use crate::handle::Owned;
 use crate::heap_access;
 use crate::rc;
@@ -64,14 +64,12 @@ const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;
 // Heap field access
 // ---------------------------------------------------------------------------
 
-// ADT field geometry (NOT Vec layout — that is `vec_runtime`'s). Derived from
-// the header-layout authority `cranelisp_types::HeapHeader` rather than
-// restating `16` (Principle 7 — this file had the third magic-number copy of the
-// header size). `isize` so they feed `heap_access`'s offset type directly, so
-// the `usize`→`isize` adaptation happens ONCE, here, not at thirteen call sites.
-const TAG_OFFSET: isize = HeapHeader::SIZE as isize;
-const FIELD0_OFFSET: isize = TAG_OFFSET + 8;
-const FIELD1_OFFSET: isize = TAG_OFFSET + 16;
+// ADT field geometry from its owner, `alloc::HeapAdt`. `isize` so they feed
+// `heap_access`'s offset type directly, so the conversion happens once, here.
+const TAG_OFFSET: isize = HeapAdt::TAG_OFFSET as isize;
+const FIELD0_OFFSET: isize = HeapAdt::field_offset(0) as isize;
+const FIELD1_OFFSET: isize = HeapAdt::field_offset(1) as isize;
+const CLOSURE_DROP_GLUE_OFFSET: isize = HeapClosure::DROP_GLUE_PTR_OFFSET as isize;
 const PURE_WITNESS_OFFSET: isize = HeapHeader::SIZE as isize + IO_PURE_GLUE_OFFSET as isize;
 const _: () = assert!(PURE_WITNESS_OFFSET == FIELD1_OFFSET);
 
@@ -728,13 +726,6 @@ pub fn dec_shallow_io(handle: Owned) {
 // Closure consumption
 // ---------------------------------------------------------------------------
 
-/// HeapClosure layout: `[header(16) | code_ptr(16) | drop_glue_ptr(24) | captures(32..)]`
-/// (backend-emitted, Decision 11). The SINGLE home for this offset: `ivar.rs`
-/// imports it rather than keeping the second copy it carried until S118 (0850
-/// §9.3 — folded because the two spellings were byte-identical, `24` as `isize`).
-/// Derived from the header-layout authority, like the ADT offsets above.
-pub(crate) const CLOSURE_DROP_GLUE_OFFSET: isize = HeapHeader::SIZE as isize + 8;
-
 /// Consume a closure: atomically dec RC, and if last ref invoke the
 /// embedded drop glue function pointer (which dec's each heap-typed
 /// capture) before deallocating.
@@ -750,9 +741,8 @@ pub fn consume_closure(handle: Owned) {
     }
     // SAFETY: `ptr` cleared the nullary-tag guard above, so per this fn's
     // `# Safety` contract it is a live closure base, and the dec below has not
-    // run — the caller's reference still holds the allocation. A backend-emitted
-    // HeapClosure is `[header | code_ptr@16 | drop_glue_ptr@24 | captures@32…]`
-    // (Decision 11), so `CLOSURE_DROP_GLUE_OFFSET` (24) is an in-bounds,
+    // run — the caller's reference still holds the allocation. Every closure
+    // has the `HeapClosure` layout, so the drop-glue word is an in-bounds,
     // 8-aligned cell present on every closure, capture-carrying or not. Reading
     // it before the dec is what leaves the glue pointer available on the
     // last-ref path, after the allocation is freed below.

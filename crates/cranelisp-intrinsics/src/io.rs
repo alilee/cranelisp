@@ -15,17 +15,18 @@ use cranelisp_types::HeapHeader;
 
 use crate::handle::{Borrowed, Owned};
 
-use crate::alloc::alloc_with_rc;
+use crate::alloc::{HeapAdt, HeapClosure, alloc_with_rc};
 use crate::io_observer::{self, IoEvent, IoEventTag};
 
+// IO nodes have the `alloc::HeapAdt` layout.
 /// Byte offset of the tag field from the base pointer.
-const TAG_OFFSET: isize = HeapHeader::SIZE as isize; // 16
+const TAG_OFFSET: isize = HeapAdt::TAG_OFFSET as isize;
 
 /// Byte offset of the first field from the base pointer.
-const FIELD_0_OFFSET: isize = TAG_OFFSET + 8; // 24
+const FIELD_0_OFFSET: isize = HeapAdt::field_offset(0) as isize;
 
 /// Byte offset of the second field from the base pointer.
-const FIELD_1_OFFSET: isize = FIELD_0_OFFSET + 8; // 32
+const FIELD_1_OFFSET: isize = HeapAdt::field_offset(1) as isize;
 
 /// Byte offset of the third field from the base pointer.
 ///
@@ -162,14 +163,13 @@ struct ContinuationFrame {
 }
 
 /// Byte offset of the code pointer within a closure from the base pointer.
-/// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
-const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
+const CLOSURE_CODE_PTR_OFFSET: isize = HeapClosure::CODE_PTR_OFFSET as isize;
 
 /// Byte offset of a closure's first env slot (its captures) from the base
 /// pointer — past the header, code_ptr, and drop_glue_ptr. For a poll-shape
 /// effect's state-closure this is the env base the trampoline passes to the
 /// poll-fn as `state` (its first i64 is the reserved result slot). (S94 R1.)
-const CLOSURE_ENV_OFFSET: i64 = HeapHeader::SIZE as i64 + 16; // 32
+const CLOSURE_ENV_OFFSET: i64 = HeapClosure::CAPTURES_START as i64;
 
 /// Force an IO task tree to completion (extern "C" entry point).
 ///
@@ -611,17 +611,17 @@ async fn launch_continue(
 /// `node` is the live `IO_TAG_SELECT` node base pointer; field 0 is a valid
 /// `Vec (IO a)` (header + len@16 + cap@24 + data_ptr@32, `vec_runtime.rs`).
 unsafe fn read_select_branches(node: i64) -> Vec<i64> {
-    // Vec struct field offsets (absolute from the Vec base) — `vec_runtime.rs`
-    // (`VEC_LEN_OFFSET = 16`, `VEC_DATA_PTR_OFFSET = 32`). The Select node owns the
-    // Vec at its own field 0.
-    const VEC_LEN_OFFSET: isize = 16;
-    const VEC_DATA_PTR_OFFSET: isize = 32;
+    // The Select node owns the Vec at its own field 0.
     let vec_ptr = unsafe { read_node_field(node, FIELD_0_OFFSET) };
     if vec_ptr == 0 {
         return Vec::new();
     }
-    let len = unsafe { crate::heap_access::read_i64(vec_ptr, VEC_LEN_OFFSET) } as usize;
-    let data_ptr = unsafe { crate::heap_access::read_i64(vec_ptr, VEC_DATA_PTR_OFFSET) };
+    let len =
+        unsafe { crate::heap_access::read_i64(vec_ptr, crate::vec_runtime::LEN_OFFSET as isize) }
+            as usize;
+    let data_ptr = unsafe {
+        crate::heap_access::read_i64(vec_ptr, crate::vec_runtime::DATA_PTR_OFFSET as isize)
+    };
     if data_ptr == 0 {
         return Vec::new();
     }
@@ -1493,8 +1493,8 @@ const IO_EFFECT_CAPACITY_ABS_OFFSET: isize =
 
 /// Absolute byte offset of the **poll** `IO_TAG_EFFECT_POLL` node's `capacity`
 /// field — the symmetric reserved slot the backend bakes at `field_offset(2)`
-/// (`io-trampoline.md` §13.3). Abs = FIELD_1_OFFSET + 8 = 40.
-const POLL_CAPACITY_ABS_OFFSET: isize = FIELD_1_OFFSET + 8; // 32 + 8 = 40
+/// (`io-trampoline.md` §13.3).
+const POLL_CAPACITY_ABS_OFFSET: isize = HeapAdt::field_offset(2) as isize;
 
 /// Read the token-pool `capacity` from an IO node — **tag-branched** (§2.6 /
 /// §13.4): `IO_TAG_EFFECT` (blocking) reads payload offset 32 (abs 48);

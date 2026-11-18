@@ -32,24 +32,30 @@ use crate::alloc as heap_alloc_mod;
 
 /// Offset of `len` field from base pointer.
 ///
-/// Blessed public-ABI contract (FIXME 0245): `cranelisp-primitives` reads this.
+/// Blessed public-ABI contract (FIXME 0245): read by the backend's Vec
+/// codegen and the binary's display and test runner.
 pub const LEN_OFFSET: usize = 16;
 /// Offset of `cap` field from base pointer.
 ///
-/// Blessed public-ABI contract (FIXME 0245): `cranelisp-primitives` reads this.
+/// Blessed public-ABI contract (FIXME 0245): read by the backend's Vec
+/// codegen.
 pub const CAP_OFFSET: usize = 24;
 /// Offset of `data_ptr` field from base pointer.
 ///
-/// Blessed public-ABI contract (FIXME 0245): `cranelisp-primitives` reads this.
+/// Blessed public-ABI contract (FIXME 0245): read by the backend's Vec
+/// codegen and the binary's display and test runner.
 pub const DATA_PTR_OFFSET: usize = 32;
-/// Payload size after HeapHeader: len + cap + data_ptr = 24 bytes.
-const VEC_PAYLOAD_SIZE: usize = 24;
+/// Payload bytes after the header of a Vec struct: `len`, `cap` and
+/// `data_ptr`. The element buffer is a separate allocation. The backend reads
+/// it to size the Vec structs it allocates.
+pub const PAYLOAD_SIZE: usize = 24;
 
 // Single-source guard: lock the blessed layout-ABI offsets (FIXME 0245).
 // Future drift in these values fails the build.
 const _: () = assert!(LEN_OFFSET == 16);
 const _: () = assert!(CAP_OFFSET == 24);
 const _: () = assert!(DATA_PTR_OFFSET == 32);
+const _: () = assert!(PAYLOAD_SIZE == DATA_PTR_OFFSET + 8 - cranelisp_types::HeapHeader::SIZE);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -326,7 +332,7 @@ impl UnpublishedVecStrings {
         let cap = i64::try_from(self.elements.len())
             .expect("owned Vec String element count must fit in i64");
 
-        self.base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
+        self.base = heap_alloc_mod::alloc_with_rc(PAYLOAD_SIZE);
         // SAFETY: `base` is the fresh live allocation returned above with the
         // exact 24-byte Vec payload required by these three field writes.
         unsafe {
@@ -537,7 +543,7 @@ pub unsafe fn with_vec_strings<R>(base: i64, read: impl FnOnce(&[i64]) -> R) -> 
 /// JIT name: "runtime/vec_new" — exported via export_name so link-mode resolves.
 #[unsafe(export_name = "runtime/vec_new")]
 pub extern "C" fn vec_new(cap: i64) -> i64 {
-    let base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
+    let base = heap_alloc_mod::alloc_with_rc(PAYLOAD_SIZE);
     let data = alloc_data_buffer(cap);
 
     unsafe {
@@ -585,7 +591,7 @@ pub extern "C" fn vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -
         databuf_guard::assert_live(src_data as usize, cap, "vec_set_copy(src)");
 
         // Allocate new Vec struct + data buffer.
-        let new_base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
+        let new_base = heap_alloc_mod::alloc_with_rc(PAYLOAD_SIZE);
         let new_data = alloc_data_buffer(cap);
 
         // Copy all elements. Inc only the RETAINED copied-over elements; the new
@@ -634,7 +640,7 @@ pub extern "C" fn vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64 {
         let new_cap = len + 1;
 
         // Allocate new Vec struct + data buffer.
-        let new_base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
+        let new_base = heap_alloc_mod::alloc_with_rc(PAYLOAD_SIZE);
         let new_data = alloc_data_buffer(new_cap);
 
         // Copy existing elements, calling inc_fn on each.

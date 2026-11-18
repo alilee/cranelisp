@@ -13,7 +13,7 @@ fn test_current_thread_id_stable() {
 fn test_alloc_adt_creates_valid_heap() {
     let adt = alloc_adt(TAG_TRACE_CALL, &[100, 200, 300, 400, 500]);
     assert!(adt != 0, "allocation must return non-null");
-    let tag = unsafe { read_i64(adt, PAYLOAD_OFFSET) };
+    let tag = unsafe { read_i64(adt, TAG_OFFSET) };
     assert_eq!(tag, TAG_TRACE_CALL);
     let f0 = unsafe { read_i64(adt, FIELD0_OFFSET) };
     assert_eq!(f0, 100);
@@ -34,7 +34,7 @@ fn test_build_runtime_list_items() {
         list >= NULLARY_THRESHOLD,
         "list head should be heap pointer"
     );
-    let tag = unsafe { read_i64(list, PAYLOAD_OFFSET) };
+    let tag = unsafe { read_i64(list, TAG_OFFSET) };
     assert_eq!(tag, TAG_SCONS);
     let head = unsafe { read_i64(list, FIELD0_OFFSET) };
     assert_eq!(head, 10);
@@ -278,7 +278,7 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
         root_children >= NULLARY_THRESHOLD,
         "root must have a child (the GOT-slotted callee was captured)"
     );
-    let scons_tag = unsafe { read_i64(root_children, PAYLOAD_OFFSET) };
+    let scons_tag = unsafe { read_i64(root_children, TAG_OFFSET) };
     assert_eq!(scons_tag, TAG_SCONS, "tchildren must be a non-empty SList");
     let child = unsafe { read_i64(root_children, FIELD0_OFFSET) };
 
@@ -304,7 +304,7 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
         child_params, TAG_SNIL,
         "captured tparams must NOT be the degenerate empty SNil"
     );
-    let params_tag = unsafe { read_i64(child_params, PAYLOAD_OFFSET) };
+    let params_tag = unsafe { read_i64(child_params, TAG_OFFSET) };
     assert_eq!(params_tag, TAG_SCONS, "tparams SList must have an operand");
     let first_param = unsafe { read_i64(child_params, FIELD0_OFFSET) };
     let first_param_str = unsafe { crate::heap_string::read_string_as_str(first_param) };
@@ -471,7 +471,7 @@ fn accessor_params_reads_offset_and_rc_incs_field() {
         "SList-head rc net-unchanged: +1 accessor inc, -1 parent consume"
     );
     // It is a non-empty SList (SCons).
-    assert_eq!(unsafe { read_i64(got, PAYLOAD_OFFSET) }, TAG_SCONS);
+    assert_eq!(unsafe { read_i64(got, TAG_OFFSET) }, TAG_SCONS);
 
     // Balance: consume the inc'd SList ref (the TraceCall consumed the
     // original). The SList holds two String heads.
@@ -521,7 +521,7 @@ fn accessor_children_reads_offset_and_rc_incs_field() {
         rc_before,
         "SList-head rc net-unchanged: +1 accessor inc, -1 parent consume"
     );
-    assert_eq!(unsafe { read_i64(got, PAYLOAD_OFFSET) }, TAG_SCONS);
+    assert_eq!(unsafe { read_i64(got, TAG_OFFSET) }, TAG_SCONS);
 
     consume_slist_of_trace(crate::handle::test_owned(got)); // balance the inc'd ref
     let _ = (name, params, result);

@@ -18,13 +18,8 @@
 
 use std::ptr;
 
+use crate::alloc::HeapAdt;
 use crate::heap_string::alloc_string;
-
-/// Heap-layout offset of an ADT's tag from its base pointer (base-pointer
-/// convention, Decision 10): `[alloc_size(+0) | rc(+8) | tag(+16) | f0(+24) …]`.
-const PAYLOAD_OFFSET: usize = 16;
-/// Heap-layout offset of an ADT's first field from its base pointer.
-const FIELD0_OFFSET: usize = 24;
 
 /// Kind tag for a [`DisplayDescriptor`] (the `kind` field, an `i32`).
 ///
@@ -312,8 +307,7 @@ unsafe fn render_adt(value: i64, desc: *const DisplayDescriptor) -> String {
     let runtime_tag: i64 = if is_nullary {
         value
     } else {
-        // Heap ADT: tag at PAYLOAD_OFFSET (16).
-        unsafe { *((value as *const u8).add(PAYLOAD_OFFSET) as *const i64) }
+        unsafe { *((value as *const u8).add(HeapAdt::TAG_OFFSET as usize) as *const i64) }
     };
 
     // Find the CtorEntry whose tag matches.
@@ -358,8 +352,8 @@ unsafe fn render_adt(value: i64, desc: *const DisplayDescriptor) -> String {
         // field's child DisplayDescriptor.
         let off_field = unsafe { field_offs.add(i) };
         let field_desc: Option<*const DisplayDescriptor> = unsafe { follow_self_rel(off_field) };
-        // Field value at FIELD0_OFFSET + i*8 of the heap ADT.
-        let field_val = unsafe { *((value as *const u8).add(FIELD0_OFFSET + i * 8) as *const i64) };
+        let field_val =
+            unsafe { *((value as *const u8).add(HeapAdt::field_offset(i) as usize) as *const i64) };
         let s = match field_desc {
             Some(fd) => unsafe { render_value(field_val, fd) },
             None => format!("{field_val}"),

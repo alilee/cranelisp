@@ -31,7 +31,9 @@ use std::cell::Cell;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
-use crate::alloc::{alloc_with_rc, dealloc};
+use cranelisp_types::HeapHeader;
+
+use crate::alloc::{HeapClosure, alloc_with_rc, dealloc};
 use crate::runtime_switches::{self, Switch};
 
 // ── Spark-stats profiling instrumentation (CRANELISP_SPARK_STATS=1) ──────────
@@ -536,20 +538,16 @@ pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     }
 }
 
-/// Field offsets from base pointer (base-pointer convention).
+/// IVar cell field offsets from the base pointer. The cell layout is private
+/// to this module: `[header | state | value | thunk]`.
 const STATE_OFFSET: isize = 16;
 const VALUE_OFFSET: isize = 24;
 const THUNK_OFFSET: isize = 32;
-const RC_OFFSET: isize = 8;
+const RC_OFFSET: isize = HeapHeader::RC_OFFSET as isize;
 
-/// Offset of code_ptr within a closure (Decision 11).
-/// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
-const CLOSURE_CODE_PTR_OFFSET: isize = 16;
-
-/// Offset of drop_glue_ptr within a closure from the base pointer. Imported from
-/// its single home in `drop.rs` (the drop-glue / closure-teardown authority) —
-/// this file carried a byte-identical second copy until S118 (0850 §9.3).
-use crate::drop::CLOSURE_DROP_GLUE_OFFSET;
+/// The thunk is a closure (`alloc::HeapClosure`).
+const CLOSURE_CODE_PTR_OFFSET: isize = HeapClosure::CODE_PTR_OFFSET as isize;
+const CLOSURE_DROP_GLUE_OFFSET: isize = HeapClosure::DROP_GLUE_PTR_OFFSET as isize;
 
 /// Allocate an IVar cell. Sets state=PENDING, stores the thunk pointer.
 /// Returns the base pointer.

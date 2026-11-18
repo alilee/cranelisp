@@ -797,16 +797,13 @@ fn consume_launch_node_detached_field0_sentinel_is_noop() {
 // 0850 — single-owner convergence (design §9.1–§9.3, §10 heap_access row)
 // ---------------------------------------------------------------------------
 
-// GREP-ZERO: `drop.rs` carries no local raw reader and no copy of the Vec layout
-// offsets. `heap_access::{read_i64, write_i64}` is the single mechanical owner
-// and `vec_runtime` the single Vec-layout authority — the crate's `AGENTS.md`
-// has declared both for three sprints while the source contradicted it (the
-// third-sprint recurrence of S87 F3). This row makes the guidance true and keeps
-// it true: a re-introduced private reader or offset copy fails HERE, at the
-// seam, not in a later audit.
+// GREP-ZERO: `drop.rs` carries no local raw reader. `heap_access::{read_i64,
+// write_i64}` is the single mechanical owner; a re-introduced private reader
+// fails HERE, at the seam. Layout offset copies are the crate-wide census's
+// (`alloc/tests.rs::no_layout_offset_is_defined_outside_its_owner`).
 // spec: 12-runtime §12.3 — R8 (diagnostic-modes §9.1–§9.2, §10 grep-zero row)
 #[test]
-fn drop_module_declares_no_local_reader_or_layout_copy() {
+fn drop_module_declares_no_local_raw_reader() {
     let src = include_str!("../drop.rs");
     assert!(
         !src.contains("unsafe fn read_i64"),
@@ -816,31 +813,28 @@ fn drop_module_declares_no_local_reader_or_layout_copy() {
         !src.contains("fn write_i64"),
         "drop.rs must not define a private raw writer — heap_access owns it"
     );
-    for copy in ["VEC_LEN_OFFSET", "VEC_CAP_OFFSET", "VEC_DATA_PTR_OFFSET"] {
-        assert!(
-            !src.contains(copy),
-            "drop.rs must not copy {copy} — vec_runtime is the layout authority"
-        );
-    }
-    // The ADT field geometry stays here (it is not Vec layout) but must DERIVE
-    // from the header-layout authority rather than restating the header size.
-    assert!(
-        src.contains("const TAG_OFFSET: isize = HeapHeader::SIZE as isize;"),
-        "TAG_OFFSET must derive from HeapHeader::SIZE"
-    );
 }
 
-// The offsets this module reads with are the authorities' values — a derivation
-// that drifted would be caught here rather than by a wrong heap read.
+// The offsets this module reads with are the owners' values.
 // spec: 12-runtime §12.3 — R8 (diagnostic-modes §9.1–§9.3)
 #[test]
 fn derived_offsets_equal_their_layout_authorities() {
-    assert_eq!(TAG_OFFSET, HeapHeader::SIZE as isize);
-    assert_eq!(FIELD0_OFFSET, TAG_OFFSET + 8);
-    assert_eq!(FIELD1_OFFSET, TAG_OFFSET + 16);
-    // The closure drop-glue slot: ONE home, imported by `ivar.rs` (§9.3 fold —
-    // it was byte-identical, so it folded rather than filing).
-    assert_eq!(CLOSURE_DROP_GLUE_OFFSET, 24);
+    assert_eq!(TAG_OFFSET, HeapAdt::TAG_OFFSET as isize);
+    assert_eq!(FIELD0_OFFSET, HeapAdt::field_offset(0) as isize);
+    assert_eq!(FIELD1_OFFSET, HeapAdt::field_offset(1) as isize);
+    assert_eq!(
+        CLOSURE_DROP_GLUE_OFFSET,
+        HeapClosure::DROP_GLUE_PTR_OFFSET as isize
+    );
+    assert_eq!(
+        (
+            TAG_OFFSET,
+            FIELD0_OFFSET,
+            FIELD1_OFFSET,
+            CLOSURE_DROP_GLUE_OFFSET
+        ),
+        (16, 24, 32, 24)
+    );
     // Vec layout comes from `vec_runtime`, never a local copy.
     assert_eq!(LEN_OFFSET, 16);
     assert_eq!(CAP_OFFSET, 24);

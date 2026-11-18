@@ -13,9 +13,86 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(debug_assertions)]
 use std::sync::{LazyLock, Mutex};
 
+use std::mem::{self, offset_of};
+
 use cranelisp_types::HeapHeader;
 
 use crate::rc;
+
+// ---------------------------------------------------------------------------
+// ADT and closure layouts (BC §4b invariant 2: one defining module per layout)
+// ---------------------------------------------------------------------------
+
+/// A data-constructor value: `[header | tag | field_0 | … | field_n-1]`, one
+/// word per field. Nullary constructors are bare tag words and never have this
+/// layout. Readers in every crate take these offsets from here; changing one is
+/// an ABI version change, not a local edit.
+#[repr(C)]
+pub struct HeapAdt {
+    /// The common allocation header.
+    pub header: HeapHeader,
+    /// The constructor's tag.
+    pub tag: i64,
+}
+
+impl HeapAdt {
+    /// Byte offset of the tag from the base pointer.
+    pub const TAG_OFFSET: i32 = offset_of!(Self, tag) as i32;
+    /// Byte offset of field 0 from the base pointer.
+    pub const FIELDS_START: usize = mem::size_of::<Self>();
+
+    /// Byte offset of field `i` from the base pointer.
+    pub const fn field_offset(i: usize) -> i32 {
+        (Self::FIELDS_START + i * mem::size_of::<i64>()) as i32
+    }
+
+    /// Payload bytes after the header for `field_count` fields: the tag word
+    /// plus one word per field.
+    pub const fn payload_size(field_count: usize) -> usize {
+        mem::size_of::<i64>() + field_count * mem::size_of::<i64>()
+    }
+}
+
+const _: () = assert!(HeapAdt::TAG_OFFSET == 16);
+const _: () = assert!(HeapAdt::FIELDS_START == 24);
+
+/// A closure: `[header | code_ptr | drop_glue_ptr | capture_0 | …]`, one word
+/// per capture. `drop_glue_ptr` is 0 when no capture needs releasing, and
+/// otherwise a `(closure: i64)` function that releases the captures before the
+/// closure is freed (BC §4b invariant 5).
+#[repr(C)]
+pub struct HeapClosure {
+    /// The common allocation header.
+    pub header: HeapHeader,
+    /// The compiled body, called as `(env: i64, params…) -> i64`.
+    pub code_ptr: i64,
+    /// The captures' release function, or 0.
+    pub drop_glue_ptr: i64,
+}
+
+impl HeapClosure {
+    /// Byte offset of the code pointer from the base pointer.
+    pub const CODE_PTR_OFFSET: i32 = offset_of!(Self, code_ptr) as i32;
+    /// Byte offset of the drop-glue pointer from the base pointer.
+    pub const DROP_GLUE_PTR_OFFSET: i32 = offset_of!(Self, drop_glue_ptr) as i32;
+    /// Byte offset of capture 0 from the base pointer.
+    pub const CAPTURES_START: usize = mem::size_of::<Self>();
+
+    /// Byte offset of capture `i` from the base pointer.
+    pub const fn capture_offset(i: usize) -> i32 {
+        (Self::CAPTURES_START + i * mem::size_of::<i64>()) as i32
+    }
+
+    /// Payload bytes after the header for `capture_count` captures: the two
+    /// pointer words plus one word per capture.
+    pub const fn payload_size(capture_count: usize) -> usize {
+        2 * mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
+    }
+}
+
+const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
+const _: () = assert!(HeapClosure::DROP_GLUE_PTR_OFFSET == 24);
+const _: () = assert!(HeapClosure::CAPTURES_START == 32);
 
 // ---------------------------------------------------------------------------
 // Allocation tracking counters (atomic, thread-safe)
@@ -110,7 +187,7 @@ pub(crate) fn live_alloc_snapshot() -> Vec<(usize, usize, i64)> {
             // SAFETY: `addr` is a currently-live tracked allocation base of
             // `size` bytes; `payload@16` is within it when `size >= 24`.
             let payload = if size >= 24 {
-                unsafe { *((addr as *const u8).add(16) as *const i64) }
+                unsafe { *((addr as *const u8).add(HeapHeader::SIZE) as *const i64) }
             } else {
                 0
             };
@@ -312,7 +389,7 @@ pub unsafe fn dealloc(base: *mut u8) {
     #[cfg(debug_assertions)]
     {
         // Capture size + payload word @+16 BEFORE scrubbing, for stale-dec reports.
-        let payload_word = unsafe { *((base as *const u8).add(16) as *const i64) };
+        let payload_word = unsafe { *((base as *const u8).add(HeapHeader::SIZE) as *const i64) };
         FREED_TRACKED
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -396,9 +473,9 @@ pub extern "C" fn heap_alloc_payload(payload_size: i64) -> i64 {
 ///
 /// # Layout produced (the platform↔intrinsics↔int three-way ABI)
 ///
-/// Identical to the backend's `ConstrADT` data-constructor emission
-/// (`cranelisp-backend` `HeapAdt`: header | tag@16 | field_0@24 | …) so a host-
-/// constructed ADT value is indistinguishable from a JIT-constructed one:
+/// [`HeapAdt`], the layout the backend's data-constructor emission also reads,
+/// so a host-constructed ADT value is indistinguishable from a JIT-constructed
+/// one:
 ///
 /// ```text
 /// total_size = 16 (HeapHeader) + 8 (tag) + 8 * field_count
@@ -434,25 +511,18 @@ pub extern "C" fn cranelisp_alloc_with_tag(
     fields_ptr: *const i64,
 ) -> i64 {
     let field_count = field_count as usize;
-    // Payload = tag slot (8 bytes) + one i64 per field. Mirrors the backend's
-    // `HeapAdt::payload_size(field_count)` (`1 + field_count` i64 slots).
-    let payload_size = (1 + field_count) * std::mem::size_of::<i64>();
-    let base = alloc_with_rc(payload_size);
+    let base = alloc_with_rc(HeapAdt::payload_size(field_count));
 
-    // SAFETY: `base` was just allocated with HeapHeader::SIZE + payload_size
-    // bytes (alloc_with_rc never returns null — it calls handle_alloc_error).
-    // The tag goes at the payload start (base + HeapHeader::SIZE); fields follow
-    // at 8-byte strides. The caller guarantees `fields_ptr` addresses
+    // SAFETY: `base` was just allocated with room for the tag and
+    // `field_count` fields (alloc_with_rc never returns null — it calls
+    // handle_alloc_error). The caller guarantees `fields_ptr` addresses
     // `field_count` i64s.
     unsafe {
-        let payload = base.add(HeapHeader::SIZE);
-        // Write the 4-byte tag at payload+0; the surrounding 8-byte slot is
-        // already zeroed by alloc_with_rc, so the 4 pad bytes are zero and the
-        // slot reads back as `tag as i64`.
-        *(payload as *mut u32) = tag;
-        let fields = payload.add(std::mem::size_of::<i64>()) as *mut i64;
+        // Write the 4-byte tag into the tag word; alloc_with_rc zeroed the
+        // word, so the 4 pad bytes are zero and it reads back as `tag as i64`.
+        *(base.add(HeapAdt::TAG_OFFSET as usize) as *mut u32) = tag;
         for i in 0..field_count {
-            *fields.add(i) = *fields_ptr.add(i);
+            *(base.add(HeapAdt::field_offset(i) as usize) as *mut i64) = *fields_ptr.add(i);
         }
     }
 

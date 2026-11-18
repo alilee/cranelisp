@@ -222,7 +222,8 @@ fn seam_precheck_armed(ptr: i64, site: &'static str) {
     // SAFETY: `ptr` is the alleged base of a heap allocation at an RC seam
     // (past the nullary-tag guard). Reading the two header words is exactly
     // what the seam is about to do to the RC field; see the fault-risk note.
-    let alloc_size = unsafe { crate::heap_access::read_i64(ptr, 0) };
+    let alloc_size =
+        unsafe { crate::heap_access::read_i64(ptr, HeapHeader::ALLOC_SIZE_OFFSET as isize) };
     let rc =
         unsafe { &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64) }
             .load(Ordering::Relaxed);
