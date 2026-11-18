@@ -76,6 +76,37 @@ pub struct ObjectCache {
     stored: dashmap::DashMap<ModuleFullPath, Option<StoredMeta>>,
 }
 
+/// What a restore loads for a decoded stored module (`design/int/int.md`
+/// §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredObject {
+    /// The module's `.o` is loaded.
+    Load,
+    /// The module codegens nothing, so it has no `.o` to load.
+    NothingToLoad,
+    /// The module has codegen targets and no `.o`: a miss.
+    Missing,
+}
+
+impl StoredObject {
+    pub(crate) fn of(cached: &cranelisp_backend::cache::CachedModule) -> Self {
+        if cached.has_object {
+            StoredObject::Load
+        } else if cached.symbol_table.codegen_targets().next().is_some() {
+            StoredObject::Missing
+        } else {
+            StoredObject::NothingToLoad
+        }
+    }
+}
+
+fn cache_write_error(message: String) -> cranelisp_types::CranelispError {
+    cranelisp_types::CranelispError::CodegenError {
+        message,
+        location: cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
+    }
+}
+
 /// A decoded stored `.meta` and the authored slot layout read from it.
 struct StoredMeta {
     layout: AuthoredSlotLayout,
@@ -144,17 +175,37 @@ impl ObjectCache {
             .flatten()
     }
 
-    /// Write `table` as `module`'s stored `.meta` at `meta_path`, ending the
-    /// decode held from the `.meta` it replaces.
+    /// Write `table` as `module`'s stored `.meta`, ending the decode held from
+    /// the `.meta` it replaces.
+    ///
+    /// The module's existing `.o` is removed first, so the new `.meta` never
+    /// stands beside an object built from another table (`design/int/int.md`
+    /// §7.7). If the object cannot be removed, nothing is written and the
+    /// earlier pair stands; the caller must then record no manifest entry.
     pub(crate) fn write_meta(
         &self,
         module: &ModuleFullPath,
-        meta_path: &std::path::Path,
         table: &crate::code::SessionSymbolTable,
     ) -> Result<(), cranelisp_types::CranelispError> {
+        let Some(dir) = self.dir.as_deref() else {
+            return Err(cache_write_error(format!(
+                "cannot write cache metadata for {module}: caching is disabled"
+            )));
+        };
+        let (meta_path, object_path) = cranelisp_backend::cache::module_cache_path(dir, module);
         let held = self.stored.entry(module.clone());
+        match std::fs::remove_file(&object_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(cache_write_error(format!(
+                    "cannot retire cached object {} before rewriting its metadata: {error}",
+                    object_path.display()
+                )));
+            }
+        }
         let written = cranelisp_backend::cache::serialize::write_meta(
-            meta_path,
+            &meta_path,
             table,
             cranelisp_backend::cache::CACHE_SCHEMA_VERSION,
         );

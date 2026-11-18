@@ -867,14 +867,14 @@ mod slot_layout {
 
     /// A project holding `dep.cl`, whose current key `ModuleSources` reads
     /// against `tables` and the cache directory.
-    struct Project {
+    pub(super) struct Project {
         root: tempfile::TempDir,
-        cache_dir: tempfile::TempDir,
+        pub(super) cache_dir: tempfile::TempDir,
         tables: dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     }
 
     impl Project {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let project = Project {
                 root: tempfile::tempdir().unwrap(),
                 cache_dir: tempfile::tempdir().unwrap(),
@@ -896,7 +896,7 @@ mod slot_layout {
 
     /// `dep`'s table defining `f`; after `moves` language-type changes with no
     /// caller, `f`'s earlier slots are retired and it holds a fresh one.
-    fn table_with_f_after(moves: usize) -> SessionSymbolTable {
+    pub(super) fn table_with_f_after(moves: usize) -> SessionSymbolTable {
         let mut table = SessionSymbolTable::new_with_params(m("dep"));
         concrete(&mut table, "f", &[]);
         for _ in 0..moves {
@@ -992,7 +992,7 @@ mod slot_layout {
         let sources = ModuleSources::new(project.root.path(), &[], &project.tables, &cache);
         for moves in [0, 2] {
             let table = table_with_f_after(moves);
-            cache.write_meta(&m("dep"), &meta, &table).unwrap();
+            cache.write_meta(&m("dep"), &table).unwrap();
             assert_eq!(
                 sources.current_key(&m("dep")),
                 Some(AuthoredSlotLayout::of(&table).derivation_key(&hash())),
@@ -1003,12 +1003,15 @@ mod slot_layout {
 
     /// A cache holding `dep`'s stored `.meta` written from `table`, and the
     /// path of that file.
-    fn cache_storing(project: &Project, table: &SessionSymbolTable) -> (ObjectCache, PathBuf) {
+    pub(super) fn cache_storing(
+        project: &Project,
+        table: &SessionSymbolTable,
+    ) -> (ObjectCache, PathBuf) {
         let cache = ObjectCache::new(Some(project.cache_dir.path().to_path_buf()), None);
         let (meta, _) =
             cranelisp_backend::cache::module_cache_path(project.cache_dir.path(), &m("dep"));
         std::fs::create_dir_all(meta.parent().unwrap()).unwrap();
-        cache.write_meta(&m("dep"), &meta, table).unwrap();
+        cache.write_meta(&m("dep"), table).unwrap();
         (cache, meta)
     }
 
@@ -1043,12 +1046,10 @@ mod slot_layout {
     #[test]
     fn a_meta_rewritten_after_validation_is_what_the_restore_reads() {
         let project = Project::new();
-        let (cache, meta) = cache_storing(&project, &table_with_f_after(0));
+        let (cache, _) = cache_storing(&project, &table_with_f_after(0));
         assert!(cache.stored_layout(&m("dep")).is_some());
 
-        cache
-            .write_meta(&m("dep"), &meta, &table_with_f_after(2))
-            .unwrap();
+        cache.write_meta(&m("dep"), &table_with_f_after(2)).unwrap();
         assert_eq!(
             stored_layout_of(cache.stored_module(&m("dep"))),
             AuthoredSlotLayout::of(&table_with_f_after(2))
@@ -1104,5 +1105,66 @@ mod slot_layout {
         let project = Project::new();
         project.tables.insert(m("dep"), table_with_f_after(0));
         assert_ne!(project.current_key(), Some(hash()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One generation beside an entry (`design/int/int.md` §7.7, ACT-1083)
+// ---------------------------------------------------------------------------
+
+mod one_generation {
+    use super::slot_layout::{Project, cache_storing, table_with_f_after};
+    use super::*;
+    use crate::cache::StoredObject;
+
+    fn object_path(project: &Project) -> PathBuf {
+        cranelisp_backend::cache::module_cache_path(project.cache_dir.path(), &m("dep")).1
+    }
+
+    fn restored_object(cache: &ObjectCache) -> StoredObject {
+        StoredObject::of(&cache.stored_module(&m("dep")).expect("a stored module"))
+    }
+
+    // spec: design/int/int.md §7.7 — every `.meta` write retires the module's
+    // object first, so a new `.meta` never stands beside an older `.o`.
+    #[test]
+    fn a_meta_write_retires_the_modules_object() {
+        let project = Project::new();
+        let (cache, _) = cache_storing(&project, &table_with_f_after(0));
+        std::fs::write(object_path(&project), "the earlier generation's object").unwrap();
+        assert_eq!(restored_object(&cache), StoredObject::Load);
+
+        cache.write_meta(&m("dep"), &table_with_f_after(0)).unwrap();
+        assert!(!object_path(&project).exists());
+    }
+
+    // spec: design/int/int.md §7.7 — when the object pass writes no `.o` after
+    // its `.meta` (its codegen or `.o` write failed), the `.meta` has codegen
+    // targets and no object, which the restore's object gate misses whatever
+    // entry keys it.
+    #[test]
+    fn a_meta_left_without_its_object_is_a_miss_at_restore() {
+        let project = Project::new();
+        let (cache, _) = cache_storing(&project, &table_with_f_after(0));
+        std::fs::write(object_path(&project), "the earlier generation's object").unwrap();
+
+        cache.write_meta(&m("dep"), &table_with_f_after(2)).unwrap();
+        assert_eq!(restored_object(&cache), StoredObject::Missing);
+    }
+
+    // spec: design/int/int.md §7.7 — an object that cannot be removed stops
+    // the write: the earlier `.meta` and `.o` stand as one generation.
+    #[test]
+    fn an_object_that_cannot_be_removed_stops_the_meta_write() {
+        let project = Project::new();
+        let (cache, meta) = cache_storing(&project, &table_with_f_after(0));
+        std::fs::create_dir(object_path(&project)).unwrap();
+
+        assert!(cache.write_meta(&m("dep"), &table_with_f_after(2)).is_err());
+        assert_eq!(
+            AuthoredSlotLayout::of(&cranelisp_backend::cache::serialize::load_meta(&meta).unwrap()),
+            AuthoredSlotLayout::of(&table_with_f_after(0)),
+            "the earlier `.meta` stands"
+        );
     }
 }

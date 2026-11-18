@@ -19,6 +19,7 @@ use cranelisp_types::{
     Realization, Span, Symbol, WrittenTraitImpl,
 };
 
+use crate::cache::StoredObject;
 use crate::cache::dependency_record::{
     DependencyRecord, ModuleSources, callee_modules, is_compiler_owned,
 };
@@ -226,12 +227,9 @@ fn cache_validity_check(
     );
 
     // `CRANELISP_MODULE_TRACE` — the module-discovery / compile-order / cache-hit
-    // observability channel (tests/AGENTS.md §"Diagnostic Logging"). The `.meta`
-    // is valid here: the module's typecheck result is cached (a cache HIT on the
-    // typecheck artifact), so the import path reuses it rather than re-deriving
-    // it from scratch. This is the S91 index→import cache-hit signal (§25.5): a
-    // module the indexer wrote a `.meta` for (no `.o`) validates here and its
-    // typecheck is reused on a later real `/import`.
+    // observability channel (tests/AGENTS.md §"Diagnostic Logging"). The
+    // manifest entry validated; the object gate below can still miss, so this
+    // line alone does not mean the module was restored.
     if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
         eprintln!("module-trace: cache hit (.meta valid) for {dep}");
     }
@@ -242,21 +240,13 @@ fn cache_validity_check(
         return None;
     }
 
-    // 3. Check .o exists — UNLESS this is a generic-only module that codegens
-    //    nothing (S84 Phase 4B, FIXME 0387). The `.meta.json` persists
-    //    independently of the `.o` now: a module whose only defs are slot-less
-    //    `Polymorphic` templates produces no codegen object (its
-    //    `codegen_targets()` batch is empty), yet its schemes still cache so a
-    //    downstream module can monomorphise it on cold-load. For such a module a
-    //    missing `.o` is the CORRECT cached state, not a miss; we install its
-    //    schemes and register it WITHOUT scheduling an `.o` load. A non-empty
-    //    codegen batch with a missing `.o` is still a genuine cache miss
-    //    (recompile).
-    let has_codegen_targets = cached.symbol_table.codegen_targets().next().is_some();
-    if !cached.has_object && has_codegen_targets {
-        return None;
-    }
-    let needs_inmem_load = cached.has_object;
+    // 3. The object gate. A generic-only module's schemes are cached with no
+    //    `.o`; it is registered without an object load (FIXME 0387).
+    let needs_inmem_load = match StoredObject::of(&cached) {
+        StoredObject::Load => true,
+        StoredObject::NothingToLoad => false,
+        StoredObject::Missing => return None,
+    };
 
     Some(ValidCacheEntry {
         cached,

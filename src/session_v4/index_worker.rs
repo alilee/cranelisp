@@ -18,9 +18,10 @@
 // "typecheck-into-live then REMOVE the residue (R13)" model). The feed's
 // primary output is the in-memory `importable_indices` rows.
 //
-// Branch (c) writes a `.meta` and manifest entry for later import reuse.
-// This is the tolerated interim in `index-worker-isolation.md` §3.3;
-// that section owns the reopen trigger and required evidence.
+// The feed writes no cache artefact (`index-worker-isolation.md` §3.3): no
+// `.meta`, no `.o`, no manifest entry. A stale module is typechecked on the
+// private substrate every session it is indexed, and its cache files are left
+// for the foreground load to rebuild.
 //
 // The three per-module branches (§25.1):
 //   (a) module present in the scheduler ModuleState registry  -> read its rows
@@ -28,13 +29,12 @@
 //   (b) valid `.meta` (schema+BUILD_ID gate AND int's source-content gate)
 //       -> deserialise the SymbolTable, read its public entries, NO typecheck.
 //   (c) no/stale `.meta`  -> typecheck once on the nice worker against the
-//       PRIVATE substrate, wrapped in CF.2 `catch_unwind`, read public entries
-//       out of the private snapshot, then write a benign `.meta` (§25.5; no
-//       `.o`, no `register_module`).
+//       PRIVATE substrate, wrapped in CF.2 `catch_unwind`, and read public
+//       entries out of the private snapshot (no `register_module`).
 //
 // REPL-only by construction (R17): the worklist is enumerated ONLY at REPL
 // startup (`arm_burndown`); `--run`/`--link`/`--release` never enumerate it, so
-// no index pass runs and no `.meta` is ever read or written in batch modes.
+// no index pass runs in batch modes.
 //
 // Abandon-on-flush/shutdown (R18): the burn-down is best-effort warm-up, never a
 // correctness obligation. Index work yields to object codegen and is never
@@ -47,7 +47,7 @@ use std::sync::Mutex;
 use cranelisp_types::{Binding, Decl, ModuleFullPath, Symbol, Type};
 
 use super::SharedState;
-use crate::cache::dependency_record::{ModuleEdges, ModuleSources, record_manifest_entry};
+use crate::cache::dependency_record::ModuleSources;
 use crate::scheduler::ModulePool;
 use crate::session_setup::CacheValidity;
 
@@ -150,21 +150,6 @@ struct ImportableRow {
     name: Symbol,
     scheme: Type,
     docstring: Option<String>,
-}
-
-struct CheckedIndexModule {
-    table: crate::code::SessionSymbolTable,
-    entries: Vec<(Symbol, Type, Binding<crate::code::Code>)>,
-    /// Hash of the source the index typechecked.
-    source_hash: String,
-    declarations: IndexedDeclarations,
-}
-
-/// What the isolated index typecheck learned about the module's declarations
-/// beyond its table, whose structural declaration fields it does not populate.
-struct IndexedDeclarations {
-    source_had_macro: bool,
-    edges: ModuleEdges,
 }
 
 /// Relevance tier of a `/search` hit — the §17.19.1a total order, strongest
@@ -417,7 +402,7 @@ impl ImportableIndices {
         }
     }
 
-    /// `record_entries` variant taking the `.meta`-write triple
+    /// `record_entries` variant taking the branch-(c) triple
     /// `(name, scheme.ty, entry)` — reads the docstring off the entry's
     /// `ModuleEntry::Def.docstring` (the docstring axis, S106) then records
     /// `(name, ty, docstring)`.
@@ -865,8 +850,7 @@ fn enumerate_cl_modules_excluding(
 /// `false` if the worklist was empty (the worker should park).
 ///
 /// The shutdown flag is checked by the caller BEFORE this call (R18); a task
-/// already popped runs to completion (atomic `.meta` write ⇒ no corruption even
-/// if the next task is abandoned).
+/// already popped runs to completion.
 pub(crate) fn run_one_index_task(shared: &SharedState) -> bool {
     let Some(module) = shared.importable_indices.take_index_task() else {
         return false;
@@ -931,24 +915,18 @@ fn index_one_module(shared: &SharedState, module: &ModuleFullPath) {
         return;
     };
 
-    let Some(cache_dir) = shared.cache.cache_dir() else {
-        // Caching disabled — fall through to branch (c) typecheck-in-memory
-        // (no `.meta` to read, none written). We still index the module so
-        // `/search` works without a cache directory.
-        index_branch_c(shared, module, &file, None);
-        return;
-    };
-
     // Branch (b): valid `.meta` (schema+BUILD_ID gate AND int's source-content
-    // gate). Read the public entries with NO typecheck (R16).
-    if let Some(entries) = try_branch_b(shared, module, &file, &cache_dir) {
+    // gate). Read the public entries with NO typecheck (R16). With caching
+    // disabled there is no `.meta` to read.
+    if let Some(cache_dir) = shared.cache.cache_dir()
+        && let Some(entries) = try_branch_b(shared, module, &file, &cache_dir)
+    {
         shared.importable_indices.record_entries(module, entries);
         return;
     }
 
-    // Branch (c): no/stale `.meta` — typecheck once (into the private substrate),
-    // write `.meta`, populate.
-    index_branch_c(shared, module, &file, Some(cache_dir));
+    // Branch (c): no/stale `.meta` — typecheck once into the private substrate.
+    index_branch_c(shared, module, &file);
 }
 
 /// Branch (b): read the module's `.meta` if it is valid on BOTH gates — the
@@ -998,88 +976,34 @@ fn try_branch_b(
 /// snapshot; it installs the module's own `(import …)` decls and runs
 /// `check_forms` against those PRIVATE maps only), wrapped in CF.2 `catch_unwind`
 /// (§25.4). On a clean check the typed entries are read back OUT of the private
-/// snapshot (dropped at function return), a benign `.meta` is written (no `.o`,
-/// no `register_module`) so a later real `/import` is a cache-hit (§25.5), and
-/// the indices are recorded.
+/// snapshot (dropped at function return) and recorded. No cache artefact is
+/// written (`index-worker-isolation.md` §3.3).
 ///
 /// In-memory isolation (S91, `index-worker-isolation.md` §3.1): the live
 /// `symbol_tables` / `module_aliases` / `prelude_fallback` maps are
 /// byte-unchanged **by construction** — the typecheck runs entirely against the
 /// private snapshot, so there is no residue to remove (the retired
 /// "typecheck-into-live then REMOVE the residue (R13)" / `process_cluster`
-/// model). On an Err or a caught panic, the per-module index-skip leaves NO
-/// `.meta` and continues the burn-down — never a crash, never a killed worker.
-fn index_branch_c(
-    shared: &SharedState,
-    module: &ModuleFullPath,
-    file: &std::path::Path,
-    cache_dir: Option<std::path::PathBuf>,
-) {
+/// model). On an Err or a caught panic, the per-module index-skip continues the
+/// burn-down — never a crash, never a killed worker.
+fn index_branch_c(shared: &SharedState, module: &ModuleFullPath, file: &std::path::Path) {
     match checked_typecheck_module(shared, module, file) {
-        Ok(Some(checked)) => {
-            // Clean check. Write a benign `.meta` (no `.o`, no register_module)
-            // so a later real `/import` of this module is a cache-hit (§25.5),
-            // built from the typed entries we read out of the private snapshot.
-            //
-            if let Some(dir) = cache_dir.as_deref()
-                && !checked.declarations.source_had_macro
-            {
-                write_index_meta(shared, module, dir, &checked);
-            }
-            shared
-                .importable_indices
-                .record_triples(module, checked.entries);
+        Ok(Some(entries)) => {
+            shared.importable_indices.record_triples(module, entries);
         }
         Ok(None) => {
             // No checkable forms (empty module) — mark indexed, nothing to add.
             shared.importable_indices.mark_skipped(module);
         }
         Err(reason) => {
-            // CF.2 / typecheck Err: per-module index-skip. NO `.meta` written
-            // (the typecheck never completed). The module is simply absent from
-            // results — never a crash, never a killed worker (§25.4).
+            // CF.2 / typecheck Err: per-module index-skip. The module is simply
+            // absent from results — never a crash, never a killed worker (§25.4).
             if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
                 eprintln!("index: could not index {module}: {reason}");
             }
             shared.importable_indices.mark_skipped(module);
         }
     }
-}
-
-/// Write a benign branch-(c) `.meta` for `module` built from its typed public
-/// entries — byte-compatible with the real Phase-1 writer's serialised
-/// `SymbolTable` (R13/R14). No `.o`. The `.meta` makes a later real `/import` a
-/// cache-hit (§25.5). Its manifest entry records the hash of the source the
-/// index typechecked and, like every writer's, its dependency closure
-/// (`design/int/int.md` §7.6).
-///
-/// This disk write is the tolerated interim in
-/// `design/int/index-worker-isolation.md` §3.3. Typechecking uses a private
-/// snapshot; that section owns the disk-write reopen trigger.
-fn write_index_meta(
-    shared: &SharedState,
-    module: &ModuleFullPath,
-    cache_dir: &std::path::Path,
-    checked: &CheckedIndexModule,
-) {
-    let table = &checked.table;
-    use cranelisp_backend::cache;
-
-    let (meta_path, _o) = cache::module_cache_path(cache_dir, module);
-    if let Some(parent) = meta_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = shared.cache.write_meta(module, &meta_path, table)
-        && std::env::var("CRANELISP_MODULE_TRACE").is_ok()
-    {
-        eprintln!("index: .meta write failed for {module}: {}", e.message());
-    }
-    record_manifest_entry(
-        shared,
-        module,
-        checked.source_hash.clone(),
-        checked.declarations.edges.clone(),
-    );
 }
 
 /// Run the real import-installing + typecheck path for `module` over its source
@@ -1104,7 +1028,7 @@ fn checked_typecheck_module(
     shared: &SharedState,
     module: &ModuleFullPath,
     file: &std::path::Path,
-) -> Result<Option<CheckedIndexModule>, String> {
+) -> Result<Option<Vec<(Symbol, Type, Binding<crate::code::Code>)>>, String> {
     let source = std::fs::read_to_string(file).map_err(|e| format!("read error: {e}"))?;
     let sexps = cranelisp_frontend::parse(&source).map_err(|e| format!("parse error: {e}"))?;
 
@@ -1157,24 +1081,12 @@ fn checked_typecheck_module(
     }));
 
     match outcome {
-        Ok(Ok(declarations)) => {
+        Ok(Ok(())) => {
             // Read the typed public entries OUT of the PRIVATE module table.
-            match private_tables.get(module) {
-                Some(t) => {
-                    let entries = public_entries_with_entry(&t);
-                    if entries.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(CheckedIndexModule {
-                            table: t.clone(),
-                            entries,
-                            source_hash: cranelisp_backend::cache::manifest::hash_source(&source),
-                            declarations,
-                        }))
-                    }
-                }
-                None => Ok(None),
-            }
+            Ok(private_tables
+                .get(module)
+                .map(|table| public_entries_with_entry(&table))
+                .filter(|entries| !entries.is_empty()))
         }
         Ok(Err(reason)) => Err(reason),
         Err(_panic) => Err("typecheck panicked (skipped)".to_string()),
@@ -1191,7 +1103,7 @@ fn index_typecheck_into_private(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     sexps: &[cranelisp_types::Sexp],
-) -> Result<IndexedDeclarations, String> {
+) -> Result<(), String> {
     use cranelisp_typecheck::SymbolTableAccess;
 
     // Pass-0 structural peel: extract the module's own import/export decls and
@@ -1199,13 +1111,6 @@ fn index_typecheck_into_private(
     // resolve). `super` is resolved at the frontend boundary.
     let (decls, remaining) = cranelisp_frontend::extract_module_declarations(module, sexps)
         .map_err(|e| format!("structural peel error: {e}"))?;
-    let edges = ModuleEdges::of_declarations(
-        module,
-        &decls.import_specs,
-        &decls.export_specs,
-        &decls.mod_decls,
-        crate::imports::gets_prelude_fallback(module, &decls.import_specs, &decls.export_specs),
-    );
 
     let declared = crate::imports::DeclaredChildren::of(module, &decls.mod_decls);
     let imports: Vec<_> = decls
@@ -1233,30 +1138,18 @@ fn index_typecheck_into_private(
     // Sprint 121 interim index rule: macros are not an index subject. Drop each
     // direct `defmacro` from the isolated source before build/typecheck; do not
     // construct a parent/prototype binding and do not expand it. Ordinary forms
-    // are indexed only if this isolated non-macro cluster succeeds. Remember the
-    // omission so branch (c) never writes a cache metadata file that a later real
-    // import could mistake for the complete macro-bearing module.
-    let mut regular: Vec<cranelisp_types::Sexp> = Vec::with_capacity(remaining.len());
-    let mut source_had_macro = false;
-    for form in remaining {
-        for flattened in cranelisp_frontend::flatten_begin(form) {
-            if cranelisp_frontend::is_defmacro(&flattened) {
-                source_had_macro = true;
-            } else {
-                regular.push(flattened);
-            }
-        }
-    }
+    // are indexed only if this isolated non-macro cluster succeeds.
+    let regular: Vec<cranelisp_types::Sexp> = remaining
+        .into_iter()
+        .flat_map(cranelisp_frontend::flatten_begin)
+        .filter(|form| !cranelisp_frontend::is_defmacro(form))
+        .collect();
 
     let program =
         crate::worker::build_program_compat(&regular).map_err(|e| format!("build error: {e}"))?;
     let parsed = crate::worker::top_level_to_parsed_entries(&program);
-    let declarations = IndexedDeclarations {
-        source_had_macro,
-        edges,
-    };
     if parsed.is_empty() {
-        return Ok(declarations);
+        return Ok(());
     }
 
     // Staging-mode `check_forms`: typed entries land in the private module table
@@ -1278,15 +1171,12 @@ fn index_typecheck_into_private(
             // Commit the staged typed entries into the private module table so
             // the caller reads them out (the private table is discarded after).
             let Some(mut private) = priv_tables.get_mut(module) else {
-                return Ok(declarations);
+                return Ok(());
             };
             private
                 .publish_staged(staging, &[])
                 .map_err(|error| format!("private index publication error: {error}"))?;
-            Ok(IndexedDeclarations {
-                edges: declarations.edges.with_recorded_edges(module, &private),
-                ..declarations
-            })
+            Ok(())
         }
         Err(e) => Err(format!("typecheck error: {e:?}")),
     }
@@ -1294,7 +1184,7 @@ fn index_typecheck_into_private(
 
 /// Read the PUBLIC, callable entries of a live module table into
 /// `(name, scheme.ty, entry-clone)` triples — the importable symbols + their
-/// cloned `ModuleEntry` for the `.meta` write. Mirrors
+/// cloned entry, from which `record_triples` reads the docstring. Mirrors
 /// `public_entries_from_table` but also clones the entry.
 fn public_entries_with_entry(
     table: &crate::code::SessionSymbolTable,
@@ -2156,80 +2046,65 @@ mod tests {
         );
     }
 
-    // spec: design/int/int.md §7.6.1 — the index writer's edges include the
-    // callee modules of its private table after typecheck, so a module that
-    // reaches a loaded module only through a qualified call records it.
+    // spec: design/int/index-worker-isolation.md §3.3 — M-1083. An index pass
+    // over a module whose manifest entry is stale and whose earlier object is
+    // cached leaves the entry, the `.meta` and the `.o` as it found them, so
+    // the next validation is still a miss; the pass still records the rows.
+    // defect: class=partial-record-update locus=src/session_v4/index_worker.rs::index_branch_c found=S124 owner=/dev
     #[test]
-    fn index_edges_include_a_module_reached_only_through_a_qualified_call() {
-        let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-            dashmap::DashMap::new();
-        crate::bootstrap::mount_synthetic_modules(&tables, &std::sync::atomic::AtomicU32::new(0))
-            .unwrap();
-        let aliases = cranelisp_types::ModuleAliases::default();
-        let fallback = cranelisp_typecheck::PreludeFallback::default();
-        let index = |module: &ModuleFullPath, source: &str| {
-            tables.insert(
-                module.clone(),
-                crate::code::SessionSymbolTable::new_with_params(module.clone()),
-            );
-            let sexps = cranelisp_frontend::parse(source).unwrap();
-            index_typecheck_into_private(&tables, &aliases, &fallback, module, &sexps).unwrap()
-        };
-        index(&m("b"), "(defn f [] 11)");
+    fn an_index_pass_over_a_stale_cached_module_writes_no_cache_artefact() {
+        use cranelisp_backend::cache::manifest::{self, CacheManifest};
 
-        let indexed = index(&m("a"), "(defn g [] (b/f))");
-
-        let fallback_bit = crate::imports::gets_prelude_fallback(&m("a"), &[], &[]);
-        let null_import_of_b = cranelisp_types::ImportSpec {
-            module_path: m("b"),
-            alias: None,
-            names: cranelisp_types::ImportNames::None,
-            span: cranelisp_types::Span::SYNTHETIC,
-        };
-        assert_eq!(
-            indexed.edges,
-            ModuleEdges::of_declarations(&m("a"), &[null_import_of_b], &[], &[], fallback_bit),
-            "`b` is an edge of `a` only through the recorded callee `b/f`"
+        const SOURCE: &str = "(defn g [] 41)\n";
+        let project = tempfile::tempdir().unwrap();
+        let cache_dir = project.path().join(".cranelisp-cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let lib = m("lib");
+        std::fs::write(project.path().join("lib.cl"), SOURCE).unwrap();
+        let mut stale = CacheManifest::new_for_host();
+        stale.upsert_module(
+            &lib,
+            manifest::hash_source("(defn g [] 7)\n"),
+            HashMap::new(),
         );
-    }
+        manifest::write_manifest(&cache_dir, &stale).unwrap();
+        let (meta, object) = cranelisp_backend::cache::module_cache_path(&cache_dir, &lib);
+        std::fs::write(&meta, "the earlier generation's metadata").unwrap();
+        std::fs::write(&object, "the earlier generation's object").unwrap();
 
-    // spec: design/int/int.md §7.6.2 — the index writer's edges include the
-    // lookup dependencies of its private table after typecheck, so a module
-    // that reaches a loaded module only through a qualified type records it.
-    #[test]
-    fn index_edges_include_a_module_reached_only_through_a_qualified_type() {
-        let tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-            dashmap::DashMap::new();
-        crate::bootstrap::mount_synthetic_modules(&tables, &std::sync::atomic::AtomicU32::new(0))
+        let shared = SharedState {
+            project_root: project.path().to_path_buf(),
+            cache: std::sync::Arc::new(crate::cache::ObjectCache::new(
+                Some(cache_dir.clone()),
+                Some(crate::session_setup::CacheState::new(cache_dir.clone())),
+            )),
+            ..test_shared_state()
+        };
+        crate::bootstrap::mount_synthetic_modules(&shared.symbol_tables, &shared.next_type_id)
             .unwrap();
-        let aliases = cranelisp_types::ModuleAliases::default();
-        let fallback = cranelisp_typecheck::PreludeFallback::default();
-        let index = |module: &ModuleFullPath, source: &str| {
-            tables.insert(
-                module.clone(),
-                crate::code::SessionSymbolTable::new_with_params(module.clone()),
-            );
-            let sexps = cranelisp_frontend::parse(source).unwrap();
-            index_typecheck_into_private(&tables, &aliases, &fallback, module, &sexps).unwrap()
-        };
-        index(
-            &m("b"),
-            "(import [primitives [Int]])\n(deftype T (K [:Int v]))",
-        );
 
-        let indexed = index(&m("a"), "(defn g [:b/T x] 1)");
+        index_one_module(&shared, &lib);
 
-        let fallback_bit = crate::imports::gets_prelude_fallback(&m("a"), &[], &[]);
-        let null_import_of_b = cranelisp_types::ImportSpec {
-            module_path: m("b"),
-            alias: None,
-            names: cranelisp_types::ImportNames::None,
-            span: cranelisp_types::Span::SYNTHETIC,
-        };
         assert_eq!(
-            indexed.edges,
-            ModuleEdges::of_declarations(&m("a"), &[null_import_of_b], &[], &[], fallback_bit),
-            "`b` is an edge of `a` only through the recorded lookup of `b/T`"
+            std::fs::read_to_string(&meta).unwrap(),
+            "the earlier generation's metadata"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&object).unwrap(),
+            "the earlier generation's object"
+        );
+        let sources = ModuleSources::new(project.path(), &[], &shared.symbol_tables, &shared.cache);
+        assert_eq!(
+            shared
+                .cache
+                .validate(&lib, &manifest::hash_source(SOURCE), &sources),
+            CacheValidity::Stale,
+            "the index pass must not re-key the stale entry"
+        );
+        let hits = shared.importable_indices.search_by_name("g");
+        assert!(
+            hits.iter().any(|hit| hit.module == lib),
+            "the index pass still records the module's rows, got {hits:?}"
         );
     }
 

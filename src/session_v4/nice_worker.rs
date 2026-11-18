@@ -157,8 +157,8 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
     // monomorphise it on a later cold-load.
     let (meta_path, o_path) = cache::module_cache_path(cache_dir, module);
 
-    // Phase 1: write `.meta.json` (typecheck-driven; ensures the parent dir).
-    // A meta-dir create failure aborts the whole pass (matches prior behaviour).
+    // Phase 1: write `.meta.json` (typecheck-driven; ensures the parent dir;
+    // retires the earlier `.o`). A failure aborts the whole pass.
     if !write_module_meta(shared, module, &meta_path) {
         return;
     }
@@ -196,9 +196,9 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
 /// structural specifications inline (cache-hit derives transitive deps from
 /// `imports` directly).
 ///
-/// Returns `false` (caller aborts the pass) only on a meta-dir create failure;
-/// a `write_meta` error is logged and tolerated (it does not block `.o`
-/// codegen).
+/// Returns `false` (caller aborts the pass) on a meta-dir create failure or a
+/// failed `.meta` write: an `.o` or manifest entry written after it would pair
+/// with whichever `.meta` the failed write left (`design/int/int.md` §7.7).
 fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &Path) -> bool {
     // Ensure parent directory exists (used by both the `.meta.json` and `.o`
     // writes below).
@@ -219,13 +219,13 @@ fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &
         .map(|guard| guard.clone())
         .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
 
-    if let Err(e) = shared.cache.write_meta(module, meta_path, &symbol_table) {
+    if let Err(e) = shared.cache.write_meta(module, &symbol_table) {
         eprintln!(
             "nice-worker: .meta.json write failed for {}: {}",
             module,
             e.message()
         );
-        // Continue — the meta failure does not block `.o` codegen below.
+        return false;
     }
     true
 }
@@ -361,4 +361,85 @@ fn write_object_and_record(
     // Append the .o path for the linker. Sprint 67 Cluster B sub-fire 3:
     // ObjectCache facade.
     shared.cache.append_o_path(o_path.to_path_buf());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use cranelisp_types::{CodegenBehaviour, ModuleFullPath};
+
+    use crate::cache::StoredObject;
+    use crate::cache::dependency_record::ModuleSources;
+    use crate::session_setup::CacheValidity;
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+
+    /// What one cached launch of `lib` left: its entry's validity against the
+    /// source it compiled, and what a restore would load.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Generation {
+        entry_valid: bool,
+        object: StoredObject,
+    }
+
+    fn launch(root: &Path, source: &str) -> Generation {
+        std::fs::write(root.join("lib.cl"), source).unwrap();
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: false,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 1,
+                run_mode: RunMode::Run,
+            },
+            root.to_path_buf(),
+            "lib",
+        )
+        .expect("test session bootstrap");
+        s.set_lib_dirs(Vec::new());
+        s.register_module("lib").unwrap();
+        s.wait_object_complete().unwrap();
+        let lib = ModuleFullPath::from("lib");
+        let shared = &s.shared;
+        let sources = ModuleSources::new(root, &[], &shared.symbol_tables, &shared.cache);
+        let validity = shared.cache.validate(
+            &lib,
+            &cranelisp_backend::cache::manifest::hash_source(source),
+            &sources,
+        );
+        let cache_dir = shared.cache.cache_dir().expect("cache enabled");
+        let cached = cranelisp_backend::cache::try_load_cached_module(&cache_dir, &lib)
+            .unwrap()
+            .expect("the launch persists `lib`");
+        let generation = Generation {
+            entry_valid: matches!(validity, CacheValidity::Valid { .. }),
+            object: StoredObject::of(&cached),
+        };
+        s.shutdown();
+        generation
+    }
+
+    // spec: design/int/int.md §7.7 — a successful object pass leaves its new
+    // `.o` and records its entry; a later pass whose table has no codegen
+    // targets leaves no `.o`, so the restore registers the module with nothing
+    // to load instead of the earlier generation's object.
+    #[test]
+    fn an_object_pass_with_no_codegen_targets_retires_the_earlier_object() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            launch(root.path(), "(defn g [] 41)\n"),
+            Generation {
+                entry_valid: true,
+                object: StoredObject::Load,
+            }
+        );
+        assert_eq!(
+            launch(root.path(), "(defn id [x] x)\n"),
+            Generation {
+                entry_valid: true,
+                object: StoredObject::NothingToLoad,
+            }
+        );
+    }
 }

@@ -119,10 +119,9 @@ impl AuthoredSlotLayout {
 pub(crate) struct ModuleEdges(BTreeSet<ModuleFullPath>);
 
 impl ModuleEdges {
-    /// The declared edges alone, for a writer whose table does not carry the
-    /// structural declarations. Import and re-export targets resolve against
+    /// The declared edges alone. Import and re-export targets resolve against
     /// `children` (`design/int/int.md` §6.9).
-    pub(crate) fn of_declarations(
+    fn of_declarations(
         module: &ModuleFullPath,
         imports: &[ImportSpec],
         exports: &[ExportSpec],
@@ -162,11 +161,7 @@ impl ModuleEdges {
         .with_recorded_edges(module, table)
     }
 
-    pub(crate) fn with_recorded_edges(
-        mut self,
-        module: &ModuleFullPath,
-        table: &SessionSymbolTable,
-    ) -> Self {
+    fn with_recorded_edges(mut self, module: &ModuleFullPath, table: &SessionSymbolTable) -> Self {
         self.0.extend(recorded_edges(module, table));
         self
     }
