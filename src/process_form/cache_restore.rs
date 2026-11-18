@@ -32,8 +32,9 @@ use super::register_dep;
 /// Attempt to load a module from the disk cache, skipping typecheck.
 ///
 /// Returns `true` if the module was successfully loaded from cache:
-/// type info restored into TC, module registered with scheduler at
-/// TypecheckDone, GOT slots pre-allocated, **and transitive imports
+/// type info restored into TC, module registered with scheduler as
+/// published (terminal once its declared children are), GOT slots
+/// pre-allocated, **and transitive imports
 /// recursively cache-loaded or registered for fresh build**. Returns
 /// `false` on any cache miss (caller falls through to full typecheck
 /// path).
@@ -109,9 +110,27 @@ pub(super) fn try_cache_hit_load<'a>(
     // the walk, which installs the tables `dep`'s object links against, has
     // returned by any path (`design/int/int.md` §7.1).
     let symbols = std::mem::take(&mut specs.symbols);
-    let load_hold =
-        register_cached_with_scheduler(ctx, dep, dep_file, symbols, source, needs_inmem_load)?;
-    walk_restored_module(ctx, dep, &specs, load_hold.as_ref())?;
+    let restored = RestoredModule {
+        symbols,
+        source,
+        needs_inmem_load,
+        declared_children: specs
+            .submodules
+            .iter()
+            .map(|decl| crate::imports::declared_child_path(dep, decl.name.as_ref()))
+            .collect(),
+    };
+    let load_hold = register_cached_with_scheduler(ctx, dep, dep_file, restored)?;
+    let walked = walk_restored_module(ctx, dep, &specs, load_hold.as_ref());
+    // The restore ends at publication: `dep` turns terminal through the wait
+    // on its declared children that the walk enrolled (`design/int/int.md`
+    // §6.11, A restored parent). It ends on a failed walk too, as the
+    // terminal registration it replaces did.
+    ctx.scheduler.end_restore(dep);
+    if let Some(shared) = ctx.shared_state {
+        crate::session_v4::index_worker::on_restorations_settled(shared);
+    }
+    walked?;
 
     Ok(true)
 }
@@ -151,6 +170,18 @@ struct ValidCacheEntry {
     source: RestoredSource,
     /// Whether the module has an `.o` to load (a generic-only module has none).
     needs_inmem_load: bool,
+}
+
+/// What a validated restore registers with the scheduler.
+struct RestoredModule {
+    /// All `Def`-named symbols.
+    symbols: std::collections::HashSet<Symbol>,
+    source: RestoredSource,
+    /// Whether the module has an `.o` to load (a generic-only module has none).
+    needs_inmem_load: bool,
+    /// The children the restored table declares, which the module waits on
+    /// before it is terminal.
+    declared_children: Vec<ModuleFullPath>,
 }
 
 /// The source version a restore installs, recorded for the importers'
@@ -516,10 +547,14 @@ fn register_cached_with_scheduler<'a>(
     ctx: &ModuleCompiler<'a>,
     dep: &ModuleFullPath,
     dep_file: &Path,
-    symbols: std::collections::HashSet<Symbol>,
-    source: RestoredSource,
-    needs_inmem_load: bool,
+    restored: RestoredModule,
 ) -> Result<Option<CachedLoadHold<'a>>, CranelispError> {
+    let RestoredModule {
+        symbols,
+        source,
+        needs_inmem_load,
+        declared_children,
+    } = restored;
     let Some(shared) = ctx.shared_state else {
         return Ok(None);
     };
@@ -538,14 +573,15 @@ fn register_cached_with_scheduler<'a>(
         ctx.prelude_fallback,
     )?;
 
-    // 5. Register with scheduler at TypecheckDone. A generic-only module with no
-    //    `.o` (FIXME 0387) registers as already-inmem-done (no codegen load to
-    //    schedule); any other cached module registers with its `.o` load held
+    // 5. Register with the scheduler: terminal when `dep` declares no
+    //    children, otherwise published until the caller ends the restore. A
+    //    generic-only module with no `.o` (FIXME 0387) has no codegen load to
+    //    schedule; any other cached module registers with its `.o` load held
     //    for the caller to release.
     let load_hold = if needs_inmem_load {
-        scheduler.register_module_cached(dep.clone(), symbols)
+        scheduler.register_module_cached(dep.clone(), symbols, declared_children)
     } else {
-        scheduler.register_module_cached_no_object(dep.clone(), symbols);
+        scheduler.register_module_cached_no_object(dep.clone(), symbols, declared_children);
         None
     };
 
@@ -661,9 +697,8 @@ fn register_cached_submodules(
     declarations: &[ModDecl],
 ) -> Result<(), CranelispError> {
     for decl in declarations {
-        // The cached parent is already terminal, so it does not enter the
-        // fresh parent's TypecheckBlocked/retry protocol. Enrollment itself is
-        // nevertheless identical and errors remain mandatory.
+        // The restored parent waits on every child from `end_restore`, not
+        // per enrolment, because it has no cluster to retry.
         let _ = super::dependency::enrol_declared_submodule(ctx, parent, decl)?;
     }
     Ok(())

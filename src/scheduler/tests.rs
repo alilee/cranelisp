@@ -397,7 +397,7 @@ fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
     let m = mod_path("cached.dep");
     // Cached module enters TypecheckDone with object_done=true,
     // inmem_done=false, unclaimed.
-    drop(sched.register_module_cached(m.clone(), HashSet::new()));
+    drop(sched.register_module_cached(m.clone(), HashSet::new(), Vec::new()));
     {
         let state = sched.lock();
         let ms = state.modules.get(&m).unwrap();
@@ -444,8 +444,8 @@ fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
         assert!(ms.inmem_done, "completion sets inmem_done");
         assert_eq!(
             ms.cached_object_load,
-            CachedObjectLoad::Released,
-            "completion releases the claim atomically with setting done"
+            CachedObjectLoad::Loaded,
+            "completion ends the claim as loaded atomically with setting done"
         );
     }
 }
@@ -459,7 +459,7 @@ fn level4_claim_guard_sets_inmem_claimed_not_inmem_done() {
 fn register_module_cached_no_object_enters_inmem_done_no_jitcodegen() {
     let sched = CompileScheduler::new();
     let m = mod_path("generic.only");
-    sched.register_module_cached_no_object(m.clone(), HashSet::new());
+    sched.register_module_cached_no_object(m.clone(), HashSet::new(), Vec::new());
     {
         let state = sched.lock();
         let ms = state.modules.get(&m).unwrap();
@@ -490,7 +490,7 @@ fn register_module_cached_no_object_enters_inmem_done_no_jitcodegen() {
 fn wait_inmem_complete_does_not_pass_on_claimed_but_unfinished_module() {
     let sched = CompileScheduler::new();
     let m = mod_path("cached.dep");
-    drop(sched.register_module_cached(m.clone(), HashSet::new()));
+    drop(sched.register_module_cached(m.clone(), HashSet::new(), Vec::new()));
 
     // Take work — claims the module.
     let _work = sched.take_priority_work();
@@ -513,8 +513,8 @@ fn level4_multiple_cached_modules_each_claim_independently() {
     let sched = CompileScheduler::new();
     let m1 = mod_path("dep.one");
     let m2 = mod_path("dep.two");
-    drop(sched.register_module_cached(m1.clone(), HashSet::new()));
-    drop(sched.register_module_cached(m2.clone(), HashSet::new()));
+    drop(sched.register_module_cached(m1.clone(), HashSet::new(), Vec::new()));
+    drop(sched.register_module_cached(m2.clone(), HashSet::new(), Vec::new()));
 
     // Two takes — each claims one module.
     let Some(PriorityWork::JitCodegen(c1)) = sched.take_priority_work() else {
@@ -661,7 +661,7 @@ fn harvest_register_module_cached_does_not_appear_as_typecheck_work() {
     let symbols = [Symbol::from("foo"), Symbol::from("bar")]
         .into_iter()
         .collect();
-    drop(sched.register_module_cached(m.clone(), symbols));
+    drop(sched.register_module_cached(m.clone(), symbols, Vec::new()));
     if let Some(PriorityWork::Typecheck { module, .. }) = sched.take_priority_work() {
         panic!("cached module must NOT appear as Typecheck work, got {module:?}");
     }
@@ -1847,7 +1847,7 @@ fn claimed_cached_module<'s>(
     sched: &'s CompileScheduler,
     module: &ModuleFullPath,
 ) -> CachedLoadClaim<'s> {
-    drop(sched.register_module_cached(module.clone(), HashSet::new()));
+    drop(sched.register_module_cached(module.clone(), HashSet::new(), Vec::new()));
     let claim = take_cache_load(sched).expect("a released load is claimable");
     assert_eq!(claim.module(), module);
     claim
@@ -1861,7 +1861,7 @@ fn held_cached_load_is_not_claimable_while_signatures_are_ready() {
     let cached = mod_path("a");
     let waiter = mod_path("user");
     let _hold = sched
-        .register_module_cached(cached.clone(), HashSet::new())
+        .register_module_cached(cached.clone(), HashSet::new(), Vec::new())
         .expect("first registration places the hold");
 
     sched.register_module(waiter.clone(), no_sexps(), false);
@@ -1888,7 +1888,7 @@ fn held_cached_load_is_not_claimable_while_signatures_are_ready() {
 fn released_cached_load_is_claimed_exactly_once() {
     let sched = CompileScheduler::new();
     let cached = mod_path("a");
-    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new(), Vec::new());
     drop(hold);
 
     let claim = take_cache_load(&sched).expect("the released load is claimable");
@@ -1905,7 +1905,7 @@ fn released_cached_load_is_claimed_exactly_once() {
 fn direct_claim_is_pending_while_held_and_loaded_after_completion() {
     let sched = CompileScheduler::new();
     let cached = mod_path("a");
-    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new(), Vec::new());
 
     assert!(matches!(
         sched.try_claim_cached_load(&cached),
@@ -1941,7 +1941,7 @@ fn direct_claim_after_ladder_claim_is_pending() {
 #[test]
 fn hold_released_on_restore_error_path() {
     fn failing_restore(sched: &CompileScheduler, module: &ModuleFullPath) -> Result<(), ()> {
-        let _hold = sched.register_module_cached(module.clone(), HashSet::new());
+        let _hold = sched.register_module_cached(module.clone(), HashSet::new(), Vec::new());
         Err(())?;
         Ok(())
     }
@@ -1960,7 +1960,7 @@ fn hold_released_on_restore_error_path() {
 fn awaiting_caller_claims_the_load_when_the_hold_drops() {
     let sched = std::sync::Arc::new(CompileScheduler::new());
     let cached = mod_path("a");
-    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new(), Vec::new());
 
     let (rx, waiter) = spawn_claim_waiter(&sched, &cached);
     assert!(
@@ -2022,8 +2022,8 @@ fn ladder_skips_failed_cached_module_and_claims_the_next() {
     let sched = CompileScheduler::new();
     let failed = mod_path("a");
     let next = mod_path("b");
-    drop(sched.register_module_cached(failed.clone(), HashSet::new()));
-    drop(sched.register_module_cached(next.clone(), HashSet::new()));
+    drop(sched.register_module_cached(failed.clone(), HashSet::new(), Vec::new()));
+    drop(sched.register_module_cached(next.clone(), HashSet::new(), Vec::new()));
     sched.notify_module_failed(&failed, dummy_error("restore failed"));
 
     let claim = take_cache_load(&sched).expect("the next load is claimable");
@@ -2046,7 +2046,7 @@ fn hold_leaves_uncached_and_objectless_modules_unchanged() {
     }
     sched.notify_source_pass_ready(&fresh, &[Symbol::from("main")]);
 
-    sched.register_module_cached_no_object(objectless.clone(), HashSet::new());
+    sched.register_module_cached_no_object(objectless.clone(), HashSet::new(), Vec::new());
     assert!(take_cache_load(&sched).is_none());
     assert!(matches!(
         sched.try_claim_cached_load(&fresh),
@@ -2108,7 +2108,7 @@ fn fresh_registration_in_the_cached_set_is_not_a_cached_load() {
 fn execution_wait_blocks_while_a_cached_load_is_held_or_claimed() {
     let sched = std::sync::Arc::new(CompileScheduler::new());
     let cached = mod_path("a");
-    let hold = sched.register_module_cached(cached.clone(), HashSet::new());
+    let hold = sched.register_module_cached(cached.clone(), HashSet::new(), Vec::new());
 
     let settled = spawn_execution_wait(&sched);
     assert!(
@@ -2194,7 +2194,7 @@ fn execution_wait_is_ready_at_once_when_no_cached_load_is_outstanding() {
     ));
     ready_now(&sched, "fresh module mid-typecheck");
 
-    sched.register_module_cached_no_object(mod_path("generic.only"), HashSet::new());
+    sched.register_module_cached_no_object(mod_path("generic.only"), HashSet::new(), Vec::new());
     ready_now(&sched, "cached module with no object");
 
     claimed_cached_module(&sched, &mod_path("loaded")).complete_loaded(&[]);
@@ -2207,7 +2207,7 @@ fn execution_wait_is_ready_at_once_when_no_cached_load_is_outstanding() {
 fn execution_wait_returns_at_shutdown() {
     let sched = std::sync::Arc::new(CompileScheduler::new());
     let cached = mod_path("a");
-    let _hold = sched.register_module_cached(cached.clone(), HashSet::new());
+    let _hold = sched.register_module_cached(cached.clone(), HashSet::new(), Vec::new());
 
     let settled = spawn_execution_wait(&sched);
     assert!(settled.recv_timeout(WAITER_STAYS_PARKED).is_err());
@@ -2952,4 +2952,165 @@ fn eval_barrier_on_a_completion_member_waits_past_its_publication() {
     sched.notify_typecheck_done(&parent);
     waiter.join().unwrap();
     assert!(opened.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+/// A cache-restored parent `P` declaring `P.c`, with its walk ended: `c` is
+/// in flight from source, so `P`'s restore ends at publication.
+fn restored_parent_with_a_missed_child(
+    sched: &CompileScheduler,
+) -> (ModuleFullPath, ModuleFullPath) {
+    let parent = mod_path("P");
+    let child = mod_path("P.c");
+    sched.register_module(child.clone(), no_sexps(), true);
+    sched.register_module_cached_no_object(parent.clone(), HashSet::new(), vec![child.clone()]);
+    sched.end_restore(&parent);
+    (parent, child)
+}
+
+// spec: design/int/int.md §6.11 A restored parent — a restored parent whose
+// child misses is published and not terminal until the child completes; a
+// completion reader waits for it, and a declaration reader installs.
+#[test]
+fn restored_parent_whose_child_misses_completes_only_after_the_child() {
+    let sched = CompileScheduler::new();
+    let (parent, child) = restored_parent_with_a_missed_child(&sched);
+    let completion_reader = mod_path("entry");
+    let declaration_reader = mod_path("P.c.reader");
+    sched.register_module(completion_reader.clone(), no_sexps(), false);
+    sched.register_module(declaration_reader.clone(), no_sexps(), false);
+
+    assert!(sched.is_ready_for_declaration(&parent), "published");
+    assert!(!sched.is_typechecked(&parent), "not terminal");
+    assert_eq!(
+        sched
+            .block_on_first_unready_closure_member(&completion_reader, &closure_of(&["P"]))
+            .unwrap(),
+        Some(parent.clone()),
+        "a completion reader waits"
+    );
+    sched
+        .block_for_typecheck(
+            &declaration_reader,
+            &parent,
+            &Symbol::from("*"),
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    assert_ne!(
+        sched.module_pool(&declaration_reader),
+        Some(ModulePool::TypecheckBlocked),
+        "a declaration reader proceeds"
+    );
+
+    sched.force_typecheck_working_for_test(&child);
+    sched.mark_generation_published(&child);
+    assert!(
+        !sched.is_typechecked(&parent),
+        "the child published, not complete"
+    );
+    assert!(
+        sched.wait_inmem_complete().is_err(),
+        "no in-memory completion before the parent is terminal"
+    );
+
+    sched.notify_typecheck_done(&child);
+    assert!(sched.is_typechecked(&parent), "the child completed");
+    assert_ne!(
+        sched.module_pool(&completion_reader),
+        Some(ModulePool::TypecheckBlocked),
+        "the completion reader is released"
+    );
+    assert!(
+        !sched.lock().typecheck_first.contains(&parent)
+            && !sched.lock().typecheck_next.contains(&parent),
+        "the release completes the parent; it does not requeue it"
+    );
+}
+
+// spec: design/int/int.md §6.11 A restored parent — a restored parent whose
+// children all hit is terminal only after the walk returns.
+#[test]
+fn restored_parent_whose_children_hit_is_terminal_only_after_the_walk() {
+    let sched = CompileScheduler::new();
+    let parent = mod_path("P");
+    let child = mod_path("P.c");
+    let hold = sched.register_module_cached(parent.clone(), HashSet::new(), vec![child.clone()]);
+    drop(sched.register_module_cached(child.clone(), HashSet::new(), Vec::new()));
+    assert!(sched.is_ready_for_declaration(&parent));
+    assert!(!sched.is_typechecked(&parent), "the walk has not returned");
+
+    sched.end_restore(&parent);
+    drop(hold);
+    assert!(sched.is_typechecked(&parent));
+}
+
+// spec: design/int/int.md §6.11 A restored parent — a missed child that fails
+// refuses the restored parent, recorded as the refusing dependency, whether
+// it fails during the wait or before the walk ends.
+#[test]
+fn a_failed_missed_child_refuses_the_restored_parent() {
+    let child_error = || CranelispError::ModuleError {
+        message: "child body".into(),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    };
+
+    let during = CompileScheduler::new();
+    let (parent, child) = restored_parent_with_a_missed_child(&during);
+    during.notify_module_failed(&child, child_error());
+    assert!(during.is_failed(&parent), "failed during the wait");
+    assert_eq!(during.refusing_dependency(&parent), Some(child.clone()));
+
+    let before = CompileScheduler::new();
+    before.register_module(child.clone(), no_sexps(), true);
+    before.notify_module_failed(&child, child_error());
+    before.register_module_cached_no_object(parent.clone(), HashSet::new(), vec![child.clone()]);
+    before.end_restore(&parent);
+    assert!(before.is_failed(&parent), "failed before the walk ended");
+    assert_eq!(before.refusing_dependency(&parent), Some(child));
+}
+
+// spec: design/int/int.md §6.11 A restored parent — negative: a restored
+// parent with no declared children is terminal at registration.
+#[test]
+fn restored_parent_without_declared_children_is_terminal_at_registration() {
+    let sched = CompileScheduler::new();
+    let with_object = mod_path("P");
+    let without_object = mod_path("Q");
+    let _hold = sched.register_module_cached(with_object.clone(), HashSet::new(), Vec::new());
+    sched.register_module_cached_no_object(without_object.clone(), HashSet::new(), Vec::new());
+    assert!(sched.is_typechecked(&with_object));
+    assert!(sched.is_typechecked(&without_object));
+}
+
+// spec: design/int/int.md §6.11 A restored parent ("the parent's in-memory
+// completion is set only once it is terminal") — a restored parent's object
+// loaded while it waits, by the macro recogniser's claim, does not complete
+// it in memory before its children.
+#[test]
+fn restored_parent_object_loaded_while_waiting_completes_in_memory_with_the_parent() {
+    let sched = CompileScheduler::new();
+    let parent = mod_path("P");
+    let child = mod_path("P.c");
+    sched.register_module(child.clone(), no_sexps(), true);
+    let hold = sched.register_module_cached(parent.clone(), HashSet::new(), vec![child.clone()]);
+    sched.end_restore(&parent);
+    drop(hold);
+    let CachedLoadAnswer::Claimed(claim) = sched.try_claim_cached_load(&parent) else {
+        unreachable!("invariant: the released load is claimable");
+    };
+    claim.complete_loaded(&[]);
+    assert!(
+        matches!(
+            sched.try_claim_cached_load(&parent),
+            CachedLoadAnswer::Loaded
+        ),
+        "the object is loaded"
+    );
+    assert!(
+        !sched.lock().modules[&parent].inmem_done,
+        "the parent waits"
+    );
+
+    sched.notify_typecheck_done(&child);
+    assert!(sched.lock().modules[&parent].inmem_done);
 }

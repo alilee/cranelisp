@@ -680,6 +680,7 @@ fn feed_loaded_module(shared: &SharedState, module: &ModuleFullPath) {
 /// skipped (the sweep's exclusions; they are handled at arm time / are the outer
 /// scope).
 pub(crate) fn on_module_published(shared: &SharedState, module: &ModuleFullPath) {
+    on_restorations_settled(shared);
     if !shared.importable_indices.is_armed() {
         return;
     }
@@ -707,6 +708,7 @@ pub(crate) fn on_module_published(shared: &SharedState, module: &ModuleFullPath)
 /// count. `prelude`/seeded modules are skipped (they are never on the worklist and
 /// are handled at arm time / are the outer scope).
 pub(crate) fn on_module_failed(shared: &SharedState, module: &ModuleFullPath) {
+    on_restorations_settled(shared);
     if !shared.importable_indices.is_armed() {
         return;
     }
@@ -716,6 +718,21 @@ pub(crate) fn on_module_failed(shared: &SharedState, module: &ModuleFullPath) {
         return;
     }
     shared.importable_indices.mark_skipped(module);
+}
+
+/// Run the publication or failure hook for each restored parent whose wait on
+/// its declared children ended inside another module's transition
+/// (`design/int/int.md` §6.11, *A restored parent*). The two hooks call this
+/// first, so a parent settles at the edge of the transition that settled it;
+/// the restore calls it when the parent completes as its walk ends.
+pub(crate) fn on_restorations_settled(shared: &SharedState) {
+    for module in shared.scheduler.take_settled_restorations() {
+        match shared.scheduler.module_pool(&module) {
+            Some(pool) if pool.is_terminal_typecheck() => on_module_published(shared, &module),
+            Some(ModulePool::Failed) => on_module_failed(shared, &module),
+            _ => {}
+        }
+    }
 }
 
 /// Whether `module` has reached a terminal typecheck state (its signatures are
@@ -2284,6 +2301,70 @@ mod tests {
                 .is_empty(),
             "a Failed module contributes no importable rows"
         );
+    }
+
+    /// `P`, restored with its declared child `P.c` in flight, both popped by
+    /// the armed index while in flight and so left pending.
+    fn restored_parent_pending_on_its_child(
+        shared: &SharedState,
+    ) -> (ModuleFullPath, ModuleFullPath) {
+        let (parent, child) = (m("P"), m("P.c"));
+        cranelisp_types::ensure_module_exists(&shared.symbol_tables, &parent);
+        cranelisp_types::ensure_module_exists(&shared.symbol_tables, &child);
+        shared
+            .scheduler
+            .register_module(child.clone(), std::sync::Arc::from(Vec::new()), true);
+        shared.scheduler.register_module_cached_no_object(
+            parent.clone(),
+            std::collections::HashSet::new(),
+            vec![child.clone()],
+        );
+        shared.scheduler.end_restore(&parent);
+        shared
+            .importable_indices
+            .arm(vec![parent.clone(), child.clone()]);
+        assert!(run_one_index_task(shared) && run_one_index_task(shared));
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            2,
+            "both in flight"
+        );
+        (parent, child)
+    }
+
+    // spec: design/int/int.md §6.11 A restored parent + resolve-home-enumeration.md
+    // §4 — a restored parent completes inside its child's transition, which
+    // runs no hook for the parent itself; the child's publication hook settles
+    // the parent's index entry too, or the burn-down wedges at `pending ≥ 1`.
+    #[test]
+    fn a_restored_parent_completed_by_its_child_leaves_the_burndown() {
+        let shared = test_shared_state();
+        let (_parent, child) = restored_parent_pending_on_its_child(&shared);
+        shared.scheduler.notify_typecheck_done(&child);
+        on_module_published(&shared, &child);
+        assert_eq!(shared.importable_indices.pending_count(), 0);
+    }
+
+    // spec: design/int/int.md §6.11 A restored parent + resolve-home-enumeration.md
+    // §4 — a restored parent refused by its failed child leaves the burn-down
+    // through the child's failure hook.
+    #[test]
+    fn a_restored_parent_refused_by_its_child_leaves_the_burndown() {
+        let shared = test_shared_state();
+        let (parent, child) = restored_parent_pending_on_its_child(&shared);
+        shared.scheduler.notify_module_failed(
+            &child,
+            cranelisp_types::CranelispError::ModuleError {
+                message: "child body".to_string(),
+                location: cranelisp_types::ErrorLocation::from_span_file(
+                    cranelisp_types::Span::SYNTHETIC,
+                    None,
+                ),
+            },
+        );
+        on_module_failed(&shared, &child);
+        assert!(shared.scheduler.is_failed(&parent));
+        assert_eq!(shared.importable_indices.pending_count(), 0);
     }
 
     // spec: repl/spec.md §17.19.3 + resolve-home-enumeration.md §4 (FIXME 0562) —

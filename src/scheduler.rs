@@ -313,6 +313,13 @@ pub struct ModuleState {
     /// its declared children (`design/int/int.md` §6.11, Declaration
     /// readiness). Every new whole-source attempt starts it false.
     generation_published: bool,
+
+    /// The declared children a cache-restored parent waits on: `Some` while
+    /// the parent is published and not terminal (`design/int/int.md` §6.11,
+    /// *A restored parent*). Releasing the wait completes the parent rather
+    /// than requeueing it, because a restored parent has no source left to
+    /// process. `None` for every other module.
+    awaited_children: Option<Vec<ModuleFullPath>>,
 }
 
 impl ModuleState {
@@ -337,6 +344,7 @@ impl ModuleState {
             refusing_dependency: None,
             cycle_failure: false,
             generation_published: false,
+            awaited_children: None,
         }
     }
 
@@ -365,6 +373,7 @@ impl ModuleState {
             refusing_dependency: None,
             cycle_failure: false,
             generation_published: false,
+            awaited_children: None,
         }
     }
 
@@ -396,6 +405,7 @@ impl ModuleState {
             refusing_dependency: None,
             cycle_failure: false,
             generation_published: false,
+            awaited_children: None,
         }
     }
 
@@ -408,6 +418,7 @@ impl ModuleState {
         }
         match self.cached_object_load {
             CachedObjectLoad::Absent => CachedLoadState::NotCachedObject,
+            CachedObjectLoad::Loaded => CachedLoadState::Loaded,
             _ if self.pool == ModulePool::Failed => CachedLoadState::Failed,
             CachedObjectLoad::Held => CachedLoadState::Held,
             CachedObjectLoad::Released => CachedLoadState::Claimable,
@@ -430,6 +441,9 @@ pub enum CachedObjectLoad {
     Released,
     /// A [`CachedLoadClaim`] owns the load.
     Claimed,
+    /// The object is in memory. A restored parent still waiting on its
+    /// declared children is not yet complete in memory.
+    Loaded,
 }
 
 /// A module's cached-object-load state, derived by
@@ -639,6 +653,13 @@ struct SchedulerState {
     /// merely present-with-symbols.
     ever_terminal: HashSet<ModuleFullPath>,
 
+    /// Restored parents whose wait on their declared children has ended,
+    /// completed or refused, since the last
+    /// [`CompileScheduler::take_settled_restorations`]. The scheduler ends that
+    /// wait inside another module's transition, so no worker pass runs the
+    /// publication or failure hook for the parent itself.
+    settled_restorations: Vec<ModuleFullPath>,
+
     shutdown: bool,
 }
 
@@ -651,6 +672,7 @@ impl SchedulerState {
             typecheck_done: VecDeque::new(),
             cached_modules: HashSet::new(),
             ever_terminal: HashSet::new(),
+            settled_restorations: Vec::new(),
             shutdown: false,
         }
     }
@@ -791,9 +813,10 @@ impl CompileScheduler {
         self.priority_work_available.notify_all();
     }
 
-    /// Register a module loaded from cache.
-    /// Enters TypecheckDone with type info available but in-memory code
-    /// not yet loaded. Object codegen is pre-satisfied.
+    /// Register a module loaded from cache, with type info available but
+    /// in-memory code not yet loaded. Object codegen is pre-satisfied.
+    /// With no `declared_children` it enters TypecheckDone; otherwise it is
+    /// published and turns terminal after them, from [`Self::end_restore`].
     /// Satisfies any pending typecheck waiters on this module's symbols.
     ///
     /// The object load is held until the returned hold drops
@@ -804,6 +827,7 @@ impl CompileScheduler {
         &self,
         module: ModuleFullPath,
         symbols: HashSet<Symbol>,
+        declared_children: Vec<ModuleFullPath>,
     ) -> Option<CachedLoadHold<'_>> {
         observability::record_module_event(
             SchedulerTraceTag::RegisterModuleCached,
@@ -821,11 +845,8 @@ impl CompileScheduler {
         let mut ms = ModuleState::new_cached(symbols.clone());
         ms.cached_object_load = CachedObjectLoad::Held;
         state.modules.insert(module.clone(), ms);
-        state.typecheck_done.push_back(module.clone());
         state.cached_modules.insert(module.clone());
-        // Cache-hit enters TypecheckDone directly (bypasses `set_pool_locked`) —
-        // record the was-terminal history (0571.3).
-        state.ever_terminal.insert(module.clone());
+        Self::enter_restored_locked(&mut state, &module, declared_children);
 
         // Satisfy any pending typecheck waiters on symbols from this module.
         Self::satisfy_typecheck_waiters_for_all_symbols_locked(&mut state, &module, &symbols);
@@ -979,8 +1000,9 @@ impl CompileScheduler {
 
     /// Register a cache-hit module that has NO codegen object (S84 Phase 4B,
     /// FIXME 0387). Mirrors [`Self::register_module_cached`] but installs the
-    /// module with `inmem_done = true` (via [`ModuleState::new_cached_no_object`])
-    /// so the Level-4 `JitCodegen` scan never tries to mmap a non-existent `.o`.
+    /// module with `inmem_done = true` (via [`ModuleState::new_cached_no_object`]),
+    /// once it is terminal, so the Level-4 `JitCodegen` scan never tries to
+    /// mmap a non-existent `.o`.
     /// A generic-only module's schemes are already installed into the symbol
     /// table by the caller (`try_cache_hit_load`); they are mono SOURCES with no
     /// callable code to load.
@@ -988,6 +1010,7 @@ impl CompileScheduler {
         &self,
         module: ModuleFullPath,
         symbols: HashSet<Symbol>,
+        declared_children: Vec<ModuleFullPath>,
     ) {
         observability::record_module_event(
             SchedulerTraceTag::RegisterModuleCached,
@@ -1002,11 +1025,8 @@ impl CompileScheduler {
 
         let ms = ModuleState::new_cached_no_object(symbols.clone());
         state.modules.insert(module.clone(), ms);
-        state.typecheck_done.push_back(module.clone());
         state.cached_modules.insert(module.clone());
-        // Cache-hit enters TypecheckDone directly (bypasses `set_pool_locked`) —
-        // record the was-terminal history (0571.3).
-        state.ever_terminal.insert(module.clone());
+        Self::enter_restored_locked(&mut state, &module, declared_children);
 
         // Satisfy pending typecheck waiters on this module's symbols.
         Self::satisfy_typecheck_waiters_for_all_symbols_locked(&mut state, &module, &symbols);
@@ -1019,6 +1039,107 @@ impl CompileScheduler {
         self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
         self.completion.notify_all();
+    }
+
+    /// Enter a just-registered cache-restored `module` into its pool
+    /// (`design/int/int.md` §6.11, *A restored parent*). With no declared
+    /// children it is terminal at once. Otherwise it is published and not
+    /// terminal, and waits on `declared_children` from [`Self::end_restore`];
+    /// its in-memory completion is set only once it is terminal.
+    fn enter_restored_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+        declared_children: Vec<ModuleFullPath>,
+    ) {
+        if declared_children.is_empty() {
+            // Enters TypecheckDone directly (bypasses `set_pool_locked`) —
+            // record the was-terminal history (0571.3).
+            state.typecheck_done.push_back(module.clone());
+            state.ever_terminal.insert(module.clone());
+            return;
+        }
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.pool = ModulePool::TypecheckBlocked;
+            ms.generation_published = true;
+            ms.inmem_done = false;
+            ms.awaited_children = Some(declared_children);
+        }
+    }
+
+    /// End `module`'s restore once its walk has enrolled every declared child:
+    /// it completes when no child is still in flight, and otherwise waits on
+    /// them (`design/int/int.md` §6.11, *A restored parent*). A no-op for a
+    /// module that is not a restored parent awaiting its walk.
+    pub(crate) fn end_restore(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        let awaiting_walk = state.modules.get(module).is_some_and(|ms| {
+            ms.pool == ModulePool::TypecheckBlocked
+                && ms.awaited_children.is_some()
+                && ms.blocked_on.is_none()
+        });
+        if awaiting_walk {
+            Self::advance_restored_parent_locked(&mut state, module);
+        }
+        drop(state);
+        self.notify_settled();
+    }
+
+    /// Move a restored `parent` on from its declared children: refuse it on a
+    /// child that stands `Failed`, wait on the first child not yet terminal,
+    /// or complete it when none is left.
+    fn advance_restored_parent_locked(state: &mut SchedulerState, parent: &ModuleFullPath) {
+        let children = state
+            .modules
+            .get(parent)
+            .and_then(|ms| ms.awaited_children.clone())
+            .unwrap_or_default();
+        for child in &children {
+            if let Err(error) =
+                Self::refuse_failed_dependency_locked(state, parent, child, Span::SYNTHETIC)
+            {
+                Self::notify_module_failed_locked(state, parent, error);
+                return;
+            }
+            if Self::signatures_ready_locked(state, child) {
+                continue;
+            }
+            if let Some(ms) = state.modules.get_mut(parent) {
+                ms.blocked_on = Some(child.clone());
+            }
+            if Self::fail_on_wait_cycle_locked(state, parent, Span::SYNTHETIC).is_ok() {
+                Self::add_waiter_locked(
+                    state,
+                    child,
+                    &Symbol::from("*"),
+                    Waiter {
+                        module: parent.clone(),
+                        need: WaitKind::Typecheck,
+                    },
+                );
+            }
+            return;
+        }
+        if let Some(ms) = state.modules.get_mut(parent) {
+            ms.awaited_children = None;
+            ms.blocked_on = None;
+            ms.inmem_done = matches!(
+                ms.cached_object_load,
+                CachedObjectLoad::Absent | CachedObjectLoad::Loaded
+            );
+        }
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateTypechecked,
+            parent.as_ref(),
+        );
+        Self::typecheck_done_locked(state, parent);
+        Self::try_complete_locked(state, parent);
+        state.settled_restorations.push(parent.clone());
+    }
+
+    /// Take the restored parents whose wait has ended since the last take,
+    /// for the caller to run their publication or failure hook.
+    pub(crate) fn take_settled_restorations(&self) -> Vec<ModuleFullPath> {
+        std::mem::take(&mut self.lock().settled_restorations)
     }
 
     /// Re-register a module after its source file has changed.
@@ -1131,6 +1252,7 @@ impl CompileScheduler {
                 refusing_dependency: None,
                 cycle_failure: false,
                 generation_published: false,
+                awaited_children: None,
             };
         }
 
@@ -1438,36 +1560,10 @@ impl CompileScheduler {
             ms.blocked_on = Some(needed_module.clone());
         }
 
-        // Check for cycles before adding the waiter.
-        if let Some(cycle) = Self::detect_cycle_locked(&state, module) {
-            let cycle_str = cycle
-                .iter()
-                .map(|m| m.to_string())
-                .collect::<Vec<_>>()
-                .join(" -> ");
-            let msg = format!("circular dependency detected: {}", cycle_str);
-            if let Some(ms) = state.modules.get_mut(module) {
-                ms.cycle_failure = true;
-            }
-            Self::record_failure_dependency_locked(&mut state, module, &cycle[1]);
-            // M2 (0571.2): attribute the circular-dependency error to the
-            // REFERENCE site (the FQ/import ref that closed the cycle), not the
-            // `Span::SYNTHETIC` module head — every diagnostic actionable (AL-3
-            // parity).
-            // Fail the module in the scheduler.
-            Self::notify_module_failed_locked(
-                &mut state,
-                module,
-                CranelispError::ModuleError {
-                    message: msg.clone(),
-                    location: ErrorLocation::from_span_file(ref_span, None),
-                },
-            );
-            return Err(CranelispError::ModuleError {
-                message: msg,
-                location: ErrorLocation::from_span_file(ref_span, None),
-            });
-        }
+        // Check for cycles before adding the waiter. M2 (0571.2): attribute the
+        // circular-dependency error to the REFERENCE site (the FQ/import ref
+        // that closed the cycle), not the `Span::SYNTHETIC` module head.
+        Self::fail_on_wait_cycle_locked(&mut state, module, ref_span)?;
 
         Self::add_waiter_locked(
             &mut state,
@@ -1648,9 +1744,9 @@ impl CompileScheduler {
             for sym in symbols {
                 ms.jit_reserved.remove(sym);
             }
-            ms.inmem_done = true;
+            ms.inmem_done = ms.awaited_children.is_none();
             if ms.cached_object_load == CachedObjectLoad::Claimed {
-                ms.cached_object_load = CachedObjectLoad::Released;
+                ms.cached_object_load = CachedObjectLoad::Loaded;
             }
         }
         // Evaluate waiter satisfaction for codegen waiters. This may requeue
@@ -2485,30 +2581,7 @@ impl CompileScheduler {
         // Acyclicity check FIRST (before adding the waiter), mirroring
         // `block_for_typecheck`: a transitive cycle back to `module` fails it
         // with the standard diagnostic.
-        if let Some(cycle) = Self::detect_cycle_locked(&state, module) {
-            let cycle_str = cycle
-                .iter()
-                .map(|m| m.to_string())
-                .collect::<Vec<_>>()
-                .join(" -> ");
-            let msg = format!("circular dependency detected: {}", cycle_str);
-            if let Some(ms) = state.modules.get_mut(module) {
-                ms.cycle_failure = true;
-            }
-            Self::record_failure_dependency_locked(&mut state, module, &cycle[1]);
-            Self::notify_module_failed_locked(
-                &mut state,
-                module,
-                CranelispError::ModuleError {
-                    message: msg.clone(),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                },
-            );
-            return Err(CranelispError::ModuleError {
-                message: msg,
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
-        }
+        Self::fail_on_wait_cycle_locked(&mut state, module, Span::SYNTHETIC)?;
         Self::add_waiter_locked(
             &mut state,
             &member,
@@ -3058,6 +3131,10 @@ impl CompileScheduler {
         if ms.pool != ModulePool::TypecheckBlocked {
             return;
         }
+        if ms.awaited_children.is_some() {
+            Self::advance_restored_parent_locked(state, module);
+            return;
+        }
 
         let has_own_waiters = !ms.waiters.is_empty();
         if has_own_waiters {
@@ -3088,6 +3165,9 @@ impl CompileScheduler {
         Self::set_pool_locked(state, module, ModulePool::Failed);
         if let Some(ms) = state.modules.get_mut(module) {
             ms.error = Some(error);
+            if ms.awaited_children.take().is_some() {
+                state.settled_restorations.push(module.clone());
+            }
         }
         Self::cascade_failure_locked(state, module);
     }
@@ -3135,6 +3215,41 @@ impl CompileScheduler {
             }
         }
         result
+    }
+
+    /// Fail `module` with the circular-dependency error, located at
+    /// `ref_span`, when its just-recorded `blocked_on` edge closes a wait
+    /// cycle. Called before the waiter is added.
+    fn fail_on_wait_cycle_locked(
+        state: &mut SchedulerState,
+        module: &ModuleFullPath,
+        ref_span: Span,
+    ) -> Result<(), CranelispError> {
+        let Some(cycle) = Self::detect_cycle_locked(state, module) else {
+            return Ok(());
+        };
+        let cycle_str = cycle
+            .iter()
+            .map(|m| m.to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let message = format!("circular dependency detected: {}", cycle_str);
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.cycle_failure = true;
+        }
+        Self::record_failure_dependency_locked(state, module, &cycle[1]);
+        Self::notify_module_failed_locked(
+            state,
+            module,
+            CranelispError::ModuleError {
+                message: message.clone(),
+                location: ErrorLocation::from_span_file(ref_span, None),
+            },
+        );
+        Err(CranelispError::ModuleError {
+            message,
+            location: ErrorLocation::from_span_file(ref_span, None),
+        })
     }
 
     /// Detect a cycle in the blocked_on graph starting from `start`.
