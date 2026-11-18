@@ -496,9 +496,9 @@ fn run_cluster_prologue(
 
     // --- Signature barrier (S93 Invariant PP; BC §6 ruling B) ---
     // No body (Pass-1/Pass-2) is admitted until EVERY module in the static
-    // import closure has published its signatures (reached a terminal typecheck
-    // pool — the publication edge; FIXME 0452 removed the redundant
-    // `signatures_ready` bit). This makes "a body never reads an
+    // import closure is ready: at its publication when it shares a cycle of the
+    // completion graph with this module, otherwise at its terminal typecheck
+    // pool (`design/int/int.md` §6.11, Route independence). This makes "a body never reads an
     // incompletely-published sibling" a structurally-verifiable property of
     // `process_cluster_once` (§3.3), rather than an invariant only emergent from
     // the per-dep Pass-0 convention — and it covers TRANSITIVE closure members

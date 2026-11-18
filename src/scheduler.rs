@@ -2353,6 +2353,22 @@ impl CompileScheduler {
         }
     }
 
+    /// Whether the barrier over `closure` may read member `m`: at its
+    /// publication when it shares a cycle of the completion graph with the
+    /// waiter, otherwise at its completion (`design/int/int.md` §6.11, Route
+    /// independence, rule 2).
+    fn barrier_member_ready_locked(
+        state: &SchedulerState,
+        closure: &ClosureOrder,
+        m: &ModuleFullPath,
+    ) -> bool {
+        if closure.at_publication.contains(m) {
+            Self::ready_for_declaration_locked(state, m)
+        } else {
+            Self::signatures_ready_locked(state, m)
+        }
+    }
+
     /// The failure of the first closure member in `Failed`, if any. Both
     /// barriers refuse on it: a failed member never publishes signatures, and
     /// its failure cascade has already drained its waiters, so a waiter
@@ -2391,7 +2407,7 @@ impl CompileScheduler {
             let all_ready = closure
                 .order
                 .iter()
-                .all(|m| Self::signatures_ready_locked(&state, m));
+                .all(|m| Self::barrier_member_ready_locked(&state, closure, m));
             if all_ready {
                 return Ok(());
             }
@@ -2453,7 +2469,7 @@ impl CompileScheduler {
         let member = closure
             .order
             .iter()
-            .find(|m| !Self::signatures_ready_locked(&state, m))
+            .find(|m| !Self::barrier_member_ready_locked(&state, closure, m))
             .cloned();
         let Some(member) = member else {
             return Ok(None); // barrier open — every member is terminal
@@ -3299,6 +3315,11 @@ fn module_failed_error(module: &ModuleFullPath, ms: &ModuleState) -> SchedulerEr
 pub struct ClosureOrder {
     /// Modules in dependency (topological) order: imports precede importers.
     pub order: Vec<ModuleFullPath>,
+    /// The members that lie on a cycle of the completion graph with the root,
+    /// which the signature barrier reads at their publication; it reads every
+    /// other member at its completion (`design/int/int.md` §6.11, Route
+    /// independence, rule 2).
+    pub at_publication: BTreeSet<ModuleFullPath>,
 }
 
 /// A static import cycle — the closure has no topological order, so the
@@ -3406,7 +3427,10 @@ pub fn dependency_closure(
         }
     }
 
-    Ok(ClosureOrder { order })
+    Ok(ClosureOrder {
+        order,
+        at_publication: BTreeSet::new(),
+    })
 }
 
 impl From<SchedulerError> for CranelispError {

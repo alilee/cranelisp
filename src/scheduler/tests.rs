@@ -1016,6 +1016,7 @@ fn dependency_closure_unlisted_dep_is_leaf() {
 fn closure_of(mods: &[&str]) -> ClosureOrder {
     ClosureOrder {
         order: mods.iter().map(|m| mod_path(m)).collect(),
+        at_publication: BTreeSet::new(),
     }
 }
 
@@ -2871,4 +2872,84 @@ fn eval_dependency_wait_ends_at_publication() {
     assert!(rx.recv_timeout(WAITER_STAYS_PARKED).is_err(), "in flight");
     sched.mark_generation_published(&w);
     assert!(rx.recv_timeout(WAITER_WAKES).unwrap().is_ok());
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Route independence, rule 2 (`design/int/int.md` §6.11): the barrier reads a
+// member on a cycle of the completion graph with the waiter at its
+// publication, and every other member at its completion.
+// ══════════════════════════════════════════════════════════════════════
+
+/// A registered member `P` whose generation has published while it is still
+/// driving its declared children (in flight, not terminal).
+fn published_in_flight(sched: &CompileScheduler, name: &str) -> ModuleFullPath {
+    let member = mod_path(name);
+    sched.register_module(member.clone(), no_sexps(), false);
+    sched.force_typecheck_working_for_test(&member);
+    sched.mark_generation_published(&member);
+    member
+}
+
+// spec: design/int/int.md §6.11 Route independence rule 2 — `z`'s barrier on
+// `P`, in the ACT-1081 shape, opens at `P`'s publication; `y`, which does not
+// lie on a cycle with `P`'s child, stays blocked until `P` completes.
+#[test]
+fn barrier_reads_a_cycle_member_at_publication_and_another_at_completion() {
+    let sched = CompileScheduler::new();
+    let parent = published_in_flight(&sched, "P");
+    let z = mod_path("z");
+    let y = mod_path("y");
+    sched.register_module(z.clone(), no_sexps(), false);
+    sched.register_module(y.clone(), no_sexps(), false);
+
+    let mut on_cycle = closure_of(&["P"]);
+    on_cycle.at_publication.insert(parent.clone());
+    assert_eq!(
+        sched
+            .block_on_first_unready_closure_member(&z, &on_cycle)
+            .unwrap(),
+        None,
+        "a member on a cycle with the waiter is read at its publication"
+    );
+    assert!(sched.await_signature_barrier(&on_cycle).is_ok());
+
+    let off_cycle = closure_of(&["P"]);
+    assert_eq!(
+        sched
+            .block_on_first_unready_closure_member(&y, &off_cycle)
+            .unwrap(),
+        Some(parent.clone()),
+        "any other member is read at its completion"
+    );
+    sched.notify_typecheck_done(&parent);
+    assert_eq!(
+        sched
+            .block_on_first_unready_closure_member(&y, &off_cycle)
+            .unwrap(),
+        None
+    );
+}
+
+// spec: design/int/int.md §6.11 Route independence rule 2 — publication of a
+// member read at its completion does not open the eval thread's barrier.
+#[test]
+fn eval_barrier_on_a_completion_member_waits_past_its_publication() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let parent = published_in_flight(&sched, "P");
+    let opened = std::sync::Arc::new(AtomicBool::new(false));
+    let waiter = {
+        let (sched, opened) = (sched.clone(), opened.clone());
+        std::thread::spawn(move || {
+            sched.await_signature_barrier(&closure_of(&["P"])).unwrap();
+            opened.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(
+        !opened.load(std::sync::atomic::Ordering::SeqCst),
+        "published, not complete: the barrier stays shut"
+    );
+    sched.notify_typecheck_done(&parent);
+    waiter.join().unwrap();
+    assert!(opened.load(std::sync::atomic::Ordering::SeqCst));
 }

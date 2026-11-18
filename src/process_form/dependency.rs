@@ -857,6 +857,7 @@ pub(super) fn static_import_closure(
         module.clone(),
         root_imports.iter().cloned().chain(root_prelude).collect(),
     )];
+    let mut completion = CompletionGraph::default();
     let mut visited: std::collections::HashSet<ModuleFullPath> =
         std::collections::HashSet::from([module.clone()]);
     let mut queue: std::collections::VecDeque<ModuleFullPath> =
@@ -868,20 +869,25 @@ pub(super) fn static_import_closure(
         let Some(parsed) = parse_module_file(ctx, &dep) else {
             continue;
         };
-        let dep_declared = DeclaredChildren::of(&dep, &mod_declarations(&parsed, &dep));
+        let submodules = mod_declarations(&parsed, &dep);
+        let dep_declared = DeclaredChildren::of(&dep, &submodules);
         let (dep_imports, _) =
             declared_dependencies(&parsed, &dep, &dep_declared, DeclaredEdges::Imports);
+        let prelude_edge = source_prelude_edge(&dep, &parsed, prelude_file_exists);
         let dep_dependencies: Vec<ModuleFullPath> = dep_imports
             .iter()
             .cloned()
-            .chain(source_prelude_edge(&dep, &parsed, prelude_file_exists))
+            .chain(prelude_edge.clone())
             .collect();
+        let dep_completion =
+            completion_edges(ctx, &dep, &parsed, &dep_declared, &submodules, prelude_edge);
         queue.extend(
-            dep_dependencies
+            dep_completion
                 .iter()
                 .filter(|d| !visited.contains(*d))
                 .cloned(),
         );
+        completion.add(&dep, dep_completion);
         imports.push((dep.clone(), dep_imports));
         dependencies.push((dep, dep_dependencies));
     }
@@ -889,7 +895,14 @@ pub(super) fn static_import_closure(
     let closure = crate::scheduler::dependency_closure(module, &dependencies)
         .and_then(|_| crate::scheduler::dependency_closure(module, &imports));
     match closure {
-        Ok(closure) => {
+        Ok(mut closure) => {
+            let reaches_root = completion.reaching(module);
+            closure.at_publication = closure
+                .order
+                .iter()
+                .filter(|member| *member != module && reaches_root.contains(*member))
+                .cloned()
+                .collect();
             // Memoise for this cluster's subsequent retry-from-top passes.
             ctx.scheduler
                 .cache_static_closure(module, fingerprint, &closure);
@@ -917,6 +930,79 @@ pub(super) fn static_import_closure(
                 ),
             })
         }
+    }
+}
+
+/// The edges of a walked module `dep` in the completion graph
+/// (`design/int/int.md` §6.11, Route independence): its `import` declarations
+/// that load and its `export` targets, its implicit prelude edge, the modules
+/// its written qualified symbols name, and one edge to each child it declares.
+/// A qualifier is substituted through the session's aliases; one naming no
+/// module file is attributed to the module whose file owns it.
+fn completion_edges(
+    ctx: &ModuleCompiler,
+    dep: &ModuleFullPath,
+    parsed: &[Sexp],
+    declared: &DeclaredChildren,
+    submodules: &[cranelisp_types::ModDecl],
+    prelude_edge: Option<ModuleFullPath>,
+) -> Vec<ModuleFullPath> {
+    let is_module_file = |path: &ModuleFullPath| {
+        crate::pipeline::resolve_module_file(path, ctx.project_root, ctx.lib_dirs).is_some()
+    };
+    let (mut edges, _) =
+        declared_dependencies(parsed, dep, declared, DeclaredEdges::ImportsAndExports);
+    edges.extend(prelude_edge);
+    edges.extend(
+        qualified_modules(ctx.module_aliases, dep, parsed)
+            .into_iter()
+            .filter_map(|named| {
+                if is_module_file(&named) {
+                    Some(named)
+                } else {
+                    owning_module_file(&named, &is_module_file)
+                }
+            }),
+    );
+    edges.extend(
+        submodules
+            .iter()
+            .map(|decl| crate::imports::declared_child_path(dep, decl.name.as_ref())),
+    );
+    edges.retain(|edge| edge != dep && !crate::cache::dependency_record::is_compiler_owned(edge));
+    edges
+}
+
+/// The completion graph the static walk reaches: each walked module's
+/// [`completion_edges`]. The cycle checks do not read it; the signature
+/// barrier reads it for which members share a cycle with the root.
+#[derive(Default)]
+struct CompletionGraph {
+    dependents: std::collections::HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
+}
+
+impl CompletionGraph {
+    fn add(&mut self, module: &ModuleFullPath, edges: Vec<ModuleFullPath>) {
+        for edge in edges {
+            self.dependents
+                .entry(edge)
+                .or_default()
+                .push(module.clone());
+        }
+    }
+
+    /// Every walked module with a path to `root`.
+    fn reaching(&self, root: &ModuleFullPath) -> std::collections::HashSet<ModuleFullPath> {
+        let mut reached = std::collections::HashSet::new();
+        let mut queue = vec![root.clone()];
+        while let Some(next) = queue.pop() {
+            for dependent in self.dependents.get(&next).into_iter().flatten() {
+                if reached.insert(dependent.clone()) {
+                    queue.push(dependent.clone());
+                }
+            }
+        }
+        reached
     }
 }
 
@@ -1186,8 +1272,8 @@ impl ReachWalk<'_> {
 
 /// Gate the cluster's body (Pass-1/Pass-2) on the signature barrier (S93,
 /// Invariant PP; BC §6 ruling B). Returns `Ok(Some(member))` when a static
-/// closure module's signatures are not yet published (the member has not reached
-/// a terminal typecheck pool) — the caller frees back to the pool (worker) or
+/// closure member is not yet ready at the readiness the closure records for it
+/// (its publication or its completion) — the caller frees back to the pool (worker) or
 /// waits (eval) and retries from the top; `Ok(None)` when the barrier is open and
 /// the body may proceed.
 ///
@@ -1216,31 +1302,20 @@ pub(super) fn gate_body_on_signature_barrier(
     module: &ModuleFullPath,
     closure: &crate::scheduler::ClosureOrder,
 ) -> Result<Option<ModuleFullPath>, CranelispError> {
-    // Gate on the root's FORWARD dependencies only — never on the root itself
-    // nor on any ANCESTOR of the root. The root (`module`) is the cluster being
-    // typechecked NOW; its own signatures are not yet registered (that is Pass-1
-    // below). An ancestor is a `(mod …)` parent reached by a `super` import: the
-    // submodule drive order commits the parent's signatures BEFORE driving the
-    // child (`drive_submodules` runs after the parent's `finalize_cluster`), and
-    // the parent is then intentionally mid-flight (blocked waiting on the child)
-    // — it is NOT a forward dependency to barrier-wait on, and gating on it
-    // would both false-deadlock and trip a false runtime cycle (parent ⇄ child).
-    // So exclude the root and every ancestor (`module` == ancestor or starts
-    // with `ancestor + "."`).
-    let is_self_or_ancestor = |m: &ModuleFullPath| -> bool {
-        m == module
-            || module
-                .as_ref()
-                .strip_prefix(m.as_ref())
-                .is_some_and(|rest| rest.starts_with('.'))
-    };
+    // The root is the cluster being typechecked now; its own signatures are
+    // registered by Pass 1 below, so it is never a member. Every other member
+    // is read at the readiness `closure` records for it: a member on a cycle
+    // of the completion graph with the root — a `super` parent among them —
+    // at its publication, any other at its completion (`design/int/int.md`
+    // §6.11, Route independence, rule 2).
     let deps = crate::scheduler::ClosureOrder {
         order: closure
             .order
             .iter()
-            .filter(|m| !is_self_or_ancestor(m))
+            .filter(|m| *m != module)
             .cloned()
             .collect(),
+        at_publication: closure.at_publication.clone(),
     };
     if deps.order.is_empty() {
         return Ok(None);
@@ -1564,7 +1639,10 @@ fn drive_submodule(
     decl: &cranelisp_types::ModDecl,
 ) -> Result<BlockAction, CranelispError> {
     match enrol_declared_submodule(ctx, module, decl)? {
-        DeclaredSubmoduleEnrollment::Ready => Ok(BlockAction::Continue),
+        DeclaredSubmoduleEnrollment::Ready => {
+            let sub_path = crate::imports::declared_child_path(module, decl.name.as_ref());
+            await_in_flight_child(ctx, module, sub_path)
+        }
         DeclaredSubmoduleEnrollment::Registered(sub_path) => {
             block_dep(ctx, module, &sub_path, decl.span)?;
             Ok(BlockAction::Block {
@@ -1572,6 +1650,44 @@ fn drive_submodule(
             })
         }
     }
+}
+
+/// A parent is finished only when every declared child is, including a child
+/// some other route already has in flight (`design/int/int.md` §6.11, Route
+/// independence, rule 1). The wait is on the child's completion, not its
+/// publication: a pool worker blocks on it and frees back to the pool; the
+/// eval thread waits inside the scheduler. A child that stands `Failed` is
+/// not waited on here.
+fn await_in_flight_child(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    child: ModuleFullPath,
+) -> Result<BlockAction, CranelispError> {
+    let in_flight = ctx.scheduler.module_pool(&child).is_some_and(|pool| {
+        !pool.is_terminal_typecheck() && pool != crate::scheduler::ModulePool::Failed
+    });
+    if !in_flight {
+        return Ok(BlockAction::Continue);
+    }
+    let completion = crate::scheduler::ClosureOrder {
+        order: vec![child],
+        at_publication: BTreeSet::new(),
+    };
+    if ctx.eval_driven {
+        ctx.scheduler
+            .await_signature_barrier(&completion)
+            .map_err(CranelispError::from)?;
+        return Ok(BlockAction::Continue);
+    }
+    Ok(
+        match ctx
+            .scheduler
+            .block_on_first_unready_closure_member(module, &completion)?
+        {
+            Some(dep_module) => BlockAction::Block { dep_module },
+            None => BlockAction::Continue,
+        },
+    )
 }
 
 /// Drive all of `module`'s declared submodules to typecheck readiness AFTER the
@@ -2037,14 +2153,22 @@ mod bare_module_name_tests {
 
         /// Record `(mod name)` on `a`'s table, as an earlier turn would.
         fn record_earlier_declaration(&self, name: &str) {
-            let a = ModuleFullPath::from("a");
-            cranelisp_types::ensure_module_exists(&self.tables, &a);
-            self.tables.get_mut(&a).unwrap().submodules.push(ModDecl {
-                name: ModuleName::from(name),
-                visibility: Visibility::Public,
-                inline_body: None,
-                span: Span::SYNTHETIC,
-            });
+            self.record_declaration(&ModuleFullPath::from("a"), name);
+        }
+
+        /// Record `(mod name)` on `parent`'s table.
+        fn record_declaration(&self, parent: &ModuleFullPath, name: &str) {
+            cranelisp_types::ensure_module_exists(&self.tables, parent);
+            self.tables
+                .get_mut(parent)
+                .unwrap()
+                .submodules
+                .push(ModDecl {
+                    name: ModuleName::from(name),
+                    visibility: Visibility::Public,
+                    inline_body: None,
+                    span: Span::SYNTHETIC,
+                });
         }
 
         /// The session state one cluster of `module` runs against.
@@ -2573,6 +2697,138 @@ mod bare_module_name_tests {
                 "{source}"
             );
         }
+    }
+
+    // ── Route independence (design/int/int.md §6.11, rules 1 and 2) ──────
+
+    /// The ACT-1081 graph: `P` declares `c`, `c` imports `z`, `z` imports
+    /// `P`; `y` imports `P` and lies on no cycle with `c`; `q` declares `d`,
+    /// which imports `super` (row 1).
+    fn declared_child_graph() -> Project {
+        Project::new(&[
+            ("P.cl", "(mod c)\n(defn x [] 1)\n"),
+            ("P/c.cl", "(import [z [zf]])\n(defn cf [] (zf))\n"),
+            ("z.cl", "(import [P [x]])\n(defn zf [] (x))\n"),
+            ("y.cl", "(import [P [x]])\n(defn yf [] (x))\n"),
+            ("q.cl", "(mod d)\n(defn x [] 1)\n"),
+            ("q/d.cl", "(import [super [x]])\n(defn dx [] (x))\n"),
+        ])
+    }
+
+    fn at_publication(project: &Project, root: &str) -> BTreeSet<ModuleFullPath> {
+        project
+            .static_closure_of(root)
+            .unwrap()
+            .map(|closure| closure.at_publication)
+            .unwrap_or_default()
+    }
+
+    // spec: design/int/int.md §6.11 Route independence rule 2 — the gate's walk
+    // reaches a declared child, so a member on a cycle of the completion graph
+    // with the root is read at publication; a member on no such cycle is not.
+    // Under today's error clause the cycle through the declaration is no error.
+    #[test]
+    fn completion_graph_marks_the_members_on_a_cycle_through_a_declaration() {
+        let project = declared_child_graph();
+        assert_eq!(at_publication(&project, "z"), BTreeSet::from([module("P")]));
+        assert_eq!(
+            at_publication(&project, "P.c"),
+            BTreeSet::from([module("P"), module("z")])
+        );
+        assert_eq!(
+            at_publication(&project, "q.d"),
+            BTreeSet::from([module("q")])
+        );
+        assert!(at_publication(&project, "y").is_empty());
+    }
+
+    /// `ctx` as a pool worker drives it.
+    fn pool_ctx<'p>(project: &'p Project, module: &ModuleFullPath) -> ModuleCompiler<'p> {
+        ModuleCompiler {
+            eval_driven: false,
+            ..project.ctx(module)
+        }
+    }
+
+    /// Register `name` with the scheduler as a cluster in flight.
+    fn in_flight(project: &Project, name: &str) -> ModuleFullPath {
+        let path = module(name);
+        project
+            .scheduler
+            .register_module(path.clone(), std::sync::Arc::from(Vec::new()), false);
+        project.scheduler.force_typecheck_working_for_test(&path);
+        path
+    }
+
+    // spec: design/int/int.md §6.11 Route independence rule 2 — `z`'s barrier on
+    // `P` opens at `P`'s publication; `y`'s stays shut until `P` completes, and
+    // row 1's child opens at its parent's publication with no name-based
+    // ancestor exemption.
+    #[test]
+    fn barrier_opens_at_publication_only_for_a_member_on_a_cycle() {
+        let project = declared_child_graph();
+        for name in ["P", "q"] {
+            let member = in_flight(&project, name);
+            project.scheduler.mark_generation_published(&member);
+        }
+        for (root, expected) in [("z", None), ("q.d", None), ("y", Some(module("P")))] {
+            let closure = project.static_closure_of(root).unwrap().unwrap();
+            let waiter = in_flight(&project, root);
+            let mut ctx = pool_ctx(&project, &waiter);
+            assert_eq!(
+                gate_body_on_signature_barrier(&mut ctx, &waiter, &closure).unwrap(),
+                expected,
+                "{root}"
+            );
+        }
+    }
+
+    // spec: design/int/int.md §6.11 Route independence rule 1 — a parent's drive
+    // of a declared child already in flight waits on it, past the child's
+    // publication, and the parent is finished only after the child.
+    #[test]
+    fn drive_of_an_in_flight_declared_child_waits_for_its_completion() {
+        let project = declared_child_graph();
+        let parent = in_flight(&project, "P");
+        project.record_declaration(&parent, "c");
+        let child = in_flight(&project, "P.c");
+        cranelisp_types::ensure_module_exists(&project.tables, &child);
+
+        let drive = || drive_submodules(&mut pool_ctx(&project, &parent), &parent).unwrap();
+        assert_eq!(drive(), Some(child.clone()), "in flight");
+        project.scheduler.mark_generation_published(&child);
+        assert_eq!(drive(), Some(child.clone()), "published, not complete");
+        project.scheduler.notify_typecheck_done(&child);
+        assert_eq!(drive(), None, "complete");
+    }
+
+    // spec: design/int/int.md §6.11 Route independence rule 1 — the eval
+    // thread's drive of an in-flight child waits inside the scheduler until
+    // the child completes, then continues.
+    #[test]
+    fn eval_drive_of_an_in_flight_declared_child_returns_after_its_completion() {
+        let project = declared_child_graph();
+        let parent = module("P");
+        project.record_declaration(&parent, "c");
+        let child = in_flight(&project, "P.c");
+        cranelisp_types::ensure_module_exists(&project.tables, &child);
+        project.scheduler.mark_generation_published(&child);
+
+        std::thread::scope(|scope| {
+            let finisher = scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                project.scheduler.notify_typecheck_done(&child);
+            });
+            assert_eq!(
+                drive_submodules(&mut project.ctx(&parent), &parent).unwrap(),
+                None
+            );
+            assert!(
+                project.scheduler.is_typechecked(&child),
+                "the drive returned only after the child completed"
+            );
+            finisher.join().unwrap();
+        });
     }
 }
 
