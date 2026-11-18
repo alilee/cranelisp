@@ -174,12 +174,7 @@ case "$mode" in
       fi
       t="$(mktemp)"; dump "$src" "$t"
       if ! diff -u "$GOLD/$name.clif" "$t" > /dev/null; then
-        # `|| true`: under `set -euo pipefail`, `head -40` closing the pipe early
-        # on a large diff sends SIGPIPE to `diff` (exit 141), failing the pipeline
-        # and aborting the whole loop on the FIRST large diff — so later entries
-        # never get reported and `fail=1` never runs. The output is purely
-        # informational (line 144 already established the mismatch), so swallow it.
-        echo "DIFF: $name"; { diff -u "$GOLD/$name.clif" "$t" | head -40; } || true; fail=1
+        echo "DIFF: $name"; diff -u "$GOLD/$name.clif" "$t" || true; fail=1
       else
         echo "ok: $name"
       fi

@@ -62,16 +62,15 @@ SITE_RE = re.compile(
 # `CRANELISP_SPARK_ADMIT=mstatic` (M-static). Therefore `current-syntactic` MUST
 # now pin `CRANELISP_SPARK_ADMIT=syntactic` explicitly — relying on the default
 # would silently measure M-static (the Wave-1 hazard). `mstatic` is the Wave-1
-# M-static-only row (M-static ON, B4 off). `admit-all` is the syntactic firehose
-# ceiling with B4 explicitly off; post-flip it is env-identical to
-# `current-syntactic` (SPARK_DENSITY_MAX unset ≡ 0), kept as a row to reconfirm
-# that identity under the new binary.
-CONFIGS = ["serial", "off", "current-syntactic", "mstatic", "current-b4on", "admit-all"]
+# M-static-only row. `admit-all` is env-identical to `current-syntactic`,
+# kept as a row to reconfirm that identity. The former `current-b4on` row
+# requires the retired spark-density gate and cannot be measured by this tree.
+CONFIGS = ["serial", "off", "current-syntactic", "mstatic", "admit-all"]
 
 
 def config_env(config, T, spark_stats=False):
     e = dict(os.environ)
-    for k in ("CRANELISP_NO_LENIENT", "CRANELISP_NO_OWNERSHIP", "CRANELISP_SPARK_DENSITY_MAX",
+    for k in ("CRANELISP_NO_LENIENT", "CRANELISP_NO_OWNERSHIP",
               "RAYON_NUM_THREADS", "CRANELISP_SPARK_STATS", "CRANELISP_SATURATION_GATE",
               "CRANELISP_SPARK_BUDGET", "CRANELISP_SPARK_ADMIT"):
         e.pop(k, None)
@@ -85,13 +84,8 @@ def config_env(config, T, spark_stats=False):
         e["CRANELISP_SPARK_ADMIT"] = "syntactic"  # pin — default is now mstatic
     elif config == "mstatic":
         e["CRANELISP_SPARK_ADMIT"] = "mstatic"     # M-static-only (Wave 1)
-        e["CRANELISP_SPARK_DENSITY_MAX"] = "0"     # B4 off (attribution pin, plan §2)
-    elif config == "current-b4on":
-        e["CRANELISP_SPARK_ADMIT"] = "syntactic"  # old default admission …
-        e["CRANELISP_SPARK_DENSITY_MAX"] = "1"    # … + B4 on: the ~112s parked anchor
     elif config == "admit-all":
         e["CRANELISP_SPARK_ADMIT"] = "syntactic"  # syntactic firehose ceiling …
-        e["CRANELISP_SPARK_DENSITY_MAX"] = "0"    # … B4 off; == current-syntactic post-flip
     else:
         raise ValueError("unknown config " + config)
     if spark_stats:
@@ -305,13 +299,11 @@ def run_baseline(binp, files, threads, reps, f4_reps, quick):
 
     # F4-hard: the anchor + config differentiation. Expensive parked cells → few reps.
     print(f"### f4_hard  (anchor reproduction; f4-reps={f4_reps})\n")
-    print("  Serial floor + the config differentiation at T=nproc, plus the")
-    print("  current-b4on super-linear-in-T ramp (0534 (D)/(4)).\n")
+    print("  Serial floor + the config differentiation at T=nproc.\n")
     anchor_cells = []
     for (config, Ts) in [("serial", [1]),
                          ("off", [NPROC]),
-                         ("admit-all", [NPROC]),
-                         ("current-b4on", [2, 4, 6, NPROC] if not quick else [2, NPROC])]:
+                         ("admit-all", [NPROC])]:
         for T in Ts:
             c = measure_cell(binp, files["f4_hard"], config, T, f4_reps)
             anchor_cells.append((config, T, c))
@@ -321,7 +313,7 @@ def run_baseline(binp, files, threads, reps, f4_reps, quick):
 
 
 # ── WAVE 1: M-static-only attribution (plan §2 / §8.5) ────────────────────────
-# The M-static QUALITY axis alone (CRANELISP_SPARK_ADMIT=mstatic, B4 off) vs the
+# The M-static QUALITY axis alone (CRANELISP_SPARK_ADMIT=mstatic) vs the
 # syntactic firehose (current-syntactic) and the admit-all ceiling. Per the arch
 # ruling (plan §2, §6 U-G5): SINGLE-MECHANISM ROWS ARE DIAGNOSTIC, NOT PASS/FAIL.
 # M-static cuts spawn QUALITY (fine flat-accessor sites → 0) but NOT quantity

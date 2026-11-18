@@ -65,7 +65,7 @@ RC_FIELDS = ["rc_inc", "rc_dec", "allocs", "deallocs", "reuse_hit",
 # Env keys the harness must scrub before a graded WALL (G-wall-off). Any stats/trace
 # gate perturbs the wall with its atomics — a wall taken with one set is INVALID.
 STATS_ENV = ("CRANELISP_RC_STATS", "CRANELISP_SPARK_STATS", "CRANELISP_OWNERSHIP_TRACE",
-             "CRANELISP_CODEGEN_TRACE", "CRANELISP_RC_TRACE", "CRANELISP_SPARK_DENSITY_TRACE",
+             "CRANELISP_CODEGEN_TRACE", "CRANELISP_RC_TRACE",
              "CRANELISP_SCHEDULER_TRACE")
 # Semantic toggles the harness sets (never perturb the wall — they change codegen).
 SEM_ENV = ("CRANELISP_NO_LENIENT", "CRANELISP_NO_OWNERSHIP", "CRANELISP_NONATOMIC_RC",

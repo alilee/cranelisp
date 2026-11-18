@@ -58,8 +58,8 @@ function %area(i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) system_v
-    fn0 = colocated u0:43 sig0
-    fn1 = colocated u0:43 sig1
+    fn0 = colocated u0:41 sig0
+    fn1 = colocated u0:41 sig1
     fn2 = u0:2 sig2
 
 block0(v0: i64):

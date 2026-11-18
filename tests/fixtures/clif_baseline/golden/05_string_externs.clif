@@ -31,7 +31,7 @@ function %main() -> i64 system_v {
     sig3 = (i64, i64, i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
-    fn0 = u0:10 sig0
+    fn0 = u0:9 sig0
 
 block0:
     jump block1
@@ -77,7 +77,7 @@ function %shout(i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
-    fn0 = u0:10 sig0
+    fn0 = u0:9 sig0
 
 block0(v0: i64):
     jump block1(v0)

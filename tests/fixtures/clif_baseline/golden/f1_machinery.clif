@@ -62,11 +62,11 @@ function %build-grid(i64, i64, i64) -> i64 system_v {
     sig5 = (i64, i64, i64) -> i64 system_v
     sig6 = (i64, i64) system_v
     fn0 = u0:0 sig1
-    fn1 = colocated u0:53 sig2
-    fn2 = colocated u0:52 sig3
-    fn3 = u0:24 sig4
-    fn4 = u0:23 sig5
-    fn5 = u0:13 sig6
+    fn1 = colocated u0:51 sig2
+    fn2 = colocated u0:50 sig3
+    fn3 = u0:22 sig4
+    fn4 = u0:21 sig5
+    fn5 = u0:11 sig6
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -158,8 +158,8 @@ function %cell-value(i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) system_v
-    fn0 = colocated u0:51 sig0
-    fn1 = colocated u0:51 sig1
+    fn0 = colocated u0:49 sig0
+    fn1 = colocated u0:49 sig1
     fn2 = u0:2 sig2
 
 block0(v0: i64):
@@ -226,8 +226,8 @@ function %leaf-work(i64, i64) -> i64 system_v {
     sig2 = (i64, i64) -> i64 system_v
     sig3 = () -> i64 system_v
     sig4 = (i64, i64, i64, i64) -> i64 system_v
-    fn0 = colocated u0:52 sig0
-    fn1 = u0:13 sig1
+    fn0 = colocated u0:50 sig0
+    fn1 = u0:11 sig1
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -289,7 +289,7 @@ function %main() -> i64 system_v {
     sig3 = (i64, i64, i64) -> i64 system_v
     sig4 = (i64, i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
-    fn0 = u0:12 sig0
+    fn0 = u0:10 sig0
 
 block0:
     jump block1
@@ -368,10 +368,10 @@ function %read-work(i64, i64, i64, i64) -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64) -> i64 system_v
-    fn0 = colocated u0:50 sig0
+    fn0 = colocated u0:48 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:52 sig2
-    fn3 = u0:13 sig3
+    fn2 = colocated u0:50 sig2
+    fn3 = u0:11 sig3
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -470,22 +470,22 @@ function %reduce-tree(i64, i64, i64) -> i64 system_v {
     sig18 = (i64, i64, i64) -> i64 system_v
     sig19 = (i64, i64) -> i64 system_v
     sig20 = (i64, i64, i64) -> i64 system_v
-    fn0 = u0:21 sig1
+    fn0 = u0:19 sig1
     fn1 = u0:0 sig2
-    fn2 = colocated u0:54 sig3
-    fn3 = colocated u0:55 sig4
-    fn4 = u0:17 sig5
-    fn5 = u0:18 sig6
+    fn2 = colocated u0:52 sig3
+    fn3 = colocated u0:53 sig4
+    fn4 = u0:15 sig5
+    fn5 = u0:16 sig6
     fn6 = u0:0 sig7
-    fn7 = colocated u0:56 sig8
-    fn8 = colocated u0:57 sig9
-    fn9 = u0:17 sig10
-    fn10 = u0:18 sig11
-    fn11 = u0:19 sig12
-    fn12 = u0:20 sig13
-    fn13 = u0:19 sig14
-    fn14 = u0:20 sig15
-    fn15 = colocated u0:50 sig16
+    fn7 = colocated u0:54 sig8
+    fn8 = colocated u0:55 sig9
+    fn9 = u0:15 sig10
+    fn10 = u0:16 sig11
+    fn11 = u0:17 sig12
+    fn12 = u0:18 sig13
+    fn13 = u0:17 sig14
+    fn14 = u0:18 sig15
+    fn15 = colocated u0:48 sig16
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)

@@ -22,9 +22,9 @@ function %build(i64, i64, i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64, i64) system_v
-    fn0 = u0:24 sig0
-    fn1 = u0:23 sig1
-    fn2 = u0:13 sig2
+    fn0 = u0:22 sig0
+    fn1 = u0:21 sig1
+    fn2 = u0:11 sig2
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -115,13 +115,13 @@ function %main() -> i64 system_v {
     sig7 = (i64, i64) system_v
     sig8 = (i64, i64) system_v
     sig9 = (i64) -> i64 system_v
-    fn0 = u0:12 sig0
+    fn0 = u0:10 sig0
     fn1 = u0:2 sig2
-    fn2 = u0:22 sig3
-    fn3 = u0:13 sig4
-    fn4 = u0:13 sig5
+    fn2 = u0:20 sig3
+    fn3 = u0:11 sig4
+    fn4 = u0:11 sig5
     fn5 = u0:2 sig7
-    fn6 = u0:13 sig8
+    fn6 = u0:11 sig8
 
 block0:
     jump block1
@@ -263,9 +263,9 @@ function %sum(i64, i64, i64, i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64, i64) system_v
     sig2 = (i64, i64) system_v
-    fn0 = colocated u0:41 sig0
+    fn0 = colocated u0:39 sig0
     fn1 = u0:2 sig1
-    fn2 = u0:13 sig2
+    fn2 = u0:11 sig2
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
