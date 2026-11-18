@@ -491,7 +491,7 @@ needed, and the label outlived the question.
 | ACT-1052 | `src/cache/dependency_record.rs`; int §7.6; the backend manifest baseline |
 | P-15 | `raise.rs`; the backend baseline; every `panic_func_id` site; external references to `cranelisp_backend::compiler` |
 | Principle 27 rows | `ownership-codegen.md` §0, §4, §7, §9, §13.4; the three baselines; backend readers of mode summaries, `value_layout` and the escape facts |
-| Mode-ABI gate | REPL §18.1.2; `ownership.rs::abi_eq_opt`; `src/redefine.rs`; `src/worker.rs`; `cache/serialize.rs` |
+| Mode-ABI gate | the REPL spec's former mode-ABI restriction (removed in Phase 3) and the `ModeSummary` ABI comparison predicates (removed by row D7, `7cceedc4`); `src/redefine.rs`; `src/worker.rs`; `cache/serialize.rs` |
 | ACT-0997, 1055, 1056, audit R2 | Spec §8.3, §8.3.5, §8.3.11, §8.4, §8.4.4; `module.rs` carriers; `module_extract.rs::parse_names_list`; the alias contract §1–§2 |
 | ACT-0973 | Spec §10.9.1; `src/process_form/platform.rs`; the S123 answers to K6 |
 | ACT-1038 | The action; spec §4.12.2, §4.12.6 |
