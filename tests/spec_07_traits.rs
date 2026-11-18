@@ -4716,6 +4716,8 @@ fn s124_jit_call_range(arena_control: bool) {
                 scope.spawn(move || {
                     let cr = Cranelisp::new()
                         .with_prelude(PreludeVariant::PrimitivesOnly)
+                        // Sixteen simultaneous compiles need room under suite load.
+                        .timeout(std::time::Duration::from_secs(120))
                         .user(&s124_two_member_depth_program(64));
                     let cr = if arena_control {
                         cr.env("MALLOC_ARENA_MAX", "1")
