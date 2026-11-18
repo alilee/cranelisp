@@ -568,19 +568,6 @@ pub enum HeapCategory {
     AlwaysHeap,
     /// May or may not be heap: polymorphic types, some ADTs with mixed constructors
     Mixed,
-    /// R5 value-flattened (increment II, `design/backend/ownership-codegen.md`
-    /// §7.1): a Copy-eligible single-constructor ADT whose fully-flattened
-    /// representation fits in `≤ VALUE_LAYOUT_MAX_WORDS` (one word, first
-    /// landing). Represented **inline** — no header, no refcount, no drop glue.
-    /// RC treatment is **none** (identical to [`NeverHeap`](HeapCategory::NeverHeap)
-    /// at every RC/heap site), but the constructor/field structure is preserved
-    /// for construction (a bare-word move of the single field) and match (bind
-    /// the field to the scrutinee word, no dereference). Selected only when the
-    /// ownership analysis is ON (`!ownership_analysis_off()`) and
-    /// [`cranelisp_types::value_layout`] returns `Some` — so with the toggle off,
-    /// or facts absent, the ADT falls back to today's heap lowering
-    /// byte-identically (§2.2 differential-oracle obligation).
-    Value,
 }
 
 impl HeapCategory {
@@ -625,37 +612,7 @@ impl HeapCategory {
                 // Conservative: AlwaysHeap (closures are the common case after Ring 0).
                 HeapCategory::AlwaysHeap
             }
-            ConcreteType::ADT(fqtn, _) => {
-                // R5 value-flattening (increment II, §7.1): the ADT arm delegates
-                // the flattening verdict to the single-sourced
-                // `cranelisp_types::value_layout` carrier (never a backend-local
-                // re-implementation — the narrowness counterweight, Principle 2;
-                // the soundness-coupled predicate typecheck's `Copy` mode
-                // classifier also consumes). `Some(_)` ⇒ `Value`; `None` ⇒ today's
-                // `classify_adt` verdict verbatim.
-                //
-                // Gated on `!ownership_analysis_off()`: the flattening changes
-                // emitted IR (bare-word move vs heap alloc), so with the master
-                // toggle OFF the differential oracle requires the pre-R5 heap
-                // lowering byte-identically (§2.2). `SymbolTables<C, L>` IS the
-                // `DashMap` `symbol_tables` already holds — no conversion.
-                // The verdict is read STRAIGHT from `value_layout.is_some()` — no
-                // backend-local refinement (the narrowness counterweight,
-                // Principle 2; the Wave-3a /review single-source ruling). The
-                // predicate itself now admits ONLY the single-ctor, single-value-
-                // field, exactly-1-word shape the `Value` arm implements, so this
-                // agrees with typecheck's `Copy` classifier (same `is_some()`
-                // call) and with `value_construct` / match field-binding by
-                // construction — a heap object can never cross a Copy edge
-                // unflattened, and a flattened value always has exactly one field.
-                if !cranelisp_types::ownership_analysis_off()
-                    && let Some(tables) = symbol_tables
-                    && cranelisp_types::value_layout(ty, Some(tables)).is_some()
-                {
-                    return HeapCategory::Value;
-                }
-                Self::classify_adt(fqtn, symbol_tables)
-            }
+            ConcreteType::ADT(fqtn, _) => Self::classify_adt(fqtn, symbol_tables),
         }
     }
 

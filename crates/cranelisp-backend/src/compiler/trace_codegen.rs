@@ -692,7 +692,7 @@ where
                     true,
                 );
             }
-            crate::heap::HeapCategory::NeverHeap | crate::heap::HeapCategory::Value => {}
+            crate::heap::HeapCategory::NeverHeap => {}
         }
     }
 

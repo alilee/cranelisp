@@ -297,7 +297,7 @@ where
             let category = self.heap_category(&self.capture_type(cap, span)?);
             match category {
                 HeapCategory::AlwaysHeap | HeapCategory::Mixed => heap_caps.push((i, category)),
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
+                HeapCategory::NeverHeap => {}
             }
         }
 
@@ -356,7 +356,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap | HeapCategory::Value => {} // filtered above
+                HeapCategory::NeverHeap => {} // filtered above
             }
         }
 

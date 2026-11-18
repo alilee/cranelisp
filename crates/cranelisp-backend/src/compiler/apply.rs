@@ -1085,12 +1085,6 @@ where
             // drop glue releases heap-typed fields when the ADT itself dies.
             let arg_vals = self.compile_operands(node)?.values;
             self.in_tail_position = saved_tail;
-            // R5 (§7.1): a value-flattened single-ctor type constructs by a
-            // bare-word move of its single field (no alloc/header/tag). Classify
-            // by the ctor's parent type (`value_layout` ignores the ADT's type
-            // args, so `ADT(fqtn, [])` classifies exactly). `None` off-toggle /
-            // non-`Value` ⇒ the heap path below, byte-identical. `fqtn`
-            // comes off the SAME legacy lookup — no second scan.
             // The Apply result is the authoritative instantiated constructor
             // result. Older hand-built test/embedding ASTs may omit it; retain
             // the established parent-ADT fallback for ordinary constructors.
@@ -1101,10 +1095,6 @@ where
                 .and_then(|ty| ConcreteType::from_type(ty).ok())
                 .filter(|ty| matches!(ty, ConcreteType::ADT(name, _) if name == &fqtn))
                 .unwrap_or_else(|| ConcreteType::ADT(fqtn.clone(), vec![]));
-            let adt_ty = constructed_ty.clone();
-            if let Some(v) = self.value_construct(&adt_ty, &arg_vals) {
-                return Ok(v);
-            }
             let emitted_fields = append_runtime_ctor_fields(
                 &mut self.builder,
                 self.module,
@@ -1831,7 +1821,7 @@ where
                 category @ (HeapCategory::AlwaysHeap | HeapCategory::Mixed) => {
                     heap_args.push((i, category));
                 }
-                HeapCategory::NeverHeap | HeapCategory::Value => {}
+                HeapCategory::NeverHeap => {}
             }
         }
 
@@ -1889,7 +1879,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap | HeapCategory::Value => {} // filtered above
+                HeapCategory::NeverHeap => {} // filtered above
             }
         }
 
@@ -1967,15 +1957,6 @@ where
         // single core emitter. `emit_adt_construct` handles the nullary
         // (`iconst tag`) and data (`alloc + tag + stores`) arms.
         let field_vals = self.compile_operands(node)?.values;
-        // R5 (§7.1): a value-flattened single-ctor type constructs by a bare-word
-        // move of its single field — NO alloc, NO header, NO tag. Keeps the
-        // synthetic ctor body's representation identical to the use-site
-        // `compile_var_apply` flattening, so `Cell`-as-a-value and `(Cell 5)`
-        // agree. `value_construct` is `None` off-toggle / for non-`Value` types
-        // ⇒ today's heap emitter, byte-identical.
-        if let Some(v) = self.value_construct(ty, &field_vals) {
-            return Ok(v);
-        }
         let emitted_fields = if let ConcreteType::ADT(type_name, _) = ty {
             append_runtime_ctor_fields(
                 &mut self.builder,
@@ -1991,33 +1972,6 @@ where
             field_vals
         };
         self.emit_adt_construct(tag, &emitted_fields, span)
-    }
-
-    /// R5 value-flattening construction (§7.1): when `ty` classifies as
-    /// [`HeapCategory::Value`], the construct is the **identity move** of the
-    /// single flattened field into the value word — `Some(field_vals[0])` for a
-    /// one-word single-field wrapper, `None` for a zero-word (fieldless) value
-    /// (which routes to the existing nullary `iconst tag` path, harmless — a
-    /// zero-information value). Returns `None` for every non-`Value` type and
-    /// whenever the ownership toggle is off (`classify` never yields `Value`
-    /// then), so callers fall through to today's heap emitter byte-identically.
-    ///
-    /// A `Value` type has **exactly one** field, guaranteed by `value_layout`'s
-    /// single-field invariant (the Wave-3a /review single-source ruling — a
-    /// ≥2-field product is `None`, never `Value`, even at ≤1 word). So
-    /// `field_vals.len() == 1` always holds for a `Value` here; it is an
-    /// invariant-consistent guard, not an independent predicate. The single field
-    /// is itself value-eligible (nested values compose), so the move needs no
-    /// per-field RC.
-    pub(crate) fn value_construct(&self, ty: &ConcreteType, field_vals: &[Value]) -> Option<Value> {
-        if matches!(
-            HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
-            HeapCategory::Value
-        ) && field_vals.len() == 1
-        {
-            return Some(field_vals[0]);
-        }
-        None
     }
 
     /// The single ADT-construct emitter — both paths route through here.

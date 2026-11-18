@@ -543,7 +543,7 @@ where
         match self.heap_category(ty) {
             HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, self.module, val),
             HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, self.module, val),
-            HeapCategory::NeverHeap | HeapCategory::Value => {}
+            HeapCategory::NeverHeap => {}
         }
     }
 

@@ -281,9 +281,7 @@ where
     ) -> Result<Value, CranelispError> {
         let category = self.elem_category(elem_type, span)?;
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => {
-                Ok(self.builder.ins().iconst(types::I64, 0))
-            }
+            HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_inc_fn(false, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -424,9 +422,7 @@ where
     ) -> Result<Value, CranelispError> {
         let category = self.elem_category(elem_type, span)?;
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => {
-                Ok(builder.ins().iconst(types::I64, 0))
-            }
+            HeapCategory::NeverHeap => Ok(builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_inc_fn(false, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -657,7 +653,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
         HeapCategory::Mixed => {
             heap::emit_rc_inc_guarded(builder, module, elem);
         }
-        HeapCategory::NeverHeap | HeapCategory::Value => {}
+        HeapCategory::NeverHeap => {}
     }
 
     Ok(elem)

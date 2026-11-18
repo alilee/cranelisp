@@ -64,7 +64,7 @@ impl DropGlueRegistry {
     }
 
     /// Request canonical glue for `ty`, or `None` when the type owns nothing
-    /// heap (`NeverHeap`/`Value`). The single entry point for every release
+    /// heap (`NeverHeap`). The single entry point for every release
     /// seam.
     pub(crate) fn request_if_owning<M, C, L>(
         &mut self,
@@ -79,7 +79,7 @@ impl DropGlueRegistry {
     {
         if matches!(
             HeapCategory::classify(&ty, Some(symbol_tables)),
-            HeapCategory::NeverHeap | HeapCategory::Value
+            HeapCategory::NeverHeap
         ) {
             return Ok(None);
         }

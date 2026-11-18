@@ -118,7 +118,7 @@ where
     ///   cannot reach this emitter without one
     ///   (`non-concrete-release-contract.md` §7.4 step 2).
     ///
-    /// Non-owning representations (`NeverHeap`/`Value`) are a no-op — the
+    /// A non-owning representation (`NeverHeap`) is a no-op — the
     /// registry's `request_if_owning` is the single membership filter.
     pub(crate) fn emit_typed_rc_dec(
         &mut self,

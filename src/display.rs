@@ -393,15 +393,6 @@ fn push_adt_value_form<C, L>(
         return;
     };
 
-    // R5 value-layout (Wave-3a): a flattened single-ctor single-value-field ADT
-    // stores the field value INLINE — the runtime word is neither a nullary tag
-    // nor a heap pointer. Recognise it before the tag/heap branching below, else
-    // the flat word is misread as a tag (`<tag:N>`) or, for a `Float` field,
-    // dereferenced as a pointer (SIGSEGV). Spec §12.9 / repl §1.5.
-    if push_value_layout_adt(value, fqtn, type_args, &type_info, symbol_tables, doc) {
-        return;
-    }
-
     // Determine if this is a nullary tag or a heap pointer.
     if (value as usize) < NULLARY_TAG_THRESHOLD {
         // Nullary constructor: value is the tag directly.
@@ -419,54 +410,6 @@ fn push_adt_value_form<C, L>(
             doc,
         );
     }
-}
-
-/// R5 value-layout display (spec §12.9 / repl §1.5) — value-only, span form.
-///
-/// A single-constructor, single-value-field ADT (`(deftype Box (Box [:Int v]))`)
-/// is flattened by the Wave-3a `value_layout` optimisation: its runtime word is
-/// the field's value carried INLINE — NOT a nullary tag and NOT a heap pointer.
-/// Recognises the shape via the SAME `cranelisp_types::value_layout` predicate
-/// the backend's `HeapCategory::Value` arm uses (single-sourced) and pushes the
-/// `(Ctor field-value)` form. Returns `true` when it handled the value; `false`
-/// when the type is not value-layout (the caller keeps the tag/heap path).
-fn push_value_layout_adt<C, L>(
-    value: i64,
-    fqtn: &FQTypeName,
-    type_args: &[Type],
-    type_info: &TypeDefInfo,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    doc: &mut StyledDoc,
-) -> bool
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    // Ask the single-sourced predicate — do NOT re-derive value-eligibility.
-    let ty = Type::ADT(fqtn.clone(), type_args.to_vec());
-    let Ok(concrete) = cranelisp_types::ConcreteType::from_type(&ty) else {
-        return false;
-    };
-    if cranelisp_types::value_layout(&concrete, Some(symbol_tables)).is_none() {
-        return false;
-    }
-
-    // `value_layout` guarantees exactly one constructor with exactly one
-    // value-eligible field; the flattened `value` IS that field's value.
-    let Some(ctor_name) = type_info.constructors.first().map(|c| c.to_string()) else {
-        return false;
-    };
-    let field_types = ctor_field_types(fqtn, &ctor_name, symbol_tables);
-    let Some(field_ty) = field_types.first() else {
-        return false;
-    };
-    let subst = build_adt_subst(type_info, type_args, symbol_tables);
-    let field_ty = substitute_field_type(field_ty, &subst);
-    let ctor_display = format_ctor_display(fqtn.name.as_ref(), &ctor_name, type_info);
-    doc.plain(format!("({ctor_display} "));
-    push_field_value(value, &field_ty, symbol_tables, doc);
-    doc.plain(")");
-    true
 }
 
 /// Format the type portion of an ADT display with qualification (spec §1.4).
@@ -1319,13 +1262,13 @@ mod tests {
         assert_eq!(format_ctor_display("Point", "Point", &info), "Point");
     }
 
-    // --- R5 value-layout display (S103 Defect 1, FIXME(/backend)) ---
+    // --- One-word single-constructor ADTs are heap values (D4) ---
 
     /// Build a `user` module table holding a single-constructor, single-field
-    /// value-layout ADT `(deftype {name} ({name} [:{field} v]))`. Both the type
-    /// facet and the ctor `Def` (with a `(Fn [field] ADT)` scheme) live under the
-    /// `{name}` key — exactly the shape `value_layout` reads.
-    fn value_layout_tables(name: &str, field_ty: Type) -> DashMap<ModuleFullPath, SymbolTable> {
+    /// ADT `(deftype {name} ({name} [:{field} v]))` — the shape
+    /// `cranelisp_types::value_layout` admits, which is nonetheless a heap
+    /// object at runtime.
+    fn one_field_tables(name: &str, field_ty: Type) -> DashMap<ModuleFullPath, SymbolTable> {
         let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let mut table = SymbolTable::new(ModuleFullPath::from("user"));
         let fqtn = FQTypeName {
@@ -1368,44 +1311,54 @@ mod tests {
         )
     }
 
-    // spec: repl/spec.md §1.5 — a value_layout-flattened single-Int-field ADT
-    // renders as the constructor form `(Box 99)`, reading the flattened word AS
-    // the Int field value — NOT as a `<tag:99>` sentinel.
+    /// A heap ADT object with tag 0 and one field word, laid out as the
+    /// backend lays out `HeapAdt`. The word to display is its base address.
+    fn one_field_heap_object(field: i64) -> Vec<i64> {
+        let word = std::mem::size_of::<i64>();
+        let mut object = vec![0_i64; HeapAdt::field_offset(1) as usize / word];
+        object[HeapAdt::TAG_OFFSET as usize / word] = 0;
+        object[HeapAdt::field_offset(0) as usize / word] = field;
+        object
+    }
+
+    // spec: repl/spec.md §1.5 — a one-word single-constructor ADT is a heap
+    // value: the display reads its field from the object, so it renders
+    // `(Box 99)`, never the address as the field.
     #[test]
-    fn format_result_value_r5_value_layout_int() {
-        let tables = value_layout_tables("Box", Type::Int);
-        let s = format_result_value(99, &adt_ty("Box"), &tables);
+    fn format_result_value_one_field_int_reads_heap_field() {
+        let tables = one_field_tables("Box", Type::Int);
+        let object = one_field_heap_object(99);
+        let s = format_result_value(object.as_ptr() as i64, &adt_ty("Box"), &tables);
         assert_eq!(s, ":user/Box (Box 99)");
     }
 
-    // spec: spec/12-runtime.md §12.9 — the value_layout class over a `:Float`
-    // field: the flattened f64 bit-pattern MUST be read as the field value, never
-    // dereferenced as a heap pointer (the SIGSEGV the e2e repro pins). No crash.
+    // spec: spec/12-runtime.md §12.9 — a single `:Float` field is read from the
+    // heap object, not reinterpreted from the pointer's bits.
     #[test]
-    fn format_result_value_r5_value_layout_float_reads_field_not_pointer() {
-        let tables = value_layout_tables("F", Type::Float);
-        let bits = 2.5_f64.to_bits() as i64; // a huge word — a raw ptr-deref would crash
-        let s = format_result_value(bits, &adt_ty("F"), &tables);
+    fn format_result_value_one_field_float_reads_heap_field() {
+        let tables = one_field_tables("F", Type::Float);
+        let object = one_field_heap_object(2.5_f64.to_bits() as i64);
+        let s = format_result_value(object.as_ptr() as i64, &adt_ty("F"), &tables);
         assert_eq!(s, ":user/F (F 2.5)");
     }
 
-    // spec: repl/spec.md §1.5 — the value_layout class over a `:Bool` field
-    // renders the discriminant word as the bool value: `(B true)`, not `<tag:1>`.
+    // spec: repl/spec.md §1.5 — a single `:Bool` field renders the stored
+    // field; `false` discriminates a display that reads the non-zero pointer.
     #[test]
-    fn format_result_value_r5_value_layout_bool() {
-        let tables = value_layout_tables("B", Type::Bool);
-        let s = format_result_value(1, &adt_ty("B"), &tables);
-        assert_eq!(s, ":user/B (B true)");
+    fn format_result_value_one_field_bool_reads_heap_field() {
+        let tables = one_field_tables("B", Type::Bool);
+        let object = one_field_heap_object(0);
+        let s = format_result_value(object.as_ptr() as i64, &adt_ty("B"), &tables);
+        assert_eq!(s, ":user/B (B false)");
     }
 
-    // spec: repl/spec.md §1.5 — a value_layout ADT nested as a FIELD of an outer
-    // (non-value_layout, 2-field) ADT recurses to its constructor form: the flat
-    // inner word renders `(Box 5)` inside the outer `format_field_value` path.
+    // spec: repl/spec.md §1.5 — the same heap value nested as a field renders
+    // its constructor form through `format_field_value`.
     #[test]
-    fn format_field_value_r5_value_layout_nested() {
-        let tables = value_layout_tables("Box", Type::Int);
-        // Format the flattened Box word (5) as a nested Box field.
-        let s = format_field_value(5, &adt_ty("Box"), &tables);
+    fn format_field_value_one_field_nested_reads_heap_field() {
+        let tables = one_field_tables("Box", Type::Int);
+        let object = one_field_heap_object(5);
+        let s = format_field_value(object.as_ptr() as i64, &adt_ty("Box"), &tables);
         assert_eq!(s, "(Box 5)");
     }
 }

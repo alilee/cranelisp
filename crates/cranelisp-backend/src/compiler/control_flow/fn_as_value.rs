@@ -529,20 +529,9 @@ where
             None => None,
         };
         if let Some((fqtn, ctor_info)) = target_ctor {
-            // R5 (§7.1): a value-flattened single-ctor type constructs by a
-            // bare-word move of its single field — no alloc. MUST match the
-            // use-site (`compile_var_apply`) and synthetic-body
-            // (`compile_constr_adt`) flattening, or a `Cell`-as-value produced
-            // here (heap pointer) would be mis-read by a flattening match
-            // (`cval`) as a bare word — the representation split that returns a
-            // garbage pointer. `value_construct` is `None` off-toggle /
-            // non-`Value` ⇒ the heap `emit_adt_construct_into` below.
             let adt_ty = ctor_result
                 .cloned()
                 .unwrap_or_else(|| ConcreteType::ADT(fqtn.clone(), vec![]));
-            if let Some(v) = self.value_construct(&adt_ty, user_params) {
-                return Ok(v);
-            }
             let alloc_id = self
                 .ctx
                 .alloc_func_id

@@ -16,7 +16,7 @@
 //!    classified with backend's **public** [`HeapCategory::classify`] — the
 //!    same predicate `request_if_owning` uses to decide whether an artifact row
 //!    exists at all (§1.1). Int owns no second heap-type list;
-//! 3. `NeverHeap | Value` ⇒ the inert arm; **no keyed lookup is attempted**,
+//! 3. `NeverHeap` ⇒ the inert arm; **no keyed lookup is attempted**,
 //!    so a keyed miss on the owning arm is unambiguously a hard error;
 //! 4. the owner is observed (REPL formats it, run/link converts it to the
 //!    process exit code) while the word is live;
@@ -311,7 +311,7 @@ impl ReleasePlan {
         // face, so int must ask this question BEFORE it demands a key.
         let target = match HeapCategory::classify(&concrete, Some(symbol_tables)) {
             // (3) inert arm — zero map reads.
-            HeapCategory::NeverHeap | HeapCategory::Value => None,
+            HeapCategory::NeverHeap => None,
             // (4) owning arm — `Mixed` included: glue exists for it and its
             // body's `guard_nullary` handles the bare-tag case. Int does NOT
             // replicate that guard.
@@ -443,7 +443,7 @@ where
 {
     let key = release_key(codegen_result_ty, inner_ty, module)?;
     let release_symbol = match HeapCategory::classify(&key, Some(symbol_tables)) {
-        HeapCategory::NeverHeap | HeapCategory::Value => None,
+        HeapCategory::NeverHeap => None,
         HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
             Some(cranelisp_types::drop_glue_symbol_name(module, &key))
         }

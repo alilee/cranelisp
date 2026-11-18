@@ -8,7 +8,6 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use crate::heap::HeapCategory;
 use cranelisp_types::{
     CranelispError, ErrorLocation, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
 };
@@ -192,20 +191,6 @@ where
         let tag = ctor_info.tag;
         let is_nullary = ctor_info.fields.is_empty();
         let is_mixed = heap::is_mixed_adt(self.ctx.symbol_tables, &fqtn);
-        // R5 (§7.1): a value-flattened single-ctor type has NO heap
-        // representation — its match binds the field to the scrutinee word
-        // directly (no tag word, no dereference). `Value` off-toggle is never
-        // yielded, so this is `false` and today's heap match path runs verbatim.
-        // (A zero-field value routes to the nullary path — an `iconst tag`
-        // compare that already works; only the 1-field data pattern flattens.)
-        let is_value = matches!(
-            HeapCategory::classify(
-                &cranelisp_types::ConcreteType::ADT(fqtn.clone(), vec![]),
-                Some(self.ctx.symbol_tables),
-            ),
-            HeapCategory::Value
-        );
-
         if is_nullary && bindings.is_empty() {
             return self.compile_nullary_pattern(tag, is_mixed, match_ctx, body);
         }
@@ -222,15 +207,7 @@ where
                 location: ErrorLocation::from_span(span),
             });
         }
-        self.compile_data_pattern(
-            tag,
-            is_mixed,
-            is_value,
-            bindings,
-            &field_types,
-            match_ctx,
-            body,
-        )
+        self.compile_data_pattern(tag, is_mixed, bindings, &field_types, match_ctx, body)
     }
 
     /// Compile a nullary constructor pattern (bare tag comparison).
@@ -295,49 +272,34 @@ where
     }
 
     /// Compile a data constructor pattern (heap-allocated, with field bindings).
-    #[allow(clippy::too_many_arguments)] // +1 for the R5 `is_value` flatten hint
     fn compile_data_pattern(
         &mut self,
         tag: usize,
         is_mixed: bool,
-        is_value: bool,
         bindings: &[Symbol],
         field_types: &[cranelisp_types::ConcreteType],
         match_ctx: &MatchContext,
         body: &MonoExpr,
     ) -> Result<(), CranelispError> {
-        let body_block = if is_value {
-            // R5 (§7.1): the scrutinee IS the flattened value word — there is no
-            // heap tag to load (a `heap_load` on the bare word would dereference
-            // an integer). A value type is single-constructor, so the arm always
-            // matches: jump unconditionally to the body. `next_block` (no-match)
-            // is unreachable for this exhaustive single-ctor arm.
-            let body_block = self.builder.create_block();
-            self.builder.ins().jump(body_block, &[]);
-            body_block
-        } else {
-            self.emit_data_pattern_tag_check(tag, is_mixed, match_ctx)
-        };
+        let body_block = self.emit_data_pattern_tag_check(tag, is_mixed, match_ctx);
 
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
 
         // Duplicate each used heap field out of the scrutinee, then drop the
         // scrutinee: the arm's binders now own their fields (§4).
-        let field_vals = self.load_data_pattern_fields(is_value, bindings, match_ctx);
-        if !is_value {
-            for (slot, &field_val) in field_vals.iter().enumerate() {
-                let intro = Intro::Arm {
-                    node: match_ctx.match_node,
-                    arm: match_ctx.arm,
-                    slot,
-                };
-                if self.field_is_used(intro) {
-                    self.emit_dup(field_val, &field_types[slot]);
-                }
+        let field_vals = self.load_data_pattern_fields(bindings, match_ctx);
+        for (slot, &field_val) in field_vals.iter().enumerate() {
+            let intro = Intro::Arm {
+                node: match_ctx.match_node,
+                arm: match_ctx.arm,
+                slot,
+            };
+            if self.field_is_used(intro) {
+                self.emit_dup(field_val, &field_types[slot]);
             }
-            self.emit_typed_rc_dec(match_ctx.scrut_val, &match_ctx.scrut_type)?;
         }
+        self.emit_typed_rc_dec(match_ctx.scrut_val, &match_ctx.scrut_type)?;
         self.enter_arm(match_ctx.match_node, match_ctx.arm)?;
 
         self.push_scope();
@@ -412,25 +374,19 @@ where
         body_block
     }
 
-    /// Load the fields a data pattern binds. A value-flattened scrutinee IS
-    /// its single payload word (R5, §7.1), so its field is the scrutinee itself.
+    /// Load the fields a data pattern binds from the scrutinee's heap object.
     fn load_data_pattern_fields(
         &mut self,
-        is_value: bool,
         bindings: &[Symbol],
         match_ctx: &MatchContext,
     ) -> Vec<Value> {
         (0..bindings.len())
             .map(|i| {
-                if is_value {
-                    match_ctx.scrut_val
-                } else {
-                    heap::heap_load(
-                        &mut self.builder,
-                        match_ctx.scrut_val,
-                        HeapAdt::field_offset(i),
-                    )
-                }
+                heap::heap_load(
+                    &mut self.builder,
+                    match_ctx.scrut_val,
+                    HeapAdt::field_offset(i),
+                )
             })
             .collect()
     }

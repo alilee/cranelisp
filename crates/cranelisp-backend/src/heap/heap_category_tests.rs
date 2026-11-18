@@ -303,16 +303,14 @@ fn test_vec_always_heap_with_tables() {
 }
 
 // ---------------------------------------------------------------------------
-// R5 value-flattening (II-B1) — the `HeapCategory::Value` arm.
+// One-word single-constructor products are heap values.
 //
-// spec: design/backend/ownership-codegen.md §7.1/§7.2 — a Copy-eligible,
-// single-constructor ADT whose fully-flattened payload is ≤ 1 word classifies
-// `Value` (bare-word move, no header/RC). These fixtures build **faithful**
-// constructor schemes (`Type::Fn(field_types, ADT)`) — unlike `tables_with_type`
-// (which leaves `scheme.ty = ADT`), because `value_layout` reads the ctor's Fn
-// scheme to recover field types. NOTE: these tests assume the process-global
-// ownership toggle is ON (the default; `CRANELISP_NO_OWNERSHIP` unset) — the
-// gate is `!ownership_analysis_off()`.
+// spec: design/backend/ownership-codegen.md §7 — after value flattening's
+// retirement (packet row D4), a product that `cranelisp_types::value_layout`
+// admits classifies like any other single-data-constructor ADT. These fixtures
+// build faithful constructor schemes (`Type::Fn(field_types, ADT)`), the shape
+// `value_layout` reads, so a classifier that still consulted the predicate would
+// see each type as admitted.
 // ---------------------------------------------------------------------------
 
 /// Insert a single-constructor **product** type with a faithful `Type::Fn`
@@ -363,34 +361,36 @@ fn product_tables(specs: &[(&str, Vec<Type>)]) -> dashmap::DashMap<ModuleFullPat
     tables
 }
 
-// Positive: one-word single-ctor scalar wrapper (the F2v `(Cell [:Int value])`
-// shape) → Value.
+// The `(Cell [:Int value])` shape `value_layout` admits is a heap object.
 #[test]
-fn test_r5_scalar_wrapper_is_value() {
+fn test_one_word_scalar_wrapper_is_heap() {
     let tables = product_tables(&[("Cell", vec![Type::Int])]);
+    let cell = cadt("Cell", vec![]);
+    assert!(cranelisp_types::value_layout(&cell, Some(&tables)).is_some());
     assert_eq!(
-        HeapCategory::classify(&cadt("Cell", vec![]), Some(&tables)),
-        HeapCategory::Value,
+        HeapCategory::classify(&cell, Some(&tables)),
+        HeapCategory::AlwaysHeap,
     );
 }
 
-// Positive: a nested single-field wrapper over a Value type composes to one word
-// → still Value (nested values flatten transitively).
+// A single-field wrapper over another admitted wrapper is a heap object too.
 #[test]
-fn test_r5_nested_value_wrapper_is_value() {
+fn test_nested_one_word_wrapper_is_heap() {
     let tables = product_tables(&[
         ("Cell", vec![Type::Int]),
         ("Outer", vec![Type::ADT(test_fqtn("Cell"), vec![])]),
     ]);
+    let outer = cadt("Outer", vec![]);
+    assert!(cranelisp_types::value_layout(&outer, Some(&tables)).is_some());
     assert_eq!(
-        HeapCategory::classify(&cadt("Outer", vec![]), Some(&tables)),
-        HeapCategory::Value,
+        HeapCategory::classify(&outer, Some(&tables)),
+        HeapCategory::AlwaysHeap,
     );
 }
 
-// Negative: a heap-typed field (String) is NOT Copy-eligible → stays AlwaysHeap.
+// Control: a heap-typed field (String) was never admitted and is a heap object.
 #[test]
-fn test_r5_heap_field_wrapper_stays_heap() {
+fn test_heap_field_wrapper_is_heap() {
     let tables = product_tables(&[("Boxed", vec![Type::String])]);
     assert_eq!(
         HeapCategory::classify(&cadt("Boxed", vec![]), Some(&tables)),
@@ -398,10 +398,9 @@ fn test_r5_heap_field_wrapper_stays_heap() {
     );
 }
 
-// Negative: two scalar fields = 2 words > VALUE_LAYOUT_MAX_WORDS (1) → stays
-// AlwaysHeap (the >1-word first-landing exclusion).
+// Control: a two-word product was never admitted and is a heap object.
 #[test]
-fn test_r5_two_word_product_stays_heap() {
+fn test_two_word_product_is_heap() {
     let tables = product_tables(&[("Pair2", vec![Type::Int, Type::Int])]);
     assert_eq!(
         HeapCategory::classify(&cadt("Pair2", vec![]), Some(&tables)),
@@ -409,72 +408,40 @@ fn test_r5_two_word_product_stays_heap() {
     );
 }
 
-// Negative: a multi-constructor ADT with scalar fields is NOT Value (a tag word
-// is needed alongside the payload — excluded from the first landing). This is
-// the F2 two-ctor `Cell` shape (the II-G4 honesty witness).
+// Negative: a fieldless single-constructor product is a bare tag, not a heap
+// object.
 #[test]
-fn test_r5_multi_ctor_scalar_not_value() {
-    // (deftype Cell (Given [:Int value]) (Solved [:Int value])) — Mixed is
-    // impossible (both data), so it classifies AlwaysHeap; the point is: NOT
-    // Value.
-    let tables = tables_with_type(
-        "TwoCell",
-        &[],
-        &[data_ctor("Given", 0, 1), data_ctor("Solved", 1, 1)],
-    );
-    let cat = HeapCategory::classify(&cadt("TwoCell", vec![]), Some(&tables));
-    assert_ne!(cat, HeapCategory::Value);
-}
-
-// Negative: a fieldless single-ctor product (0-word) is NOT flattened to Value —
-// it has no payload; today's NeverHeap lowering (single nullary ctor) stands.
-#[test]
-fn test_r5_zero_word_product_not_value() {
+fn test_zero_word_product_is_never_heap_neg() {
     let tables = product_tables(&[("UnitLike", vec![])]);
-    let cat = HeapCategory::classify(&cadt("UnitLike", vec![]), Some(&tables));
-    assert_ne!(cat, HeapCategory::Value);
+    assert_eq!(
+        HeapCategory::classify(&cadt("UnitLike", vec![]), Some(&tables)),
+        HeapCategory::NeverHeap,
+    );
 }
 
-// Wave-3a /review BLOCKER 1 (0-word-but-≥1-field product) — the backend half of
-// the divergence guard. `(P [:U u])`, U nullary (0 words): the backend MUST
-// classify P as a real heap object (`AlwaysHeap`), NOT `Value` — matching
-// typecheck's `Copy` verdict (both read `value_layout`, now `None` for P). If
-// this ever regressed to `Value`, P would be bit-copied across a Copy edge with
-// no `rc_inc` while its RC still governs a heap allocation → leak/UAF.
+// `(P [:U u])` with `U` nullary holds a field, so it is a heap object even
+// though its payload carries no information.
 #[test]
-fn test_r5_zero_word_field_product_not_value() {
+fn test_zero_word_field_product_is_heap() {
     let tables = product_tables(&[
         ("U", vec![]),
         ("P", vec![Type::ADT(test_fqtn("U"), vec![])]),
     ]);
-    let cat = HeapCategory::classify(&cadt("P", vec![]), Some(&tables));
-    assert_ne!(
-        cat,
-        HeapCategory::Value,
-        "0-word-field product must not flatten"
-    );
     assert_eq!(
-        cat,
+        HeapCategory::classify(&cadt("P", vec![]), Some(&tables)),
         HeapCategory::AlwaysHeap,
-        "P is a real heap object (RC-governed)"
     );
 }
 
-// Wave-3a /review BLOCKER 2 (multi-field-but-≤1-word) — the backend half.
-// `(M [:Int x :U u])` = 1 word across 2 fields: MUST classify heap, NOT `Value`.
-// A `Value` verdict here would split construction (2-field heap) from match
-// (flat single-word bind) → garbage pointer.
+// `(M [:Int x :U u])`: two fields across one word is a heap object.
 #[test]
-fn test_r5_multi_field_one_word_product_not_value() {
+fn test_multi_field_one_word_product_is_heap() {
     let tables = product_tables(&[
         ("U", vec![]),
         ("M", vec![Type::Int, Type::ADT(test_fqtn("U"), vec![])]),
     ]);
-    let cat = HeapCategory::classify(&cadt("M", vec![]), Some(&tables));
-    assert_ne!(
-        cat,
-        HeapCategory::Value,
-        "≥2-field product must not flatten"
+    assert_eq!(
+        HeapCategory::classify(&cadt("M", vec![]), Some(&tables)),
+        HeapCategory::AlwaysHeap,
     );
-    assert_eq!(cat, HeapCategory::AlwaysHeap);
 }

@@ -20,7 +20,7 @@ pub(crate) fn emit_capture_inc_into<M: Module>(
     match category {
         HeapCategory::AlwaysHeap => heap::emit_rc_inc(builder, module, val),
         HeapCategory::Mixed => heap::emit_rc_inc_guarded(builder, module, val),
-        HeapCategory::NeverHeap | HeapCategory::Value => {}
+        HeapCategory::NeverHeap => {}
     }
 }
 
@@ -60,7 +60,7 @@ impl CaptureReleaseKind {
     /// passes `true` unconditionally — it is a closure by construction.
     pub(crate) fn classify(category: HeapCategory, is_fn_type: bool) -> Option<Self> {
         match category {
-            HeapCategory::NeverHeap | HeapCategory::Value => None,
+            HeapCategory::NeverHeap => None,
             // A `Fn`-typed value is ALWAYS a heap closure box, so the embedded
             // glue is always the right release and no nullary guard applies.
             _ if is_fn_type => Some(CaptureReleaseKind::ClosureBox),
@@ -212,15 +212,7 @@ mod tests {
             None
         );
         assert_eq!(
-            CaptureReleaseKind::classify(HeapCategory::Value, false),
-            None
-        );
-        assert_eq!(
             CaptureReleaseKind::classify(HeapCategory::NeverHeap, true),
-            None
-        );
-        assert_eq!(
-            CaptureReleaseKind::classify(HeapCategory::Value, true),
             None
         );
     }
