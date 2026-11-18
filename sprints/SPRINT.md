@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W8 accepted; approved work that needs no decision is exhausted; settling target waits on the user's decisions (list in Notes, `qa` §14 at `06741872`)
+**Status**: PHASE 5 LANGUAGE — focus module backend: closing its exit list (B14, B13, B8, B10); other modules carried on their tests
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -433,7 +433,25 @@ The third-deferral groups and ACT-1067 (Notes).
   `79a8c94c` have had no independent review; ask whether a reader the restore
   walk itself runs can wait on the module being walked, and whether a stop
   can stay recorded for a module whose object a later pass publishes.
-- **Awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
+- **User, 2026-11-19 — delivery principles** (`sprints/METHOD.md` §Delivery
+  principles): reproduce first, focus module, consistent spec, public-API
+  changes, clean house, no decay. **The backend is S124's focus module**: the
+  Phase 5 settling target is the backend clean and green, every other failing
+  test carried on record by module, and no module left worse. The decision
+  list in the note above is superseded by these principles.
+- **User, 2026-11-19 — trace coverage ruled (Reading A):** a trace form
+  records calls into its own module and its transitive imports plus the
+  built-in primitives; a form in the entry file or at the REPL prompt covers
+  the whole program; a library-held form does not record calls inside a
+  caller's function. Unblocks ACT-1039, ACT-1078 and B10's remainder.
+- **Public-API batch decided by `arch` (`3e5908ba`):** D13, K11-c, K11-d and
+  R10-2 as realised, the resolution-gap module (ACT-1082; contract approved,
+  correction not scheduled), ACT-1084 and `cranelisp_trace_first_child_nanos`
+  removals approved; the `CallableOrigin::TraitMethod` member declined; the
+  typed position-less `--link` refusal escalated (needs a REPL-spec
+  exception). `arch` is re-reading the batch against the user's three
+  criteria (bounded context, simple api, strongly typed).
+- **Superseded — awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
   member (`cranelisp-types`; raised by review of `951622cf`, half-fixed in
   `240b3a8a`). Not started.
 - **Filed during Phase 5, scheduling with the user unless stated:** ACT-1068

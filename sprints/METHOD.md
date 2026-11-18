@@ -74,8 +74,13 @@ what still returns is listed after them.
   open question and current behaviour stands.
 - **Public-API changes.** Public-API changes are batched and reviewed by
   `arch` against its architectural quality criteria, and escalated to the
-  user when larger changes are required. Root `AGENTS.md` §Roles states the
-  gate.
+  user when larger changes are required. The criteria are three questions
+  asked of each candidate change: *bounded context* — does the module keep
+  its cohesive and coherent intent? *simple api* — does the public API
+  simply and clearly express that intent, for example one obvious path to an
+  outcome? *strongly typed* — do the definitions use type representation so
+  an invalid state cannot be expressed? Root `AGENTS.md` §Roles states the
+  gate; `design/arch/AGENTS.md` §Public-API discipline applies it.
 - **Clean house.** A module getting a larger change has its carried defects
   considered for inclusion, whether or not it is the focus module.
 - **No decay.** A sprint leaves every module it touches no worse: a
