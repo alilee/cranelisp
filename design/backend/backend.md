@@ -352,7 +352,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims (ACT-1039; blocked on `arch`'s module-set ruling), and the backend's half of strict evaluation and allocation-free wrappers (ACT-1038; built). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims (ACT-1039, with ACT-1078; blocked on the user's ruling on which modules a trace form covers), and the backend's half of strict evaluation and allocation-free wrappers (ACT-1038; built). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
@@ -364,8 +364,8 @@ indexed in
 
 | # | Change-set | Design | Waits on |
 |---|---|---|---|
-| B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | `arch`'s types half of D6, made in the same commit (the commit shape is in §9 there) |
-| B10 | The traced set fixed by slot claims (ACT-1039) | [trace codegen](trace-codegen.md) §1 | `arch`'s ruling on which modules contribute, and the change it names for `macros`' slot claims ([trace codegen](trace-codegen.md) §1.3) |
+| B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | The user's decision on row D13: `SymbolTable::install_extern` loses its sibling parameter, which the approved D6 does not name. Then `arch`'s types half of D6, made in the same commit (the commit shape is in §9 there). Not scheduled. |
+| B10 | The traced set fixed by slot claims (ACT-1039), and with it ACT-1078 | [trace codegen](trace-codegen.md) §1 | The user's ruling on which modules a trace form covers ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)), then the change it names for `macros`' slot claims ([trace codegen](trace-codegen.md) §1.3). Not scheduled. |
 
 - **Landed in W6.** Each emission-affecting change-set carried its own scoped
   re-baseline.
@@ -390,15 +390,16 @@ indexed in
   not part of B10 as scheduled and is not in source. Whether it is pulled in
   is the user's decision
   ([evidence delta](../../tests/plan/s124-evidence-delta.md) §14.8).
-- `CACHE_SCHEMA_VERSION` is 32. It is bumped by B8, and by two change-sets that
-  land on other surfaces but must edit this crate's constant: row D3's and
-  ACT-1052's ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache
-  discipline; [int §7.6.3](../int/int.md#763-slot-layout-identity-act-1052)).
-- ACT-1052's change-set also corrects the rustdoc of
-  `CachedModuleRef::dependency_hashes` (`cache/manifest.rs`), which says the
-  values are source hashes. After that change they are opaque validity keys
-  whose form is int's. This is a factual correction with no API change, made
-  by `dev`(backend) in int's change-set.
+- `CACHE_SCHEMA_VERSION` is 34 (read at `79a8c94c`). Row D3's change-set took
+  it to 33 (`42e6d929`) and ACT-1052's to 34 (`f3f9cc47`;
+  [int §7.6.3](../int/int.md#763-slot-layout-identity-act-1052)). B8 bumps it
+  again when it lands ([crate guidance](../../crates/cranelisp-backend/AGENTS.md),
+  cache discipline).
+- `f3f9cc47` also corrected the rustdoc of `CachedModuleRef::dependency_hashes`
+  (`cache/manifest.rs`): the values are opaque validity keys whose form is
+  int's, not source hashes. `check_manifest`'s parameter keeps its older name,
+  `dependency_source_hashes`; the design names the values by what they are
+  ([module caching](module-caching.md) §3).
 - The approved baseline-format row K11-a lands last, alone, after every other
   row.
 - ACT-1018 has no backend item. Its residual measured 2 blocks after

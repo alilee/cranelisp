@@ -416,7 +416,9 @@ position to serve, because no position borrows
 ([uniform counting](uniform-counting.md) §1). The carrier
 `Realization::ExternShim { borrowed_sibling }` has had no producer since
 ACT-0974 and leaves `cranelisp-types` in S124 (packet row D6, with row D9).
-Not in source at `1e4b0ce4` (read 2026-11-18).
+Not in source at `79a8c94c` (read 2026-11-18), and not scheduled: it waits on
+the user's decision on row D13, the removal of `install_extern`'s sibling
+parameter (step 1 below).
 
 **The backend's half.**
 
@@ -427,8 +429,8 @@ Not in source at `1e4b0ce4` (read 2026-11-18).
 - The public variant `CacheStale::SiblingSlotOutOfRange` is removed with its
   only producer (row D9, approved 2026-11-16). Its diagnostic tag arm and its
   display arm go with it. Backend `public-api.txt` loses three lines.
-- `CACHE_SCHEMA_VERSION` goes from 32 to 33 (`cache/mod.rs`), because
-  `Realization` is persisted. The schema pin cell in
+- `CACHE_SCHEMA_VERSION` goes up by one from its value when B8 lands (34 at
+  `79a8c94c`; `cache/mod.rs`), because `Realization` is persisted. The schema pin cell in
   `cache/serialize/tests.rs` follows it.
 - In `cache/serialize/tests.rs`, the sibling fixtures
   (`install_primitive_with_sibling`, `roundtrip_sibling_slot`) and the cell
@@ -446,9 +448,9 @@ sequences it as one callee-first migration:
    `module.rs` and the types tests. The workspace then stops compiling, and
    the broken build is the checklist. `SymbolTable::install_extern` takes the
    sibling as a parameter. The packet row names neither that parameter nor
-   typecheck's production callers of it, so before this step `arch` confirms
-   that the approved delta covers the parameter, or returns the row to the
-   user.
+   typecheck's production callers of it, so the parameter's removal went back
+   to the user as row D13, which is not yet decided. This step does not start
+   before it is.
 2. `dev`(backend) makes the half above.
 3. `dev`(typecheck) follows in its own crate: the `install_extern` calls in
    `result.rs` and `builtins.rs`, and the field in three test fixtures

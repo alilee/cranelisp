@@ -67,21 +67,28 @@ output is unchanged.
 ### Secondary key: transitive dependency hashes
 
 - **The record is the closure.** Each manifest entry maps every module in its
-  transitive dependency closure to the source hash it was compiled against. The
-  owner of the closure's edge set, the hash provenance and the builder every
-  writer uses is [dependency record and validity](../int/int.md#76-dependency-record-and-validity).
+  transitive dependency closure to the validity key it was compiled against.
+  To the backend the key is an opaque string. Its form is int's: today the
+  member's source hash together with its authored slot layout
+  ([slot-layout identity](../int/int.md#763-slot-layout-identity-act-1052)).
+  The owner of the closure's edge set, the key's provenance and the builder
+  every writer uses is [dependency record and validity](../int/int.md#76-dependency-record-and-validity).
 - **Why not direct imports.** An importer's sidecar and object embed slot
   indices, layouts, expanded macros, instances compiled from generic bodies and
   inferred types. A change can reach the importer through an unchanged
   intermediate module, so direct-import hashes would miss it.
 - **What the backend check compares.** `check_manifest` compares exactly the
-  current-hash map its caller supplies. A supplied member that is missing from
-  the record, or whose hash differs, is a miss. The check does not walk the
-  record itself, so the caller must build the map from the record's keys.
-  Int's validity query builds that map from a current-hash source, so no
-  int caller can run the comparison over nothing.
-- **Conservative.** Members are keyed by whole source, so a private edit in a
-  dependency still invalidates its importers. Interface hashing is §12.
+  current-key map its caller supplies, by string equality. A supplied member
+  that is missing from the record, or whose key differs, is a miss. The check
+  does not walk the record itself, so the caller must build the map from the
+  record's keys. Int's validity query builds that map from a current-key
+  source, so no int caller can run the comparison over nothing. The map's
+  parameter is still named `dependency_source_hashes`, from before the values
+  became opaque keys; the name is not the contract, and the rustdoc of
+  `CachedModuleRef::dependency_hashes` states what the values are.
+- **Conservative.** Each member's key includes its whole-source hash, so a
+  private edit in a dependency still invalidates its importers. Interface
+  hashing is §12.
 
 Gaps in what the record covers, including a dependency reached only through a
 qualified reference, are recorded in int's
@@ -163,23 +170,44 @@ accepted, or the module compiles from scratch.
 
 ## 7. Background Writing
 
-- **Int owns scheduling.** The nice worker writes a module's sidecar, then its
-  object, then records its manifest entry, all off the interactive path. The
-  index worker writes sidecars without objects ([index-worker isolation](../int/index-worker-isolation.md) §3). Every writer records its manifest entry through int's one
-  dependency-record builder, which defers an entry until its record settles
+- **Int owns scheduling.** Only the nice worker's object pass writes a
+  module's sidecar, object and manifest entry, all off the interactive path.
+  The index pass writes no cache artefact
+  ([index-worker isolation](../int/index-worker-isolation.md#33-the-cache-channel) §3.3).
+  The pass records the entry through int's one dependency-record builder,
+  which defers an entry until its record settles
   ([dependency record and validity](../int/int.md#76-dependency-record-and-validity)).
+- **One generation beside an entry.** A module's `.meta` and `.o` come from
+  one object pass. Int's one `.meta` writer removes the module's old object
+  before it writes the sidecar, and a sidecar with codegen targets and no
+  object is a miss. The rule, its failure outcomes and its owner are
+  [one generation beside an entry](../int/int.md#77-one-generation-beside-an-entry-act-1083).
 - **Backend supplies the pieces.**
   - `write_meta` serialises the table with the schema version and build
-    identity, then writes it atomically.
+    identity, then writes it atomically. It does not touch the object; the
+    retirement is int's, in the writer that calls it.
   - `compile_to_module` runs against an object module, and the caller
     finalises it into bytes.
   - `build_isa(true)` builds the position-independent ISA.
   - `write_manifest` writes the index atomically.
   - The backend's writers go through a temporary file and a rename, so a
-    concurrent reader never sees a partial sidecar or manifest.
-- **Int writes the object.** The nice worker writes the emitted `.o` bytes with
-  a plain file write, not the backend's atomic helper. It records the manifest
-  entry only after that write succeeds.
+    concurrent reader in the same process never sees a partial sidecar or
+    manifest.
+- **Int writes the object.** The object pass publishes the emitted `.o`
+  through int's own helper, not the backend's, which is private to this
+  crate: a temporary unique to the process and the write, flushed, then
+  renamed onto the object path. It records the manifest entry only after the
+  rename succeeds (int §7.7).
+- **Atomicity across processes is not claimed (asserted limit).** The
+  backend's helper names its temporary from the target path alone, so two
+  processes writing the same sidecar or manifest share one temporary, and one
+  can rename bytes the other is still writing or has interleaved. Nothing
+  here excludes a second process: whether two processes may share a project
+  cache directory is open with the user (int §7.7, *One cache owner*). The
+  claim above holds only while one process writes the directory.
+  *Falsifier:* two processes writing one module's sidecar or the manifest
+  concurrently, after which a read finds bytes neither wrote whole, or a
+  rename fails because the other process already moved the temporary.
 - **No packet API.** The cache-packet family and its dormant int writer,
   which no live path called, were deleted in S124 (row R10-3, `1e4b0ce4`).
 
@@ -515,16 +543,19 @@ noticing (Principle 7).
 ### 14.5 Cache-write path
 
 1. Clone the module's table from the session store.
-2. Serialise it with the schema version and build identity (`write_meta`), and
-   write it atomically.
+2. Remove the module's existing `.o`, then serialise the table with the schema
+   version and build identity (`write_meta`) and write it atomically. A failure
+   at this step stops the pass with no object and no entry (int
+   [§7.7](../int/int.md#77-one-generation-beside-an-entry-act-1083)).
 3. If the module has codegen targets, compile them against an object module
-   (§13.2) and write the `.o` atomically.
+   (§13.2) and publish the `.o` atomically.
 4. Record the manifest entry: the module's source hash and its dependency record
    (§3). Int defers the entry until that record settles.
 
 The sidecar write depends on typecheck alone, so a module whose object fails to
-compile still persists its table. Int owns ordering, error tolerance and
-scheduling (§7).
+compile still persists its table. No entry is recorded for that pass, and the
+sidecar without its object is a miss at restore. Int owns ordering, error
+tolerance and scheduling (§7).
 
 ### 14.6 Symmetry invariant (mirrors §8 design principle)
 

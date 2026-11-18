@@ -10,9 +10,12 @@ swap and the nested-trace guard are
 
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
-- §1's selection is designed and **not in source** at `1e4b0ce4` (read
-  2026-11-18). `dev` built it and reverted it, because it fails `--link`
-  (§1.2). It waits on `arch` (§1.3).
+- §1's selection is designed and **not in source** at `79a8c94c` (read
+  2026-11-18), and is not scheduled. `dev` built it and reverted it, because
+  it fails `--link` (§1.2). It and ACT-1078 wait on the user's ruling on
+  which modules a trace form covers
+  ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18));
+  §1.3 is the backend's recommendation to that ruling.
 - The descriptor baker's substitution correction (ACT-1062's backend reader)
   is not scheduled and is not in source.
 
@@ -124,11 +127,11 @@ The backend cannot close either gap inside its boundary.
    binds. That alternative keeps a claim that no image can fill, and every
    trace swaps a table that is always empty.
 
-**What `dev`(backend) builds once `arch` has ruled:**
+**What `dev`(backend) builds once the ruling is made:**
 
 - §1.1, unchanged. The reverted patch realises it.
-- The module filter of item 1, in `discover_traced_fns_from_tables`, if `arch`
-  adopts it.
+- The module filter of item 1, in `discover_traced_fns_from_tables`, if the
+  ruling adopts it.
 - Its module rows:
   - a claim in a module outside the closure is not selected;
   - a claim in an imported module is selected;
