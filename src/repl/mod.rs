@@ -554,6 +554,7 @@ impl CompilerSession {
             ReplCommand::Mem(expr) => CommandResult::Final(self.handle_mem(expr)),
             ReplCommand::Sh(cmd) => {
                 run_shell_command(cmd, stdout);
+                self.compare_recorded_sources_at_next_poll();
                 CommandResult::Nothing
             }
             ReplCommand::Ask(text) => {

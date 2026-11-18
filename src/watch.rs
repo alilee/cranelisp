@@ -33,6 +33,9 @@ pub struct FileWatcher {
     /// landed between the session's read and the directory watch queued no
     /// event, so the next poll compares each of them with the record.
     first_sight: HashSet<PathBuf>,
+    /// Set by [`Self::compare_recorded_sources`]: the next poll compares
+    /// every recorded source, whether or not its event has arrived.
+    compare_recorded: bool,
 }
 
 /// The state of a source file (`design/int/repl-lifecycle.md` §1.2, Content
@@ -104,6 +107,7 @@ impl FileWatcher {
             watched_dirs: HashSet::new(),
             seen: HashSet::new(),
             first_sight: HashSet::new(),
+            compare_recorded: false,
         })
     }
 
@@ -132,6 +136,14 @@ impl FileWatcher {
         }
     }
 
+    /// Arm the next poll to compare every recorded source with its record, so
+    /// a save that a completed `/sh` command made is found before its
+    /// notification is delivered (`design/int/repl-lifecycle.md` §1.2, Poll
+    /// points).
+    pub(crate) fn compare_recorded_sources(&mut self) {
+        self.compare_recorded = true;
+    }
+
     /// Non-blocking poll for changed `.cl` files.
     ///
     /// Drains all queued events in one pass, adds the files first seen since
@@ -141,6 +153,9 @@ impl FileWatcher {
     /// record: the reload's own read does.
     pub(crate) fn poll_changes(&mut self, recorded: &RecordedSources) -> Option<Vec<PathBuf>> {
         let mut candidates: HashSet<PathBuf> = std::mem::take(&mut self.first_sight);
+        if std::mem::take(&mut self.compare_recorded) {
+            candidates.extend(recorded.iter().map(|entry| entry.key().clone()));
+        }
         while let Ok(event_result) = self.rx.try_recv() {
             if let Ok(event) = event_result {
                 match event.kind {
@@ -188,6 +203,7 @@ impl FileWatcher {
         }
         self.seen.clear();
         self.first_sight.clear();
+        self.compare_recorded = false;
         // Drain any pending events.
         while self.rx.try_recv().is_ok() {}
     }
@@ -346,5 +362,30 @@ mod tests {
             "the key recorded before creation is the created file's canonical path"
         );
         assert!(FileWatcher::has_content_changed(&canonical, &recorded));
+    }
+
+    // spec: repl/spec/14-file-watching.md §14.2; design/int/repl-lifecycle.md
+    // §1.2 (a `/sh` turn's own save is compared, not awaited) — with the
+    // notification withheld, an armed poll reports a recorded file changed on
+    // disk and an unarmed poll does not; after the rebuild's read updates the
+    // record, a later event for the same save reports nothing.
+    #[test]
+    fn an_armed_poll_compares_every_recorded_source() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let saved = seeded(dir.path(), "m.cl", b"(defn f [] 1)\n");
+        let recorded = RecordedSources::new();
+        record_now(&recorded, &saved);
+        let mut w = FileWatcher::new().expect("watcher");
+        std::fs::write(&saved, "(defn f [] 2)\n").expect("save");
+
+        assert_eq!(w.poll_changes(&recorded), None, "control: unarmed");
+        w.compare_recorded_sources();
+        assert_eq!(w.poll_changes(&recorded), Some(vec![saved.clone()]));
+        assert_eq!(w.poll_changes(&recorded), None, "one poll per arming");
+
+        record_now(&recorded, &saved);
+        w.watch_file(&saved);
+        w.compare_recorded_sources();
+        assert_eq!(w.poll_changes(&recorded), None, "no double report");
     }
 }

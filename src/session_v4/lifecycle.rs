@@ -1362,6 +1362,16 @@ impl CompilerSession {
         self.poll_and_reload()
     }
 
+    /// Arm the next poll to compare every recorded source with its record: a
+    /// completed `/sh` turn's own saves are rebuilt and reported before the
+    /// next prompt whether or not their notifications have arrived
+    /// (`design/int/repl-lifecycle.md` §1.2, Poll points).
+    pub(crate) fn compare_recorded_sources_at_next_poll(&mut self) {
+        if let Some(watcher) = &mut self.watcher {
+            watcher.compare_recorded_sources();
+        }
+    }
+
     /// Poll the file watcher for changed source files and rebuild them with
     /// their dependents (`design/int/repl-lifecycle.md` §1.2).
     ///
