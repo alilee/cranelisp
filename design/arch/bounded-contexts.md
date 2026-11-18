@@ -76,9 +76,7 @@ recognition and execution live elsewhere.
 3. **`super` is resolved at parse.** Neither `ImportSpec.module_path` nor
    `ExportSpec.module_path` contains a literal `super` after parsing;
    resolution uses the parsing module's own path. Spec §8.4 gives exports the
-   import grammar, so one specifier parser serves both. At `4b58ab93` an
-   export's `super` passes through unrewritten; the correction lands with
-   invariant 11.
+   import grammar, so one specifier parser serves both.
 4. **Synthetic spans are unique** within a session (`next_synthetic_span` is
    monotonic).
 5. Retired — the expansion fixpoint bound is the binary's expand loop
@@ -105,12 +103,11 @@ recognition and execution live elsewhere.
     classifier is the single types-owned `quote_head`; the frontend fold and the
     binary's expansion shield both consume it.
 11. **Import and export entries are classified one by one, and the bound name
-    is derived here.** Approved S124 target, not in source at `4b58ab93`, where
-    the names parser classifies a whole list. Each entry of a names list is
+    is derived here.** Each entry of a names list is
     classified independently (spec §8.3.11), imports and exports share one
     grammar and one entry type, and the frontend derives each entry's bound
     local name once so that no consumer reads a written spelling
-    ([import and export entries](interfaces.md#import-and-export-entries-s124-target)).
+    ([import and export entries](interfaces.md#import-and-export-entries)).
 
 ---
 

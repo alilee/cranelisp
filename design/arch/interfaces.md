@@ -80,50 +80,35 @@ remaining forms. The extracted `ImportSpec`, `ExportSpec`, platform and submodul
 declarations live on the module's `SymbolTable` in its public structural vectors. Those
 vectors are the append contract: direct push, source order, no deduplication.
 
-### Import and export entries (S124 target)
+### Import and export entries
 
-**Status:** approved, not in source at `4b58ab93`.
+Spec §8.3 and §8.3.11 classify each entry of a names list independently, and §8.4 applies the
+same grammar to exports with a mount alias. Exact promises: the rustdoc on `ImportEntry`,
+`ImportNames` and `ExportSpec` (`crates/cranelisp-types/src/module.rs`).
 
-At the checkpoint `ImportNames` classifies a whole list (`Specific(Vec<Symbol>)`, `Glob`,
-`MemberGlob(Symbol)`, `None`), the names parser returns at the first `.*` entry and drops the
-rest, and `ExportSpec` has no alias. Spec §8.3 and §8.3.11 require each entry to be classified
-independently, and §8.4 applies the same grammar to exports with a mount alias. The approved
-carrier (user ruling 2026-11-16; S124 packet row D3):
-
-- **One entry type serves imports and exports.**
-  `#[non_exhaustive] pub enum ImportEntry { Name { source: Symbol, local: Symbol }, MemberGlob(Symbol) }`.
-  `ImportNames::Specific` holds `Vec<ImportEntry>`; the list-level `ImportNames::MemberGlob`
-  variant is removed. A mixed list is therefore representable and a list-level member glob is
-  not.
+- **One entry type serves imports and exports.** `ImportEntry` is `Name { source, local }`
+  or `MemberGlob(parent)`, and `ImportNames::Specific` holds a vector of entries. A mixed
+  list is representable; a list-level member glob is not.
 - **`source`** is the name in the source module and may be dotted. **`local`** is the bare
   name the entry binds and is always present: the written name of a plain entry, the member
   of a dotted entry, or the second symbol of a rename.
 - **The frontend derives `local` once; no consumer re-derives it**
   ([Principle 24](principles/24-resolve-once.md)). The installer binds `local` to `source`
   and never reads a written spelling, so binding a dotted entry under its dotted spelling
-  (ACT-1055) has no representation. ACT-0997 (renamed entries), ACT-1055 and ACT-1056 (mixed
-  lists and mounts) are corrected by this one change, not separately.
+  has no representation.
 - **The member of a dotted entry is read by the frontend's own dotted splitter.** The
   frontend must split a written entry to classify and validate it, so the member falls out
   of that one read. `cranelisp_types::bare_member_name` is not called there: it also strips
-  a `/` qualifier, which an entry source may not carry, and a second read of the same
-  spelling would add a consumer edge without removing a derivation. The installer's
-  member-glob projection keeps `bare_member_name`, over canonical member keys. *Falsifier:*
-  a dotted entry and the member glob of its parent binding different local names for one
-  member.
-- **`ExportSpec` gains `alias: Option<ModuleName>`**, the §8.4.4 mount, mirroring
-  `ImportSpec::alias`. Its storage, writer and lookup are the
-  [alias contract](module-alias-scoped-lookup.md) §2.1 and §5.1; no lookup mechanism is added.
-- **`ImportNames` stays without `#[non_exhaustive]`.** Its consumers match it exhaustively on
+  a `/` qualifier, which an entry source may not carry. The installer's member-glob
+  projection keeps `bare_member_name`, over canonical member keys. *Falsifier:* a dotted
+  entry and the member glob of its parent binding different local names for one member.
+- **`ExportSpec::alias`** is the §8.4.4 mount, mirroring `ImportSpec::alias`. Its storage,
+  writer and lookup are the [alias contract](module-alias-scoped-lookup.md) §2.1 and §5.1.
+- **`ImportNames` carries no `#[non_exhaustive]`.** Its consumers match it exhaustively on
   purpose, so a new list shape forces every installer, regenerator and selector to be
   revisited.
-- **Persistence.** `SymbolTable::imports` and `exports` are persisted, so the change takes a
-  `CACHE_SCHEMA_VERSION` bump in its own change-set. The correction carries ACT-0997's
-  impl-identity evidence: an impl written through a renamed type import and through a renamed
-  trait import, each persisted with a later definition, plus a cold restart.
-- **Rejected:** S123 row N1 (a rename pair inside `Specific` only), which cannot carry a
-  mixed list; and merging `ImportSpec` and `ExportSpec` into one type with a visibility
-  field, which churns two persisted table fields and their readers for no added guard.
+- **Persistence.** `SymbolTable::imports` and `exports` are persisted, so a change to either
+  shape takes a `CACHE_SCHEMA_VERSION` bump.
 - **Surfaces.** Types carries the type; the frontend's module extraction is the only
   producer; the binary's import installation, source regeneration, dependency recording,
   cache restore, indexing, lifecycle and test selection are the consumers. Typecheck does not
@@ -580,9 +565,7 @@ symbol-table data; nothing scans.
 - `substitute_module_alias` takes the alias table, the referring module and the path. The
   leading segment may use the referring module's alias at either visibility; later segments
   traverse public mounts only. Every step is a keyed probe under the shared chain-depth cap.
-  `module_alias_key` is the one alias-key mint; the binary's import-alias writer still keys
-  through a private copy
-  ([outstanding obligation](module-alias-scoped-lookup.md#5-outstanding-obligation--import-alias-key-mint)).
+  `module_alias_key` is the one alias-key mint.
 - Contracts: [prelude and explicit imports](prelude-import-convergence.md),
   [scoped module aliases](module-alias-scoped-lookup.md) and
   [resolve home before enumeration](resolve-home-enumeration.md).
@@ -735,20 +718,14 @@ design that needs a public change outside these rows stops and returns to `arch`
 
 | Row | Change | Owning surface | Other surfaces that change | Contract |
 |---|---|---|---|---|
-| D3 | `ImportEntry`; `ImportNames::Specific` payload; `ImportNames::MemberGlob` removed; `ExportSpec::alias` | types | frontend (producer); binary (consumers); `tests/cache.rs` | [import and export entries](#import-and-export-entries-s124-target) |
 | D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed. Waits on the user's approval of one further delta the row does not name: `SymbolTable::install_extern` loses the matching parameter | types | backend cache validation; primitives (the one production caller of `install_extern`); test callers in backend, typecheck and the binary | [safety invariants](safety-invariants.md) row R5 |
 | D7 | `ModeSummary::{abi_eq, abi_eq_opt, is_abi_conservative}` removed | types | binary (`redefine.rs`, `worker.rs`) | [ownership-inference carriers](#ownership-inference-carriers) |
 | D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | [safety invariants](safety-invariants.md) row R5 |
-| D10 | `WrittenTraitImpl::authored_label` and `TraitImpl::authored_label` added; `WrittenTraitImpl::new` gains the parameter (ACT-0997) | types | typecheck (producer); binary (live turn and rehydration; its own label derivation deleted); test call sites of `new` | [the authored label](trait-impl-cache-carrier.md#21-the-authored-label-s124-target) |
 | D12 | `session_v4::BatchError` added; `CompilerSession::trampoline` and `link_by_name` return it. A missing `main` is rendered with its error category and no location (S124-Q8) | binary (root library) | — (sole consumer is the binary target `src/main.rs`) | [BC §6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle), known architectural constraints |
 | K11-b | `IntrinsicEntry::is_runtime` removed | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 11 |
 | K11-c | `SymbolTable::{settle_template, settle_concrete}` become `pub(crate)` | types | — | [lifecycle authoring facade](#lifecycle-authoring-facade) |
 | K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`, re-exported under `test_support` | types | binary and backend test code and their dev-dependencies | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
 | K11-a | Baseline format omits auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md` | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
-
-One factual rustdoc correction needs no row: the frontend crate root says `trace` fails when
-linked, which contradicts spec §4.12.9 and [tracing §2.5](tracing.md#25-build-modes). The
-promise is false and no policy changes; `dev`(frontend) corrects it with audit R5.
 
 Order between rows that the designs respect:
 
@@ -756,11 +733,7 @@ Order between rows that the designs respect:
   redefinition cell.
 - D6 and D7 have no architectural dependency on another row; their place is `sprint`'s.
   D9 lands in D6's change-set, a callee-first migration from types through its callers.
-- D3 is types first, then the frontend producer, then the binary's consumers, as one
-  callee-first migration.
-- D3 and D6 each bump `CACHE_SCHEMA_VERSION` in their own change-set.
-- D10 lands in D3's migration and shares its schema bump: types, then typecheck's producer,
-  then the binary's two readers.
+- D6 bumps `CACHE_SCHEMA_VERSION` in its own change-set.
 - D12 has no order against another row.
 - K11-a lands last, alone, after every other row, so its regenerated contraction is not mixed
   with a functional delta.

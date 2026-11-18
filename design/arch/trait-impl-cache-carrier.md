@@ -8,7 +8,6 @@ functions; typecheck produces the record; int restores it. Exact API promises
 are the rustdoc on `WrittenTraitImpl` and the functions below
 (`crates/cranelisp-types/src/module.rs`). The executing discriminator is
 `tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
-One approved addition is not in source: the authored label (§2.1).
 
 ## 1. Why the trait home cannot be the durable home
 
@@ -32,9 +31,10 @@ resolver ([Principle 24](principles/24-resolve-once.md)).
 
 ## 2. The carrier — `WrittenTraitImpl` on the writer's `SymbolTable`
 
-- `WrittenTraitImpl { trait_name, impl_type, impl_module, methods, visibility }`
-  records the canonical trait and type, the writer module, the local
-  (unmangled) method names and the implementation's visibility.
+- `WrittenTraitImpl { trait_name, impl_type, impl_module, methods, visibility,
+  authored_label }` records the canonical trait and type, the writer module,
+  the local (unmangled) method names, the implementation's visibility and the
+  head's authored label (§2.1).
 - It is carried as `SymbolTable.written_trait_impls`, in registration order,
   which keeps sidecars reproducible.
 - **The field has no `#[serde(default)]`.** A sidecar without it is a hard
@@ -46,14 +46,11 @@ resolver ([Principle 24](principles/24-resolve-once.md)).
   belong to the types crate. Backend persists it through the generic sidecar
   serialisation and takes no surface change.
 
-### 2.1 The authored label (S124 target)
-
-**Status: approved by the user 2026-11-17, not in source at `4b58ab93`.** The
-exact delta is [S124 packet](../../sprints/s124-api-packet.md) row D10.
+### 2.1 The authored label
 
 A form's `impl` head, as written, can name its trait or type through a renamed
 import, so the spelling differs from the settled pair and the form cannot be
-matched to its record by spelling the key again (ACT-0997). The record
+matched to its record by spelling the key again. The record
 therefore carries the head's spelling, and a consumer holding a form reaches
 the settled pair by one keyed read
 ([Principle 24](principles/24-resolve-once.md)).
@@ -86,8 +83,7 @@ the settled pair by one keyed read
   §8.6.5), so two records of one writer should not share a label. Nothing
   measures that; the falsifier is either report above firing.
 - **Persistence.** The field is serde-mandatory like the record (§6): an
-  empty default would silently match nothing. It lands in the import-entry
-  migration (row D3) and shares that `CACHE_SCHEMA_VERSION` bump.
+  empty default would silently match nothing.
 
 ## 3. Producer seam — recorded once, from settled state
 
@@ -193,7 +189,10 @@ Rejected alternatives, each of which a reasonable contributor might propose:
   qualification variants.
 - **Measured in types.** `crates/cranelisp-types/src/module/tests.rs` covers
   shell staging and rollback, refusal of intervening writes and a wrong trait
-  home, and one upsert per key with writer checking.
+  home, and one upsert per key with writer checking;
+  `written_impl_record_without_its_authored_label_does_not_decode` pins the
+  label's mandatory persistence, and `crates/cranelisp-types/src/ast/tests.rs`
+  pins its one derivation, before and after the higher-kinded rewrite.
 - **Not directly unit-tested** (found 2026-09-25): restore enrolment's
   `AlreadyEnrolled` and divergent-conflict arms, malformed-record rejection at
   load, and typecheck's record ⟺ shell bijection. Only the end-to-end cell

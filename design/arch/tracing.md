@@ -71,11 +71,13 @@ display). [§11.5](../../spec/11-stdlib.md) (`core.trace`) is non-normative.
 
 A print-only `/trace` command would stop at the session boundary; the program
 could not inspect its own trace. The form returns a first-class value the
-program owns — bound, walked, summed, filtered, stored. Two consumers depend on
-that: the `core.trace` helpers are ordinary functions over `Trace`, and the
-REPL `/run-tests` handler (`src/repl/commands.rs`) re-runs a failing test as
-`(trace (test-fn))` and reads the first child's `nanos` through
-`cranelisp_trace_first_child_nanos`. Do not re-shape tracing as output.
+program owns — bound, walked, summed, filtered, stored. The `core.trace`
+helpers depend on that: they are ordinary functions over `Trace`. Do not
+re-shape tracing as output.
+
+The compiler's test runner is not a consumer. `/run-tests`, `/run-all-tests`
+and `--test` compile no form and trace nothing; the runner times a run by wall
+clock ([test runner](../int/test-runner.md)).
 
 ### 2.4 What is traced
 
@@ -244,6 +246,12 @@ readers `cranelisp_trace_{name,params,result,children,nanos}`, and re-exports
 through `crates/cranelisp-intrinsics/src/catalog.rs::intrinsics_table` like
 every other intrinsic.
 
+`cranelisp_trace_first_child_nanos` has no caller at `1790531f`: the backend
+declares no call to it and no host code reads it. It was the reader of a
+`/run-tests` re-run under `trace` that the runner no longer performs. Removing
+it is an intrinsics public-API change and passes the
+[API gate](AGENTS.md#public-api-discipline); it is not approved.
+
 **Name agreement has one owner.** The catalog and its tests own the trace
 name set: a renamed or dropped symbol is a catalog test failure, not a runtime
 unresolved-symbol crash. Backend's `declare_trace_extern` strings are the
@@ -277,8 +285,8 @@ module does not reference it, so relocating it created no coupling.
 ### 4.3 The binary hosts nothing
 
 The binary contributes no trace body, no registration, no formatter and no
-discovery. Its residual touches are ordinary: it loads `core.trace` as stdlib,
-and `/run-tests` consumes the value (§2.3). `discover-tests` is not part of this
+discovery. Its one residual touch is ordinary: it loads `core.trace` as
+stdlib. `discover-tests` is not part of this
 family; its placement is [test discovery](test-discovery.md).
 
 ## 5. Discovery — swap every symbol table

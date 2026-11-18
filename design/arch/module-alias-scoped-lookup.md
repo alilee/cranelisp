@@ -3,9 +3,8 @@
 **Status: current contract, implemented.** `arch` ruled it at S121 Phase 3; it
 is realized in `cranelisp-types`, `cranelisp-typecheck` and the binary.
 Alias-only import registration (spec §8.3.6), the last functional gap, was
-repaired in `bc675d86`. Two realization obligations remain: the import-alias
-writer still keys through a private mint (§5), and export mounts have a
-lookup but no carrier or writer (§5.1, built in S124).
+repaired in `bc675d86`. One obligation remains, a rustdoc repair `arch` owns
+(§5).
 
 This document states how module aliases are keyed, written and looked up across
 crates. Exact signatures and caller obligations are the rustdoc of
@@ -40,8 +39,7 @@ The contract below states that model as keyed reads.
   the bare alias.
 - `ModuleAliases` is the session-level map. It is derived state: the same
   writers rebuild it at restore from the persisted table fields that record
-  the declarations. Those are `imports` and `submodules` today, and `exports`
-  once mounts have a carrier (§5.1). The map is **not serialized**, so aliases
+  the declarations: `imports`, `submodules` and `exports`. The map is **not serialized**, so aliases
   themselves have no cache-schema contact.
 - A `ModuleAliases` newtype with a private interior was declined (Principle 6).
   It is the named successor if a writer ever appears outside the writer
@@ -98,13 +96,14 @@ Precedence follows the spec:
 
 ## 3. Writers and consumers
 
-Verified against source on 2026-09-25.
+Writers verified against source on 2026-11-18 (`1790531f`); consumers on 2026-09-25.
 
 | Site | Kind | Notes |
 |---|---|---|
-| `src/imports.rs::install_import_alias` | writer — import aliases | The one import-alias writer; the named (`install_imports`), name-less (`handle_import`) and restore (`install_module_session_env`) routes all call it. Writes `Private` entries. Keys through the private `alias_key` (§5). |
+| `src/imports.rs::install_import_alias` | writer — import aliases | The one import-alias writer; the named (`install_imports`), name-less (`handle_import`) and restore (`install_declared_aliases`) routes all call it. Writes `Private` entries; an alias the module also mounts to the same module stays the mount's `Public` entry. Keys through `module_alias_key`. |
+| `src/imports.rs::install_export_mount` | writer — export mounts (§5.1) | The one mount writer; the fresh (`src/process_form/dependency.rs`) and restore (`install_declared_aliases`) routes both call it. Writes `Public` entries. Keys through `module_alias_key`. |
 | `src/process_form/dependency.rs::register_submodule_alias` | writer — submodule short names, fresh | Keys through `module_alias_key`. |
-| `src/imports.rs::install_module_session_env` | writer — submodule short names, restore | Keys through `module_alias_key`. |
+| `src/imports.rs::install_declared_aliases` | writer — submodule short names, restore | Keys through `module_alias_key`. |
 | `crates/cranelisp-types/src/resolve.rs::resolve_qualified`, `resolve_qualified_candidates` | consumer (types-internal) | Pass the query's current module. |
 | `crates/cranelisp-typecheck/src/checker.rs::normalize_self_qualified` | consumer | Passes the checker's current module. |
 | `src/process_form/macro_resolution.rs::recognize` | consumer — FQ-autoload boundary | Passes the module whose form is being processed. |
@@ -115,7 +114,16 @@ Verified against source on 2026-09-25.
 `qa` owns allocation and adequacy. The alias-only correction's adequacy record
 is [alias-only import registration](../../tests/plan/s122-evidence-delta.md#alias-only-import-registration-fixme-0798--correction-adequacy-2026-09-25).
 
-- **Export mounts** have types-tier walk evidence only, until §5.1 lands.
+- **Export mounts.** The walk is pinned in the types tier below. The writer's
+  refusals and the shared-key rule (§5.1) are pinned in `src/imports/tests.rs`
+  (`mount_installs_one_public_route_on_both_routes`,
+  `mount_alias_equal_to_a_declared_child_refuses`,
+  `second_mount_to_a_different_module_refuses`,
+  `import_alias_and_mount_to_one_module_leave_one_public_entry`,
+  `import_alias_and_mount_to_different_modules_refuse_in_either_order`). A
+  qualified reference through a mount whose declaring module is not yet loaded
+  is an open defect:
+  [ACT-1079](../../sprints/actions/ACT-1079-qualified-reference-through-a-mount-needs-its-owner-loaded-intake.md).
 - **Types unit tier** (`crates/cranelisp-types/src/resolve/tests.rs`):
   - `module_alias_key_is_owner_scoped`;
   - `scoped_alias_exact_and_undeclared_passthrough`;
@@ -146,36 +154,24 @@ is [alias-only import registration](../../tests/plan/s122-evidence-delta.md#alia
   - a bare submodule short-name reference (`(mod util)` then `util/x`),
     fresh and warm.
 
-## 5. Outstanding obligation — import-alias key mint
+## 5. Outstanding obligation — `module_alias_key` rustdoc
 
-- `src/imports.rs::install_import_alias` keys through the private
-  `alias_key`, a textual copy of `module_alias_key`. The key values agree
-  today, but two mints violate §2.1 and Principle 7.
-- `design`(int) owns the repair: delete the private helper and key through the
-  types mint. The item is tracked in
-  [`int.md` §16.0](../int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21)
-  ("Import-alias key mint").
-- While it stands, the `ModuleAliases` rustdoc's claim that
-  `module_alias_key` "is the only key mint" is untrue of the binary.
-- The rustdoc on `module_alias_key` describes the alias walk rather than the
-  mint and contains a broken sentence. `arch` owns that source-rustdoc repair
-  and schedules it with the int deletion. It needs no public-API signature
-  change.
+The rustdoc on `module_alias_key` describes the alias walk rather than the
+mint and contains a broken sentence. `arch` owns that source-rustdoc repair.
+It needs no public-API signature change.
 
-### 5.1 Outstanding obligation — export mounts (S124)
+### 5.1 Export mounts
 
 - §2.1 stores a §8.4.4 export mount as a public alias entry and §2.2 walks
-  it; `public_submodule_mount_walks_by_resolved_prefix` pins the walk. No
-  mount reaches the map from an `export` form: `ExportSpec` has no alias
-  field and the export parser accepts only a plain module symbol (ACT-1056).
-- **Carrier (approved, S124 packet row D3):** `ExportSpec::alias`, stated at
-  [import and export entries](interfaces.md#import-and-export-entries-s124-target).
+  it. The carrier is `ExportSpec::alias`
+  ([import and export entries](interfaces.md#import-and-export-entries)).
 - **Writer.** The binary installs one `Public` entry per aliased export under
   `module_alias_key(<exporting module>, <alias>)`, targeting the exported
-  module. It is a third writer family in §3, in two routes: fresh, when the
+  module. It is the third writer family in §3, in two routes: fresh, when the
   export form is processed, and restore, from the persisted `exports` field.
   Both routes call one function, as the import-alias routes do.
-- **Lookup is unchanged.** No probe, visibility rule or precedence is added.
+- **Lookup has no mount-specific rule.** Mounts add no probe, visibility rule
+  or precedence.
 - **Declaration-time errors stay at the definition seam, which is the
   binary's mount writer.** A duplicate mount and a mount that collides with a
   submodule short name are §8.6.4-family errors raised by that one function,
@@ -183,24 +179,23 @@ is [alias-only import registration](../../tests/plan/s122-evidence-delta.md#alia
   The frontend raises neither, even within one form: it sees one form and no
   table, and a second check there would be a partial copy of the rule.
 - **An import alias and a mount of one spelling share a key** (user ruling
-  S124-Q4, 2026-11-17; `spec` scribes it into §8.4.4 and §8.6.4).
+  S124-Q4, 2026-11-17; spec §8.4.4 and §8.6.4).
   - Different targets: the second declaration is refused, in either order, by
     whichever of the two writers meets the occupied key.
   - Equal canonical targets: the pair is one route, and the key holds one
     `Public` entry in either order. The mount writer raises an existing
     private entry to public; the import-alias writer leaves an existing
     public entry as it is.
-  - §2.1's one entry per key, §2.2's walk and the public `ModuleAliases` type
-    are unchanged, so no API row follows.
   - An export with an empty name list and no alias installs nothing and is
     not an error.
-- `design`(int) owns the writer; `design`(frontend) owns the parser.
+- `design`(int) owns the writer's interior; `design`(frontend) owns the
+  parser.
 
 ## 6. Falsifiers
 
 - **One mint.** A `module_aliases.insert`, or an alias-key construction,
   outside the writer families of §3 or not produced by `module_alias_key` is a
-  `review` reject; the check is one grep. It currently fires on the §5 residue.
+  `review` reject; the check is one grep.
 - **No ambiguity arm needed.** A lookup that observes two declarations
   competing for one key would falsify the declaration-seam premise. The cure
   lands at the §8.6.4 definition seam, never in the walk.
