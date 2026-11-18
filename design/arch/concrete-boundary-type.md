@@ -185,19 +185,16 @@ them was the original leak; treat any new one as a defect.
   by body node types. Typecheck builds their views with
   `MonoExpr::synthetic_local_from_expr`.
 - At a concrete use site the field type converts. A generic declaration such as
-  `(deftype (Option a) (Some [:a v]))` presents a residual declared parameter on the
-  signature path. `signature_heap_category`
-  (`crates/cranelisp-backend/src/compiler/rc_emission.rs`) converts through `from_type` and
-  maps a failure to `HeapCategory::Mixed`. It must not abort, and `classify` itself must not
-  be widened.
-- "No variable reaches `classify`" therefore holds by construction on the body path and by
-  total signature classification on the template path.
+  `(deftype (Option a) (Some [:a v]))` has a residual declared parameter, and it is never
+  classified: field types that feed classification, release or glue are read at the
+  reference's instantiation, and a residual instantiation is a located error (§3.1.2).
+  `classify` itself is not widened.
+- "No variable reaches `classify`" therefore holds by construction on both paths: `classify`
+  and every RC entry point take a `ConcreteType`.
 - Declaration-time rule (user ruling 2026-09-02, spec §5.2.4): a bare head declares a
   monomorphic type, a parenthesised head declares the complete parameter list, and every
   field carries a written type. Missing field types and undeclared variables are located
   frontend errors, so no legal monomorphic declaration has a free field variable.
-- The bullets above describe source at `4b58ab93`. "Must not abort" is the interim rule;
-  §3.1.2 is the end state S124 builds.
 - Open residuals outside §3.1.2:
   - FIXME 0931 — constructors joining monomorphisation, which removes the largest
     signature-path population.
@@ -208,103 +205,64 @@ them was the original leak; treat any new one as a defect.
     real concrete node types. `synthetic_local_from_expr` has production callers in typecheck
     and `src/bootstrap.rs` and stays public. The lenient builder has no production caller
     outside `cranelisp-types`; its narrowing to `pub(crate)` with a `test_support` re-export is
-    approved (S123 packet row K11-d) and lands in S124
-    ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)). It is not a
-    precondition of §3.1.2.
+    approved (S123 packet row K11-d) and not in source at `e6d566bf`
+    ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
 
 ### 3.1.2 The S124 close — no RC operation on a word without a category
 
-**Status:** approved target, not in source at `4b58ab93`. Governing rule: safety-register
-rows R17 and R18. Backend interior: the
+**Status:** built in S124. The field channel landed at `3deee350` and `24c42430` (packet row
+D1), the binder representation and the arm deletion at `152a0def`, and the narrowings that
+left at `1d965ed5`. Governing rule: safety-register rows R17 and R18. Backend interior: the
 [release contract](../backend/non-concrete-release-contract.md) §7.3–§7.4; typecheck interior:
 [producer obligations](../typecheck/non-concrete-producer-obligations.md).
 
 - **The end state is representational**
-  ([Principle 20](principles/20-model-invariants-by-representation.md)). A binder's stored
+  ([Principle 20](principles/20-model-invariants-by-representation.md)). A binder's recorded
   type in a compiled frame is a `ConcreteType`: it cannot be absent and cannot be residual.
-  `design`(backend) owns the representation. Three arms then have nothing to match and are
+  `design`(backend) owns the representation. Three arms have nothing to match and are
   deleted, not re-keyed:
-  1. the retain side — `signature_heap_category`'s `Err ⇒ HeapCategory::Mixed`;
-  2. the release side — the type-keyed guarded shallow decrement in `FnCompiler::emit_release`
-     (FIXME 0903);
-  3. the absent-type side — the early return of `emit_dup` and `emit_release` for `ty: None`,
-     fed by `compile_lambda`'s `derive_param_type_from_body` for a parameter the body never
-     uses. An untyped word is uncategorised, so skipping its release is rule R-1's fault in
-     its quiet form. ACT-1050's subject is an unused heap parameter of an inline lambda;
-     *refuted as this arm if* that parameter reaches `compile_lambda` typed.
+  1. the retain side — the conversion failure that classified a residual as
+     `HeapCategory::Mixed`;
+  2. the release side — the type-keyed guarded shallow decrement in
+     `FnCompiler::emit_release`;
+  3. the absent-type side — the early return of `emit_dup` and `emit_release` for a word with
+     no recorded type. An untyped word is uncategorised, so skipping its release is rule
+     R-1's fault in its quiet form. An occurrence in the body is not an admissible source of
+     a parameter's type.
 - **Constructor field types are an instantiation fact.** Field-type materialisation and
   `drop_glue::ctor_shapes` read them through `cranelisp_types::ctor_field_types_at`
-  ([total concreteness §2.1](total-concreteness.md#21-constructor-field-types-at-an-instantiation)).
-  Its `NotConcrete` refusal is a located error at the reference. The backend becomes that
-  function's first consumer outside its crate (S124 packet row D1); its signature does not
-  change.
+  ([total concreteness §2.1](total-concreteness.md#21-constructor-field-types-at-an-instantiation)),
+  which pairs each argument with the declared parameter in its position. Its `NotConcrete`
+  refusal is a located error at the reference. The backend is that function's consumer
+  outside its crate (S124 packet row D1); its signature did not change.
 - **A refusal is a producer obligation, never a licence to classify.** Where the close turns
   a residual into a located error, the correction belongs to the producer that handed over
   the residual type: typecheck's monomorphisation of accessors and trait-method instances.
-  ACT-1034 is in that population: a call inside a minted parametric impl-method instance
-  demands no instance, so the backend meets a slotless template and refuses, as the lifecycle
-  intends. *Refuted as a producer gap if* typecheck publishes an instance key for the inner
-  call and the backend misses it.
-- **The census decides, and it is vacuous while a population is refused.** The debug-profile
-  category census keys on the existing `CallableOrigin` partitions and needs no new carrier.
-  The typecheck work is scoped from what it measures. Its zero is read only after ACT-1034 is
-  corrected, because that action's programs are refused before emission and contribute no
-  `TraitMethod` traffic.
-- **Order.** Stack-placement retirement (§Phase 5) precedes the census: an armed half that
-  contains a `NoEscape` constructor stops on a false positive today (ACT-1049), and the
-  retirement re-baselines the golden corpus once before any census-scoped diff is claimed.
-  Then: census with both detection legs → the field channel (row D1) and the producer
-  corrections, including ACT-1034 → zero read → the arm deletion.
-  - **Row D1 precedes the arm deletion.** The backend's own field-type substitution hands
-    classification a type variable whenever the reference's type arguments are absent or
-    residual. The census measures no such read
-    ([release contract §7.3](../backend/non-concrete-release-contract.md#73-the-category-census-armed-open)),
-    so the channel does not hold the zero read open; but until the walk is deleted nothing
-    makes one unconstructable, and the arm deletion types every match field through row D1's
-    accessor (safety-register row R17).
-  - **No refusal lands on measured traffic, row D1's included.** The census distinguishes a
-    field read whose instantiation is concrete, residual or absent. Row D1 turns the last
-    two into located errors, so it lands only on a census reading of zero field reads in both
-    classes. That reading is taken and is zero, so row D1 lands directly after the census,
-    ahead of the producer corrections. A narrowing landed ahead of its producers is the
-    measured failure of the frame key (+16 refusals, twice;
-    [release contract §2.6](../backend/non-concrete-release-contract.md#26-frame-key-falsification)).
-  - **Row D1 also corrects a concrete read.** The backend's walk pairs a reference's type
-    arguments with the declaration's variables by first appearance in the fields, so a type
-    whose fields mention its parameters out of declaration order binds a field at another
-    parameter's type (ACT-1062, memory-unsafe). No census point records it, because the wrong
-    type is concrete. `ctor_field_types_at` pairs by declared parameter
-    ([total concreteness §2.1](total-concreteness.md#21-constructor-field-types-at-an-instantiation)).
+- **No refusal lands on measured traffic.** Each refusal the close added landed on a census
+  reading of zero at its point. A narrowing landed ahead of its producers is the measured
+  failure of the frame key (+16 refusals, twice;
+  [release contract §2.6](../backend/non-concrete-release-contract.md#26-frame-key-falsification)).
+  The same rule binds any later narrowing.
 - **A census record is attributed by where the backend read the type it could not
   classify**, then by partition
   ([producer obligations §5.3](../typecheck/non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it)
-  holds the table). A type read from a constructor declaration is the backend's, cured by
-  row D1. A type read from a typecheck carrier, a selected arm's scheme or a view node, is
-  typecheck's. Any other source belongs to the component that read it; no surface is the
-  default owner.
+  holds the table). A type read from a constructor declaration is the backend's. A type read
+  from a typecheck carrier, a selected arm's scheme or a view node, is typecheck's. Any
+  other source belongs to the component that read it; no surface is the default owner.
   - **A record from a typecheck carrier is a funnel breach and comes to `arch`**, with
     `qa`'s reduction. It falsifies the representation claim of register row R11 (I-CONC or
     the I-FRAME body path), so it is a contract fault before it is a typecheck correction.
-  - **The record key is not required to carry the source channel.** The field and absent
-    points already name their channel by being distinct points. Only the retain and release
-    arms do not, and telling them apart needs provenance threaded through every
-    categorisation call or stored on each binder, in a representation the close deletes.
-    Each attributed record is reduced by `qa` before any correction is designed, and the
-    reduction shows the channel. `design`(backend) may add a channel wherever a point
-    already knows it at no threading cost.
-- **No `Grid.cells` frame exists to re-baseline.** An accessor of a generic product is a
-  template, compiled only at the concrete instantiations a program demands. `f4_sudoku` never
-  calls `cells`, so `tests/fixtures/clif_baseline/golden/f4_sudoku.clif` carries no such
-  frame, and neither row D1 nor a producer correction owes a re-baseline of it. Row D1's
-  emission change is confined to the concrete reads its pairing corrects
-  ([release contract §7.4](../backend/non-concrete-release-contract.md#74-the-r-1-structural-close-open)).
-- **No mode may differ.** ACT-1034's cells diverge between the REPL and batch in opposite
-  directions; instance demand is one function of the program in every mode
-  ([Principle 11](principles/11-single-pipeline-mode-parameters.md)). `qa` attributes the
-  divergence before `design` places that part of the correction.
-- **Grade after the close:** structural for the three arms and the field channel; the census
-  remains as the permanently measured detector.
-- A design that needs a public change beyond row D1 stops and returns to `arch`.
+  - The census is vacuous for a population refused before emission: such a program compiles
+    no frame for the refused definition.
+- **Grade:** structural for the three arms and the field channel. The census is the
+  permanently measured detector and reads zero from every program
+  ([evidence delta §14.5](../../tests/plan/s124-evidence-delta.md#145-the-category-census)).
+- **Outside the close:** a concrete but wrong type (register row R18). One backend reader of
+  it remains: `schema::subst_for_ctor_fields` pairs arguments by first appearance for the
+  trace descriptor baker and the platform schema walk (ACT-1062;
+  [release contract §7.4](../backend/non-concrete-release-contract.md)).
+  Neither reaches an RC category.
+- A design that needs a further public change returns to `arch`.
 
 ## 4-A. Mono-completeness — only all-args-concrete instances are minted
 
@@ -328,12 +286,12 @@ rows R17 and R18. Backend interior: the
 
 - Because every codegen value is concrete, spec §12.1 makes each concrete type's runtime
   representation a backend choice. The uniform-word layouts it lists are descriptive.
-- The dev lowering uses none of that freedom after S124
-  ([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)): stack placement
-  of non-escaping constructors and value-representation flattening of single-field ADTs are
-  both in source at `4b58ab93` and both retire
+- The dev lowering uses none of that freedom
+  ([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)): S124 retired
+  stack placement of non-escaping constructors (`8f44040e`) and value-representation
+  flattening of single-field ADTs (`441e31ea`)
   ([ownership inference §3.4](ownership-inference.md#34-tier-statement--oracle-r7)). Every
-  ADT value is then a counted heap object or a nullary tag. The shared layout predicate in
+  ADT value is a counted heap object or a nullary tag. The shared layout predicate in
   `crates/cranelisp-types/src/heap.rs` stays published and producer-tested as a release-tier
   fact.
 - Further representation freedom is a user-arbitrated question raised in the

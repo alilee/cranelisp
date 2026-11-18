@@ -5,10 +5,10 @@
 descriptors; swap every symbol table; nested trace is a runtime error; every
 build mode including `--link`); S76–S82 delivered it. Owner `arch`. Decision
 40's trace half is withdrawn ([label index](decisions/README.md) row 40); this
-document is the sole architecture authority for tracing. Two contracts are
-not yet in source at `4b58ab93`: strict evaluation within the trace extent (§7)
-and the mode-independent traced set (§5). §3.3 and §5 state the target and mark
-where source differs.
+document is the sole architecture authority for tracing. Strict evaluation
+within the trace extent (§7) is built. The mode-independent traced set (§5) is
+not in source at `e6d566bf`, and the set of modules a form covers is with the
+user for decision (§5.1). §5 marks where source differs.
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -82,7 +82,8 @@ REPL `/run-tests` handler (`src/repl/commands.rs`) re-runs a failing test as
 Spec §4.12.3 is the normative list. The architectural rule behind it is
 **completeness by construction**: every callable whose GOT slot holds a real
 code pointer when the trace begins is instrumented, whichever module defines it
-and however the call reaches it (§3.5, §5). Structurally invisible: inline-CLIF primitives (no
+and however the call reaches it (§3.5, §5). Which modules a form can cover is
+open (§5.1). Structurally invisible: inline-CLIF primitives (no
 callable entry), host-promised externs and intrinsic-backed `primitives`
 entries (no slot of their own), anonymous lambdas (no named slot; their effects
 appear inside the enclosing traced call), and overloaded or constrained-poly
@@ -126,8 +127,9 @@ covers both shapes.
 `crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace` emits,
 for one `(trace body)`:
 
-1. `discover_traced_fns_from_tables` over every module in `symbol_tables`
-   (§5), grouped by defining module — each module owns one GOT and one GOT
+1. `discover_traced_fns_from_tables` over the modules the form covers
+   (§5.1; every module in `symbol_tables` at `e6d566bf`), grouped by defining
+   module — each module owns one GOT and one GOT
    data symbol. An empty result takes `compile_trace_no_swap` (body, discard,
    `cranelisp_collect_trace`), which returns the minimal `::trace::` node.
 2. Per group: the GOT base as a `global_value` against the module's GOT data
@@ -139,9 +141,7 @@ for one `(trace body)`:
    wrappers)`.
 3. The body, compiled with `in_tail_position = false` and otherwise as any
    expression. Codegen does not mark the body: the runtime declines sparks
-   for the trace's dynamic extent (§7). At `4b58ab93` a compile-time
-   `in_trace_body` flag stops sparking in the form's lexical body only; it is
-   deleted when the runtime decline lands, and not before.
+   for the trace's dynamic extent (§7).
 4. `emit_body_discard` — a category-driven RC release of the body value.
 5. `cranelisp_trace_restore_got` per group in reverse order.
 6. `cranelisp_collect_trace`, emitted exactly once and last — its result is
@@ -283,8 +283,9 @@ family; its placement is [test discovery](test-discovery.md).
 
 ## 5. Discovery — swap every symbol table
 
-`discover_traced_fns_from_tables` runs at trace-codegen time over every module
-in `symbol_tables`, with no project-root filter and no reachability set:
+`discover_traced_fns_from_tables` runs at trace-codegen time over the modules
+the form covers (§5.1). Within them it applies no project-root filter and no
+reachability set:
 
 1. Select every entry with a callable GOT slot (`callable_got_slot()`;
    overloaded and constrained-poly base names answer `None` structurally).
@@ -304,15 +305,94 @@ decided when the trace begins, by the emitted sequence, from the pre-swap
 contents it already loads (§3.3 step 2). A slot that is empty then stays empty
 and gets no wrapper, so no wrapper calls through a null original.
 
-**Not in source at `4b58ab93`**, where step 1 reads the slot at codegen and
-skips a zero. That makes the set depend on compilation order, and it is the
-provisional mechanism of ACT-1039 (`--run` records no user function);
-attribution is `qa`'s. The contract above binds whatever that attribution
-finds. Interior: [trace codegen §1](../backend/trace-codegen.md#1-the-traced-set-is-fixed-by-slot-claims-not-by-slot-contents).
+**Not in source at `e6d566bf`**, where step 1 reads the slot at codegen and
+skips a zero. That makes the set depend on compilation and cache-restore
+order, which is ACT-1039's mechanism, confirmed by `qa` with a control.
+Selection by claim was built and reverted: it cannot land before §5.1 is
+decided, because it makes every reference of §5.1 finding 1 unconditional.
+Interior: [trace codegen §1](../backend/trace-codegen.md#1-the-traced-set-is-fixed-by-slot-claims-not-by-slot-contents).
 
 The callable address comes from the slot rather than from a code marker. That
 is what includes extern primitives (whose entries carry no code but whose
 pointers live in the primitives GOT) without a special case.
+
+### 5.1 Which modules a form covers — with the user (2026-11-18)
+
+**Status: not decided.** The user's 2026-06-04 ruling and spec §4.12.3 say
+every module. Source reads every table loaded when the form compiles. Two
+findings show that this reading cannot stand; the replacement narrows a
+normative statement, so it is the user's.
+
+- **Finding 1 — an object may reference only a GOT that every image holding
+  it defines.** A trace form imports `__cranelisp_got_{M}` for each module it
+  swaps. Int already owes the general rule: every table an object references
+  is reached by its restore walk ([int §7.1](../int/int.md#71-cache-hit-flow-inside-register_module),
+  asserted there with the loader's unresolved-symbol error as falsifier). A
+  form that reads every loaded table breaks it. Observed by `design`(backend)
+  ([trace codegen §1.2](../backend/trace-codegen.md#12-what-the-built-selection-showed)):
+  `u` holds a form, entry `e1` imports `u` and `x`, entry `e2` imports `u`
+  only; after `--run e1.cl`, both `--run e2.cl` and `--link e2.cl` fail with
+  `unresolved symbol: __cranelisp_got_x`. Separately, `macros` claims slots
+  and no linked image defines `__cranelisp_got_macros`.
+- **Finding 2 — "every loaded table" is not a function of the program.** The
+  loaded set at a form's codegen depends on scheduling and on what an earlier
+  run cached. For a form outside the entry module it generally omits the
+  modules that import the form's module, because they compile later. Spec
+  §4.12.3's "however the callee was reached" is therefore not delivered today
+  for such a form. *Derived from the pipeline's dependency order and the
+  observation above; not probed.* Falsifier: a form in an imported module
+  `u`, called from entry `e` with a function of `e`, records `e`'s calls
+  identically cold, warm and in every mode.
+- **What binds any answer.** The covered set is a function of the object's
+  validity record ([Principle 11](principles/11-single-pipeline-mode-parameters.md)),
+  and every covered module is one the restore walk loads for the form's
+  module (finding 1). One enumeration of those load edges serves the walk and
+  discovery ([Principle 7](principles/07-single-source-of-truth.md)); the
+  edge set, with its null-import rule, is int's today
+  ([int §7.6](../int/int.md#76-dependency-record-and-validity)).
+
+**Proposed, `arch`'s recommendation.** A form covers its own module, every
+module that module's load edges reach transitively, and the compiler-owned
+modules whose GOT every image defines (`primitives`, and the platform modules
+those modules declare).
+
+- The §3.5 rationale survives inside the set: no reachability filter, so a
+  closure, a trait method or a function value defined in a covered module is
+  recorded however it is reached.
+- A form in the entry module or at the REPL prompt covers the whole program,
+  because its module reaches every module the program loaded by import.
+- **The narrowing.** A form in a module `u` does not record calls made
+  inside a module `u` does not reach. The case is a function value or a
+  trait implementation handed to `u` by one of its importers:
+  `(defn profile [f] (trace (f)))` in a library records the library's own
+  callees and none of the caller's. Spec §4.12.3 would state that boundary.
+- `macros` is outside the set: it has no object and no image defines its
+  GOT. Its slot claims are then never read by tracing and need no change.
+- **Not settled by the proposal:** how the backend reads the load-edge set.
+  Moving the enumeration into `cranelisp-types` or passing the set through
+  the backend's compile entry is an inter-crate public change and returns to
+  the [gate](AGENTS.md#public-api-discipline) with its exact delta. A second
+  enumeration inside the backend is rejected (Principle 7): a drift between
+  the two is an unresolved symbol on a warm start only.
+
+**Alternative that keeps §4.12.3 whole.** Each module's object owns the
+wrappers and descriptors of its own slotted functions, every image keeps a
+registry of its modules' GOTs and wrapper tables, and a form swaps the
+registry. Each object is then a function of its own module and the set is the
+running image. The cost is a wrapper and its descriptors for every slotted
+function in every object, whether or not the program traces, new intrinsic
+exports and a table every linked image must carry. Not recommended for the
+dev tier; it stays available if whole-program coverage from a library-held
+form is wanted.
+
+**Rejected.**
+
+- *Keep every loaded table and make each image define or load what an object
+  references.* It cures finding 1 and leaves finding 2.
+- *Seed the `macros` constructors without slots, alone*
+  ([trace codegen §1.3](../backend/trace-codegen.md#13-blocked-on-arch-which-modules-contribute)
+  item 2). The proposal does not need it, and the unfillable claims are
+  constructor-slot retirement's subject (FIXME 0931).
 
 ## 6. Nested-trace guard
 
@@ -349,8 +429,8 @@ and emits `cranelisp_collect_trace` exactly once per form, last (§3.3).
 ## 7. Strict evaluation within the trace extent
 
 **Status:** ruled by the user on 2026-11-16 and stated by spec §4.12.2 item 2;
-not in source at `4b58ab93`. ACT-1038 carries the two failing guards in
-`tests/trace.rs`.
+built at `3cdca9dc` (S124 packet row D8). ACT-1038 carries the two guards in
+`tests/trace.rs`; its closure is `qa`'s.
 
 **The fault.** Wrappers are installed in the process-wide GOT (§3.5), so a
 traced callee that sparks runs its calls through wrappers on worker threads.
@@ -366,9 +446,9 @@ the `cranelisp_trace_enter` and `cranelisp_trace_exit` convention rows).
    to `cranelisp_collect_trace`, every evaluation reached from the body is
    strict and sequential on the role thread, including code compiled outside
    the form. The extent is dynamic, so the decision is the runtime's: emitted
-   code cannot know at compile time whether it will run under a trace. The
-   compile-time `in_trace_body` flag (§3.3 step 3) is not the mechanism and
-   is deleted with this rule's landing.
+   code cannot know at compile time whether it will run under a trace. A
+   compile-time mark on the form's lexical body is not the mechanism; the
+   former `in_trace_body` flag is deleted.
 2. **No wrapper allocates before it has a consumer.** A wrapper that will not
    record formats nothing. With rule 1 no wrapper runs off the role thread
    during a trace, but the rule stands alone: it is what makes a wrapper
@@ -409,11 +489,11 @@ and `design`(intrinsics), which owns both bodies, confirms it
   ([trace codegen §2](../backend/trace-codegen.md#2-the-trace-extent-and-the-wrappers-allocation)).
   Closing the scheduling dependence is not scheduled.
 
-**Public surface — approved, not in source (S124 packet row D8).**
-No signature changes and no export is added, so the baselines read +0. The
-documented contract of the two exports changes, which a baseline cannot show;
-the row carries it. Any changed or added export returns the row.
-The convention rows of BC §4b carry the target. With spark statistics on, a
+**Public surface (S124 packet row D8, built).**
+No signature changed and no export was added, so the baselines read +0. The
+documented contract of the two exports changed, which a baseline cannot show;
+the row carries it. Any changed or added export returns to the gate.
+The convention rows of BC §4b state it. With spark statistics on, a
 trace decline is counted in its own `trace_declines` field, so evidence can
 tell it from a budget or depth decline.
 

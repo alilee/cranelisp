@@ -506,8 +506,10 @@ M1 direct calls, M2 LTO, M3 IR-level RC fusion), belongs to the release tier
 shared lowering. The current disposition of each built mechanism is
 [ownership codegen](../backend/ownership-codegen.md) §0.
 
-**S124 retirements (approved; in source at `4b58ab93` until they land).** Each fails
-Principle 27's acid test — removing it changes a constant, not a growth rate:
+**S124 retirements.** Each fails Principle 27's acid test — removing it changes a constant,
+not a growth rate. Stack placement (`8f44040e`), value flattening (`441e31ea`) and spark
+density (`4b8660c9`) have left source. The borrow-elision carrier and the mode-ABI gate are
+approved and still in source at `e6d566bf`:
 
 | Mechanism | What leaves the dev lowering | What stays produced for the release tier |
 |---|---|---|
@@ -1136,8 +1138,7 @@ existing entries is untouched). Corpus-construction pin routed to the qa plan as
 
 ### 6.3 The `Copy` row's mechanism (R5) — named, routed to the backend proposal
 
-**Tier.** This mechanism is delivered in the dev lowering at `4b58ab93` and retires from it in
-S124 (§3.4). The single-sourced eligibility predicate below stays; its backend reader returns
+**Tier.** This mechanism was retired from the dev lowering in S124 (`441e31ea`, §3.4). The single-sourced eligibility predicate below stays; its backend reader returns
 only with a release-tier lowering. Typecheck keeps placing eligible types at the `Copy` point
 while the dev lowering counts them as heap values. That is sound only because no dev emission
 reads a mode (safety-register row R1); a dev-tier emission that elides a count on a `Copy` mode

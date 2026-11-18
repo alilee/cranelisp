@@ -765,7 +765,7 @@ subsection pins the exact predicate the local bind-chain analysis applies
   admitted **only as a sub-tree member, never as the single-step launch root**: a
   lone detached `sleep` is pointless, and detaching a `sleep` the continuation's
   effect depends on would run the continuation *before* the delay — so the
-  single-step arm keeps refusing it (`src/bind_chain_analysis.rs::is_sleep_timer_leaf`).
+  single-step arm keeps refusing it (the `Callee::Sleep` classification in `src/bind_chain_analysis.rs`).
   This refines E3 without widening it to opaque user fns: `sleep` is a known,
   resource-free primitive leaf, resolved through the import chain — not an
   interprocedural footprint walk.

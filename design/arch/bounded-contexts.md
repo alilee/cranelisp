@@ -254,19 +254,15 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
 - **Out:** the populated GOT slot for each compiled target, and returned
   artefacts (IR text, code size, duration, per-type drop-glue addresses). On a
   cache hit, the binary calls `cache::load_cached_object` with its linker and
-  cached module to obtain target addresses. The separate `load_object` entry
-  returns a linker artefact only and has no production caller; its removal is
-  approved.
-- **The public surface is what a consumer outside the crate uses.** S124
-  removes or narrows the public items that have none: the `compiler` module
-  with its `CompileContext`, the artefact types, the cache-packet family,
-  `primitives_inline` and the items listed with them. It also deletes the
-  backend's three heap layout structs, whose readers take the layouts from
-  intrinsics (§4b invariant 2)
-  ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
-  `HeapCategory` and `classify` stay public for the binary's result exit.
+  cached module to obtain target addresses.
+- **The public surface is what a consumer outside the crate uses.** The
+  `compiler` module, with its `CompileContext`, and `primitives_inline` are
+  crate-private. The crate has no artefact types, no cache-packet family and
+  no heap layout structs: readers take the ADT, closure and Vec layouts from
+  intrinsics (§4b invariant 2). `HeapCategory` and `classify` are public for
+  the binary's result exit.
 - The **caller composes the lifecycle owner**: backend names `Code` but never
-  constructs it; the binary builds it from the `Jit` or linker artefact it owns
+  constructs it; the binary builds it from the `Jit` or `Linker` it owns
   and publishes it through the types table.
 - **Minimal JIT-setup boundary.** The `Jit` boundary is constructor, module handoff, `define_symbol` and `Drop`.
 - The GOT-population observer is an extension point; observer state is the
@@ -312,14 +308,11 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
    concrete types reach codegen.** Heap classification is total over
    `ConcreteType`; there is no type-variable arm and no runtime representation
    guess. A concrete body realization carries its codegen view by
-   construction. At `4b58ab93` constructor and accessor templates are
-   signature-driven and classify a residual declared field conservatively,
-   and a word with no recorded type skips its RC operation. S124 removes
-   both: a binder's stored type is concrete by representation and a residual
-   is a located error owed by its producer
+   construction. A binder's recorded type is concrete by representation,
+   constructor field types are read at the reference's instantiation, and a
+   residual is a located error owed by its producer
    ([the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category)).
-   Open residuals: FIXME 0903 (closed by that work), FIXME 0931 and FIXME
-   0934 under `design/arch/fixmes/`.
+   Open residual: FIXME 0931 under `design/arch/fixmes/`.
    Representation freedom beyond the one-word value model is a user-arbitrated
    language question raised in the
    [release-backend proposal](release-llvm-backend.md).
@@ -480,9 +473,9 @@ populations, each with one source of its call convention:
 
 | Entry | Convention |
 |---|---|
-| `cranelisp_trace_format` | Borrows the value; returns a fresh String. **S124 target (packet row D8, approved, not in source):** it returns a fresh String only on the thread holding the trace role; on any other thread it returns `0` and allocates nothing |
-| `cranelisp_trace_enter` | Takes each formatted parameter String. On the thread holding the trace role it stores them in the trace frame; on any other thread it returns without storing or releasing them. Under the D8 target every argument on such a thread is `0`, so nothing is left unreleased |
-| `cranelisp_trace_exit` | Returns `result` unchanged and takes the result String. On the thread holding the trace role it stores it in the trace frame; on any other thread it returns without storing or releasing it. Under the D8 target that argument is `0` |
+| `cranelisp_trace_format` | Borrows the value. On the thread holding the trace role it returns a fresh String; on any other thread it returns `0` and allocates nothing |
+| `cranelisp_trace_enter` | Takes each formatted parameter String. On the thread holding the trace role it stores them in the trace frame; on any other thread it returns without storing or releasing them. Every argument on such a thread is `0`, so nothing is left unreleased |
+| `cranelisp_trace_exit` | Returns `result` unchanged and takes the result String. On the thread holding the trace role it stores it in the trace frame; on any other thread it returns without storing or releasing it; that argument is `0` there |
 | `cranelisp_trace_first_child_nanos` | Consumes the Trace; returns an Int |
 | `runtime/run_io` | Consumes the caller's tree; the trampoline it drives borrows that tree |
 | `cranelisp_ivar_create` | Takes the thunk into the new cell. Only the force that claims the cell releases the thunk, after evaluation; the cell's teardown does not. The emitting site therefore sparks every cell it creates |
@@ -493,15 +486,10 @@ populations, each with one source of its call convention:
 | `runtime/dealloc`, `runtime/vec_drop`, `runtime/free_io_node`, `cranelisp_ivar_dealloc` | Teardown tails, called only after the caller's decrement reached zero; they free the allocation rather than release a reference |
 | `runtime/rc_dec_check` | Reads the count word; no ownership effect |
 
-`runtime/rc_underflow_check` and `runtime/string_read` have no emitting site.
-The first is a dead catalog entry
-([ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md));
-the second is a Rust-path operation the binary calls, writing a String's bytes
-pointer and length through two out-pointers without an ownership effect.
-Neither belongs in the catalog under invariant 1. S124 packet row D11
-(approved, not in source) removes the first with its function and takes the
-second out of the catalog, keeping `heap_string::string_read` as a public
-Rust function.
+`heap_string::string_read` is not a catalog entry: no emitted code calls it
+(invariant 1). It is a public Rust function the binary calls, writing a
+String's bytes pointer and length through two out-pointers without an
+ownership effect.
 `runtime/sleep_pollfn` is a poll function the reactor calls. The remaining
 entries take no counted heap argument.
 
@@ -1129,8 +1117,8 @@ newtypes; spans, errors and warnings; shared constants. Narrative companion:
   eligibility, concreteness, the IO result-root rule and the
   ownership-analysis toggle each have one definition that typecheck and backend
   both delegate to, because two copies could disagree unsoundly. Value-layout
-  eligibility loses its backend reader in S124 and stays published as a
-  release-tier fact ([heap classification](interfaces.md#heap-classification)).
+  eligibility has had no backend reader since S124 retired value flattening
+  (`441e31ea`) and stays published as a release-tier fact ([heap classification](interfaces.md#heap-classification)).
 - **Registration funnels.** ADT registration derives its complete entry set
   through one builder shared by typecheck and the binary's bootstrap. No generic
   "module table from a source" abstraction exists, because no consumer

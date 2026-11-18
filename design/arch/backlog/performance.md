@@ -333,7 +333,7 @@ Re-entry trigger: the memory-model implementation sprint that reactivates these 
   now states that no cascade, `stale:` or downgrade report exists); `design/int/s102-defect-wave.md`
   §1/§7.1; and the REPL specification's former stale-caller negative requirement (then numbered 18.1.1).
   That specification has since been rewritten
-  as [callable redefinition](../../../repl/spec/18-redefinition.md#181-callable-redefinition-uncovered-s121);
+  as [callable redefinition](../../../repl/spec/18-redefinition.md) (§18.1);
   re-verify every item against it before acting.
 - **Current state (`src/` read 2026-11-16, S123 W4 tree)** — `is_t1_downgrade`,
   `apply_redefinition_outcomes`, the cascade report and `is_repair_definition_turn` no longer exist,

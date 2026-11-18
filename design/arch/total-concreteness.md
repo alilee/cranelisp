@@ -123,13 +123,13 @@ types at a concrete instantiation for category and glue purposes.
   instantiation mismatch — is a typed error distinct from the refusal.
 - Pins: `crates/cranelisp-types/src/heap/value_layout_tests.rs`. Source rustdoc owns the
   exact signature.
-- Open: the backend's declaration-scheme walk in
-  `crates/cranelisp-backend/src/compiler/context.rs` still fills a missing field type with
-  `Type::Int` and pairs arguments with variables by first appearance in the fields, which
-  binds a field to another parameter's type (ACT-1062). The function has no consumer outside
-  its crate. S124 retires the walk onto
-  this projection; the backend consumer edge is approved (S124 packet row D1). Contract:
+- The backend is this projection's consumer outside its crate (S124 packet row D1): its
+  match lowering and drop glue read field types through it. Contract:
   [the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
+- Open: one backend helper still pairs arguments with variables by first appearance in the
+  fields, which binds a field to another parameter's type (ACT-1062):
+  `crates/cranelisp-backend/src/schema.rs::subst_for_ctor_fields`, read by the trace
+  descriptor baker and the platform schema walk.
 
 ## 3. Populations
 
