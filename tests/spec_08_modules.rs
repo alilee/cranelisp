@@ -6151,3 +6151,152 @@ fn s124_nameless_export_mount_without_prelude_cycle_control() {
         .output()
         .assert_stdout_contains(":primitives/Int 37");
 }
+
+fn s124_unloaded_mount_owner(mode: &str, chain: bool, control: bool) {
+    let imports = match (chain, control) {
+        (false, false) => "",
+        (false, true) | (true, false) => "(import [p [f]])",
+        (true, true) => "(import [p [f]]) (import [q [g]])",
+    };
+    let (call, expected) = if chain { ("p.s.t/y", 37) } else { ("p.s/g", 5) };
+    let cr = Cranelisp::new()
+        .file("p.cl", "(export [(q s) []]) (defn f [] 1)")
+        .file("q.cl", "(export [(x t) []]) (defn g [] 5)")
+        .file("x.cl", "(defn y [] 37)")
+        .file(
+            "app.cl",
+            &format!("{imports}\n(defn main [] (primitives/Pure ({call})))"),
+        );
+    let out = match mode {
+        "run" => cr.run("app.cl").output(),
+        "link" => cr.link_then_run("app.cl").output(),
+        _ => cr.cli_flag("app.cl").stdin("(main)\n/quit\n").output(),
+    };
+    if mode == "repl" {
+        out.assert_ok()
+            .assert_stdout_contains(&format!(":primitives/Int {expected}"))
+            .assert_stdout_does_not_contain("[errors:");
+    } else {
+        out.assert_exit(expected);
+    }
+}
+
+fn s124_chained_mount_prelude_cycle(opt_out: bool) -> Cranelisp {
+    let cr = s124_mount_prelude_cycle("p.s.t", opt_out)
+        .file(
+            "p.cl",
+            "(import [prelude []])\n(export [(q s) []])\n(defn f [] 1)",
+        )
+        .file(
+            "q.cl",
+            "(import [prelude []])\n(export [(x t) []])\n(defn g [] 5)",
+        );
+    if opt_out {
+        cr.prelude("(import [p [f]])\n(defn reach [] (p.s.t/y))")
+    } else {
+        cr
+    }
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6 — REPRO-1079-c: follow a chain of mounts to the prelude cycle
+// defect: class=enumeration-miss locus=src/process_form/dependency.rs::prelude_reach_cycle found=S124 owner=/dev
+#[test]
+fn s124_1079_c_chained_mount_reports_cycle_neg() {
+    let out = s124_chained_mount_prelude_cycle(false)
+        .stdin("/quit\n")
+        .output();
+    let text = combined(&out);
+    assert!(
+        names_prelude_x_cycle(&text),
+        "the chained mount must name the x/prelude cycle; {text}"
+    );
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6 — REPRO-1079-c: opting out breaks the chain's prelude cycle
+#[test]
+fn s124_1079_c_opt_out_control() {
+    s124_chained_mount_prelude_cycle(true)
+        .stdin("(reach)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 37")
+        .assert_stdout_does_not_contain("[errors:");
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-a: qualified mount with unloaded owner
+// defect: class=wrong-reject locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_1079_a_subject_run() {
+    s124_unloaded_mount_owner("run", false, false);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-a: qualified mount with unloaded owner
+// defect: class=wrong-reject locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_1079_a_subject_link() {
+    s124_unloaded_mount_owner("link", false, false);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-a: qualified mount with unloaded owner
+// defect: class=wrong-reject locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_1079_a_subject_repl() {
+    s124_unloaded_mount_owner("repl", false, false);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-a: qualified mount with loaded owner
+#[test]
+fn s124_1079_a_control_run() {
+    s124_unloaded_mount_owner("run", false, true);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-a: qualified mount with loaded owner
+#[test]
+fn s124_1079_a_control_link() {
+    s124_unloaded_mount_owner("link", false, true);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-a: qualified mount with loaded owner
+#[test]
+fn s124_1079_a_control_repl() {
+    s124_unloaded_mount_owner("repl", false, true);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-b: qualified mount with unloaded owner
+// defect: class=wrong-reject locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_1079_b_subject_run() {
+    s124_unloaded_mount_owner("run", true, false);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-b: qualified mount with unloaded owner
+// defect: class=wrong-reject locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_1079_b_subject_link() {
+    s124_unloaded_mount_owner("link", true, false);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-b: qualified mount with unloaded owner
+// defect: class=wrong-reject locus=src/process_form/dependency.rs found=S124 owner=/dev
+#[test]
+fn s124_1079_b_subject_repl() {
+    s124_unloaded_mount_owner("repl", true, false);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-b: qualified mount with loaded owner
+#[test]
+fn s124_1079_b_control_run() {
+    s124_unloaded_mount_owner("run", true, true);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-b: qualified mount with loaded owner
+#[test]
+fn s124_1079_b_control_link() {
+    s124_unloaded_mount_owner("link", true, true);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6 — REPRO-1079-b: qualified mount with loaded owner
+#[test]
+fn s124_1079_b_control_repl() {
+    s124_unloaded_mount_owner("repl", true, true);
+}
