@@ -707,7 +707,7 @@ single-constructor value classifies as a heap value. The binary's display walk
 
 ## Approved changes not yet in source (S124)
 
-Navigation for the S124 designs. Every row is absent from source at `e6d566bf` and approved
+Navigation for the S124 designs. Every row is absent from source at `66bc7b8a` and approved
 by the user. The exact delta, consumer list and expected baseline effect of each row are in
 the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and R10-10) and the
 [S123 packet](../../sprints/s123-api-packet.md) Part B (K11 rows and R10-1 to R10-8); this
@@ -718,18 +718,19 @@ design that needs a public change outside these rows stops and returns to `arch`
 |---|---|---|---|---|
 | D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed. Waits on the user's approval of one further delta the row does not name: `SymbolTable::install_extern` loses the matching parameter | types | backend cache validation; primitives (the one production caller of `install_extern`); test callers in backend, typecheck and the binary | [safety invariants](safety-invariants.md) row R5 |
 | D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | [safety invariants](safety-invariants.md) row R5 |
-| D12 | `session_v4::BatchError` added; `CompilerSession::trampoline` and `link_by_name` return it. A missing `main` is rendered with its error category and no location (S124-Q8) | binary (root library) | — (sole consumer is the binary target `src/main.rs`) | [BC §6](bounded-contexts.md#6-binary-int-src-cratescranelisp-exe-bundle), known architectural constraints |
 | K11-b | `IntrinsicEntry::is_runtime` removed | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 11 |
-| K11-c | `SymbolTable::{settle_template, settle_concrete}` become `pub(crate)` | types | — | [lifecycle authoring facade](#lifecycle-authoring-facade) |
-| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`, re-exported under `test_support` | types | binary and backend test code and their dev-dependencies | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
-| K11-a | Baseline format omits auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md` | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
+| K11-c | `SymbolTable::{settle_template, settle_concrete}` leave the public surface. Their only callers are the types crate's module tests, so they compile under `#[cfg(test)]` as `pub(crate)` | types | — | [lifecycle authoring facade](#lifecycle-authoring-facade) |
+| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature | types | test code in the binary and the backend; their dev-dependencies on `cranelisp-types` enable `test-support` | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
+| K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
 Order between rows that the designs respect:
 
 - D6 has no architectural dependency on another row; its place is `sprint`'s.
   D9 lands in D6's change-set, a callee-first migration from types through its callers.
 - D6 bumps `CACHE_SCHEMA_VERSION` in its own change-set.
-- D12 has no order against another row.
-- K11-a lands last, alone, after every other row, so its regenerated contraction is not mixed
-  with a functional delta.
-
+- K11-b and K11-c each change one crate and have no order against another row.
+- K11-d lands compatibly in four steps: types adds the `test_support` function; the backend's
+  and then the binary's test callers move to it; types narrows the method.
+- K11-a lands last, alone, after every other row and after the baselines are regenerated in
+  the present format, so its contraction is not mixed with a functional delta
+  ([baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close)).

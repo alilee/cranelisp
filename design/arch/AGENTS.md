@@ -169,8 +169,26 @@ cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crat
 **Approved format change, not yet implemented:**
 [ACT-0955](../../sprints/actions/ACT-0955-omit-auto-traits-from-public-api-baselines.md)
 owns the coordinated addition of `--omit auto-trait-impls` to this command and
-the guard, with all seven baselines regenerated together. Preserve required
-Send/Sync and other auto-trait obligations with direct fences where omission
-would remove their only check. The format choice is already approved; its
-actual generated contraction still requires user confirmation separately from
-functional API changes. Until that migration, use the command above.
+the guard, with all seven baselines regenerated together. Until that migration,
+use the command above. Its order:
+
+1. A compile fence lands first, in the platform crate's module tests: `CLInt`,
+   `CLBool`, `CLFloat`, `CLString`, `CLAdt<T>`, `CLOwned<T>` and `CLIO<CL>` are
+   `Send + Sync`. A platform author's effect closure must be `Send + Sync`, so
+   it may capture these values only while they are; no workspace crate is
+   obliged to capture each of them. No other generated auto-trait row is a
+   cross-crate promise: the negative rows follow from raw-pointer fields and
+   no contract states them.
+2. The seven baselines are regenerated in the present format on the final
+   source tree. That diff carries the functional rows and is compared with
+   the approval packets.
+3. The guard, `tests/AGENTS.md` and this section take the new flag together,
+   and the baselines are regenerated again from the same tree. This diff must
+   contain removals only, each a generated auto-trait row. Explicit
+   `unsafe impl Send` and `Sync` rows remain; the `PlatformFn` row test in
+   `tests/facade_pif_rows.rs` fails if they do not.
+4. The guard's detection proof is repeated in the new format: a planted
+   public item fails it and the clean tree passes.
+
+The format choice is approved. The user confirms the step 2 diff and the
+step 3 contraction separately.
