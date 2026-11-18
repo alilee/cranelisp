@@ -569,3 +569,56 @@ fn settled_sites_inside_an_instance_mint_nothing() {
     assert_eq!(instances_of(&tc, "test/Size.size$test/Opt").len(), 1);
     assert!(symbol_names_containing(&tc, "add-i64 [").is_empty());
 }
+
+// spec: 03-types §3.10; monomorphisation.md §3.10.3 "Reading the
+// implementation instantiation" — a conventional implementation entry's
+// receiver is read from self's binding, and an entry whose receiver cannot be
+// read is refused at the demand's site as an internal inconsistency rather than
+// recorded as a higher-kinded (receiver-less) instantiation.
+#[test]
+fn unreadable_conventional_receiver_is_an_internal_inconsistency() {
+    let tc = checked(&format!(
+        "{OPT_SIZE}(impl Size (Opt a) (defn size [o] 1))\n(defn main [] (size (Yep 3)))"
+    ));
+    let module = ModuleFullPath::from("test");
+    let size = cranelisp_types::FQTraitName::new(module.clone(), "Size".into());
+    let opt = cranelisp_types::FQTypeName::new(module.clone(), "Opt".into());
+    let opt_int = cranelisp_types::Type::ADT(opt.clone(), vec![cranelisp_types::Type::Int]);
+    let signature =
+        cranelisp_types::Type::Fn(vec![opt_int.clone()], Box::new(cranelisp_types::Type::Int));
+    let entry = |symbol: &str| FQSymbol {
+        module: module.clone(),
+        symbol: symbol.into(),
+    };
+    let site = cranelisp_types::Span::new(3, 9);
+    let env = tc.env();
+
+    let read =
+        env.implementing_type_at(&size, &opt, &entry("Size.size$test/Opt"), &signature, site);
+    assert_eq!(read.expect("the receiver is self's binding"), opt_int);
+
+    let refusals = [
+        (
+            entry("Size.missing$test/Opt"),
+            signature.clone(),
+            "no trait member names this implementation entry",
+        ),
+        (
+            entry("Size.size$test/Opt"),
+            cranelisp_types::Type::Fn(vec![], Box::new(cranelisp_types::Type::Int)),
+            "self variable is not bound by the signature",
+        ),
+    ];
+    for (template, signature, cause) in refusals {
+        let error = env
+            .implementing_type_at(&size, &opt, &template, &signature, site)
+            .expect_err("an unreadable conventional receiver is refused");
+        let cranelisp_types::CranelispError::CodegenError { message, location } = &error else {
+            panic!("an internal inconsistency, not a user error: {error:?}");
+        };
+        assert!(message.starts_with("internal inconsistency"), "{message}");
+        assert!(message.contains(cause), "{message}");
+        assert!(message.contains(template.symbol.as_ref()), "{message}");
+        assert_eq!(location.span, site, "{message}");
+    }
+}

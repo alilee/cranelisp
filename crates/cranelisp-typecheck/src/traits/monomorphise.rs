@@ -384,7 +384,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         // The in-progress chain (§3.10.3): refuse a demand that would take the
         // chain past the depth limit.
-        let chain_link = self.chain_link(state, &link, instance_key.clone(), &origin, &resolved);
+        let chain_link = self.chain_link(
+            state,
+            &link,
+            instance_key.clone(),
+            &origin,
+            &resolved,
+            call_span,
+        )?;
         if chain_link.counts && chain_depth(&state.mono_chain) >= INSTANTIATION_DEPTH_LIMIT {
             return Err(depth_refusal(
                 &state.mono_chain,
@@ -1556,7 +1563,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         key: Symbol,
         origin: &CallableOrigin,
         signature: &Type,
-    ) -> ChainLink {
+        site: Span,
+    ) -> Result<ChainLink, CranelispError> {
         let template = match &link.template {
             CallableTarget::Binding(owner) | CallableTarget::OverloadArm { owner, .. } => {
                 owner.clone()
@@ -1566,19 +1574,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 symbol: key.clone(),
             },
         };
-        let implementation = match origin {
-            CallableOrigin::TraitMethod {
-                shell,
-                trait_name,
-                impl_type,
-            } => Some(ImplementationInstantiation {
-                shell: shell.clone(),
-                receiver: (!self.is_higher_kinded_trait(trait_name))
-                    .then(|| self.implementing_type_at(trait_name, impl_type, &template, signature))
-                    .flatten(),
-            }),
-            _ => None,
-        };
+        let implementation =
+            match origin {
+                CallableOrigin::TraitMethod {
+                    shell,
+                    trait_name,
+                    impl_type,
+                } => Some(ImplementationInstantiation {
+                    shell: shell.clone(),
+                    receiver: if self.is_higher_kinded_trait(trait_name) {
+                        None
+                    } else {
+                        Some(self.implementing_type_at(
+                            trait_name, impl_type, &template, signature, site,
+                        )?)
+                    },
+                }),
+                _ => None,
+            };
         let counts = implementation.as_ref().is_some_and(|instantiation| {
             let mut at_instantiation = state
                 .mono_chain
@@ -1588,52 +1601,78 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             at_instantiation.peek().is_none()
                 || at_instantiation.any(|element| element.template == template)
         });
-        ChainLink {
+        Ok(ChainLink {
             key,
             template,
             signature: signature.clone(),
             implementation,
             counts,
-        }
+        })
     }
 
-    /// The type `self` takes in an instance of the implementation method
-    /// `template`, read by matching the trait member's declared scheme against
-    /// the instance's concrete `signature` (§3.10.3). The member is the one
-    /// whose mangled implementation entry is `template`.
+    /// The type `self` takes in an instance of the conventional
+    /// implementation method `template`, read by matching the trait member's
+    /// declared scheme against the instance's concrete `signature` (§3.10.3).
+    /// The member is the one whose mangled implementation entry is `template`.
+    ///
+    /// A template whose receiver cannot be read is an internal inconsistency
+    /// between the implementation entry and its trait's declaration, refused at
+    /// the demand's `site`; it is never recorded as a higher-kinded receiver.
     fn implementing_type_at(
         &self,
         trait_name: &cranelisp_types::FQTraitName,
         impl_type: &FQTypeName,
         template: &FQSymbol,
         signature: &Type,
-    ) -> Option<Type> {
+        site: Span,
+    ) -> Result<Type, CranelispError> {
+        let unreadable = |cause: &str| CranelispError::CodegenError {
+            message: format!(
+                "internal inconsistency: the implementation instantiation of `{template}` \
+                 (impl of {trait_name} for {impl_type}) cannot be read: {cause}; \
+                 signature `{signature}`"
+            ),
+            location: ErrorLocation::from_span(site),
+        };
         let Some(cranelisp_types::Decl::Trait(trait_record)) = self
             .probe_module_entry_owned(&trait_name.module, trait_name.name.as_ref())
             .map(|binding| binding.declaration)
         else {
-            return None;
+            return Err(unreadable("the trait declaration is not in its home table"));
         };
-        let member = trait_record.info.methods.iter().find(|method| {
-            crate::traits::mangle_trait_method(
-                trait_name.name.as_ref(),
-                method.name.as_ref(),
-                impl_type,
-            ) == template.symbol.as_ref()
-        })?;
+        let member = trait_record
+            .info
+            .methods
+            .iter()
+            .find(|method| {
+                crate::traits::mangle_trait_method(
+                    trait_name.name.as_ref(),
+                    method.name.as_ref(),
+                    impl_type,
+                ) == template.symbol.as_ref()
+            })
+            .ok_or_else(|| unreadable("no trait member names this implementation entry"))?;
         let key = cranelisp_types::member_key(trait_name.name.as_ref(), member.name.as_ref());
         let Some(cranelisp_types::Decl::TraitMethod(record)) = self
             .probe_module_entry_owned(&trait_name.module, key.as_ref())
             .map(|binding| binding.declaration)
         else {
-            return None;
+            return Err(unreadable(&format!(
+                "the member declaration `{key}` is not in the trait's home table"
+            )));
         };
         let self_var = record
             .scheme
             .constraints
             .iter()
-            .find_map(|(var, traits)| traits.contains(trait_name).then_some(*var))?;
-        binding_of(self_var, &record.scheme.ty, signature)
+            .find_map(|(var, traits)| traits.contains(trait_name).then_some(*var))
+            .ok_or_else(|| unreadable(&format!("`{key}` constrains no variable by the trait")))?;
+        binding_of(self_var, &record.scheme.ty, signature).ok_or_else(|| {
+            unreadable(&format!(
+                "`{key}`'s self variable is not bound by the signature against `{}`",
+                record.scheme.ty
+            ))
+        })
     }
 
     fn is_higher_kinded_trait(&self, trait_name: &cranelisp_types::FQTraitName) -> bool {
@@ -1861,7 +1900,9 @@ fn binding_of(var: cranelisp_types::TypeId, declared: &Type, concrete: &Type) ->
                 .chain(std::iter::once((declared_ret.as_ref(), ret.as_ref())))
                 .find_map(|(declared, concrete)| binding_of(var, declared, concrete))
         }
-        (Type::ADT(_, declared_args), Type::ADT(_, args)) if declared_args.len() == args.len() => {
+        (Type::ADT(_, declared_args) | Type::TyConApp(_, declared_args), Type::ADT(_, args))
+            if declared_args.len() == args.len() =>
+        {
             declared_args
                 .iter()
                 .zip(args)
