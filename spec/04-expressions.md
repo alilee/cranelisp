@@ -731,7 +731,7 @@ The type of the traced expression is not preserved in the static type -- the `Tr
 
 Evaluation proceeds as follows:
 
-1. The implementation activates instrumentation for function calls reachable from `expr`.
+1. The implementation activates instrumentation for function calls reachable from `expr` within the coverage defined by [§4.12.3](#4123-what-is-traced). [Uncovered S124]
 2. `expr` MUST be evaluated strictly and sequentially for the whole dynamic
    extent of the trace, including evaluation inside functions called from
    `expr`. The lenient parallel-evaluation permission in
@@ -749,19 +749,25 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [S122 — partial. Tested tests/trace::trace_extern_primitive_appears_as_child (REPL); under `--run` user functions are not recorded (ACT-1039; RED tests/trace::trace_records_user_function_calls_in_every_mode)]
+### 4.12.3 What Is Traced [Uncovered S124 — was S122 — partial. Tested tests/trace::trace_extern_primitive_appears_as_child (REPL); under `--run` user functions are not recorded (ACT-1039; RED tests/trace::trace_records_user_function_calls_in_every_mode)]
 
-Instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. There is no project-root filter and no library/standard-library exclusion: completeness is by construction — if a call goes through an indirection-table slot, it is recorded, regardless of which module the callee lives in or how the callee was reached. This includes: [S76]
+A trace form MUST record calls into the module containing that form and every module it imports, directly or indirectly, plus the built-in primitives, subject to the function categories and exclusions below. [Uncovered S124]
+
+A trace form in the entry file or at the REPL prompt MUST cover the whole program, subject to the same function categories and exclusions. [Uncovered S124]
+
+A trace form in a library module MUST NOT record calls inside a function passed in by a caller: `(defn profile [f] (trace (f)))` in a library records the library's own calls but not the calls inside the caller's `f`. [Uncovered S124]
+
+Within this coverage, instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. [Uncovered S124] This includes:
 
 - Top-level functions defined with `defn` (including multi-signature variants and monomorphised specializations)
-- Functions imported from any module, including library modules discovered through the lib search path (standard library and third-party libraries)
+- Functions in directly or indirectly imported modules, including library modules discovered through the lib search path (standard library and third-party libraries) [Uncovered S124]
 - Extern primitives in the synthetic `primitives` module (host-implemented functions reached through their indirection-table slot, e.g. `str-concat`, `int-to-string`)
 - Synthetic-module functions (e.g. `macros`-module functions) where they hold an indirection-table slot
 
 The following are NOT instrumented: [S76]
 
 - **Inline primitives**: Arithmetic, comparison, and boolean operations that compile to inline instructions have no callable entry point and cannot be intercepted. This category is structurally invisible.
-- **Host-promised extern and intrinsic-backed `primitives` entries**: `primitives`-module entries whose body is a host-supplied extern or runtime intrinsic (e.g. `discover-tests`) hold no indirection-table slot of their own — a call to them has no slot to redirect — so they are likewise structurally untraceable. (Note: the *callables that `discover-tests` returns* are ordinary fn values reached through the indirection table, and so ARE traced when invoked; it is only the `discover-tests` entry themselves that are untraceable.)
+- **Host-promised extern and intrinsic-backed `primitives` entries**: `primitives`-module entries whose body is a host-supplied extern or runtime intrinsic (e.g. `discover-tests`) hold no indirection-table slot of their own — a call to them has no slot to redirect — so they are likewise structurally untraceable. (Note: the *callables that `discover-tests` returns* are ordinary fn values reached through the indirection table, and so ARE traced when invoked within the coverage above; it is only the `discover-tests` entry itself that is untraceable.) [Uncovered S124 — was S76]
 - **Anonymous lambdas**: Closures created by `fn` expressions do not have named entries in the indirection table and are not individually traced. Their effects appear as part of the enclosing traced function's execution.
 
 ### 4.12.4 The Trace ADT [Tested tests/trace::trace_nanos_accessor_resolves_in_repl]
