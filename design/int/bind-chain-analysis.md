@@ -57,14 +57,9 @@ question of a callee `Var`: what does it resolve to here? The bind primitive
 are each read from that one answer. The pass keeps no other spelling test and
 no other chain walk. The answer comes from three layers, in order:
 
-1. **Lexical binders.** A bare spelling bound by any binder in the definition
-   being transformed resolves to that local. The binders are the parameters,
-   lambda parameters, `let` bindings, match-pattern binders, `ParBind`
-   bindings and chain binders. The set is collected once per definition and
-   ignores nesting, so a local `bind` in one arm also declines the primitive
-   in another. That over-approximation is sound (§1) and removes scope
-   threading from a pass that otherwise needs none. Its cost is a missed
-   rewrite, recorded in §7 (*A same-named local declines unrelated chains*).
+1. **Lexical binders.** A bare spelling resolves to a local when a binder
+   whose region contains the callee spells it (§3.8). A binder is always
+   bare (spec §4.3, §4.5.2), so a qualified spelling is never a local.
 2. **The cluster's own declarations.** A bare spelling, or one qualified by
    the current module, that the cluster's program declares resolves to that
    declaration. The program reaches the pass before typecheck commits it, so
@@ -241,6 +236,50 @@ launched strand runs in the context in which its launch executes, whether it
 runs detached or inline. Realising that ownership belongs to the runtime; see
 §7.
 
+### 3.8 Binder scope (ACT-1077)
+
+The pass carries the binders in scope as it recurses. Every callee read —
+chain recognition (§3.1), effect classification (§3.3), and the launch leaf
+and sub-tree positions (§3.7) — uses the scope of the written position it
+reads. A local therefore declines a callee only where the program itself
+would resolve that spelling to it.
+
+| Binder | Region |
+|---|---|
+| A definition variant's parameters | that variant's body |
+| A lambda's parameters | the lambda's body |
+| A `let` binding | the later bindings' values and the body (spec §4.3) |
+| A match arm's pattern binders | that arm's body only |
+| A `ParBind` binding | the `ParBind`'s body only |
+| A chain step's binder | the later steps and the terminal body: the lambda row, read through the nesting the user wrote |
+
+Every other expression form binds nothing. The binders are stated in the
+same exhaustive match over `Expr` that the recursion uses, so a new
+expression variant does not compile until its binders are stated.
+
+- **A chain's scopes are prefixes.** Step *k*'s application and effect sit
+  under the outer scope and binders 1 to *k*−1; the terminal body sits under
+  all of them. A scope that grows on entry to a region and is truncated on
+  exit gives each step its prefix without copying. Copying a whole set at
+  each binder is quadratic in chain length and is not used. The
+  representation is otherwise `dev`'s.
+- **Shadowing needs no case of its own.** A spelling is local when any
+  enclosing binder spells it.
+- **The rewrite keeps every callee's scope.** A grouped effect has no group
+  or earlier binder free (§3.4), and a callee `Var` is a free variable, so
+  grouping moves no callee out from under a binder that spells it. A launch
+  drops only its own binder, which E1 requires to be unused. Typecheck,
+  which resolves the rebuilt nodes, therefore sees the locals the pass read.
+
+Rejected alternatives:
+
+- **One binder set per definition**, as built from `32e434dc` to S124's
+  correction. It is sound but declines a callee in chains the local cannot
+  reach; it caused ACT-1077, a regression against the earlier spelling
+  test.
+- **Renaming locals apart before the pass.** It rewrites user spellings that
+  diagnostics and typecheck's span-keyed records read.
+
 ## 4. Platform scheduling data
 
 - **One entry per platform function.** Platform load installs each manifest
@@ -298,11 +337,12 @@ transformed tree remains safe.
 
 ### 5.3 Entry and genericity
 
-- `apply_bind_chain_analysis` transforms each single-signature `Defn` and each
-  single-signature trait-impl method through `auto_schedule_defn`.
-- Multi-signature definitions and methods are skipped; `auto_schedule_defn`
-  treats reaching one as an invariant violation (`unreachable!`). §7 records
-  the consequence.
+- `apply_bind_chain_analysis` transforms every `Defn` and every trait-impl
+  method through `auto_schedule_defn`, which transforms each variant's body
+  separately with that variant's parameters as the root scope (§3.8). A
+  multi-signature definition is therefore scheduled clause by clause, as
+  spec §10.12.1 requires of every body (ACT-0981). No caller filters by
+  signature count, and the pass has no multi-signature invariant to assert.
 - The pass is generic over the table's store parameters
   (`SymbolTables<C, L>`), as `ResolutionScope` is. It reads only fields
   independent of `C` (callable origin and resolution), so it runs directly
@@ -337,6 +377,8 @@ features have different safety arguments and are debugged separately.
 | Mode uniformity | same grouping in every mode | the single seam (§5.1) | `auto_io_par_grouping_uniform_across_modes` observes run and linked execution |
 | C7 node identity | no output span on two nodes; each rebuilt node's span is its written node's | the step record and a reconstruction with no span argument (§3.6) | C7 module rows in `src/bind_chain_analysis/identity_tests.rs`, one per rewrite shape on distinct-span fixtures; `tests/bind_unused_heap_argument.rs` end to end |
 | C8 callee identity | a step only where the callee resolves to the primitive; every other callee left as written | §3.1's three layers and the one bootstrap identity | C8 module rows in `src/bind_chain_analysis/identity_tests.rs`; `bootstrap.rs`'s row pinning both identities to the installed entries; REPRO-1065-a to c and e in `tests/spec_10_io.rs`. Owed: T-1065-d (renamed import, after row D3) and T-1065-f (§3.1's import assertion, masked by ACT-1075) |
+| C9 binder scope | a local declines a callee only inside its region; elsewhere in the definition the callee resolves through layers 2 and 3 | scope carried through the recursion (§3.8) | C9 module rows (§7); `tests/spec_10_io.rs::s124_1077_unrelated_bind_local_keeps_overlap` |
+| C10 every body | each clause of a multi-signature definition is scheduled like a single-signature body | per-variant entry (§5.3) | the C10 module row (§7); `tests/spec_10_io.rs::s124_0981_multi_signature_overlap` |
 
 - **Ordering between effects on one handle is the inference's job.** Under the
   handle model of `design/arch/effect-concurrency.md` §4.1.1 the runtime does
@@ -363,19 +405,52 @@ features have different safety arguments and are debugged separately.
   observes it end to end.
 - **§3.1's import assertion is unwitnessed end to end** until ACT-1075 is
   corrected and T-1065-f executes (§3.1, *Asserted with a named falsifier*).
-- **A same-named local declines unrelated chains.** Layer 1 collects every
-  binder of a definition without scope (§3.1). A definition that binds a
-  local spelled `bind`, `sleep` or like a platform function anywhere also
-  declines that callee in chains the local cannot reach: an eligible pair
-  there stays sequential, and a launch whose sub-tree calls the timer leaf
-  is refused. The program is the sequential one (§1), but `spec/10-io.md`
-  §10.12.1 says the compiler inserts a `Par` node for an eligible pair, so
-  this is a conformance gap of the same kind as the multi-signature one
-  below, with no module row pinning it. Whether it is a defect, and whether
-  a row records it, is `qa`'s. The design changes only on that
-  classification: the trigger is a ruling that the gap must close, and the
-  correction is to thread the binders in scope through the pass's
-  recursion in place of the per-definition set.
+- **S124 correction: binder scope and every body (ACT-1077, ACT-0981).**
+  Designed 2026-11-19; not in source at `e6ad49f1`. ACT-1077 is a
+  regression S124 caused, owed under *no decay*
+  ([delivery principles](../../sprints/METHOD.md#delivery-principles)).
+  ACT-0981 is taken under *clean house*: once the scope is rooted per
+  variant (§3.8), scheduling a multi-signature body is the removal of two
+  signature-count guards and an `unreachable!`.
+  - **`dev`(`src/`) builds**, in one change-set, failing rows first:
+    §3.8's scope in `src/bind_chain_analysis.rs`, replacing
+    `collect_binders` and the pass's per-definition set; §5.3's
+    per-variant entry there; and the removal of the two guards in
+    `session_setup::apply_bind_chain_analysis`.
+  - **C9 module rows**, in `src/bind_chain_analysis/identity_tests.rs`, one
+    per region rule that differs from "the whole body". Each fixture has a
+    local spelled `bind` and an independent platform pair:
+    1. the local bound by a `let` in one `if` arm, the pair in the other:
+       the pair groups (ACT-1077's subject);
+    2. a `let` whose first binding's value holds the pair and whose second
+       binding is the local: the pair groups; the same chain in the body
+       stays as written;
+    3. a match arm binding the local, the pair in another arm: the pair
+       groups; the same chain in the binding arm stays as written;
+    4. a chain whose first step's binder is the local: its later
+       `(bind …)` stays as written.
+  - **C10 module row**, same file: a two-clause definition with the pair in
+    each clause and the local as a parameter of one clause only. The other
+    clause's pair groups, and the clause with the parameter stays as
+    written.
+  - **Turn green:** `tests/spec_10_io.rs::s124_1077_unrelated_bind_local_keeps_overlap`
+    (`qa`'s cell beside REPRO-0981) and
+    `tests/spec_10_io.rs::s124_0981_multi_signature_overlap`.
+  - **Stay green:** the C7 and C8 module rows, including
+    `parameter_named_bind_is_not_the_primitive`,
+    `let_named_bind_is_not_the_primitive`,
+    `parameter_named_like_a_platform_effect_is_not_scheduled` and
+    `local_named_sleep_is_not_the_timer_leaf`; REPRO-1065-a to c and e;
+    `auto_io_par_grouping_uniform_across_modes`; and
+    `tests/bind_unused_heap_argument.rs`.
+  - **Stop rule for the ACT-0981 half.** Typecheck and the backend already
+    accept `ParBind` and `LaunchContinue` in any body; this is asserted, and
+    REPRO-0981's checked values and exit status are its falsifier. If a
+    clause's rewritten body is refused or yields a wrong value, `dev`
+    restores the two guards and the `unreachable!`, deletes the C10 row,
+    and reports. ACT-0981 then stays carried on its failing test,
+    ACT-1077's correction lands without it, and `design`(int) restates
+    §5.3.
 
 - **G1 — free-variable completeness.** C2 soundness depends on
   `free_vars_expr` reporting every free variable in every expression variant.
@@ -389,9 +464,3 @@ features have different safety arguments and are debugged separately.
   `spec/10-io.md` §10.12.7 items 5–6 and §10.12.9 is a runtime obligation,
   tracked by
   `sprints/actions/ACT-0977-scoped-launched-work-cancellation-evidence.md`.
-
-- **Multi-signature bodies are never scheduled.** A `bind!` chain inside a
-  multi-clause definition or impl method is left sequential (§5.3). Sequential
-  execution is observationally safe, but `spec/10-io.md` §10.12 says the
-  compiler MUST insert `Par` nodes for eligible pairs, so this is a
-  conformance gap for `qa` intake.

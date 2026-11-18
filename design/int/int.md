@@ -3250,18 +3250,16 @@ graph changes, even though the direct dependency's own source does not.
   - every callee module;
   - every declared child, which the walk enrols.
 
-  The load edges exclude lookup dependencies and compiler-owned modules. They
-  also exclude the prelude, which the injection loads when the fallback bit
-  is on (§6.5) rather than the walk. As built at `42e6d929`, the set is
-  composed inline in `cache_restore.rs::walk_restored_module`; no one
-  function returns it. The reload edges (`dependency_record::reload_edges`)
-  are a different set, with the prelude and lookup dependencies and without
-  declared children. A consumer outside the walk, such as `arch`'s proposed
-  traced-module set ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)),
-  must not compose its own copy. When the user decides §5.1, the walk's
-  composition moves into one crate-private enumerator in
-  `cache/dependency_record.rs`, which the walk and that consumer both read.
-  No consumer needs it before then.
+  The load edges exclude lookup dependencies. The first two kinds, the
+  **reference edges**, are what one enumerator returns ([§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10)); the walk
+  registers each and then enrols the declared children. The reference edges
+  also name the session-installed modules a module imports or calls — the
+  prelude under the fallback bit, `primitives` and platform modules — which
+  the walk finds already present (§7.1) and the covered trace set reads.
+  The reload edges (`dependency_record::reload_edges`)
+  are a different set, with lookup dependencies and without
+  declared children. No other int reader composes a copy of the reference
+  edges.
   Define the edge set once (Principle 7). The fallback bit has one
   structural rule, which the restore environment and the record builder
   share. Two kinds of module are excluded:
@@ -3910,6 +3908,124 @@ stale; an unchanged layout and hash keeps it valid; a minted instance or
 `__expr` slot change does not invalidate; a member with no live table and no
 stored `.meta` is a miss; a member being built fresh is a miss; an S123-era
 record is a miss.
+
+#### 7.6.4 Reference edges and the covered trace set (row B10)
+
+**Status.** Designed 2026-11-19 to the user's ruling on trace coverage
+(Reading A, `sprints/SPRINT.md`, Notes) and `arch`'s row B10
+([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend));
+not in source at `e6ad49f1`. Private to `src/`; the only inter-crate change
+is row B10's parameter, which `arch` approved.
+
+**The enumerator.** One crate-private function in
+`src/cache/dependency_record.rs` returns a module's reference edges, read
+from its table. It is generic over the table's store parameters, so a
+decoded `.meta` table and a session table answer alike.
+
+- Each import and each export whose names list loads, resolved through the
+  table's declared children (§6.9). Whether a spec loads is `names_load` in
+  `src/imports.rs`, the null-import rule's one source; the enumerator calls
+  it and states no rule of its own. A null import is therefore an edge only
+  through a use, which records its target as a callee module.
+- Every callee module (§7.6.1), before the record's compiler-owned
+  exclusion: a platform function's module is an edge here.
+- The prelude, when the module's fallback bit is on and the session holds a
+  prelude table: the record's prelude rule (§7.6, *Prelude edge*), read from
+  the same place.
+- Never the module itself.
+
+**Consumers.**
+
+1. **The restore walk.** `walk_restored_module` registers each reference
+   edge of the decoded table in place of its three loops over imports,
+   re-export targets and callee modules, and then enrols declared children
+   as today. The added targets are session-installed, and
+   `register_cached_dependency` returns at once for them. Registration order
+   becomes the set's order. A miss registers without blocking, so the order
+   changes no result. That is asserted; the restore rows and REPRO-1081's
+   routes are its falsifiers.
+2. **The covered set.** A second crate-private function beside it returns
+   the value of B10's `trace_modules` for a call: the transitive closure of
+   reference edges from the call's `module_path`, each member's edges read
+   from its own table in the tables that call passes as `symbol_tables`;
+   plus `primitives`; less `module_path` itself and `macros`, whose GOT no
+   image defines.
+
+**What each caller passes.** All three production callers compute the
+covered set at the call, rooted at the call's `module_path` and read from
+the tables passed beside it, whether or not a target holds a trace form
+(B10's meaning). The two `src/worker.rs` callers read the tables they
+compile against, which for a prepared turn are its prepared view
+([prepared turn](s117-conformance-recovery.md)); the nice worker's object
+(`src/session_v4/nice_worker.rs`) reads the session tables. No caller
+branches on mode or on which module is the entry
+([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
+
+- **The entry module** passes its own closure. It covers the whole program
+  because every module the program loads is reached from the entry by an
+  import or a call. A declared child the entry never imports is not an
+  import (Reading A) and is not covered; nothing calls into it except
+  through a trait implementation it writes. That that call records the
+  child as a callee module is asserted; the falsifier is an entry form that
+  calls a trait method whose implementation lives in such a child.
+- **A REPL turn** compiles in the prompt's current module through the same
+  prepared turn. Its view holds the turn's own callee modules, so a call at
+  the prompt through a null import is covered.
+- **Test callers** pass the set their fixture means, usually empty.
+
+**Why reference edges, not all load edges.** Declared children are not
+imports, and a fresh parent enrols its children only after its own
+cluster commits (`process_form/dependency.rs::enrol_declared_submodule`),
+so a child can have no table at the parent's batch. B10 makes a listed
+module with no table a codegen error.
+
+**Known residual: a root edge added after the form's batch.** A worker
+batch reads its module's table as of that batch, and a later cluster of the
+same module can add an import or a callee module. The nice worker's object
+reads the finished table. A trace form whose batch precedes its module's
+last new edge can therefore cover less cold under `--run` and the REPL
+than warm or under `--link`. The modules that differ are those reached only
+through those later edges, and a call into one during the trace needs a
+function value or trait implementation to reach it.
+- **Grade: asserted with a named falsifier.** Module `u` holds
+  `(defn g [h] (trace (h 1)))`, then `(import [x [f]])`, then a `main`
+  calling `(g f)`. A cold `--run` records no `x/f` frame and a warm `--run`
+  or `--link` records one.
+- **Routed:** to `arch`, whose tracing §5.1 states the set is a function of
+  the validity record for every mode; and to `qa`, which decides whether
+  the falsifier becomes a cell. Int builds nothing for it in S124.
+
+**For `arch`'s §5.1 wording** (`arch` owns it): the covered compiler-owned
+modules are the platform modules a covered module imports or calls, since
+platform declarations are entry-only (ACT-0973); and the prelude is covered
+through the fallback bit, which int's earlier "load edges" excluded.
+
+**Build order** (B10's): `dev`(`src/`) lands the enumerator with the walk
+as its consumer, with its module rows; that builds alone and changes no
+public item. Then, in the one callee-first commit with `dev`(backend), the
+covered-set function and the three callers.
+
+**Module rows** (`src/cache/dependency_record/` tests):
+
+- a null import without a use is no edge, and with a qualified use its
+  target is an edge;
+- an import named through a declared child resolves to the child's path;
+- the prelude is an edge with the fallback bit and a prelude table, and not
+  without either;
+- a platform callee module is an edge, and the module itself is not;
+- the covered set of `e → u → x` holds `u`, `x` and `primitives`, and not
+  `e`, `macros` or a declared child of `e` that `e` does not import.
+
+**Cells.** The cells B10 turns green, `trace::s124_1039_*` and
+`trace::s124_1078_subject_run` and `_link`, are the backend's
+([evidence delta](../../tests/plan/s124-evidence-delta.md)); int's half
+alone turns none. The restore walk's existing rows stay green.
+
+**Clean house.** These files are `src/cache/dependency_record.rs`,
+`src/process_form/cache_restore.rs`, `src/worker.rs` and
+`src/session_v4/nice_worker.rs`. The change does not reach
+`src/process_form/dependency.rs`, so ACT-1079 is not drawn in and stays
+carried.
 
 
 ### 7.7 One generation beside an entry (ACT-1083)
@@ -4712,6 +4828,18 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `c53a3f4b`, ACT-0973's refusal at `68f042d5` after the exemplar's split
   (`efa4d8df`), the refusal of a `main` whose result type is not fixed at
   `098f0980`, and ACT-1052's shared decode at `2d3a5b3e`.
+  - *Phase 5 under the delivery principles (designed 2026-11-19; not in
+    source at `e6ad49f1`):*
+    - ACT-1077, a regression S124 caused and owed under *no decay*, with
+      ACT-0981 taken under *clean house* in the same change-set:
+      [bind-chain analysis §3.8, §5.3 and §7](bind-chain-analysis.md#7-open-obligations).
+    - Int's half of row B10, the covered trace set:
+      [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10).
+    - *Carried past S124, not scheduled:* ACT-1079, ACT-1068, ACT-1005,
+      ACT-1062's display reader, ACT-1081's outcome clause, ACT-1082, the
+      cache owner (ACT-1085) and the location of the `--link` refusal. Each
+      stays recorded on its failing test or its filing; the items below
+      that name them record designs, not schedule.
   - The location of the batch `discover-tests` refusal (ACT-1036's last
     leg) landed at `52de1aad`, and ACT-1081's rules 1 and 2 at `b8b6df58`
     and `9580856a`.
