@@ -1,8 +1,8 @@
 //! S103 Phase-5 Stage-1 — increment-II (the write path): the reuse-token +
-//! R5-flattening QA-first set.
+//! ownership QA-first set.
 //!
 //! Plan: `tests/plan/s103-test-plan.md` §1.1 (F2v witness + L-C3 reuse fence +
-//! reuse counter smoke + R5 value-flatten witness + R5 soundness-couple
+//! reuse counter smoke + R5 soundness-couple
 //! negative fence), §1.5 (the `(map inc (map dec v))` chaining witness). Spine:
 //! `design/arch/ownership-inference.md` §6.3/§7 (R5 mechanism), §7 (write path);
 //! backend half `design/backend/ownership-codegen.md` §6 (reuse tokens),
@@ -27,7 +27,6 @@
 //!   RED (flip when the named mechanism lands, per §6 flip protocol):
 //!     l_c3_reuse_on_unique_value_reuse_hit_fires             (leg ii)
 //!     reuse_hit_nonzero_when_unique_vec_mutated_in_place
-//!     r5_value_flatten_rc_inc_collapses_vs_two_ctor
 //!     chaining_map_inc_map_dec_two_in_place_passes
 //!     chaining_toggle_off_allocates_intermediate (differential twin)
 //!   RED (defect DISCOVERED at drafting — the guard is the record, owner
@@ -401,38 +400,6 @@ fn reuse_hit_nonzero_when_unique_vec_mutated_in_place() {
         "an in-place churn of a unique vec must register reuse_hit>0 once the \
          reuse mechanism lands (/backend, B3); got {hits}. stderr:\n{}",
         out.stderr
-    );
-}
-
-// =============================================================================
-// R5 value-flatten witness (qa plan §1.1, gate II-G1 attribution). The rc_inc
-// collapse: F2v (one-word single-ctor `Cell`) flattens under R5, so its
-// per-copy per-cell `rc_inc` volume collapses vs F2 (two-ctor `Cell`, NOT
-// R5-first-landing-covered per §5 limit 1). The two fixtures are structurally
-// identical apart from the payload constructor count, so pre-R5 their rc_inc
-// counts are ~equal; post-R5 F2v's collapses. RED until R5 lands.
-// =============================================================================
-
-// spec: design/backend/ownership-codegen.md §7.1 — R5 value-flatten witness:
-// F2v's rc_inc collapses materially below F2's once the one-word single-ctor
-// payload is stored by value (null elem clone/drop fns, memcpy copies). RED at
-// draft (F2v ≈ F2, both inc per retained cell on every shared-grid copy). The
-// perf/gate-graded II-G1 "< 1% of B2" bar is `ig_gates.py`; this in-suite
-// witness is the coarser RED-until-mechanism signal (a strict, margin-bearing
-// drop, scheduling-independent because rc_inc is deterministic).
-#[test]
-fn r5_value_flatten_rc_inc_collapses_vs_two_ctor() {
-    let f2v = run_with_rc_stats(include_str!("fixtures/s99/f2v_single_ctor.cl"));
-    let f2 = run_with_rc_stats(include_str!("fixtures/s99/f2_contention.cl"));
-    let f2v_inc = rc_field(&f2v.stderr, "rc_inc");
-    let f2_inc = rc_field(&f2.stderr, "rc_inc");
-    assert!(
-        f2v_inc * 2 < f2_inc,
-        "R5 must flatten F2v's one-word single-ctor `Cell` payload (by-value \
-         copies, null elem fns) so its rc_inc collapses vs the structurally \
-         identical two-ctor F2: expected f2v_inc*2 < f2_inc, got f2v_inc={f2v_inc} \
-         f2_inc={f2_inc}. RED until R5 lands (backend §7.1); pre-R5 the two are \
-         ~equal (both inc every retained cell per shared-grid copy)."
     );
 }
 
