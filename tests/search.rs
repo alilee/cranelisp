@@ -22,7 +22,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, Stage};
 
 /// A REPL session at a project root containing a reachable-but-unimported sibling
 /// module `lib1.cl` (on a lib-dir) that exports a few functions of known shapes,
@@ -143,29 +143,41 @@ fn search_neg_already_imported_not_relisted() {
 
 // ===========================================================================
 // A.3 — three-branch indexer coverage (skip-claimed / read-`.meta`-no-typecheck
-// / typecheck-and-write-`.meta`)
+// / typecheck-and-record-rows-without-cache-writes)
 // ===========================================================================
 
-// spec: design/int/agent.md §25.1 — branch (c): a reachable module with no/stale
-// `.meta` is typechecked once on the nice worker against throwaway staging, then
-// a `.meta` is written via `cache::write_meta` — but NO `.o`. After a search that
-// arms the index, the indexed lib module has a `.meta.json` but no `.o`.
+// spec: repl/spec/17a-agent-language-awareness.md §17.19 — source indexing
+// records public rows without importing the module; design/int/index-worker-isolation.md
+// §3.3 — absent or stale cache artefacts are left unchanged.
 #[test]
-fn search_branch_c_stale_meta_typechecks_writes_meta() {
-    let out = search_session("/search gcd2\n");
-    // The branch-(c) write produces a `.meta` for the indexed module …
-    assert!(
-        out.tmp_exists(".cranelisp-cache/mathx.meta.json"),
-        "branch (c) MUST write a `.meta` for the indexed reachable module \
-         (design/int/agent.md §25.1); cache dir={:?}",
-        out.tmpdir
+fn search_branch_c_stale_meta_typechecks_without_cache_write() {
+    let cold = search_session("/search gcd2\n");
+    let cold = cold
+        .assert_ok()
+        .assert_stdout_contains("(import [mathx [gcd2]])")
+        .assert_stdout_contains("(Fn [primitives/Int primitives/Int] primitives/Int)");
+    assert!(!cold.tmp_exists(".cranelisp-cache/mathx.meta.json"));
+    assert!(!cold.tmp_exists(".cranelisp-cache/mathx.o"));
+
+    // An invalid old record forces source indexing and must survive byte-for-byte.
+    let stale_meta = "stale index cache sentinel\n";
+    let stale = cold
+        .run_again()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .lib_dir("lib")
+        .file(".cranelisp-cache/mathx.meta.json", stale_meta)
+        .stdin("/search gcd2\n")
+        .output();
+    let stale = stale
+        .assert_ok()
+        .assert_stdout_contains("(import [mathx [gcd2]])")
+        .assert_stdout_contains("(Fn [primitives/Int primitives/Int] primitives/Int)");
+    assert_eq!(
+        stale.read_tmp(".cranelisp-cache/mathx.meta.json"),
+        stale_meta
     );
-    // … but NO `.o` (the indexer never object-codegens or register_module's it).
-    assert!(
-        !out.tmp_exists(".cranelisp-cache/mathx.o"),
-        "branch (c) MUST NOT write a `.o` for an INDEXED (not imported) module \
-         (design/int/agent.md §25.1 — no object codegen, no register_module)"
-    );
+    assert!(!stale.tmp_exists(".cranelisp-cache/mathx.o"));
 }
 
 // spec: design/int/agent.md §25.1 — branch (c) NEG: the indexer writes a `.meta`
@@ -274,6 +286,7 @@ fn search_session_with_unindexable(cmds: &str) -> helpers::e2e::CrOutput {
              (defn bad-fn [x] (undefined-symbol-zzz x))\n",
         )
         .lib_dir("lib")
+        .env("CRANELISP_MODULE_TRACE", "1")
         .stdin(cmds)
         .output()
 }
@@ -297,47 +310,33 @@ fn search_cf2_unindexable_module_skipped_no_crash() {
     out.assert_stdout_contains("good-fn");
 }
 
-// spec: repl/spec.md §17.19.5 — NEG: the failed (unresolved-symbol) module
-// produces NO `.meta` and does NOT kill the nice worker — a subsequent `/search`
-// of OTHER modules still succeeds (background capacity intact).
-//
-// DETERMINISM (S112 W2.1, review I2): the negative is anchored on a settle proof
-// so it cannot race the background indexer. `/search` calls
-// `wait_for_index_settled` (poll to `pending_count == 0`) BEFORE serving, and a
-// skipped module (`mark_skipped`) is counted into `indexed`, so `pending_count`
-// reaches 0 only after the bad module has been ATTEMPTED. The good module's
-// `.meta` EXISTING is the race-free settle anchor: it proves the file feed
-// enumerated and drained (arm ran, good indexed), so the bad module was likewise
-// attempted-and-skipped by serve time. The bad `.meta` absence is then not merely
-// "not yet written" — it is "never written" (the unresolved-symbol module fails
-// typecheck under every settled rule, so branch-(c) takes the Err skip and the
-// write never occurs).
+// spec: repl/spec/17a-agent-language-awareness.md §17.19.5 — a failed source
+// pass contributes no rows and does not prevent later searches; design/int/
+// index-worker-isolation.md §3.3 — successful source indexing writes no cache.
 #[test]
 fn search_cf2_neg_no_killed_worker_no_meta() {
-    let out = search_session_with_unindexable("/search good-fn\n/search good-fn\n");
-    // Settle anchor (race-free): the good module IS indexed — its `.meta` exists.
-    // This proves the file feed enumerated + drained through the reachable set,
-    // so the bad sibling was attempted-and-skipped (not merely un-reached).
-    assert!(
-        out.tmp_exists(".cranelisp-cache/good.meta.json"),
-        "the well-formed sibling MUST be indexed (its `.meta` written) — the \
-         settle anchor proving the file feed drained; cache dir={:?}",
-        out.tmpdir
+    let out = search_session_with_unindexable("/search good-fn\n/search good-fn\n/search bad-fn\n");
+    let out = out
+        .assert_ok()
+        .assert_stdout_does_not_contain("(import [bad [bad-fn]])")
+        .assert_stdout_does_not_contain("indexing")
+        .assert_stdout_contains("no importable symbols matched")
+        .assert_stderr_contains("index: could not index bad:");
+    // Both settled queries must return an actionable row, not just an echoed name.
+    assert_eq!(
+        out.stdout.matches("(import [good [good-fn]])").count(),
+        2,
+        "both searches must return the good sibling's row: {}",
+        out.stdout
     );
-    // The failed module produces NO `.meta`: the unresolved-symbol module can
-    // never typecheck, so the branch-(c) `.meta` write never occurs (race-free —
-    // the event asserted-absent simply never happens).
-    assert!(
-        !out.tmp_exists(".cranelisp-cache/bad.meta.json"),
-        "a module that fails to typecheck MUST NOT get a `.meta` written (CF.2 — \
-         the failed module is skipped, not cached)"
-    );
-    // The nice worker survived: a second /search of the good module still works.
-    out.assert_stdout_contains("good-fn");
+    for module in ["good", "bad"] {
+        assert!(!out.tmp_exists(&format!(".cranelisp-cache/{module}.meta.json")));
+        assert!(!out.tmp_exists(&format!(".cranelisp-cache/{module}.o")));
+    }
 }
 
 // ===========================================================================
-// A.7 — eager-from-startup trigger + partial results + cache-hit on import
+// A.7 — eager-from-startup trigger + partial results + foreground import
 // ===========================================================================
 
 // spec: design/int/agent.md §25.5 — the burn-down arms EAGERLY at REPL start-up
@@ -357,22 +356,30 @@ fn search_partial_results_during_indexing() {
     out.assert_stdout_contains("gcd2");
 }
 
-// spec: design/int/agent.md §25.5 — NEG: in REPL mode indexing begins AT START-UP,
-// not gated on first `/search` or agent activation. A session that NEVER issues a
-// `/search` still arms + burns down the index at startup (REPL-only invariant),
-// so the index `.meta`s exist after a no-search session over reachable modules.
+// spec: repl/spec/17a-agent-language-awareness.md §17.19.3 — indexing arms at
+// startup, before the first search; design/int/index-worker-isolation.md §3.3
+// — the observable product is rows, not a cache write.
 #[test]
 fn search_burndown_arms_at_repl_startup_neg_not_on_first_search() {
-    // Pipe ONLY a no-op (a newline) — no /search, no agent. The eager startup
-    // burn-down must still run in REPL mode.
-    let out = search_session("\n");
-    assert!(
-        out.tmp_exists(".cranelisp-cache/mathx.meta.json"),
-        "the burn-down MUST arm at REPL start-up (eager-from-startup, §25.5), NOT \
-         be gated on a first `/search` — a no-search REPL session over reachable \
-         modules still produces the index `.meta`s; cache dir={:?}",
-        out.tmpdir
-    );
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("early.cl", "(defn early-fn [x] x)\n")
+        .staged_output(&[
+            // The first prompt follows startup enumeration. A module created now
+            // would be enumerated by an incorrect first-search-only arming path.
+            Stage::Write("late.cl", b"(defn late-fn [x] x)\n"),
+            Stage::Line("/search early-fn"),
+            Stage::Line("/search late-fn"),
+        ]);
+    let out = out
+        .assert_ok()
+        .assert_stdout_contains("(import [early [early-fn]])")
+        .assert_stdout_does_not_contain("(import [late [late-fn]])")
+        .assert_stdout_contains("no importable symbols matched")
+        .assert_stdout_does_not_contain("indexing");
+    assert!(!out.tmp_exists(".cranelisp-cache/early.meta.json"));
+    assert!(!out.tmp_exists(".cranelisp-cache/early.o"));
 }
 
 // spec: design/int/agent.md §25.5 — NEG (REPL-only invariant): a `--run`/`--link`
@@ -418,12 +425,11 @@ fn search_neg_batch_mode_inert_no_index_no_meta_writes() {
     );
 }
 
-// spec: design/int/agent.md §25.5 — a symbol found via `/search` then `(import …)`
-// is a `.meta` CACHE-HIT on the live import path: NO re-typecheck. With
-// `CRANELISP_MODULE_TRACE=1`, the import of an already-indexed module shows a
-// cache-hit rather than a fresh typecheck.
+// spec: repl/spec/17a-agent-language-awareness.md §17.19 — search offers an
+// import, and actual import remains the authority for compiled contents;
+// design/int/index-worker-isolation.md §3.3 — indexing supplies no cache hit.
 #[test]
-fn search_index_to_import_is_meta_cache_hit() {
+fn search_index_to_import_compiles_without_index_cache() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -432,26 +438,20 @@ fn search_index_to_import_is_meta_cache_hit() {
             "(import [primitives [add-i64]])\n(defn gcd2 [x y] (add-i64 x y))\n",
         )
         .lib_dir("lib")
-        .env("CRANELISP_MODULE_TRACE", "1")
-        // /search arms+indexes mathx (writes its .meta), then import it → the
-        // import must be a .meta cache-hit, not a re-typecheck.
-        .stdin("/search gcd2\n(import [mathx [gcd2]])\n(gcd2 2 3)\n")
+        .stdin(
+            "/search gcd2\n\
+             /sh test ! -e .cranelisp-cache/mathx.meta.json && test ! -e .cranelisp-cache/mathx.o && echo INDEX-LEFT-NO-CACHE\n\
+             (import [mathx [gcd2]])\n(gcd2 2 3)\n",
+        )
         .output();
-    // The import resolves and the call works.
-    assert!(
-        out.stdout.contains(":primitives/Int 5"),
-        "the indexed-then-imported call must work; stdout={}",
-        out.stdout
-    );
-    // The module trace shows a cache-hit for mathx on the import path (it was
-    // already indexed → `.meta` present → no re-typecheck).
-    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
-    assert!(
-        combined.contains("cache") && combined.contains("mathx"),
-        "an indexed-then-imported module MUST be a `.meta` cache-hit on import \
-         (no re-typecheck, §25.5); MODULE_TRACE should show a cache hit for \
-         mathx; trace:\n{combined}"
-    );
+    let out = out.assert_ok().assert_stdout_contains_all(&[
+        "(import [mathx [gcd2]])",
+        "INDEX-LEFT-NO-CACHE",
+        ":primitives/Int 5",
+    ]);
+    // These files appear only after the real import's foreground compilation.
+    assert!(out.tmp_exists(".cranelisp-cache/mathx.meta.json"));
+    assert!(out.tmp_exists(".cranelisp-cache/mathx.o"));
 }
 
 // spec: design/int/agent.md §25.1 — floor: clearing the in-memory indices + re-
