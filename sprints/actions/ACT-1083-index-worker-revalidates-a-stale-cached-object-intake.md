@@ -1,7 +1,7 @@
 ---
 id: ACT-1083
 title: A REPL session's index pass records a stale module as current and leaves its old object in the cache, so the next launch runs code compiled against a dependency that has since changed
-status: open
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -97,12 +97,12 @@ after both edits records the state the next launch sees.
   re-keyed while the object stays, and the stale object is then restored.
   *Refuted if* a build whose index pass writes no manifest entry over an
   existing object still gives 7.
-- **Writer: read in source, not observed by a planted fault.**
-  `src/session_v4/index_worker.rs::write_index_meta` (branch (c): a stale
-  or absent `.meta`) writes the `.meta` and calls
-  `record_manifest_entry` with the current keys. Its contract is "no
-  `.o`"; it does not remove one that an earlier launch wrote. `dev` probes
-  this before building on it.
+- **Writer: the index worker's `.meta` write** (branch (c): a stale or
+  absent `.meta`), in `src/session_v4/index_worker.rs`. It wrote the
+  `.meta` and recorded a manifest entry with the current keys; its
+  contract was "no `.o`", and it did not remove one that an earlier launch
+  wrote. Read in source at filing; confirmed by the correction, which
+  removes the write (*Resolved*, below).
 - **Entered: before S124.** Builds read on both programs:
 
 | Build | Deterministic program, cached launch | K-6 legs 1 to 4, 300 loaded runs |
@@ -155,3 +155,44 @@ after both edits records the state the next launch sees.
 REPRO-1083 fails on the wrong value and passes after the correction with
 both controls unchanged; M-1083 is in source; K-6's loaded reading is 0 of
 300; `qa` judges adequacy and deletes this action.
+
+## Resolved (qa, 2026-11-18, `79a8c94c`)
+
+- **Correction.** The index pass writes no cache artefact, and every
+  `.meta` write retires the module's object first (`f2317af0`;
+  [int §7.7](../../design/int/int.md#77-one-generation-beside-an-entry-act-1083)).
+  From the review of that change: the object is published by temporary
+  file and rename (`3dbc3db5`), and `--link` refuses a session whose
+  object pass stopped (`79a8c94c`).
+- **The refutation clause did not fire.** With the write removed, the
+  deterministic program gives 41.
+- **Evidence,** all on debug builds, the two binaries run in one session
+  on one machine with the same scripts and 28 parallel processes:
+
+| Reading | `a205a29f` (before) | `79a8c94c` (after) |
+|---|---|---|
+| The deterministic program, 200 loaded runs | 7 in 200 | 41 in 200 |
+| K-6's first four legs, 300 loaded runs | signal in 24 | signal in 0, read twice (0 of 600) |
+| The same legs as load for the next row, 6,000 runs | not run | signal in 0 |
+| The harness cells K-6 and REPRO-1083 with their linked and REPL legs, 100 repetitions under that load | not run | 100 of 100 pass |
+
+  After the session, `lib`'s manifest entry is the first launch's and
+  `lib.o` is rebuilt by the next launch; with the session omitted or the
+  object deleted the result is the same.
+- **REPRO-1083**
+  (`tests/cache.rs::cache_index_over_stale_importer_preserves_calls_across_modes`,
+  `91470bc6`) was committed before the correction and passes after it with
+  both controls unchanged. Its RED is `test`'s report; `qa` observed the
+  script form of the same legs give 7 on the earlier build.
+- **M-1083** is in source and passes:
+  `session_v4::index_worker::tests::an_index_pass_over_a_stale_cached_module_writes_no_cache_artefact`.
+- **Not closed by this correction, and carried elsewhere:** two processes
+  on one project directory
+  ([ACT-1085](ACT-1085-two-processes-on-one-project-directory-can-mix-cache-generations-intake.md));
+  the rewrite-during-load lead at `src/worker.rs`, which int §7.7 records
+  as a residual with its falsifier.
+- **Left:** this file stays until
+  `design/int/index-worker-isolation.md` and `sprints/SPRINT.md` drop
+  their links to it. REPRO-1083's `// defect:` line still lacks its
+  `fixed=` stamp (`test`).
+

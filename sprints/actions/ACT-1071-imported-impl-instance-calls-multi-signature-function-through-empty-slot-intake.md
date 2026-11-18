@@ -44,7 +44,7 @@ prelude. Found while probing the W3 review's redirect finding.
 | Control: `helper` with one signature, `(defn helper [x k] …)` | 42 in `--run`, `--link` and the REPL |
 | Control: the `impl` in `p.cl` instead of `lib.cl` | 42 |
 | Variant: `helper`'s body dispatches `(size x)`, in its own module beside a `base.cl` | signal 11 under `--run` and the REPL; 42 under `--link` (the committed cell, `f775478e` and `8667a868`) |
-| The variant with a back-edge, `(helper (if false o Nope) 0)` | signal 11 under `--run` and the REPL; `--link` fails at the linker: the instance in `p.o` refers to `__cranelisp_got_lib`, which no object defines |
+| The variant with a back-edge, `(helper (if false o Nope) 0)` | signal 11 under `--run` and the REPL; `--link` is refused before the system linker: `cannot link: the object pass for \`lib\` stopped at its object` (since `79a8c94c`; see *Attribution*) |
 
 ## Classification: a defect, memory-unsafe; a mode divergence
 
@@ -66,6 +66,19 @@ value under `--link`.
   imported recheck). Not observed at that seam. `dev`(typecheck) probes
   before implementing; if typecheck publishes the importing module's key,
   the attribution returns to `qa` for the backend and `src/`.
+- **Observed at the object pass, back-edge variant under `--link`**
+  (`qa`, `79a8c94c`). The pass for `lib` cannot compile the instance
+  `lib/(h/helper [(base/Opt Int) Int] Int)`: its call carries the resolved
+  target `lib/(lib/Size.size$base/Opt [(base/Opt Int)] Int)`, and `lib`'s
+  symbol table holds no such entry. A target is published under the
+  library module for an instance that is not installed there, which is
+  what the hypothesis above predicts for this variant. Before `79a8c94c`
+  the pass stopped without a report, the link went on without `lib.o`,
+  and the system linker failed on `__cranelisp_got_lib`; that linker error
+  was a consequence, not a second defect. The subject and the dispatching
+  variant still link and give 42, so this observation is of the back-edge
+  variant only. Under `--run` and the REPL the process ends on the signal
+  before the pass reports.
 - **`review`'s back-edge redirect is not separated from this defect.** Every
   shape that reaches the overload drain under an imported recheck fails this
   way first. The back-edge variant is a leg of this filing's cell.
@@ -89,5 +102,5 @@ that names no table entry.
 
 ## Completion evidence
 
-Each subject leg fails by signal, or at the linker, before the correction
+Each subject leg fails by signal, or by the link's refusal, before the correction
 and yields its value after it in every mode; the controls pass throughout.

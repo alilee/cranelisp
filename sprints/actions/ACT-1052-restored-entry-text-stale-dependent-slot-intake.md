@@ -98,5 +98,9 @@ run in twelve (24 of 300), and in 29 of 300 at `a205a29f`.
 - **This correction's key is right in all 300.** Before `3c4c0f7b` K-6
   fails alone, 3 of 3, with the entry untouched; at `a205a29f` the 39
   runs that left the entry untouched all pass.
-- **K-6 is a reliable guard for this filing only once ACT-1083 is
-  corrected.** Until then a K-6 failure traces to ACT-1083.
+- **K-6 became a reliable guard for this filing when ACT-1083 was
+  corrected.** At `79a8c94c` its first four legs end on the signal in 0
+  of 600 loaded runs, against 24 of 300 for the `a205a29f` binary in the
+  same session, and the harness cell passes 100 of 100 repetitions under
+  load with its linked and REPL legs. The settling target's clause for
+  this guard is met on that tree.

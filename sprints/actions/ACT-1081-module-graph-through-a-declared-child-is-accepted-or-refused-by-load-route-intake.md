@@ -112,6 +112,18 @@ unless stated. Four files:
   failure) are `dev`(`src/`)'s, at the module tier
   ([evidence delta §14.4](../../tests/plan/s124-evidence-delta.md#144-residuals)).
 
+## At `79a8c94c` (qa, 2026-11-18)
+
+- **`review`'s two findings are corrected at the module tier**
+  (`9ea2b291`), and a restored module with no declared children now fails
+  on a failed walk (`a812faaa`). The scheduler rows are in source and
+  pass; the suite's failing set is unchanged by them.
+- **Two module rows are still owed by `dev`(`src/`)**
+  ([evidence delta §14.4](../../tests/plan/s124-evidence-delta.md#144-residuals)):
+  the restore's call site passing the walk's result to the scheduler, and
+  a claimed load that fails while its parent waits.
+- **The outcome clause is unchanged:** with the user.
+
 ## Completion evidence
 
 The user rules the outcome; REPRO-1081 gains the outcome clause and the
