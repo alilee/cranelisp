@@ -40,7 +40,7 @@ codegen: run the armed category census, then typecheck's producer
 obligations (trait-method instances, synthetic accessors and the lenient
 view are monomorphised; `design/typecheck/non-concrete-producer-obligations.md`),
 then the backend structural close
-([FIXME 0903](../design/arch/fixmes/0903-s4-1-frame-key-excludes-two-measured-escapee-families.md)),
+(FIXME 0903, closed in S124 at `09e92046`),
 with [ACT-1050](actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md)
 grouped in. Also scheduled for S124:
 [ACT-1052](actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md)

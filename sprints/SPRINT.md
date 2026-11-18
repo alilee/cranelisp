@@ -52,7 +52,7 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
 
 - The armed category census reports zero RC operations on a word whose type
   is not concrete, and the non-concrete release and retain arms no longer
-  compile ([FIXME 0903](../design/arch/fixmes/0903-s4-1-frame-key-excludes-two-measured-escapee-families.md)).
+  compile (FIXME 0903, closed in S124 at `09e92046`).
 - The twelve `bind_unused_heap_argument` guards (ACT-1050) and the
   cached-restore guard (ACT-1052) pass in every mode.
 - The document checker and `citation_drift` pass against the converged package.
