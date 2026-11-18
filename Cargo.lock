@@ -512,7 +512,6 @@ name = "cranelisp-frontend"
 version = "0.1.0"
 dependencies = [
  "cranelisp-types",
- "dashmap",
 ]
 
 [[package]]

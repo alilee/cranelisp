@@ -60,42 +60,36 @@ Reorder these and literals mis-tokenize.
   `/` and `.` are excluded because they are structurally significant (module
   qualifier / dotted member) and must not be silently swallowed.
 - **`-`/`+` are number-or-operator** (`read_minus_or_number` / `read_plus_or_operator`):
-  followed by a digit → number, else operator symbol. An operator symbol
-  immediately followed by a digit is a hard error (spec §1.4.2).
-- **`:`-prefix** (`read_colon_prefix`): `:Name`, `:mod/Name`, `:a.b/Name` read as
-  ONE `Sexp::Symbol(":Name")`; bare `:` and `:(...)` read as `Sexp::Symbol(":")`
-  (the AST builder pairs the following compound form). The `/`-split guard
-  requires BOTH halves non-empty so a bare `/` division operator stays a bare
-  name (Principle 16; FIXME 0328/0331 — the split itself lives in
-  `cranelisp-types::resolve`, `/arch`-owned).
+  followed by a digit → number, else the run finishes through the ONE operator
+  tail `read_operator`, which every operator run shares. An operator run
+  immediately followed by a digit is a hard error there (spec §1.4.2), however
+  the run began (`+*1`, `->1`, `**1` all reject).
+- **`:`-prefix** (`read_colon_prefix`): the reader reads the annotation
+  (`:Name`, `:mod/Name`, `: (Fn …)`) AND its subject, and returns ONE
+  `Sexp::Annotated` node. A `:` with no type or no following form is a located
+  reader error (`annotation missing type expression` / `annotation missing
+  expression`).
 - Reader macros desugar at read time: `'x`→`(quote x)`, `` `x ``→`(quasiquote x)`,
   `~x`→`(unquote x)`, `~@x`→`(unquote-splicing x)`, `#(...)`→`(anon-fn (...))`.
   `%n`/`$name`/`&name`/`name#` produce plain symbols the AST builder later gates.
 
 ## `:Type` binds the FOLLOWING form, everywhere (BC invariant 9; spec §1.4.5/§2.3.8)
 
-A `colon_prefix` token is an **annotation introducer, never a `Var`**. In
-expression position `build_expr` errors `annotation missing expression` on a bare
-`:Type` (`ast_builder.rs` ~L1131). The pairing is single-sourced through
-`build_one_expr_at` + `try_consume_annotation`, called at EVERY position that can
-carry an annotated operand: call head + args (`build_apply`), vec literals, `let`
-values, `match` scrutinee (FIXME 0389 — grouping the scrutinee into one
-`Expr::Annotate` is what keeps a positional arity guard honest), params, fields,
-and the top-level form sequence (`build_forms`). When you add a new operand
-position, route it through `build_one_expr_at` — a raw `build_expr` there silently
-drops annotation support.
+Annotation folding is single-sourced in the reader: an annotated operand is
+ONE `Sexp::Annotated` node, and `build_expr` lowers it to `Expr::Annotate`.
+Every operand position therefore holds exactly one child. Address operands by
+index, build each with `build_expr`, and check arity by index or length
+(`if`, `fn`, `match`, `defn` and its variants do). Do not reintroduce a
+consumed-width helper; it can only ever return one.
 
-- **Single-body operand positions** (a body that must be the LAST form and may be
-  ascribed) route through **`build_body_to_end`** (S114 BD-A one-seam,
-  `design/frontend/enforcement-matrices.md` §1) — the let body, impl-method body,
-  trait default-method body, and `trace` operand. It calls `build_one_expr_at`
-  (so `:Type body` ascription works) and rejects any form left after the body
-  (so `(form … body junk)` is a LOCATED error, not a silent drop). A raw
-  `build_expr` for a body, or a hand-rolled tail check, is the BD-A defect the
-  seam closes (P7/P18). `parse_defn`/`build_defn_variant` have their own routed
-  tail and need not adopt it. `try_consume_annotation` returns
-  `Result<Option<…>>` — a bare `:` binding a NON-type form is a located reject
-  (RA-N5), not a swallow to `Var{":"}`.
+- **Single-body operand positions** (a body that must be the LAST form) route
+  through **`build_body_to_end`** (`design/frontend/enforcement-matrices.md` §1)
+  — the let body, impl-method body and `trace` operand. It rejects any form left
+  after the body at that form's span, so `(form … body junk)` is a located
+  error, not a silent drop. A raw `build_expr` for such a body without the tail
+  check is the defect the seam closes. `parse_defn`/`build_defn_variant` check
+  their own tail by length. A trait method's tail is NOT a caller:
+  `build_method_sig` preserves one raw trailing element for typecheck.
 
 - **The reader** rejects a dangling qualifier where the token is formed (the only
   site adjacency is known): `:foo/`/`:a.b/` (empty local half) and `/bar` (empty
@@ -163,8 +157,8 @@ routed, S115; it was the one binder position that never called the helper, so a
 qualified param died downstream as an incidental `module … not found` at a
 degenerate `0..0` span) and the §5 native heads (defn / deftype-both-arms / deftrait-caller /
 defmacro / method-sig / con_var); `deftype` **constructor names** (both arms) and
-**field names** (both arms); `defmacro` **params** (`parse_param_items` +
-`parse_bracket_pattern`); the `import`/`export` **module alias** and a **renamed entry's local**
+**field names** (both arms); `defmacro` **params** (`parse_param_sequence`, the
+one rule for the top-level list and bracket patterns); the `import`/`export` **module alias** and a **renamed entry's local**
 (`module_extract`); and — **since S114 W-D2** — the **value-level local binders**:
 `defn`/`fn`/`defmacro` params (`build_annotated_params`, both arms), `let` names
 (`build_let_bindings`), and `match` var-patterns (`build_pattern`, the lowercase
@@ -219,7 +213,7 @@ LAST form, else rejects the trailing form located. Guard now GREEN:
 
 `reject_non_ring0_symbol` + `build_list_expr` reject `%param`, `$gensym`,
 `&rest`, trailing-`#`, `anon-fn` (`#(...)`), and `par-let` with "not yet
-supported (Ring N)" messages. These are deliberate gates on reader-accepted
+supported" messages that name the explicit spelling to write instead. These are deliberate gates on reader-accepted
 syntax, not defects. `quote`/`quasiquote`/`unquote` reaching `build_list_expr`
 is an error ("should have been expanded") — they must be desugared upstream.
 
@@ -239,6 +233,9 @@ realistic source offset) is the ONE source of synthetic spans; `defmacro::next_s
 delegates to `quasiquote::next_synthetic_span`. `make_gensym_name` also draws from
 it (`x#` → `x__auto_NNNN`). Never mint a second counter — uniqueness across a
 session is the invariant. Auto-gensym in templates only fires at depth 0.
+The one synthesised node that carries a SOURCE span is `defmacro`'s
+`:macros/Sexp` body annotation (`constrain_to_sexp`): it takes the clause
+body's span so a non-`Sexp` body is reported at that body (spec §9.9.1).
 
 ## Caller contracts (enforced with diagnostics, not silent)
 

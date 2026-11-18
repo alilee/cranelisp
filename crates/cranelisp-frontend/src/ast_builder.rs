@@ -580,7 +580,7 @@ fn parsed_entry_to_top_level(entry: ParsedEntry) -> Option<TopLevel> {
 // Rejection helpers
 // ---------------------------------------------------------------------------
 
-/// Reject non-Ring-0 symbol forms in expression position.
+/// Reject reader-accepted symbol forms the builder does not yet lower.
 fn reject_non_ring0_symbol(name: &str, span: Span) -> Result<(), CranelispError> {
     if name.starts_with('%') {
         return Err(parse_err(
@@ -1714,7 +1714,7 @@ fn build_list_expr(children: &[Sexp], span: Span) -> Result<Expr, CranelispError
                     *head_span,
                 ));
             }
-            // Non-Ring-0 expression forms
+            // Reader-accepted forms the builder does not yet lower
             "trace" => return build_trace(children, span),
             // `discover-tests` and `run-test` are NOT special forms. Under the
             // settled test-discovery design (design/arch/test-discovery.md

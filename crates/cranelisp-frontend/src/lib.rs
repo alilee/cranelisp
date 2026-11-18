@@ -106,17 +106,10 @@
 //!
 //! ## Build is mode-agnostic
 //!
-//! `build_form` and `build_expr` take no `CodegenBehaviour` parameter.
-//! `(trace ...)` in `--link` standalone-binary mode fails at link time
-//! via the architecture's natural missing-symbol detection: backend emits
-//! `cranelisp_collect_trace` as `Linkage::Import`, and the system linker
-//! errors with "undefined symbol cranelisp_collect_trace" because the
-//! trace runtime is not bundled into the staticlib produced by exe-bundle.
-//! The earlier `link_mode::validate_*` pre-pass validator (Sprint 67
-//! Wave 4) and its successor inline `build_trace` rejection were both
-//! retired in the Sprint 67 Wave 4 follow-up subtraction — the
-//! architecture rejects naturally, so no frontend pre-pass check is
-//! needed. See `spec/04-expressions.md` §4.12.9.
+//! `build_form` and `build_expr` take no `CodegenBehaviour` parameter and
+//! behave identically under the REPL, `--run` and `--link`. `(trace ...)`
+//! builds in every mode; nothing in the frontend refuses it
+//! (`spec/04-expressions.md` §4.12.9).
 //!
 //! # Module layout
 //!
