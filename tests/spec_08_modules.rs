@@ -6446,3 +6446,109 @@ fn s124_declared_child_graph_neg_failed_module_evaluates_next_turn() {
         }
     }
 }
+
+fn s124_parent_path_and_super_exports(mode: &str) {
+    let cr = Cranelisp::new()
+        .file("p.cl", "(mod c)\n(defn x [] 40)\n(defn y [] 59)\n")
+        .file("p/c.cl", "(export [p [x]])\n(export [super [y]])\n")
+        .file(
+            "app.cl",
+            "(import [p.c [x y]])\n(defn main [] (primitives/Pure (primitives/add-i64 (x) (y))))\n",
+        );
+    match mode {
+        "run" => {
+            cr.run("app.cl")
+                .output()
+                .assert_exit(99)
+                .assert_stderr_empty();
+        }
+        "link" => {
+            cr.link_then_run("app.cl")
+                .output()
+                .assert_exit(99);
+        }
+        _ => {
+            cr.cli_flag("app.cl")
+                .stdin("(main)\n/quit\n")
+                .output()
+                .assert_ok()
+                .assert_stdout_contains(":primitives/Int 99")
+                .assert_stdout_does_not_contain("Error:")
+                .assert_stderr_empty();
+        }
+    }
+}
+
+// spec: spec/08-modules.md §8.4, §8.3.8 — readiness fence: full-path parent export beside super export.
+#[test]
+fn s124_parent_path_and_super_exports_run() {
+    s124_parent_path_and_super_exports("run");
+}
+
+// spec: spec/08-modules.md §8.4, §8.3.8 — readiness fence: full-path parent export beside super export.
+#[test]
+fn s124_parent_path_and_super_exports_link() {
+    s124_parent_path_and_super_exports("link");
+}
+
+// spec: spec/08-modules.md §8.4, §8.3.8 — readiness fence: full-path parent export beside super export.
+#[test]
+fn s124_parent_path_and_super_exports_repl() {
+    s124_parent_path_and_super_exports("repl");
+}
+
+// spec: spec/08-modules.md §8.3.8; repl/spec/06-module-navigation.md §6.1; repl/spec/15-session-persistence.md §15.4 — readiness fence: parent turn after declaring two super-importing children, then restart.
+#[test]
+fn s124_parent_switch_definition_with_two_super_children_survives_restart() {
+    let first = Cranelisp::new()
+        .file("p.cl", "(mod a)\n(mod b)\n(defn x [] 40)\n")
+        .file(
+            "p/a.cl",
+            "(import [super [x]])\n(defn af [] (primitives/add-i64 (x) 1))\n",
+        )
+        .file(
+            "p/b.cl",
+            "(import [super [x]])\n(defn bf [] (primitives/add-i64 (x) 2))\n",
+        )
+        .stdin("/mod p\n(defn fresh [] 16)\n/mod user\n(p.a/af)\n(p.b/bf)\n(p/fresh)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stderr_empty();
+    let values = |out: &helpers::e2e::CrOutput| {
+        out.stdout
+            .lines()
+            .filter_map(|line| {
+                line.find(":primitives/Int ")
+                    .map(|start| line[start..].to_owned())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(!first.stdout.contains("Error:"), "{}", first.stdout);
+    assert_eq!(
+        values(&first),
+        [
+            ":primitives/Int 41",
+            ":primitives/Int 42",
+            ":primitives/Int 16"
+        ],
+        "{}",
+        first.stdout
+    );
+    let second = first
+        .run_again()
+        .stdin("(p.a/af)\n(p.b/bf)\n(p/fresh)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stderr_empty();
+    assert!(!second.stdout.contains("Error:"), "{}", second.stdout);
+    assert_eq!(
+        values(&second),
+        [
+            ":primitives/Int 41",
+            ":primitives/Int 42",
+            ":primitives/Int 16"
+        ],
+        "{}",
+        second.stdout
+    );
+}
