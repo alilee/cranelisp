@@ -979,6 +979,28 @@ mod slot_layout {
         assert_ne!(project.current_key(), Some(recorded));
     }
 
+    // spec: design/int/int.md §7.6.3 — the stored-layout memo ends with the
+    // `.meta` it decoded: a session overwrite of a member it holds no table
+    // for, as the index worker writes one, is what the next validation reads.
+    #[test]
+    fn a_stored_meta_overwrite_is_read_by_the_next_validation() {
+        let project = Project::new();
+        let cache = ObjectCache::new(Some(project.cache_dir.path().to_path_buf()), None);
+        let (meta, _) =
+            cranelisp_backend::cache::module_cache_path(project.cache_dir.path(), &m("dep"));
+        std::fs::create_dir_all(meta.parent().unwrap()).unwrap();
+        let sources = ModuleSources::new(project.root.path(), &[], &project.tables, &cache);
+        for moves in [0, 2] {
+            let table = table_with_f_after(moves);
+            cache.write_meta(&m("dep"), &meta, &table).unwrap();
+            assert_eq!(
+                sources.current_key(&m("dep")),
+                Some(AuthoredSlotLayout::of(&table).derivation_key(&hash())),
+                "after {moves} moves"
+            );
+        }
+    }
+
     // spec: design/int/int.md §7.6.3 — minted instances and `__expr` are
     // restaged by every recompile, so their slots are not part of the layout.
     #[test]

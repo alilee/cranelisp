@@ -65,9 +65,10 @@ pub struct ObjectCache {
     compiled_o_paths: Mutex<Vec<PathBuf>>,
 
     /// The authored slot layout of each stored `.meta` decoded for validation
-    /// (`design/int/int.md` §7.6.3), once per session. Read only for a member
-    /// the session holds no table for; this session writes a `.meta` only for
-    /// a module whose table it holds, so an entry cannot go stale.
+    /// (`design/int/int.md` §7.6.3), at most once per `.meta` the session
+    /// reads. Every session writer of a `.meta` goes through
+    /// [`Self::write_meta`], which ends the entry under its shard lock, so a
+    /// decode cannot outlive the file it read.
     stored_layouts: dashmap::DashMap<ModuleFullPath, Option<AuthoredSlotLayout>>,
 }
 
@@ -96,12 +97,35 @@ impl ObjectCache {
         if let Some(layout) = self.stored_layouts.get(module) {
             return layout.clone();
         }
-        let layout = self.dir.as_deref().and_then(|dir| {
-            let cached = cranelisp_backend::cache::try_load_cached_module(dir, module).ok()??;
-            Some(AuthoredSlotLayout::of(&cached.symbol_table))
-        });
-        self.stored_layouts.insert(module.clone(), layout.clone());
-        layout
+        self.stored_layouts
+            .entry(module.clone())
+            .or_insert_with(|| {
+                let dir = self.dir.as_deref()?;
+                let cached =
+                    cranelisp_backend::cache::try_load_cached_module(dir, module).ok()??;
+                Some(AuthoredSlotLayout::of(&cached.symbol_table))
+            })
+            .clone()
+    }
+
+    /// Write `table` as `module`'s stored `.meta` at `meta_path`, ending the
+    /// layout decoded from the `.meta` it replaces.
+    pub(crate) fn write_meta(
+        &self,
+        module: &ModuleFullPath,
+        meta_path: &std::path::Path,
+        table: &crate::code::SessionSymbolTable,
+    ) -> Result<(), cranelisp_types::CranelispError> {
+        let memo = self.stored_layouts.entry(module.clone());
+        let written = cranelisp_backend::cache::serialize::write_meta(
+            meta_path,
+            table,
+            cranelisp_backend::cache::CACHE_SCHEMA_VERSION,
+        );
+        if let dashmap::Entry::Occupied(decoded) = memo {
+            decoded.remove();
+        }
+        written
     }
 
     /// Whether caching is enabled for this session.

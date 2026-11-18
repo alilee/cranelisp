@@ -200,8 +200,6 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
 /// a `write_meta` error is logged and tolerated (it does not block `.o`
 /// codegen).
 fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &Path) -> bool {
-    use cranelisp_backend::cache;
-
     // Ensure parent directory exists (used by both the `.meta.json` and `.o`
     // writes below).
     if let Some(parent) = meta_path.parent()
@@ -221,9 +219,7 @@ fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &
         .map(|guard| guard.clone())
         .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
 
-    if let Err(e) =
-        cache::serialize::write_meta(meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION)
-    {
+    if let Err(e) = shared.cache.write_meta(module, meta_path, &symbol_table) {
         eprintln!(
             "nice-worker: .meta.json write failed for {}: {}",
             module,

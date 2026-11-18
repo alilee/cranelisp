@@ -37,16 +37,6 @@ pub(crate) struct OriginatedForm {
     pub(crate) authored: Sexp,
 }
 
-impl OriginatedForm {
-    /// A written form, not yet expanded: its own origin.
-    pub(crate) fn written(form: Sexp) -> Self {
-        OriginatedForm {
-            authored: form.clone(),
-            form,
-        }
-    }
-}
-
 /// What a continuation's source stands for when its generation publishes
 /// (`design/int/session-transaction.md` §7.3).
 #[derive(Debug, Clone)]

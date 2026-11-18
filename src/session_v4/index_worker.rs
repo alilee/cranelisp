@@ -1052,7 +1052,7 @@ fn write_index_meta(
     if let Some(parent) = meta_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(e) = cache::serialize::write_meta(&meta_path, table, cache::CACHE_SCHEMA_VERSION)
+    if let Err(e) = shared.cache.write_meta(module, &meta_path, table)
         && std::env::var("CRANELISP_MODULE_TRACE").is_ok()
     {
         eprintln!("index: .meta write failed for {module}: {}", e.message());
