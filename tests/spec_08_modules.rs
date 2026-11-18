@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 use std::time::Duration;
 
 // =============================================================================
@@ -5386,40 +5386,78 @@ fn s124_modules_exp0_control_repl() {
     );
 }
 
-// spec: spec/08-modules.md §8.4 — S124 super
+fn s124_super_reexport(mode: &str, cycle: bool) {
+    let cr = Cranelisp::new();
+    let cr = if cycle {
+        cr.file("p.cl", "(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))")
+    } else {
+        cr.file("p.cl", "(mod child) (defn x [] 49)")
+            .file("p/child.cl", "(export [super [x]])")
+            .file("app.cl", "(import [p.child [x]]) (defn main [] (primitives/Pure (if (primitives/eq-i64 (x) 49) (p.child/x) 99)))")
+    };
+    let entry = if cycle { "p.cl" } else { "app.cl" };
+    let out = match mode {
+        "run" => cr.run(entry).output(),
+        "link" => cr.link_then_run(entry).output(),
+        _ => cr.cli_flag(entry).stdin("(main)\n/quit\n").output(),
+    };
+    let text = combined(&out);
+    if cycle {
+        assert!(
+            text.contains("circular")
+                && (text.contains("p -> p.child -> p") || text.contains("p.child -> p -> p.child"))
+                && !text.contains("not found in module"),
+            "ACT-1016: the parent/child cycle must be named as a circular dependency; {text}"
+        );
+        if mode != "repl" {
+            out.assert_exit(1);
+        }
+    } else if mode == "repl" {
+        out.assert_ok()
+            .assert_stdout_contains(":primitives/Int 49")
+            .assert_stdout_does_not_contain("[errors:");
+    } else {
+        out.assert_exit(49);
+    }
+}
+
+// spec: spec/08-modules.md §8.4 — T-SUP: imported and qualified super re-export
 #[test]
 fn s124_modules_super_run() {
-    let cr = s124_projection_modules();
-    s124_module_value(
-        cr,
-        r#"(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))"#,
-        49,
-        "run",
-    );
+    s124_super_reexport("run", false);
 }
 
-// spec: spec/08-modules.md §8.4 — S124 super
+// spec: spec/08-modules.md §8.4 — T-SUP: imported and qualified super re-export
 #[test]
 fn s124_modules_super_link() {
-    let cr = s124_projection_modules();
-    s124_module_value(
-        cr,
-        r#"(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))"#,
-        49,
-        "link",
-    );
+    s124_super_reexport("link", false);
 }
 
-// spec: spec/08-modules.md §8.4 — S124 super
+// spec: spec/08-modules.md §8.4 — T-SUP: imported and qualified super re-export
 #[test]
 fn s124_modules_super_repl() {
-    let cr = s124_projection_modules();
-    s124_module_value(
-        cr,
-        r#"(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))"#,
-        49,
-        "repl",
-    );
+    s124_super_reexport("repl", false);
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6 — ACT-1016 super-export cycle; acyclic control: s124_modules_super_run
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev
+#[test]
+fn s124_modules_super_cycle_neg_run() {
+    s124_super_reexport("run", true);
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6 — ACT-1016 super-export cycle; acyclic control: s124_modules_super_link
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev
+#[test]
+fn s124_modules_super_cycle_neg_link() {
+    s124_super_reexport("link", true);
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6 — ACT-1016 super-export cycle; acyclic control: s124_modules_super_repl
+// defect: class=error-swallow locus=src/process_form/dependency.rs::handle_export found=S124 owner=/dev
+#[test]
+fn s124_modules_super_cycle_neg_repl() {
+    s124_super_reexport("repl", true);
 }
 
 // spec: spec/08-modules.md §8.6.4 — T-ALIAS
