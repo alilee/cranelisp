@@ -8,20 +8,22 @@ architecture leaves to it. The emitted sequence, the descriptor blob, the GOT
 swap and the nested-trace guard are
 [tracing](../arch/tracing.md) §3–§6 and are not restated here.
 
+- §1, the traced set, is decided and **not in source** at `401ed6c0` (read
+  2026-11-19). The user ruled which modules a form covers on 2026-11-19
+  (spec §4.12.3, scribed at `3a687501`), and `arch` approved how the set
+  reaches the backend as row B10
+  ([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
+  §1.3 states what `dev` builds; it corrects ACT-1039 and ACT-1078.
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
-- §1's selection is designed and **not in source** at `081134ba` (read
-  2026-11-19). `dev` built it and reverted it, because it fails `--link`
-  (§1.2). It and ACT-1078 wait on the user's ruling on which modules a trace
-  form covers
-  ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)).
-  §1.3 states what `dev` builds under each ruling.
 - §3, the substitution correction (ACT-1062's backend reader), is designed
-  and in scope (backend row B14); it is not in source at `081134ba`.
+  and in scope (backend row B14); it is not in source at `401ed6c0`.
 
 **Authority:** spec §4.12.2, §4.12.3 and §4.12.9;
 [tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table) for the
-traced set; [tracing §7](../arch/tracing.md#7-strict-evaluation-within-the-trace-extent)
+traced set and [§5.1](../arch/tracing.md#51-which-modules-a-form-covers) for
+the covered modules;
+[tracing §7](../arch/tracing.md#7-strict-evaluation-within-the-trace-extent)
 for the strictness and allocation rules.
 
 ---
@@ -39,8 +41,9 @@ function of compilation and load order
 
 ### 1.1 Decision
 
-- **Selection reads claims.** An entry is traced when it has a callable GOT
-  slot (`callable_got_slot()`) and a function-typed scheme. The slot's
+- **Selection reads claims.** An entry of a covered module (§1.3) is traced
+  when it has a callable GOT slot (`callable_got_slot()`) and a
+  function-typed scheme. The slot's
   contents are not read at codegen. Slot layout is pinned before codegen
   ([backend.md](backend.md) §4), so the set does not depend on compilation or
   load order.
@@ -71,8 +74,9 @@ function of compilation and load order
 
 ### 1.2 What the built selection showed
 
-Read against `dev`'s reverted patch and probed with the built binary at
-`1e4b0ce4`. Each probe used a fresh directory.
+The evidence behind §1.3: selection by claim cannot land alone. Read against
+`dev`'s reverted patch and probed with the built binary at `1e4b0ce4`. Each
+probe used a fresh directory.
 
 - **The trace's object may reference only a GOT that every image holding it
   defines.** For each module it swaps, the trace form imports
@@ -87,8 +91,9 @@ Read against `dev`'s reverted patch and probed with the built binary at
   swaps `macros`, and `--link` fails to link: eight previously green cells,
   for example `link_traced_extern_primitives_appear_as_children_exit_42` and
   the `trace_linked_*` cells.
-- **A trace's object references modules outside its own dependencies.** This
-  is a defect at source today, independent of the selection rule. Discovery
+- **A trace's object references modules outside its own dependencies**
+  (ACT-1078). This is a defect at source until §1.3 lands, independent of
+  the selection rule. Discovery
   reads every loaded table, so a cached object records the GOTs of whatever
   modules were loaded when it compiled, which its cache key does not cover.
   - *Reproduction.* `u` holds a trace form. Entry `e1` imports `u` and `x`;
@@ -98,97 +103,124 @@ Read against `dev`'s reverted patch and probed with the built binary at
   - Under the content gate the reference depends on whether `x` was published
     before `u` compiled. Under selection by claim it is always made.
 
-### 1.3 Blocked on `arch`: which modules contribute
+### 1.3 Which modules a form covers
 
-The backend cannot close either gap inside its boundary. Which modules a form
-covers is [tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18):
-`arch`'s proposal, now with the user. Which modules an image defines a GOT
-for is int's.
+Spec §4.12.3 states the rule and
+[tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers) states it
+architecturally. Int computes the set; the backend reads it. Under this split
+the set is a function of the form's module's validity record, so it is the same
+cold, warm and in every mode, and an object references only GOTs that every
+image holding it defines (§1.2).
 
-**A correction to this section's earlier recommendation.** It drew the traced
-set from the form's import closure and claimed that no call outside that
-closure could happen during the trace: a closure, a function value or a trait
-implementation would reach the body only from code in the closure. `arch`
-refuted that claim with a library form, `(defn profile [f] (trace (f)))`. The
-library's importer passes in its own function, which sits outside the
-library's closure. A closure-drawn set is therefore a narrowing of spec
-§4.12.3, not a restatement of it. The recommendation's second item,
-seeding `macros`' constructors without slots, is also withdrawn: neither
-ruling below reads `macros`' claims. Constructor slots are FIXME 0931's
-subject.
+- **Input.** `compile_to_module` takes
+  `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables` (row B10,
+  [tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
+  It names the modules a trace form in `module_path` covers besides
+  `module_path`. Every call passes it, whether or not a target holds a trace
+  form. The backend composes no copy of the enumeration
+  ([Principle 7](../arch/principles/07-single-source-of-truth.md)).
+- **The covered set is `module_path` and the listed modules.** The backend
+  adds no other module and privileges none by name
+  ([Principle 19](../arch/principles/19-no-module-privileged-by-name.md)):
+  `primitives` is covered because it is listed. A listed `module_path`
+  changes nothing.
+- **Discovery reads only the covered tables.** A covered module with no
+  table in `symbol_tables` is a located codegen error, not a skip
+  ([backend.md](backend.md#2-the-reading-discipline--a-pure-keyed-consumer)
+  §2). Within those tables, selection is §1.1's.
+- **Group order is the set's order,** so the emitted object does not depend
+  on table iteration order.
+- **`macros` is never listed.** Its claims are never read, and nothing
+  changes there. Constructor slots are FIXME 0931's subject.
 
-**Common to the rulings that correct ACT-1039.** Selection reads claims
-(§1.1; the reverted patch realises it). The
-`discovery_skips_empty_got_slots_and_non_fn_schemes` row is rewritten to the
-§1.1 row. Neither lands without the rest of its ruling's change, because
-alone it makes §1.2's references unconditional.
+#### What the set must contain
 
-#### Ruling A: `arch`'s proposal
+The backend does not check the set's contents; a wrong set is a wrong trace,
+or an unresolved GOT symbol at load. Spec text decides each case below. Int
+owns the composition.
 
-The form covers its own module, every module its load edges reach
-transitively, and the compiler-owned modules whose GOT every image defines
-(`primitives`, and the platform modules those declare). A form in a library
-does not record calls made in modules the library does not reach, and spec
-§4.12.3 is restated to say so.
+- **Platform modules: decided by existing spec text.** A platform module is
+  the synthetic module `platform.<name>` (spec §8.9.3). A non-entry module
+  reaches it by import (§10.9.1); the entry reaches it by its `platform`
+  declaration, which is a dependency edge (§8.10.1). §4.12.3's "every module
+  it imports, directly or indirectly" therefore covers a platform module
+  exactly when the form's module reaches it through those edges, and no
+  other. An image holding the form's object has that platform declared
+  (§10.9.1), so the platform's GOT is defined. Platform functions hold
+  callable slots, so §1.1 selects them as it selects any other entry. Int's
+  load edges exclude platform modules
+  ([int §7.6](../int/int.md#76-dependency-record-and-validity)). The
+  enumerator therefore adds the platform modules reached from the covered
+  modules, which is how this design reads tracing §5.1's "the platform
+  modules those modules declare". `link_traced_extern_primitives_appear_as_children_exit_42`
+  expects `primitives` externs (`str-concat`, `str-len`), which §4.12.3's
+  "plus the built-in primitives" covers. It expects no platform call.
+- **The prelude: decided by existing spec text, and not in arch's
+  wording.** Spec §8.8.1 makes the implicit prelude import a dependency
+  "like the written import it stands for", so §4.12.3 covers the prelude,
+  and every module it reaches, for a module whose fallback is on. Int's load
+  edges exclude the prelude, which its injection loads rather than the walk
+  ([int §7.6](../int/int.md#76-dependency-record-and-validity)). The
+  transitive closure of the load edges alone would stop an entry form
+  recording the standard-library frames that §4.12.3 and
+  [tracing §3.5](../arch/tracing.md#35-got-copy-swap-and-completeness-by-construction)
+  require. The enumerator adds the prelude when the fallback is on. This is
+  returned to `arch` and int to state in §5.1.1 and int §7.6.
+- **`macros`: consistent with §4.12.3.** §4.12.3 instruments a synthetic
+  module's function only through a slot that holds a real code pointer, and
+  no mode writes `macros`' GOT (§1.2). Excluding it therefore drops no
+  frame. *Asserted; falsifier:* a write to `macros`' GOT in any mode.
 
-- **Prerequisite outside the backend.** The covered set must reach the
-  backend through one route, which `arch` takes to the public-API gate. Int
-  owns the load-edge enumeration
-  ([int §7.6](../int/int.md#76-dependency-record-and-validity)), and its
-  planned home, `cache/dependency_record.rs` in the binary, is crate-private
-  there. The backend cannot call it, and composing a second copy is rejected
-  (Principle 7).
-  - **Recommended route: the compile entry receives the set.**
-    `compile_to_module` gains one parameter, `trace_modules: &[ModuleFullPath]`,
-    after `symbol_tables`: the covered set of `module_path`, which int computes
-    with the restore walk's enumerator. The other route moves the enumeration,
-    with the null-import rule, into `cranelisp-types`. It is a larger public
-    change, and it separates the rule from the walk that owns it.
-- **What `dev`(backend) builds** (`compiler/trace_codegen.rs` and its tests):
-  - §1.1's selection.
-  - Discovery reads only the covered modules' tables. A covered module with
-    no table is a located codegen error, not a skip (§2 of
-    [backend.md](backend.md#2-the-reading-discipline--a-pure-keyed-consumer)).
-  - Module rows:
-    - a claim in a module outside the set is not selected;
-    - a claim in a covered import, and one in the form's own module, are
-      selected;
-    - a claimed slot that is still empty is selected;
-    - a slotless entry and a non-function scheme are not selected;
-    - a covered module whose table is missing is refused.
-- `macros` is outside the set, so its claims are never read and nothing
-  changes there.
-- **Cells that turn green:**
-  `trace::trace_records_user_function_calls_in_every_mode`,
-  `trace::s124_1039_w_subject_run`, `_link` and `_repl`, and
-  `trace::s124_1078_subject_run` and `_link`. `test` writes the held cell
-  T-1039-lib to expect no caller frames, and it passes.
+#### What `dev`(backend) builds
 
-#### Ruling B: spec §4.12.3 stands
+In `lib.rs`, `compiler/trace_codegen.rs` and its tests:
 
-This is `arch`'s alternative. Each module's object owns the wrappers and
-descriptors of its own slotted functions, and a form swaps an image-wide
-registry. The backend cannot start until `arch` publishes the registry
-contract: the new intrinsic exports, and the table that int defines in every
-image. The backend's half is then:
+- the parameter, threaded from `compile_to_module` to discovery, with
+  rustdoc stating its meaning;
+- §1.1's selection and the covered-table read; neither lands without the
+  other (§1.2);
+- module rows:
+  - a claim in a module outside the set is not selected;
+  - a claim in a listed module, and one in `module_path`, are selected;
+  - a claimed slot that is still empty is selected;
+  - a slotless entry and a non-function scheme are not selected;
+  - a listed module whose table is missing is refused;
+- the `discovery_skips_empty_got_slots_and_non_fn_schemes` row rewritten to
+  the §1.1 row;
+- the backend's test callers of `compile_to_module` pass the set their
+  fixture means, usually empty.
 
-- each module's compile emits a wrapper and its descriptor for every slotted
-  function of that module, and exports the module's wrapper table beside its
-  GOT. The wrapper body and the descriptor bake are today's, moved from the
-  form's compile to the defining module's compile;
-- the form emits the registry swap and imports no other module's GOT;
-- discovery at the form is deleted, and §1.1 with it, because the set is the
-  running image.
+**Build order** ([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)):
 
-The cells are Ruling A's, and T-1039-lib expects the caller's frames. The
-cost is a wrapper and descriptors in every object, and a descriptor bake in
-every compile, whether or not the program traces.
+1. `dev`(`src/`) lands int's enumerator with the restore walk as its
+   consumer. It changes no public item and the tree builds.
+2. One commit, callee-first. `dev`(backend) makes the change above, and
+   `dev`(`src/`) passes the set at the binary's three production callers and
+   its test callers. The tree does not build between the two halves.
 
-#### No ruling this sprint
+**Cache.** No persisted shape changes and no `CACHE_SCHEMA_VERSION` bump is
+owed. An object built under the old rule differs only in its own trace form's
+emission: which GOTs it imports and which slots it swaps. It shares no
+convention with code it was not compiled with, because the swap intrinsics,
+descriptors and wrapper body are unchanged. So
+[module caching](module-caching.md) §14.2's bump rule does not fire.
 
-The six cells above stay RED and are attributed to the backend, so the backend
-cannot exit clean and green. Carrying them needs the user's explicit
-sign-off ([METHOD §2.4](../../sprints/METHOD.md#24-deferral)).
+- The build identity separates the two. B10 is a commit, so `BUILD_ID`
+  changes, and the manifest's compiler fingerprint catches an uncommitted
+  rebuild.
+- The remaining gap is module caching §12's existing empty-fingerprint
+  residual. Its face here is a stale trace form, which fails as today, with
+  an unresolved GOT symbol at load or a missing frame. *Asserted; falsifier:*
+  that residual's own experiment, run on a module holding a trace form.
+- B8's bump, 34 to 35, is for B8's own persisted shape. It lands before B10,
+  so it does not separate B10's objects, and nothing needs it to.
+
+**Cells that turn green:**
+`trace::trace_records_user_function_calls_in_every_mode`,
+`trace::s124_1039_w_subject_run`, `_link` and `_repl`, and
+`trace::s124_1078_subject_run` and `_link`. `test` writes the held cell
+T-1039-lib to expect no frames from the caller's function, as §4.12.3 now
+states.
 
 ## 2. The trace extent and the wrapper's allocation
 

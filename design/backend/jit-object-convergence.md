@@ -28,7 +28,7 @@ happens to produce. It is not "only a caching concern".
 
 | Artifact | Rationale |
 |---|---|
-| **CLIF emitted by `compile_to_module<M: Module>`** | It is the sole emission entry and does not branch on `M` for any decision affecting emitted instructions. The same inputs must give byte-identical CLIF for `JITModule` and `ObjectModule`. |
+| **CLIF emitted by `compile_to_module<M: Module>`** | It is the sole emission entry and does not branch on `M` for any decision affecting emitted instructions. The same inputs must give byte-identical CLIF for the JIT's module (§3) and `ObjectModule`. |
 | **Function symbol names** | Every user defn is declared bare-name with `Linkage::Local` in both paths (Decision 36). No per-mode mangling. |
 | **GOT slot layout** — which symbol occupies which per-module slot index | Pinned before any codegen runs, persisted to cache, re-installed unchanged on cache-hit (Decision 37 order-independence). |
 | **Callee resolution shape** — calls to redefinable language functions read their code pointer from `__cranelisp_got_{M}` slot `i` | Decision 36 "why all-GOT calling" plus the Decision 31 safety invariant. A direct relocation against a function symbol would break REPL redefinition and is forbidden. |
@@ -95,8 +95,10 @@ document states the questions, not a test plan:
 
 ## §3 Call reach in the JIT (ACT-1070)
 
-**Status:** designed 2026-11-19 against `081134ba`; not in source. The public
-delta below goes to `arch`'s batch review before `dev` starts.
+**Status:** decided; not in source at `401ed6c0`. `arch` approved the public
+delta on 2026-11-19 as row B13 of the
+[batch record](../arch/interfaces.md#approved-changes-not-yet-in-source-s124),
+with the wrapper crate-private.
 
 **Fault.** `cranelift-jit` 0.116 takes each function's code memory from the
 global allocator, so two functions of one JIT module can land any distance
@@ -116,15 +118,17 @@ attributed by `qa` with the `MALLOC_ARENA_MAX=1` control).
 - The object path is not exposed. The in-process linker copies one text
   section into one mapping, and the system linker places one text section.
 
-**Decision: the JIT compiles every call far.** The JIT's module is a backend
-wrapper over `JITModule`. Its function-definition entry clears `colocated` on
-every external function of the context and then delegates. Upstream does the
-same for its hotswap mode. A far call is an absolute address and an indirect
-branch, so placement cannot put a callee out of reach.
+**Decision: the JIT compiles every call far.** The JIT's module is a
+crate-private wrapper over `JITModule`. Its function-definition entry clears
+`colocated` on every external function of the context and then delegates.
+Upstream does the same for its hotswap mode. A far call is an absolute address
+and an indirect branch, so placement cannot put a callee out of reach.
 
-- **Grade: structural.** `Jit` holds only the wrapper and hands out only the
-  wrapper, so every function the JIT defines passes through the one
-  definition entry. No emission site can opt out, and none needs to change.
+- **Grade: structural.** `Jit` holds only the wrapper and hands it out only
+  as `impl Module + CodeFinalizer`, so every function the JIT defines passes
+  through the one definition entry. `JITModule` no longer implements
+  `CodeFinalizer`, so a module that compiles near calls cannot be passed to
+  `compile_to_module`. No emission site can opt out, and none needs to change.
 - **CLIF is unchanged** in both modes. The rewrite happens after capture, at
   the fixup boundary (§1.2 row 6). Captured and dumped CLIF still shows
   `colocated` on local callees; the JIT's machine code reaches them far.
@@ -149,31 +153,41 @@ branch, so placement cannot put a callee out of reach.
   glibc-specific and unenforced, so it controls the symptom, not the
   mechanism.
 
-**Public delta for `arch`** (backend only; no consumer source changes,
-because every caller passes `jit.jit_module()` straight to
-`compile_to_module`):
+**Public delta** (row B13; the batch record carries the decision):
 
 | Item | Change |
 |---|---|
-| `cranelisp_backend::jit::FarJitModule` | Added: a `pub` struct owning the `JITModule`. Its fields are private, and it has no public constructor or inherent method |
-| `impl cranelift_module::Module for FarJitModule` | Added: delegation, except that function definition clears `colocated` first |
-| `impl cranelisp_backend::CodeFinalizer for FarJitModule` | Added: the current `JITModule` implementation, moved |
-| `impl cranelisp_backend::CodeFinalizer for cranelift_jit::JITModule` | Removed (four baseline lines) |
-| `Jit::jit_module(&mut self)` | Returns `&mut FarJitModule` instead of `&mut JITModule` |
+| `Jit::jit_module(&mut self)` | Returns `&mut (impl cranelift_module::Module + CodeFinalizer)` instead of `&mut JITModule`. Its rustdoc states the promise: no call in a function defined through this module depends on where the JIT places code |
+| `impl cranelisp_backend::CodeFinalizer for cranelift_jit::JITModule` | Removed |
 
-The type name is a proposal; `arch` may rename it. The baseline also gains the
-new type's auto-trait lines until row K11-a removes that class.
+No public type is added. Expected baseline effect: backend −4, 1 changed, +0.
 
-**What `dev`(backend) builds** (`jit.rs`, and its test module):
+**Callers.** No caller outside the backend changes: the binary's four callers
+pass the value straight to `compile_to_module` and do not name its type.
+Inside the backend, test modules that name `JITModule` on the result, or call
+its inherent `get_finalized_function`, change. Examples, under
+`crates/cranelisp-backend/src/`, are `raise/tests.rs`,
+`compiler/vec_codegen/element_release_tests.rs`,
+`compiler/apply/host_promised_tests.rs`,
+`compiler/control_flow/fn_as_value/forwarding_template_tests.rs` and
+`primitives_inline/div_tests.rs`. The build lists the rest. They read a
+finalized address through one crate-private accessor rather than through the
+opaque return.
 
-1. The wrapper and its two trait implementations. `Jit` stores the wrapper.
-   Its drop frees the inner module's memory as it does today.
-2. Module row M-1070-a. Define a caller with a `colocated` call to a second
+**What `dev`(backend) builds** (`jit.rs`, its test module, and the in-crate
+test callers above), as one change-set with no order against another row:
+
+1. The wrapper and its `Module` and `CodeFinalizer` implementations, and any
+   accessor the crate's own tests need, all `pub(crate)`. `Jit` stores the
+   wrapper. Its drop frees the inner module's memory as it does today.
+2. `Jit::jit_module`'s new return and rustdoc, and the removed `JITModule`
+   implementation.
+3. Module row M-1070-a. Define a caller with a `colocated` call to a second
    function through the wrapper, then read the compiled code's relocations.
    It must hold no pc-relative call relocation (`Arm64Call` or
    `X86CallPCRel4`). The same context defined through a bare `JITModule`
    must hold one. That control proves the row can detect the fault.
-3. Rustdoc on the wrapper stating the invariant and why it exists.
+4. Rustdoc on the wrapper stating the invariant and why it exists.
 
 `qa` allocated a module row that places two functions of one JIT module out
 of range of each other. It cannot be built deterministically on 0.116,
