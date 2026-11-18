@@ -19,7 +19,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -5052,4 +5052,259 @@ fn s124_f_pr_4_box_first_uncalled_control_link() {
 #[test]
 fn s124_f_pr_4_box_first_uncalled_control_repl() {
     s124_f_pr_two_impls(true, true, "repl");
+}
+
+fn s124_self_position(leg: &str, self_first: bool, mode: &str) {
+    let (definitions, expression, expected) = match leg {
+        "a" | "b" => {
+            let params = if self_first { "self :Int d" } else { ":Int d self" };
+            let args = if self_first { "b d" } else { "d b" };
+            let extra = if leg == "b" {
+                format!("(impl T Int (defn f [{args}] (add-i64 d 100)))")
+            } else {
+                String::new()
+            };
+            (
+                format!("(deftrait T (f [{params}] Int))\n(impl T Bool (defn f [{args}] (add-i64 d 1)))\n{extra}\n"),
+                if self_first { "(f true 1)" } else { "(f 1 true)" },
+                2,
+            )
+        }
+        "c" => {
+            let params = if self_first { "self :String s" } else { ":String s self" };
+            let args = if self_first { "n s" } else { "s n" };
+            (
+                format!("(deftrait T (f [{params}] Int))\n(impl T Int (defn f [{args}] (add-i64 n (str-len s))))\n(impl T String (defn f [{args}] (add-i64 100 (str-len n))))\n"),
+                if self_first { r#"(f 2000 "abc")"# } else { r#"(f "abc" 2000)"# },
+                2003,
+            )
+        }
+        "d" => {
+            let params = if self_first { "x :(Fn [a] b) f" } else { ":(Fn [a] b) f x" };
+            let args = if self_first { "x f" } else { "f x" };
+            (
+                format!("(deftype Wrap (MkWrap [:Int value]))\n(deftrait Mappable (map-val [{params}] self))\n(impl Mappable Wrap (defn map-val [{args}] x))\n(defn inc [x] (add-i64 x 1))\n"),
+                if self_first {
+                    "(match (map-val (MkWrap 7) inc) [(MkWrap v) v])"
+                } else {
+                    "(match (map-val inc (MkWrap 7)) [(MkWrap v) v])"
+                },
+                7,
+            )
+        }
+        "e" => (
+            "(deftrait Convertible (convert [:String s] self))\n(impl Convertible Int (defn convert [s] (str-len s)))\n".to_owned(),
+            r#"(add-i64 (convert "abc") 1)"#,
+            4,
+        ),
+        _ => unreachable!(),
+    };
+    let definitions = format!("(import [primitives [*]])\n{definitions}");
+    let cr = Cranelisp::new();
+    let out = match mode {
+        "repl" => cr
+            .cli_flag("--no-cache")
+            .stdin(&format!("{definitions}{expression}\n"))
+            .output(),
+        "run" | "link" => {
+            let cr = cr.file(
+                "user.cl",
+                &format!("{definitions}(defn main [] (Pure {expression}))\n"),
+            );
+            if mode == "run" {
+                cr.cli_flag("--no-cache").run("user.cl").output()
+            } else {
+                cr.link_then_run("user.cl").output()
+            }
+        }
+        _ => unreachable!(),
+    };
+    let diagnostics = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !diagnostics.contains("no impl of trait") && !diagnostics.contains("undefined function"),
+        "legal self-position call must not be refused: {diagnostics}"
+    );
+    if mode == "repl" {
+        out.assert_ok()
+            .assert_stdout_contains(&format!(":primitives/Int {expected}"));
+    } else {
+        out.assert_exit(expected % 256);
+    }
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject C, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_c_run() {
+    s124_self_position("c", false, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject C, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_c_link() {
+    s124_self_position("c", false, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject C, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_c_repl() {
+    s124_self_position("c", false, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control C, self-position dispatch
+#[test]
+fn s124_1076_control_c_run() {
+    s124_self_position("c", true, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control C, self-position dispatch
+#[test]
+fn s124_1076_control_c_link() {
+    s124_self_position("c", true, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control C, self-position dispatch
+#[test]
+fn s124_1076_control_c_repl() {
+    s124_self_position("c", true, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject B, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_b_run() {
+    s124_self_position("b", false, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject B, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_b_link() {
+    s124_self_position("b", false, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject B, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_b_repl() {
+    s124_self_position("b", false, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control B, self-position dispatch
+#[test]
+fn s124_1076_control_b_run() {
+    s124_self_position("b", true, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control B, self-position dispatch
+#[test]
+fn s124_1076_control_b_link() {
+    s124_self_position("b", true, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control B, self-position dispatch
+#[test]
+fn s124_1076_control_b_repl() {
+    s124_self_position("b", true, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject A, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_a_run() {
+    s124_self_position("a", false, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject A, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_a_link() {
+    s124_self_position("a", false, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject A, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_a_repl() {
+    s124_self_position("a", false, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control A, self-position dispatch
+#[test]
+fn s124_1076_control_a_run() {
+    s124_self_position("a", true, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control A, self-position dispatch
+#[test]
+fn s124_1076_control_a_link() {
+    s124_self_position("a", true, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control A, self-position dispatch
+#[test]
+fn s124_1076_control_a_repl() {
+    s124_self_position("a", true, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject D, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_d_run() {
+    s124_self_position("d", false, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject D, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_d_link() {
+    s124_self_position("d", false, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject D, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_d_repl() {
+    s124_self_position("d", false, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control D, self-position dispatch
+#[test]
+fn s124_1076_control_d_run() {
+    s124_self_position("d", true, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control D, self-position dispatch
+#[test]
+fn s124_1076_control_d_link() {
+    s124_self_position("d", true, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 control D, self-position dispatch
+#[test]
+fn s124_1076_control_d_repl() {
+    s124_self_position("d", true, "repl");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject E, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_e_run() {
+    s124_self_position("e", false, "run");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject E, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_e_link() {
+    s124_self_position("e", false, "link");
+}
+
+// spec: spec/07-traits.md §7.1.4 — ACT-1076 subject E, self-position dispatch
+// defect: class=projection-mirror locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::try_resolve_trait_method_decl found=S124 owner=/dev
+#[test]
+fn s124_1076_subject_e_repl() {
+    s124_self_position("e", false, "repl");
 }
