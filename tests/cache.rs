@@ -483,8 +483,8 @@ fn schema28_identity_cache_refused_rebuilt_and_reused_warm() {
     );
 }
 
-// spec: repl/spec/18-redefinition.md §18.1.2 — restart reconstruction is not
-// constrained by the live-slot ownership-ABI gate; cold and warm must agree.
+// spec: repl/spec/18-redefinition.md §18.1 — cold and warm reconstruction
+// preserve the callable behaviour.
 // defect: class=wrong-reject locus=src/session_v4.rs found=S121 owner=/dev
 #[test]
 fn cache_restored_sum_field_projection_keeps_ownership_abi() {

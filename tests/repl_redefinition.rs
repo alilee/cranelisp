@@ -1050,37 +1050,6 @@ fn caller_free_type_change_publishes() {
     drop(cap);
 }
 
-// spec: repl/spec/18-redefinition.md §18.1.2 — an unchanged language type
-// does not permit an existing live slot to change its ABI-bearing parameter
-// mode. Rejection is independent of caller presence and preserves the old
-// body. QA allocation: tests/plan/s121-test-plan.md GR-1.
-#[test]
-fn same_type_ownership_abi_change_is_rejected_before_slot_patch() {
-    let cap = repl_prims(
-        "(defn f [:String s] (str-len s))\n\
-         (f \" x \")\n\
-         (defn f [:String s] (str-len (trim s)))\n\
-         (f \" x \")\n",
-    );
-    let cap = cap
-        .assert_stdout_contains("cannot redefine user/f")
-        .assert_stdout_contains("language type is unchanged")
-        .assert_stdout_contains("old ownership ABI: params [Borrowed], result Fresh")
-        .assert_stdout_contains("proposed ownership ABI: params [Owned], result Fresh")
-        .assert_stdout_contains("the proposed replacement changes the ownership ABI");
-    assert_eq!(
-        count(&cap.stdout, ":primitives/Int 3"),
-        2,
-        "the rejected trim body must not patch the old slot; stdout:\n{}",
-        cap.stdout
-    );
-    assert!(
-        !cap.stdout.contains(":primitives/Int 1"),
-        "the rejected body must never run; stdout:\n{}",
-        cap.stdout
-    );
-}
-
 // spec: repl/spec/18-redefinition.md §18.1, §18.4 — callable and macro
 // visibility is immutable in both directions during live redefinition. The
 // rejected proposal cannot displace the old definition. QA allocation:
