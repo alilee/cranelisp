@@ -32,7 +32,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
+use helpers::e2e::{repl_output_lines, Cranelisp, PreludeVariant, REPL_IO_NOTICE};
 use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================
@@ -2690,11 +2690,20 @@ fn s124_1065_e_rd() {
     );
 }
 
-fn s124_scheduling_sample(multi: bool, dependent: bool, second: bool) -> u128 {
+fn s124_scheduling_sample(
+    multi: bool,
+    dependent: bool,
+    second: bool,
+    unrelated_local: Option<&str>,
+) -> u128 {
     let b = if dependent {
         "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 a) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
     } else {
         "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 d) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
+    };
+    let b = match unrelated_local {
+        Some(name) => format!("(if (eq-i64 d 0) (let [{name} 1] (Pure {name})) {b})"),
+        None => b.to_owned(),
     };
     let def = if !multi {
         format!("(defn f [d] {b})")
@@ -2725,19 +2734,41 @@ fn s124_scheduling_sample(multi: bool, dependent: bool, second: bool) -> u128 {
 // defect: class=enumeration-miss locus=src/bind_chain_analysis.rs::auto_schedule_defn found=S124 owner=/dev
 #[test]
 fn s124_0981_multi_signature_overlap() {
-    let single = s124_scheduling_sample(false, false, false);
-    let serial = s124_scheduling_sample(false, true, false);
+    let single = s124_scheduling_sample(false, false, false, None);
+    let serial = s124_scheduling_sample(false, true, false, None);
     assert!(
         single * 4 < serial * 3,
         "single {single}ms, serial {serial}ms"
     );
     for second in [false, true] {
-        let multi = s124_scheduling_sample(true, false, second);
+        let multi = s124_scheduling_sample(true, false, second, None);
         assert!(
             multi * 4 < serial * 3,
             "multi second={second}: {multi}ms, single {single}ms, serial {serial}ms"
         );
     }
+}
+
+// spec: spec/10-io.md §10.12.1 — ACT-1077, a local in another arm cannot shadow the independent chain
+// defect: class=wrong-scope-lookup locus=src/bind_chain_analysis.rs::collect_binders found=S124 owner=/dev
+#[test]
+fn s124_1077_unrelated_bind_local_keeps_overlap() {
+    let overlap = s124_scheduling_sample(false, false, false, None);
+    let serial = s124_scheduling_sample(false, true, false, None);
+    let control = s124_scheduling_sample(false, false, false, Some("then"));
+    let subject = s124_scheduling_sample(false, false, false, Some("bind"));
+    assert!(
+        overlap * 4 < serial * 3,
+        "reference regimes must separate: overlap {overlap}ms, serial {serial}ms"
+    );
+    assert!(
+        control * 4 < serial * 3,
+        "then control must overlap: {control}ms, overlap {overlap}ms, serial {serial}ms"
+    );
+    assert!(
+        subject * 4 < serial * 3,
+        "bind subject must overlap: {subject}ms, then {control}ms, overlap {overlap}ms, serial {serial}ms"
+    );
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
