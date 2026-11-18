@@ -1443,8 +1443,9 @@ Status:
 - the declaration readiness gate (ACT-1016 Face 2) is built at `870aacd8`;
 - route independence through a declared child (ACT-1081): rules 1 and 2 are
   built at `b8b6df58` and corrected at `9580856a`; rule 1 for a
-  cache-restored parent is designed and not built (*A restored parent*
-  below); the error clause waits on the user's ruling.
+  cache-restored parent is built at `a205a29f`, and its failure paths are
+  designed and not built (*A restored parent* below); the error clause waits
+  on the user's ruling.
 
 Private to `src/`; no public API, carrier, schema or ABI change.
 
@@ -1854,7 +1855,8 @@ restart legs of REPRO-1081.
   ([§6.3.1](#631-locating-a-gap-at-its-reference-site), *The gap's module*),
   which is a separate fault.
 
-*A restored parent* (designed 2026-11-18; not built). Rule 1 holds for a
+*A restored parent* (designed 2026-11-18; built at `a205a29f`, except the
+failure paths below). Rule 1 holds for a
 parent restored from cache too (§7.5).
 
 - **The fault.** A restored parent registers at `TypecheckDone` before its
@@ -1900,27 +1902,90 @@ parent restored from cache too (§7.5).
   leaves the second face open. The wait is the fresh path's own lifecycle
   point, which §7.5 requires
   ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
-- **What `dev` builds** (`src/process_form/cache_restore.rs`,
-  `src/scheduler.rs`). The restored-parent registration at publication, the
-  wait on registered and in-flight children whose release completes the
-  parent, and the refusal by a failed child. Module rows:
-  - a restored parent whose child misses is published and not terminal
-    until the child completes; a completion reader waits, and a declaration
-    reader installs;
-  - a restored parent whose children all hit is terminal only after the
-    walk returns;
-  - a missed child that fails refuses the restored parent, with the child as
-    refusing dependency;
-  - negative: a restored parent with no declared children is terminal at
-    registration.
+- **Failure paths (designed 2026-11-18; not built).** The parent's outcome
+  is decided by its walk and its declared children. Its object load can only
+  add a failure. The ordering of these events does not change the outcome.
+  - *A failed walk fails the parent.* When the restore walk returns an
+    error, such as a failed dependency registration, the restore fails the
+    parent with that error before it ends. It never completes the parent,
+    whatever its enrolled children have reached. A fresh module whose Pass-0
+    dependency registration fails fails the same way (Principle 11). The
+    load hold still releases on that path (§7.1), and a failed module's
+    load is unavailable.
+  - *An object load never completes a waiting parent.* A load that ends
+    loaded while the parent waits records only that the object is in
+    memory. The parent's in-memory completion is set when the wait releases
+    (as built).
+  - *A child's failure after the load still refuses the parent.* The parent
+    fails with the child's failure, and its in-memory completion is never
+    set.
+  - *A load that ends after the parent failed changes nothing.* A loaded
+    completion leaves a failed parent failed. It sets no in-memory completion
+    and wakes no completion reader as if the parent were ready. A failure
+    completion of such a load adds no second failure. This guards a failed
+    module only; it is not ACT-0994's rule for a module re-registered while
+    claimed (§7.1, *A claim ends inside its registration*), which stays
+    deferred.
+  - *A load that fails while the parent waits fails the parent* with the
+    load error. A child that completes later does not complete it.
+- **As built (`a205a29f`; `src/scheduler.rs`,
+  `src/process_form/cache_restore.rs`, `src/session_v4/index_worker.rs`).**
+  - The scheduler registers a restored parent that declares children as
+    published and blocked. It holds the declared children it awaits on the
+    module's state, and only a restored parent holds them. The release of
+    the wait reads them, and so do the end of the restore, the guard that
+    keeps an object load from setting in-memory completion, and the
+    failure transition. The design has no other reader.
+  - The restore ends the parent's restore after its walk returns. The parent
+    completes there if no child is still in flight, and otherwise waits on
+    the first one that is.
+  - **Settled restorations.** A parent's wait often ends inside another
+    module's transition, such as its child's publication or failure. No
+    worker pass then runs the index's publication or failure hook for the
+    parent, so without a carrier the `/search` burn-down would wait for it
+    forever.
+    - The scheduler appends the parent to a queue of settled restorations
+      when its wait ends, whether it completes or fails.
+    - `index_worker::on_restorations_settled` drains the queue. It runs the
+      publication hook for a terminal parent and the failure hook for a
+      failed one, and skips any other state.
+    - The publication and failure hooks drain the queue first, and the
+      restore drains it after it ends the parent's restore. So a parent
+      settles at the edge of the transition that settled it.
+    - The queue is drained in every mode, including the batch modes where
+      the hooks are inert. It holds at most one entry per restored parent
+      between drains.
+    - A late drain reads the parent's state when it runs, not when it
+      settled. A re-registered parent is therefore fed as it now stands.
+  - Module rows: `restored_parent_whose_child_misses_completes_only_after_the_child`,
+    `restored_parent_whose_children_hit_is_terminal_only_after_the_walk`,
+    `a_failed_missed_child_refuses_the_restored_parent`,
+    `restored_parent_without_declared_children_is_terminal_at_registration`
+    and `restored_parent_object_loaded_while_waiting_completes_in_memory_with_the_parent`
+    (`src/scheduler/tests.rs`);
+    `a_restored_parent_completed_by_its_child_leaves_the_burndown` and
+    `a_restored_parent_refused_by_its_child_leaves_the_burndown`
+    (`src/session_v4/index_worker.rs`).
+- **What `dev` builds now:** the failure paths
+  (`src/process_form/cache_restore.rs`, `src/scheduler.rs`). Module rows:
+  - a walk that fails after enrolling a child that hits leaves the parent
+    failed with the walk's error, not terminal. Its negative is the same walk
+    succeeding, which leaves the parent terminal;
+  - a parent whose object load ends loaded while it waits, and whose missed
+    child then fails, is failed and not in memory;
+  - a parent whose missed child fails while its load is claimed, whose claim
+    then completes loaded, stays failed and not in memory;
+  - a parent whose claimed load fails while it waits is failed with the load
+    error, and a later completion of its child leaves it failed.
 - **Cells for `qa` to allocate:** the observation above in `--run`, `--link`
   and the REPL, with its two controls (cold; both of the child's files
   removed). Turn green: those legs. Stay green: the REPRO-1081 cells, the
   partial-cache legs `test` already ran, and
   `tests/test_runner.rs::run_neg_refuses_discover_tests_reference_restored_from_cache`.
-- **Falsifier.** With the rule built, `CRANELISP_SCHEDULER_TRACE` shows a
-  restored parent turning terminal before a declared child, or a completion
-  reader of a restored parent that runs before the child publishes.
+- **Falsifier.** `CRANELISP_SCHEDULER_TRACE` shows a restored parent turning
+  terminal before a declared child, a completion reader of a restored parent
+  that runs before the child publishes, or a restored parent that is
+  terminal after its walk or a declared child failed.
 
 *Falsifiers.*
 
@@ -3106,7 +3171,7 @@ returns `Result<bool, CranelispError>`:
 
 | Relationship | Fresh path | Restore rule |
 |---|---|---|
-| Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs, so a child's `super` import sees it. Private and public children take one path, and an existing child is a no-op. The restored parent is published, not terminal, until those children complete, as a fresh parent is ([§6.11](#611-module-cycles-at-publication), *A restored parent*; designed, not built: today it registers terminal first). |
+| Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs, so a child's `super` import sees it. Private and public children take one path, and an existing child is a no-op. The restored parent is published, not terminal, until those children complete, as a fresh parent is ([§6.11](#611-module-cycles-at-publication), *A restored parent*; built at `a205a29f`). |
 | Trait impls the module wrote | The typecheck producer appends `WrittenTraitImpl` records (`design/arch/trait-impl-cache-carrier.md`) | Restore each foreign trait home first. After the writer table installs, re-enrol every record through the types-owned `enrol_written_trait_impl`. `Enrolled` and `AlreadyEnrolled` succeed; a divergence is an error, never a silent pick. An empty record vector is trusted as written: never default it, rescan the trait home or rebuild it from mangled names. |
 | Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports` and `submodules` by the same writers. The resolver in [§6.9](#69-bare-module-names-in-import-and-export) resolves each import alias's target. The map is unserialized session state, so aliases add no cache field. |
 | Import and re-export targets | The resolver in [§6.9](#69-bare-module-names-in-import-and-export), over the cluster's declared children | The same resolver, over the restored table's `submodules`. The restore walk never reads a persisted bare spelling as an absolute module. |
@@ -3173,17 +3238,16 @@ graph changes, even though the direct dependency's own source does not.
   composition moves into one crate-private enumerator in
   `cache/dependency_record.rs`, which the walk and that consumer both read.
   No consumer needs it before then.
-  Define the edge set once (Principle 7). The fallback bit has one structural rule, shared by
-  the restore environment and the index writer. Two kinds of module are
-  excluded:
+  Define the edge set once (Principle 7). The fallback bit has one
+  structural rule, which the restore environment and the record builder
+  share. Two kinds of module are excluded:
   - `primitives` and `macros`, which are compiler-owned and keyed by the build
     identity and compiler fingerprint;
   - platform modules (see *Known gaps* below).
 
-  The edges are read from a module's table, except for the index writer. Its
-  private table does not carry the structural declaration fields, so its edges
-  come from the structural peel of the source it typechecked, plus the
-  callee modules of its private table after typecheck.
+  The edges are read from a module's table. Only the nice worker writes a
+  record ([§7.7](#77-one-generation-beside-an-entry-act-1083)), and its
+  table carries the structural declarations.
 - **Whole-source hashes.** Each member is keyed by its whole source, not by its
   interface. An importer's artefact contains code compiled from its
   dependencies' generic and macro bodies, so an interface hash would have to
@@ -3217,12 +3281,11 @@ graph changes, even though the direct dependency's own source does not.
   - **Prelude edge.** A prelude edge is dropped when the session holds no
     prelude table, because no prelude file resolved. Without this, no module
     of a prelude-less project would ever be recorded (*Known gaps*).
-- **One builder, every writer.** Every manifest write builds its record with
-  this one builder: the nice worker's object write, its no-object write
-  (generic-only, types-only and imports-only modules), and the index worker's
-  `.meta` write ([index-worker isolation](index-worker-isolation.md) §3). The
-  index entry is keyed by the hash of the source the index typechecked. The
-  index worker writes no loaded-source stash, because it loads no module.
+- **One builder, one writer.** Every manifest write builds its record with
+  this one builder: the nice worker's object write and its no-object write
+  (generic-only, types-only and imports-only modules). The index worker
+  writes no record ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel);
+  as built it still writes one, until ACT-1083's correction lands).
 - **Validation.** Validity is backend's `check_manifest`: the global keys, M's
   own source hash, and a current-hash map that int builds from exactly the keys
   M's entry records.
@@ -3468,12 +3531,9 @@ producer, consumers and lifecycle within them.
   - **One table-recorded edge set.** A table's recorded edges are its
     callee modules plus its lookup dependencies, filtered by the same edge
     rule as every other edge (own module and compiler-owned modules
-    excluded). `ModuleEdges::of_table` and the index worker's post-publish
-    step both take this one union (Principle 7). Recording is unfiltered
+    excluded). `ModuleEdges::of_table` takes this one union (Principle 7). Recording is unfiltered
     apart from the types recorder's own-module rule, so a clause body records
     the compiler-owned `macros`; the filter belongs to the consumer.
-  - The index worker expands no macros. Typecheck's records reach its
-    private table through the same staged publication.
   - **Not a load, link or restore edge.** The restore walk, the object load
     and `--link` ignore lookup dependencies (§7.1, §7.5). A warm `--link`
     therefore omits a lookup-only module's object, while a fresh one includes
@@ -3573,8 +3633,6 @@ producer, consumers and lifecycle within them.
     - a lookup member with no loaded source leaves the record unsettled;
     - a restored member settles from its record without its lookup members
       being loaded.
-  - `session_v4/index_worker`: a module that reaches a loaded module only
-    through a qualified type reference records it among its edges.
   - `process_form`:
     - an alias-qualified macro head publishes the target module, not the
       alias;
@@ -3828,6 +3886,92 @@ stale; an unchanged layout and hash keeps it valid; a minted instance or
 `__expr` slot change does not invalidate; a member with no live table and no
 stored `.meta` is a miss; a member being built fresh is a miss; an S123-era
 record is a miss.
+
+
+### 7.7 One generation beside an entry (ACT-1083)
+
+**Status: designed 2026-11-18; not built.** Private to `src/`. No public API,
+carrier, persisted field, schema or ABI change.
+
+- **The invariant.** A module's `.meta` and `.o` are one generation: one
+  writer wrote them from one table. A writer records a module's manifest entry
+  only after it has settled both files for that generation. A `.meta` with
+  codegen targets and no `.o` is a miss (§7.1), never an inconsistency.
+- **Who writes.** Only the nice worker's object pass writes a module's
+  `.meta`, `.o` and manifest entry. The index feed writes none of them
+  ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)).
+  `--link` writes only its own startup objects.
+- **Every `.meta` write retires the module's object first.**
+  `ObjectCache::write_meta` is the one `.meta` writer. It removes the module's
+  existing `.o` before it writes the `.meta`. The object pass then writes the
+  new `.o` when the table has codegen targets, and records the entry last, as
+  it does today.
+  - A `.o` that is already absent is no error. Any other removal failure
+    stops the write: no `.meta` is written and no entry is recorded, so the
+    earlier generation stands whole.
+  - Every outcome then leaves one generation or a miss:
+
+    | Outcome of the object pass | Today | With retirement |
+    |---|---|---|
+    | Object written | new pair, entry recorded | unchanged |
+    | No codegen targets after a generation that had them | the old `.o` beside the new `.meta`; the restore schedules a load of the old object (§7.5) | no `.o`; the restore registers nothing to load |
+    | Codegen or `.o` write fails | new `.meta` beside the old `.o`; an earlier entry can key them | `.meta` without its `.o`: a miss under any entry |
+    | Process ends between the steps | as the failure row | as the failure row |
+
+  - The table's *today* rows are the same class as ACT-1083 at the
+    foreground writer. Not observed. Falsifier: after a cached cold run,
+    edit a module so that it defines only generic templates, run once, and
+    compare the next warm run with `--no-cache`; or make a restored module's
+    `.o` unwritable before a REPL turn rewrites it, and compare the next warm
+    run likewise.
+- **Why at the writer.** A detector at restore would need a generation stamp
+  in both files, which is a persisted field in the backend's format and goes
+  to `arch` and the user. Retiring the object inside the only `.meta` writer
+  makes a new `.meta` beside an older object unwritable through `ObjectCache`.
+- **Unchanged.** The retained earlier entry of a deferred-then-dropped
+  record (§7.6, *Defer, retry once, then drop*) still keys a rewritten pair.
+  The pair is one generation; its soundness against that entry is §7.6.2's.
+- **Grade.** *Structural* for every `.meta` written through
+  `ObjectCache::write_meta`. The backend's `serialize::write_meta` is
+  public, so a call to it from `src/` outside `ObjectCache` is a review
+  reject (§12.1, item 20). *Measured* by REPRO-1083 and the module rows below.
+- **Warm-start cost.** One file removal per `.meta` write, on a nice worker.
+  The restore and validation read nothing more. A module rebuilds only where
+  its earlier generation was already unsound. *Expectation:* the exemplar's
+  warm debug `--run` stays in the 0.89 to 0.94 s band `qa` measured at
+  `2d3a5b3e` (§7.6.3). *Falsifier:* it rises materially above that band, or
+  a warm run rebuilds a module whose source and recorded members are
+  unchanged since a successful object pass.
+- **Residual: a rewrite while the module's own cached load is outstanding.**
+  This is the review lead at `worker.rs::load_cached_module_via_linker`. The
+  object load reads the `.meta` and the `.o` again from disk, and stores the
+  `.meta`'s slot assignments in the live GOT. Once the index write is gone,
+  only the object pass rewrites those files. It rewrites a restored module
+  only after a turn compiles into it. If that happens while the module's
+  cached load is still held, claimable or claimed, the load can read a
+  newer `.meta`. It can also find no `.o`, which with retirement is a load
+  failure that refuses code-running steps (§7.1), instead of a mismatched
+  pair.
+  - Not observed, and no run in ACT-1083 needs it.
+  - *Falsifier:* a defining turn into a restored module, issued before its
+    object load ends, then a code turn that calls it, differs from
+    `--no-cache`.
+  - *Closure, if it is observed:* the object pass waits out the module's
+    cached load, as a reload's settle wait does (§7.1, *A claim ends inside
+    its registration*, ACT-0994), or the load takes its slot map from the
+    restore's decode (§7.6.3, potential extension).
+- **What `dev` builds** (`src/cache.rs`; the index half is
+  [index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)).
+  The retirement inside `ObjectCache::write_meta`. Module rows:
+  - a `.meta` write for a module that has a `.o` leaves no `.o`. It turns
+    RED when the retirement is reverted;
+  - an object pass whose table has no codegen targets, after one whose table
+    had them, leaves no `.o`, and the restore registers the module with
+    nothing to load;
+  - an object pass whose `.o` write fails, after a valid earlier entry, is a
+    miss at the next validation and restore;
+  - negative: a successful object pass leaves the new `.o` and its entry,
+    and `a_stored_meta_overwrite_is_read_by_the_next_validation` stays green.
 
 ---
 
@@ -4307,6 +4451,10 @@ carries the rule; this list is the review checklist.
     an int AST transform whose span is not that of the written node it
     replaces in the same role, or one span on two output nodes
     ([bind-chain analysis §3.6](bind-chain-analysis.md#36-reconstruction)).
+20. **A cache artefact written beside another generation** — a `.meta`
+    written other than through `ObjectCache::write_meta`, an index-branch
+    cache write, or a manifest entry recorded before its `.o` is settled
+    ([§7.7](#77-one-generation-beside-an-entry-act-1083)).
 
 ---
 
@@ -4380,9 +4528,16 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   - The location of the batch `discover-tests` refusal (ACT-1036's last
     leg) landed at `52de1aad`, and ACT-1081's rules 1 and 2 at `b8b6df58`
     and `9580856a`.
-  - *Still open (read at `9580856a`):*
-    - ACT-1081's restored-parent leg of rule 1 (§6.11, *A restored parent*)
-      and its error clause, which waits on the user's ruling;
+  - ACT-1081's restored-parent leg of rule 1 landed at `a205a29f` (§6.11,
+    *A restored parent*); its two failure paths are designed and not built.
+  - *Cached-object generation (ACT-1083), designed 2026-11-18, not built:*
+    the index pass writes no cache artefact
+    ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)),
+    and every `.meta` write retires the module's object first
+    ([§7.7](#77-one-generation-beside-an-entry-act-1083)).
+  - *Still open (read at `a205a29f`):*
+    - the failure paths of a restored parent (§6.11, *A restored parent*)
+      and ACT-1081's error clause, which waits on the user's ruling;
     - the gap's module for an alias-spelled member-absent reference
       ([§6.3.1](#631-locating-a-gap-at-its-reference-site)), at `arch` and
       the user's gate;
@@ -4833,12 +4988,10 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     cell covers a `super`-importing child or a mutual-import pair; that is
     `qa`'s fence gap.
   - **Index `.meta` structural fields.** The index-written table has empty
-    `imports`, `exports` and `submodules`. A restore from it therefore walks
-    none of its dependencies and rebuilds no aliases or fallback bit from them
-    ([restoration parity](#75-restoration-parity)). This predates CD-1 and is
-    unmeasured. Falsifier: in the REPL, let the index write a module that
-    imports another, then import it and compare its restore with a fresh
-    build. Attribution belongs to `qa`.
+    `imports`, `exports` and `submodules`, so a restore from it walks none of
+    its dependencies. ACT-1083's correction removes the index write
+    ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel)),
+    which retires this gap with it.
   - **Behaviour change and unmeasured points.** A changed recorded dependency
     now also skips the REPL entry-slot preload, so the module gets fresh
     numbering. Restore-time closure hashing and the trait-home reverse

@@ -780,14 +780,11 @@ compiler in an isolated realm. Until then this section describes what is built.
     is deserialised and read, with no typecheck;
   - **(c)** no or stale `.meta`: the module is typechecked once against a
     private substrate (§25.2), inside the containment catch (§25.4).
-- **Current branch-(c) cache write.** A clean branch (c) on a macro-free
-  module writes a `.meta` (no `.o`) and, once its
-  [dependency record](int.md#76-dependency-record-and-validity) settles, a
-  manifest entry, so a later real import is a cache hit. The write is a
-  tolerated interim with a named reopen trigger
-  (`design/int/index-worker-isolation.md` §3.3), and ACT-0952 forbids it for
-  the future semantic index. Its removal must be a coordinated design and test
-  change, because `tests/search.rs` pins the current behaviour.
+- **No cache write.** Branch (c) writes no `.meta`, `.o` or manifest entry
+  ([index-worker isolation §3.3](index-worker-isolation.md#33-the-cache-channel),
+  ACT-1083; designed, not built). The built feed still writes a `.meta` and
+  a manifest entry for a clean, macro-free module, and `tests/search.rs`
+  pins that write until `test` restates those cells.
 
 ### 25.2 Private substrate
 
@@ -802,7 +799,7 @@ construction. The isolation contract and its evidence are
 not a symbol table, is never serialised, and needs no cache-schema change. It
 holds one row per public symbol (name, scheme and docstring), the set of
 processed modules, the worklist, and the lifecycle latch (§25.10). Clearing it
-and re-reading `.meta` files reproduces the same results. The in-scope harvest
+and running the burn-down again reproduces the same results. The in-scope harvest
 (§23) is separate: it reads live tables directly and shares no structure with
 this index.
 
@@ -826,8 +823,7 @@ written, and the worker continues.
 
 Index work is best-effort warm-up. Link promotion drains only object codegen
 and abandons the index worklist; shutdown is checked between index tasks.
-`.meta` writes are atomic, so abandonment leaves unindexed modules, never a
-corrupt artifact.
+Abandonment leaves unindexed modules.
 
 ### 25.6 Command wiring and the result row
 
