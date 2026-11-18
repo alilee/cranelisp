@@ -79,7 +79,7 @@ function %Sizeable.size$user/Tag(i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) system_v
-    fn0 = colocated u0:43 sig0
+    fn0 = colocated u0:44 sig0
     fn1 = u0:2 sig2
 
 block0(v0: i64):
@@ -138,44 +138,51 @@ block1(v1: i64):
 ; === end CLIF user::Tag.MkTag ===
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
-    gv0 = symbol userextname0
-    gv1 = symbol colocated userextname1
-    gv2 = symbol userextname0
-    gv3 = symbol userextname0
+    gv0 = symbol userextname1
+    gv1 = symbol colocated userextname2
+    gv2 = symbol userextname1
+    gv3 = symbol userextname1
     sig0 = (i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
-    fn0 = u0:10 sig1
-    fn1 = u0:0 sig2
+    sig5 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+    fn1 = u0:10 sig2
+    fn2 = u0:0 sig3
 
 block0:
     jump block1
 
 block1:
     v0 = iconst.i64 5
-    v1 = global_value.i64 gv0
-    v2 = iadd_imm v1, 16
-    v3 = load.i64 notrap aligned v2
-    v4 = call_indirect sig0, v3(v0)  ; v0 = 5
-    v5 = global_value.i64 gv1
-    v6 = iconst.i64 3
-    v7 = call fn0(v5, v6)  ; v6 = 3
-    v8 = iconst.i64 16
-    v9 = call fn1(v8)  ; v8 = 16
-    v10 = iconst.i64 0
-    store notrap aligned v10, v9+16  ; v10 = 0
-    store notrap aligned v7, v9+24
-    v11 = global_value.i64 gv2
-    v12 = iadd_imm v11, 24
-    v13 = load.i64 notrap aligned v12
-    v14 = call_indirect sig3, v13(v9)
-    v15 = iadd v4, v14
-    v16 = global_value.i64 gv3
-    v17 = iadd_imm v16, 32
-    v18 = load.i64 notrap aligned v17
-    v19 = call_indirect sig4, v18(v15)
-    return v19
+    v1 = iconst.i64 16
+    v2 = call fn0(v1)  ; v1 = 16
+    v3 = iconst.i64 0
+    store notrap aligned v3, v2+16  ; v3 = 0
+    store notrap aligned v0, v2+24  ; v0 = 5
+    v4 = global_value.i64 gv0
+    v5 = iadd_imm v4, 16
+    v6 = load.i64 notrap aligned v5
+    v7 = call_indirect sig1, v6(v2)
+    v8 = global_value.i64 gv1
+    v9 = iconst.i64 3
+    v10 = call fn1(v8, v9)  ; v9 = 3
+    v11 = iconst.i64 16
+    v12 = call fn2(v11)  ; v11 = 16
+    v13 = iconst.i64 0
+    store notrap aligned v13, v12+16  ; v13 = 0
+    store notrap aligned v10, v12+24
+    v14 = global_value.i64 gv2
+    v15 = iadd_imm v14, 24
+    v16 = load.i64 notrap aligned v15
+    v17 = call_indirect sig4, v16(v12)
+    v18 = iadd v7, v17
+    v19 = global_value.i64 gv3
+    v20 = iadd_imm v19, 32
+    v21 = load.i64 notrap aligned v20
+    v22 = call_indirect sig5, v21(v18)
+    return v22
 }
 ; === end CLIF user::main ===
