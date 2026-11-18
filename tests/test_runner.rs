@@ -839,7 +839,7 @@ fn all_pass_run_keeps_existing_report() {
 }
 
 // spec: repl/spec/16-test-discovery.md §16.1 — REPRO-1063 discover-tests value
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_discover_value() {
     Cranelisp::new()

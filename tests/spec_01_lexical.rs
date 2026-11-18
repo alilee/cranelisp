@@ -2,7 +2,7 @@ mod helpers;
 use helpers::e2e::Cranelisp;
 
 // spec: spec/01-lexical.md §1.4.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_plus_or_operator found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_plus_or_operator found=S124 owner=/dev fixed=S124/7b9963bd
 #[test]
 fn s124_r3_plus() {
     let out = Cranelisp::new()
@@ -27,7 +27,7 @@ fn s124_r3_plus() {
 }
 
 // spec: spec/01-lexical.md §1.4.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_plus_or_operator found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_plus_or_operator found=S124 owner=/dev fixed=S124/7b9963bd
 #[test]
 fn s124_r3_minus() {
     let out = Cranelisp::new()
@@ -52,7 +52,7 @@ fn s124_r3_minus() {
 }
 
 // spec: spec/01-lexical.md §1.4.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_plus_or_operator found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_plus_or_operator found=S124 owner=/dev fixed=S124/7b9963bd
 #[test]
 fn s124_r3_arrow() {
     let out = Cranelisp::new()

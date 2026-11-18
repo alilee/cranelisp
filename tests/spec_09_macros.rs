@@ -1292,28 +1292,28 @@ fn assert_unused_macro_rejected(declaration: &str) {
 }
 
 // spec: spec/09-macros.md §9.2.3, §9.9.1 — reject non-Sexp bodies even when unused
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn macro_nullary_non_sexp_rejected_at_definition_neg() {
     assert_unused_macro_rejected("(defmacro bad [] 3.14)");
 }
 
 // spec: spec/09-macros.md §9.2.3, §9.9.1 — reject non-Sexp bodies even when unused
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn macro_rest_only_non_sexp_rejected_at_definition_neg() {
     assert_unused_macro_rejected("(defmacro bad [& xs] 3.14)");
 }
 
 // spec: spec/09-macros.md §9.2.3, §9.9.1 — reject non-Sexp bodies even when unused
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn macro_multi_clause_nullary_non_sexp_rejected_at_definition_neg() {
     assert_unused_macro_rejected("(defmacro bad ([] 42) ([x] (quote 1)))");
 }
 
 // spec: spec/09-macros.md §9.9.1 — locate the mismatch at the defmacro form
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn macro_return_mismatch_located_at_definition_neg() {
     let out = unused_macro_run("(defmacro bad [x]\n 42)");
@@ -1332,7 +1332,7 @@ fn macro_return_mismatch_located_at_definition_neg() {
 }
 
 // spec: spec/09-macros.md §9.2.3, §9.9.1 — REPL rejects the declaration and remains usable
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S123 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn macro_nullary_non_sexp_repl_rejects_without_publication_neg() {
     let out = Cranelisp::new()
@@ -1529,7 +1529,7 @@ fn s124_1066_value_control_repl() {
 }
 
 // spec: spec/09-macros.md §9.2.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_r1_trailing() {
     let out = Cranelisp::new()
@@ -1550,7 +1550,7 @@ fn s124_r1_trailing() {
 }
 
 // spec: spec/09-macros.md §9.2.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_r1_rest_tail() {
     let out = Cranelisp::new()
@@ -1571,7 +1571,7 @@ fn s124_r1_rest_tail() {
 }
 
 // spec: spec/09-macros.md §9.2.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_r1_spaced_rest() {
     let out = Cranelisp::new()
@@ -1592,7 +1592,7 @@ fn s124_r1_spaced_rest() {
 }
 
 // spec: spec/09-macros.md §9.2.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_r1_two_rest() {
     let out = Cranelisp::new()
@@ -1613,7 +1613,7 @@ fn s124_r1_two_rest() {
 }
 
 // spec: spec/09-macros.md §9.2.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_r1_nested_tail() {
     let out = Cranelisp::new()
@@ -1634,7 +1634,7 @@ fn s124_r1_nested_tail() {
 }
 
 // spec: spec/09-macros.md §9.2.2
-// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev
+// defect: class=silent-accept locus=crates/cranelisp-frontend/src/defmacro.rs found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_r1_nested_two() {
     let out = Cranelisp::new()
@@ -1771,7 +1771,7 @@ fn s124_r1_zero_control() {
 }
 
 // spec: spec/09-macros.md §9.9.1
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S124 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_q3_clauses() {
     let out = Cranelisp::new()
@@ -1791,7 +1791,7 @@ fn s124_q3_clauses() {
 }
 
 // spec: spec/09-macros.md §9.9.1
-// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S124 owner=/dev
+// defect: class=wrong-accept locus=crates/cranelisp-frontend/src/defmacro.rs::synthesize_macro_clause_defn found=S124 owner=/dev fixed=S124/4dcf6cca
 #[test]
 fn s124_q3_shorthand() {
     let out = Cranelisp::new()
@@ -1808,7 +1808,7 @@ fn s124_q3_shorthand() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 sconcat
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_sconcat_value() {
     Cranelisp::new()

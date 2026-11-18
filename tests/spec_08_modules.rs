@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 use std::time::Duration;
 
 // =============================================================================
@@ -4603,7 +4603,7 @@ fn box_import_unrenamed_control() {
 }
 
 // spec: spec/08-modules.md §8.3.5 — a renamed type keeps its canonical identity.
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs found=S122 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs found=S122 owner=/dev fixed=S124/42e6d929
 // ACT-0997; control: box_import_unrenamed_control.
 #[test]
 fn box_import_renamed_binds_canonical_type() {
@@ -4616,7 +4616,7 @@ fn box_import_renamed_binds_canonical_type() {
 }
 
 // spec: spec/08-modules.md §8.3.5 — a self-rename is valid.
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs found=S122 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs found=S122 owner=/dev fixed=S124/42e6d929
 // ACT-0997; control: box_import_unrenamed_control.
 #[test]
 fn box_import_self_rename_is_accepted() {
@@ -4840,7 +4840,7 @@ fn assert_member_import_result(import: &str, body: &str, expected: i32) {
 }
 
 // spec: spec/08-modules.md §8.3.11 — selective members enter bare scope
-// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev
+// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn selective_member_ctor_binds_bare_value_and_pattern() {
     assert_member_import_result(
@@ -4851,7 +4851,7 @@ fn selective_member_ctor_binds_bare_value_and_pattern() {
 }
 
 // spec: spec/08-modules.md §8.3.11 — selective members enter bare scope
-// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev
+// defect: class=wrong-reject locus=src/imports.rs::collect_specific found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn selective_member_trait_method_binds_bare_name() {
     assert_member_import_result("(import [mathx [Seven.seven]])", "(seven 1)", 7);
@@ -4925,7 +4925,7 @@ fn selective_member_glob_control() {
 }
 
 // spec: spec/08-modules.md §8.3.11 — each names-list entry contributes its bindings
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn mixed_parent_and_member_glob_keeps_both() {
     assert_member_import_result(
@@ -4936,7 +4936,7 @@ fn mixed_parent_and_member_glob_keeps_both() {
 }
 
 // spec: spec/08-modules.md §8.3.11 — each names-list entry contributes its bindings
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn mixed_member_glob_and_function_keeps_both() {
     assert_member_import_result(
@@ -4981,7 +4981,7 @@ fn assert_export_result(export: &str, body: &str, expected: i32) {
 }
 
 // spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn export_mount_reexports_and_exposes_unlisted_member() {
     assert_export_result(
@@ -4992,14 +4992,14 @@ fn export_mount_reexports_and_exposes_unlisted_member() {
 }
 
 // spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn export_mount_only_exposes_qualified_member() {
     assert_export_result("(export [(mathx math) []])", "(api.math/square 7)", 49);
 }
 
 // spec: spec/08-modules.md §8.4, §8.4.4, §8.3.11 — export bindings and public mounts
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn export_mixed_member_glob_keeps_function() {
     assert_export_result(
@@ -5016,7 +5016,7 @@ fn export_unmounted_control() {
 }
 
 // spec: spec/08-modules.md §8.4.4 — mount-only export adds no bare names
-// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S123 owner=/dev fixed=S124/42e6d929
 #[test]
 fn export_mount_only_does_not_reexport_bare_names_neg() {
     let out = export_fixture("(export [(mathx math) []])", "(square 7)");
@@ -5063,6 +5063,7 @@ fn s124_module_value(cr: Cranelisp, src: &str, expected: i32, mode: &str) {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_a
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_a_run() {
     let cr = s124_projection_modules();
@@ -5075,6 +5076,7 @@ fn s124_modules_r2_a_run() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_a
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_a_link() {
     let cr = s124_projection_modules();
@@ -5087,6 +5089,7 @@ fn s124_modules_r2_a_link() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_a
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_a_repl() {
     let cr = s124_projection_modules();
@@ -5099,6 +5102,7 @@ fn s124_modules_r2_a_repl() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_b
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_b_run() {
     let cr = s124_projection_modules();
@@ -5111,6 +5115,7 @@ fn s124_modules_r2_b_run() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_b
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_b_link() {
     let cr = s124_projection_modules();
@@ -5123,6 +5128,7 @@ fn s124_modules_r2_b_link() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_b
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_names_list found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_b_repl() {
     let cr = s124_projection_modules();
@@ -5135,6 +5141,7 @@ fn s124_modules_r2_b_repl() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_c
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_c_run() {
     let cr = s124_projection_modules();
@@ -5147,6 +5154,7 @@ fn s124_modules_r2_c_run() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_c
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_c_link() {
     let cr = s124_projection_modules();
@@ -5159,6 +5167,7 @@ fn s124_modules_r2_c_link() {
 }
 
 // spec: spec/08-modules.md §8.4 — S124 r2_c
+// defect: class=wrong-reject locus=crates/cranelisp-frontend/src/module_extract.rs::parse_export_entries found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_r2_c_repl() {
     let cr = s124_projection_modules();
@@ -5461,7 +5470,7 @@ fn s124_modules_super_cycle_neg_repl() {
 }
 
 // spec: spec/08-modules.md §8.6.4 — T-ALIAS
-// defect: class=silent-accept locus=src/imports.rs::import_alias_writer found=S122 owner=/dev
+// defect: class=silent-accept locus=src/imports.rs::import_alias_writer found=S122 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_alias_conflict_file() {
     let out = Cranelisp::new()
@@ -5483,7 +5492,7 @@ fn s124_modules_alias_conflict_file() {
 }
 
 // spec: spec/08-modules.md §8.6.4 — T-ALIAS, later turn
-// defect: class=silent-accept locus=src/imports.rs::import_alias_writer found=S122 owner=/dev
+// defect: class=silent-accept locus=src/imports.rs::import_alias_writer found=S122 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_modules_alias_conflict_turn() {
     let out = Cranelisp::new()
@@ -6136,16 +6145,18 @@ fn s124_mount_prelude_cycle(qualifier: &str, opt_out: bool) -> Cranelisp {
 }
 
 // spec: spec/08-modules.md §8.5.4 item 6, §8.4.4 — a qualified dependency through a mount closes a prelude cycle
-// defect: class=enumeration-miss locus=src/process_form/dependency.rs::prelude_reach_cycle found=S124 owner=/dev
-// Review of 42e6d929; design/int/int.md prelude_reach_cycle fixpoint rule.
+// defect: class=enumeration-miss locus=src/process_form/dependency.rs::prelude_reach_cycle found=S124 owner=/dev fixed=S124/2dec7450
+// The prelude cycle walk had missed a qualified dependency through a mount.
 #[test]
 fn s124_prelude_cycle_through_nameless_export_mount_reports_cycle() {
     let out = s124_mount_prelude_cycle("p.s", false)
         .stdin("/quit\n")
         .output();
     let text = combined(&out);
-    assert!(names_prelude_x_cycle(&text),
-        "qualified p.s/y must report the x/prelude cycle rather than x's unresolved PreludeType; {text}");
+    assert!(
+        names_prelude_x_cycle(&text),
+        "qualified p.s/y must report the x/prelude cycle rather than x's unresolved PreludeType; {text}"
+    );
 }
 
 // spec: spec/08-modules.md §8.5.4 item 6 — direct qualifier control for the same cycle

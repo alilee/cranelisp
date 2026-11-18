@@ -713,7 +713,7 @@ fn traced_fib_12_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
 // spec: spec/04-expressions.md §4.12.2 — item 3: every instrumented call in
 // the trace's extent is recorded, including calls a spark-admitted callee
 // makes. REPL only until ACT-1039 lets `--run` record user functions.
-// defect: class=shared-state-write-race locus=design/backend/lenient-eval.md §2.3 trace-body exclusion is lexical, so a callee sparks during the trace's dynamic extent found=S122 owner=/dev (ACT-1038)
+// defect: class=shared-state-write-race locus=design/backend/lenient-eval.md §2.3 trace-body exclusion was lexical, so a callee sparked during the trace's dynamic extent found=S122 owner=/dev (ACT-1038) fixed=S124/3cdca9dc
 #[test]
 fn trace_records_every_call_of_spark_admitted_callee() {
     let out = traced_fib_12_repl(false);
@@ -819,7 +819,7 @@ fn traced_vs_untraced_fib_12(no_lenient: bool) -> MarginalPair {
 // and result String it formats, including those formatted for calls a
 // spark-admitted callee makes: the traced session's marginal over the
 // untraced one is zero.
-// defect: class=shared-state-write-race locus=crates/cranelisp-intrinsics/src/trace.rs::cranelisp_trace_enter returns on a thread without TRACE_THREAD_ID without storing or releasing the formatted Strings found=S122 owner=/dev (ACT-1038)
+// defect: class=shared-state-write-race locus=crates/cranelisp-intrinsics/src/trace.rs::cranelisp_trace_enter returned on a thread without TRACE_THREAD_ID without storing or releasing the formatted Strings found=S122 owner=/dev (ACT-1038) fixed=S124/3cdca9dc
 #[test]
 fn traced_spark_admitted_callee_releases_every_formatted_string() {
     let pair = traced_vs_untraced_fib_12(false).measure();
@@ -837,7 +837,7 @@ fn traced_callee_releases_every_formatted_string_with_sparks_disabled_control() 
 
 // spec: spec/04-expressions.md §4.12.9 — a trace behaves identically in every
 // mode: `(trace (fib 3))` records its 5 `fib` calls in the REPL, under `--run`
-// and in a linked binary. Sparks are disabled so ACT-1038 cannot drop frames;
+// and in a linked binary. Sparks are disabled to isolate the mode comparison;
 // the REPL leg is the control.
 // defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S122 owner=/dev — provisional: mechanism unobserved (ACT-1039)
 #[test]

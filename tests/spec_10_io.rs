@@ -32,7 +32,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{repl_output_lines, Cranelisp, PreludeVariant, REPL_IO_NOTICE};
+use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
 use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================
@@ -2046,7 +2046,7 @@ fn s124_value(cr: helpers::e2e::Cranelisp, program: &str, mode: &str, expected: 
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_run() {
     s124_value(
@@ -2061,7 +2061,7 @@ fn s124_1063_p_bind_run() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_link() {
     s124_value(
@@ -2076,7 +2076,7 @@ fn s124_1063_p_bind_link() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_repl() {
     s124_value(
@@ -2091,7 +2091,7 @@ fn s124_1063_p_bind_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_ap_run() {
     s124_value(
@@ -2106,7 +2106,7 @@ fn s124_1063_p_bind_ap_run() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_ap_link() {
     s124_value(
@@ -2121,7 +2121,7 @@ fn s124_1063_p_bind_ap_link() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_ap_repl() {
     s124_value(
@@ -2136,7 +2136,7 @@ fn s124_1063_p_bind_ap_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_vec_run() {
     s124_value(
@@ -2151,7 +2151,7 @@ fn s124_1063_p_bind_vec_run() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_vec_link() {
     s124_value(
@@ -2166,7 +2166,7 @@ fn s124_1063_p_bind_vec_link() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_bind_vec_repl() {
     s124_value(
@@ -2181,7 +2181,7 @@ fn s124_1063_p_bind_vec_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_race_run() {
     s124_value(
@@ -2196,7 +2196,7 @@ fn s124_1063_p_race_run() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_race_link() {
     s124_value(
@@ -2211,7 +2211,7 @@ fn s124_1063_p_race_link() {
 }
 
 // spec: spec/03-types.md §3.2.1
-// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::auto_curry found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_p_race_repl() {
     s124_value(
@@ -2789,7 +2789,7 @@ fn s124_1077_unrelated_bind_local_keeps_overlap() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_bind_run() {
     s124_value(
@@ -2804,7 +2804,7 @@ fn s124_1063_value_bind_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_bind_link() {
     s124_value(
@@ -2819,7 +2819,7 @@ fn s124_1063_value_bind_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_bind_repl() {
     s124_value(
@@ -2834,7 +2834,7 @@ fn s124_1063_value_bind_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_ap
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_bind_ap_run() {
     s124_value(
@@ -2849,7 +2849,7 @@ fn s124_1063_value_bind_ap_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_ap
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_bind_ap_link() {
     s124_value(
@@ -2864,7 +2864,7 @@ fn s124_1063_value_bind_ap_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 bind_ap
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_bind_ap_repl() {
     s124_value(
@@ -2879,7 +2879,7 @@ fn s124_1063_value_bind_ap_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 race
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_race_run() {
     s124_value(
@@ -2894,7 +2894,7 @@ fn s124_1063_value_race_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 race
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_race_link() {
     s124_value(
@@ -2909,7 +2909,7 @@ fn s124_1063_value_race_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 race
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_race_repl() {
     s124_value(
@@ -2924,7 +2924,7 @@ fn s124_1063_value_race_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 select
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_select_run() {
     s124_value(
@@ -2939,7 +2939,7 @@ fn s124_1063_value_select_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 select
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_select_link() {
     s124_value(
@@ -2954,7 +2954,7 @@ fn s124_1063_value_select_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 select
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_select_repl() {
     s124_value(
@@ -2969,7 +2969,7 @@ fn s124_1063_value_select_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 select_ap
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_select_ap_run() {
     s124_value(
@@ -2984,7 +2984,7 @@ fn s124_1063_value_select_ap_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 select_ap
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_select_ap_link() {
     s124_value(
@@ -2999,7 +2999,7 @@ fn s124_1063_value_select_ap_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 select_ap
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_select_ap_repl() {
     s124_value(
@@ -3014,7 +3014,7 @@ fn s124_1063_value_select_ap_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_sleep_run() {
     s124_value(
@@ -3029,7 +3029,7 @@ fn s124_1063_value_sleep_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_sleep_link() {
     s124_value(
@@ -3044,7 +3044,7 @@ fn s124_1063_value_sleep_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 sleep
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_sleep_repl() {
     s124_value(
@@ -3059,7 +3059,7 @@ fn s124_1063_value_sleep_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 name
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_name_run() {
     s124_value(
@@ -3074,7 +3074,7 @@ fn s124_1063_value_name_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 name
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_name_link() {
     s124_value(
@@ -3089,7 +3089,7 @@ fn s124_1063_value_name_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 name
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_name_repl() {
     s124_value(
@@ -3104,7 +3104,7 @@ fn s124_1063_value_name_repl() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 nanos
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_nanos_run() {
     s124_value(
@@ -3119,7 +3119,7 @@ fn s124_1063_value_nanos_run() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 nanos
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_nanos_link() {
     s124_value(
@@ -3134,7 +3134,7 @@ fn s124_1063_value_nanos_link() {
 }
 
 // spec: spec/03-types.md §3.2.1 — REPRO-1063 nanos
-// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-backend::fn_as_value found=S124 owner=/dev fixed=S124/777412a7
 #[test]
 fn s124_1063_value_nanos_repl() {
     s124_value(

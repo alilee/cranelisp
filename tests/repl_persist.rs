@@ -6589,7 +6589,7 @@ fn w4_removed_file_without_definition_control() {
 }
 
 // spec: repl/spec/15-session-persistence.md §15.4
-// defect: class=artifact-underkey locus=src/save.rs::impl_enumeration found=S124 owner=/dev
+// defect: class=artifact-underkey locus=src/save.rs::impl_enumeration found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_1064_subject_entered() {
     let cr = Cranelisp::new()
@@ -6632,7 +6632,7 @@ fn s124_1064_subject_entered() {
 }
 
 // spec: repl/spec/15-session-persistence.md §15.4
-// defect: class=artifact-underkey locus=src/save.rs::impl_enumeration found=S124 owner=/dev
+// defect: class=artifact-underkey locus=src/save.rs::impl_enumeration found=S124 owner=/dev fixed=S124/42e6d929
 #[test]
 fn s124_1064_subject_loaded() {
     let cr = Cranelisp::new()
@@ -7147,22 +7147,25 @@ fn s124_glob_rename_restart(imports: &str) {
         .assert_stdout_contains(":primitives/Int 37");
     let saved = first.read_tmp("user.cl");
     let second = s124_cold_session(first).stdin("(h)\n/quit\n").output();
-    assert!(second.stdout.contains(":primitives/Int 37"),
+    assert!(
+        second.stdout.contains(":primitives/Int 37"),
         "renamed g beside a glob must survive cold restart; saved:\n{saved}\nstdout:\n{}\nstderr:\n{}",
-        second.stdout, second.stderr);
+        second.stdout,
+        second.stderr
+    );
 }
 
 // spec: spec/08-modules.md §8.3.10–§8.3.11; repl/spec/15-session-persistence.md §15.4 rule 1
-// defect: class=carrier-loss locus=src/save.rs::generate_imports found=S124 owner=/dev
-// Review of 42e6d929; design/int/int.md §6.13 regeneration merge correction.
+// defect: class=carrier-loss locus=src/save.rs::generate_imports found=S124 owner=/dev fixed=S124/74aa7a52
+// Regeneration had lost a rename beside a glob (review of 42e6d929).
 #[test]
 fn s124_glob_then_rename_survives_cold_restart() {
     s124_glob_rename_restart("(import [m [*] m [(f g)]])");
 }
 
 // spec: spec/08-modules.md §8.3.10–§8.3.11; repl/spec/15-session-persistence.md §15.4 rule 1
-// defect: class=carrier-loss locus=src/save.rs::generate_imports found=S124 owner=/dev
-// Review of 42e6d929; the reverse order must preserve the same union.
+// defect: class=carrier-loss locus=src/save.rs::generate_imports found=S124 owner=/dev fixed=S124/74aa7a52
+// Regeneration had lost the same union in reverse order.
 #[test]
 fn s124_rename_then_glob_survives_cold_restart() {
     s124_glob_rename_restart("(import [m [(f g)] m [*]])");
@@ -7175,7 +7178,7 @@ fn s124_rename_without_glob_cold_restart_control() {
 }
 
 // spec: spec/08-modules.md §8.3.10–§8.3.11; repl/spec/15-session-persistence.md §15.4 rule 1
-// defect: class=carrier-loss locus=src/save.rs::generate_imports found=S124 owner=/dev
+// defect: class=carrier-loss locus=src/save.rs::generate_imports found=S124 owner=/dev fixed=S124/74aa7a52
 // The design's suggested separate-form control is tested independently.
 #[test]
 fn s124_glob_and_rename_separate_forms_survive_cold_restart() {
@@ -7212,31 +7215,37 @@ fn s124_selective_star_restart(export: bool, names: &str) {
             .run("consumer.cl")
             .output();
         let text = format!("{}{}", third.stdout, third.stderr);
-        assert!(!third.status.success() && text.contains("undefined variable: other"),
-            "selective export must not expose other downstream after cold restart; saved:\n{saved}\nstatus: {:?}\n{text}", third.status);
+        assert!(
+            !third.status.success() && text.contains("undefined variable: other"),
+            "selective export must not expose other downstream after cold restart; saved:\n{saved}\nstatus: {:?}\n{text}",
+            third.status
+        );
     } else {
         let second = s124_cold_session(first)
             .stdin("(*)\n(other)\n/quit\n")
             .output()
             .assert_stdout_contains(":primitives/Int 37");
-        assert!(second.stdout.contains("undefined variable: other")
+        assert!(
+            second.stdout.contains("undefined variable: other")
                 && !second.stdout.contains(":primitives/Int 83"),
             "selective import must not gain other after cold restart; saved:\n{saved}\nstdout:\n{}\nstderr:\n{}",
-            second.stdout, second.stderr);
+            second.stdout,
+            second.stderr
+        );
     }
 }
 
 // spec: spec/08-modules.md §8.3.2, §8.3.5; repl/spec/15-session-persistence.md §15.4 rule 1
-// defect: class=carrier-loss locus=src/save.rs found=S124 owner=/dev
-// Review of 42e6d929; design/int/int.md §6.13 lone-* rendering correction.
+// defect: class=carrier-loss locus=src/save.rs found=S124 owner=/dev fixed=S124/74aa7a52
+// Regeneration had widened a selective lone-* import to a glob.
 #[test]
 fn s124_selective_star_import_stays_selective_after_cold_restart() {
     s124_selective_star_restart(false, "[(* *)]");
 }
 
 // spec: spec/08-modules.md §8.3.2, §8.4.0; repl/spec/15-session-persistence.md §15.4 rule 1
-// defect: class=carrier-loss locus=src/save.rs found=S124 owner=/dev
-// Review of 42e6d929; downstream public API must remain selective too.
+// defect: class=carrier-loss locus=src/save.rs found=S124 owner=/dev fixed=S124/74aa7a52
+// Regeneration had widened a selective lone-* export downstream.
 #[test]
 fn s124_selective_star_export_stays_selective_after_cold_restart() {
     s124_selective_star_restart(true, "[(* *)]");
