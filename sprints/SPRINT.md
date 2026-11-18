@@ -396,6 +396,18 @@ The third-deferral groups and ACT-1067 (Notes).
   scheduled nor a recorded carry. Rows K11-a to K11-d and D6/D9 (behind D13)
   are approved and not in source. The document checker cannot pass without
   the ignored-path disposal.
+- **After W8 (`qa`, `6aff37c8`):** K11-b landed (`fe4e6484`); the K11-a
+  compile fence landed (`7af4023e`); ACT-1036's `discover-tests` leg located
+  (`52de1aad`); ACT-1081 rules 1 and 2 with review corrections and the
+  restored-parent rule (`b8b6df58`, `9580856a`, `a205a29f`) — routes agree;
+  the outcome clause waits on the user. Suite 7,794 run, 86 failed, nothing
+  unattributed. ACT-1052's guard passes alone and fails about one loaded run
+  in ten: a different, older defect, filed as ACT-1083 (a REPL index pass
+  re-validates a stale cached object; wrong value or crash on the next
+  cached batch run). Also filed: ACT-1082 (a reference through a module
+  alias names the alias as the module; correction is a semantic
+  `ResolutionGap` row awaiting the user), ACT-1084 (dead `MacroInMem`
+  variant; not scheduled).
 - **Awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
   member (`cranelisp-types`; raised by review of `951622cf`, half-fixed in
   `240b3a8a`). Not started.
