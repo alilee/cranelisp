@@ -295,7 +295,7 @@ fn non_platform_effect_dispatch_does_not_stamp_field3() {
     let field3_off: i64 =
         cranelisp_types::HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
     let store_at_field3 = format!("+{field3_off}");
-    let store_at_pure_glue = format!("+{}", crate::heap::HeapAdt::field_offset(1));
+    let store_at_pure_glue = format!("+{}", cranelisp_intrinsics::alloc::HeapAdt::field_offset(1));
 
     let mut obj = make_object_module();
     let artifacts = compile_names_to_module(

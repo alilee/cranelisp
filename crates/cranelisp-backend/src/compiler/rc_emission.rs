@@ -29,8 +29,8 @@ pub(crate) fn emit_closure_dec_into<M: Module>(
     closure_val: Value,
     dealloc_id: FuncId,
 ) {
-    use crate::heap::HeapClosure;
     use cranelift_codegen::ir::AtomicRmwOp;
+    use cranelisp_intrinsics::alloc::HeapClosure;
     use cranelisp_types::HeapHeader;
 
     let cont_block = builder.create_block();

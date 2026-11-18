@@ -47,10 +47,11 @@ Each rule is owned elsewhere; the link is the authority.
 - **Nullary ADT constructors are bare `i64` tags, not heap objects.** Values
   below `NULLARY_TAG_THRESHOLD` carry no RC header; guarded RC helpers skip
   them through `heap::emit_nullary_skip_guard`.
-- **Layout offsets have two sources.** `heap.rs` owns `HeapAdt`, `HeapClosure`
-  and `HeapVec` (static offset asserts beside each); `HeapHeader` is
-  `cranelisp-types`'; `cranelisp-intrinsics` cannot depend on this crate and
-  keeps its own offset constants. Change a layout on both sides.
+- **Heap layouts are intrinsics'.** Read `cranelisp_intrinsics::alloc::{HeapAdt,
+  HeapClosure}` and `vec_runtime`'s offsets; `HeapHeader` is
+  `cranelisp-types`'. `heap.rs` only converts the Vec offsets to `i32` once
+  ([heap layout owners](../../design/intrinsics/heap-layout.md)). Never spell a
+  literal offset against an object base.
 - **`got_data_symbol_name` in `compiler/resolution.rs` is a one-line forward**
   to `cranelisp_types::got_data_symbol_name`. Int defines the symbol through the
   types function, so a backend-local change breaks every cross-module call.

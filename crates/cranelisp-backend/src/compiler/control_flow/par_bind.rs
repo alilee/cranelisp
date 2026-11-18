@@ -10,7 +10,8 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
-use crate::heap::{self, HeapAdt, HeapClosure};
+use crate::heap;
+use cranelisp_intrinsics::alloc::{HeapAdt, HeapClosure};
 
 use super::FnCompiler;
 use crate::compiler::ownership_plan::{CaptureEntry, Intro};

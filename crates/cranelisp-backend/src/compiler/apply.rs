@@ -15,8 +15,9 @@ use cranelisp_types::{
     Life, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
 };
 
-use crate::heap::{self, HeapAdt, HeapClosure};
+use crate::heap;
 use crate::primitives_inline;
+use cranelisp_intrinsics::alloc::{HeapAdt, HeapClosure};
 
 use super::FnCompiler;
 use super::control_flow::{

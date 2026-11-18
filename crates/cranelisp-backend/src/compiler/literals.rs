@@ -13,7 +13,8 @@ use cranelisp_types::{
 
 use super::FnCompiler;
 use super::context::CtorValueShape;
-use crate::heap::{self, HeapClosure};
+use crate::heap;
+use cranelisp_intrinsics::alloc::HeapClosure;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where

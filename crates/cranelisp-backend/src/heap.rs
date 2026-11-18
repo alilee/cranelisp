@@ -1,18 +1,15 @@
-//! Heap layout types, RC emit helpers, and codegen heap classification.
+//! RC emit helpers and codegen heap classification.
 //!
-//! Owns the backend's heap layout structs (`HeapAdt`, `HeapClosure`,
-//! `HeapVec`) over the types-owned `HeapHeader`, and the inline RC and
-//! allocation emitters other codegen calls rather than spelling offsets. The
-//! layouts are `pub` for the binary crate's value display and test runner.
-//! `cranelisp-intrinsics` cannot depend on this crate and carries its own
-//! offsets for the same layouts.
+//! The heap layouts are defined once, in `cranelisp-intrinsics`
+//! (`alloc::HeapAdt`, `alloc::HeapClosure`, `vec_runtime`) over the
+//! types-owned `HeapHeader` (`design/intrinsics/heap-layout.md`). This module
+//! holds the inline RC and allocation emitters other codegen calls rather than
+//! spelling offsets, and converts the Vec offsets to codegen's `i32` once.
 //!
 //! [`HeapCategory`] + [`HeapCategory::classify`] are the codegen heap
 //! classification. `classify` carries a two-mode `Option<&tables>` contract
 //! (pre-typecheck: ADTs conservatively `Mixed`; post-typecheck: classified by
 //! constructor inspection), noted at the item.
-
-use std::mem::{self, offset_of};
 
 use cranelift::prelude::*;
 use cranelift_codegen::ir::AtomicRmwOp;
@@ -24,107 +21,20 @@ use cranelisp_types::{
     CallableOrigin, ConcreteType, FQTypeName, HeapHeader, ModuleFullPath, Symbol, SymbolTable,
 };
 
+use cranelisp_intrinsics::vec_runtime;
 use cranelisp_types::NULLARY_TAG_THRESHOLD;
 
 // ---------------------------------------------------------------------------
-// Heap layout structs — backend-owned
+// Vec offsets — the layouts are intrinsics' (`alloc::HeapAdt`,
+// `alloc::HeapClosure`, `vec_runtime`); codegen addresses with `i32`
 // ---------------------------------------------------------------------------
 
-/// ADT data constructor: [header | tag | field_0 | field_1 | ... | field_n]
-/// Nullary constructors are NOT heap-allocated — they are bare i64 tags.
-#[repr(C)]
-pub struct HeapAdt {
-    pub header: HeapHeader,
-    /// Constructor tag (same tag value whether nullary or data constructor).
-    pub tag: i64,
-    // Fields follow at FIELDS_START. Each field is an i64.
-}
-
-impl HeapAdt {
-    pub const TAG_OFFSET: i32 = offset_of!(Self, tag) as i32; // 16
-    pub const FIELDS_START: usize = mem::size_of::<Self>(); // 24
-
-    /// Offset of the i-th field from the base pointer.
-    pub const fn field_offset(i: usize) -> i32 {
-        (Self::FIELDS_START + i * mem::size_of::<i64>()) as i32
-    }
-
-    /// Payload size after the header: tag + n fields.
-    pub const fn payload_size(field_count: usize) -> usize {
-        mem::size_of::<i64>() + field_count * mem::size_of::<i64>()
-    }
-}
-
-const _: () = assert!(HeapAdt::TAG_OFFSET == 16);
-const _: () = assert!(HeapAdt::FIELDS_START == 24);
-
-/// Closure: [header | code_ptr | drop_glue_ptr | cap_0 | cap_1 | ... | cap_n]
-///
-/// `drop_glue_ptr` is 0 for closures with no heap-typed captures.
-/// When non-zero, it points to a `(ptr: i64) -> ()` function that dec's
-/// each captured heap value before the closure env is freed.
-#[repr(C)]
-pub struct HeapClosure {
-    pub header: HeapHeader,
-    /// Pointer to the compiled lambda body.
-    /// Lambda body signature: (env_ptr: i64, params...) -> i64
-    pub code_ptr: i64,
-    /// Pointer to the drop glue function for captured heap values.
-    /// Zero if no captures are heap-typed.
-    /// Drop glue signature: (closure_ptr: i64) -> ()
-    pub drop_glue_ptr: i64,
-    // Captures follow at CAPTURES_START. Each capture is an i64.
-}
-
-impl HeapClosure {
-    pub const CODE_PTR_OFFSET: i32 = offset_of!(Self, code_ptr) as i32; // 16
-    pub const DROP_GLUE_PTR_OFFSET: i32 = offset_of!(Self, drop_glue_ptr) as i32; // 24
-    pub const CAPTURES_START: usize = mem::size_of::<Self>(); // 32
-
-    /// Offset of the i-th captured value from the base pointer.
-    pub const fn capture_offset(i: usize) -> i32 {
-        (Self::CAPTURES_START + i * mem::size_of::<i64>()) as i32
-    }
-
-    /// Payload size after the header: code_ptr + drop_glue_ptr + n captures.
-    pub const fn payload_size(capture_count: usize) -> usize {
-        2 * mem::size_of::<i64>() + capture_count * mem::size_of::<i64>()
-    }
-}
-
-const _: () = assert!(HeapClosure::CODE_PTR_OFFSET == 16);
-const _: () = assert!(HeapClosure::DROP_GLUE_PTR_OFFSET == 24);
-const _: () = assert!(HeapClosure::CAPTURES_START == 32);
-
-/// Vec: [header | len | cap | data_ptr]
-/// The data buffer is a separate allocation: [elem_0 | elem_1 | ... | elem_{cap-1}]
-/// Each element is i64 (uniform representation). Only the first `len` elements are live.
-#[repr(C)]
-pub struct HeapVec {
-    pub header: HeapHeader,
-    /// Number of live elements (0..len are initialized).
-    pub len: i64,
-    /// Capacity of the data buffer (in elements, not bytes).
-    pub cap: i64,
-    /// Pointer to the data buffer. The buffer holds `cap` slots of i64.
-    pub data_ptr: i64, // ptr-width: i64 on native
-}
-
-impl HeapVec {
-    pub const LEN_OFFSET: i32 = offset_of!(Self, len) as i32; // 16
-    pub const CAP_OFFSET: i32 = offset_of!(Self, cap) as i32; // 24
-    pub const DATA_PTR_OFFSET: i32 = offset_of!(Self, data_ptr) as i32; // 32
-
-    /// Payload size after the header: len + cap + data_ptr.
-    pub const fn payload_size() -> usize {
-        3 * mem::size_of::<i64>() // 24 bytes
-    }
-}
-
-const _: () = assert!(HeapVec::LEN_OFFSET == 16);
-const _: () = assert!(HeapVec::CAP_OFFSET == 24);
-const _: () = assert!(HeapVec::DATA_PTR_OFFSET == 32);
-const _: () = assert!(mem::size_of::<HeapVec>() == 40);
+/// [`vec_runtime::LEN_OFFSET`] as a codegen offset.
+pub(crate) const VEC_LEN_OFFSET: i32 = vec_runtime::LEN_OFFSET as i32;
+/// [`vec_runtime::CAP_OFFSET`] as a codegen offset.
+pub(crate) const VEC_CAP_OFFSET: i32 = vec_runtime::CAP_OFFSET as i32;
+/// [`vec_runtime::DATA_PTR_OFFSET`] as a codegen offset.
+pub(crate) const VEC_DATA_PTR_OFFSET: i32 = vec_runtime::DATA_PTR_OFFSET as i32;
 
 // ---------------------------------------------------------------------------
 // Generic heap access helpers — free functions

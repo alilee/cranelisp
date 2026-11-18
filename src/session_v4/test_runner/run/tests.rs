@@ -19,12 +19,11 @@ extern "C" fn passes() -> i64 {
 extern "C" fn fails() -> i64 {
     record("call fail");
     let reason = cranelisp_intrinsics::heap_string::alloc_string(b"boom") as i64;
-    let some = cranelisp_intrinsics::alloc::alloc_with_rc(16);
-    // SAFETY: a fresh 16-byte payload: the `Some` tag, then its one field.
+    let some = cranelisp_intrinsics::alloc::alloc_with_rc(HeapAdt::payload_size(1));
+    // SAFETY: a fresh one-field ADT payload: the `Some` tag, then its field.
     unsafe {
-        *(some.add(16) as *mut i64) = 1;
-        *(some.add(cranelisp_backend::heap::HeapAdt::field_offset(0) as usize) as *mut i64) =
-            reason;
+        *(some.add(HeapAdt::TAG_OFFSET as usize) as *mut i64) = 1;
+        *(some.add(HeapAdt::field_offset(0) as usize) as *mut i64) = reason;
     }
     FAIL_VALUE.store(some as i64, Ordering::SeqCst);
     some as i64

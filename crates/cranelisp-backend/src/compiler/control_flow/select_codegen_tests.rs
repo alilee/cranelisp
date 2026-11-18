@@ -11,8 +11,8 @@
 // — the tag bake does not depend on the branch shape, and the runtime semantics
 // are covered e2e.
 
-use crate::heap::HeapAdt;
 use crate::jit::Jit;
+use cranelisp_intrinsics::alloc::HeapAdt;
 use cranelisp_types::{
     Defn, DefnVariant, Expr, FQTypeName, ModuleFullPath, ResolvedCall, Span, Symbol, SymbolTable,
     Type, TypeName, Visibility,

@@ -267,8 +267,9 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
     );
     // Field 0 lives at HeapAdt::field_offset(0) from the base pointer.
     let field0 = unsafe {
-        let field_addr =
-            (adt_ptr as usize + crate::heap::HeapAdt::field_offset(0) as usize) as *const i64;
+        let field_addr = (adt_ptr as usize
+            + cranelisp_intrinsics::alloc::HeapAdt::field_offset(0) as usize)
+            as *const i64;
         *field_addr
     };
     assert_eq!(

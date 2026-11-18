@@ -75,7 +75,8 @@ fn test_compile_vec_literal_with_ints() {
     // Verify element values from data buffer.
     unsafe {
         let base = ptr as *const u8;
-        let data_ptr = *(base.add(heap::HeapVec::DATA_PTR_OFFSET as usize) as *const *const i64);
+        let data_ptr =
+            *(base.add(cranelisp_intrinsics::vec_runtime::DATA_PTR_OFFSET) as *const *const i64);
         assert_eq!(*data_ptr, 10);
         assert_eq!(*data_ptr.add(1), 20);
         assert_eq!(*data_ptr.add(2), 30);

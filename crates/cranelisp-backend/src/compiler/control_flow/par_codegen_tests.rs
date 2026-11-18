@@ -14,7 +14,8 @@
 // of backend (frontend/typecheck build the node), so it is not a backend
 // unit; the backend's contract is "given a ParBind, emit a Par node".
 
-use crate::{heap::HeapAdt, jit::Jit};
+use crate::jit::Jit;
+use cranelisp_intrinsics::alloc::HeapAdt;
 use cranelisp_types::{
     Defn, DefnVariant, Expr, FQTypeName, ModuleFullPath, ResolvedCall, Span, Symbol, Type,
     TypeName, Visibility,

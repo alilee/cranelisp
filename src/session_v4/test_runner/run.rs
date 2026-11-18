@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use cranelisp_intrinsics::alloc::HeapAdt;
 use cranelisp_types::{
     CranelispError, FQSymbol, Life, ModuleFullPath, NULLARY_TAG_THRESHOLD, Realization, Type,
     Warning,
@@ -341,8 +342,7 @@ fn observe(result: &OwnedProgramResult) -> TestOutcome {
     // is a live heap `Some` box owned by `result`; field 0 is its `String`.
     let reason = unsafe {
         let base = value as *const u8;
-        let string =
-            *(base.add(cranelisp_backend::heap::HeapAdt::field_offset(0) as usize) as *const i64);
+        let string = *(base.add(HeapAdt::field_offset(0) as usize) as *const i64);
         cranelisp_intrinsics::heap_string::read_string_as_str(string).to_string()
     };
     TestOutcome::Fail { reason }

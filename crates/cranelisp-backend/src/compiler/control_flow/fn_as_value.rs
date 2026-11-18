@@ -15,8 +15,9 @@ use cranelisp_types::{
 };
 
 use crate::compiler::apply::HostPromisedLowering;
-use crate::heap::{self, HeapCategory, HeapClosure};
+use crate::heap::{self, HeapCategory};
 use crate::primitives_inline;
+use cranelisp_intrinsics::alloc::HeapClosure;
 
 use super::{CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_inc_into};
 
@@ -102,7 +103,7 @@ fn emit_adt_construct_into<M: Module>(
     field_vals: &[Value],
     _span: Span,
 ) -> Result<Value, CranelispError> {
-    use crate::heap::HeapAdt;
+    use cranelisp_intrinsics::alloc::HeapAdt;
 
     if field_vals.is_empty() {
         // Nullary constructor: bare tag, no heap allocation.

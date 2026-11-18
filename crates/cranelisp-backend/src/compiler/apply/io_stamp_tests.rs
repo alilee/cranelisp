@@ -1,9 +1,10 @@
 //! S121 B5 — `Pure` construction-stamp shape and its closed producer set.
 
 use super::{PURE_GLUE_ABS_OFFSET, append_runtime_ctor_fields, pure_payload_type};
-use crate::{drop_glue::DropGlueRegistry, heap::HeapAdt, test_support::make_object_module};
+use crate::{drop_glue::DropGlueRegistry, test_support::make_object_module};
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
+use cranelisp_intrinsics::alloc::HeapAdt;
 use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, SymbolTable, TypeName};
 use dashmap::DashMap;
 

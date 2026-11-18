@@ -10,8 +10,9 @@ use cranelift_module::{Linkage, Module};
 use cranelisp_types::HeapHeader;
 
 use super::forwarding_template_args;
-use crate::heap::{HeapCategory, HeapClosure};
+use crate::heap::HeapCategory;
 use crate::jit::Jit;
+use cranelisp_intrinsics::alloc::HeapClosure;
 
 /// Build `probe(env, params…)`: the template over `captures`, returning the
 /// argument at `returned`. Returns the JIT and the entry address.

@@ -4,7 +4,8 @@ use cranelift::prelude::*;
 use cranelift_module::Module;
 use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span};
 
-use crate::heap::{self, HeapAdt};
+use crate::heap;
+use cranelisp_intrinsics::alloc::HeapAdt;
 
 use super::FnCompiler;
 

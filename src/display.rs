@@ -14,7 +14,8 @@ use cranelisp_types::{
     SymbolTable, Type, TypeDefInfo, TypeId, VarNaming, render_type,
 };
 
-use cranelisp_backend::heap::{HeapAdt, HeapVec};
+use cranelisp_intrinsics::alloc::HeapAdt;
+use cranelisp_intrinsics::vec_runtime;
 
 use crate::styled::{Role, StyledDoc, render};
 
@@ -490,7 +491,7 @@ where
 
 /// Format a heap-allocated ADT value (data constructor with fields).
 ///
-/// Reads tag from HeapAdt::TAG_OFFSET (16), fields from HeapAdt::field_offset(i).
+/// Reads the tag at `HeapAdt::TAG_OFFSET` and field `i` at `HeapAdt::field_offset(i)`.
 /// Recursively formats field values using their declared types.
 /// Uses `Type.Constructor` dot notation per spec §1.5, suppressing the `Type.`
 /// prefix for single-constructor product types where the constructor name matches
@@ -610,8 +611,8 @@ fn substitute_field_type(ty: &Type, subst: &HashMap<TypeId, Type>) -> Type {
 
 /// Format Vec elements by reading the heap layout.
 ///
-/// HeapVec layout: `[alloc_size(+0) | rc(+8) | len(+16) | cap(+24) | data_ptr(+32)]`
-/// Elements are stored in the data buffer at `data_ptr`, each 8 bytes (i64).
+/// Reads the length at `vec_runtime::LEN_OFFSET` and the data buffer at
+/// `vec_runtime::DATA_PTR_OFFSET`. Elements are stored in the data buffer at `data_ptr`, each 8 bytes (i64).
 fn push_vec_elements<C, L>(
     value: i64,
     elem_type: Option<&Type>,
@@ -627,14 +628,14 @@ fn push_vec_elements<C, L>(
     }
 
     let base = value as *const u8;
-    // SAFETY: value is a heap pointer to a valid HeapVec (produced by JIT code).
-    let len = unsafe { *(base.add(HeapVec::LEN_OFFSET as usize) as *const i64) } as usize;
+    // SAFETY: value is a heap pointer to a valid Vec (produced by JIT code).
+    let len = unsafe { *(base.add(vec_runtime::LEN_OFFSET) as *const i64) } as usize;
     if len == 0 {
         doc.plain("[]");
         return;
     }
 
-    let data_ptr = unsafe { *(base.add(HeapVec::DATA_PTR_OFFSET as usize) as *const *const i64) };
+    let data_ptr = unsafe { *(base.add(vec_runtime::DATA_PTR_OFFSET) as *const *const i64) };
     if data_ptr.is_null() {
         doc.plain("[]");
         return;
@@ -1312,7 +1313,7 @@ mod tests {
     }
 
     /// A heap ADT object with tag 0 and one field word, laid out as the
-    /// backend lays out `HeapAdt`. The word to display is its base address.
+    /// intrinsics lays out `HeapAdt`. The word to display is its base address.
     fn one_field_heap_object(field: i64) -> Vec<i64> {
         let word = std::mem::size_of::<i64>();
         let mut object = vec![0_i64; HeapAdt::field_offset(1) as usize / word];

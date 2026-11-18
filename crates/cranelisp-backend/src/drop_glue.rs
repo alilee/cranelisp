@@ -13,7 +13,8 @@ use cranelisp_types::{
     member_key,
 };
 
-use crate::heap::{self, HeapAdt, HeapCategory};
+use crate::heap::{self, HeapCategory};
+use cranelisp_intrinsics::alloc::HeapAdt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DefinitionState {

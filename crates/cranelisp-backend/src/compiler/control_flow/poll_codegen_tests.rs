@@ -227,7 +227,7 @@ fn poll_shape_true_builds_io_tag_effect_poll_with_closure_env() {
 // the leaf operand 777 — proving the v8 leading-pair positional bake is gone.
 #[test]
 fn poll_node_does_not_bake_positional_arg_inert_slots_only() {
-    use crate::heap::HeapAdt;
+    use cranelisp_intrinsics::alloc::HeapAdt;
     // A single distinctive leaf arg 777 (a v8 build would have peeled it as `token`).
     let clif = clif_of_poll_call(vec![Type::Int], vec![int_lit(777)]);
 
@@ -258,7 +258,7 @@ fn poll_node_does_not_bake_positional_arg_inert_slots_only() {
 // result slot stays at `capture(0)`. Nothing is peeled to the node.
 #[test]
 fn poll_env_marshals_all_leaf_args_no_peel() {
-    use crate::heap::HeapClosure;
+    use cranelisp_intrinsics::alloc::HeapClosure;
     // Two natural leaf args (55, 66) — under v8 the first two would have been peeled.
     let clif = clif_of_poll_call(vec![Type::Int, Type::Int], vec![int_lit(55), int_lit(66)]);
     let clo = closure_store_region(&clif);

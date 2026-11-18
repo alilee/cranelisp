@@ -19,7 +19,8 @@ use cranelift_module::Module;
 
 use cranelisp_types::{CranelispError, ErrorLocation, Span};
 
-use crate::heap::{self, HeapAdt};
+use crate::heap;
+use cranelisp_intrinsics::alloc::HeapAdt;
 
 use super::FnCompiler;
 

@@ -19,7 +19,7 @@
 // the crate root, so `super::*` resolved lib.rs's scope). These `pub(crate)`
 // re-exports reproduce exactly that surface for the relocated homes.
 pub(crate) use crate::jit::Jit;
-pub(crate) use crate::{CompilationArtifacts, build_isa, compile_to_module, heap, produce_disasm};
+pub(crate) use crate::{CompilationArtifacts, build_isa, compile_to_module, produce_disasm};
 pub(crate) use cranelisp_types::{
     CallableTarget, CranelispError, Defn, DefnVariant, DisplayInfo, ErrorLocation, Expr, FQSymbol,
     ModuleFullPath, MonoDefn, Program, Span, Symbol, SymbolTable, TopLevel, Type, Visibility,

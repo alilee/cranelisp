@@ -9,6 +9,8 @@
 
 use std::sync::Mutex;
 
+use cranelisp_intrinsics::alloc::{HeapAdt, HeapClosure, alloc_with_rc};
+use cranelisp_intrinsics::vec_runtime;
 use cranelisp_types::ModuleFullPath;
 
 use crate::code::SessionSymbolTable;
@@ -110,17 +112,13 @@ pub(crate) fn set_test_runner_state(state: &TestRunnerState) {
 
 /// Allocate a heap ADT with the given tag and fields.
 ///
-/// Layout: [alloc_size(8) | rc=1(8) | tag(8) | field0(8) | field1(8) | ...]
-/// (mirrors `HeapAdt` in `cranelisp-backend::heap`). Returns the base pointer.
+/// Laid out as `HeapAdt`, with rc 1. Returns the base pointer.
 unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 {
     unsafe {
-        let payload_size = 8 + fields.len() * 8; // tag + fields
-        let base = cranelisp_intrinsics::alloc::alloc_with_rc(payload_size);
-        // Tag at offset 16 (HeapHeader::SIZE).
-        *(base.add(16) as *mut i64) = tag;
-        // Fields at offsets 24, 32, 40, ...
+        let base = alloc_with_rc(HeapAdt::payload_size(fields.len()));
+        *(base.add(HeapAdt::TAG_OFFSET as usize) as *mut i64) = tag;
         for (i, &field) in fields.iter().enumerate() {
-            *(base.add(24 + i * 8) as *mut i64) = field;
+            *(base.add(HeapAdt::field_offset(i) as usize) as *mut i64) = field;
         }
         base as i64
     }
@@ -128,14 +126,13 @@ unsafe fn alloc_heap_adt(tag: i64, fields: &[i64]) -> i64 {
 
 /// The late-bound test-wrapper closure body — `extern "C" fn(env_ptr) -> i64`.
 ///
-/// The closure layout is `[header(16) | code_ptr=this(8) | drop_glue=0(8) |
-/// slot_addr(8)]` (a `HeapClosure` with one capture). The single capture is the
+/// The closure is a `HeapClosure` with code pointer this function, no drop
+/// glue and one capture, the slot address. The single capture is the
 /// **address of the test's GOT slot** (`GotTable::base_ptr() + slot*8`), which
 /// is stable for the module's lifetime; its *contents* are the test's current
 /// code pointer (updated in place on redefinition). So the wrapper:
 ///
-/// 1. loads the captured slot-address from the closure env (capture offset 0 =
-///    base + 32);
+/// 1. loads the captured slot-address from the closure env (capture 0);
 /// 2. loads the current code pointer from that slot-address (late-binding — a
 ///    redefined test runs its new body through the same wrapper);
 /// 3. calls `extern "C" fn() -> i64` and returns the `(Option String)` result.
@@ -146,8 +143,8 @@ extern "C" fn discovered_test_wrapper(env_ptr: i64) -> i64 {
         return 0;
     }
     unsafe {
-        // capture[0] at offset 32 (HeapClosure::CAPTURES_START).
-        let slot_addr = *((env_ptr as *const u8).add(32) as *const i64);
+        let slot_addr =
+            *((env_ptr as *const u8).add(HeapClosure::capture_offset(0) as usize) as *const i64);
         if slot_addr == 0 {
             return 0;
         }
@@ -166,11 +163,12 @@ extern "C" fn discovered_test_wrapper(env_ptr: i64) -> i64 {
 /// ordinary `(Fn [] (Option String))` value.
 unsafe fn alloc_test_wrapper_closure(slot_addr: i64) -> i64 {
     unsafe {
-        // payload = code_ptr(8) + drop_glue_ptr(8) + 1 capture(8) = 24 bytes.
-        let base = cranelisp_intrinsics::alloc::alloc_with_rc(24);
-        *(base.add(16) as *mut i64) = discovered_test_wrapper as *const u8 as i64; // code_ptr
-        *(base.add(24) as *mut i64) = 0; // drop_glue_ptr (no heap captures)
-        *(base.add(32) as *mut i64) = slot_addr; // capture[0] = GOT slot address
+        let base = alloc_with_rc(HeapClosure::payload_size(1));
+        *(base.add(HeapClosure::CODE_PTR_OFFSET as usize) as *mut i64) =
+            discovered_test_wrapper as *const u8 as i64;
+        // No drop glue: the one capture is a GOT slot address, not a heap value.
+        *(base.add(HeapClosure::DROP_GLUE_PTR_OFFSET as usize) as *mut i64) = 0;
+        *(base.add(HeapClosure::capture_offset(0) as usize) as *mut i64) = slot_addr;
         base as i64
     }
 }
@@ -269,10 +267,9 @@ unsafe fn read_module_paths(vec_ptr: i64) -> Vec<ModuleFullPath> {
         if vec_ptr == 0 {
             return Vec::new();
         }
-        // HeapVec layout: [header(16) | len(8)@16 | cap(8)@24 | data_ptr(8)@32].
         let base = vec_ptr as *const u8;
-        let len = *(base.add(16) as *const i64);
-        let data_ptr = *(base.add(32) as *const i64) as *const i64;
+        let len = *(base.add(vec_runtime::LEN_OFFSET) as *const i64);
+        let data_ptr = *(base.add(vec_runtime::DATA_PTR_OFFSET) as *const i64) as *const i64;
         if len <= 0 || data_ptr.is_null() {
             return Vec::new();
         }
@@ -293,7 +290,7 @@ unsafe fn read_module_paths(vec_ptr: i64) -> Vec<ModuleFullPath> {
 /// `vec_new` so the layout + data-buffer allocation convention match exactly
 /// what backend codegen and `vec_drop` expect.
 unsafe fn alloc_empty_vec() -> i64 {
-    cranelisp_intrinsics::vec_runtime::vec_new(0)
+    vec_runtime::vec_new(0)
 }
 
 /// Allocate a heap `Vec` whose elements are the given i64 values, using the
@@ -303,16 +300,16 @@ unsafe fn alloc_empty_vec() -> i64 {
 unsafe fn alloc_vec_from(elems: &[i64]) -> i64 {
     unsafe {
         let n = elems.len();
-        let base = cranelisp_intrinsics::vec_runtime::vec_new(n as i64) as *mut u8;
+        let base = vec_runtime::vec_new(n as i64) as *mut u8;
         if n == 0 {
             return base as i64;
         }
-        // HeapVec: len@16, cap@24, data_ptr@32; data buffer holds `cap` i64 slots.
-        let data_ptr = *(base.add(32) as *const i64) as *mut i64;
+        // The data buffer holds `cap` i64 slots.
+        let data_ptr = *(base.add(vec_runtime::DATA_PTR_OFFSET) as *const i64) as *mut i64;
         for (i, &e) in elems.iter().enumerate() {
             *data_ptr.add(i) = e;
         }
-        *(base.add(16) as *mut i64) = n as i64; // len
+        *(base.add(vec_runtime::LEN_OFFSET) as *mut i64) = n as i64;
         base as i64
     }
 }

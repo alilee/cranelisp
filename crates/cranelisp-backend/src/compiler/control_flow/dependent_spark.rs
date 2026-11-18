@@ -24,13 +24,10 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
-use crate::heap::{self, HeapCategory, HeapClosure};
+use crate::heap::{self, HeapCategory};
+use cranelisp_intrinsics::alloc::HeapClosure;
 
 use super::{FnCompiler, find_free_vars};
-
-/// RC_OFFSET for an IVar cell (base-pointer convention, +8). IVars carry an
-/// atomic RC at the same offset as every heap object.
-const IVAR_RC_OFFSET: i64 = 8;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -397,7 +394,9 @@ fn emit_ivar_dec_into<M: Module>(
     ivar_val: Value,
     span: Span,
 ) -> Result<(), CranelispError> {
-    let rc_addr = builder.ins().iadd_imm(ivar_val, IVAR_RC_OFFSET);
+    let rc_addr = builder
+        .ins()
+        .iadd_imm(ivar_val, i64::from(cranelisp_types::HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
     let old_rc = builder.ins().atomic_rmw(
         types::I64,

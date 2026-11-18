@@ -13,7 +13,7 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, HeapHeader, MonoExpr, Span};
 
-use crate::heap::{self, HeapCategory, HeapVec};
+use crate::heap::{self, HeapCategory, VEC_CAP_OFFSET, VEC_DATA_PTR_OFFSET, VEC_LEN_OFFSET};
 
 use super::FnCompiler;
 use super::control_flow::emit_extern_call_in_wrapper;
@@ -124,7 +124,7 @@ where
         let vec_ptr = self.builder.inst_results(call)[0];
 
         // Load data_ptr from the Vec struct.
-        let data_ptr = heap::heap_load(&mut self.builder, vec_ptr, HeapVec::DATA_PTR_OFFSET); // data_ptr: i64 (ptr-width)
+        let data_ptr = heap::heap_load(&mut self.builder, vec_ptr, VEC_DATA_PTR_OFFSET); // data_ptr: i64 (ptr-width)
 
         // Store each owned element into the data buffer at data_ptr + i * 8;
         // the vector takes each element's reference.
@@ -134,7 +134,7 @@ where
 
         // Set len = number of elements.
         let len_i64 = self.builder.ins().iconst(types::I64, len);
-        heap::heap_store(&mut self.builder, len_i64, vec_ptr, HeapVec::LEN_OFFSET);
+        heap::heap_store(&mut self.builder, len_i64, vec_ptr, VEC_LEN_OFFSET);
 
         Ok(vec_ptr)
     }
@@ -160,7 +160,7 @@ where
         let vec_val = arg_vals[0];
         let result = match name {
             "vec-len" => {
-                let len = heap::heap_load(&mut self.builder, vec_val, HeapVec::LEN_OFFSET);
+                let len = heap::heap_load(&mut self.builder, vec_val, VEC_LEN_OFFSET);
                 self.release_vec(vec_val, &elem_type, span)?;
                 len
             }
@@ -476,7 +476,7 @@ where
                             location: ErrorLocation::from_span(span),
                         })?;
                 let dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
-                let len = heap::heap_load(builder, params[0], HeapVec::LEN_OFFSET);
+                let len = heap::heap_load(builder, params[0], VEC_LEN_OFFSET);
                 emit_vec_rc_dec_with_drop(builder, self.module, params[0], vec_drop_id, dec_fn_ptr);
                 Ok(len)
             }
@@ -582,7 +582,7 @@ fn emit_vec_index_guard<M: Module>(
     idx_val: Value,
     span: Span,
 ) -> Result<(), CranelispError> {
-    let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
+    let len = heap::heap_load(builder, vec_val, VEC_LEN_OFFSET);
     let zero = builder.ins().iconst(types::I64, 0);
     let neg_check = builder.ins().icmp(IntCC::SignedLessThan, idx_val, zero);
     let bounds_check = builder
@@ -632,7 +632,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     emit_vec_index_guard(builder, module, panic, vec_val, idx_val, span)?;
 
     // Load data_ptr.
-    let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
+    let data_ptr = heap::heap_load(builder, vec_val, VEC_DATA_PTR_OFFSET);
 
     // Compute element address: data_ptr + idx * 8.
     let eight = builder.ins().iconst(types::I64, 8);
@@ -753,7 +753,7 @@ fn emit_vec_set_in_place<M: Module>(
     // no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
 
-    let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
+    let data_ptr = heap::heap_load(builder, vec_val, VEC_DATA_PTR_OFFSET);
     let eight = builder.ins().iconst(types::I64, 8);
     let byte_off = builder.ins().imul(idx_val, eight);
     let elem_addr = builder.ins().iadd(data_ptr, byte_off);
@@ -808,8 +808,8 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     // HIT. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
     heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
 
-    let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
-    let cap = heap::heap_load(builder, vec_val, HeapVec::CAP_OFFSET);
+    let len = heap::heap_load(builder, vec_val, VEC_LEN_OFFSET);
+    let cap = heap::heap_load(builder, vec_val, VEC_CAP_OFFSET);
     let has_capacity = builder.ins().icmp(IntCC::SignedLessThan, len, cap);
 
     let fast_block = builder.create_block();
@@ -823,7 +823,7 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     builder.switch_to_block(fast_block);
     builder.seal_block(fast_block);
 
-    let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
+    let data_ptr = heap::heap_load(builder, vec_val, VEC_DATA_PTR_OFFSET);
     let eight = builder.ins().iconst(types::I64, 8);
     let byte_off = builder.ins().imul(len, eight);
     let elem_addr = builder.ins().iadd(data_ptr, byte_off);
@@ -833,7 +833,7 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
 
     // Increment len.
     let new_len = builder.ins().iadd_imm(len, 1);
-    heap::heap_store(builder, new_len, vec_val, HeapVec::LEN_OFFSET);
+    heap::heap_store(builder, new_len, vec_val, VEC_LEN_OFFSET);
 
     builder.ins().jump(merge_block, &[vec_val]);
 

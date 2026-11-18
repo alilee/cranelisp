@@ -11,7 +11,8 @@ use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Span, Symbol};
 
-use crate::heap::{self, HeapClosure};
+use crate::heap;
+use cranelisp_intrinsics::alloc::HeapClosure;
 
 use super::{CaptureRelease, CaptureReleaseKind, FnCompiler, emit_capture_dec_into};
 use crate::compiler::ownership_plan::{CaptureEntry, Intro};

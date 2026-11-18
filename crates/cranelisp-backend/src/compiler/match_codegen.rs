@@ -12,7 +12,8 @@ use cranelisp_types::{
     CranelispError, ErrorLocation, MonoExpr, MonoMatchArm, Pattern, Span, Symbol,
 };
 
-use crate::heap::{self, HeapAdt};
+use crate::heap;
+use cranelisp_intrinsics::alloc::HeapAdt;
 
 use super::ownership_plan::Intro;
 use super::{FnCompiler, MatchContext};

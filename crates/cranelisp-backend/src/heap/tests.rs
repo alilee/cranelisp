@@ -1,36 +1,15 @@
 use super::*;
 
-// spec: 12-runtime §12.1.4 — ADT heap layout offsets (tag at 16, fields at 24+)
+// spec: 12-runtime §12.1.5 — Vec heap layout (len/cap/data_ptr at 16/24/32).
+// The layout is intrinsics'; codegen's i32 offsets are its values.
 #[test]
-fn test_heap_adt_layout() {
-    assert_eq!(HeapAdt::TAG_OFFSET, 16);
-    assert_eq!(HeapAdt::FIELDS_START, 24);
-    assert_eq!(HeapAdt::field_offset(0), 24);
-    assert_eq!(HeapAdt::field_offset(1), 32);
-    assert_eq!(HeapAdt::payload_size(0), 8); // tag only
-    assert_eq!(HeapAdt::payload_size(2), 24); // tag + 2 fields
-}
-
-// spec: 12-runtime §12.1.3 — closure heap layout (code_ptr at 16, drop_glue at 24, captures at 32+)
-#[test]
-fn test_heap_closure_layout() {
-    assert_eq!(HeapClosure::CODE_PTR_OFFSET, 16);
-    assert_eq!(HeapClosure::DROP_GLUE_PTR_OFFSET, 24);
-    assert_eq!(HeapClosure::CAPTURES_START, 32);
-    assert_eq!(HeapClosure::capture_offset(0), 32);
-    assert_eq!(HeapClosure::capture_offset(1), 40);
-    assert_eq!(HeapClosure::payload_size(0), 16); // code_ptr + drop_glue_ptr only
-    assert_eq!(HeapClosure::payload_size(3), 40); // code_ptr + drop_glue_ptr + 3 captures
-}
-
-// spec: 12-runtime §12.1.5 — Vec heap layout (len/cap/data_ptr at 16/24/32)
-#[test]
-fn test_heap_vec_layout() {
-    assert_eq!(HeapVec::LEN_OFFSET, 16);
-    assert_eq!(HeapVec::CAP_OFFSET, 24);
-    assert_eq!(HeapVec::DATA_PTR_OFFSET, 32);
-    assert_eq!(HeapVec::payload_size(), 24);
-    assert_eq!(std::mem::size_of::<HeapVec>(), 40);
+fn vec_codegen_offsets_are_the_intrinsics_layout() {
+    assert_eq!(VEC_LEN_OFFSET, 16);
+    assert_eq!(VEC_CAP_OFFSET, 24);
+    assert_eq!(VEC_DATA_PTR_OFFSET, 32);
+    assert_eq!(VEC_LEN_OFFSET as usize, vec_runtime::LEN_OFFSET);
+    assert_eq!(VEC_CAP_OFFSET as usize, vec_runtime::CAP_OFFSET);
+    assert_eq!(VEC_DATA_PTR_OFFSET as usize, vec_runtime::DATA_PTR_OFFSET);
 }
 
 // spec: sprints/SPRINT.md §"Wave 0" R4 — byte-identical-off guard for the RC
