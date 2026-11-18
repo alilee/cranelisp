@@ -6381,7 +6381,7 @@ fn s124_declared_child_batch_outcomes_with_alias(
                         || (alias
                             && combined(&out)
                                 .contains("module 'zz' referenced by 'zz/...' not found")))),
-            "route {import} must reach the value or cycle assertion: status={} {}",
+            "route {import} must produce the value or a recognized refusal: status={} {}",
             out.status,
             combined(&out)
         );
@@ -6432,7 +6432,7 @@ fn s124_declared_child_repl_outcomes_with_alias(returns_to_parent: bool, alias: 
                 accepted
                     || text.contains("circular dependency detected")
                     || (alias && text.contains("module 'zz' referenced by 'zz/...' not found")),
-                "route {first} must reach the value or cycle assertion: {text}"
+                "route {first} must produce the value or a recognized refusal: {text}"
             );
             if alias {
                 eprintln!("route {first}: accepted={accepted} {text}");
