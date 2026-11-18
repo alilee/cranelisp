@@ -3464,3 +3464,109 @@ fn cache_fresh_super_importing_test_child_over_restored_declared_child_matches_u
          (defn parent-value [] (v))\n",
     );
 }
+
+fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
+    let mut failures = Vec::new();
+    for attempt in 1..=3 {
+        let cold = Cranelisp::new()
+            .file("P.cl", "(import [primitives [Int]])\n(deftrait Tr (tr [self] Int))\n(mod c)\n")
+            .file("P/c.cl", "(import [primitives [Int]])\n(import [super [Tr]])\n(impl Tr Int (defn tr [_] 7))\n")
+            .file("app.cl", "(import [P [tr]])\n(defn main [] (primitives/Pure (tr 1)))\n")
+            .run("app.cl")
+            .output()
+            .assert_exit(7);
+        let parent_meta = cold.read_tmp(".cranelisp-cache/P.meta.json");
+        assert!(cold.tmp_exists(".cranelisp-cache/P/c.meta.json"));
+        fs::remove_file(cold.tmpdir.join(".cranelisp-cache/P/c.o")).unwrap();
+        if remove_metadata {
+            fs::remove_file(cold.tmpdir.join(".cranelisp-cache/P/c.meta.json")).unwrap();
+        }
+        assert!(!cold.tmp_exists(".cranelisp-cache/P/c.o"));
+        assert_eq!(
+            cold.tmp_exists(".cranelisp-cache/P/c.meta.json"),
+            !remove_metadata
+        );
+        // Force the consumer to rebuild while leaving the parent's source and cache intact.
+        let builder = cold
+            .run_again()
+            .env("CRANELISP_MODULE_TRACE", "1")
+            .env("CRANELISP_SCHEDULER_TRACE", "1")
+            .file(
+                "app.cl",
+                "(import [P [tr]])\n(defn main [] (primitives/Pure (tr 2)))\n",
+            );
+        assert_eq!(
+            fs::read_to_string(builder.tmpdir_path().join(".cranelisp-cache/P.meta.json")).unwrap(),
+            parent_meta
+        );
+        let out = match mode {
+            "run" => builder.run("app.cl").output(),
+            "link" => builder.link_then_run("app.cl").output(),
+            "repl" => builder.repl().stdin("/mod app\n(tr 2)\n/quit\n").output(),
+            _ => unreachable!(),
+        };
+        let parent_hit = trace_hit(&out, "P");
+        assert_eq!(parent_hit, !remove_metadata,
+            "fixture attempt {attempt}: parent hit must distinguish object-only removal from metadata removal: {}", out.stderr);
+        let correct = if mode == "repl" {
+            out.status.success()
+                && out.stdout.contains(":primitives/Int 7")
+                && !out.stdout.contains("Error")
+        } else {
+            out.status.code() == Some(7)
+                && (mode != "link" || out.linked_execution_elapsed.is_some())
+        };
+        eprintln!("attempt {attempt} {mode} remove_metadata={remove_metadata}: status={}\nstdout:\n{}\nstderr:\n{}", out.status, out.stdout, out.stderr);
+        if !correct {
+            failures.push(format!(
+                "attempt {attempt}: status={}\nstdout:\n{}\nstderr:\n{}",
+                out.status, out.stdout, out.stderr
+            ));
+        }
+    }
+    assert!(failures.is_empty(),
+        "{mode}: a reader of P must see its rebuilt child's implementation and yield 7 ({} of 3 failed):\n{}",
+        failures.len(), failures.join("\n"));
+}
+
+// spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev
+// Open: design/int/int.md §6.11, A restored parent; only the child object is absent.
+#[test]
+fn s124_restored_parent_child_object_removed_run() {
+    s124_restored_parent_child("run", false);
+}
+
+// spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
+#[test]
+fn s124_restored_parent_child_both_files_removed_control_run() {
+    s124_restored_parent_child("run", true);
+}
+
+// spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev
+// Open: design/int/int.md §6.11, A restored parent; only the child object is absent.
+#[test]
+fn s124_restored_parent_child_object_removed_link() {
+    s124_restored_parent_child("link", false);
+}
+
+// spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
+#[test]
+fn s124_restored_parent_child_both_files_removed_control_link() {
+    s124_restored_parent_child("link", true);
+}
+
+// spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev
+// Open: design/int/int.md §6.11, A restored parent; only the child object is absent.
+#[test]
+fn s124_restored_parent_child_object_removed_repl() {
+    s124_restored_parent_child("repl", false);
+}
+
+// spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
+#[test]
+fn s124_restored_parent_child_both_files_removed_control_repl() {
+    s124_restored_parent_child("repl", true);
+}
