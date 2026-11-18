@@ -420,6 +420,12 @@ pub(crate) fn drive_module_dep(
         }
         return Ok(());
     }
+    // In flight with a table: wait on it, as a Pass-0 declaration does
+    // (`design/int/int.md` §6.11, Declaration readiness).
+    refuse_failed_table(ctx, module, dep, span)?;
+    if wait_on_in_flight(ctx, module, dep, span)?.is_some() {
+        return Ok(());
+    }
 
     // Resolve the file — same rules as import (no new search semantics).
     let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
@@ -858,6 +864,7 @@ pub(super) fn static_import_closure(
         root_imports.iter().cloned().chain(root_prelude).collect(),
     )];
     let mut completion = CompletionGraph::default();
+    let mut qualifiers = WalkedQualifiers::new(ctx);
     let mut visited: std::collections::HashSet<ModuleFullPath> =
         std::collections::HashSet::from([module.clone()]);
     let mut queue: std::collections::VecDeque<ModuleFullPath> =
@@ -879,15 +886,26 @@ pub(super) fn static_import_closure(
             .cloned()
             .chain(prelude_edge.clone())
             .collect();
-        let dep_completion =
-            completion_edges(ctx, &dep, &parsed, &dep_declared, &submodules, prelude_edge);
-        queue.extend(
-            dep_completion
-                .iter()
-                .filter(|d| !visited.contains(*d))
-                .cloned(),
+        let walked = WalkedFile {
+            module: &dep,
+            parsed: &parsed,
+            declared: &dep_declared,
+            submodules: &submodules,
+        };
+        let mut edges = vec![(
+            dep.clone(),
+            completion_edges(ctx, &mut qualifiers, &walked, prelude_edge),
+        )];
+        edges.extend(
+            qualifiers
+                .resolve_pending()
+                .into_iter()
+                .map(|(writer, named)| (writer, vec![named])),
         );
-        completion.add(&dep, dep_completion);
+        for (writer, targets) in edges {
+            queue.extend(targets.iter().filter(|d| !visited.contains(*d)).cloned());
+            completion.add(&writer, targets);
+        }
         imports.push((dep.clone(), dep_imports));
         dependencies.push((dep, dep_dependencies));
     }
@@ -933,39 +951,42 @@ pub(super) fn static_import_closure(
     }
 }
 
-/// The edges of a walked module `dep` in the completion graph
-/// (`design/int/int.md` §6.11, Route independence): its `import` declarations
-/// that load and its `export` targets, its implicit prelude edge, the modules
-/// its written qualified symbols name, and one edge to each child it declares.
-/// A qualifier is substituted through the session's aliases; one naming no
-/// module file is attributed to the module whose file owns it.
+/// One file the static walk visits, with the `mod` declarations it peeled.
+struct WalkedFile<'w> {
+    module: &'w ModuleFullPath,
+    parsed: &'w [Sexp],
+    declared: &'w DeclaredChildren,
+    submodules: &'w [cranelisp_types::ModDecl],
+}
+
+/// The edges of a walked module in the completion graph (`design/int/int.md`
+/// §6.11, Route independence): its `import` declarations that load and its
+/// `export` targets, its implicit prelude edge, the modules its written
+/// qualified symbols name through the walked files' aliases
+/// ([`WalkedQualifiers`]), the edges its live table records, and one edge to
+/// each child it declares. A qualifier that a later visit resolves is added
+/// by the walk.
 fn completion_edges(
     ctx: &ModuleCompiler,
-    dep: &ModuleFullPath,
-    parsed: &[Sexp],
-    declared: &DeclaredChildren,
-    submodules: &[cranelisp_types::ModDecl],
+    qualifiers: &mut WalkedQualifiers,
+    walked: &WalkedFile,
     prelude_edge: Option<ModuleFullPath>,
 ) -> Vec<ModuleFullPath> {
-    let is_module_file = |path: &ModuleFullPath| {
-        crate::pipeline::resolve_module_file(path, ctx.project_root, ctx.lib_dirs).is_some()
-    };
-    let (mut edges, _) =
-        declared_dependencies(parsed, dep, declared, DeclaredEdges::ImportsAndExports);
-    edges.extend(prelude_edge);
-    edges.extend(
-        qualified_modules(ctx.module_aliases, dep, parsed)
-            .into_iter()
-            .filter_map(|named| {
-                if is_module_file(&named) {
-                    Some(named)
-                } else {
-                    owning_module_file(&named, &is_module_file)
-                }
-            }),
+    let dep = walked.module;
+    let (mut edges, _) = declared_dependencies(
+        walked.parsed,
+        dep,
+        walked.declared,
+        DeclaredEdges::ImportsAndExports,
     );
+    edges.extend(prelude_edge);
+    edges.extend(qualifiers.visit(dep, walked.parsed, walked.submodules));
+    if let Some(table) = ctx.symbol_tables.get(dep) {
+        edges.extend(crate::cache::dependency_record::recorded_edges(dep, &table));
+    }
     edges.extend(
-        submodules
+        walked
+            .submodules
             .iter()
             .map(|decl| crate::imports::declared_child_path(dep, decl.name.as_ref())),
     );
@@ -974,7 +995,8 @@ fn completion_edges(
 }
 
 /// The completion graph the static walk reaches: each walked module's
-/// [`completion_edges`]. The cycle checks do not read it; the signature
+/// [`completion_edges`] and the pending qualifiers later visits resolve. The
+/// cycle checks do not read it; the signature
 /// barrier reads it for which members share a cycle with the root.
 #[derive(Default)]
 struct CompletionGraph {
@@ -1146,73 +1168,122 @@ pub(super) fn prelude_reach_cycle(
     module: &ModuleFullPath,
 ) -> Option<crate::scheduler::CycleError> {
     let prelude = prelude_module();
-    let is_module_file = |path: &ModuleFullPath| {
-        crate::pipeline::resolve_module_file(path, ctx.project_root, ctx.lib_dirs).is_some()
-    };
-    let aliases = cranelisp_types::ModuleAliases::default();
+    let mut qualifiers = WalkedQualifiers::new(ctx);
     let mut walk = ReachWalk {
         target: module,
         prelude: &prelude,
         reached_from: std::collections::HashMap::new(),
         queue: std::collections::VecDeque::from([prelude.clone()]),
     };
-    // `(writer, qualifier)` pairs whose qualifier names no module file yet.
-    let mut pending: Vec<(ModuleFullPath, ModuleFullPath)> = Vec::new();
     while let Some(visiting) = walk.queue.pop_front() {
         let Some(parsed) = parse_module_file(ctx, &visiting) else {
             continue;
         };
         let submodules = mod_declarations(&parsed, &visiting);
-        // A refused route is the walked file's own Pass-0 error; here it only
-        // leaves that alias out of the walk.
-        crate::imports::install_declared_aliases(
-            &visiting,
-            &aliases,
-            &import_declarations(&parsed, &visiting),
-            &export_declarations(&parsed, &visiting),
-            &submodules,
-        )
-        .ok();
         let declared = DeclaredChildren::of(&visiting, &submodules);
-        let (declarations, _) = declared_dependencies(
+        let (mut edges, _) = declared_dependencies(
             &parsed,
             &visiting,
             &declared,
             DeclaredEdges::ImportsAndExports,
         );
-        let mut edges = declarations;
-        for qualifier in written_qualifiers(&parsed) {
-            let named = cranelisp_types::substitute_module_alias(&aliases, &visiting, &qualifier);
-            if is_module_file(&named) {
-                edges.push(named);
-                continue;
-            }
-            if let Some(owner) = owning_module_file(&named, &is_module_file) {
-                edges.push(owner);
-            }
-            pending.push((visiting.clone(), qualifier));
-        }
+        edges.extend(qualifiers.visit(&visiting, &parsed, &submodules));
         for next in edges {
             if let Some(cycle) = walk.follow(next, &visiting) {
                 return Some(cycle);
             }
         }
-        let mut resolved = Vec::new();
-        pending.retain(|(writer, qualifier)| {
-            let named = cranelisp_types::substitute_module_alias(&aliases, writer, qualifier);
-            let names_module = is_module_file(&named);
-            if names_module {
-                resolved.push((writer.clone(), named));
-            }
-            !names_module
-        });
-        for (writer, next) in resolved {
+        for (writer, next) in qualifiers.resolve_pending() {
             if let Some(cycle) = walk.follow(next, &writer) {
                 return Some(cycle);
             }
         }
     }
     None
+}
+
+/// The modules the written qualified symbols of walked files name, substituted
+/// through the aliases the walked files declare rather than the session
+/// carrier, which a walked module's Pass 0 may not yet have written
+/// (`design/int/int.md` §6.12, Aliases come from the walked file). A qualifier
+/// through another module's export mount (`p.s/y`) can name a module only once
+/// `p` has been walked, so a qualifier that names no module file stays pending
+/// and is substituted again after every visit, while the walk follows it to
+/// its owner `p`. A walk that visits until its queue is empty and no pending
+/// qualifier resolves reaches the least fixpoint, independent of visit order.
+struct WalkedQualifiers<'c> {
+    project_root: &'c Path,
+    lib_dirs: &'c [PathBuf],
+    aliases: cranelisp_types::ModuleAliases,
+    /// `(writer, qualifier)` pairs whose qualifier names no module file yet.
+    pending: Vec<(ModuleFullPath, ModuleFullPath)>,
+}
+
+impl<'c> WalkedQualifiers<'c> {
+    fn new(ctx: &ModuleCompiler<'c>) -> Self {
+        WalkedQualifiers {
+            project_root: ctx.project_root,
+            lib_dirs: ctx.lib_dirs,
+            aliases: cranelisp_types::ModuleAliases::default(),
+            pending: Vec::new(),
+        }
+    }
+
+    fn is_module_file(&self, path: &ModuleFullPath) -> bool {
+        crate::pipeline::resolve_module_file(path, self.project_root, self.lib_dirs).is_some()
+    }
+
+    /// Add `visiting`'s aliases, and return the modules its written
+    /// qualifiers name now: the module, or the owner of a qualifier that names
+    /// none, which stays pending.
+    fn visit(
+        &mut self,
+        visiting: &ModuleFullPath,
+        parsed: &[Sexp],
+        submodules: &[cranelisp_types::ModDecl],
+    ) -> Vec<ModuleFullPath> {
+        // A refused route is the walked file's own Pass-0 error; here it only
+        // leaves that alias out of the walk.
+        crate::imports::install_declared_aliases(
+            visiting,
+            &self.aliases,
+            &import_declarations(parsed, visiting),
+            &export_declarations(parsed, visiting),
+            submodules,
+        )
+        .ok();
+        let mut edges = Vec::new();
+        for qualifier in written_qualifiers(parsed) {
+            let named =
+                cranelisp_types::substitute_module_alias(&self.aliases, visiting, &qualifier);
+            if self.is_module_file(&named) {
+                edges.push(named);
+                continue;
+            }
+            edges.extend(owning_module_file(&named, &|path: &ModuleFullPath| {
+                self.is_module_file(path)
+            }));
+            self.pending.push((visiting.clone(), qualifier));
+        }
+        edges
+    }
+
+    /// The pending qualifiers that the aliases added since name a module
+    /// file, as `(writer, module)` edges.
+    fn resolve_pending(&mut self) -> Vec<(ModuleFullPath, ModuleFullPath)> {
+        let mut resolved = Vec::new();
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.retain(|(writer, qualifier)| {
+            let named = cranelisp_types::substitute_module_alias(&self.aliases, writer, qualifier);
+            let names_module = self.is_module_file(&named);
+            if names_module {
+                resolved.push((writer.clone(), named));
+            }
+            !names_module
+        });
+        self.pending = pending;
+        resolved
+    }
 }
 
 /// The longest proper prefix of `path` that names a module file: the module
@@ -1641,7 +1712,7 @@ fn drive_submodule(
     match enrol_declared_submodule(ctx, module, decl)? {
         DeclaredSubmoduleEnrollment::Ready => {
             let sub_path = crate::imports::declared_child_path(module, decl.name.as_ref());
-            await_in_flight_child(ctx, module, sub_path)
+            await_in_flight_child(ctx, module, sub_path, decl.span)
         }
         DeclaredSubmoduleEnrollment::Registered(sub_path) => {
             block_dep(ctx, module, &sub_path, decl.span)?;
@@ -1656,27 +1727,34 @@ fn drive_submodule(
 /// some other route already has in flight (`design/int/int.md` §6.11, Route
 /// independence, rule 1). The wait is on the child's completion, not its
 /// publication: a pool worker blocks on it and frees back to the pool; the
-/// eval thread waits inside the scheduler. A child that stands `Failed` is
-/// not waited on here.
+/// eval thread waits inside the scheduler. A child that stands `Failed`
+/// refuses the parent with its failure, before the wait as during it, so the
+/// parent's outcome does not depend on when the child failed.
 fn await_in_flight_child(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     child: ModuleFullPath,
+    span: Span,
 ) -> Result<BlockAction, CranelispError> {
-    let in_flight = ctx.scheduler.module_pool(&child).is_some_and(|pool| {
-        !pool.is_terminal_typecheck() && pool != crate::scheduler::ModulePool::Failed
-    });
+    ctx.scheduler
+        .refuse_failed_dependency(module, &child, span)?;
+    let in_flight = ctx
+        .scheduler
+        .module_pool(&child)
+        .is_some_and(|pool| !pool.is_terminal_typecheck());
     if !in_flight {
         return Ok(BlockAction::Continue);
     }
     let completion = crate::scheduler::ClosureOrder {
-        order: vec![child],
+        order: vec![child.clone()],
         at_publication: BTreeSet::new(),
     };
     if ctx.eval_driven {
-        ctx.scheduler
-            .await_signature_barrier(&completion)
-            .map_err(CranelispError::from)?;
+        if let Err(error) = ctx.scheduler.await_signature_barrier(&completion) {
+            ctx.scheduler
+                .refuse_failed_dependency(module, &child, span)?;
+            return Err(error.into());
+        }
         return Ok(BlockAction::Continue);
     }
     Ok(
@@ -2742,6 +2820,53 @@ mod bare_module_name_tests {
         assert!(at_publication(&project, "y").is_empty());
     }
 
+    // spec: design/int/int.md §6.11 Route independence (the completion graph
+    // carries qualified references and recorded edges) — `c` closes the cycle
+    // back to `z` by a qualified reference only: through its own import alias,
+    // through `m`'s mount, which the walk visits after `c`, or as an edge its
+    // live table records. With no alias in the session carrier, as before `c`'s
+    // Pass 0 runs, `P` still lies on a cycle with `z`; `y` still does not.
+    #[test]
+    fn completion_graph_reads_qualified_references_through_walked_aliases_and_recorded_edges() {
+        let graph = |child: &str, extra: &[(&'static str, &'static str)]| {
+            let mut files = vec![
+                ("P.cl", "(mod c)\n(defn x [] 1)\n"),
+                ("z.cl", "(import [P [x]])\n(defn zf [] (x))\n"),
+                ("y.cl", "(import [P [x]])\n(defn yf [] (x))\n"),
+            ];
+            files.push(("P/c.cl", child));
+            files.extend_from_slice(extra);
+            Project::new(&files)
+        };
+        let alias = graph("(import [(z zz) []])\n(defn cf [] (zz/zf))\n", &[]);
+        let mount = graph(
+            "(defn cf [] (m.s/zf))\n",
+            &[("m.cl", "(export [(z s) []])\n(defn mf [] 1)\n")],
+        );
+        let recorded = graph("(defn cf [] 1)\n", &[]);
+        let c = module("P.c");
+        cranelisp_types::ensure_module_exists(&recorded.tables, &c);
+        recorded
+            .tables
+            .get_mut(&c)
+            .unwrap()
+            .record_lookup_dependency(module("z"));
+
+        for (name, project) in [
+            ("alias", &alias),
+            ("mount", &mount),
+            ("recorded", &recorded),
+        ] {
+            assert!(project.aliases.is_empty(), "{name}: precondition");
+            assert_eq!(
+                at_publication(project, "z"),
+                BTreeSet::from([module("P")]),
+                "{name}"
+            );
+            assert!(at_publication(project, "y").is_empty(), "{name}");
+        }
+    }
+
     /// `ctx` as a pool worker drives it.
     fn pool_ctx<'p>(project: &'p Project, module: &ModuleFullPath) -> ModuleCompiler<'p> {
         ModuleCompiler {
@@ -2829,6 +2954,101 @@ mod bare_module_name_tests {
             );
             finisher.join().unwrap();
         });
+    }
+
+    // spec: design/int/int.md §6.11 Declaration readiness (the qualified-
+    // reference gate mirrors the import gate) — a qualified reference's drive
+    // of a module in flight with a table waits on it through the dependency
+    // edge; it does not take the table as satisfied and requeue the referrer,
+    // which would retry against the unpublished table without end.
+    #[test]
+    fn qualified_drive_of_an_in_flight_module_waits_on_it() {
+        let project = declared_child_graph();
+        let dep = in_flight(&project, "z");
+        cranelisp_types::ensure_module_exists(&project.tables, &dep);
+        let referrer = in_flight(&project, "P.c");
+
+        drive_module_dep(
+            &mut pool_ctx(&project, &referrer),
+            &referrer,
+            &dep,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        assert_eq!(
+            project.scheduler.module_pool(&referrer),
+            Some(crate::scheduler::ModulePool::TypecheckBlocked),
+            "the referrer waits on the in-flight module"
+        );
+        project.scheduler.mark_generation_published(&dep);
+        assert_ne!(
+            project.scheduler.module_pool(&referrer),
+            Some(crate::scheduler::ModulePool::TypecheckBlocked),
+            "its publication releases the referrer"
+        );
+    }
+
+    /// The failure `P`'s drive of `c` ends in, when `c` fails before the drive
+    /// enrols its wait (`before`) or after it, on the pool or the eval path:
+    /// `P`'s error, and the dependency recorded as refusing `P`.
+    fn parent_outcome_of_a_failed_child(
+        before: bool,
+        eval: bool,
+    ) -> (bool, Option<ModuleFullPath>) {
+        let project = declared_child_graph();
+        let parent = in_flight(&project, "P");
+        project.record_declaration(&parent, "c");
+        let child = in_flight(&project, "P.c");
+        cranelisp_types::ensure_module_exists(&project.tables, &child);
+        let fail_child = || {
+            project.scheduler.notify_module_failed(
+                &child,
+                CranelispError::TypeError {
+                    message: "c fails".to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                },
+            )
+        };
+        let ctx = || ModuleCompiler {
+            eval_driven: eval,
+            ..project.ctx(&parent)
+        };
+        if before {
+            fail_child();
+        }
+        let failed = std::thread::scope(|scope| {
+            if !before && eval {
+                scope.spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    fail_child();
+                });
+            }
+            let outcome = drive_submodules(&mut ctx(), &parent);
+            if !before && !eval {
+                assert_eq!(outcome.unwrap(), Some(child.clone()), "the drive waits");
+                fail_child();
+                return project.scheduler.is_failed(&parent);
+            }
+            outcome.is_err()
+        });
+        (failed, project.scheduler.refusing_dependency(&parent))
+    }
+
+    // spec: design/int/int.md §6.11 Route independence rule 1 — a parent's
+    // completion includes its declared child, so a child that fails before the
+    // parent's drive enrols its wait fails the parent as one that fails after
+    // does, on the pool and the eval path, each refused by the child.
+    #[test]
+    fn a_declared_child_failed_before_the_drive_fails_the_parent_as_one_failed_after() {
+        for eval in [false, true] {
+            for before in [true, false] {
+                assert_eq!(
+                    parent_outcome_of_a_failed_child(before, eval),
+                    (true, Some(module("P.c"))),
+                    "eval={eval} before={before}"
+                );
+            }
+        }
     }
 }
 
