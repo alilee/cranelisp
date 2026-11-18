@@ -95,7 +95,7 @@ The cell holds under either answer to tracing §5.1: both candidates make
 the object a function of its own module's load edges.
 
 `dev`(backend) owes the module rows of
-[trace codegen §1.3](../../design/backend/trace-codegen.md#13-blocked-on-arch-which-modules-contribute)
+[trace codegen §1.3](../../design/backend/trace-codegen.md#13-which-modules-a-form-covers)
 with the correction.
 
 ## Disposition
