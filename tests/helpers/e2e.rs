@@ -567,6 +567,9 @@ impl Default for Cranelisp {
 pub enum Stage<'a> {
     /// Send one complete input line, then wait for the REPL's next prompt.
     Line(&'a str),
+    /// Repeat a prompt-gated command until its output contains the given text,
+    /// bounded by the child timeout. Used to await asynchronous index results.
+    LineUntilOutput(&'a str, &'a str),
     /// Write the bytes to a path under the TempDir while the REPL waits at
     /// its prompt.
     Write(&'a str, &'a [u8]),
@@ -735,14 +738,21 @@ impl CrInvocationOwned {
                 break;
             }
             match stage {
-                Stage::Line(line) => {
+                Stage::Line(line) | Stage::LineUntilOutput(line, _) => loop {
                     stdin
                         .write_all(format!("{line}\n").as_bytes())
                         .and_then(|()| stdin.flush())
                         .map_err(CrError::StdinWriteFailed)?;
                     prompts += 1;
                     live = await_prompts(&mut child, prompts)?;
-                }
+                    let Stage::LineUntilOutput(_, expected) = stage else {
+                        break;
+                    };
+                    let text = String::from_utf8_lossy(&stdout.0.lock().unwrap()).into_owned();
+                    if !live || text.contains(expected) || Instant::now() >= deadline {
+                        break;
+                    }
+                },
                 Stage::Write(rel, bytes) => write(rel, bytes),
                 Stage::Remove(rel) => fs::remove_file(self.cwd.join(rel))
                     .unwrap_or_else(|e| panic!("staged remove {rel}: {e}")),

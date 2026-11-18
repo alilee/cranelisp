@@ -27,6 +27,105 @@ use std::time::{Duration, SystemTime};
 
 use helpers::e2e::Cranelisp;
 
+// spec: design/int/int.md §7.6; design/int/index-worker-isolation.md §3.3 — REPRO-1083.
+// defect: class=partial-record-update locus=src/session_v4/index_worker.rs::write_index_meta found=S124 owner=/dev
+// ACT-1083: an index pass rekeys a stale importer while its old object remains.
+#[test]
+fn cache_index_over_stale_importer_preserves_calls_across_modes() {
+    cache_index_importer_calls(true, true);
+}
+
+// spec: design/int/int.md §7.6; design/int/index-worker-isolation.md §3.3 — REPRO-1083, omit only the index session.
+#[test]
+fn cache_index_stale_importer_no_session_control() {
+    cache_index_importer_calls(false, true);
+}
+
+// spec: design/int/int.md §7.6; design/int/index-worker-isolation.md §3.3 — REPRO-1083, edit without moving slots.
+#[test]
+fn cache_index_stale_importer_same_order_control() {
+    cache_index_importer_calls(true, false);
+}
+
+// spec: AGENTS.md §Assurance — the index wait must repeat on absent output and stop on observed output.
+#[test]
+fn cache_index_wait_repeats_until_observed_output_control() {
+    use helpers::e2e::Stage;
+
+    let out = Cranelisp::new()
+        .file("attempts", "")
+        .staged_output(&[Stage::LineUntilOutput(
+            "/sh echo turn >> attempts; if [ $(wc -l < attempts) -eq 3 ]; then echo index-ready; fi",
+            "index-ready",
+        )])
+        .assert_ok()
+        .assert_stdout_contains("index-ready");
+    assert_eq!(
+        out.read_tmp("attempts"),
+        "turn\nturn\nturn\n",
+        "the wait must continue across two absent results and stop at the third result"
+    );
+}
+
+fn cache_index_importer_calls(index_session: bool, move_slots: bool) {
+    use helpers::e2e::Stage;
+
+    let cold = Cranelisp::new()
+        .user("(defn f [] 41)\n(defn h [] 7)\n")
+        .file("lib.cl", "(import [user [f]])\n(defn g [] (f))\n")
+        .file(
+            "app.cl",
+            "(import [primitives [Pure]])\n(import [lib [g]])\n(defn main [] (Pure (g)))\n",
+        )
+        .run("app.cl")
+        .output()
+        .assert_exit(41)
+        .assert_stderr_empty();
+    assert!(
+        cold.tmp_exists(".cranelisp-cache/lib.o"),
+        "premise: cold run must cache lib.o"
+    );
+    let edited = cold.run_again().user(if move_slots {
+        "(defn h [] 7)\n(defn f [] 41)\n"
+    } else {
+        "(defn f [] 41)\n(defn h [] 8)\n"
+    });
+    let builder = if index_session {
+        let indexed = edited
+            .repl()
+            .staged_output(&[Stage::LineUntilOutput("/search g", "(import [lib [g]])")])
+            .assert_ok()
+            .assert_stdout_contains("(import [lib [g]])");
+        eprintln!("REPRO-1083 index premise: g listed in lib");
+        indexed.run_again()
+    } else {
+        edited
+    };
+    let cached = builder.run("app.cl").output();
+    let mut failures = Vec::new();
+    check_cache_edit_leg(&cached, "REPRO-1083 cached --run", 41, &[""], &mut failures);
+    let linked = cached.run_again().link_then_run("app.cl").output();
+    if linked.linked_execution_elapsed.is_none() {
+        failures.push(format!("REPRO-1083 link failed: {}", linked.stderr));
+    }
+    check_cache_edit_leg(
+        &linked,
+        "REPRO-1083 linked executable",
+        41,
+        &[""],
+        &mut failures,
+    );
+    let repl = linked.run_again().repl().stdin("/mod app\n(g)\n").output();
+    check_cache_edit_leg(
+        &repl,
+        "REPRO-1083 REPL",
+        0,
+        &[":primitives/Int 41"],
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "REPRO-1083:\n{}", failures.join("\n"));
+}
+
 // spec: design/int/int.md §7.6; design/int/session-transaction.md §7.1;
 // repl/spec/00-cli-invocation.md §0.6 — K-6 in tests/plan/s123-evidence-delta.md §3.7.
 // defect: class=artifact-underkey locus=src/cache/dependency_record.rs::DependencyRecord found=S123 owner=/dev fixed=S124/3c4c0f7b
