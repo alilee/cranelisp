@@ -4,9 +4,8 @@
 [backend.md](backend.md).
 
 **Status:** the current design of the backend mechanisms that consume the
-ownership analysis without deciding a count: value
-flattening, reuse counters, the redefinition machinery and the supporting
-contracts. Counting — move, duplicate and drop — is
+ownership analysis without deciding a count: reuse counters, the redefinition
+machinery and the supporting contracts. Counting — move, duplicate and drop — is
 [uniform counting](uniform-counting.md), built at S123 W2. The counting
 mechanisms this document used to carry (borrow elision, the static uniqueness
 proof, the tail and COW counting contracts, the borrowed extern sibling) are
@@ -15,7 +14,8 @@ tests cite them. §0 records each mechanism's disposition under
 [Principle 27](../arch/principles/27-dev-tier-optimises-only-against-blow-up.md):
 the dev tier keeps an optimisation only against a change of growth rate.
 Verified against source on 2026-11-16, and §0, §1, §4 and §13 again after
-S124 B1 on 2026-11-17, and §2.1 and §7 at `152a0def` on 2026-11-18. The increment ladders, as-built
+S124 B1 on 2026-11-17, and §0, §2.1, §7 and §10 at `441e31ea` on
+2026-11-18. The increment ladders, as-built
 narratives and falsified analyses are in Git history.
 
 **Governing authority:** [the ownership spine](../arch/ownership-inference.md)
@@ -48,7 +48,7 @@ spec rulings). A retiring mechanism's typecheck facts keep being produced.
 | Non-atomic RC for `Confined` | §5 | Retired at S123 W4: no classifier or census; every emitted RC operation is atomic unless the probe is set | Constant factor: release tier (§5). The unsound measurement probe stays |
 | Dynamic Vec COW check and reuse counters | §6 | Built | Stays: rule U2 holds an update loop linear ([uniform counting](uniform-counting.md) §2). The counters are instrumentation |
 | General drop-guided reuse | §6.1 | Not built | Release tier |
-| One-word value flattening | §7 | Built | Constant factor: retires in S124 after the R-1 close, with packet row D4 (§7). The value-layout predicate stays a published fact |
+| One-word value flattening | §7 | Retired at S124 B5 with packet row D4 | Constant factor: dev tier no longer carries it. The value-layout predicate stays a published fact |
 | Redefinition machinery (backend half) | §8 | Fresh slots built; the trap stub retired at S123 W4 (P13) | Not an optimisation |
 | Dual-symbol extern convention | §9 | Retired: no position borrows | The carrier leaves in S124 with packet row D6 (§9) |
 | Vec-query trio in value position | §12.7 | Built | A required lowering, not an optimisation |
@@ -90,9 +90,8 @@ derives no ownership, escape, confinement or uniqueness of its own.
 Typecheck's ownership pass does not run, so no site facts exist, and every
 consumer takes its absent-fact arm. The backend reads the same polarity
 (`ownership_analysis_off`) in the ownership plan, which selects moves off
-([uniform counting](uniform-counting.md) §2.1), and the cache manifest. Until
-B5 it is also read by `HeapCategory::classify`, which flattens only
-analysis-on (§7); that read leaves with flattening. The toggle is the permanent differential oracle switch; the default
+([uniform counting](uniform-counting.md) §2.1), and the cache manifest; heap
+classification does not read it. The toggle is the permanent differential oracle switch; the default
 is analysis-on.
 
 ### 2.2 Absent facts select the existing code
@@ -311,144 +310,71 @@ split is a runtime tally, reported in the `[RC_STATS]` line (§13.2.1).
 
 ---
 
-## §7. One-word value flattening
+## §7. One-word value flattening — retired
 
-**Disposition: retires from the dev tier in S124** (Principle 27). A
-one-word single-constructor value held on the heap costs an allocation and its
-counts, a constant per value. Until the S124 change lands, this section is the
-current design. What the retirement must respect:
+**Retired from the dev tier at S124 B5** (`441e31ea`, with packet row D4),
+under Principle 27: holding a one-word single-constructor value on the heap
+costs an allocation and its counts, a constant per value. The current design
+is what replaced it:
 
-- **The predicate stays.** `value_layout` in `cranelisp-types` is a retained
-  fact (Principle 27, "Retained facts"); only the backend's use of it as a
-  representation retires. Typecheck's `Copy` mode no longer couples to
-  emission, because the backend reads no mode summary (§1), so §7.1's
-  "missing increment" hazard does not arise while `Value` is gone.
-- **It changes representation.** Removing the `Value` category changes
-  compiled layout, so `CACHE_SCHEMA_VERSION` is bumped (§7.4), the descriptor
-  baker renders those types as heap values (§7.5), and Vecs of them gain
-  element functions (§7.3).
-- **It changes the public surface.** `HeapCategory::Value` is a public
-  variant; its removal is approved as packet row D4
-  ([interfaces](../arch/interfaces.md#heap-classification)).
-- Spec §12.1's descriptive layouts should not describe flattening after S124
-  (`spec`).
+- **One representation.** `HeapCategory::classify` does not consult
+  `value_layout` or the analysis toggle. A one-word single-constructor ADT
+  classifies like any other single-data-constructor ADT, as a heap value, in
+  either toggle polarity. It is constructed on the RC heap
+  ([compile-to-module](compile-to-module.md) §2.6.1), released through its
+  canonical glue, given element functions as a Vec element and glue as a
+  field, and displayed and traced as an ordinary heap ADT.
+- **The predicate stays published.** `value_layout` in `cranelisp-types` is a
+  retained fact whose design home is
+  [the ownership spine](../arch/ownership-inference.md) §6.3 and its rustdoc.
+  Its only reader is typecheck's `Copy` classifier, and a `Copy` mode no
+  longer couples to emission, because the backend reads no mode summary (§1).
+  A new representation reader of it is a reject (§10).
+- **Cache.** The representation change bumped `CACHE_SCHEMA_VERSION` to 32,
+  so every object compiled against the flattened layout is refused.
+- **Emission acceptance.** B5's golden re-baseline is attributed when its diff
+  is confined to frames that handle a value of a type `value_layout` admits,
+  directly, as a Vec element or as an ADT field, and to those fields' glue,
+  in any golden lane. Any other frame's diff is unattributed and blocks.
+- **ACT-1069.** Its trace cells, the small-payload leg and the two controls
+  are expected to pass on the B5 tree with no change made for them, because
+  the formatter is correct for heap values. A cell still RED refutes the
+  attribution and returns to `qa`, who disposes of the record.
 
-The retirement is change-set B5, after the R-1 close
-([release contract](non-concrete-release-contract.md) §7.7, row 5), because
-the census and the close claim diffs scoped against the layout they were
-measured on. The close's step 2 landed at B4 (`152a0def`), so B5 is unblocked.
-It is one commit spanning the backend and the binary: between a backend-only
-and a binary-only commit the display either prints a heap pointer as a field
-or reads a field as a pointer, so neither half is a valid tree alone.
+The binary's half is [int §16.0](../int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
+*`HeapCategory::Value` removed (D4)*, and
+[result owner §1.1](../int/result-owner.md#11-classification-is-a-shared-predicate-not-an-absence-test).
 
-- **Classification.** `HeapCategory::classify` stops delegating to
-  `value_layout`, and with it drops its read of `ownership_analysis_off`
-  (§2.1). A one-word single-constructor ADT then classifies like any other
-  single-data-constructor ADT, as a heap value, in either toggle polarity.
-- **Deleted in the backend:** the `Value` variant and every site naming it.
-  Removing the variant makes the broken build the checklist: the match
-  lowering's inline field read, `value_construct`'s identity move in
-  `compiler/apply.rs` (with it the shared decision of
-  [compile-to-module](compile-to-module.md) §2.6.3), and the `Value`
-  alternatives in capture, glue, Vec, dependent-spark, trace, apply-site and
-  duplicate classification, with the module tests that assert the category.
-- **Gained, with no new code:** a Vec of these types gets element functions,
-  and a field of this type inside another ADT gets its glue, like any heap
-  type (§7.3).
-- **The binary's two consumers.** `result_owner.rs` names the variant, so the
-  broken build lists its two arms. `display.rs` does **not**: its
-  flattened-word arm asks `cranelisp_types::value_layout` directly, which
-  stays published and compiles unchanged, so the build is silent about the
-  one consumer whose survival is wrong. That arm is deleted in the same
-  commit, and the display renders the type through its ordinary
-  nullary-or-heap branch; its module rows are re-shaped as heap values. The
-  binary's design is [int §16.0](../int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
-  *`HeapCategory::Value` removed (D4)*, and
-  [result owner §1.1](../int/result-owner.md#11-classification-is-a-shared-predicate-not-an-absence-test).
-  After B5 the only reader of `value_layout` is typecheck's `Copy`
-  classifier; a new representation reader of it outside typecheck is a
-  reject (§10).
-- **Closes ACT-1069** (§7.5): its trace cells, the small-payload leg and the
-  two controls pass in every mode on the B5 tree with no change made for
-  them. A cell still RED there refutes the attribution and returns to `qa`,
-  who disposes of the record.
-- **`CACHE_SCHEMA_VERSION` is bumped** in the change-set (§7.4).
-- **Emission acceptance:** an attributed golden re-baseline, scoped to frames
-  that handle a value of a type `value_layout` admits, directly, as a Vec
-  element or as an ADT field, and to those fields' glue. Any other frame's
-  diff is unattributed and blocks.
-- §7.1–§7.6 and compile-to-module §2.6.3 then describe a mechanism that does
-  not exist, and reduce to stubs for their cited numbers in the design pass
-  after B5.
+The subsections below are anchors for existing citations; the mechanism they
+described is in Git history before `441e31ea`.
 
 ### 7.1 `HeapCategory::Value` and its single source
 
-`HeapCategory::Value` marks a concrete type represented inline: no header, no
-refcount, no drop glue, with constructor and field structure kept for
-construction and match. Eligibility is one predicate with two soundness-coupled
-consumers — typecheck's `Copy` mode classifier and the backend's layout — so it
-lives once, in `cranelisp-types`: `value_layout(ty, …) -> Option<ValueLayout>`
-with `VALUE_LAYOUT_MAX_WORDS = 1`. `HeapCategory::classify` delegates to it and
-derives no predicate of its own. A `Copy` mode over an unflattened
-representation would be a missing increment, which is why the predicate must not
-be duplicated.
-
-At a `Value`-typed site: construction is a bare move of the single field into
-the word; field read and match are bare moves; there is no RC at consuming
-positions or drop points; and a `Value` field inside
-a heap ADT or Vec is skipped by drop glue exactly as a `NeverHeap` field is.
+Retired: the variant is deleted. The eligibility predicate is §7's
+*The predicate stays published*.
 
 ### 7.2 One word, single constructor
 
-Every ABI surface is uniformly i64, so a one-word `Value` crosses every boundary
-unchanged. Multi-constructor types (which need a tag word) and types wider than
-one word stay heap-represented and RC-shared — sound, just unflattened.
-**Trigger for multi-word flattening:** a fixture whose hot type is Copy-eligible
-but wider than one word; its shape (element stride, multi-slot returns, boxing
-at word-sized edges) is designed then. In emitted code a flattened value never
-meets the nullary tag guard as tag-or-pointer: classification is total
-post-mono and a `Value` type classifies `Value` at every site. The trace
-formatter is the exception (§7.5).
+Retired with §7.1. The size bound is the predicate's constant,
+`VALUE_LAYOUT_MAX_WORDS`. The multi-word trigger retired with the mechanism:
+flattening returns only with a release-tier lowering
+([ownership spine](../arch/ownership-inference.md) §6.3).
 
 ### 7.3 Vec of values
 
-The Vec runtime's element inc/dec pointers are nullable, and null already means
-"no per-element RC" — how `Vec Int` works. A Vec of one-word values is emitted
-with null element functions and behaves like `Vec Int`: its copy does no incs and
-its drop walks nothing. No runtime code was added.
+Retired: a Vec of these types gets element functions like any heap element.
 
 ### 7.4 Cache and `--link` parity
 
-Layout is a deterministic function of the type definitions (persisted in the
-module metadata and chain-followed to one defining module), the size bound (a
-constant) and the toggle (a manifest key), so every compile of cache-valid
-inputs makes the same flattening decisions. Flattening changed compiled
-representation and bumped `CACHE_SCHEMA_VERSION`; any future change to the
-predicate or bound must bump it again.
+Retired: §7, *Cache*.
 
 ### 7.5 Trace and display descriptors
 
-The binary's value display renders a flattened value from its raw word with its
-constructor name. The trace path does not: the descriptor baker describes the
-type as an ordinary ADT, and the intrinsics formatter reads the word as a
-nullary tag below `NULLARY_TAG_THRESHOLD` and as a heap pointer at or above
-it. A one-word value traced as an argument prints the wrong text or ends the
-process
-([ACT-1069](../../sprints/actions/ACT-1069-trace-formats-one-word-adt-argument-as-tag-or-pointer-intake.md),
-memory-unsafe). It is not corrected in place: the retirement makes every such
-type a heap value, for which the formatter is right as written, so ACT-1069's
-cells passing on the retirement tree with no change made for them is part of
-its acceptance. No platform-visible type flattens; platform ABI edges stay
-boxed.
+Retired: §7, *ACT-1069*.
 
 ### 7.6 Compatibility rules
 
-- Matches over `HeapCategory` stay exhaustive; no wildcard collapses `Value`
-  into another arm.
-- A `Copy` parameter emits no inc and no dec.
-- Reuse keys on allocation size and site facts, so flattening only removes
-  candidates from it.
-- No code may assume "heap-typed ⇔ has a header" beyond what `classify` says.
+Retired with the variant.
 
 ---
 
@@ -513,8 +439,8 @@ half, in the same change-set:
 - A backend-local escape, strand or uniqueness analysis duplicating typecheck's.
 - An emission change on a fact-absent path (§2.2).
 - GOT slot-hole reclamation.
-- After B5, a representation decision read from `value_layout` anywhere
-  outside typecheck's `Copy` classifier (§7).
+- A representation decision read from `value_layout` anywhere outside
+  typecheck's `Copy` classifier (§7).
 
 ---
 

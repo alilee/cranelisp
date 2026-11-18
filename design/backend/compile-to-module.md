@@ -2,7 +2,8 @@
 
 > **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
 > **Status**: current design, verified against source 2026-09-25; §12 at
-> `4b58ab93`, 2026-11-17, with §12.1 designed and not yet landed.
+> `4b58ab93`, 2026-11-17, with §12.1 designed and not yet landed; §2.6 at
+> `441e31ea`, 2026-11-18.
 > **Authority**: `design/arch/bounded-contexts.md` §3 owns the boundary and its
 > invariants; the rustdoc in `crates/cranelisp-backend/src/lib.rs` owns the exact
 > signatures. This document explains how the one entry is organised and why.
@@ -128,10 +129,8 @@ The wrapper therefore never calls a constructor through the GOT.
 
 #### 2.6.3 Value-flattened constructors
 
-A single-constructor type flattened to a bare word constructs by moving its
-field, with no allocation. The inline site, the synthesised body and the
-wrapper consult the same `value_construct` decision. If they disagreed, a heap
-pointer would be matched as a bare word ([ownership codegen](ownership-codegen.md) §7).
+Retired at S124 B5: no type is flattened, so every construction with fields
+allocates (§2.6.1; [ownership codegen](ownership-codegen.md) §7).
 
 #### 2.6.4 Reference-counting contract
 

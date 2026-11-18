@@ -151,14 +151,14 @@ none is implicated in the faults in §6:
 - canonical drop glue ([transitive-drop-glue.md](transitive-drop-glue.md));
 - category before operation
   ([non-concrete-release-contract.md](non-concrete-release-contract.md) §3);
-- one-word value flattening ([ownership-codegen.md](ownership-codegen.md) §7),
-  with its analysis-off fallback;
+- one-word value flattening, retired at S124 B5
+  ([ownership-codegen.md](ownership-codegen.md) §7);
 - the IO node's release and the trampoline balance
   ([ring2-rc.md](ring2-rc.md) §3.5).
 
 **Placement mechanisms leave the dev tier.** Stack placement and value
-flattening change only a constant, so Principle 27 retires them in S124
-(stack placement at B1), and
+flattening change only a constant, so Principle 27 retired them in S124
+(stack placement at B1, value flattening at B5), and
 non-atomic RC for `Confined` retired at S123 W4
 ([ownership-codegen.md](ownership-codegen.md) §0, §5). Confined counting
 already had no consumer under U′: its only emission site was the return

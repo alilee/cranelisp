@@ -8,8 +8,9 @@ operation it emits, the disposition of each non-concrete face, and the open
 backend work that completes it. It absorbed the S121 C4 visit design; that
 visit's delivered bundles are recorded here as current mechanism and its open
 bundles as §7. Source was re-verified on 2026-11-15, for §7 on 2026-11-16,
-for §5.3 on 2026-11-17 at `1a3ab46e`, and for §4, §7.1, §7.3, §7.4, §7.7
-and §9 on 2026-11-18 at `152a0def`. *When* a reference is
+for §5.3 on 2026-11-17 at `1a3ab46e`, for §4, §7.1 and §7.3 on 2026-11-18
+at `152a0def`, and for §3.5, §7.2, §7.4, §7.7 and §9 on 2026-11-18 at
+`441e31ea`. *When* a reference is
 moved, duplicated or dropped is [uniform counting](uniform-counting.md), built
 at S123 W2; this contract governs whether an RC operation may be emitted on a
 value at all. §6 and §7.6 are retired with the provenance classification and
@@ -161,8 +162,8 @@ The normative surface is
 ### 3.5 The gate order
 
 > **Category, then counting, then emitter.** A seam asks the value's own
-> concrete type for its `HeapCategory`; `NeverHeap` (and `Value`, until row D4
-> retires it) emit nothing and the seam stops. Only then does the ownership plan's move, duplicate or drop
+> concrete type for its `HeapCategory`; `NeverHeap` emits nothing and the seam
+> stops. Only then does the ownership plan's move, duplicate or drop
 > apply. The plan never answers *whether* a reference exists.
 
 As built, the plan's duplicates and drops pass through two helpers, the
@@ -405,12 +406,11 @@ disagree with what a constructor carries, so none exists.
 
 §7.3 and §7.4 deliver the end state of
 [the S124 close](../arch/concrete-boundary-type.md#312-the-s124-close-no-rc-operation-on-a-word-without-a-category).
-The census (§7.3) and both close steps (§7.4) are built, except three
-narrowings step 2 left, which change-set B4′ closes (§7.4, *What remains of
-step 2*). §7.1 and §7.2 are not on that path and stay open; §7.6 is retired.
-None is accepted as residual. Order and dependencies are §7.7. Source read
-for this section: `main` at `4b58ab93`, 2026-11-16; §7.3, §7.4 and §7.7 again
-at `152a0def`, 2026-11-18.
+The census (§7.3) and both close steps (§7.4), with B4′, are built. §7.1 and
+§7.2 are not on that path and stay open; §7.6 is retired. None is accepted as
+residual. The landed order is §7.7. Source read for this section: `main` at
+`4b58ab93`, 2026-11-16; §7.3 at `152a0def` and §7.2, §7.4 and §7.7 at
+`441e31ea`, 2026-11-18.
 
 ### 7.1 Consume the lifecycle exhaustively (partial)
 
@@ -450,8 +450,14 @@ R-4 must hold before §7.4 converts more sites to located refusals.
   re-parsing a rendered message.
 - **A real span.** The glue registry's error helper uses
   `ErrorLocation::from_span(Span::SYNTHETIC)` (`drop_glue.rs`), the direct cause
-  of `0..0`. Every registry error carries the requesting frame's or reference's
-  span; the spans are on the `MonoExpr` nodes.
+  of `0..0`. The registry is keyed by type alone, and most of its requesters
+  hold no span to pass: the typed release emitter, the capture-glue request,
+  the IO payload sites and the result-root pre-request, which has no reference
+  at all; a nested field's shape is built inside its parent's. Every registry
+  error, including the malformed-Vec refusal B4′ added (§7.4), carries the
+  requesting frame's span, or the reference's where the requester has one; the
+  spans are on the `MonoExpr` nodes. The declaration-level constructor read
+  (`constructor_metas`, §7.4 step 1) takes the same fix.
 - **A lookup-able subject.** `"codegen failed for {module}/{symbol}"`
   (`cranelisp-backend/src/error.rs`) doubles an already-qualified monomorphised symbol. The backend
   supplies correct data; the presentation projection (`__expr` → the entered
@@ -481,7 +487,7 @@ forbids in user output, so it is compiled into debug builds only (§8 reject
 
 | Point | Where it is recorded | What one record means |
 |---|---|---|
-| Absent | the two parameter channels' refusals: in `defn_param_types`, a defn whose selected scheme is not a function type over exactly its parameters; in the lambda lowering, a `Lambda` node whose type is not a function type over exactly its parameters | one parameter of a refused list. Both channels record one per parameter, because the refusal introduces none of them; the defn channel's excess refusal and per-parameter count are B4′ (§7.4) |
+| Absent | the two parameter channels' refusals: in `defn_param_types`, a defn whose selected scheme is not a function type over exactly its parameters; in the lambda lowering, a `Lambda` node whose type is not a function type over exactly its parameters | one parameter of a refused list. Both channels record one per parameter, because the refusal introduces none of them |
 | Field | `CompileContext::ctor_field_types`, the match lowering's one field-type read, once per call; and its pattern-constructor read, when that read refuses a short declaration | a constructor's field types read at an instantiation of the class below |
 | Frame | `census::Frame::of_target`, where the codegen target is selected and its partition assigned, once per target compiled | one frame compiled under the census, in its partition: the denominator a zero reading is read against |
 
@@ -635,8 +641,9 @@ read that run.
 
 ### 7.4 The R-1 structural close (open)
 
-**Status: built** (the heading keeps "(open)" for its cited anchor): step 1 at row D1 and step 2 at B4 (`152a0def`), except
-three narrowings step 2 left, which B4′ closes (*What remains of step 2*).
+**Status: built** (the heading keeps "(open)" for its cited anchor): step 1
+at row D1, step 2 at B4 (`152a0def`), and the narrowings step 2 left at B4′
+(`1d965ed5`).
 
 Two change-sets, each gated on its own §7.3 reading: step 1 on zero residual
 and absent field reads, step 2 on zero records at every point.
@@ -644,8 +651,13 @@ and absent field reads, step 2 on zero records at every point.
 **The refusal frame is not a precondition.** §7.2 (FIXME 0915) governs how a
 refusal reads, and it carries past S124 by the user's ruling. Each step adds a
 refusal only where the census measured zero traffic, so no suite program
-reaches one. Each new refusal carries the span of the node or reference it
-refuses, never `Span::SYNTHETIC`; the doubled prefix and the mangled subject
+reaches one. A new refusal at a site that holds the node or reference it
+refuses carries that span, never `Span::SYNTHETIC`. A new refusal inside a
+table keyed without a reference refuses at `Span::SYNTHETIC`, and §7.2's span
+obligation locates it: the close adds two, the declaration-level constructor
+read (step 1) and the glue registry's malformed-Vec arm (B4′). Each is a
+compiler-invariant breach no producer reaches, so the residual is a `0..0`
+location on an unreachable error. The doubled prefix and the mangled subject
 remain §7.2's. *Falsifier:* any suite program that reaches a refusal the close
 added.
 
@@ -741,47 +753,30 @@ The three arms then have nothing to match and are **deleted, not re-keyed**
 display (step 1), for trace discovery's slotted signatures, and at the
 conversion points above. None of these reaches a category.
 
-**The remaining narrowings, by site:**
+**The narrowings, by site** (closed at B4, or at B4′ `1d965ed5` where marked):
 
-| Site | Current source | Disposition |
-|---|---|---|
-| `drop_glue.rs`, Vec arm of `shape()`: `unwrap_or(ConcreteType::Int)` | live | located refusal (B4′) |
-| `vec_codegen::emit_vec_get_core`: an absent element category skips the element increment | live; unreachable, because both callers resolve the release adapter first, which refuses a missing element type | the core takes a `HeapCategory`, not an option (B4′) |
-| `vec_codegen::resolve_elem_inc_fn_ptr` and its `_into` twin: missing element type "assume `NeverHeap`" | **delivered** at B4 — located refusal (`element_release_tests.rs`) | — |
-| `vec_codegen::request_elem_dec_adapter`: missing element type | **delivered** — located refusal (`element_release_tests.rs`) | — |
-| `compiler/context.rs`: `unwrap_or(Type::Int)` on the constructor field read | **delivered** — deleted by step 1 | — |
-| `fn_compiler.rs`: the dead `variable_types` `unwrap_or(Type::Int)` arm | **delivered** — absent from source | — |
+| Site | Disposition |
+|---|---|
+| `drop_glue.rs`, Vec arm of the shape builder (B4′) | a Vec key with other than one element type is refused (`a_vec_key_without_one_element_type_is_refused_neg`); no `unwrap_or(ConcreteType::Int)` remains |
+| `vec_codegen::emit_vec_get_core` (B4′) | takes a `HeapCategory`, not an option. Each caller resolves it through the element-category refusal at the reference's span before calling the core: the inline caller resolves only the category and releases the vector after the core; the value-position wrapper resolves its release adapter, then the category |
+| `vec_codegen::resolve_elem_inc_fn_ptr` and its `_into` twin | located refusal of a missing element type (`element_release_tests.rs`) |
+| `vec_codegen::request_elem_dec_adapter` | located refusal of a missing element type (`element_release_tests.rs`) |
+| `defn_param_types` (B4′ for the excess and the per-parameter count) | refuses a scheme that does not type exactly the defn's parameters, short or excess, and records one absent record per parameter of the refused list, as the lambda channel does (`census/tests.rs`) |
 
-With concrete Vec types an element type is missing only for a `Vec` carrying no
-argument, which is a malformed `ConcreteType`. The `("vec-len", 1)`
+With concrete Vec types an element type is missing only for a `Vec` carrying
+other than one argument, which is a malformed `ConcreteType`. The `("vec-len", 1)`
 value-position arm of `emit_vec_query_into` shares its siblings' refusal
 through the release resolver, never a local default (§8 reject 6).
 
-**What remains of step 2 (B4′).** One byte-identical change-set closes the
-narrowings B4 left:
+*Falsifier* for every refusal in the table: any suite program that reaches
+it, observed as a new RED; the parameter channel's also shows as an absent
+census record. The Vec refusals are not census record points (§7.3).
 
-1. the drop-glue Vec arm and `emit_vec_get_core`'s optional category (the
-   table above);
-2. `defn_param_types` refuses a scheme with more parameter types than the
-   defn has parameters. B4 refuses only a short scheme and ignores the
-   excess, while the lambda channel refuses both. The callee's Cranelift
-   signature takes its arity from the defn, so an excess is a scheme and a
-   body disagreeing about the function's arity, never a legal program;
-3. the defn channel records one absent record per parameter of a refused
-   list, as the lambda channel does (§7.3 record-point table). B4 records one
-   per untyped parameter only.
-
-Each lands with its unit fixture beside the existing ones: the excess scheme
-refused at the defn with one absent record per parameter, a two-parameter
-short scheme recording two, and the glue registry refusing a Vec with no
-argument. *Falsifier:* any suite program that reaches one of these refusals,
-observed as a non-empty census reading or a new RED. B4′ stays out of B5's
-change-set, whose acceptance class is a re-baseline (§7.7).
-
-**Emission acceptance:** step 2 is byte-identical, and B4′ with it. Every
-site they change was measured at zero traffic, and every other binder records
-the type it already used. A non-empty golden diff from either is traffic the
-census missed. Neither contributes a new refusal.
+**Emission acceptance:** step 2 and B4′ are byte-identical, and B4′ landed
+with the golden lane green. Every site they change was measured at zero
+traffic, and every other binder records the type it already used. A non-empty
+golden diff from either is traffic the census missed. Neither contributes a
+refusal a suite program reaches.
 
 **What the representation cannot see.** A concrete but wrong type: the
 lenient builders' `Int` placeholder on synthetic-body nodes (safety register
@@ -823,20 +818,16 @@ the declaration corrections ACT-0974 made are primitives'.
 
 ### 7.7 Order
 
-The backend change-sets of the S124 close, in order. Landed: stack-placement
-retirement with row D5 (`b0f48914`, `8f44040e`), the census (`1a3ab46e`) and
-its frame record (`3ca6086e`), close step 1 (`3deee350`, `24c42430`) and close
-step 2 at B4 (`152a0def`). The producer corrections the zero read waited on
-landed on other surfaces: typecheck row T4 for ACT-1034 (`3a2692e3`) and
-ACT-1050's in the binary (`32e434dc`). The zero read is CEN-4 (§7.3).
-
-| # | Change-set | Depends on | Emission acceptance class |
-|---|---|---|---|
-| 4′ | B4′: the narrowings step 2 left (§7.4, *What remains of step 2*) | 4, landed | byte-identical; zero new refusals |
-| 5 | Value-flattening retirement, row D4, with the binary's display arm ([ownership codegen](ownership-codegen.md) §7) | 4, landed | attributed re-baseline; `CACHE_SCHEMA_VERSION` bump |
-
-Rows 4′ and 5 are independent; they stay separate change-sets because their
-acceptance classes differ.
+The backend change-sets of the S124 close, all landed, in order:
+stack-placement retirement with row D5 (`b0f48914`, `8f44040e`), the census
+(`1a3ab46e`) and its frame record (`3ca6086e`), close step 1 (`3deee350`,
+`24c42430`), close step 2 at B4 (`152a0def`), its narrowings at B4′
+(`1d965ed5`, byte-identical), and the value-flattening retirement at B5 with
+row D4 and the binary's display arm (`441e31ea`; an attributed re-baseline
+and the `CACHE_SCHEMA_VERSION` bump, [ownership codegen](ownership-codegen.md)
+§7). The producer corrections the zero read waited on landed on other
+surfaces: typecheck row T4 for ACT-1034 (`3a2692e3`) and ACT-1050's in the
+binary (`32e434dc`). The zero read is CEN-4 (§7.3).
 
 The lifecycle disposition with its cache-load arms (§7.1) and the refusal frame
 (§7.2) are not on this path. They stay open, byte-identical when they land.
@@ -875,8 +866,8 @@ In addition to [transitive-drop-glue.md](transitive-drop-glue.md) §11:
     process's standard streams.
 15. **A borrowing position, or an RC action selected by a declared `Mode` or
     `ParamFlow`** ([uniform counting](uniform-counting.md) §1).
-16. **A golden re-baseline outside the items that declare one** (§7.7), or one
-    taken without scoped attribution.
+16. **A golden re-baseline outside the change-sets that declare one**
+    ([backend](backend.md) §9), or one taken without scoped attribution.
 17. **After §7.4 step 2: an optional or `Type`-typed binder record or RC entry
     point**, a parameter type read off an occurrence, or any field-type read
     for classification, release or glue that does not go through the step 1
@@ -890,15 +881,13 @@ Rows sit beside their production owner per the crate's sibling convention. The
 delivered rows (the IO arm, the `Pure` stamp and the platform-return tag
 dispatch, the shared nullary guard, the census with its frame record, step 1's
 field channel, and step 2's binder types, census refusals and element
-increment refusal) are in source and are not repeated.
+increment refusal, and B4′'s parameter channel and Vec shape) are in source and are not repeated.
 
 | Submodule | Positive | Edge | Negative |
 |---|---|---|---|
 | lifecycle disposition (§7.1) | each `Concrete × Realization` arm lowers as tabled; `defined_symbols` equals the `Concrete × Body` projection | `FacadeOf` is a name-alias with no per-instance body | exhaustive, no `_ =>`; `Template` in value position and `Declared` at codegen are located refusals |
 | `cache/serialize` (§7.1) | a legal restored entry loads | tombstones conserve | each legality violation is a `CacheStale` recompile, never an `assert!` |
 | `error` frame (§7.2) | one prefix, real span, unmangled subject | a refusal inside a monomorphised instance renders the instantiation as types | no `0..0` from the glue registry; no `module/module/` doubling |
-| defn parameter channel (B4′, §7.4) | a scheme typing exactly the defn's parameters compiles | a two-parameter short scheme records two absent records | a scheme with more parameter types than parameters is a located invariant error with one absent record per parameter |
-| drop-glue Vec shape (B4′, §7.4) | a `Vec` with a concrete element builds its shape | a scalar element builds a shape with no element release | a `Vec` carrying no argument is a located refusal |
 | category before counting (§3.5) | — | — | no RC emission is reachable without a preceding category gate |
 
 E2e acceptance is `qa`'s.
