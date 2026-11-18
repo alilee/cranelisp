@@ -349,6 +349,43 @@ rebuilt. Contract: [trait-implementation persistence](trait-impl-cache-carrier.m
   [macro availability](macro-availability-model.md). Exact signatures are the rustdoc on
   `check_forms` and `SymbolTableAccess` in `crates/cranelisp-typecheck/src/`.
 
+### Resolution gaps
+
+`ResolutionGap` is the recoverable "this dependency is not ready" value inside
+`CheckError::Gap`. It carries no span and is never persisted.
+
+- **Producer.** Typecheck alone: value position's qualified walk
+  (`resolve_qualified`, `SymbolTypechecked`), type position (`Type`) and
+  `instantiate_demands` (`SymbolTypechecked` on a demand owner's absent home).
+- **Consumer.** The binary alone. It reads the gap's module to choose what to load or park
+  on, and the module and member to word and place the diagnostic (`gap_target_module`,
+  `gap_member`, the gap arm of cluster finalization, the macro checkpoint, and
+  `GapReference`). The worker's validation paths print a surviving gap in an error.
+- **`MacroInMem` has no producer.** Frontend raises no gap. The binary's macro-head
+  recognition substitutes the alias itself and drives the module without a gap value; a head
+  whose module is present and lacks the member is not a macro and reaches typecheck as a
+  value reference. Only a module test in the binary constructs the variant.
+- **The module a gap names, in source.** An absent module is named after alias substitution
+  (spec §8.6.6), because the resolver's error supplies it. A member absent from a present
+  module is named by the qualifier as written, so an alias-spelled reference names a module
+  that does not exist.
+- **Proposal — awaiting the user's approval, not in source.** Every gap names the module
+  resolution probed: the written qualifier after one alias substitution from the referring
+  module. A gap's module is then an identity like every other resolved-stage `FQSymbol`
+  ([Principle 24](principles/24-resolve-once.md)), and the binary substitutes nothing.
+  - Typecheck applies `substitute_module_alias` to the written qualifier in the
+    member-absent arm, with the alias table and referring module its scope resolve used.
+    Typecheck already calls that function, so no consumer edge is added.
+  - Substitution is applied to a written qualifier only, and once. It is not idempotent:
+    with aliases `a → b.c` and `b → q`, substituting `a` twice yields `q.c`. This is why the
+    consumer cannot repair the gap, which does not say which form it carries.
+  - The resolver's `*NotFound` errors are not the source. Their `from_module` has no one
+    meaning: typecheck's own projections set it to the current module, the name or the
+    empty path.
+  - Grade once built: measured, by a typecheck module test at `resolve_qualified` and the
+    alias cells of `tests/spec_08_modules.rs`. A written qualifier and a resolved module
+    share the type `ModuleFullPath`, so the rule is not structural.
+
 ---
 
 ## ADT Support Types
