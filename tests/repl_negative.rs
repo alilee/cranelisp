@@ -1100,3 +1100,77 @@ fn list_neg_no_raw_type_vars() {
         out.stdout
     );
 }
+
+fn s124_return_diagnostic_roles(mode: &str, leg: &str) {
+    let (program, expected, actual) = match leg {
+        "int_annotation" => ("(defn f [] :primitives/Int 3.5)", "Int", "Float"),
+        "float_annotation" => ("(defn h [] :primitives/Float 3)", "Float", "Int"),
+        "argument_control" => ("(defn g [:primitives/Int x] x)\n(g 3.5)", "Int", "Float"),
+        _ => unreachable!(),
+    };
+    let cr = Cranelisp::new();
+    let out = if mode == "run" {
+        cr.file(
+            "app.cl",
+            &format!("{program}\n(defn main [] (primitives/Pure 0))"),
+        )
+        .run("app.cl")
+        .output()
+    } else {
+        cr.stdin(&format!("{program}\n/quit\n")).output()
+    };
+    let text = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        text.contains("type mismatch"),
+        "the fixture must reach type unification; {text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "expected primitives/{expected}, got primitives/{actual}"
+        )),
+        "expected must name the annotation/parameter, got must name the inferred type; {text}"
+    );
+    if mode == "run" {
+        out.assert_exit(1);
+    }
+}
+
+// spec: repl/spec/05-error-presentation.md §5.3 — REPRO-1080: expected and inferred type roles
+// defect: class=diagnostic-role-swap locus=cranelisp-typecheck return-annotation unification found=S124 owner=/dev
+#[test]
+fn s124_1080_int_annotation_repl() {
+    s124_return_diagnostic_roles("repl", "int_annotation");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.3 — REPRO-1080: expected and inferred type roles
+// defect: class=diagnostic-role-swap locus=cranelisp-typecheck return-annotation unification found=S124 owner=/dev
+#[test]
+fn s124_1080_int_annotation_run() {
+    s124_return_diagnostic_roles("run", "int_annotation");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.3 — REPRO-1080: expected and inferred type roles
+// defect: class=diagnostic-role-swap locus=cranelisp-typecheck return-annotation unification found=S124 owner=/dev
+#[test]
+fn s124_1080_float_annotation_repl() {
+    s124_return_diagnostic_roles("repl", "float_annotation");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.3 — REPRO-1080: expected and inferred type roles
+// defect: class=diagnostic-role-swap locus=cranelisp-typecheck return-annotation unification found=S124 owner=/dev
+#[test]
+fn s124_1080_float_annotation_run() {
+    s124_return_diagnostic_roles("run", "float_annotation");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.3 — REPRO-1080: expected and inferred type roles
+#[test]
+fn s124_1080_argument_control_repl() {
+    s124_return_diagnostic_roles("repl", "argument_control");
+}
+
+// spec: repl/spec/05-error-presentation.md §5.3 — REPRO-1080: expected and inferred type roles
+#[test]
+fn s124_1080_argument_control_run() {
+    s124_return_diagnostic_roles("run", "argument_control");
+}
