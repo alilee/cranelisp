@@ -6394,7 +6394,8 @@ fn s124_declared_child_batch_outcomes_with_alias(
 }
 
 // spec: spec/08-modules.md §8.10.2 — REPRO-1081: one graph has one batch outcome, independent of its entry route.
-// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev fixed=S124/b8b6df58
+// Entry routes formerly disagreed on the same graph or exposed a refused module on a later turn.
 #[test]
 fn s124_declared_child_graph_batch_routes_agree() {
     let outcomes = s124_declared_child_batch_outcomes(true);
@@ -6443,7 +6444,8 @@ fn s124_declared_child_repl_outcomes_with_alias(returns_to_parent: bool, alias: 
 }
 
 // spec: spec/08-modules.md §8.10.2 — REPRO-1081: cold REPL orders agree with each other and the batch routes.
-// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev fixed=S124/b8b6df58
+// Entry routes formerly disagreed on the same graph or exposed a refused module on a later turn.
 #[test]
 fn s124_declared_child_graph_repl_orders_agree() {
     let mut outcomes = s124_declared_child_repl_outcomes(true);
@@ -6461,7 +6463,8 @@ fn s124_declared_child_graph_repl_acyclic_control() {
 }
 
 // spec: spec/08-modules.md §8.10.2 — REPRO-1081: a cycle-refused module cannot evaluate next turn without a save.
-// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=src/scheduler.rs found=S124 owner=/dev fixed=S124/b8b6df58
+// Entry routes formerly disagreed on the same graph or exposed a refused module on a later turn.
 #[test]
 fn s124_declared_child_graph_neg_failed_module_evaluates_next_turn() {
     for first in ["(z/zf)", "(P.c/cf)"] {
@@ -6589,7 +6592,8 @@ fn s124_parent_switch_definition_with_two_super_children_survives_restart() {
 }
 
 // spec: spec/08-modules.md §8.10.2 — ACT-1081 route agreement also holds for a file-local module alias.
-// defect: class=mode-divergence locus=src/process_form/dependency.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=src/process_form/dependency.rs found=S124 owner=/dev fixed=S124/9580856a
+// The aliased graph formerly disagreed across batch entry routes.
 #[test]
 fn s124_declared_child_alias_graph_batch_routes_agree() {
     let outcomes = s124_declared_child_batch_outcomes_with_alias(true, true);
@@ -6610,6 +6614,7 @@ fn s124_declared_child_alias_graph_batch_acyclic_control() {
 
 // spec: spec/08-modules.md §8.10.2 — ACT-1081 aliased graph agrees across cold REPL orders and batch routes.
 // defect: class=mode-divergence locus=src/process_form/dependency.rs found=S124 owner=/dev
+// Open: ACT-1082 — one REPL order looks up the file-local alias as a module.
 #[test]
 fn s124_declared_child_alias_graph_repl_orders_agree() {
     let mut outcomes = s124_declared_child_repl_outcomes_with_alias(true, true);
@@ -6668,7 +6673,7 @@ fn s124_missing_member_diagnostic(mode: &str, alias: bool) {
 
 // spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
 // defect: class=wrong-scope-lookup locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
-// Open: design/int/int.md §6.3.1, the gap names the written alias.
+// Open: ACT-1082 — the resolution gap names the written alias instead of its module.
 #[test]
 fn s124_missing_member_alias_neg_run() {
     s124_missing_member_diagnostic("run", true);
@@ -6682,7 +6687,7 @@ fn s124_missing_member_unaliased_control_run() {
 
 // spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
 // defect: class=wrong-scope-lookup locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
-// Open: design/int/int.md §6.3.1, the gap names the written alias.
+// Open: ACT-1082 — the resolution gap names the written alias instead of its module.
 #[test]
 fn s124_missing_member_alias_neg_link() {
     s124_missing_member_diagnostic("link", true);
@@ -6696,7 +6701,7 @@ fn s124_missing_member_unaliased_control_link() {
 
 // spec: spec/08-modules.md §8.5.4 edge 4; §8.6.6 — absent member after alias substitution.
 // defect: class=wrong-scope-lookup locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
-// Open: design/int/int.md §6.3.1, the gap names the written alias.
+// Open: ACT-1082 — the resolution gap names the written alias instead of its module.
 #[test]
 fn s124_missing_member_alias_neg_repl() {
     s124_missing_member_diagnostic("repl", true);

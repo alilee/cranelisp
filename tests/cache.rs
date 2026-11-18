@@ -3629,8 +3629,8 @@ fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
 }
 
 // spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
-// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev
-// Open: design/int/int.md §6.11, A restored parent; only the child object is absent.
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev fixed=S124/a205a29f
+// A restored parent formerly completed before its object-missing child rebuilt its implementation.
 #[test]
 fn s124_restored_parent_child_object_removed_run() {
     s124_restored_parent_child("run", false);
@@ -3643,8 +3643,8 @@ fn s124_restored_parent_child_both_files_removed_control_run() {
 }
 
 // spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
-// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev
-// Open: design/int/int.md §6.11, A restored parent; only the child object is absent.
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev fixed=S124/a205a29f
+// A restored parent formerly completed before its object-missing child rebuilt its implementation.
 #[test]
 fn s124_restored_parent_child_object_removed_link() {
     s124_restored_parent_child("link", false);
@@ -3657,8 +3657,8 @@ fn s124_restored_parent_child_both_files_removed_control_link() {
 }
 
 // spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.
-// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev
-// Open: design/int/int.md §6.11, A restored parent; only the child object is absent.
+// defect: class=shared-state-write-race locus=src/process_form/cache_restore.rs::restored-parent-completion found=S124 owner=/dev fixed=S124/a205a29f
+// A restored parent formerly completed before its object-missing child rebuilt its implementation.
 #[test]
 fn s124_restored_parent_child_object_removed_repl() {
     s124_restored_parent_child("repl", false);

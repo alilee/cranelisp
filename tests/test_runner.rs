@@ -861,7 +861,8 @@ fn s124_1063_discover_direct_control() {
 }
 
 // spec: repl/spec/05-error-presentation.md §5.5; repl/spec/16-test-discovery.md §16.6 — REPRO-0915-loc
-// defect: class=check-gate-leak locus=src/exe.rs::refuse_dev_session_externs found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::refuse_dev_session_externs found=S124 owner=/dev fixed=S124/52de1aad
+// The discover-tests batch refusal formerly lost the source location.
 #[test]
 fn s124_discover_batch_location_run() {
     let cr = Cranelisp::new().file(
@@ -879,7 +880,8 @@ fn s124_discover_batch_location_run() {
 }
 
 // spec: repl/spec/05-error-presentation.md §5.5; repl/spec/16-test-discovery.md §16.6 — REPRO-0915-loc
-// defect: class=check-gate-leak locus=src/exe.rs::refuse_dev_session_externs found=S124 owner=/dev
+// defect: class=check-gate-leak locus=src/exe.rs::refuse_dev_session_externs found=S124 owner=/dev fixed=S124/52de1aad
+// The discover-tests batch refusal formerly lost the source location.
 #[test]
 fn s124_discover_batch_location_link() {
     let cr = Cranelisp::new().file(
