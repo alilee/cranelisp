@@ -62,6 +62,9 @@ mod value_use_tests;
 #[cfg(test)]
 mod keyed_miss_tests;
 
+#[cfg(test)]
+mod unclaimed_builtin_tests;
+
 /// The forwarding template (`uniform-counting.md` §3.3): the argument vector
 /// of a generated wrapper's one saturated call of its target, and the only RC
 /// emission in a wrapper body. Every function-as-value, trait-method-as-value
