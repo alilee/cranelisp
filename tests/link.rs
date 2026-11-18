@@ -371,6 +371,82 @@ fn link_neg_no_cache_flag_is_rejected() {
 // 4. Cache reuse
 // =============================================================================
 
+fn object_pass_project(obstruct_lib: bool) -> Cranelisp {
+    let project = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("lib.cl", "(defn f [] 41)\n")
+        .file(
+            "app.cl",
+            "(import [primitives [Pure]])\n(import [lib [f]])\n(defn main [] (Pure (f)))\n",
+        );
+    if obstruct_lib {
+        project.file(".cranelisp-cache/lib.o/keep", "object-path obstruction\n")
+    } else {
+        project
+    }
+}
+
+// spec: design/int/int.md §7.7 — T-LINK-STOP: a pass that publishes no object fails the link.
+// defect: class=error-swallow locus=src/session_v4/nice_worker.rs found=S124 owner=/dev fixed=S124/79a8c94c
+// A stopped dependency object pass formerly reached startup emission and the system linker.
+#[test]
+fn link_neg_stopped_dependency_object_pass_refuses_before_startup() {
+    let out = object_pass_project(true).link("app.cl").output();
+    assert!(
+        out.tmpdir.join(".cranelisp-cache/lib.o").is_dir()
+            && out.tmp_exists(".cranelisp-cache/app.o"),
+        "premise: only lib's object path is obstructed and app publishes its object; stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.status.success(),
+        "a stopped object pass must refuse --link"
+    );
+    assert!(
+        out.stderr.contains("cannot link") && out.stderr.contains("lib"),
+        "the refusal must name lib: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains("; Linking:") && !out.stderr.contains("; Linking:"),
+        "the system linker must not be reached; stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.tmp_exists(".cranelisp-cache/__startup.o"),
+        "startup must not be emitted after an object pass stops"
+    );
+    assert!(!out.tmp_exists("app"), "no executable may be produced");
+}
+
+// spec: design/int/int.md §7.7 — T-LINK-STOP control: the unobstructed project links and runs.
+#[test]
+fn link_dependency_object_pass_unobstructed_control() {
+    let out = object_pass_project(false)
+        .link_then_run("app.cl")
+        .output()
+        .assert_exit(41);
+    assert!(
+        out.linked_execution_elapsed.is_some(),
+        "41 must come from the linked executable"
+    );
+}
+
+// spec: design/int/int.md §7.7 — T-LINK-STOP control: a stopped object pass does not refuse --run.
+#[test]
+fn link_stopped_dependency_object_pass_run_control() {
+    let out = object_pass_project(true)
+        .run("app.cl")
+        .output()
+        .assert_exit(41);
+    assert!(
+        out.tmpdir.join(".cranelisp-cache/lib.o").is_dir(),
+        "the object-path obstruction must remain in place"
+    );
+}
+
 // spec: design/backend/executable-generation.md §3 — cache reuse on second --link.
 //   Two `--link` runs both produce a working executable; deleting the
 //   produced exe between runs proves the second invocation re-emits.

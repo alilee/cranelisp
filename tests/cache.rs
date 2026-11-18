@@ -28,8 +28,8 @@ use std::time::{Duration, SystemTime};
 use helpers::e2e::Cranelisp;
 
 // spec: design/int/int.md §7.6; design/int/index-worker-isolation.md §3.3 — REPRO-1083.
-// defect: class=partial-record-update locus=src/session_v4/index_worker.rs::write_index_meta found=S124 owner=/dev
-// ACT-1083: an index pass rekeys a stale importer while its old object remains.
+// defect: class=partial-record-update locus=src/session_v4/index_worker.rs::write_index_meta found=S124 owner=/dev fixed=S124/f2317af0
+// ACT-1083: an index pass formerly rekeyed a stale importer while its old object remained.
 #[test]
 fn cache_index_over_stale_importer_preserves_calls_across_modes() {
     cache_index_importer_calls(true, true);
