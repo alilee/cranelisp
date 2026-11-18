@@ -91,12 +91,15 @@ visibility change, a facade re-export, a new or removed cross-crate consumer
 edge, or a change of meaning the baseline cannot represent — is batched by
 module and reviewed by `arch` before implementation starts. `arch` states the
 exact delta, affected producers and consumers, compatibility and schema/ABI
-impact and the expected `public-api.txt` effect, and judges it against its
-architectural quality criteria (`design/arch/AGENTS.md` §Public-API
-discipline) for the effect on each module's simplicity and maintainability.
-`arch` approves a batch that meets them. It escalates to the user, with a
-brief, when a larger change is required: a significant step change to a
-module's surface or contract. The generated baselines are regenerated once
+impact and the expected `public-api.txt` effect, and asks three questions of
+it for every module it touches (`design/arch/AGENTS.md` §Public-API
+discipline): *bounded context* — does the module keep its cohesive and
+coherent intent; *simple api* — does the public API simply and clearly
+express that intent; *strongly typed* — do the definitions use type
+representation so an invalid state cannot be expressed. `arch` approves a
+change when each answer is yes. It escalates to the user, with a brief, when
+an answer is no and it still recommends the change, or when the change alters
+a module's intent. The generated baselines are regenerated once
 per phase, at its checkpoint. `arch` compares the diff with the approved
 batches and reports it to the user at the checkpoint; a line outside an
 approved batch stops the work and returns to `arch`. A phase, wave or general
