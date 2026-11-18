@@ -1020,20 +1020,28 @@ pub(super) fn attempt_dependencies(
 /// A walked file's qualifiers are substituted through the aliases the walked
 /// files declare, not the session carrier, which the walked module's Pass 0 may
 /// not yet have written. A qualifier through another module's export mount
-/// (`p.s/y`) resolves only once `p` has been walked. A mount whose export
-/// loads names is also an `export` edge of `p`, so the walk still reaches its
-/// target; a name-less mount is no edge, and a qualifier read through it
-/// before `p` is walked is a reach this walk misses.
+/// (`p.s/y`) can name a module only once `p` has been walked, so a qualifier
+/// that names no module file stays pending and is substituted again after
+/// every visit; meanwhile the walk follows it to its owner `p`. The result is
+/// the least fixpoint, independent of visit order.
 pub(super) fn prelude_reach_cycle(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,
 ) -> Option<crate::scheduler::CycleError> {
     let prelude = prelude_module();
+    let is_module_file = |path: &ModuleFullPath| {
+        crate::pipeline::resolve_module_file(path, ctx.project_root, ctx.lib_dirs).is_some()
+    };
     let aliases = cranelisp_types::ModuleAliases::default();
-    let mut reached_from: std::collections::HashMap<ModuleFullPath, ModuleFullPath> =
-        std::collections::HashMap::new();
-    let mut queue = std::collections::VecDeque::from([prelude.clone()]);
-    while let Some(visiting) = queue.pop_front() {
+    let mut walk = ReachWalk {
+        target: module,
+        prelude: &prelude,
+        reached_from: std::collections::HashMap::new(),
+        queue: std::collections::VecDeque::from([prelude.clone()]),
+    };
+    // `(writer, qualifier)` pairs whose qualifier names no module file yet.
+    let mut pending: Vec<(ModuleFullPath, ModuleFullPath)> = Vec::new();
+    while let Some(visiting) = walk.queue.pop_front() {
         let Some(parsed) = parse_module_file(ctx, &visiting) else {
             continue;
         };
@@ -1055,29 +1063,94 @@ pub(super) fn prelude_reach_cycle(
             &declared,
             DeclaredEdges::ImportsAndExports,
         );
-        let qualified = qualified_modules(&aliases, &visiting, &parsed);
-        for next in declarations.into_iter().chain(qualified) {
-            if next == prelude
-                || next == visiting
-                || reached_from.contains_key(&next)
-                || crate::cache::dependency_record::is_compiler_owned(&next)
-            {
+        let mut edges = declarations;
+        for qualifier in written_qualifiers(&parsed) {
+            let named = cranelisp_types::substitute_module_alias(&aliases, &visiting, &qualifier);
+            if is_module_file(&named) {
+                edges.push(named);
                 continue;
             }
-            reached_from.insert(next.clone(), visiting.clone());
-            if next == *module {
-                let mut path = vec![module.clone()];
-                while let Some(previous) = reached_from.get(path.last()?) {
-                    path.push(previous.clone());
-                }
-                path.push(module.clone());
-                path.reverse();
-                return Some(crate::scheduler::CycleError { cycle: path });
+            if let Some(owner) = owning_module_file(&named, &is_module_file) {
+                edges.push(owner);
             }
-            queue.push_back(next);
+            pending.push((visiting.clone(), qualifier));
+        }
+        for next in edges {
+            if let Some(cycle) = walk.follow(next, &visiting) {
+                return Some(cycle);
+            }
+        }
+        let mut resolved = Vec::new();
+        pending.retain(|(writer, qualifier)| {
+            let named = cranelisp_types::substitute_module_alias(&aliases, writer, qualifier);
+            let names_module = is_module_file(&named);
+            if names_module {
+                resolved.push((writer.clone(), named));
+            }
+            !names_module
+        });
+        for (writer, next) in resolved {
+            if let Some(cycle) = walk.follow(next, &writer) {
+                return Some(cycle);
+            }
         }
     }
     None
+}
+
+/// The longest proper prefix of `path` that names a module file: the module
+/// whose mount spec §8.4.4 steps 2–3 resolve the rest of `path` through.
+fn owning_module_file(
+    path: &ModuleFullPath,
+    is_module_file: &impl Fn(&ModuleFullPath) -> bool,
+) -> Option<ModuleFullPath> {
+    let mut prefix = path.as_ref();
+    while let Some((shorter, _)) = prefix.rsplit_once('.') {
+        prefix = shorter;
+        let candidate = ModuleFullPath::from(prefix);
+        if is_module_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// The breadth-first reach of [`prelude_reach_cycle`] from the prelude.
+struct ReachWalk<'a> {
+    target: &'a ModuleFullPath,
+    prelude: &'a ModuleFullPath,
+    reached_from: std::collections::HashMap<ModuleFullPath, ModuleFullPath>,
+    queue: std::collections::VecDeque<ModuleFullPath>,
+}
+
+impl ReachWalk<'_> {
+    /// Follow the edge `from -> next`: the cycle when `next` is the target,
+    /// otherwise enqueue `next` the first time it is reached.
+    fn follow(
+        &mut self,
+        next: ModuleFullPath,
+        from: &ModuleFullPath,
+    ) -> Option<crate::scheduler::CycleError> {
+        if next == *self.prelude
+            || next == *from
+            || self.reached_from.contains_key(&next)
+            || crate::cache::dependency_record::is_compiler_owned(&next)
+        {
+            return None;
+        }
+        self.reached_from.insert(next.clone(), from.clone());
+        if next == *self.target {
+            let mut path = vec![self.target.clone()];
+            while let Some(previous) = self.reached_from.get(path.last()?) {
+                path.push(previous.clone());
+            }
+            path.push(self.target.clone());
+            path.reverse();
+            return Some(crate::scheduler::CycleError { cycle: path });
+        }
+        self.queue.push_back(next);
+        None
+    }
 }
 
 /// Gate the cluster's body (Pass-1/Pass-2) on the signature barrier (S93,
@@ -2206,6 +2279,52 @@ mod bare_module_name_tests {
         let message = project.failed_attempt_error("x", P_UNKNOWN);
         assert!(
             message.contains("circular dependency detected: x -> prelude -> a -> x"),
+            "{message}"
+        );
+    }
+
+    // spec: spec/08-modules.md §8.5.4 item 6, §8.4.4; design/int/int.md §6.12
+    // (a qualifier through another module's mount resolves at the fixpoint) —
+    // the prelude writes `p.s/one` before the walk visits `p`, whose name-less
+    // `(export [(x s) []])` mounts `x` as `s`; the walk visits the prelude
+    // first, so the qualifier resolves only once `p`'s aliases join the set.
+    #[test]
+    fn failed_attempt_reached_through_a_later_walked_mount_reports_the_cycle() {
+        let project = Project::new(&[
+            (
+                "prelude.cl",
+                "(import [p [f]])\n(deftype P [:Int n])\n(defn reach [] (p.s/one))\n",
+            ),
+            (
+                "p.cl",
+                "(import [prelude []])\n(export [(x s) []])\n(defn f [] 1)\n",
+            ),
+            ("x.cl", X_FAILS_ON_P),
+        ]);
+        let message = project.failed_attempt_error("x", P_UNKNOWN);
+        assert!(
+            message.contains("circular dependency detected: x -> prelude -> x"),
+            "{message}"
+        );
+    }
+
+    // spec: spec/08-modules.md §8.4.4 steps 2–3; design/int/int.md §6.12 — a
+    // qualifier that names no module file is followed to its owner, the
+    // longest proper prefix that does: the prelude writes `q.r.s/one` and
+    // imports nothing, so only that edge reaches `q`, whose import reaches `x`.
+    #[test]
+    fn unresolved_qualifier_is_followed_to_its_owner_module() {
+        let project = Project::new(&[
+            (
+                "prelude.cl",
+                "(deftype P [:Int n])\n(defn reach [] (q.r.s/one))\n",
+            ),
+            ("q.cl", "(import [prelude []])\n(import [x [one]])\n"),
+            ("x.cl", X_FAILS_ON_P),
+        ]);
+        let message = project.failed_attempt_error("x", P_UNKNOWN);
+        assert!(
+            message.contains("circular dependency detected: x -> prelude -> q -> x"),
             "{message}"
         );
     }
