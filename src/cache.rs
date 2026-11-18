@@ -64,12 +64,22 @@ pub struct ObjectCache {
     /// the initiator may iterate at link-time.
     compiled_o_paths: Mutex<Vec<PathBuf>>,
 
-    /// The authored slot layout of each stored `.meta` decoded for validation
-    /// (`design/int/int.md` §7.6.3), at most once per `.meta` the session
-    /// reads. Every session writer of a `.meta` goes through
-    /// [`Self::write_meta`], which ends the entry under its shard lock, so a
-    /// decode cannot outlive the file it read.
-    stored_layouts: dashmap::DashMap<ModuleFullPath, Option<AuthoredSlotLayout>>,
+    /// Each stored `.meta` decoded for validation, held for the member's
+    /// restore so the file is decoded once (`design/int/int.md` §7.6.3);
+    /// `None` records that no valid `.meta` is stored. An entry lives only
+    /// while the session holds no table for the member: the restore takes it,
+    /// and the restore's install and a fresh registration end it. Every
+    /// session writer of a `.meta` goes through [`Self::write_meta`], which
+    /// ends the entry under its shard lock, so a decode cannot outlive the
+    /// file it read. Correctness never depends on an entry: a missing one is
+    /// decoded from the file.
+    stored: dashmap::DashMap<ModuleFullPath, Option<StoredMeta>>,
+}
+
+/// A decoded stored `.meta` and the authored slot layout read from it.
+struct StoredMeta {
+    layout: AuthoredSlotLayout,
+    module: cranelisp_backend::cache::CachedModule,
 }
 
 impl ObjectCache {
@@ -86,43 +96,69 @@ impl ObjectCache {
             dir,
             state: Mutex::new(state),
             compiled_o_paths: Mutex::new(Vec::new()),
-            stored_layouts: dashmap::DashMap::new(),
+            stored: dashmap::DashMap::new(),
         }
     }
 
-    /// The authored slot layout of `module`'s stored `.meta`, decoded at most
-    /// once per session; `None` when caching is disabled or no valid `.meta`
-    /// is stored.
+    /// The authored slot layout of `module`'s stored `.meta`; `None` when
+    /// caching is disabled or no valid `.meta` is stored. The decode is held
+    /// for the member's restore.
     pub(crate) fn stored_layout(&self, module: &ModuleFullPath) -> Option<AuthoredSlotLayout> {
-        if let Some(layout) = self.stored_layouts.get(module) {
-            return layout.clone();
+        if let Some(held) = self.stored.get(module) {
+            return held.as_ref().map(|stored| stored.layout.clone());
         }
-        self.stored_layouts
+        self.stored
             .entry(module.clone())
             .or_insert_with(|| {
-                let dir = self.dir.as_deref()?;
-                let cached =
-                    cranelisp_backend::cache::try_load_cached_module(dir, module).ok()??;
-                Some(AuthoredSlotLayout::of(&cached.symbol_table))
+                let module = self.decode(module)?;
+                Some(StoredMeta {
+                    layout: AuthoredSlotLayout::of(&module.symbol_table),
+                    module,
+                })
             })
-            .clone()
+            .as_ref()
+            .map(|stored| stored.layout.clone())
+    }
+
+    /// `module`'s stored module for its metadata restore: the decode
+    /// validation holds, taken, or else a decode of the file.
+    pub(crate) fn stored_module(
+        &self,
+        module: &ModuleFullPath,
+    ) -> Option<cranelisp_backend::cache::CachedModule> {
+        match self.stored.remove(module) {
+            Some((_, held)) => held.map(|stored| stored.module),
+            None => self.decode(module),
+        }
+    }
+
+    /// End any decode held for `module`: the session now holds its table.
+    pub(crate) fn end_stored_hold(&self, module: &ModuleFullPath) {
+        self.stored.remove(module);
+    }
+
+    fn decode(&self, module: &ModuleFullPath) -> Option<cranelisp_backend::cache::CachedModule> {
+        let dir = self.dir.as_deref()?;
+        cranelisp_backend::cache::try_load_cached_module(dir, module)
+            .ok()
+            .flatten()
     }
 
     /// Write `table` as `module`'s stored `.meta` at `meta_path`, ending the
-    /// layout decoded from the `.meta` it replaces.
+    /// decode held from the `.meta` it replaces.
     pub(crate) fn write_meta(
         &self,
         module: &ModuleFullPath,
         meta_path: &std::path::Path,
         table: &crate::code::SessionSymbolTable,
     ) -> Result<(), cranelisp_types::CranelispError> {
-        let memo = self.stored_layouts.entry(module.clone());
+        let held = self.stored.entry(module.clone());
         let written = cranelisp_backend::cache::serialize::write_meta(
             meta_path,
             table,
             cranelisp_backend::cache::CACHE_SCHEMA_VERSION,
         );
-        if let dashmap::Entry::Occupied(decoded) = memo {
+        if let dashmap::Entry::Occupied(decoded) = held {
             decoded.remove();
         }
         written
@@ -150,8 +186,11 @@ impl ObjectCache {
     }
 
     /// Record the source hash a fresh registration of `module` loaded. It
-    /// supersedes a restored version. No-op if caching is disabled.
+    /// supersedes a restored version and ends any held decode, since the
+    /// session now holds the module's table. Records nothing if caching is
+    /// disabled.
     pub fn record_source_hash(&self, module: &ModuleFullPath, hash: String) {
+        self.end_stored_hold(module);
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cs) = guard.as_mut() {
             cs.record_fresh_source(module, hash);

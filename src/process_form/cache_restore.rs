@@ -168,13 +168,12 @@ fn cache_validity_check(
     dep: &ModuleFullPath,
     dep_file: &Path,
 ) -> Option<ValidCacheEntry> {
-    use cranelisp_backend::cache;
     use cranelisp_backend::cache::manifest as cache_manifest;
 
     let shared = ctx.shared_state?;
 
     // 1. Check cache validity: read source, compute hash, check manifest.
-    let cache_dir = shared.cache.cache_dir()?;
+    shared.cache.cache_dir()?;
 
     let dep_source = std::fs::read_to_string(dep_file).ok()?;
     let source_hash = cache_manifest::hash_source(&dep_source);
@@ -207,11 +206,8 @@ fn cache_validity_check(
         eprintln!("module-trace: cache hit (.meta valid) for {dep}");
     }
 
-    // 2. Load metadata from disk.
-    let cached = match cache::try_load_cached_module(&cache_dir, dep) {
-        Ok(Some(c)) => c,
-        _ => return None,
-    };
+    // 2. The stored module, decoded once with validation's read of its layout.
+    let cached = shared.cache.stored_module(dep)?;
     if !cache_macro_clauses_valid(&cached.symbol_table) {
         return None;
     }
@@ -454,6 +450,9 @@ fn install_cached_table(
     let concrete_table = cached.symbol_table.into_concrete::<crate::code::Code, ()>();
     cranelisp_typecheck::advance_next_id_past_table(ctx.next_type_id, &concrete_table);
     cranelisp_types::install_module(ctx.symbol_tables, dep.clone(), concrete_table);
+    if let Some(shared) = ctx.shared_state {
+        shared.cache.end_stored_hold(dep);
+    }
 }
 
 /// Re-resolve platform fn ptrs for each `(platform …)` decl recorded on the

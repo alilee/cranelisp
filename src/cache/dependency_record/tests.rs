@@ -1001,6 +1001,73 @@ mod slot_layout {
         }
     }
 
+    /// A cache holding `dep`'s stored `.meta` written from `table`, and the
+    /// path of that file.
+    fn cache_storing(project: &Project, table: &SessionSymbolTable) -> (ObjectCache, PathBuf) {
+        let cache = ObjectCache::new(Some(project.cache_dir.path().to_path_buf()), None);
+        let (meta, _) =
+            cranelisp_backend::cache::module_cache_path(project.cache_dir.path(), &m("dep"));
+        std::fs::create_dir_all(meta.parent().unwrap()).unwrap();
+        cache.write_meta(&m("dep"), &meta, table).unwrap();
+        (cache, meta)
+    }
+
+    fn stored_layout_of(
+        module: Option<cranelisp_backend::cache::CachedModule>,
+    ) -> AuthoredSlotLayout {
+        AuthoredSlotLayout::of(&module.expect("a stored module").symbol_table)
+    }
+
+    // spec: design/int/int.md §7.6.3 — validation's read of a member's stored
+    // layout and the member's restore share one decode: once validation has
+    // read it, the restore takes that value without reading the file, and
+    // the value is taken, not kept.
+    #[test]
+    fn a_validated_member_restores_from_the_decode_validation_made() {
+        let project = Project::new();
+        let (cache, meta) = cache_storing(&project, &table_with_f_after(1));
+        let sources = ModuleSources::new(project.root.path(), &[], &project.tables, &cache);
+        assert!(sources.current_key(&m("dep")).is_some());
+
+        std::fs::remove_file(&meta).unwrap();
+        assert_eq!(
+            stored_layout_of(cache.stored_module(&m("dep"))),
+            AuthoredSlotLayout::of(&table_with_f_after(1))
+        );
+        assert!(cache.stored_module(&m("dep")).is_none());
+    }
+
+    // spec: design/int/int.md §7.6.3 — a rewrite of the `.meta` between
+    // validation and restore ends the held decode; the restore reads the new
+    // file.
+    #[test]
+    fn a_meta_rewritten_after_validation_is_what_the_restore_reads() {
+        let project = Project::new();
+        let (cache, meta) = cache_storing(&project, &table_with_f_after(0));
+        assert!(cache.stored_layout(&m("dep")).is_some());
+
+        cache
+            .write_meta(&m("dep"), &meta, &table_with_f_after(2))
+            .unwrap();
+        assert_eq!(
+            stored_layout_of(cache.stored_module(&m("dep"))),
+            AuthoredSlotLayout::of(&table_with_f_after(2))
+        );
+    }
+
+    // spec: design/int/int.md §7.6.3 — a member loaded fresh after validation
+    // holds no decoded value: its fresh registration ends the hold.
+    #[test]
+    fn a_member_loaded_fresh_after_validation_holds_no_decode() {
+        let project = Project::new();
+        let (cache, meta) = cache_storing(&project, &table_with_f_after(0));
+        assert!(cache.stored_layout(&m("dep")).is_some());
+
+        cache.record_source_hash(&m("dep"), hash());
+        std::fs::remove_file(&meta).unwrap();
+        assert!(cache.stored_module(&m("dep")).is_none());
+    }
+
     // spec: design/int/int.md §7.6.3 — minted instances and `__expr` are
     // restaged by every recompile, so their slots are not part of the layout.
     #[test]
