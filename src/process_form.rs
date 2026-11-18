@@ -31,7 +31,7 @@ use cranelisp_types::{
 
 use std::collections::BTreeSet;
 
-use crate::scheduler::{SourceContinuation, SourceProvenance};
+use crate::scheduler::{OriginatedForm, SourceContinuation, SourceProvenance};
 use crate::session_v4::{BuiltIdentity, ImplIdentities, definition_identity};
 use crate::worker::{
     ClusterOnce, ModuleCompiler, build_program_compat, check_program_compat, leading_annotation_len,
@@ -186,7 +186,7 @@ fn fail_whole_source_attempt(
         ctx,
         module,
         forms,
-        &prefix.forms,
+        &prefix.expanded_forms(),
         &prefix.attempt.macro_lookup_dependencies,
     );
     ctx.scheduler
@@ -248,7 +248,7 @@ fn attempt_cluster(
     let pass2_result = pass2_check_bodies_with_expansion(
         ctx,
         module,
-        sexps,
+        continuation,
         &mut expanded_program,
         prefix,
         &mut turn_definitions,
@@ -362,7 +362,7 @@ struct Built<'a> {
 /// facts each of its macro checkpoints reads. A resumed attempt starts from
 /// the facts its continuation carried and re-walks the continuation's forms.
 struct ExpandedPrefix {
-    forms: Vec<Sexp>,
+    forms: Vec<OriginatedForm>,
     attempt: AttemptFacts,
 }
 
@@ -397,8 +397,18 @@ impl ExpandedPrefix {
         }
     }
 
+    fn expanded_forms(&self) -> Vec<Sexp> {
+        self.forms
+            .iter()
+            .map(|expanded| expanded.form.clone())
+            .collect()
+    }
+
     /// The continuation of a gap: this prefix, then `rest`, not yet expanded.
-    fn continuation_with(&self, rest: impl IntoIterator<Item = Sexp>) -> SourceContinuation {
+    fn continuation_with(
+        &self,
+        rest: impl IntoIterator<Item = OriginatedForm>,
+    ) -> SourceContinuation {
         let mut forms = self.forms.clone();
         forms.extend(rest);
         SourceContinuation::resumed(
@@ -407,6 +417,14 @@ impl ExpandedPrefix {
             self.attempt.provenance.clone(),
         )
     }
+}
+
+/// `forms`, all produced from the written form `origin`.
+fn originated(forms: Vec<Sexp>, origin: &Sexp) -> impl Iterator<Item = OriginatedForm> + '_ {
+    forms.into_iter().map(|form| OriginatedForm {
+        form,
+        authored: origin.clone(),
+    })
 }
 
 /// Cluster prologue: strategy-specific setup (active module, static import
@@ -1234,11 +1252,12 @@ fn record_definition_emissions(
 fn pass2_check_bodies_with_expansion(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
-    sexps: &[Sexp],
+    continuation: &SourceContinuation,
     expanded_program: &mut BuiltProgram,
     prefix: &mut ExpandedPrefix,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<Pass2Result, CranelispError> {
+    let sexps = continuation.forms();
     let mut idx = 0;
     while idx < sexps.len() {
         let sexp = &sexps[idx];
@@ -1261,20 +1280,21 @@ fn pass2_check_bodies_with_expansion(
                     let dep_module = macro_checkpoint_gap_target(ctx, &gap, sexp.span())?;
                     return Ok(Pass2Result::BlockedOnFqModule {
                         dep_module,
-                        continuation: prefix.continuation_with(sexps[idx..].iter().cloned()),
+                        continuation: prefix.continuation_with(continuation.originated_from(idx)),
                         ref_span: sexp.span(),
                     });
                 }
-                let authored_source = verbatim_source_slice(ctx, module, sexp);
+                let origin = continuation.authored_origin(idx);
+                let authored_source = verbatim_source_slice(ctx, module, origin);
                 record_macro_introspection(
                     ctx.introspection,
                     module,
                     &info.name,
                     sexp,
-                    sexp,
+                    origin,
                     authored_source,
                 );
-                record_macro_origin(ctx, module, &info.name, sexp);
+                record_macro_origin(ctx, module, &info.name, origin);
                 record_turn_definition(
                     turn_definitions,
                     BuiltIdentity::Keyed(FQSymbol {
@@ -1301,22 +1321,27 @@ fn pass2_check_bodies_with_expansion(
                     (&sexps[idx..idx], idx)
                 };
                 let next = idx.max(form_idx) + 1;
+                let origin = continuation.authored_origin(form_idx);
                 match process_regular_form(
                     ctx,
                     module,
                     annotation_prefix,
                     &sexps[form_idx],
+                    origin,
                     expanded_program,
                     &mut prefix.attempt,
                     turn_definitions,
                 )? {
-                    RegularFormResult::Complete(forms) => prefix.forms.extend(forms),
+                    RegularFormResult::Complete(forms) => {
+                        prefix.forms.extend(originated(forms, origin));
+                    }
                     RegularFormResult::Blocked {
                         dep_module,
                         continuation: local,
                         ref_span,
                     } => {
-                        let rest = local.into_iter().chain(sexps[next..].iter().cloned());
+                        let rest =
+                            originated(local, origin).chain(continuation.originated_from(next));
                         return Ok(Pass2Result::BlockedOnFqModule {
                             dep_module,
                             continuation: prefix.continuation_with(rest),
@@ -1499,32 +1524,12 @@ fn rebuild_error_with(
 /// the body. New macros from expansion (e.g. const/def) are registered in
 /// the symbol table and become visible to the resolver for subsequent forms.
 ///
-/// Returns `Ok(Some(dep_module))` when expansion encountered an FQ macro head
-/// whose module is not loaded — the caller loads `dep_module` and resumes this
-/// form (FIXME 0268). Returns `Ok(None)` on normal completion.
-fn process_regular_form(
-    ctx: &mut ModuleCompiler,
-    module: &ModuleFullPath,
-    annotation_prefix: &[Sexp],
-    sexp: &Sexp,
-    expanded_program: &mut BuiltProgram,
-    attempt: &mut AttemptFacts,
-    turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
-) -> Result<RegularFormResult, CranelispError> {
-    process_regular_form_with_origin(
-        ctx,
-        module,
-        annotation_prefix,
-        sexp,
-        sexp,
-        expanded_program,
-        attempt,
-        turn_definitions,
-    )
-}
-
+/// `authored_origin` is the written top-level form `sexp` came from, which
+/// every definition it builds is attributed to. Returns `Blocked` when
+/// expansion encountered an FQ macro head whose module is not loaded — the
+/// caller loads `dep_module` and resumes this form (FIXME 0268).
 #[allow(clippy::too_many_arguments)] // within the src/ eight-parameter budget
-fn process_regular_form_with_origin(
+fn process_regular_form(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     annotation_prefix: &[Sexp],
@@ -1574,7 +1579,7 @@ fn process_regular_form_with_origin(
                 );
                 continue;
             }
-            match process_regular_form_with_origin(
+            match process_regular_form(
                 ctx,
                 module,
                 &[],

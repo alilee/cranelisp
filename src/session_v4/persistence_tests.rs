@@ -2595,6 +2595,43 @@ fn startup_failing_dependency_stands_failed_and_the_entry_waits() {
     s.shutdown();
 }
 
+// spec: repl/spec/05-error-presentation.md §5.5; design/int/io-integration.md
+// §1 (the definition-origin span) — a definition expanded before a dependency
+// gap keeps its written form's span when the attempt resumes, as does one
+// expanded after it.
+#[test]
+fn definition_origin_survives_a_dependency_retry() {
+    let user =
+        "(defmacro mk [n] `(defn ~n [] 1))\n(mk early)\n(defn use [] (late/id 1))\n(mk after)\n";
+    let root = tempfile::tempdir().unwrap();
+    write_files(
+        root.path(),
+        &[("late.cl", "(defn id [x] x)\n"), ("user.cl", user)],
+    );
+    let (mut s, report) = started_session(root.path());
+    assert_eq!(report, None);
+    for (name, written) in [("early", "(mk early)"), ("after", "(mk after)")] {
+        let start = user.find(written).unwrap();
+        let origin = s
+            .shared
+            .definition_origins
+            .get(&FQSymbol {
+                module: ModuleFullPath::from("user"),
+                symbol: Symbol::from(name),
+            })
+            .map(|span| *span);
+        assert_eq!(
+            origin,
+            Some(cranelisp_types::Span::new(
+                start as u32,
+                (start + written.len()) as u32
+            )),
+            "{name}"
+        );
+    }
+    s.shutdown();
+}
+
 // spec: spec/08-modules.md §8.3.8, §8.4.0; design/int/int.md §6.11
 // (Declaration readiness, the published fact) — a parent publishes before it
 // drives a declared child, so the child's export of `super` reads the

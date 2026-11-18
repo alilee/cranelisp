@@ -20,8 +20,31 @@ use crate::observability::{self, SchedulerTraceTag};
 #[derive(Debug, Clone)]
 pub struct SourceContinuation {
     forms: std::sync::Arc<[Sexp]>,
+    /// The written top-level form each of `forms` came from, one per form, when
+    /// the attempt already expanded some of them; empty for unexpanded source,
+    /// whose forms are their own origin (`design/int/io-integration.md` §1,
+    /// the definition-origin span).
+    authored_origins: std::sync::Arc<[Sexp]>,
     macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
     provenance: SourceProvenance,
+}
+
+/// A form of a resumed continuation with the written top-level form it came
+/// from, which is the form itself unless an expansion produced it.
+#[derive(Debug, Clone)]
+pub(crate) struct OriginatedForm {
+    pub(crate) form: Sexp,
+    pub(crate) authored: Sexp,
+}
+
+impl OriginatedForm {
+    /// A written form, not yet expanded: its own origin.
+    pub(crate) fn written(form: Sexp) -> Self {
+        OriginatedForm {
+            authored: form.clone(),
+            form,
+        }
+    }
 }
 
 /// What a continuation's source stands for when its generation publishes
@@ -47,6 +70,7 @@ impl SourceContinuation {
     pub fn source(forms: impl Into<std::sync::Arc<[Sexp]>>) -> Self {
         SourceContinuation {
             forms: forms.into(),
+            authored_origins: std::sync::Arc::from(Vec::new()),
             macro_lookup_dependencies: BTreeSet::new(),
             provenance: SourceProvenance::Increment,
         }
@@ -72,15 +96,35 @@ impl SourceContinuation {
     /// The remainder of an attempt that expanded part of its source; it keeps
     /// the attempt's provenance.
     pub(crate) fn resumed(
-        forms: Vec<Sexp>,
+        forms: Vec<OriginatedForm>,
         macro_lookup_dependencies: BTreeSet<ModuleFullPath>,
         provenance: SourceProvenance,
     ) -> Self {
+        let (forms, authored_origins): (Vec<Sexp>, Vec<Sexp>) = forms
+            .into_iter()
+            .map(|originated| (originated.form, originated.authored))
+            .unzip();
         SourceContinuation {
             forms: forms.into(),
+            authored_origins: authored_origins.into(),
             macro_lookup_dependencies,
             provenance,
         }
+    }
+
+    /// The written top-level form `forms()[index]` came from.
+    pub(crate) fn authored_origin(&self, index: usize) -> &Sexp {
+        self.authored_origins
+            .get(index)
+            .unwrap_or(&self.forms[index])
+    }
+
+    /// `forms()[from..]`, each with its written origin.
+    pub(crate) fn originated_from(&self, from: usize) -> impl Iterator<Item = OriginatedForm> + '_ {
+        (from..self.forms.len()).map(|index| OriginatedForm {
+            form: self.forms[index].clone(),
+            authored: self.authored_origin(index).clone(),
+        })
     }
 
     pub(crate) fn provenance(&self) -> &SourceProvenance {
