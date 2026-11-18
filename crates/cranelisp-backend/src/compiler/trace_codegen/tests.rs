@@ -672,3 +672,87 @@ fn recursive_adt_descriptor_bake_is_bounded_not_exponential() {
          got {blob_len} bytes — a non-memoized exponential re-bake would be far larger"
     );
 }
+
+// spec: design/backend/trace-codegen.md §2 rule 1 (M-1038, backend row) — a
+// spark site inside a trace form emits the ordinary create-gate: the call to
+// `cranelisp_spark_budget_try_reserve`, which declines at run time while the
+// thread records. The trace takes its GOT-swap path (one published callable).
+#[test]
+fn trace_form_spark_site_emits_the_create_gate() {
+    use cranelisp_types::{Defn, Expr};
+    let probe = Symbol::from("trace_spark_probe");
+    let call = |at: u32| Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: probe.clone(),
+            span: Span::new(at, at + 1),
+            resolved_call: None,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        args: vec![],
+        span: Span::new(at, at + 1),
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let body = Expr::Trace {
+        modules: vec![],
+        body: Box::new(Expr::Let {
+            bindings: vec![(Symbol::from("a"), call(1)), (Symbol::from("b"), call(3))],
+            body: Box::new(Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            }),
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let defn = Defn {
+        name: probe.clone(),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            body,
+            span: Span::SYNTHETIC,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    };
+    let user = ModuleFullPath::from("user");
+    let mut table = SymbolTable::new(user.clone());
+    crate::test_support::insert_user_fn_stub(&mut table, "trace_spark_probe", 0);
+    insert_fn(
+        &mut table,
+        "published",
+        fn_scheme(vec![Type::Int], Type::Int),
+        Some(0x4100),
+    );
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    tables.insert(user.clone(), table);
+    let targets = crate::test_support::call_carriers(defn.body(), &user, &["trace_spark_probe"]);
+    let mut jit = crate::jit::Jit::new_with_symbols(&[]).expect("JIT construction");
+    let clif =
+        crate::test_support::probe_defn_clif(&defn, &[], &targets, &tables, user, jit.jit_module());
+    let reserve = match jit
+        .jit_module()
+        .get_name("cranelisp_spark_budget_try_reserve")
+    {
+        Some(cranelift_module::FuncOrDataId::Func(id)) => id,
+        other => panic!("the create-gate's reserve is not declared ({other:?})\n{clif}"),
+    };
+    let reserve_ref = crate::test_support::clif_func_ref(&clif, reserve);
+    assert!(
+        clif.contains(&format!("call {reserve_ref}(")),
+        "the trace body's spark site calls the create-gate\n{clif}"
+    );
+    let swap = match jit.jit_module().get_name("cranelisp_trace_swap_got") {
+        Some(cranelift_module::FuncOrDataId::Func(id)) => id,
+        other => panic!("the trace's GOT swap is not declared ({other:?})\n{clif}"),
+    };
+    let swap_ref = crate::test_support::clif_func_ref(&clif, swap);
+    assert!(
+        clif.contains(&format!("call {swap_ref}(")),
+        "the trace takes its swap path\n{clif}"
+    );
+}
