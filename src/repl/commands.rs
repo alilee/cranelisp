@@ -425,7 +425,11 @@ impl CompilerSession {
             crate::process_form::drive_module_dep(ctx, &current, target, Span::SYNTHETIC)
         }) {
             Err(error) => Err(self.reset_failed_load(&held, error)),
-            Ok(()) => self.register_dep_for_eval(target, &held),
+            Ok(()) => self.register_dep_for_eval(
+                target,
+                &held,
+                crate::eval::DependencyReadiness::InMemory,
+            ),
         }
     }
 

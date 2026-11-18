@@ -72,6 +72,17 @@ pub(crate) fn record_defining_turn_source(
     }
 }
 
+/// How far the eval thread waits on a dependency it drove.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DependencyReadiness {
+    /// Until a turn's declaration of, or qualified reference to, the
+    /// dependency may read its table: its generation published
+    /// (`design/int/int.md` §6.11, Declaration readiness).
+    Declaration,
+    /// Until its in-memory code is complete: the session then works in it.
+    InMemory,
+}
+
 impl CompilerSession {
     /// Block the REPL-eval thread on the persistent worker pool driving a
     /// dependency (and its transitive deps) to `inmem_done`, then return so the
@@ -95,6 +106,7 @@ impl CompilerSession {
         &self,
         dep_module: &ModuleFullPath,
         held: &BTreeSet<ModuleFullPath>,
+        until: DependencyReadiness,
     ) -> Result<(), FailedLoad> {
         // S78 Step 3 (OQ-3): the `eval_in_flight` guard is GONE. The
         // in-call-stack model keeps the caller's cluster state on the eval
@@ -107,16 +119,21 @@ impl CompilerSession {
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, dep_module);
 
         // Block on the persistent worker pool driving THIS dep (and every
-        // transitive dep it blocks on) to inmem_done. Decision 37 §3.1 — the
+        // transitive dep it blocks on) to `until`. Decision 37 §3.1 — the
         // single synchronisation primitive, scoped to the target dep. We cannot
         // use `wait_inmem_complete_blocking` (whole-world wait) here: the caller
         // (user module) is in TypecheckBlocked state and can only be resumed by
         // the eval thread's retry loop, not by a persistent worker — so a
         // whole-world wait would deadlock on the user module.
-        let result = self
-            .shared
-            .scheduler
-            .wait_module_inmem_complete_blocking(dep_module);
+        let scheduler = &self.shared.scheduler;
+        let result = match until {
+            DependencyReadiness::Declaration => {
+                scheduler.wait_module_declaration_ready_blocking(dep_module)
+            }
+            DependencyReadiness::InMemory => {
+                scheduler.wait_module_inmem_complete_blocking(dep_module)
+            }
+        };
 
         // S93 Invariant SW: the eval thread recorded a `current → dep`
         // cycle-check edge (`register_dep_edge_for_cycle_check`, via `block_dep`)
@@ -453,7 +470,7 @@ impl CompilerSession {
                     // The dep has already been registered + blocked on inside
                     // `process_cluster_once`; block on the persistent worker
                     // pool driving it to completion, then retry from the top.
-                    self.register_dep_for_eval(&dep, &held)?;
+                    self.register_dep_for_eval(&dep, &held, DependencyReadiness::Declaration)?;
                     pending = continuation;
                     generation_started = started;
                     if retry == MAX_DEP_RETRIES - 1 {

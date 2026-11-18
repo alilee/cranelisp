@@ -274,6 +274,11 @@ pub struct ModuleState {
     /// cycle is a property of the saved sources, so the recurrence stop keeps
     /// such an error. Every registration starts it false.
     pub(crate) cycle_failure: bool,
+
+    /// Whether this generation's whole cluster has published, before it drives
+    /// its declared children (`design/int/int.md` §6.11, Declaration
+    /// readiness). Every new whole-source attempt starts it false.
+    generation_published: bool,
 }
 
 impl ModuleState {
@@ -297,6 +302,7 @@ impl ModuleState {
             failure_dependencies: BTreeSet::new(),
             refusing_dependency: None,
             cycle_failure: false,
+            generation_published: false,
         }
     }
 
@@ -324,6 +330,7 @@ impl ModuleState {
             failure_dependencies: BTreeSet::new(),
             refusing_dependency: None,
             cycle_failure: false,
+            generation_published: false,
         }
     }
 
@@ -354,6 +361,7 @@ impl ModuleState {
             failure_dependencies: BTreeSet::new(),
             refusing_dependency: None,
             cycle_failure: false,
+            generation_published: false,
         }
     }
 
@@ -1088,6 +1096,7 @@ impl CompileScheduler {
                 failure_dependencies: BTreeSet::new(),
                 refusing_dependency: None,
                 cycle_failure: false,
+                generation_published: false,
             };
         }
 
@@ -1367,10 +1376,13 @@ impl CompileScheduler {
         //
         // Only the whole-module (`"*"`) waiter — the sole production form (every
         // `dependency.rs` caller passes `"*"`) — gets the terminal-requeue: a
-        // terminal `needed_module` has published ALL its symbols, so a `"*"`
-        // waiter is definitively satisfiable. The specific-symbol form is
+        // terminal `needed_module`, or one whose generation has published
+        // (`design/int/int.md` §6.11, Declaration readiness), has published ALL
+        // its symbols, so a `"*"` waiter is definitively satisfiable. The specific-symbol form is
         // test-only and keeps the register-a-waiter behaviour.
-        if needed_symbol.as_ref() == "*" && Self::signatures_ready_locked(&state, needed_module) {
+        if needed_symbol.as_ref() == "*"
+            && Self::ready_for_declaration_locked(&state, needed_module)
+        {
             // Clear any stale edge, move to TypecheckBlocked so
             // `try_unblock_locked`'s `pool == TypecheckBlocked` precondition holds,
             // then immediately requeue (→ TypecheckFirst/Next). Mirrors
@@ -2161,6 +2173,81 @@ impl CompileScheduler {
             );
         }
         result.0
+    }
+
+    /// Whether a Pass-0 `import` or `export` of `module`, or a qualified
+    /// reference to it, may read its table (`design/int/int.md` §6.11,
+    /// Declaration readiness): its typecheck is terminal, or its current
+    /// generation has published and it has not since failed. An unregistered
+    /// module answers as [`Self::is_typechecked`] does.
+    pub(crate) fn is_ready_for_declaration(&self, module: &ModuleFullPath) -> bool {
+        Self::ready_for_declaration_locked(&self.lock(), module)
+    }
+
+    fn ready_for_declaration_locked(state: &SchedulerState, module: &ModuleFullPath) -> bool {
+        state.modules.get(module).is_none_or(|ms| {
+            ms.pool.is_terminal_typecheck()
+                || (ms.generation_published && ms.pool != ModulePool::Failed)
+        })
+    }
+
+    /// Record that `module`'s current generation has published, and release
+    /// every module waiting on it through a whole-module dependency edge
+    /// (`design/int/int.md` §6.11, Declaration readiness). Called once a whole
+    /// cluster's outcome is `Done` and published, before its declared children
+    /// are driven; a released waiter retries from the top.
+    pub(crate) fn mark_generation_published(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        let Some(ms) = state.modules.get_mut(module) else {
+            return;
+        };
+        ms.generation_published = true;
+        let released = Self::take_waiters_for_symbol_locked(
+            &mut state,
+            module,
+            &Symbol::from("*"),
+            WaitKind::Typecheck,
+        );
+        for waiter in released {
+            if let Some(ws) = state.modules.get_mut(&waiter) {
+                ws.blocked_on = None;
+            }
+            Self::try_unblock_locked(&mut state, &waiter);
+        }
+        drop(state);
+        self.priority_work_available.notify_all();
+        self.completion.notify_all();
+    }
+
+    /// The eval thread's wait on a dependency it declared or referenced: it
+    /// ends when [`Self::wait_module_inmem_complete_blocking`] would, or when
+    /// `target`'s generation has published (`design/int/int.md` §6.11).
+    pub(crate) fn wait_module_declaration_ready_blocking(
+        &self,
+        target: &ModuleFullPath,
+    ) -> Result<(), SchedulerError> {
+        let mut state = self.lock();
+        loop {
+            let ms = state
+                .modules
+                .get(target)
+                .ok_or_else(|| SchedulerError::InmemIncomplete {
+                    module: target.clone(),
+                })?;
+            if ms.pool == ModulePool::Failed {
+                return Err(module_failed_error(target, ms));
+            }
+            if ms.inmem_done || ms.pool == ModulePool::Complete || ms.generation_published {
+                return Ok(());
+            }
+            if state.shutdown {
+                return Ok(());
+            }
+            state = self
+                .completion
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
     }
 
     /// Return true if `module` has been registered with the scheduler

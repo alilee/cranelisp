@@ -2595,6 +2595,26 @@ fn startup_failing_dependency_stands_failed_and_the_entry_waits() {
     s.shutdown();
 }
 
+// spec: spec/08-modules.md §8.3.8, §8.4.0; design/int/int.md §6.11
+// (Declaration readiness, the published fact) — a parent publishes before it
+// drives a declared child, so the child's export of `super` reads the
+// published parent instead of waiting on a parent that waits on it.
+#[test]
+fn startup_child_export_of_its_parent_reads_the_published_parent() {
+    let root = tempfile::tempdir().unwrap();
+    write_files(
+        root.path(),
+        &[
+            ("user.cl", "(mod child)\n(defn x [] 49)\n"),
+            ("user/child.cl", "(export [super [x]])\n"),
+        ],
+    );
+    let (mut s, report) = started_session(root.path());
+    assert_eq!(report, None);
+    assert!(!stands_failed(&s, "user") && !stands_failed(&s, "user.child"));
+    s.shutdown();
+}
+
 // spec: repl/spec/14-file-watching.md §14.5 (session lock);
 // spec/08-modules.md §8.5.4 edge 6; design/int/repl-lifecycle.md §1.3.2
 // Startup (d) — a startup qualified cycle leaves the refused member standing

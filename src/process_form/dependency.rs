@@ -174,16 +174,15 @@ pub(super) fn handle_import(
         // `contains_key=true` but pool=`TypecheckWorking`/`TypecheckBlocked`
         // would jump to `register_imports`, whose `source_table.get(name)`
         // finds no entry and raises "'name' not found in module 'dep'"
-        // — the signature of the Round 4 heisenbug. Require a terminal
-        // typecheck state via `scheduler.is_typechecked(dep)` so the fast
-        // path only fires when `dep`'s SymbolTable is fully populated.
-        if ctx.symbol_tables.contains_key(dep) && ctx.scheduler.is_typechecked(dep) {
+        // — the signature of the Round 4 heisenbug. The fast path fires only
+        // when `dep` is ready for declaration; otherwise the import waits.
+        if dependency_table_is_ready(ctx, dep) {
             // Sprint 61 Wave 3 step 3e — H4 race closure (Change B).
             // Emit the reader-side trace tag immediately before
             // `register_imports` consumes `symbol_tables[dep]`. This is
             // the data-plane lookup the failing-run dump's ordering
             // analysis (§7.4) implicates as the race site — emitting
-            // here (after the `is_typechecked` gate, before the lookup)
+            // here (after the readiness gate, before the lookup)
             // makes the post-fix dump show the invariant directly:
             // `RepublishFromSymbolTable user` must precede
             // `RegisterImportsLookup helper` on any successful eval.
@@ -200,6 +199,9 @@ pub(super) fn handle_import(
                 std::slice::from_ref(&resolved),
             )?;
             continue;
+        }
+        if let Some(wait) = wait_on_in_flight(ctx, module, dep, spec.span)? {
+            return Ok(wait);
         }
 
         // Resolve file path.
@@ -268,6 +270,34 @@ pub(super) fn handle_import(
     Ok(BlockAction::Continue)
 }
 
+/// Whether a Pass-0 `import` or `export` may install from `dep`'s table: the
+/// table exists and `dep` is ready for declaration — terminal, or its
+/// generation has published (`design/int/int.md` §6.11). A module still in
+/// flight holds a seeded table without its definitions (the Sprint 60 Round 4
+/// shape), so a declaration of it takes the dependency path and waits.
+fn dependency_table_is_ready(ctx: &ModuleCompiler, dep: &ModuleFullPath) -> bool {
+    ctx.symbol_tables.contains_key(dep) && ctx.scheduler.is_ready_for_declaration(dep)
+}
+
+/// The wait of a Pass-0 `import` or `export` on a module that has a table but
+/// is not [ready](dependency_table_is_ready): it is in flight, so the
+/// declaration records the dependency edge, whose acyclicity check names a
+/// cycle through it, and blocks. `None` when `dep` has no table and must load.
+fn wait_on_in_flight(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    dep: &ModuleFullPath,
+    span: Span,
+) -> Result<Option<BlockAction>, CranelispError> {
+    if !ctx.symbol_tables.contains_key(dep) {
+        return Ok(None);
+    }
+    block_dep(ctx, module, dep, span)?;
+    Ok(Some(BlockAction::Block {
+        dep_module: dep.clone(),
+    }))
+}
+
 /// Pass 0's fail-fast on a declared module that has a table and stands
 /// `Failed` (`design/int/int.md` §6.11): the attempt fails with that module's
 /// error, and no name resolves against its failed table. A failed module with
@@ -288,10 +318,11 @@ fn refuse_failed_table(
 /// Whether `dep` is fully loaded (typechecked) and therefore ready to satisfy
 /// an FQ reference without a load.
 ///
-/// Mirrors the `handle_import` fast-path gate (Sprint 60 Wave 2 Round 4): a
+/// Mirrors the Pass-0 declaration gate ([`dependency_table_is_ready`]): a
 /// seeded-but-empty `SymbolTable` may exist in `symbol_tables` before a
 /// module's Defs are populated, so a `contains_key` check alone is not
-/// sufficient. Require a terminal typecheck state via `is_typechecked`.
+/// sufficient. A tracked module must be ready for declaration — terminal, or
+/// its generation published (`design/int/int.md` §6.11).
 ///
 /// **"Loaded/terminal" requires EVER-terminal, not merely present-with-symbols
 /// (I1, 0571.2 + 0571.3).** `is_typechecked` answers `true` for EVERY module the
@@ -314,7 +345,7 @@ pub(super) fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) ->
         return false;
     }
     if ctx.scheduler.is_registered(dep) {
-        return ctx.scheduler.is_typechecked(dep);
+        return ctx.scheduler.is_ready_for_declaration(dep);
     }
     ctx.scheduler.was_ever_terminal(dep)
         || crate::bootstrap::seeded_importable_modules().contains(dep)
@@ -1266,8 +1297,10 @@ pub(super) fn handle_export(
         }
         refuse_failed_table(ctx, module, dep, spec.span)?;
 
-        // Already loaded — register the re-export and continue.
-        if ctx.symbol_tables.contains_key(dep) {
+        // Ready — register the re-export and continue. A module still in
+        // flight has a seeded, incomplete table; the export waits on it as an
+        // import does (`design/int/int.md` §6.11).
+        if dependency_table_is_ready(ctx, dep) {
             crate::imports::install_exports(
                 ctx.symbol_tables,
                 &ctx.current_module,
@@ -1276,6 +1309,9 @@ pub(super) fn handle_export(
                 std::slice::from_ref(resolved),
             )?;
             continue;
+        }
+        if let Some(wait) = wait_on_in_flight(ctx, module, dep, spec.span)? {
+            return Ok(wait);
         }
 
         // Source module not loaded — need to load it first.
@@ -2390,7 +2426,18 @@ mod bare_module_name_tests {
     /// A project whose `w` has a table defining `one`, standing `Failed` with
     /// [`W_REFUSAL`] or compiled; `a` is registered so it can record failure
     /// dependencies.
-    fn project_with_w(failed: bool) -> Project {
+    /// Where `w`, whose table holds `one`, stands when `a`'s Pass 0 declares it.
+    #[derive(Debug, Clone, Copy)]
+    enum WStanding {
+        Failed,
+        Compiled,
+        /// Registered with a seeded table, neither published nor terminal.
+        InFlight,
+        /// Its generation has published; it is still driving its children.
+        Published,
+    }
+
+    fn project_with_w(standing: WStanding) -> Project {
         let project = Project::new(&[("w.cl", "(defn one [] 1)\n")]);
         let (a, w) = (module("a"), module("w"));
         cranelisp_types::ensure_module_exists(&project.tables, &a);
@@ -2401,16 +2448,20 @@ mod bare_module_name_tests {
         let empty = || std::sync::Arc::from(Vec::new());
         project.scheduler.register_module(a, empty(), false);
         project.scheduler.register_module(w.clone(), empty(), false);
-        if failed {
-            project.scheduler.notify_module_failed(
+        match standing {
+            WStanding::Failed => project.scheduler.notify_module_failed(
                 &w,
                 CranelispError::ModuleError {
                     message: W_REFUSAL.to_string(),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 },
-            );
-        } else {
-            project.scheduler.notify_typecheck_done(&w);
+            ),
+            WStanding::Compiled => project.scheduler.notify_typecheck_done(&w),
+            WStanding::InFlight => {}
+            WStanding::Published => project.scheduler.mark_generation_published(&w),
+        }
+        if matches!(standing, WStanding::InFlight | WStanding::Published) {
+            assert!(!project.scheduler.is_typechecked(&w), "{standing:?}");
         }
         project
     }
@@ -2449,7 +2500,7 @@ mod bare_module_name_tests {
             "(import [w [one]])\n",
             "(import [w [two]])\n",
         ] {
-            let project = project_with_w(true);
+            let project = project_with_w(WStanding::Failed);
             let outcome = project.pass0(source);
             let carries_w_error = matches!(
                 &outcome,
@@ -2466,12 +2517,52 @@ mod bare_module_name_tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    // spec: spec/08-modules.md §8.10.1; design/int/int.md §6.11 (an `export`
+    // waits like an `import`) — a declaration of a registered module that has a
+    // seeded table but no terminal typecheck blocks on it and installs nothing
+    // from the incomplete table.
+    #[test]
+    fn pass0_declaration_of_an_in_flight_module_waits_on_it() {
+        for source in ["(import [w [one]])\n", "(export [w [one]])\n"] {
+            let in_flight = project_with_w(WStanding::InFlight);
+            assert_eq!(
+                in_flight.pass0(source).unwrap(),
+                Some(module("w")),
+                "{source}"
+            );
+            assert!(!in_flight.a_names("one"), "{source}");
+        }
+    }
+
+    // spec: spec/08-modules.md §8.3.8, §8.5.4 item 7; design/int/int.md §6.11
+    // (Declaration readiness) — a published, non-terminal module is ready: both
+    // declarations install its names without waiting, and the qualified-reference
+    // gate answers loaded.
+    #[test]
+    fn pass0_declaration_of_a_published_module_installs_its_names() {
+        for source in ["(import [w [one]])\n", "(export [w [one]])\n"] {
+            let published = project_with_w(WStanding::Published);
+            assert_eq!(published.pass0(source).unwrap(), None, "{source}");
+            assert!(published.a_names("one"), "{source}");
+        }
+        let published = project_with_w(WStanding::Published);
+        assert!(fq_module_is_loaded(
+            &published.ctx(&module("a")),
+            &module("w")
+        ));
+        let in_flight = project_with_w(WStanding::InFlight);
+        assert!(!fq_module_is_loaded(
+            &in_flight.ctx(&module("a")),
+            &module("w")
+        ));
+    }
+
     // spec: design/int/int.md §6.11 (Pass-0 fail-fast) negative — with `w`
     // compiled, the same declarations install as before and record nothing.
     #[test]
     fn pass0_declaration_of_a_compiled_module_installs_its_names() {
         for source in ["(export [w [one]])\n", "(import [w [one]])\n"] {
-            let project = project_with_w(false);
+            let project = project_with_w(WStanding::Compiled);
             assert_eq!(project.pass0(source).unwrap(), None, "{source}");
             assert!(project.a_names("one"), "{source}");
             assert!(

@@ -620,6 +620,7 @@ fn finish_pass2(
                 // only drives the declared submodules, so it is an increment.
                 let published = SourceContinuation::source(Vec::new());
                 store_pool_continuation(ctx, module, &published, true);
+                ctx.scheduler.mark_generation_published(module);
                 if let Some(dep) = drive_submodules(ctx, module)? {
                     return Ok(ClusterOnce::Gap {
                         dep,

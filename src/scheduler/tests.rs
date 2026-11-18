@@ -2779,3 +2779,96 @@ fn failed_dependency_refusal_has_one_located_prefix_in_the_failed_file() {
         "the wait report shares the text"
     );
 }
+
+// spec: spec/08-modules.md §8.3.8, §8.5.4 item 7; design/int/int.md §6.11
+// (Declaration readiness, the published fact) — a published module is ready
+// for declaration while still non-terminal; a new whole-source attempt and a
+// failure end it.
+#[test]
+fn published_generation_is_ready_for_declaration_until_a_new_attempt() {
+    let sched = CompileScheduler::new();
+    let w = mod_path("w");
+    sched.register_module(w.clone(), no_sexps(), false);
+    let _ = sched.take_priority_work();
+    assert!(!sched.is_ready_for_declaration(&w), "in flight");
+
+    sched.mark_generation_published(&w);
+    assert!(sched.is_ready_for_declaration(&w), "published");
+    assert!(!sched.is_typechecked(&w), "still non-terminal");
+
+    sched.notify_typecheck_done(&w);
+    assert!(sched.re_register_module(&w, no_sexps()));
+    assert!(!sched.is_ready_for_declaration(&w), "a rebuild clears it");
+
+    sched.mark_generation_published(&w);
+    sched.notify_module_failed(&w, dummy_error("child failed"));
+    assert!(!sched.is_ready_for_declaration(&w), "a failure ends it");
+}
+
+// spec: design/int/int.md §6.11 (Declaration readiness, publication wakes the
+// declaration waiters) — a module blocked on `w` through a whole-module edge
+// is requeued when `w` publishes, before `w` is terminal.
+#[test]
+fn publication_requeues_whole_module_waiters_before_terminal() {
+    let sched = CompileScheduler::new();
+    let (a, w) = (mod_path("a"), mod_path("w"));
+    sched.register_module(a.clone(), no_sexps(), false);
+    sched.register_module(w.clone(), no_sexps(), false);
+    let _ = sched.take_priority_work();
+    let _ = sched.take_priority_work();
+    sched
+        .block_for_typecheck(&a, &w, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+    assert!(sched.take_priority_work().is_none(), "a waits on w");
+
+    sched.mark_generation_published(&w);
+    match sched.take_priority_work() {
+        Some(PriorityWork::Typecheck { module, .. }) => assert_eq!(module, a),
+        other => panic!("expected a requeued at w's publication, got {other:?}"),
+    }
+    assert_eq!(sched.module_pool(&w), Some(ModulePool::TypecheckWorking));
+    assert!(
+        sched.lock().modules[&a].blocked_on.is_none(),
+        "edge cleared"
+    );
+}
+
+// spec: design/int/int.md §6.11 (Declaration readiness) — a whole-module wait
+// recorded after `w` published is not stranded: it requeues at once, as one on
+// a terminal module does.
+#[test]
+fn block_on_a_published_module_requeues_not_strands() {
+    let sched = CompileScheduler::new();
+    let (a, w) = (mod_path("a"), mod_path("w"));
+    sched.register_module(a.clone(), no_sexps(), false);
+    sched.register_module(w.clone(), no_sexps(), false);
+    let _ = sched.take_priority_work();
+    let _ = sched.take_priority_work();
+    sched.mark_generation_published(&w);
+    sched
+        .block_for_typecheck(&a, &w, &Symbol::from("*"), Span::SYNTHETIC)
+        .unwrap();
+    assert!(matches!(
+        sched.take_priority_work(),
+        Some(PriorityWork::Typecheck { module, .. }) if module == a
+    ));
+}
+
+// spec: design/int/int.md §6.11 (Declaration readiness) — the eval thread's
+// wait on a dependency ends when the dependency publishes.
+#[test]
+fn eval_dependency_wait_ends_at_publication() {
+    let sched = std::sync::Arc::new(CompileScheduler::new());
+    let w = mod_path("w");
+    sched.register_module(w.clone(), no_sexps(), false);
+    let _ = sched.take_priority_work();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let waiter = std::sync::Arc::clone(&sched);
+    let target = w.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(waiter.wait_module_declaration_ready_blocking(&target));
+    });
+    assert!(rx.recv_timeout(WAITER_STAYS_PARKED).is_err(), "in flight");
+    sched.mark_generation_published(&w);
+    assert!(rx.recv_timeout(WAITER_WAKES).unwrap().is_ok());
+}
