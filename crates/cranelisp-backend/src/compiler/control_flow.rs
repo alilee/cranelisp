@@ -51,10 +51,6 @@ pub(crate) use free_vars::find_free_vars;
 pub(crate) use sparkability::{
     LENIENT_DISABLED, SPARK_ADMIT, SparkAdmit, find_sparkable_args, find_sparkable_args_with,
 };
-// `spark_density` (B4 density axis, lenient-eval.md §2.7) — reached by the
-// `sparkability_tests` sibling via `super::` for exact-score matrix assertions.
-#[cfg(test)]
-pub(crate) use sparkability::spark_density;
 // Only the `sparkability_tests` sibling reaches these via `super::`.
 #[cfg(test)]
 pub(crate) use sparkability::{find_sparkable_bindings, find_sparkable_bindings_with};

@@ -810,58 +810,6 @@ pub(crate) fn defn_param_types(
         .collect()
 }
 
-/// Read the `confined` site fact off a [`MonoExpr`] node, for the spark density
-/// scorer (`design/backend/ownership-codegen.md` §13.4). Only the five
-/// allocation/capture-producing variants carry the fact (`StringLit`, `Lambda`,
-/// `Apply`, `VecLit`, `ConstrADT` — the enum-level rustdoc on `MonoExpr`);
-/// every other variant has no cell of its own to confine and answers `None`.
-/// Backend-local (no `cranelisp-types` accessor); kept a total match so a new
-/// fact-bearing variant is a compile error here.
-pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
-    match node {
-        MonoExpr::StringLit { confined, .. }
-        | MonoExpr::Lambda { confined, .. }
-        | MonoExpr::Apply { confined, .. }
-        | MonoExpr::VecLit { confined, .. }
-        | MonoExpr::ConstrADT { confined, .. } => *confined,
-        MonoExpr::IntLit { .. }
-        | MonoExpr::FloatLit { .. }
-        | MonoExpr::BoolLit { .. }
-        | MonoExpr::Var { .. }
-        | MonoExpr::Let { .. }
-        | MonoExpr::If { .. }
-        | MonoExpr::Match { .. }
-        | MonoExpr::Trace { .. }
-        | MonoExpr::ParBind { .. }
-        | MonoExpr::LaunchContinue { .. } => None,
-    }
-}
-
-/// Read the `escapes` site fact off a [`MonoExpr`] node. Only the five
-/// allocation/capture-producing variants carry the fact (same set as
-/// [`node_confined`]); every other variant answers `None`. Its consumer is the
-/// spark density scorer (`design/backend/ownership-codegen.md` §13.4). Kept a
-/// total match so a new fact-bearing variant is a compile error here.
-pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
-    match node {
-        MonoExpr::StringLit { escapes, .. }
-        | MonoExpr::Lambda { escapes, .. }
-        | MonoExpr::Apply { escapes, .. }
-        | MonoExpr::VecLit { escapes, .. }
-        | MonoExpr::ConstrADT { escapes, .. } => *escapes,
-        MonoExpr::IntLit { .. }
-        | MonoExpr::FloatLit { .. }
-        | MonoExpr::BoolLit { .. }
-        | MonoExpr::Var { .. }
-        | MonoExpr::Let { .. }
-        | MonoExpr::If { .. }
-        | MonoExpr::Match { .. }
-        | MonoExpr::Trace { .. }
-        | MonoExpr::ParBind { .. }
-        | MonoExpr::LaunchContinue { .. } => None,
-    }
-}
-
 /// The ONE self-call identity predicate (Principle 7 single-source-of-truth /
 /// Principle 24 "Resolve once") — consumed by the TCO fast-path (`compile_apply`,
 /// `apply.rs`) and the spark SCC classifier (`classify_spark_callee`,
@@ -918,13 +866,12 @@ pub(crate) fn is_self_call(
 mod binder_type_tests;
 
 #[cfg(test)]
-mod node_escapes_and_self_call_tests {
-    //! `node_escapes` is total over the variant set; `is_self_call` decides
-    //! self-recursion by the storage carrier, module and symbol.
-    use super::{is_self_call, node_escapes};
+mod self_call_tests {
+    //! `is_self_call` decides self-recursion by the storage carrier, module and
+    //! symbol.
+    use super::is_self_call;
     use cranelisp_types::{
-        ConcreteType, FQSymbol, FQTypeName, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
-        TypeName,
+        ConcreteType, FQSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
     };
 
     fn int() -> ConcreteType {
@@ -962,88 +909,6 @@ mod node_escapes_and_self_call_tests {
             }),
         }
     }
-    fn constr(escapes: Option<bool>) -> MonoExpr {
-        MonoExpr::ConstrADT {
-            type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")),
-            tag: 0,
-            fields: vec![],
-            span: Span::new(0, 1),
-            ty: int(),
-            escapes,
-            confined: None,
-            unique_static: None,
-        }
-    }
-    /// An `(f args…)` apply with the given callee name, escape fact, and resolved call.
-    fn apply(
-        callee: &str,
-        args: Vec<MonoExpr>,
-        escapes: Option<bool>,
-        resolved: Option<ResolvedCall>,
-    ) -> MonoExpr {
-        MonoExpr::Apply {
-            dispatch: cranelisp_types::ApplyRef::ViaCallee,
-            callee: Box::new(var(callee)),
-            args,
-            span: Span::new(0, 3),
-            resolved_call: resolved.map(Box::new),
-            ty: int(),
-            escapes,
-            confined: None,
-            unique_static: None,
-            provenance: None,
-        }
-    }
-
-    // --- node_escapes: total match, fact-bearing vs non-bearing variants ------
-    #[test]
-    fn escapes_reads_the_five_fact_bearing_variants() {
-        // spec: design/backend/ownership-codegen.md §13.4 — escapes on ConstrADT/Apply/…
-        assert_eq!(node_escapes(&constr(Some(false))), Some(false));
-        assert_eq!(node_escapes(&constr(Some(true))), Some(true));
-        assert_eq!(node_escapes(&constr(None)), None);
-        assert_eq!(
-            node_escapes(&apply("f", vec![], Some(false), None)),
-            Some(false)
-        );
-        assert_eq!(
-            node_escapes(&MonoExpr::VecLit {
-                elements: vec![],
-                span: Span::new(0, 1),
-                ty: int(),
-                escapes: Some(false),
-                confined: None,
-                unique_static: None
-            }),
-            Some(false)
-        );
-        assert_eq!(
-            node_escapes(&MonoExpr::Lambda {
-                params: vec![],
-                body: Box::new(var("x")),
-                span: Span::new(0, 1),
-                ty: ConcreteType::Fn(vec![], Box::new(int())),
-                escapes: Some(true),
-                confined: None,
-                unique_static: None
-            }),
-            Some(true)
-        );
-    }
-    #[test]
-    fn escapes_is_none_for_non_allocating_variants() {
-        // spec: design/backend/ownership-codegen.md §13.4 — non-fact-bearing ⇒ None
-        assert_eq!(node_escapes(&var("v")), None);
-        assert_eq!(
-            node_escapes(&MonoExpr::IntLit {
-                value: 0,
-                span: Span::new(0, 1),
-                ty: int()
-            }),
-            None
-        );
-    }
-
     // spec: design/backend/backend.md §2.7.1 — a callee whose storage carrier is
     // the current fn's identity is a self-call whatever its written name; a
     // carrier in another module is not.
@@ -1069,144 +934,5 @@ mod node_escapes_and_self_call_tests {
             &m(),
             Some(&Symbol::from("g"))
         ));
-    }
-}
-
-#[cfg(test)]
-mod b33_node_confined_tests {
-    //! `node_confined` reads the `confined` site fact off the five
-    //! allocation/capture-producing variants and answers `None` for every other
-    //! variant. Its consumer is the spark density scorer
-    //! (`design/backend/ownership-codegen.md` §13.4).
-    use super::node_confined;
-    use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, MonoExpr, Span, TypeName};
-
-    fn int() -> ConcreteType {
-        ConcreteType::Int
-    }
-
-    // The five fact-bearing variants, each parameterised over its `confined`.
-    fn string_lit(c: Option<bool>) -> MonoExpr {
-        MonoExpr::StringLit {
-            value: "x".into(),
-            span: Span::new(0, 1),
-            ty: ConcreteType::String,
-            escapes: None,
-            confined: c,
-            unique_static: None,
-        }
-    }
-    fn lambda(c: Option<bool>) -> MonoExpr {
-        MonoExpr::Lambda {
-            params: vec![],
-            body: Box::new(MonoExpr::IntLit {
-                value: 0,
-                span: Span::new(0, 1),
-                ty: int(),
-            }),
-            span: Span::new(0, 1),
-            ty: ConcreteType::Fn(vec![], Box::new(int())),
-            escapes: None,
-            confined: c,
-            unique_static: None,
-        }
-    }
-    fn apply(c: Option<bool>) -> MonoExpr {
-        MonoExpr::Apply {
-            callee: Box::new(MonoExpr::Var {
-                name: "f".into(),
-                span: Span::new(0, 1),
-                resolved_call: None,
-                resolution: cranelisp_types::VarRef::Local {
-                    binder: "f".into(),
-                    binding_span: Span::SYNTHETIC,
-                },
-                ty: int(),
-            }),
-            args: vec![],
-            span: Span::new(0, 2),
-            resolved_call: None,
-            ty: int(),
-            escapes: None,
-            confined: c,
-            unique_static: None,
-            provenance: None,
-            dispatch: cranelisp_types::ApplyRef::ViaCallee,
-        }
-    }
-    fn vec_lit(c: Option<bool>) -> MonoExpr {
-        // node_confined reads only `confined`; the ty is immaterial here.
-        MonoExpr::VecLit {
-            elements: vec![],
-            span: Span::new(0, 1),
-            ty: int(),
-            escapes: None,
-            confined: c,
-            unique_static: None,
-        }
-    }
-    fn constr_adt(c: Option<bool>) -> MonoExpr {
-        MonoExpr::ConstrADT {
-            type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")),
-            tag: 0,
-            fields: vec![],
-            span: Span::new(0, 1),
-            ty: int(),
-            escapes: None,
-            confined: c,
-            unique_static: None,
-        }
-    }
-
-    // POSITIVE: each fact-bearing variant reports its own confined field.
-    #[test]
-    fn fact_bearing_variants_report_confined() {
-        for mk in [
-            string_lit as fn(Option<bool>) -> MonoExpr,
-            lambda,
-            apply,
-            vec_lit,
-            constr_adt,
-        ] {
-            assert_eq!(node_confined(&mk(Some(true))), Some(true));
-            assert_eq!(node_confined(&mk(Some(false))), Some(false));
-            assert_eq!(node_confined(&mk(None)), None);
-        }
-    }
-
-    // NEGATIVE: non-allocation variants have no cell of their own ⇒ None.
-    // Var / Let / If / Match are the through-carriers,
-    // never the fact source.
-    #[test]
-    fn non_fact_bearing_variants_are_none() {
-        let var = MonoExpr::Var {
-            name: "v".into(),
-            span: Span::new(0, 1),
-            resolved_call: None,
-            resolution: cranelisp_types::VarRef::Local {
-                binder: "v".into(),
-                binding_span: Span::SYNTHETIC,
-            },
-            ty: int(),
-        };
-        let iflit = MonoExpr::If {
-            cond: Box::new(MonoExpr::BoolLit {
-                value: true,
-                span: Span::new(0, 1),
-                ty: ConcreteType::Bool,
-            }),
-            then_branch: Box::new(var.clone()),
-            else_branch: Box::new(var.clone()),
-            span: Span::new(0, 2),
-            ty: int(),
-        };
-        let intlit = MonoExpr::IntLit {
-            value: 0,
-            span: Span::new(0, 1),
-            ty: int(),
-        };
-        assert_eq!(node_confined(&var), None);
-        assert_eq!(node_confined(&iflit), None);
-        assert_eq!(node_confined(&intlit), None);
     }
 }

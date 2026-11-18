@@ -89,7 +89,7 @@ off and are byte-identical off.
 | `CRANELISP_RC_STATS` | Emit `runtime/rc_stat_*` tally calls, printed at exit | `heap.rs` |
 | `CRANELISP_RC_DEC_CHECK` | Emit `runtime/rc_dec_check(ptr)` before each inline dec | `heap::emit_rc_dec_check_gated` |
 | `CRANELISP_NO_OWNERSHIP` | Moves off: every use duplicates. Also a cache key | `cranelisp_types::ownership_analysis_off()` |
-| `CRANELISP_NO_LENIENT`, `CRANELISP_SPARK_ADMIT`, `CRANELISP_SPARK_DENSITY_MAX`, `CRANELISP_SPARK_DENSITY_TRACE`, `CRANELISP_SPARK_STATS` | Lenient spark admission, its trace and tally | `compiler/control_flow/sparkability.rs`, `utilization.rs` |
+| `CRANELISP_NO_LENIENT`, `CRANELISP_SPARK_ADMIT`, `CRANELISP_SPARK_STATS` | Lenient spark admission and its tally | `compiler/control_flow/sparkability.rs`, `utilization.rs` |
 
 ## Debug hooks
 
