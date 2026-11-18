@@ -72,11 +72,6 @@ parallel≡serial guards (`tests/s99_fixtures.rs`) are the green witness. The
 config pins above still apply — the dump is of compiled code, not execution
 order.
 
-**Known unsound golden frame.** `f4_sudoku` `user::Grid.cells` (a synthetic
-accessor of a generic product) carries a shallower self-parameter release than
-its type requires. The golden records current emission, not correctness;
-FIXME 0903 owns the correction and its scoped re-baseline of that frame.
-
 ## Golden layout and runners
 
 ```
