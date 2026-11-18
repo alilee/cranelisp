@@ -81,6 +81,22 @@ Reproduced by `qa` on HEAD `390201c3` (`target/debug/cranelisp`),
 - **Cost.** Four warm debug runs of `--run exemplar/tests.cl` took 0.89 to
   0.94 s, against 0.96 s before the change and 1.23 s with the first
   version of it.
-- **Left:** `test` stamps K-6 `fixed=S124/3c4c0f7b`. This file stays until
-  `sprints/SPRINT.md` and `sprints/ROADMAP.md` drop their links to it.
+- **Left:** this file stays until `sprints/SPRINT.md` and
+  `sprints/ROADMAP.md` drop their links to it.
 
+## Re-read (qa, 2026-11-18, `a205a29f`)
+
+**The resolution stands; its evidence was too thin.** K-6 was accepted on
+one full run. On that same tree it ends on signal 11 in about one loaded
+run in twelve (24 of 300), and in 29 of 300 at `a205a29f`.
+
+- **The failures are another writer's,**
+  [ACT-1083](ACT-1083-index-worker-revalidates-a-stale-cached-object-intake.md).
+  A REPL session's index pass re-keys the importer's manifest entry and
+  leaves its old object. In 300 loaded runs every failure, and no pass,
+  has the entry at the session's final state.
+- **This correction's key is right in all 300.** Before `3c4c0f7b` K-6
+  fails alone, 3 of 3, with the entry untouched; at `a205a29f` the 39
+  runs that left the entry untouched all pass.
+- **K-6 is a reliable guard for this filing only once ACT-1083 is
+  corrected.** Until then a K-6 failure traces to ACT-1083.

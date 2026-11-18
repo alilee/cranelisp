@@ -97,8 +97,20 @@ the [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#34-repro-0915-
   `dev`(`src/`) with a module row. Whether that lands in S124 or is carried
   is the user's decision.
 
+## At `a205a29f` (qa, 2026-11-18)
+
+- **Corrected (`52de1aad`).** The `discover-tests` refusal is located at
+  the referencing function under `--run` and `--link`;
+  `tests/test_runner.rs::s124_discover_batch_location_run` and `_link`
+  were RED at `2d3a5b3e` and pass in `qa`'s full run.
+- **One residual, with the user.** A macro-produced referencing function
+  restored from cache is still reported at `0..0`
+  ([test runner §7.3](../../design/int/test-runner.md#73-batch-refusal-of-discover-tests)).
+  `design`(int) accepts it. No cell asserts it. This action stays open
+  until the user accepts the residual or asks for its correction.
+
 ## Completion evidence
 
 Every cell goes RED for the location, then GREEN after the correction in
-both batch modes, with the refusal text unchanged. Met for the refusals
-about `main`; open for the `discover-tests` refusal.
+both batch modes, with the refusal text unchanged: met. The residual above
+is accepted by the user, or corrected against a cell `qa` allocates.

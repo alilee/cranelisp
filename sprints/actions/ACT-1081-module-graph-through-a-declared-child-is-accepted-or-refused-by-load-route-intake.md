@@ -91,8 +91,29 @@ unless stated. Four files:
 - **`design`(int)** states, once ruled, where the declared-child edge is or
   is not an edge; `dev`(`src/`) adds the scheduler row.
 
+## At `a205a29f` (qa, 2026-11-18)
+
+- **The routes agree, on "accepted".** `b8b6df58`, `9580856a` and
+  `a205a29f` build int §6.11's rules 1 and 2 and the restored-parent
+  rule. REPRO-1081 (`d88487d1`) was RED on the disagreement and passes in
+  `qa`'s full run: the three batch entries and both REPL orders give 11,
+  the control gives 10, and a module is no longer evaluated after being
+  reported failed. The restored-parent cells (`366bc280`) and the
+  in-flight qualified reference (`a76e42e4`) pass with their controls.
+- **Still open: which outcome is right.** Every route now accepts the
+  program. Whether a `mod` declaration can close a cycle is with the
+  user; under "never accepted" every route is wrong together, and no cell
+  asserts either outcome.
+- **The same tree through a module alias** fails in one REPL order for a
+  different reason,
+  [ACT-1082](ACT-1082-reference-through-a-module-alias-names-the-alias-as-the-module-intake.md).
+- **`review`'s two findings on `a205a29f`** (a failed restore walk still
+  completing the parent; a loaded parent object masking a later child
+  failure) are `dev`(`src/`)'s, at the module tier
+  ([evidence delta §14.4](../../tests/plan/s124-evidence-delta.md#144-residuals)).
+
 ## Completion evidence
 
-REPRO-1081 fails on the disagreement, then passes with every route giving
-the ruled outcome; the session-save leg and a restart agree with it; `qa`
-judges adequacy and deletes this action.
+The user rules the outcome; REPRO-1081 gains the outcome clause and the
+session-save and restart legs and passes; `qa` judges adequacy and deletes
+this action.
