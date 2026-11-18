@@ -1025,3 +1025,74 @@ fn s124_1039_w_no_cache_control_run() {
 fn s124_1039_w_no_cache_control_repl() {
     s124_cached_import_trace("repl", true);
 }
+
+fn s124_cached_trace_fewer_modules(mode: &str, trace: bool, no_cache: bool) {
+    let body = if trace {
+        "(match (trace (inc 2)) [(TraceCall n p r c ns) 7])"
+    } else {
+        "(match (inc 2) [n 7])"
+    };
+    let cr = Cranelisp::new()
+        .file("u.cl", &format!("(import [primitives [add-i64 Int Trace TraceCall]])\n(defn inc [:Int n] (add-i64 n 1))\n(defn traced [] {body})"))
+        .file("x.cl", "(import [primitives [add-i64 Int]])\n(defn xf [:Int n] (add-i64 n 2))")
+        .file("e1.cl", "(import [primitives [Pure Int add-i64]]) (import [u [traced]]) (import [x [xf]])\n(defn main [] (Pure (add-i64 (traced) (xf 0))))")
+        .file("e2.cl", "(import [primitives [Pure]]) (import [u [traced]])\n(defn main [] (Pure (traced)))");
+    let first = if mode == "run" {
+        cr.run("e1.cl")
+    } else {
+        cr.link_then_run("e1.cl")
+    }
+    .output()
+    .assert_exit(9);
+    let mut second = first.run_again().env("CRANELISP_MODULE_TRACE", "1");
+    if no_cache {
+        second = second.cli_flag("--no-cache");
+    }
+    let second = if mode == "run" {
+        second.run("e2.cl")
+    } else {
+        second.link_then_run("e2.cl")
+    }
+    .output();
+    if !no_cache {
+        assert!(
+            second.stderr.contains("cache hit (.meta valid) for u"),
+            "u must restore: {}{}",
+            second.stdout,
+            second.stderr
+        );
+    }
+    second.assert_exit(7);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::discover_traced_fns_from_tables found=S124 owner=/dev
+#[test]
+fn s124_1078_subject_run() {
+    s124_cached_trace_fewer_modules("run", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::discover_traced_fns_from_tables found=S124 owner=/dev
+#[test]
+fn s124_1078_subject_link() {
+    s124_cached_trace_fewer_modules("link", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
+#[test]
+fn s124_1078_no_cache_control() {
+    s124_cached_trace_fewer_modules("run", true, true);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
+#[test]
+fn s124_1078_no_trace_control_run() {
+    s124_cached_trace_fewer_modules("run", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
+#[test]
+fn s124_1078_no_trace_control_link() {
+    s124_cached_trace_fewer_modules("link", false, false);
+}
