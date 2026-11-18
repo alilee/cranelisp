@@ -107,3 +107,11 @@ this intake.
 
 REPRO-1078's subjects fail on the unresolved symbol, then pass with the
 controls unchanged.
+
+## The subject cells are run-dependent (qa, 2026-11-19, `d30c70e9`)
+
+In five runs of the cells alone, `s124_1078_subject_run` failed three
+times and `s124_1078_subject_link` four; both passed in one run. Every
+failure was the `unresolved symbol` this filing states. The fixture leaves
+the order in which `u` and `x` compile to the scheduler. Returned to `test`
+([evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test)).

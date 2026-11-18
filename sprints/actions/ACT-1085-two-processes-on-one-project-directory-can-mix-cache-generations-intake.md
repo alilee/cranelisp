@@ -88,3 +88,11 @@ The user's decision is recorded. If the control is built: the module rows
 and T-OWNER pass, each observed RED without the lock, and `qa` judges
 adequacy and deletes this action. If it is carried: this action is marked
 deferred with the decision, and the hazard is stated in the sprint record.
+
+## What a reproduction takes (qa, 2026-11-19)
+
+Judged constructible with a harness primitive the suite lacks, and not
+attempted. The sequence, what it would show and what it would not are in
+the [evidence delta §14.1](../../tests/plan/s124-evidence-delta.md#141-the-failing-set-by-owning-module),
+*ACT-1085: what a reproduction takes*. Under *reproduce first* the hazard
+has no committed reproduction; `sprint` schedules or declines one.

@@ -78,3 +78,15 @@ none. `qa` retains this intake.
 
 The subject is serial before the correction and overlaps after it; the
 control overlaps throughout.
+
+## A regression S124 caused (qa, 2026-11-19, `d30c70e9`)
+
+- **Measured.** The subject overlaps (310 to 313 ms) on the release binary
+  of 2026-11-18 00:11, the W2 tree, and is serial (628 to 630 ms) on
+  `d30c70e9`. The `then` control and both references agree on the two
+  binaries ([evidence delta §14.10](../../tests/plan/s124-evidence-delta.md#1410-no-decay)).
+- **Consequence.** Under the *no decay*
+  [delivery principle](../METHOD.md#delivery-principles) the correction
+  is owed in S124. The priority above predates that principle.
+- **Limit.** The earlier binary is not the opening tree and its commit is
+  not pinned.

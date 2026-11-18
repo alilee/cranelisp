@@ -82,3 +82,8 @@ The file-loaded subject behaves the same on the release build of
 REPRO-1068 fails on the missing form in each subject leg, then passes with
 its control; `dev`(`src/`) adds a unit row at the function section for a
 multi-signature family, RED before the correction.
+
+## Owner (qa, 2026-11-19)
+
+`src/`. The regenerated file is `src/save.rs`'s output and no other module
+writes it. The site stays a source reading until `dev`(`src/`) probes it.
