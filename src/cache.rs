@@ -24,7 +24,8 @@
 // minimum-this-sprint surface is the ones that have actual callers
 // (everything in `crate::session_v4` + `crate::worker`).
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cranelisp_types::ModuleFullPath;
@@ -98,6 +99,41 @@ impl StoredObject {
             StoredObject::NothingToLoad
         }
     }
+}
+
+/// Publish `bytes` as the module object at `object_path`, so a file at that
+/// path is always a complete object (`design/int/int.md` §7.7). On failure
+/// nothing new stands at `object_path`.
+pub(crate) fn publish_object(object_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    publish_object_with(object_path, |file| file.write_all(bytes))
+}
+
+/// Run `write` into a temporary beside `object_path`, flush it to disk and
+/// rename it onto `object_path`. A failed step removes the temporary.
+pub(crate) fn publish_object_with(
+    object_path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let temporary = publication_temporary(object_path);
+    let mut file = std::fs::File::create_new(&temporary)?;
+    let written = write(&mut file).and_then(|()| file.sync_all());
+    drop(file);
+    let published = written.and_then(|()| std::fs::rename(&temporary, object_path));
+    if published.is_err() {
+        // Best effort: restore reads only the object path, never a temporary.
+        let _ = std::fs::remove_file(&temporary);
+    }
+    published
+}
+
+/// A name beside `object_path` that no other write, in this process or
+/// another, uses.
+fn publication_temporary(object_path: &Path) -> PathBuf {
+    static NEXT_PUBLICATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let publication = NEXT_PUBLICATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = object_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{publication}.tmp", std::process::id()));
+    object_path.with_file_name(name)
 }
 
 fn cache_write_error(message: String) -> cranelisp_types::CranelispError {
@@ -440,6 +476,24 @@ mod tests {
             paths,
             vec![PathBuf::from("/tmp/a.o"), PathBuf::from("/tmp/b.o")]
         );
+    }
+
+    // spec: design/int/int.md §7.7 — a completed publication leaves exactly
+    // the emitted bytes at the object path and no temporary beside it.
+    #[test]
+    fn a_published_object_holds_its_bytes_alone_in_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let object_path = dir.path().join("lib.o");
+        std::fs::write(&object_path, "the earlier generation's object").unwrap();
+
+        publish_object(&object_path, b"the emitted object").unwrap();
+
+        assert_eq!(std::fs::read(&object_path).unwrap(), b"the emitted object");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["lib.o"]);
     }
 
     #[test]

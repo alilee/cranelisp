@@ -147,6 +147,18 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 /// and the load-bearing ordering (.meta.json is DECOUPLED from `.o` output —
 /// persists whenever the module type-checked).
 fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_dir: &Path) {
+    run_object_pass(shared, module, cache_dir, crate::cache::publish_object);
+}
+
+/// Writes a module's emitted object bytes to its object path.
+type PublishObject = fn(&Path, &[u8]) -> std::io::Result<()>;
+
+fn run_object_pass(
+    shared: &SharedState,
+    module: &ModuleFullPath,
+    cache_dir: &Path,
+    publish: PublishObject,
+) {
     use cranelisp_backend::cache;
 
     // Resolve cache paths up front — `.meta.json` persistence is DECOUPLED from
@@ -182,7 +194,7 @@ fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_di
     };
 
     // Phase 4: write the `.o` + record in manifest + append for the linker.
-    write_object_and_record(shared, module, &o_path, &obj_bytes);
+    write_object_and_record(shared, module, &o_path, &obj_bytes, publish);
 }
 
 /// Phase 1 (S87 §3.3): write `.meta.json` for cache-hit restoration via the
@@ -347,10 +359,10 @@ fn write_object_and_record(
     module: &ModuleFullPath,
     o_path: &Path,
     obj_bytes: &[u8],
+    publish: PublishObject,
 ) {
-    // Write the .o file to cache directory (the parent dir was ensured above for
-    // the `.meta.json` write, which shares the same parent).
-    if let Err(e) = std::fs::write(o_path, obj_bytes) {
+    // The parent dir was ensured for the `.meta.json` write, which shares it.
+    if let Err(e) = publish(o_path, obj_bytes) {
         eprintln!("nice-worker: cannot write '{}': {}", o_path.display(), e);
         return;
     }
@@ -382,7 +394,8 @@ mod tests {
         object: StoredObject,
     }
 
-    fn launch(root: &Path, source: &str) -> Generation {
+    /// A cached `--run` session over `lib` whose object work has drained.
+    fn compiled_session(root: &Path, source: &str) -> CompilerSession {
         std::fs::write(root.join("lib.cl"), source).unwrap();
         let mut s = CompilerSession::new(
             SessionSettings {
@@ -400,6 +413,11 @@ mod tests {
         s.set_lib_dirs(Vec::new());
         s.register_module("lib").unwrap();
         s.wait_object_complete().unwrap();
+        s
+    }
+
+    fn launch(root: &Path, source: &str) -> Generation {
+        let mut s = compiled_session(root, source);
         let lib = ModuleFullPath::from("lib");
         let shared = &s.shared;
         let sources = ModuleSources::new(root, &[], &shared.symbol_tables, &shared.cache);
@@ -418,6 +436,42 @@ mod tests {
         };
         s.shutdown();
         generation
+    }
+
+    fn stopped_publication(object_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        crate::cache::publish_object_with(object_path, |file| {
+            std::io::Write::write_all(file, &bytes[..bytes.len() / 2])?;
+            Err(std::io::Error::other("the write stops part-way"))
+        })
+    }
+
+    // spec: design/int/int.md §7.7 — an object publication that stops after
+    // writing part of the bytes leaves no file at the object path, nor its
+    // temporary, so the next restore is a miss rather than a truncated load.
+    #[test]
+    fn a_stopped_object_publication_leaves_a_miss() {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = compiled_session(root.path(), "(defn g [] 41)\n");
+        let lib = ModuleFullPath::from("lib");
+        let cache_dir = s.shared.cache.cache_dir().expect("cache enabled");
+        let restored = || {
+            let cached = cranelisp_backend::cache::try_load_cached_module(&cache_dir, &lib)
+                .unwrap()
+                .expect("the pass persists `lib`");
+            StoredObject::of(&cached)
+        };
+        assert_eq!(restored(), StoredObject::Load);
+
+        super::run_object_pass(&s.shared, &lib, &cache_dir, stopped_publication);
+
+        let leftovers: Vec<_> = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("lib.o"))
+            .collect();
+        assert_eq!(leftovers, Vec::<String>::new());
+        assert_eq!(restored(), StoredObject::Missing);
+        s.shutdown();
     }
 
     // spec: design/int/int.md §7.7 — a successful object pass leaves its new
