@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W7 accepted; W6 open on two user gates; W8 next
+**Status**: PHASE 5 LANGUAGE — W8 accepted; W6 open on two user gates; settling target waits on user scheduling decisions
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -381,6 +381,21 @@ The third-deferral groups and ACT-1067 (Notes).
   export mount is refused unless the mount's owner is loaded; reachable only
   since W7), ACT-1080 (annotation-mismatch diagnostic swaps expected and
   got; predates S124).
+- **W8 accepted by `qa` (`66bc7b8a`):** D7 + ACT-0953 (`7cceedc4`),
+  ACT-1061, ACT-1036 + D12 + Q8/Q9, ACT-1052 (schema 34), ACT-1016,
+  ACT-0973 (after the exemplar split `efa4d8df`: `solver.cl` is a library,
+  `smoke.cl` the entry), review corrections through `2d3a5b3e`. Suite 7,747
+  run, 84 failed, nothing unattributed; census zero over 223,925 frames.
+  Closed: ACT-0973, 1016, 1061, 1063. Remaining of W8: the batch
+  `discover-tests` refusal is still located at `0..0` (ACT-1036, 2 cells).
+  Filed: ACT-1081 (the transitive `mod` program's outcome depends on the
+  import route).
+- **Between HEAD and the settling target (qa, `66bc7b8a`):** of 84 failures,
+  2 maintenance checks, 12 carried on record, 1 ACT-1018 guard, 6 on the
+  traced-set ruling, 63 across twelve filings with neither a correction
+  scheduled nor a recorded carry. Rows K11-a to K11-d and D6/D9 (behind D13)
+  are approved and not in source. The document checker cannot pass without
+  the ignored-path disposal.
 - **Awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
   member (`cranelisp-types`; raised by review of `951622cf`, half-fixed in
   `240b3a8a`). Not started.
