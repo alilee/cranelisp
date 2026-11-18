@@ -499,12 +499,11 @@ impl TestFixture {
         apply(&self.state.subst, ty)
     }
 
-    /// Check form (test convenience).
-    pub fn check_form(
+    /// Register one form, Pass 1 (test convenience). An implementation
+    /// registers as a cluster of one; `check_forms` stages it instead.
+    pub fn register_form(
         &mut self,
-        module: &ModuleFullPath,
         form: &cranelisp_types::TopLevel,
-        pass: crate::program::CheckPass,
         accumulator: &mut crate::program::ModuleCheckAccumulator,
     ) -> Result<crate::program::FormCheckResult, CranelispError> {
         let env = TypeCheckEnv::new(
@@ -513,7 +512,22 @@ impl TestFixture {
             &self.module_aliases,
             &self.prelude_fallback,
         );
-        env.check_form(module, form, pass, &mut self.state, accumulator)
+        env.check_form_register(&mut self.state, form, accumulator)
+    }
+
+    /// Check one form's body, Pass 2 (test convenience).
+    pub fn check_form_body(
+        &mut self,
+        form: &cranelisp_types::TopLevel,
+        accumulator: &mut crate::program::ModuleCheckAccumulator,
+    ) -> Result<crate::program::FormCheckResult, CranelispError> {
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
+        env.check_form_body(&mut self.state, form, accumulator)
     }
 
     /// Merge form result (test convenience).

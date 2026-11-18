@@ -2081,8 +2081,8 @@ fn a_body_returning_either_of_two_params_publishes_the_result_top() {
 // index, the other reaching parameter DISCARDED), the caller read argument 1 —
 // a literal — and published `Fresh`.
 // spec: spec/12-runtime.md §12.3.1 — freed memory MUST NOT be accessed after
-// deallocation: `backend::compiler::fn_compiler::return_is_fresh_by_summary`
-// elides the callee return protect on a PRESENT `Fresh`.
+// deallocation: a consumer that elides the callee return protect on a PRESENT
+// `Fresh` (the backend until S123 W2) frees what the callee returned.
 #[test]
 fn composing_a_two_param_returning_callee_keeps_the_caller_s_reaching_parameter() {
     let callee = pick2_summary();

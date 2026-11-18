@@ -614,9 +614,10 @@ fn confinement_no_spurious_cross_for_parent_only_chain() {
 // The three cells that lived here asserted the pre-S121 recovery: on cap
 // exhaustion the driver minted a ⊤ `ModeSummary`, ⊤ site facts and `false`
 // uniqueness bits, and PUBLISHED them. That literal was ⊤ on four axes and the
-// axis's STRONGEST claim on the fifth (`result: Fresh`), which the backend's
-// `return_is_fresh_by_summary` reads to elide the callee return protect on a
-// body that does return its parameter. The role those cells guarded — a cap must
+// axis's STRONGEST claim on the fifth (`result: Fresh`), a claim that the body
+// returns no parameter, published for a body that does return its parameter
+// (the backend's return-protect elision then read it; retired in S123 W2). The
+// role those cells guarded — a cap must
 // never publish the too-precise partial — is retained here; what changed, by the
 // user's approval, is the spelling of the conservative point: from a ⊤ literal to
 // ABSENCE (§19.5), which lands the refused cluster on the
@@ -794,9 +795,9 @@ fn named<'u>(universe: &'u [Callable], key: &str) -> &'u Callable {
 // spec: design/typecheck/ownership-inference.md §3.2 — the modes worklist
 // converges, so a converged cluster publishes a real summary, never ⊤.
 // spec: spec/12-runtime.md §12.3.1 — freed memory MUST NOT be accessed after
-// deallocation (the consequence: the ⊤ below claims `result: Fresh`, which
-// `backend::compiler::fn_compiler::return_is_fresh_by_summary` reads to ELIDE
-// the callee return protect on a body that does return its parameter).
+// deallocation (the consequence: the ⊤ below claims `result: Fresh` for a body
+// that does return its parameter; a consumer eliding the return protect on
+// `Fresh`, as the backend did until S123 W2, frees what it returns).
 #[test]
 fn parameter_permuting_self_call_publishes_a_converged_summary() {
     let mut tf = tc_with_prims();
@@ -810,8 +811,7 @@ fn parameter_permuting_self_call_publishes_a_converged_summary() {
     let published_f = published(&c, f).expect("f must publish its inferred summary");
     // The base case returns param 1 and the permuting self-call carries param 0
     // into the same position, so BOTH parameters may reach the result and neither
-    // may be named: the axis's ⊤ (§19.2). Not-`Fresh` is the safety-bearing half —
-    // `return_is_fresh_by_summary` keeps the callee return protect on it.
+    // may be named: the axis's ⊤ (§19.2). Not-`Fresh` is the safety-bearing half.
     assert_eq!(
         published_f.result,
         cranelisp_types::ResultMode::MayAliasAny,

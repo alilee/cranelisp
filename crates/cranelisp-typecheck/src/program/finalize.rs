@@ -12,7 +12,7 @@ pub(crate) fn collect_expr_spans(expr: &Expr, spans: &mut HashSet<Span>) {
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     /// Merge a `FormCheckResult` into the module's accumulator.
     ///
-    /// Called after each `check_form()` to accumulate the remaining per-form
+    /// Called after each per-form pass to accumulate the remaining per-form
     /// products. Resolution, expression and callee facts have longer-lived
     /// owners and do not travel through this carrier.
     pub(crate) fn merge_form_result(

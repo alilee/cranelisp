@@ -114,11 +114,9 @@ pub(crate) fn classify_call(
 ///
 /// **The R5 delegation (CS-II-3).** A type sits at `Copy` iff the single-sourced
 /// [`value_layout`](cranelisp_types::value_layout) predicate returns `Some` —
-/// the soundness-coupled carrier both this classifier and the backend's
-/// `HeapCategory::Value` arm consume (spine §6.3; §14.5). The classifier
-/// **delegates**, never re-implements: a `Copy`-moded param the backend did not
-/// flatten is a missing-`rc_inc` use-after-free, so two independent copies of the
-/// predicate is the Principle-7 mirror-defect class. This is a **value change**
+/// the single-sourced carrier (spine §6.3; §14.5). The classifier
+/// **delegates**, never re-implements: two independent copies of the predicate
+/// is the Principle-7 mirror-defect class. This is a **value change**
 /// (which `ConcreteType`s classify `Copy`), not a shape change — deterministic
 /// (post-mono ⇒ total), hence cache-key-safe.
 ///
@@ -130,16 +128,10 @@ pub(crate) fn classify_call(
 /// (`(Cell Int)`-style). The classifier holds an erased predicate closure so it
 /// carries no `C`/`L` generics into the transfer/fixpoint seams.
 ///
-/// **Landing discipline (§14.5 — `Copy` is scalars-only until R5/B3).**
-/// Production currently supplies the **`None` (scalars-only)** predicate. The
-/// backend already consumes `Mode::Copy` (it drops RC and treats the value
-/// by-value) but does NOT yet flatten value-eligible ADTs (that is R5/Block B3,
-/// backend `HeapCategory::Value`; the reuse/R5 witnesses are still RED).
-/// Admitting a heap ADT to `Copy` before the backend flattens it is a
-/// missing-`rc_inc` use-after-free — so the input stays `None` until B3, which
-/// flips it to `Some(env.modules())` in the SAME change-set that lands the
-/// flattening. The delegation *mechanism* is the increment-II step; the tables
-/// *input* is the coupled B3 step (both surfaces grow precision together).
+/// **Production is scalars-only (§14.5).** Production supplies the **`None`**
+/// predicate. The backend's one-word value flattening was retired in S123 (D4):
+/// every data-constructor ADT is a heap value, so admitting one to `Copy` would
+/// claim a by-value representation the backend does not provide.
 pub(crate) struct CopyClassifier<'a> {
     memo: RefCell<HashMap<ConcreteType, bool>>,
     /// The value-layout predicate: `true` iff `ty` is value-representable
@@ -151,7 +143,7 @@ pub(crate) struct CopyClassifier<'a> {
 impl<'a> CopyClassifier<'a> {
     /// Construct from an explicit value-layout predicate. Production supplies
     /// `|ty| value_layout::<C, L>(ty, None).is_some()` (the delegation, tables
-    /// withheld until B3 per §14.5); tests supply a stub to exercise the seam
+    /// withheld per §14.5); tests supply a stub to exercise the seam
     /// without rebuilding the tables.
     pub(crate) fn new(is_value: impl Fn(&ConcreteType) -> bool + 'a) -> Self {
         Self {

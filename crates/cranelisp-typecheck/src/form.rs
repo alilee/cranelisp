@@ -50,7 +50,7 @@ use cranelisp_types::{
 
 use crate::checker::{CheckState, LookupDependencyCollector, PreludeFallback, TypeCheckEnv};
 use crate::cluster::SymbolTableAccess;
-use crate::program::{CheckPass, ModuleCheckAccumulator};
+use crate::program::ModuleCheckAccumulator;
 use crate::result::{CheckError, CheckResult};
 
 /// Cluster-atomic typecheck entry surface.
@@ -298,13 +298,7 @@ where
     for form in &working_program {
         state.active_constraints = pass1_constraints.clone();
         let result = env
-            .check_form(
-                &current_module,
-                form,
-                CheckPass::CheckBody,
-                &mut state,
-                &mut accumulator,
-            )
+            .check_form_body(&mut state, form, &mut accumulator)
             .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }
@@ -315,13 +309,7 @@ where
         state.active_constraints = pass1_constraints.clone();
         let form = TopLevel::Defn(defn.clone());
         let result = env
-            .check_form(
-                &current_module,
-                &form,
-                CheckPass::CheckBody,
-                &mut state,
-                &mut accumulator,
-            )
+            .check_form_body(&mut state, &form, &mut accumulator)
             .map_err(|e| lift_error(e, &state))?;
         env.merge_form_result(&current_module, &mut state, &mut accumulator, result);
     }

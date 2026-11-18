@@ -678,14 +678,11 @@ fn u2_nested_fn_written_var_corefers_enclosing_same_typeid() {
 #[test]
 fn test_check_form_single_defn_register() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let defn = make_inc_defn();
     let form = TopLevel::Defn(defn);
-    let result = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&form, &mut accumulator).unwrap();
 
     // Register pass does not populate active body facts.
     assert!(tc.state.method_resolutions.resolved_calls.is_empty());
@@ -718,13 +715,10 @@ fn test_check_form_single_defn_register() {
 #[test]
 fn test_check_form_typedef_register() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let form = make_color_typedef();
-    let result = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&form, &mut accumulator).unwrap();
 
     // Registration should be mostly empty result (type is registered internally)
     assert!(result.default_method_defns.is_empty());
@@ -750,14 +744,11 @@ fn test_check_form_typedef_register() {
 #[test]
 fn test_check_form_trait_decl_register() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Eq (eq [lhs rhs] Bool))");
     let form = TopLevel::TraitDecl(decl);
-    let result = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&form, &mut accumulator).unwrap();
 
     // Should produce an empty result (registration is internal)
     assert!(tc.state.method_resolutions.resolved_calls.is_empty());
@@ -770,15 +761,12 @@ fn test_check_form_trait_decl_register() {
 fn test_check_form_trait_impl_register() {
     let mut tc = tc_with_prims();
     register_num_trait_inline(&mut tc);
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     // Register a new trait (Eq) then impl it for Int
     let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Eq (eq [a b] Bool))");
     let decl_form = TopLevel::TraitDecl(decl);
-    let _ = tc
-        .check_form(&module, &decl_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let _ = tc.register_form(&decl_form, &mut accumulator).unwrap();
 
     // Now impl Eq for Int
     let impl_ = TraitImpl {
@@ -812,9 +800,7 @@ fn test_check_form_trait_impl_register() {
         span: Span::SYNTHETIC,
     };
     let impl_form = TopLevel::TraitImpl(impl_);
-    let result = tc
-        .check_form(&module, &impl_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&impl_form, &mut accumulator).unwrap();
 
     // Impl registration should succeed (no error).
     // default_method_defns contains mangled-name defns for each impl method
@@ -837,14 +823,13 @@ fn test_check_form_trait_impl_register() {
 #[test]
 fn test_check_form_check_body_before_register_errors() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let defn = make_inc_defn();
     let form = TopLevel::Defn(defn);
 
     // Try CheckBody without registering first — should error
-    let result = tc.check_form(&module, &form, CheckPass::CheckBody, &mut accumulator);
+    let result = tc.check_form_body(&form, &mut accumulator);
     assert!(
         result.is_err(),
         "CheckBody before Register should produce an error"
@@ -855,15 +840,12 @@ fn test_check_form_check_body_before_register_errors() {
 #[test]
 fn test_check_form_register_records_body_signature() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let defn = make_inc_defn();
     let form = TopLevel::Defn(defn);
 
-    let _ = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let _ = tc.register_form(&form, &mut accumulator).unwrap();
 
     let registration = accumulator
         .bodies
@@ -883,37 +865,19 @@ fn test_check_form_typedef_before_defn() {
 
     // Register TypeDef(Color) first
     let typedef_form = make_color_typedef();
-    let result = tc
-        .check_form(
-            &module,
-            &typedef_form,
-            CheckPass::Register,
-            &mut accumulator,
-        )
-        .unwrap();
+    let result = tc.register_form(&typedef_form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Then register Defn(is-red) which uses Color constructors
     let defn_form = TopLevel::Defn(make_is_red_defn());
-    let result = tc
-        .check_form(&module, &defn_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&defn_form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Pass 2: check body — should resolve constructor types correctly
     // TypeDef is no-op in CheckBody
-    let _ = tc
-        .check_form(
-            &module,
-            &typedef_form,
-            CheckPass::CheckBody,
-            &mut accumulator,
-        )
-        .unwrap();
+    let _ = tc.check_form_body(&typedef_form, &mut accumulator).unwrap();
 
-    let body_result = tc
-        .check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let body_result = tc.check_form_body(&defn_form, &mut accumulator).unwrap();
 
     // Should succeed and produce expr_types
     assert!(

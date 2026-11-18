@@ -6,10 +6,11 @@
 //!
 //! ## Per-Form API (v4 Pipeline)
 //!
-//! `check_form()` processes a single `TopLevel` form through one pass at a time.
-//! The caller (`check_forms`) drives two-pass iteration:
-//! - Pass 1 (`CheckPass::Register`): register type defs, traits, signatures.
-//! - Pass 2 (`CheckPass::CheckBody`): check function bodies, detect constraints.
+//! The caller (`check_forms`) drives two passes over a cluster:
+//! - Pass 1, `register_cluster()`: register type defs, traits and signatures,
+//!   stage every implementation, then run the impl-body sweep.
+//! - Pass 2, `check_form_body()` per form: check function bodies, detect
+//!   constraints.
 //!
 //! `merge_form_result()` accumulates per-form results into a `ModuleCheckAccumulator`.
 //! `finalize_check_result()` runs post-passes and drains the accumulator into `CheckResult`.
@@ -44,11 +45,10 @@ mod support;
 #[cfg(test)]
 mod test_driver;
 
-// Re-export the free-function toolbox + callee helpers at the `program`
+// Re-export the free-function toolbox at the `program`
 // level so sibling submodules reach them via `use super::*` and the
 // existing `crate::program::<fn>` call sites in checker/adt/traits/infer
 // keep resolving unchanged (a pure decomposition moves no path).
-pub(crate) use callees::*;
 pub(crate) use mono_collect::AutoCurryDrain;
 pub(crate) use support::*;
 
@@ -499,37 +499,6 @@ fn callable_target_owner(target: &CallableTarget) -> Option<&FQSymbol> {
         | CallableTarget::OverloadArm { owner, .. }
         | CallableTarget::MacroClause { owner, .. } => Some(owner),
         _ => None,
-    }
-}
-
-impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
-    /// Check a single `TopLevel` form through one pass.
-    ///
-    /// The caller drives the two-pass iteration:
-    /// - Pass 1 (`CheckPass::Register`): call for every form in source order.
-    /// - Pass 2 (`CheckPass::CheckBody`): call for every form in source order.
-    ///
-    /// Returns a `FormCheckResult` that the caller feeds to `merge_form_result()`.
-    ///
-    /// ## Invariants
-    /// - All signatures must be registered (Pass 1) before any body is checked (Pass 2).
-    /// - Pass 1 is one sweep in form order (`design/typecheck/typecheck.md` §5.2 item 2).
-    /// - One `ModuleCheckAccumulator` per module, no concurrent access.
-    ///
-    /// The caller owns the `CheckState` and passes it in. Multiple workers
-    /// can hold `&TypeCheckEnv` concurrently, each with their own state.
-    pub(crate) fn check_form(
-        &self,
-        _module: &ModuleFullPath,
-        form: &TopLevel,
-        pass: CheckPass,
-        state: &mut CheckState,
-        accumulator: &mut ModuleCheckAccumulator,
-    ) -> Result<FormCheckResult, CranelispError> {
-        match pass {
-            CheckPass::Register => self.check_form_register(state, form, accumulator),
-            CheckPass::CheckBody => self.check_form_body(state, form, accumulator),
-        }
     }
 }
 

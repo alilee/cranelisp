@@ -55,8 +55,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
-    /// Pass 1 (Register) dispatch: register type defs, trait decls/impls, signatures.
-    pub(super) fn check_form_register(
+    /// Pass 1 dispatch for one form: register a type def, trait decl,
+    /// implementation (as a cluster of one) or signature.
+    pub(crate) fn check_form_register(
         &self,
         state: &mut CheckState,
         form: &TopLevel,

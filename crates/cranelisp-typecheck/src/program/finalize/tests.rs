@@ -121,9 +121,7 @@ fn qualified_impl_finalize_refreshes_canonical_settled_entry() {
     };
     let program = vec![TopLevel::TraitImpl(impl_)];
     let mut accumulator = ModuleCheckAccumulator::new();
-    let registered = tc
-        .check_form(&user, &program[0], CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let registered = tc.register_form(&program[0], &mut accumulator).unwrap();
     tc.merge_form_result(&user, &mut accumulator, registered);
 
     let canonical = Symbol::from("Display.shw$primitives/Int");
@@ -532,17 +530,13 @@ fn test_check_form_accumulator_merge() {
 
     // Pass 1: Register all
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::Register, &mut accumulator)
-            .unwrap();
+        let result = tc.register_form(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
     // Pass 2: body facts remain in the active map until the one final sweep.
     let et_before_first = tc.state.expr_types.len();
-    let form0_result = tc
-        .check_form(&module, &program[0], CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let form0_result = tc.check_form_body(&program[0], &mut accumulator).unwrap();
     let form0_et = tc.state.expr_types.len() - et_before_first;
     tc.merge_form_result(&module, &mut accumulator, form0_result);
     let et_after_first = tc.state.expr_types.len();
@@ -552,9 +546,7 @@ fn test_check_form_accumulator_merge() {
         "accumulator should grow after first form's CheckBody"
     );
 
-    let form1_result = tc
-        .check_form(&module, &program[1], CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let form1_result = tc.check_form_body(&program[1], &mut accumulator).unwrap();
     let form1_et = tc.state.expr_types.len() - et_after_first;
     tc.merge_form_result(&module, &mut accumulator, form1_result);
     let et_after_second = tc.state.expr_types.len();
@@ -581,15 +573,11 @@ fn test_check_form_finalize_produces_complete_result() {
 
     // Full two-pass processing
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::Register, &mut accumulator)
-            .unwrap();
+        let result = tc.register_form(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::CheckBody, &mut accumulator)
-            .unwrap();
+        let result = tc.check_form_body(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
@@ -643,15 +631,11 @@ fn test_check_form_constrained_fn_detection() {
     ));
 
     // Register
-    let reg = tc
-        .check_form(&module, &defn_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let reg = tc.register_form(&defn_form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, reg);
 
     // Check body
-    let body = tc
-        .check_form(&module, &defn_form, CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let body = tc.check_form_body(&defn_form, &mut accumulator).unwrap();
 
     // Should detect constrained fn
     assert!(

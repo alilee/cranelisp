@@ -2,8 +2,8 @@ use super::*;
 use crate::checker::{BodyFrame, RecursionBinding};
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
-    /// Pass 2 (CheckBody) dispatch: check function bodies, generalize, detect constraints.
-    pub(super) fn check_form_body(
+    /// Pass 2 dispatch: check function bodies, generalize, detect constraints.
+    pub(crate) fn check_form_body(
         &self,
         state: &mut CheckState,
         form: &TopLevel,

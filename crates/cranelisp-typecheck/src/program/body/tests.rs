@@ -59,18 +59,13 @@ fn register_then_require_body_error(
     defn: &TopLevel,
 ) {
     let mut accumulator = ModuleCheckAccumulator::new();
-    let registered = tc
-        .check_form(module, defn, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let registered = tc.register_form(defn, &mut accumulator).unwrap();
     tc.merge_form_result(module, &mut accumulator, registered);
     let expected_frame = sentinel_body_frame(module);
     tc.state.body_frame = expected_frame.clone();
     let frames_before = tc.state.env.top_frame_index();
 
-    assert!(
-        tc.check_form(module, defn, CheckPass::CheckBody, &mut accumulator)
-            .is_err()
-    );
+    assert!(tc.check_form_body(defn, &mut accumulator).is_err());
     assert_eq!(tc.state.env.top_frame_index(), frames_before);
     assert_eq!(tc.state.body_frame, expected_frame);
 }

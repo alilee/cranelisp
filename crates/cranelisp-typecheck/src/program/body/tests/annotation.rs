@@ -597,9 +597,7 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let double_decl =
         crate::traits::test_helpers::parse_trait_decl("(deftrait Double (double [x] self))");
     let decl_form = TopLevel::TraitDecl(double_decl);
-    let result = tc
-        .check_form(&module, &decl_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&decl_form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Impl Double for Int: (defn double [x] (+ x x))
@@ -634,9 +632,7 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
         span: span(80, 120),
     };
     let impl_form = TopLevel::TraitImpl(impl_);
-    let result = tc
-        .check_form(&module, &impl_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&impl_form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // The register pass should produce the mangled defn (S102 FQ `$Type`
@@ -658,9 +654,7 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let defaults = std::mem::take(&mut accumulator.default_method_defns);
     for defn in &defaults {
         let form = TopLevel::Defn(defn.clone());
-        let result = tc
-            .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-            .unwrap();
+        let result = tc.register_form(&form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
     accumulator.default_method_defns = defaults;
@@ -669,9 +663,7 @@ fn test_impl_method_not_marked_constrained_after_body_check() {
     let defaults_for_body = accumulator.default_method_defns.clone();
     for defn in &defaults_for_body {
         let form = TopLevel::Defn(defn.clone());
-        let result = tc
-            .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
-            .unwrap();
+        let result = tc.check_form_body(&form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 

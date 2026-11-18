@@ -1,22 +1,5 @@
 use super::*;
 
-// --- Per-Form Typecheck API types ---
-
-/// Pass indicator for `check_form()`.
-///
-/// The two-pass structure (register all signatures, then check all bodies) is
-/// fundamental to Algorithm W with mutual recursion. The caller drives the
-/// iteration; `check_form` does the right thing for each (form, pass) pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CheckPass {
-    /// Pass 1: register type/trait/signature.
-    /// For Defn: registers signature only. For TypeDef/TraitDecl/TraitImpl: full registration.
-    Register,
-    /// Pass 2: check function body, generalize, detect constraints.
-    /// Only meaningful for Defn forms. Other form kinds return an empty result.
-    CheckBody,
-}
-
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
     // =================================================================
     // Per-Form Typecheck API (v4 pipeline)

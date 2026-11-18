@@ -424,9 +424,7 @@ fn test_check_form_defn_multi_register() {
         span: span(990, 1054),
     });
 
-    let result = tc
-        .check_form(&module, &multi, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&multi, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Each source clause has one registered ledger record.

@@ -10,17 +10,16 @@
 //!
 //! # Read path and monotone soundness
 //!
-//! The backend DOES consume these summaries (the increment-I "emitted but
-//! UNconsumed, behaviour-neutral for codegen" statement this paragraph used to
-//! carry has been false since the read path landed): among others,
-//! `backend::compiler::fn_compiler::return_is_fresh_by_summary` elides a
-//! callee's return protect exactly when a summary is PRESENT and says
-//! `ResultMode::Fresh`. Every fact must therefore be monotone-sound in its own
+//! Since uniform reference counting (S123 W2) backend codegen reads no
+//! summary; the backend's cache restore validates each persisted summary's
+//! parameter indices. A consumer that elides work on a fact will read a
+//! published summary as true, so every fact must be monotone-sound in its own
 //! right: widening toward `Owned`/`Escapes`/`Crossing` is always correct, only
 //! less precise (spine §6.1).
 //!
-//! **`Fresh` is the exception to "widening is free", and it is the one that has
-//! bitten.** It is the result axis's STRONGEST claim, not its ⊤ — the ⊤ is
+//! **`Fresh` is the exception to "widening is free"**: the retired
+//! return-protect elision read it as licence to skip a protect. It is the
+//! result axis's STRONGEST claim, not its ⊤ — the ⊤ is
 //! `ResultMode::MayAliasAny` (S121, §19.2). A summary is publishable only as the
 //! output of a converged transfer walk; a cluster that does not converge, and a
 //! frame the walk never visits, publish NOTHING (§19.5/§19.6). Absence is the

@@ -330,13 +330,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // Normalize: the effective impl target is the bare constructor, so
             // every downstream method-check/mangle site sees the impl type in
             // slot 2 exactly as it did for the pre-S112 `(impl Functor Option)`
-            // form. MIRROR (M1): `src/session_v4/types.rs::impl_echo_type_name` performs the
-            // reciprocal derivation on the DISPLAY side — it echoes the pairing's
-            // constructor ARGUMENT (`Option`), not the pairing head (`Functor`),
-            // so the introspection echo names the same type this normalization
-            // registers the impl under (Principle 26 — render from settled state).
-            // Keep the two in lock-step: both read the constructor out of
-            // `Applied(pairing_head, [Constructor])`.
+            // form.
             rewritten_impl = TraitImpl {
                 target: cranelisp_types::TypeExpr::Named(con_ref),
                 ..impl_.clone()

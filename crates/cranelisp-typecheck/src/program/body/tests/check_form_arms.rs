@@ -16,15 +16,11 @@ fn test_check_form_single_defn_check_body() {
     let form = TopLevel::Defn(defn);
 
     // Must register first
-    let reg_result = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let reg_result = tc.register_form(&form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, reg_result);
 
     // Now check body
-    let body_result = tc
-        .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let body_result = tc.check_form_body(&form, &mut accumulator).unwrap();
 
     // Per-form expression and dispatch facts remain in the active check state;
     // the result carrier only transports cross-form products.
@@ -54,19 +50,14 @@ fn test_check_form_single_defn_check_body() {
 #[test]
 fn test_check_form_typedef_check_body_noop() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let form = make_color_typedef();
     // Register first
-    let _ = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let _ = tc.register_form(&form, &mut accumulator).unwrap();
 
     // CheckBody on TypeDef should be a no-op
-    let result = tc
-        .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let result = tc.check_form_body(&form, &mut accumulator).unwrap();
     assert!(result.constrained_fn.is_none());
     assert!(result.mono_defns.is_empty());
 }
@@ -75,21 +66,16 @@ fn test_check_form_typedef_check_body_noop() {
 #[test]
 fn test_check_form_trait_decl_check_body_noop() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Show (show [x] String))");
     let form = TopLevel::TraitDecl(decl);
 
     // Register first
-    let _ = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let _ = tc.register_form(&form, &mut accumulator).unwrap();
 
     // CheckBody should be no-op
-    let _result = tc
-        .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let _result = tc.check_form_body(&form, &mut accumulator).unwrap();
     assert!(tc.state.method_resolutions.resolved_calls.is_empty());
     assert!(tc.state.expr_types.is_empty());
 }
@@ -121,9 +107,7 @@ fn test_check_form_expr_register_and_check() {
     let form = TopLevel::Defn(synthetic_defn);
 
     // Register pass
-    let reg_result = tc
-        .check_form(&module, &form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let reg_result = tc.register_form(&form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, reg_result);
 
     assert!(
@@ -134,9 +118,7 @@ fn test_check_form_expr_register_and_check() {
     );
 
     // CheckBody pass
-    let body_result = tc
-        .check_form(&module, &form, CheckPass::CheckBody, &mut accumulator)
-        .unwrap();
+    let body_result = tc.check_form_body(&form, &mut accumulator).unwrap();
 
     // expr_types should contain the literal's type
     assert!(
@@ -159,9 +141,7 @@ fn test_check_form_two_pass_mutual_reference() {
 
     // Pass 1: Register both defns
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::Register, &mut accumulator)
-            .unwrap();
+        let result = tc.register_form(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
@@ -181,9 +161,7 @@ fn test_check_form_two_pass_mutual_reference() {
 
     // Pass 2: Check bodies of both
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::CheckBody, &mut accumulator)
-            .unwrap();
+        let result = tc.check_form_body(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
@@ -236,9 +214,7 @@ fn test_check_form_trait_decl_before_impl() {
     // Register TraitDecl(Eq) first
     let decl = crate::traits::test_helpers::parse_trait_decl("(deftrait Eq (eq [a b] Bool))");
     let decl_form = TopLevel::TraitDecl(decl);
-    let result = tc
-        .check_form(&module, &decl_form, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let result = tc.register_form(&decl_form, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, result);
 
     // Then register TraitImpl(Eq for Int) — should succeed because decl was registered first
@@ -273,7 +249,7 @@ fn test_check_form_trait_decl_before_impl() {
         span: Span::SYNTHETIC,
     };
     let impl_form = TopLevel::TraitImpl(impl_);
-    let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator);
+    let result = tc.register_form(&impl_form, &mut accumulator);
 
     // Should succeed — no error
     assert!(result.is_ok(), "TraitImpl after TraitDecl should succeed");
@@ -342,17 +318,13 @@ fn test_check_form_multi_defn_shared_substitution() {
 
     // Pass 1: Register all
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::Register, &mut accumulator)
-            .unwrap();
+        let result = tc.register_form(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
     // Pass 2: Check all bodies
     for form in &program {
-        let result = tc
-            .check_form(&module, form, CheckPass::CheckBody, &mut accumulator)
-            .unwrap();
+        let result = tc.check_form_body(form, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
     }
 
@@ -513,13 +485,11 @@ fn test_check_form_type_error_propagates() {
     ));
 
     // Register should succeed
-    let reg = tc
-        .check_form(&module, &bad_defn, CheckPass::Register, &mut accumulator)
-        .unwrap();
+    let reg = tc.register_form(&bad_defn, &mut accumulator).unwrap();
     tc.merge_form_result(&module, &mut accumulator, reg);
 
     // CheckBody should produce an error
-    let result = tc.check_form(&module, &bad_defn, CheckPass::CheckBody, &mut accumulator);
+    let result = tc.check_form_body(&bad_defn, &mut accumulator);
     assert!(
         result.is_err(),
         "type error in body should propagate as Err"
@@ -530,7 +500,6 @@ fn test_check_form_type_error_propagates() {
 #[test]
 fn test_check_form_trait_impl_unknown_trait_error() {
     let mut tc = tc_with_prims();
-    let module = ModuleFullPath::from("test");
     let mut accumulator = ModuleCheckAccumulator::new();
 
     // TraitImpl referencing undeclared trait
@@ -546,7 +515,7 @@ fn test_check_form_trait_impl_unknown_trait_error() {
         span: Span::SYNTHETIC,
     };
     let form = TopLevel::TraitImpl(impl_);
-    let result = tc.check_form(&module, &form, CheckPass::Register, &mut accumulator);
+    let result = tc.register_form(&form, &mut accumulator);
 
     assert!(
         result.is_err(),
