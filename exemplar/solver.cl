@@ -13,12 +13,13 @@
 ;; (via grid.cl's make-grid char-at and the board formatters) is confined to
 ;; parsing/rendering.
 
-(platform stdio)
-
 ;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
-;; operators; Vec access via the curated `count`/`get`/`assoc`; the string +
-;; IO primitives imported by name. Solver logic is pure Int/Vec; only `main`
-;; and `build-output` touch strings and IO.
+;; operators; Vec access via the curated `count`/`get`/`assoc`; the string
+;; primitives imported by name. Solver logic is pure Int/Vec; only the board
+;; formatters and `build-output` touch strings. The module declares no platform
+;; and performs no IO: it is imported by the entries (`smoke.cl`, `user.cl`,
+;; `main.cl`, `tests.cl`), and only an entry may declare a platform
+;; (spec/10-io.md §10.9.1).
 ;;
 ;; S88 adoption (Stage D): heap-ADT (`Cell`) accumulators in the test grid
 ;; builders now use the curated `collections.vec/conj` (DEF-2 carve-out
@@ -26,13 +27,12 @@
 ;; `digit-string` ladder.
 (import [collections.vec [count get assoc conj]])
 (import [collections.parallel [par-map-reduce]])
-(import [primitives [char-at str-concat str-len not bind Pure]])
+(import [primitives [char-at str-concat str-len not Pure]])
 (import [text.string [digit-to-char]])
 
 (import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
                full-mask bit-set? bit-clear bit-count bit-lowest
                cell-at set-cell peers is-solved cell-determined? cell-value make-grid]])
-(import [platform.stdio [print]])
 
 ;; ── Constraint Propagation ─────────────────────────────────────────────
 
@@ -316,7 +316,7 @@
 (defn format-board [g]
   (format-board-helper g 0 ""))
 
-;; ── IO Entry Point ───────────────────────────────────────────────────
+;; ── Output ───────────────────────────────────────────────────────────
 
 ;; Build the output string for a puzzle: header, input board, solution.
 (defn build-output [puzzle-str]
@@ -334,25 +334,6 @@
       (str-concat "\n\nPuzzle:\n"
         (str-concat input-board
           (str-concat "\n\nSolution:\n" solution-str))))))
-
-;; Main: solve a hard-coded puzzle and print the input board followed by the
-;; full solution. The whole 81-cell grid solves end-to-end (exit 0, valid
-;; solution); the earlier deep-recursion segfault is resolved. For the full
-;; story (parse-form-body → make-grid → solve → ASCII + HTML render) see the
-;; headline entry in `user.cl`.
-(defn main []
-  (let [puzzle "003020600900305001001806400008102900700000008006708200002609500800203009005010300"]
-    (bind (print (str-concat "=== Sudoku Solver ===\n\nPuzzle:\n"
-                   (format-board-str puzzle)))
-      (fn [_]
-        (match (make-grid puzzle)
-          [None (print "\nError: invalid puzzle string")
-           (Some g)
-             (match (solve g)
-               [(Success solution)
-                  (print (str-concat "\nSolution:\n" (format-board solution)))
-                Unsolvable
-                  (print "\nNo solution found")])])))))
 
 ;; ── Tests ───────────────────────────────────────────────────────────────
 ;;

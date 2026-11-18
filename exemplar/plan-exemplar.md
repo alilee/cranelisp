@@ -19,7 +19,7 @@ The exemplar shows that Cranelisp handles a real multi-module program:
 
 ## Architecture
 
-One pure core serves two IO entries.
+One pure core serves three IO entries: `user.cl` and `smoke.cl` on stdio, `main.cl` on the web.
 
 | Module | Responsibility |
 |---|---|
@@ -28,6 +28,7 @@ One pure core serves two IO entries.
 | `html.cl` | Form, solution, error and not-found pages |
 | `form.cl` | URL-encoded form body → 81-character puzzle string |
 | `user.cl` | Stdio entry (the headline showcase) |
+| `smoke.cl` | Stdio entry that solves and prints a fixed puzzle |
 | `main.cl`, `serve.cl`, `web.cl` | Web entry: router, serve loop, and the `web` platform's language-side types |
 
 `user.cl` drives the same pipeline the web route uses:

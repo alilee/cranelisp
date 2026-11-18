@@ -19,7 +19,7 @@ surface. Its design, design decisions and open obligations are in
 |---|---|
 | `grid.cl`, `solver.cl`, `html.cl`, `form.cl` | The pure core; see [architecture](plan-exemplar.md#architecture) |
 | `user.cl` | Headline stdio entry: form body → grid → solve → ASCII board, plus the rendered HTML page's size |
-| `solver.cl` `main` | Quick smoke test that solves and prints a fixed puzzle |
+| `smoke.cl` | Quick smoke-test entry that solves and prints a fixed puzzle |
 | `tests.cl` | Free-standing runner; exit code = number of passing tests |
 | `main.cl`, `serve.cl`, `web.cl` | Web server entry, serve-loop wrappers, `web` platform types |
 | `platforms/web/` | The `web` platform DLL (Rust) |
@@ -34,6 +34,7 @@ which is not a default platform search directory, so set
 ```bash
 export CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib
 cargo run -- --run exemplar/user.cl       # headline showcase, exit 0
+cargo run -- --run exemplar/smoke.cl      # solves a fixed puzzle, exit 0
 cargo run -- --run exemplar/tests.cl      # exit code 41 when all pass
 CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 41
 cargo run -- --run exemplar/main.cl       # serves HTTP until killed
@@ -58,7 +59,7 @@ cargo run -- --run exemplar/main.cl       # serves HTTP until killed
 | Web server serves the form, a valid solution and a 404, under `--run` and as a linked binary | `tests/exemplar_web.rs` |
 | Concurrent `/slow` requests overlap instead of serialising (`--run`) | `tests/exemplar_web.rs::exemplar_web_server_fans_out_concurrent_requests_overlap` |
 | Linked `user.cl` output matches `--run` byte for byte | `tests/exemplar_link_run_parity.rs` |
-| Heap residue of a warm serial `solver.cl` run stays within a bound, with a zero-work control | `tests/exemplar_ownership_residue_s116.rs` |
+| Heap residue of a warm serial `smoke.cl` run stays within a bound, with a zero-work control | `tests/exemplar_ownership_residue_s116.rs` |
 
 State only what these tests show:
 
@@ -90,6 +91,9 @@ State only what these tests show:
   test to `tests.cl` and its expected count. In-language discovery is
   REPL-only, so the runner calls tests directly.
 - Every batch `main` returns `(IO _)`; the inner Int is the process exit code.
+- Only an entry (`smoke.cl`, `user.cl`, `tests.cl`, `main.cl`) declares a
+  platform; the pure-core and helper modules import `platform.<name>` from the
+  entry's declaration (`spec/10-io.md` §10.9.1).
 - A runtime panic ends the process, the web server included, so request
   handling has no fault recovery. Code that a request's input can reach must
   not panic: use total or checked operations, bound every `get` and divisor,
