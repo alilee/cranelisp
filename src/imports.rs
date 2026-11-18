@@ -7,24 +7,26 @@
 //! per-symbol binding installation directly against the session symbol
 //! tables:
 //!
-//! - resolved per-symbol exposures → terminal `NameCandidate` references in the
-//!   current module's symbol table (`Private` for imports, `Public` for exports);
-//! - module-path aliases (`(import [(target alias) …])`) →
-//!   `ModuleAliases` keyed by `<owner>.<alias>`.
+//! - resolved per-entry exposures → terminal `NameCandidate` references in the
+//!   current module's symbol table (`Private` for imports, `Public` for exports),
+//!   each bound under the entry's `local` name;
+//! - module-path routes → `ModuleAliases` keyed by `<owner>.<alias>`: import
+//!   aliases (`(import [(target alias) …])`, `Private`) and export mounts
+//!   (`(export [(target alias) …])`, `Public`), both written through
+//!   [`ModuleRoutes`] (`design/int/int.md` §6.13).
 //!
 //! typecheck reads `module_aliases` read-only and surfaces unresolved
 //! dependencies as `CheckError::Gap`; the installer is the *producer*.
 //!
-//! The resolution semantics (glob / specific / member-glob; visibility checks;
-//! ambiguity detection) mirror the deleted typecheck bodies (recovered from
-//! git `cee8152^`), now operating directly on `SessionSymbolTable` values.
+//! The resolution semantics (glob, per-entry names and member globs; visibility
+//! checks) operate directly on `SessionSymbolTable` values.
 
 use std::collections::HashSet;
 
 use cranelisp_typecheck::PreludeFallback;
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl,
-    ModuleAliasEntry, ModuleAliases, ModuleFullPath, ModuleName, Span, Symbol, Visibility,
+    CranelispError, ErrorLocation, ExportSpec, FQSymbol, ImportEntry, ImportNames, ImportSpec,
+    ModDecl, ModuleAliasEntry, ModuleAliases, ModuleFullPath, ModuleName, Span, Symbol, Visibility,
 };
 
 /// The session-side declared-export closure map (FIXME 0604 §2.2): `M → D(M)`,
@@ -119,6 +121,23 @@ impl DeclaredChildren {
             module: self.resolve(&spec.module_path),
         }
     }
+
+    /// Whether the parent declares a child named `name`.
+    fn declares(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
+/// Whether a declaration with this names list loads its module: every list
+/// except the empty one (spec §8.3.6, §8.3.7, §8.4.0). The import and export
+/// handlers, the reload edges, the static closure and test selection all read
+/// this one answer, so the two forms cannot differ (`design/int/int.md` §6.13).
+pub(crate) fn names_load(names: &ImportNames) -> bool {
+    match names {
+        ImportNames::Specific(entries) => !entries.is_empty(),
+        ImportNames::Glob => true,
+        ImportNames::None => false,
+    }
 }
 
 /// The module path of `parent`'s declared child `name`.
@@ -127,11 +146,11 @@ pub(crate) fn declared_child_path(parent: &ModuleFullPath, name: &str) -> Module
 }
 
 /// Install resolved import bindings for `specs` into `current_module`'s symbol
-/// table, plus any module-path aliases into `module_aliases`. Replaces the
-/// struck `cranelisp_typecheck::register_imports`.
+/// table, and each spec's import alias through `routes`.
 ///
 /// Each spec's source is the module it was resolved to; a missing table for
-/// that module is an error naming it.
+/// that module is an error naming it. A spec whose names list loads nothing
+/// installs only its alias.
 ///
 /// `prelude_fallback` remains part of the orchestration call shape; the shared
 /// resolver owns union with implicit-prelude candidates. This installer records
@@ -140,12 +159,15 @@ pub(crate) fn install_imports(
     symbol_tables: &SessionTables,
     current_module: &ModuleFullPath,
     module_aliases: &ModuleAliases,
-    _prelude_fallback: &PreludeFallback,
+    routes: &mut ModuleRoutes,
     specs: &[ResolvedSpec<'_, ImportSpec>],
 ) -> Result<(), CranelispError> {
     for resolved in specs {
         let spec = resolved.spec;
-        install_import_alias(current_module, module_aliases, resolved);
+        routes.install_import_alias(current_module, module_aliases, resolved)?;
+        if !names_load(&spec.names) {
+            continue;
+        }
 
         let to_add = {
             let source_guard =
@@ -186,10 +208,10 @@ pub(crate) fn install_imports(
 }
 
 /// Install re-export bindings for `specs` into `current_module`'s symbol
-/// table. Replaces the struck `cranelisp_typecheck::register_exports`.
-/// Each re-export installs `Public`-visible candidate exposures from the module
-/// its spec was resolved to; a missing table for that module is an error
-/// naming it.
+/// table. Each re-export installs `Public`-visible candidate exposures from the
+/// module its spec was resolved to; a missing table for that module is an
+/// error naming it. A spec whose names list loads nothing installs nothing
+/// here; its mount, if any, is [`ModuleRoutes::install_export_mount`]'s.
 ///
 /// `export` populates the inner scope identically to `import` (§8.4.0), so it
 /// runs through the same candidate-install path as `import`.
@@ -210,6 +232,9 @@ pub(crate) fn install_exports(
 ) -> Result<(), CranelispError> {
     for resolved in specs {
         let spec = resolved.spec;
+        if !names_load(&spec.names) {
+            continue;
+        }
         let to_add = {
             let source_guard =
                 symbol_tables
@@ -397,19 +422,19 @@ pub(crate) fn check_exposed_candidate_closure(
 }
 
 /// Establish a module's session-env companions (prelude-fallback bit, import
-/// `as`-aliases, submodule short-name aliases) from its **already-installed**
-/// symbol table's structural fields (S102 CS-D3a; `design/int/s102-defect-wave.md`
-/// §6.2). These companions are session-side and UNSERIALIZED, so a module that
-/// enters the session by any route OTHER than the fresh-typecheck path (cache
-/// restore, blank `/mod` creation) would otherwise have none of them — its next
-/// `/mod`-namespace turn typechecks with no prelude fallback (bare `+`/`:Int`
-/// unresolved) and no aliases.
+/// aliases, export mounts, submodule short-name aliases) from its
+/// **already-installed** symbol table's structural fields (S102 CS-D3a;
+/// `design/int/s102-defect-wave.md` §6.2). These companions are session-side and
+/// UNSERIALIZED, so a module that enters the session by any route OTHER than the
+/// fresh-typecheck path (cache restore, blank `/mod` creation) would otherwise
+/// have none of them — its next `/mod`-namespace turn typechecks with no prelude
+/// fallback (bare `+`/`:Int` unresolved) and no aliases.
 ///
 /// **Invariant (Principle 18/20):** the companions are computed at INSTALL time,
 /// uniformly across every route, from the table's OWN structural representation
 /// — never as a side effect of one route's Pass 0. This is the structural mirror
 /// of the fresh path's `inject_prelude_if_needed` (`!sexps_reference_prelude`),
-/// `install_imports` (alias registration), and `register_submodule_alias`.
+/// the Pass-0 alias and mount writers, and `register_submodule_alias`.
 ///
 /// Idempotent: re-running for an already-established module recomputes the same
 /// bit + aliases (DashMap insert overwrites with the same values).
@@ -418,9 +443,9 @@ pub(crate) fn install_module_session_env(
     module: &ModuleFullPath,
     module_aliases: &ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
-) {
+) -> Result<(), CranelispError> {
     let Some(table) = symbol_tables.get(module) else {
-        return;
+        return Ok(());
     };
 
     // (a) Prelude-fallback bit. ON for every non-prelude module that does not
@@ -433,27 +458,37 @@ pub(crate) fn install_module_session_env(
         prelude_fallback.insert(module.clone(), true);
     }
 
-    // (b)+(c) The module-path aliases its declarations make (the per-symbol
+    // (b)+(c) The module-path routes its declarations make (the per-symbol
     //     Import bindings themselves were serialized in the restored table;
     //     only the session-side alias map needs re-populating).
-    install_declared_aliases(module, module_aliases, &table.imports, &table.submodules);
+    install_declared_aliases(
+        module,
+        module_aliases,
+        &table.imports,
+        &table.exports,
+        &table.submodules,
+    )
 }
 
-/// Install the module-path aliases `module`'s declarations make: each import
-/// `as`-alias (`(import [(target alias) …])`), targeting the module the spec
-/// resolves to among `submodules`, and each `(mod util)` short name, targeting
-/// `<module>.util`. Every entry is private and keyed by `module`, so an alias
-/// serves only `module`'s own qualified references. The same aliases Pass 0
-/// writes through `install_imports` and `register_submodule_alias`.
+/// Install the module-path routes `module`'s declarations make: each import
+/// alias, each export mount, each targeting the module its spec resolves to
+/// among `submodules`, and each `(mod util)` short name, targeting
+/// `<module>.util`. Every entry is keyed by `module`. This is the restore route
+/// of the writers Pass 0 calls, so it raises the same refusals.
 pub(crate) fn install_declared_aliases(
     module: &ModuleFullPath,
     module_aliases: &ModuleAliases,
     imports: &[ImportSpec],
+    exports: &[ExportSpec],
     submodules: &[ModDecl],
-) {
+) -> Result<(), CranelispError> {
     let declared = DeclaredChildren::of(module, submodules);
+    let mut routes = ModuleRoutes::declared(declared.clone(), &[], &[]);
     for spec in imports {
-        install_import_alias(module, module_aliases, &declared.resolve_import(spec));
+        routes.install_import_alias(module, module_aliases, &declared.resolve_import(spec))?;
+    }
+    for spec in exports {
+        routes.install_export_mount(module, module_aliases, &declared.resolve_export(spec))?;
     }
     for decl in submodules {
         let sub_path = declared_child_path(module, decl.name.as_ref());
@@ -462,6 +497,7 @@ pub(crate) fn install_declared_aliases(
             ModuleAliasEntry::new(sub_path, Visibility::Private, decl.span),
         );
     }
+    Ok(())
 }
 
 /// Whether a module with these structural declarations gets the prelude
@@ -479,32 +515,197 @@ pub(crate) fn gets_prelude_fallback(
         && !exports.iter().any(|s| is_prelude(&s.module_path))
 }
 
-/// Register a resolved spec's module-path alias (§8.3.4, §8.3.6), if it has
-/// one, targeting the module the spec names. This is the one import-alias
-/// writer, and it needs no loaded target: a name-less alias-only import
-/// registers its alias without loading anything.
-pub(crate) fn install_import_alias(
-    current_module: &ModuleFullPath,
-    module_aliases: &ModuleAliases,
-    resolved: &ResolvedSpec<'_, ImportSpec>,
-) {
-    let spec = resolved.spec;
-    if let Some(alias) = &spec.alias {
+/// Which declaration family a module-path route came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteFamily {
+    /// `(import [(m alias) …])`: private to the declaring module (§8.3.4).
+    ImportAlias,
+    /// `(export [(m alias) …])`: part of the declaring module's public
+    /// namespace (§8.4.4).
+    Mount,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleRoute {
+    alias: ModuleName,
+    target: ModuleFullPath,
+    family: RouteFamily,
+}
+
+/// The module-path routes one module has declared under its own alias names,
+/// each with the module its spec resolves to (`design/int/int.md` §6.13; alias
+/// contract §5.1).
+///
+/// The import-alias and mount writers are its two methods, shared by the fresh
+/// route (Pass 0) and the restore route ([`install_declared_aliases`]). Import
+/// aliases and mounts of one module share the key
+/// `module_alias_key(<module>, <alias>)`, and the lookup holds one entry per
+/// key, so each writer refuses a spelling the module's declarations already
+/// route to a different module, whichever family declared it and whichever
+/// came first. Each writer then records its own route, so a later declaration
+/// of the same form sees it. Targets are compared as resolved modules, never
+/// as spellings.
+pub(crate) struct ModuleRoutes {
+    children: DeclaredChildren,
+    routes: Vec<ModuleRoute>,
+}
+
+impl ModuleRoutes {
+    /// The routes `imports` and `exports` already declare, resolved against
+    /// `children`: the module's recorded declarations from earlier forms and
+    /// turns.
+    pub(crate) fn declared(
+        children: DeclaredChildren,
+        imports: &[ImportSpec],
+        exports: &[ExportSpec],
+    ) -> Self {
+        let import_routes = imports.iter().filter_map(|spec| {
+            let alias = spec.alias.clone()?;
+            Some(ModuleRoute {
+                alias,
+                target: children.resolve(&spec.module_path),
+                family: RouteFamily::ImportAlias,
+            })
+        });
+        let mount_routes = exports.iter().filter_map(|spec| {
+            let alias = spec.alias.clone()?;
+            Some(ModuleRoute {
+                alias,
+                target: children.resolve(&spec.module_path),
+                family: RouteFamily::Mount,
+            })
+        });
+        let routes = import_routes.chain(mount_routes).collect();
+        ModuleRoutes { children, routes }
+    }
+
+    /// The routes `module`'s live table records, for a Pass-0 handler.
+    pub(crate) fn recorded(
+        symbol_tables: &SessionTables,
+        module: &ModuleFullPath,
+        children: &DeclaredChildren,
+    ) -> Self {
+        match symbol_tables.get(module) {
+            Some(table) => Self::declared(children.clone(), &table.imports, &table.exports),
+            None => Self::declared(children.clone(), &[], &[]),
+        }
+    }
+
+    /// Register a resolved import spec's module-path alias (§8.3.4, §8.3.6),
+    /// if it has one, targeting the module the spec names. It needs no loaded
+    /// target: a name-less alias-only import registers its alias without
+    /// loading anything.
+    ///
+    /// Refuses an alias the module already routes to a different module, by
+    /// an import alias (§8.6.4) or a mount (§8.4.4). An alias the module
+    /// mounts to the same module stays the mount's `Public` entry.
+    pub(crate) fn install_import_alias(
+        &mut self,
+        current_module: &ModuleFullPath,
+        module_aliases: &ModuleAliases,
+        resolved: &ResolvedSpec<'_, ImportSpec>,
+    ) -> Result<(), CranelispError> {
+        let spec = resolved.spec;
+        let Some(alias) = &spec.alias else {
+            return Ok(());
+        };
+        self.refuse_rerouted(alias, &resolved.module, RouteFamily::ImportAlias, spec.span)?;
+        let mounted = self
+            .routes
+            .iter()
+            .any(|route| route.alias == *alias && route.family == RouteFamily::Mount);
+        if !mounted {
+            module_aliases.insert(
+                cranelisp_types::module_alias_key(current_module, alias.as_ref()),
+                ModuleAliasEntry::new(resolved.module.clone(), Visibility::Private, spec.span),
+            );
+        }
+        self.record(alias, &resolved.module, RouteFamily::ImportAlias);
+        Ok(())
+    }
+
+    /// Install a resolved export spec's mount (§8.4.4), if it has one: a
+    /// `Public` alias entry targeting the module the spec names.
+    ///
+    /// Refuses a mount alias equal to a child the module declares, and one the
+    /// module already routes to a different module, by a mount or an import
+    /// alias (§8.6.4). A repeated mount to the same module is idempotent, and
+    /// an import alias to the same module becomes this one `Public` entry.
+    pub(crate) fn install_export_mount(
+        &mut self,
+        current_module: &ModuleFullPath,
+        module_aliases: &ModuleAliases,
+        resolved: &ResolvedSpec<'_, ExportSpec>,
+    ) -> Result<(), CranelispError> {
+        let spec = resolved.spec;
+        let Some(alias) = &spec.alias else {
+            return Ok(());
+        };
+        if self.children.declares(alias.as_ref()) {
+            return Err(route_refusal(
+                format!(
+                    "export: mount alias `{alias}` names the submodule `{}` that module                      '{current_module}' declares; a mount cannot reuse a child's name                      (spec §8.4.4, §8.6.4)",
+                    declared_child_path(current_module, alias.as_ref())
+                ),
+                spec.span,
+            ));
+        }
+        self.refuse_rerouted(alias, &resolved.module, RouteFamily::Mount, spec.span)?;
         module_aliases.insert(
-            alias_key(current_module, alias.as_ref()),
-            ModuleAliasEntry::new(resolved.module.clone(), Visibility::Private, spec.span),
+            cranelisp_types::module_alias_key(current_module, alias.as_ref()),
+            ModuleAliasEntry::new(resolved.module.clone(), Visibility::Public, spec.span),
         );
+        self.record(alias, &resolved.module, RouteFamily::Mount);
+        Ok(())
+    }
+
+    fn refuse_rerouted(
+        &self,
+        alias: &ModuleName,
+        target: &ModuleFullPath,
+        family: RouteFamily,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        let Some(existing) = self
+            .routes
+            .iter()
+            .find(|route| route.alias == *alias && route.target != *target)
+        else {
+            return Ok(());
+        };
+        let declared_as = |family: RouteFamily| match family {
+            RouteFamily::ImportAlias => "an import alias",
+            RouteFamily::Mount => "an export mount",
+        };
+        let section = match (existing.family, family) {
+            (RouteFamily::ImportAlias, RouteFamily::ImportAlias) => "spec §8.6.4",
+            _ => "spec §8.4.4, §8.6.4",
+        };
+        Err(route_refusal(
+            format!(
+                "`{alias}` is already {} for module '{}'; {} cannot also route it to \
+                 module '{target}' ({section})",
+                declared_as(existing.family),
+                existing.target,
+                declared_as(family),
+            ),
+            span,
+        ))
+    }
+
+    fn record(&mut self, alias: &ModuleName, target: &ModuleFullPath, family: RouteFamily) {
+        self.routes.push(ModuleRoute {
+            alias: alias.clone(),
+            target: target.clone(),
+            family,
+        });
     }
 }
 
-/// `<owner>.<alias>` key for the session-level alias table; owner is the
-/// declaring module.
-fn alias_key(current_module: &ModuleFullPath, alias: &str) -> ModuleFullPath {
-    let cur: &str = current_module.as_ref();
-    if cur.is_empty() {
-        ModuleFullPath::from(alias)
-    } else {
-        ModuleFullPath::from(format!("{cur}.{alias}"))
+fn route_refusal(message: String, span: Span) -> CranelispError {
+    CranelispError::ModuleError {
+        message,
+        location: ErrorLocation::from_span_file(span, None),
     }
 }
 
@@ -526,21 +727,21 @@ fn collect_bindings(
     visibility: Visibility,
 ) -> Result<Vec<CandidateExposure>, CranelispError> {
     match names {
-        ImportNames::Glob => Ok(collect_glob(source_table, module_path, visibility)),
-        ImportNames::Specific(names) => collect_specific(
-            source_table,
-            current_module,
-            names,
-            module_path,
-            span,
-            visibility,
-        ),
-        ImportNames::MemberGlob(parent) => Ok(collect_member_glob(
-            source_table,
-            parent,
-            module_path,
-            visibility,
-        )),
+        ImportNames::Glob => Ok(collect_glob(source_table, visibility)),
+        ImportNames::Specific(entries) => {
+            let mut exposures = Vec::new();
+            for entry in entries {
+                exposures.extend(collect_entry(
+                    source_table,
+                    current_module,
+                    module_path,
+                    entry,
+                    span,
+                    visibility,
+                )?);
+            }
+            Ok(exposures)
+        }
         ImportNames::None => Ok(Vec::new()),
     }
 }
@@ -548,7 +749,6 @@ fn collect_bindings(
 /// All public symbols from the source module → Import bindings.
 fn collect_glob(
     source_table: &SessionSymbolTable,
-    _module_path: &ModuleFullPath,
     visibility: Visibility,
 ) -> Vec<CandidateExposure> {
     source_table
@@ -561,53 +761,90 @@ fn collect_glob(
         .collect()
 }
 
-/// Specific named symbols — visibility + existence checks (spec §8.3).
-fn collect_specific(
+/// The exposures of one names-list entry, each bound under the name the
+/// frontend derived for it (`design/int/int.md` §6.13). The written `source`
+/// is only looked up, never bound.
+fn collect_entry(
     source_table: &SessionSymbolTable,
     current_module: &ModuleFullPath,
-    names: &[Symbol],
     module_path: &ModuleFullPath,
+    entry: &ImportEntry,
     span: Span,
     visibility: Visibility,
 ) -> Result<Vec<CandidateExposure>, CranelispError> {
-    let mut result = Vec::new();
-    for name in names {
-        let candidates = source_table.name_candidates(name);
-        if candidates.is_empty() {
-            return Err(CranelispError::TypeError {
-                message: format!("'{name}' not found in module '{module_path}'"),
-                location: ErrorLocation::from_span(span),
-            });
+    match entry {
+        ImportEntry::Name { source, local } => collect_name(
+            source_table,
+            current_module,
+            module_path,
+            NamedEntry { source, local },
+            span,
+            visibility,
+        ),
+        ImportEntry::MemberGlob(parent) => {
+            Ok(collect_member_glob(source_table, parent, visibility))
         }
-        let accessible: Vec<_> = candidates
-            .into_iter()
-            .filter(|candidate| {
-                candidate.visibility == Visibility::Public
-                    || is_in_subtree(current_module, module_path)
-            })
-            .collect();
-        if accessible.is_empty() {
-            return Err(CranelispError::TypeError {
-                message: format!("'{name}' is not public in '{module_path}'"),
-                location: ErrorLocation::from_span(span),
-            });
-        }
-        for candidate in accessible {
-            result.push(CandidateExposure {
-                local_name: name.clone(),
-                source: candidate.source,
-                visibility,
-            });
-        }
+        other => Err(CranelispError::ModuleError {
+            message: format!(
+                "names-list entry {other:?} from module '{module_path}' has no installer"
+            ),
+            location: ErrorLocation::from_span_file(span, None),
+        }),
     }
-    Ok(result)
 }
 
-/// All constructors of a type or all methods of a trait (member glob).
+/// A `Name` entry's two symbols: the name looked up in the source module and
+/// the name it is bound under.
+struct NamedEntry<'e> {
+    source: &'e Symbol,
+    local: &'e Symbol,
+}
+
+/// One named entry — visibility + existence checks (spec §8.3), bound under
+/// its `local` name.
+fn collect_name(
+    source_table: &SessionSymbolTable,
+    current_module: &ModuleFullPath,
+    module_path: &ModuleFullPath,
+    entry: NamedEntry<'_>,
+    span: Span,
+    visibility: Visibility,
+) -> Result<Vec<CandidateExposure>, CranelispError> {
+    let name = entry.source;
+    let candidates = source_table.name_candidates(name);
+    if candidates.is_empty() {
+        return Err(CranelispError::TypeError {
+            message: format!("'{name}' not found in module '{module_path}'"),
+            location: ErrorLocation::from_span(span),
+        });
+    }
+    let accessible: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.visibility == Visibility::Public || is_in_subtree(current_module, module_path)
+        })
+        .collect();
+    if accessible.is_empty() {
+        return Err(CranelispError::TypeError {
+            message: format!("'{name}' is not public in '{module_path}'"),
+            location: ErrorLocation::from_span(span),
+        });
+    }
+    Ok(accessible
+        .into_iter()
+        .map(|candidate| CandidateExposure {
+            local_name: entry.local.clone(),
+            source: candidate.source,
+            visibility,
+        })
+        .collect())
+}
+
+/// All constructors of a type or all methods of a trait (member glob), each
+/// bound under its bare member name.
 fn collect_member_glob(
     source_table: &SessionSymbolTable,
     parent: &Symbol,
-    _module_path: &ModuleFullPath,
     visibility: Visibility,
 ) -> Vec<CandidateExposure> {
     let prefix = format!("{}.", parent.as_ref());
@@ -660,6 +897,15 @@ fn is_in_subtree(module: &ModuleFullPath, ancestor: &ModuleFullPath) -> bool {
         return true;
     }
     m == a || m.starts_with(&format!("{a}."))
+}
+
+/// A plain names-list entry: `name`, bound under itself.
+#[cfg(test)]
+pub(crate) fn plain_entry(name: &str) -> ImportEntry {
+    ImportEntry::Name {
+        source: Symbol::from(name),
+        local: Symbol::from(name),
+    }
 }
 
 #[cfg(test)]

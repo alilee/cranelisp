@@ -1099,6 +1099,7 @@ fn test_impl_resolution_chain_follows_not_universe_scans() {
             decoy_path.clone(),
             vec![Symbol::from("ch-op")],
             Visibility::Public,
+            Symbol::from("ChainTrait.Int"),
         );
         tbl.stage_trait_impl_shell(&decoy).unwrap().commit();
     }

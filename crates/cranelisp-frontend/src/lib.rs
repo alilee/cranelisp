@@ -279,8 +279,8 @@
 //!    because frontend no longer owns the conflicting capability.
 //! 3. **`super` resolved at frontend.** Per
 //!    `design/arch/super-import-arbitration.md`:
-//!    `ImportSpec.module_path` NEVER contains the literal `"super"`
-//!    past [`extract_module_declarations`]. All `super`-resolution
+//!    no `ImportSpec` or `ExportSpec` module path contains the literal
+//!    `"super"` past [`extract_module_declarations`]. All `super`-resolution
 //!    happens at parse time against the parsing module's own path.
 //! 4. **Synthetic spans are unique.** [`next_synthetic_span`] issues
 //!    monotonically increasing spans for compiler-generated forms. No

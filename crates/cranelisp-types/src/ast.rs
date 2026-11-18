@@ -695,6 +695,30 @@ pub struct TraitImpl {
     pub span: Span,
 }
 
+impl TraitImpl {
+    /// The label of this form's `impl` head as written: the one derivation of
+    /// [`WrittenTraitImpl::authored_label`](crate::WrittenTraitImpl::authored_label).
+    ///
+    /// It is slot 1's trait reference, `.`, then the target's head reference,
+    /// each with its written qualifier. When slot 1 echoes a higher-kinded
+    /// head, the type reference is the pairing's constructor argument, not the
+    /// pairing head. A target with no head reference contributes `_`.
+    ///
+    /// The form as built and the form after typecheck's higher-kinded rewrite
+    /// (whose target is the bare constructor) yield the same label. The label
+    /// is opaque: compare it for equality, never split, resolve or display it.
+    pub fn authored_label(&self) -> Symbol {
+        let pairing_constructor = match (&self.head_con_var, &self.target) {
+            (Some(_), TypeExpr::Applied(_, args)) => args.first().and_then(TypeExpr::head_ref),
+            _ => None,
+        };
+        match pairing_constructor.or_else(|| self.target.head_ref()) {
+            Some(head) => Symbol::from(format!("{}.{head}", self.trait_name)),
+            None => Symbol::from(format!("{}._", self.trait_name)),
+        }
+    }
+}
+
 /// Top-level form: the unit of compilation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TopLevel {
@@ -877,3 +901,6 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

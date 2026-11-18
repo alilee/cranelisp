@@ -196,6 +196,7 @@ fn resolved_target_cross_module_trait_method_records_impl_writer_module() {
         cranelisp_types::ModuleFullPath::from("writermod"),
         vec![Symbol::from("test-op")],
         Visibility::Public,
+        Symbol::from("TestTrait.Int"),
     );
     tc.symbol_table_mut()
         .stage_trait_impl_shell(&record)
@@ -749,6 +750,7 @@ fn trait_home_with_shells(receivers: &[cranelisp_types::FQTypeName]) -> TestFixt
             cranelisp_types::ModuleFullPath::from("writermod"),
             vec![Symbol::from("test-op")],
             Visibility::Public,
+            Symbol::from(format!("TestTrait.{}", receiver.name)),
         );
         tc.symbol_table_mut()
             .stage_trait_impl_shell(&record)

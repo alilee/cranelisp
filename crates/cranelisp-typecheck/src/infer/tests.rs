@@ -308,6 +308,7 @@ fn same_named_receiver_world() -> TestFixture {
         ModuleFullPath::from("a"),
         vec![Symbol::from("test-op")],
         Visibility::Public,
+        Symbol::from("TestTrait.U"),
     );
     fixture
         .symbol_table_mut()

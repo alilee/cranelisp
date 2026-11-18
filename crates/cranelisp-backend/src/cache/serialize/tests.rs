@@ -1,7 +1,8 @@
 use super::*;
 use cranelisp_types::{
-    Binding, CallableSlot, Defn, DefnVariant, Expr, FQSymbol, ImportSpec, Life, ModuleFullPath,
-    Realization, SchedulingClass, Scheme, Span as TSpan, Symbol, Type, Visibility,
+    Binding, CallableSlot, Defn, DefnVariant, ExportSpec, Expr, FQSymbol, FQTraitName, FQTypeName,
+    ImportEntry, ImportSpec, Life, ModuleFullPath, ModuleName, Realization, SchedulingClass,
+    Scheme, Span as TSpan, Symbol, TraitName, Type, TypeName, Visibility, WrittenTraitImpl,
 };
 use std::collections::HashMap;
 
@@ -81,7 +82,7 @@ fn result_context_instances_round_trip_complete_links() {
     // Bump tripwire: the round trip below is version-agnostic, so this literal
     // exists only to make a `CACHE_SCHEMA_VERSION` change re-read this cell.
     // Advance it once the version-log entry for the new epoch is written.
-    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 32);
+    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 33);
     let table = result_context_instances();
     let bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = deserialise_meta(
@@ -560,12 +561,52 @@ fn cache_round_trip_multi_field_symbol_table() {
         .expect("expose imported fixture");
 
     // Populate structural-decl fields (Wave 2a additions per Decision 33).
+    // Every persisted import-entry shape (D3): a plain name, a rename, a
+    // dotted member, and a member glob in one list.
+    let entries = cranelisp_types::ImportNames::Specific(vec![
+        ImportEntry::Name {
+            source: Symbol::from("dep-val"),
+            local: Symbol::from("dep-val"),
+        },
+        ImportEntry::Name {
+            source: Symbol::from("dep-fn"),
+            local: Symbol::from("renamed-fn"),
+        },
+        ImportEntry::Name {
+            source: Symbol::from("Shape.Circle"),
+            local: Symbol::from("Circle"),
+        },
+        ImportEntry::MemberGlob(Symbol::from("Colour")),
+    ]);
     table.imports.push(ImportSpec {
         module_path: ModuleFullPath::from("other"),
         alias: None,
-        names: cranelisp_types::ImportNames::Specific(vec![Symbol::from("dep-val")]),
+        names: entries.clone(),
         span: TSpan::new(0, 30),
     });
+    // An export with and without a mount alias (D3).
+    table.exports.push(ExportSpec {
+        module_path: ModuleFullPath::from("other"),
+        alias: Some(ModuleName::from("o")),
+        names: entries.clone(),
+        span: TSpan::new(31, 60),
+    });
+    table.exports.push(ExportSpec {
+        module_path: ModuleFullPath::from("third"),
+        alias: None,
+        names: cranelisp_types::ImportNames::Glob,
+        span: TSpan::new(61, 80),
+    });
+    // A written impl record carries its authored label (D10).
+    let written = WrittenTraitImpl::new(
+        FQTraitName::new(ModuleFullPath::from("traits"), TraitName::from("Display")),
+        FQTypeName::new(ModuleFullPath::from("types"), TypeName::from("Thing")),
+        ModuleFullPath::from("multi"),
+        vec![Symbol::from("show")],
+        Visibility::Public,
+        Symbol::from("t/Display.ty/Thing"),
+    );
+    table.written_trait_impls.push(written.clone());
 
     // Round-trip via the authoritative API.
     write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
@@ -582,6 +623,19 @@ fn cache_round_trip_multi_field_symbol_table() {
 
     // The first ImportSpec round-trips on its module + names shape.
     assert_eq!(loaded.imports[0].module_path, table.imports[0].module_path);
+    assert_eq!(loaded.imports[0].names, entries);
+    let export_shape = |spec: &ExportSpec| {
+        (
+            spec.module_path.clone(),
+            spec.alias.clone(),
+            spec.names.clone(),
+        )
+    };
+    assert_eq!(
+        loaded.exports.iter().map(export_shape).collect::<Vec<_>>(),
+        table.exports.iter().map(export_shape).collect::<Vec<_>>(),
+    );
+    assert_eq!(loaded.written_trait_impls, vec![written]);
 
     // Round-trip is idempotent: re-writing produces the same bytes.
     let bytes_a = serialise_meta(&loaded, super::super::CACHE_SCHEMA_VERSION).unwrap();

@@ -15,8 +15,8 @@ use std::io::Write;
 use std::path::Path;
 
 use cranelisp_types::{
-    Binding, CallableOrigin, Decl, ExportSpec, FQSymbol, ImportNames, ImportSpec, ModDecl,
-    ModuleFullPath, PlatformSpec, Sexp, Span,
+    Binding, CallableOrigin, Decl, ExportSpec, FQSymbol, ImportEntry, ImportNames, ImportSpec,
+    ModDecl, ModuleFullPath, ModuleName, PlatformSpec, Sexp, Span,
 };
 
 use dashmap::DashMap;
@@ -178,11 +178,35 @@ pub(crate) fn generate_module_source(
 /// form was recorded for them (`design/int/session-persistence.md` §2.4.3).
 /// Writing the module without them would lose their source at the next start.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnrenderedEntries(Vec<cranelisp_types::Symbol>);
+pub(crate) struct UnrenderedEntries(Vec<Unrendered>);
+
+/// One entry a regeneration could not render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unrendered {
+    /// A named definition of the module.
+    Named(cranelisp_types::Symbol),
+    /// An implementation written in the module, named by its settled pair.
+    Impl {
+        trait_name: cranelisp_types::FQTraitName,
+        impl_type: cranelisp_types::FQTypeName,
+    },
+}
+
+impl std::fmt::Display for Unrendered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unrendered::Named(name) => write!(f, "`{name}`"),
+            Unrendered::Impl {
+                trait_name,
+                impl_type,
+            } => write!(f, "`impl {trait_name} for {impl_type}`"),
+        }
+    }
+}
 
 impl std::fmt::Display for UnrenderedEntries {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names: Vec<String> = self.0.iter().map(|name| format!("`{name}`")).collect();
+        let names: Vec<String> = self.0.iter().map(Unrendered::to_string).collect();
         f.write_str(&names.join(", "))
     }
 }
@@ -199,7 +223,7 @@ struct SectionLedger {
     /// authored at. A REPL declaration's record holds text only, so its form
     /// has no known span (`None`) and matches any form with the same text.
     emitted: HashMap<String, Vec<Option<Span>>>,
-    unrendered: Vec<cranelisp_types::Symbol>,
+    unrendered: Vec<Unrendered>,
 }
 
 impl SectionLedger {
@@ -508,86 +532,99 @@ fn generate_platforms(specs: &[PlatformSpec]) -> String {
 
 /// Merge and generate a single `(import [...])` form.
 /// Filters out the implicit prelude import.
+///
+/// Specs for one module under one alias merge: their entries concatenate with
+/// equal entries removed, `[*]` absorbs, and a name-less spec adds nothing to
+/// a list (`design/int/int.md` §6.13).
 fn generate_imports(specs: &[ImportSpec]) -> String {
-    // Filter out implicit prelude import
-    let filtered: Vec<&ImportSpec> = specs
-        .iter()
-        .filter(|s| {
-            !(s.module_path == "prelude" && s.names == ImportNames::Glob && s.alias.is_none())
-        })
-        .collect();
-
-    if filtered.is_empty() {
-        return String::new();
-    }
-
-    // Group by module_path, merging names
-    let mut groups: Vec<(String, Option<String>, ImportNames)> = Vec::new();
-    for spec in &filtered {
-        let mod_path = spec.module_path.to_string();
-        let alias = spec.alias.as_ref().map(|a| a.to_string());
-        if let Some(existing) = groups.iter_mut().find(|(path, _, _)| *path == mod_path) {
-            // Merge: Glob wins over Specific
-            match (&existing.2, &spec.names) {
-                (ImportNames::Glob, _) => {}
-                (_, ImportNames::Glob) => existing.2 = ImportNames::Glob,
-                (ImportNames::Specific(existing_names), ImportNames::Specific(new_names)) => {
-                    let mut merged = existing_names.clone();
-                    for name in new_names {
-                        if !merged.contains(name) {
-                            merged.push(name.clone());
-                        }
-                    }
-                    existing.2 = ImportNames::Specific(merged);
-                }
-                _ => {}
-            }
-        } else {
-            groups.push((mod_path, alias, spec.names.clone()));
+    let mut groups: Vec<(&ModuleFullPath, Option<&ModuleName>, ImportNames)> = Vec::new();
+    let user_authored = specs.iter().filter(|s| {
+        !(s.module_path == "prelude" && s.names == ImportNames::Glob && s.alias.is_none())
+    });
+    for spec in user_authored {
+        let alias = spec.alias.as_ref();
+        match groups
+            .iter_mut()
+            .find(|(path, group_alias, _)| **path == spec.module_path && *group_alias == alias)
+        {
+            Some((_, _, names)) => merge_names(names, &spec.names),
+            None => groups.push((&spec.module_path, alias, spec.names.clone())),
         }
     }
-
-    let mut parts = Vec::new();
-    for (module_path, alias, names) in &groups {
-        let mod_part = match alias {
-            Some(a) => format!("({} {})", module_path, a),
-            None => module_path.clone(),
-        };
-        let names_part = match names {
-            ImportNames::Glob => "[*]".to_string(),
-            ImportNames::Specific(names) => {
-                let name_strs: Vec<&str> = names.iter().map(|n| n.as_ref()).collect();
-                format!("[{}]", name_strs.join(" "))
-            }
-            ImportNames::MemberGlob(parent) => format!("[{}.*]", parent),
-            ImportNames::None => "[]".to_string(),
-        };
-        parts.push(format!("{} {}", mod_part, names_part));
+    if groups.is_empty() {
+        return String::new();
     }
-
+    let parts: Vec<String> = groups
+        .iter()
+        .map(|(module_path, alias, names)| render_pair(module_path, *alias, names))
+        .collect();
     format!("(import [{}])", parts.join(" "))
+}
+
+/// Merge `incoming` into `merged`, the names list of an earlier spec for the
+/// same module and alias.
+fn merge_names(merged: &mut ImportNames, incoming: &ImportNames) {
+    match (&mut *merged, incoming) {
+        (ImportNames::Glob, _) | (_, ImportNames::None) => {}
+        (_, ImportNames::Glob) | (ImportNames::None, _) => *merged = incoming.clone(),
+        (ImportNames::Specific(entries), ImportNames::Specific(new_entries)) => {
+            for entry in new_entries {
+                if !entries.contains(entry) {
+                    entries.push(entry.clone());
+                }
+            }
+        }
+    }
 }
 
 fn generate_exports(specs: &[ExportSpec]) -> String {
     if specs.is_empty() {
         return String::new();
     }
-
-    let mut parts = Vec::new();
-    for spec in specs {
-        let names_part = match &spec.names {
-            ImportNames::Glob => "[*]".to_string(),
-            ImportNames::Specific(names) => {
-                let name_strs: Vec<&str> = names.iter().map(|n| n.as_ref()).collect();
-                format!("[{}]", name_strs.join(" "))
-            }
-            ImportNames::MemberGlob(parent) => format!("[{}.*]", parent),
-            ImportNames::None => "[]".to_string(),
-        };
-        parts.push(format!("{} {}", spec.module_path, names_part));
-    }
-
+    let parts: Vec<String> = specs
+        .iter()
+        .map(|spec| render_pair(&spec.module_path, spec.alias.as_ref(), &spec.names))
+        .collect();
     format!("(export [{}])", parts.join(" "))
+}
+
+/// One `module-spec names-list` pair: `m` or `(m alias)`, then the list.
+fn render_pair(
+    module_path: &ModuleFullPath,
+    alias: Option<&ModuleName>,
+    names: &ImportNames,
+) -> String {
+    let module_spec = match alias {
+        Some(alias) => format!("({module_path} {alias})"),
+        None => module_path.to_string(),
+    };
+    let names_list = match names {
+        ImportNames::Glob => "[*]".to_string(),
+        ImportNames::Specific(entries) => {
+            let rendered: Vec<String> = entries.iter().map(render_entry).collect();
+            format!("[{}]", rendered.join(" "))
+        }
+        ImportNames::None => "[]".to_string(),
+    };
+    format!("{module_spec} {names_list}")
+}
+
+/// A names-list entry as written: a `Name` whose `local` is the member its
+/// `source` would bind renders as `source` (`Shade.Blue`, `Some`), any other
+/// as the rename `(source local)`, and a member glob as `Parent.*`.
+fn render_entry(entry: &ImportEntry) -> String {
+    match entry {
+        ImportEntry::Name { source, local }
+            if local.as_ref() == cranelisp_types::bare_member_name(source.as_ref()) =>
+        {
+            source.to_string()
+        }
+        ImportEntry::Name { source, local } => format!("({source} {local})"),
+        ImportEntry::MemberGlob(parent) => format!("{parent}.*"),
+        other => unreachable!(
+            "invariant: the frontend produces only `Name` and `MemberGlob` entries, got {other:?}"
+        ),
+    }
 }
 
 /// The (sexp, source) pair off a symbol's introspection record. The verbatim
@@ -774,7 +811,7 @@ fn generate_traits(
             let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
             match emit_decl_or_source(sexp, source) {
                 Some(decl) => items.push((name.to_string(), decl)),
-                None => ledger.unrendered.push(name.clone()),
+                None => ledger.unrendered.push(Unrendered::Named(name.clone())),
             }
         }
     }
@@ -801,7 +838,7 @@ fn generate_types(
             let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
             match emit_decl_or_source(sexp, source) {
                 Some(decl) => items.push((name.to_string(), decl)),
-                None => ledger.unrendered.push(name.clone()),
+                None => ledger.unrendered.push(Unrendered::Named(name.clone())),
             }
         }
     }
@@ -817,132 +854,52 @@ fn generate_types(
 /// survived (inconsistent-resurrection, the S109-4/0573 class). The fix mirrors
 /// `generate_traits`/`generate_types` exactly (ONE reader per kind, Principle 7).
 ///
-/// **Enumeration (§12.3, completeness-binding).** "The impls written in module M"
-/// is NOT "the shells in M's table". Under Decision 45 *as amended* the impl
-/// `TraitImpl` **shell** lives at the TRAIT's defining module carrying
-/// `impl_module = <writer>` (the writer back-pointer); the shell's mangled method
-/// `Def`s + the impl form's verbatim source live in the writer's module. So M's
-/// regen enumerates the shells whose `impl_module == module_path` — an impl of an
-/// M-homed trait written in M (the RT-4 pins) OR of an imported trait written in M
-/// (the §12.4 union backstop, reached identically). A shell homed in M but written
-/// in another module N (`impl_module == N`) is N's regen row — a LEGAL exclusion.
+/// **Enumeration (§12.3, completeness-binding).** "The impls written in module
+/// M" are M's `written_trait_impls` records: every impl written in M has one,
+/// whether its trait is M's own or imported, and a cache-restored table carries
+/// them. Each record is identified by its settled pair through the injective
+/// `trait_impl_key`, the key its live turn and rehydration record its form
+/// under (`design/int/int.md` §6.13), so two impls of one trait for same-named
+/// types from different modules stay two. An impl of M's trait written in
+/// another module N is N's record, not M's: a legal exclusion.
 ///
-/// For each enumerated impl the render key is the settled `Trait.Type` label,
-/// and source is fetched via the same `introspection_sexp_and_source` +
-/// `emit_decl_or_source` re-parse-gated reader every decl section uses (a
-/// stale/garbage source is skipped, never corrupts the file).
-///
-/// **Two enumeration sources (§12.3), deduped by the shared `Trait.Type` key**
-/// (0664 — the registrar writes the `TraitImpl` shell to the TRAIT's home table,
-/// `impl_check.rs::symbol_table_mut_in(&trait_home)`, NOT the writer's table, so
-/// the shell-only scan of `st` is INCOMPLETE for an impl of an imported trait):
-///
-/// - **Row 1 — shells in `st`.** A `TraitImpl` shell for a trait homed HERE lives
-///   in this module's own table; filter to impls WRITTEN here (`impl_module == M`).
-///   Key from the settled shell fields (`impl_type` is the settled effective
-///   target, Principle 26). Catches impls of M-homed traits written in M.
-/// - **Row 2 — introspection backstop.** `record_defining_turn_source` records the
-///   impl form's verbatim source under `{M, "Trait.Type"}` for EVERY impl written
-///   in M, INCLUDING impls of IMPORTED traits (whose shell lives at the trait's
-///   home, absent from `st`). A `{M, sym}` record is an impl label iff `sym` is
-///   dotted AND its recorded form's head is `impl` (structural, self-contained —
-///   no cross-table shell walk). Key = `sym`.
-///
-/// An impl reachable via BOTH rows (an M-homed trait impl written in M) yields the
-/// SAME `Trait.Type` key from each, so the `BTreeSet` renders it exactly ONCE
-/// (0664 dedup obligation). An impl of an M-homed trait written in module N stays
-/// excluded: row 1 filters `impl_module != M`, and its source is recorded under
-/// `{N, …}`, not `{M, …}`, so row 2 does not reach it either. `BTreeSet` gives
-/// deterministic sorted output.
-///
-/// - **Row 3 — `written_trait_impls`.** Every impl written in M, including one
-///   restored from cache with no record, so a missing record is reported as
-///   unrendered (§2.4.3) instead of skipped.
+/// Source is fetched via the same `introspection_sexp_and_source` +
+/// `emit_decl_or_source` re-parse-gated reader every decl section uses; a
+/// record with no form is reported as unrendered (§2.4.3), never skipped.
+/// Output is ordered by trait and type name, then by the key.
 fn generate_impls(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
     ledger: &mut SectionLedger,
 ) -> String {
-    use std::collections::BTreeSet;
-    let mut keys: BTreeSet<String> = BTreeSet::new();
-
-    // Row 1 — shells homed HERE, written HERE.
-    for (_name, entry) in st.all_symbols() {
-        if let Decl::ImplShell(shell) = &entry.declaration
-            && shell.impl_module == *module_path
-        {
-            keys.insert(impl_label(&shell.trait_name, &shell.impl_type));
-        }
-    }
-
-    // Row 3 — the table's written-impl records.
-    keys.extend(
-        st.written_trait_impls
-            .iter()
-            .filter(|written| written.impl_module == *module_path)
-            .map(|written| impl_label(&written.trait_name, &written.impl_type)),
-    );
-
-    // Row 2 — introspection impl-label records written HERE (the imported-trait
-    // backstop). Fully consumed + dropped BEFORE the render loop's `.get()` below
-    // (no concurrent iter+get on the same DashMap shard).
-    if let Some(intro) = introspection {
-        for item in intro.iter() {
-            let fq = item.key();
-            if fq.module == *module_path
-                && fq.symbol.as_ref().contains('.')
-                && record_is_impl_form(item.value())
-            {
-                keys.insert(fq.symbol.to_string());
-            }
-        }
-    }
+    let mut written: Vec<&cranelisp_types::WrittenTraitImpl> = st
+        .written_trait_impls
+        .iter()
+        .filter(|record| record.impl_module == *module_path)
+        .collect();
+    written.sort_by_cached_key(|record| {
+        let identity = crate::session_v4::impl_identity(record).symbol;
+        (
+            record.trait_name.name.to_string(),
+            record.impl_type.name.to_string(),
+            identity,
+        )
+    });
 
     let mut items = Vec::new();
-    for key in keys {
-        let sym = cranelisp_types::Symbol::from(key.as_str());
-        let (sexp, source) = introspection_sexp_and_source(introspection, module_path, &sym);
+    for record in written {
+        let key = crate::session_v4::impl_identity(record).symbol;
+        let (sexp, source) = introspection_sexp_and_source(introspection, module_path, &key);
         match emit_decl_or_source(sexp, source) {
-            Some(decl) => items.push((key, decl)),
-            None => ledger.unrendered.push(sym),
+            Some(decl) => items.push((key.to_string(), decl)),
+            None => ledger.unrendered.push(Unrendered::Impl {
+                trait_name: record.trait_name.clone(),
+                impl_type: record.impl_type.clone(),
+            }),
         }
     }
     join_declarations(items, ledger)
-}
-
-/// The `Trait.Type` label of an impl, from its settled trait and target names.
-fn impl_label(
-    trait_name: &cranelisp_types::FQTraitName,
-    impl_type: &cranelisp_types::FQTypeName,
-) -> String {
-    format!("{}.{}", trait_name.name, impl_type.name)
-}
-
-/// `true` iff the introspection record's recorded form (verbatim `source`
-/// preferred, `sexp` fallback) is an `(impl …)` form — the §12.3 row-2 impl-label
-/// discriminator (0664). Structural (head symbol), so a `deftype`/`defn`/ctor
-/// record sharing a dotted name can never be misclassified as an impl.
-fn record_is_impl_form(intro: &Introspection) -> bool {
-    if let Some(src) = &intro.source
-        && let Ok(forms) = cranelisp_frontend::parse(src.trim())
-        && forms.len() == 1
-    {
-        return sexp_head_is(&forms[0], "impl");
-    }
-    if let Some(sexp) = &intro.sexp {
-        return sexp_head_is(sexp, "impl");
-    }
-    false
-}
-
-/// `true` iff `sexp` is a list whose head is the bare symbol `head`.
-fn sexp_head_is(sexp: &Sexp, head: &str) -> bool {
-    matches!(
-        sexp,
-        Sexp::List(items, _)
-            if matches!(items.first(), Some(Sexp::Symbol(h, _)) if h == head)
-    )
 }
 
 /// §12.3.1 section-completeness guard (Principle 18) — the runtime seam. Sweeps
@@ -1091,7 +1048,7 @@ fn generate_fns_and_macros(
         let (record_sexp, record_source) =
             introspection_sexp_and_source(introspection, module_path, name);
         let Some(sexp) = record_sexp.or(macro_table_sexp) else {
-            ledger.unrendered.push(name.clone());
+            ledger.unrendered.push(Unrendered::Named(name.clone()));
             continue;
         };
         let item = FnMacroItem {
@@ -1152,7 +1109,8 @@ struct FnMacroItem {
 enum AuthoredKey {
     /// A name-slot form: live when the module's table binds the name.
     Entry(cranelisp_types::Symbol),
-    /// An `impl`: live when the module's `written_trait_impls` names it.
+    /// An `impl`, by its authored label: live, and keyed, when exactly one of
+    /// the module's written-impl records carries the label.
     Impl(cranelisp_types::Symbol),
 }
 
@@ -1174,23 +1132,25 @@ pub(crate) fn rehydrate_introspection_from_source(
     module_path: &ModuleFullPath,
     backing_source: &str,
 ) -> usize {
+    use crate::session_v4::{ImplRecordMatch, impl_identity, match_impl_record};
     let Ok(forms) = cranelisp_frontend::parse(backing_source) else {
         return 0;
     };
-    let written_impls: HashSet<String> = st
-        .written_trait_impls
-        .iter()
-        .filter(|written| written.impl_module == *module_path)
-        .map(|written| impl_label(&written.trait_name, &written.impl_type))
-        .collect();
 
     let mut filled = 0;
     for form in &forms {
         for key in authored_keys(form, module_path) {
+            // An impl form that no single record carries stays unkeyed; the
+            // regeneration then reports its record as unrendered (§2.4.3).
             let symbol = match key {
                 AuthoredKey::Entry(symbol) if st.get(symbol.as_ref()).is_some() => symbol,
-                AuthoredKey::Impl(symbol) if written_impls.contains(symbol.as_ref()) => symbol,
-                AuthoredKey::Entry(_) | AuthoredKey::Impl(_) => continue,
+                AuthoredKey::Impl(label) => {
+                    match match_impl_record(&st.written_trait_impls, module_path, &label) {
+                        ImplRecordMatch::One(record) => impl_identity(record).symbol,
+                        ImplRecordMatch::Unmatched | ImplRecordMatch::Several => continue,
+                    }
+                }
+                AuthoredKey::Entry(_) => continue,
             };
             let mut record = introspection
                 .entry(FQSymbol {
@@ -1232,10 +1192,16 @@ fn authored_keys(form: &Sexp, module_path: &ModuleFullPath) -> Vec<AuthoredKey> 
             let [top] = built.as_slice() else {
                 return None;
             };
-            let key = crate::session_v4::definition_result_symbol(module_path, top)?.symbol;
             Some(match top {
-                cranelisp_types::TopLevel::TraitImpl(_) => AuthoredKey::Impl(key),
-                _ => AuthoredKey::Entry(key),
+                cranelisp_types::TopLevel::TraitImpl(trait_impl) => {
+                    AuthoredKey::Impl(trait_impl.authored_label())
+                }
+                _ => match crate::session_v4::definition_identity(module_path, top)? {
+                    crate::session_v4::BuiltIdentity::Keyed(symbol) => {
+                        AuthoredKey::Entry(symbol.symbol)
+                    }
+                    crate::session_v4::BuiltIdentity::Impl(_) => return None,
+                },
             })
         })
         .collect()
@@ -1460,7 +1426,10 @@ mod tests {
         let specs = vec![ImportSpec {
             module_path: "core".into(),
             alias: None,
-            names: ImportNames::Specific(vec!["foo".into(), "bar".into()]),
+            names: ImportNames::Specific(vec![
+                crate::imports::plain_entry("foo"),
+                crate::imports::plain_entry("bar"),
+            ]),
             span: Span::SYNTHETIC,
         }];
         assert_eq!(generate_imports(&specs), "(import [core [foo bar]])");
@@ -1472,7 +1441,7 @@ mod tests {
             ImportSpec {
                 module_path: "core".into(),
                 alias: None,
-                names: ImportNames::Specific(vec!["foo".into()]),
+                names: ImportNames::Specific(vec![crate::imports::plain_entry("foo")]),
                 span: Span::SYNTHETIC,
             },
             ImportSpec {
@@ -1525,7 +1494,7 @@ mod tests {
         let before = generate_module_source(&st, Some(&introspection), &module);
         assert_eq!(
             before.map_err(|unrendered| unrendered.0),
-            Err(vec![Symbol::from("answer")]),
+            Err(vec![Unrendered::Named(Symbol::from("answer"))]),
             "precondition: a cache-loaded UserFn with no record is refused, not dropped"
         );
 
@@ -2592,21 +2561,42 @@ mod tests {
         types
             .install_binding("Pt".into(), type_def_entry(&module, "Pt"))
             .expect("type fixture installs");
-        assert_eq!(refused(&types), Err(vec![Symbol::from("Pt")]));
+        assert_eq!(
+            refused(&types),
+            Err(vec![Unrendered::Named(Symbol::from("Pt"))])
+        );
 
         let mut traits = crate::code::SessionSymbolTable::new_with_params(module.clone());
         traits
             .install_binding("Disp".into(), trait_decl_entry("Disp"))
             .expect("trait fixture installs");
-        assert_eq!(refused(&traits), Err(vec![Symbol::from("Disp")]));
+        assert_eq!(
+            refused(&traits),
+            Err(vec![Unrendered::Named(Symbol::from("Disp"))])
+        );
 
         let mut impls = crate::code::SessionSymbolTable::new_with_params(module.clone());
         upsert_written_impl(&mut impls, "lib", "Disp", &module, "W");
-        assert_eq!(refused(&impls), Err(vec![Symbol::from("Disp.W")]));
+        let refusal = refused(&impls).expect_err("the impl has no record");
+        assert_eq!(
+            refusal,
+            vec![Unrendered::Impl {
+                trait_name: cranelisp_types::FQTraitName::new("lib".into(), "Disp".into()),
+                impl_type: cranelisp_types::FQTypeName::new(module.clone(), "W".into()),
+            }]
+        );
+        // The refusal names each half by its own module, from the settled pair.
+        assert_eq!(
+            UnrenderedEntries(refusal).to_string(),
+            "`impl lib/Disp for user/W`"
+        );
 
         let mut fns = crate::code::SessionSymbolTable::new_with_params(module.clone());
         install_userfn(&mut fns, "f", 0, Vec::new());
-        assert_eq!(refused(&fns), Err(vec![Symbol::from("f")]));
+        assert_eq!(
+            refused(&fns),
+            Err(vec![Unrendered::Named(Symbol::from("f"))])
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2628,34 +2618,60 @@ mod tests {
             impl_module.clone(),
             vec!["dp".into()],
             Visibility::Public,
+            format!("{trait_name}.{impl_type}").into(),
         );
         cranelisp_types::enrol_written_trait_impl(table, &record)
             .expect("trait impl shell fixture enrols through discovery funnel");
     }
 
-    // §12.3 row 1: an impl of an M-homed trait, WRITTEN IN M. The registrar stages
-    // the `TraitImpl` shell at the TRAIT's home table — which, for a trait homed
-    // HERE, IS `st` (`symbol_table_mut_in(&trait_home)`, trait_home == M). Filter
-    // `impl_module == M`; render from the `{M, "Disp.W"}` defining-turn source
-    // (the `record_defining_turn_source` key, via `impl_echo_type_name`). The RT-4
-    // pins live here.
-    // spec: repl/spec.md §15.4 — `impl` is persisted module content.
-    #[test]
-    fn generate_impls_enumerates_impl_written_in_module() {
-        let module = ModuleFullPath::from("user");
-        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        // Trait homed at `user`, so its shell lives in `user`'s table (== st),
-        // written in `user`. Production shape (shell at trait home).
-        install_trait_impl_shell(&mut st, &module, "Disp", &module, "W", &module);
+    /// The introspection key an impl's live turn records its form under.
+    fn impl_key(trait_home: &str, trait_name: &str, type_home: &str, impl_type: &str) -> Symbol {
+        cranelisp_types::trait_impl_key(
+            &cranelisp_types::FQTypeName::new(type_home.into(), impl_type.into()),
+            &cranelisp_types::FQTraitName::new(trait_home.into(), trait_name.into()),
+        )
+    }
 
-        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+    fn record_impl_source(
+        introspection: &DashMap<FQSymbol, Introspection>,
+        writer: &ModuleFullPath,
+        key: Symbol,
+        source: &str,
+    ) {
         introspection
             .entry(FQSymbol {
-                module: module.clone(),
-                symbol: "Disp.W".into(),
+                module: writer.clone(),
+                symbol: key,
             })
             .or_default()
-            .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
+            .source = Some(source.to_string());
+    }
+
+    // §12.3: an impl written in M — of M's own trait or an imported one — is
+    // enumerated from M's written-impl record and rendered from the form its
+    // live turn recorded under the settled pair's key.
+    // spec: repl/spec.md §15.4 — `impl` is persisted module content.
+    #[test]
+    fn generate_impls_enumerates_each_impl_written_in_module() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        upsert_written_impl(&mut st, "user", "Disp", &module, "W");
+        upsert_written_impl(&mut st, "lib.shape", "Area", &module, "W");
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let own = "(impl Disp W (defn dp [w] 42))";
+        let imported = "(impl Area W (defn area [w] 1))";
+        record_impl_source(
+            &introspection,
+            &module,
+            impl_key("user", "Disp", "user", "W"),
+            own,
+        );
+        record_impl_source(
+            &introspection,
+            &module,
+            impl_key("lib.shape", "Area", "user", "W"),
+            imported,
+        );
 
         let out = generate_impls(
             &st,
@@ -2663,36 +2679,26 @@ mod tests {
             &module,
             &mut SectionLedger::default(),
         );
-        assert_eq!(
-            out, "(impl Disp W (defn dp [w] 42))",
-            "an impl written in M MUST regenerate from its defining-turn source: {out:?}"
-        );
+        assert_eq!(out, format!("{imported}\n\n{own}"), "{out:?}");
     }
 
-    // §12.3 legal exclusion: a shell HOMED in M (its trait lives here, so the
-    // shell is in `st`) but WRITTEN IN another module N (`impl_module == N`) is N's
-    // regen row — M's generate_impls MUST NOT emit it. Row 1 filters
-    // `impl_module != M`; row 2 does not reach it either, because the writer N
-    // recorded the source under `{N, "Disp.X"}`, NOT `{M, …}` (staged the
-    // production way — the introspection key is the WRITER's module).
+    // §12.3 legal exclusion: a shell HOMED in M but WRITTEN IN another module N
+    // has no record in M, so M's regeneration does not reach it, even with N's
+    // form recorded.
     // spec: repl/spec.md §15.4; session-persistence.md §12.2 (D45-amended storage)
     #[test]
     fn generate_impls_excludes_impl_written_in_another_module() {
         let home = ModuleFullPath::from("user");
         let other = ModuleFullPath::from("other");
         let mut st = crate::code::SessionSymbolTable::new_with_params(home.clone());
-        // Trait Disp homed at `user` (shell in st), impl written in `other`.
         install_trait_impl_shell(&mut st, &home, "Disp", &other, "X", &other);
-        // The writer `other` records the source under `{other, "Disp.X"}` — NOT
-        // under `user`. `user`'s regen must not reach it.
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        introspection
-            .entry(FQSymbol {
-                module: other.clone(),
-                symbol: "Disp.X".into(),
-            })
-            .or_default()
-            .source = Some("(impl Disp X (defn dp [w] 7))".to_string());
+        record_impl_source(
+            &introspection,
+            &other,
+            impl_key("user", "Disp", "other", "X"),
+            "(impl Disp X (defn dp [w] 7))",
+        );
 
         let out = generate_impls(
             &st,
@@ -2706,28 +2712,38 @@ mod tests {
         );
     }
 
-    // §12.3 row 2 (0664 backstop, the BLOCKER fix): an impl of an IMPORTED trait,
-    // WRITTEN IN M. Staged the PRODUCTION way — the shell lives at the TRAIT's home
-    // (`lib.shape`), NOT in `st`, so the row-1 shell scan MISSES it; only the
-    // introspection record `{M, "Disp.W"}` (written by `record_defining_turn_source`
-    // for every impl written in M) reaches it. The pre-0664 shell-only enumeration
-    // DROPPED this impl from regen.
-    // spec: session-persistence.md §12.3 row 2 — the imported-trait backstop.
+    // REPRO-1064's unit row and int §6.13's: a local `Box` and an imported `Box`
+    // renamed to `B` are two impls of one trait in one module. The injective
+    // key keeps them two, and both regenerate.
+    // spec: design/int/int.md §6.13 — the identity is the settled pair, held injectively
     #[test]
-    fn generate_impls_enumerates_impl_of_imported_trait_written_here() {
+    fn generate_impls_keeps_impls_for_same_named_types_distinct() {
         let module = ModuleFullPath::from("user");
-        // `st` holds NO TraitImpl shell — production stages it at the trait's home
-        // (`lib.shape`), a table generate_impls is not even handed. Only the
-        // introspection defining-turn source is present.
-        let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        upsert_labelled_impl(&mut st, "prelude", "Show", &module, "Box", "Show.Box");
+        upsert_labelled_impl(
+            &mut st,
+            "prelude",
+            "Show",
+            &ModuleFullPath::from("lib"),
+            "Box",
+            "Show.B",
+        );
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        introspection
-            .entry(FQSymbol {
-                module: module.clone(),
-                symbol: "Disp.W".into(),
-            })
-            .or_default()
-            .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
+        let local = "(impl Show Box (defn show [x] \"local\"))";
+        let renamed = "(impl Show B (defn show [x] \"lib\"))";
+        record_impl_source(
+            &introspection,
+            &module,
+            impl_key("prelude", "Show", "user", "Box"),
+            local,
+        );
+        record_impl_source(
+            &introspection,
+            &module,
+            impl_key("prelude", "Show", "lib", "Box"),
+            renamed,
+        );
 
         let out = generate_impls(
             &st,
@@ -2735,30 +2751,24 @@ mod tests {
             &module,
             &mut SectionLedger::default(),
         );
-        assert_eq!(
-            out, "(impl Disp W (defn dp [w] 42))",
-            "an impl of an IMPORTED trait written HERE (shell at the trait home, \
-             absent from st) MUST be reached via the introspection backstop: {out:?}"
-        );
+        assert!(out.contains(local) && out.contains(renamed), "{out:?}");
     }
 
-    // §12.3 dedup (0664 obligation): an M-homed-trait impl written in M is reachable
-    // via BOTH row 1 (shell in st) AND row 2 (introspection impl record). It MUST
-    // render EXACTLY ONCE (the shared `Trait.Type` key deduplicates).
-    // spec: session-persistence.md §12.3 — union-with-dedup.
+    // Rows 1 and 2 are gone: neither a dotted introspection record nor a shell
+    // without its writer record names an impl to regenerate.
+    // spec: design/int/int.md §6.13 — regeneration enumerates the records alone
     #[test]
-    fn generate_impls_dedups_impl_reachable_via_both_rows() {
+    fn generate_impls_reads_no_identity_beside_the_records() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         install_trait_impl_shell(&mut st, &module, "Disp", &module, "W", &module);
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        introspection
-            .entry(FQSymbol {
-                module: module.clone(),
-                symbol: "Disp.W".into(),
-            })
-            .or_default()
-            .source = Some("(impl Disp W (defn dp [w] 42))".to_string());
+        record_impl_source(
+            &introspection,
+            &module,
+            "Disp.W".into(),
+            "(impl Disp W (defn dp [w] 42))",
+        );
 
         let out = generate_impls(
             &st,
@@ -2766,42 +2776,7 @@ mod tests {
             &module,
             &mut SectionLedger::default(),
         );
-        assert_eq!(
-            out.matches("(impl Disp W").count(),
-            1,
-            "an impl reachable via both enumeration rows MUST render exactly once: {out:?}"
-        );
-    }
-
-    // §12.3 row 2 discriminator: a dotted introspection record whose form is NOT an
-    // `(impl …)` (e.g. a `Type.Ctor` carrying a deftype form) is NOT misclassified
-    // as an impl — the head-symbol check keeps ctor/decl records out of the impl
-    // section.
-    // spec: session-persistence.md §12.3 — structural impl-label discriminator.
-    #[test]
-    fn generate_impls_row2_ignores_non_impl_dotted_record() {
-        let module = ModuleFullPath::from("user");
-        let st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        // A dotted key whose recorded form is a deftype, not an impl.
-        introspection
-            .entry(FQSymbol {
-                module: module.clone(),
-                symbol: "Color.Red".into(),
-            })
-            .or_default()
-            .source = Some("(deftype Color Red Green Blue)".to_string());
-
-        let out = generate_impls(
-            &st,
-            Some(&introspection),
-            &module,
-            &mut SectionLedger::default(),
-        );
-        assert!(
-            out.is_empty(),
-            "a dotted non-impl record MUST NOT be enumerated as an impl: {out:?}"
-        );
+        assert!(out.is_empty(), "{out:?}");
     }
 
     // The §12.3.1 fail-loud guard: the current variant set is FULLY classified —
@@ -2850,12 +2825,25 @@ mod tests {
         rehydrate_introspection_from_source(st, introspection, module, backing)
     }
 
+    /// Record an impl whose head was written bare, `(impl Trait Type …)`.
     fn upsert_written_impl(
         table: &mut crate::code::SessionSymbolTable,
         trait_home: &str,
         trait_name: &str,
         type_home: &ModuleFullPath,
         impl_type: &str,
+    ) {
+        let label = format!("{trait_name}.{impl_type}");
+        upsert_labelled_impl(table, trait_home, trait_name, type_home, impl_type, &label);
+    }
+
+    fn upsert_labelled_impl(
+        table: &mut crate::code::SessionSymbolTable,
+        trait_home: &str,
+        trait_name: &str,
+        type_home: &ModuleFullPath,
+        impl_type: &str,
+        label: &str,
     ) {
         use cranelisp_types::{FQTraitName, FQTypeName, WrittenTraitImpl};
         let writer = table.path.clone();
@@ -2866,6 +2854,7 @@ mod tests {
                 writer,
                 vec!["m".into()],
                 Visibility::Public,
+                label.into(),
             ))
             .expect("written-impl fixture records through the writer funnel");
     }
@@ -2991,33 +2980,120 @@ mod tests {
         assert_eq!(box_source.as_deref(), Some("(deftype Box [:Int v])"));
     }
 
-    // spec: design/int/session-persistence.md §2.4.2 — key and liveness: an
-    // impl keys by the live-turn projection, including the HKT echo head, and
-    // is live when `written_trait_impls` names it (own or imported trait).
+    // spec: design/int/int.md §6.13 — rehydration keys an impl form from the
+    // one record carrying its authored label, including the HKT echo head, and
+    // records it under that record's settled pair (own or imported trait).
     #[test]
-    fn rehydrate_fills_impls_under_live_turn_labels() {
+    fn rehydrate_fills_impls_under_their_records_identity() {
         let (module, st) = rehydration_fixture();
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
 
         for (key, prefix) in [
-            ("Weigh.Box", "(impl Weigh Box"),
-            ("Show.Box", "(impl Show Box"),
-            ("Functor.Option", "(impl (Functor f)"),
+            (impl_key("user", "Weigh", "user", "Box"), "(impl Weigh Box"),
+            (impl_key("prelude", "Show", "user", "Box"), "(impl Show Box"),
+            (
+                impl_key("prelude", "Functor", "primitives", "Option"),
+                "(impl (Functor f)",
+            ),
         ] {
             assert_eq!(
-                record_form(&introspection, &module, key),
+                record_form(&introspection, &module, key.as_ref()),
                 Some(backing_form(prefix)),
-                "impl `{key}` is rehydrated under its label"
+                "impl `{key}` is rehydrated under its record's identity"
             );
         }
+        assert_eq!(record_form(&introspection, &module, "Weigh.Box"), None);
+    }
 
-        let hkt = parse1("(impl (Functor f) (Functor Option) (defn fmap [g o] o))");
-        let built = crate::worker::build_program_compat(std::slice::from_ref(&hkt))
-            .expect("HKT impl builds");
-        let live_turn_key = crate::session_v4::definition_result_symbol(&module, &built[0])
-            .expect("an impl has a result symbol");
-        assert_eq!(live_turn_key.symbol.as_ref(), "Functor.Option");
+    // spec: design/int/int.md §6.13 — under a rename the authored label, not
+    // the settled names, associates a form with its record: `(impl Show B …)`
+    // with `B` renamed from `lib/Box` and a local `(impl Show Box …)` key to
+    // their own records, and a qualified head stays apart from a bare one.
+    #[test]
+    fn rehydrate_keys_renamed_and_qualified_heads_to_their_own_records() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let lib = ModuleFullPath::from("lib");
+        upsert_labelled_impl(&mut st, "prelude", "Show", &module, "Box", "Show.Box");
+        upsert_labelled_impl(&mut st, "prelude", "Show", &lib, "Box", "Show.B");
+        upsert_labelled_impl(&mut st, "prelude", "Eq", &lib, "Box", "Eq.lib/Box");
+        upsert_labelled_impl(&mut st, "prelude", "Eq", &module, "Box", "Eq.Box");
+        let backing = "\
+(impl Show Box (defn show [x] \"local\"))
+(impl Show B (defn show [x] \"lib\"))
+(impl Eq lib/Box (defn = [x y] true))
+(impl Eq Box (defn = [x y] false))
+";
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        assert_eq!(rehydrate(&st, &introspection, &module, backing), 4);
+        let source_of = |key: Symbol| {
+            introspection
+                .get(&FQSymbol {
+                    module: module.clone(),
+                    symbol: key,
+                })
+                .and_then(|record| record.source.clone())
+        };
+        assert_eq!(
+            source_of(impl_key("prelude", "Show", "lib", "Box")).as_deref(),
+            Some("(impl Show B (defn show [x] \"lib\"))")
+        );
+        assert_eq!(
+            source_of(impl_key("prelude", "Show", "user", "Box")).as_deref(),
+            Some("(impl Show Box (defn show [x] \"local\"))")
+        );
+        assert_eq!(
+            source_of(impl_key("prelude", "Eq", "lib", "Box")).as_deref(),
+            Some("(impl Eq lib/Box (defn = [x y] true))")
+        );
+        assert_eq!(
+            source_of(impl_key("prelude", "Eq", "user", "Box")).as_deref(),
+            Some("(impl Eq Box (defn = [x y] false))")
+        );
+        let out = regen_ok(&st, Some(&introspection), &module);
+        assert_eq!(out.matches("(impl ").count(), 4, "{out}");
+    }
+
+    // spec: design/int/int.md §6.13 — a form matches exactly one record or
+    // none: two records carrying one label leave the form unkeyed, and the
+    // regeneration reports both rather than picking one. The one-record
+    // control keys the form.
+    #[test]
+    fn rehydrate_leaves_a_form_whose_label_two_records_carry_unkeyed() {
+        let module = ModuleFullPath::from("user");
+        let backing = "(impl Show B (defn show [x] \"b\"))\n";
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        upsert_labelled_impl(
+            &mut st,
+            "prelude",
+            "Show",
+            &ModuleFullPath::from("lib"),
+            "Box",
+            "Show.B",
+        );
+
+        let control: DashMap<FQSymbol, Introspection> = DashMap::new();
+        assert_eq!(
+            rehydrate(&st, &control, &module, backing),
+            1,
+            "one record keys the form"
+        );
+
+        upsert_labelled_impl(
+            &mut st,
+            "prelude",
+            "Show",
+            &ModuleFullPath::from("alt"),
+            "Box",
+            "Show.B",
+        );
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        assert_eq!(rehydrate(&st, &introspection, &module, backing), 0);
+        assert!(introspection.is_empty(), "neither record is picked");
+        let refusal = generate_module_source(&st, Some(&introspection), &module)
+            .expect_err("both records are unrendered");
+        assert_eq!(refusal.0.len(), 2, "{refusal}");
     }
 
     // spec: design/int/session-persistence.md §2.4.2 — scope: private heads,
@@ -3067,7 +3143,14 @@ mod tests {
             record_form(&introspection, &module, "retained-failure"),
             None
         );
-        assert_eq!(record_form(&introspection, &module, "Weigh.Shape"), None);
+        assert_eq!(
+            record_form(
+                &introspection,
+                &module,
+                impl_key("user", "Weigh", "user", "Shape").as_ref()
+            ),
+            None
+        );
     }
 
     // spec: design/int/session-persistence.md §2.4.1–§2.4.2 absence — a REPL
@@ -3163,7 +3246,8 @@ mod tests {
     fn regen_repl_begin_spanning_sections_emits_once() {
         let (module, st) = rehydration_fixture();
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        for key in ["Token", "Weigh.Token", "c"] {
+        let weigh_token = impl_key("user", "Weigh", "user", "Token");
+        for key in ["Token", weigh_token.as_ref(), "c"] {
             let mut record = introspection
                 .entry(FQSymbol {
                     module: module.clone(),
@@ -3195,7 +3279,8 @@ mod tests {
             0,
             "precondition: the form is offset"
         );
-        for key in ["Token", "Weigh.Token", "c"] {
+        let weigh_token = impl_key("user", "Weigh", "user", "Token");
+        for key in ["Token", weigh_token.as_ref(), "c"] {
             let mut record = introspection
                 .entry(FQSymbol {
                     module: module.clone(),
@@ -3222,15 +3307,14 @@ mod tests {
         rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
         introspection.remove(&FQSymbol {
             module: module.clone(),
-            symbol: "Show.Box".into(),
+            symbol: impl_key("prelude", "Show", "user", "Box"),
         });
 
         let refusal = generate_module_source(&st, Some(&introspection), &module)
             .expect_err("a missing record refuses the generation");
-        assert_eq!(refusal.0, vec![Symbol::from("Show.Box")]);
         assert_eq!(
             refusal.to_string(),
-            "`Show.Box`",
+            "`impl prelude/Show for user/Box`",
             "the warning names the entry"
         );
     }

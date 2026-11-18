@@ -6,10 +6,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
-use cranelisp_types::{CranelispError, ErrorLocation, ImportNames, ModuleFullPath, Span};
+use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Span};
 
 use crate::code::SessionSymbolTable;
-use crate::imports::{DeclaredChildren, declared_child_path};
+use crate::imports::{DeclaredChildren, declared_child_path, names_load};
 use crate::session_v4::TypecheckProduct;
 
 /// A module's class for test selection (§0.2.2).
@@ -102,12 +102,12 @@ impl SelectionInputs<'_> {
             let imports = table
                 .imports
                 .iter()
-                .filter(|spec| names_list_is_admitted(&spec.names))
+                .filter(|spec| names_load(&spec.names))
                 .map(|spec| children.resolve(&spec.module_path));
             let exports = table
                 .exports
                 .iter()
-                .filter(|spec| names_list_is_admitted(&spec.names))
+                .filter(|spec| names_load(&spec.names))
                 .map(|spec| children.resolve(&spec.module_path));
             let declared = table
                 .submodules
@@ -137,16 +137,6 @@ impl SelectionInputs<'_> {
             .into_iter()
             .filter(|module| self.classify(module) != ModuleClass::Library)
             .collect()
-    }
-}
-
-/// An `import` or `export` entry is an edge only when its names list is not
-/// empty (§0.2.2): alias-only and null entries name no names.
-fn names_list_is_admitted(names: &ImportNames) -> bool {
-    match names {
-        ImportNames::Specific(names) => !names.is_empty(),
-        ImportNames::Glob | ImportNames::MemberGlob(_) => true,
-        ImportNames::None => false,
     }
 }
 

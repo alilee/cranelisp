@@ -18,7 +18,9 @@ pub(crate) use cranelisp_types::{
     TopLevel, TraitName, Type, TypeName, TypeRecord, View,
 };
 
-pub(crate) use crate::code::{Code, SessionSymbolTable};
+pub(crate) use crate::code::Code;
+#[cfg(test)]
+pub(crate) use crate::code::SessionSymbolTable;
 pub(crate) use crate::display::format_type_qualified;
 use crate::session_v4::FailureCause;
 pub(crate) use crate::session_v4::{
@@ -27,20 +29,6 @@ pub(crate) use crate::session_v4::{
 };
 pub(crate) use crate::styled::{Role, StyledDoc, render};
 use format_type::*;
-
-/// Resolve the sole public terminal exposed under `name` in `module`.
-///
-/// Visibility belongs to the local exposure, so filter candidates before
-/// deciding uniqueness. `NameCandidate::source` is already terminal by the
-/// symbol-table/import invariant; the final read is therefore one keyed lookup.
-fn resolve_unique_public_terminal(
-    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module: &ModuleFullPath,
-    name: &str,
-) -> Option<(Binding<crate::code::Code>, ModuleFullPath)> {
-    resolve_unique_terminal_with_key(tables, module, name, true)
-        .map(|(binding, canonical)| (binding, canonical.module))
-}
 
 /// Resolve one terminal candidate while retaining its canonical storage key —
 /// the single-answer walk behind `lookup_with_prelude_fallback`. A local
@@ -1315,6 +1303,7 @@ pub(crate) mod test_support {
             home.clone(),
             vec![Symbol::from("__fixture")],
             Visibility::Public,
+            Symbol::from(format!("{trait_name}.{type_name}")),
         );
         table
             .stage_trait_impl_shell(&record)

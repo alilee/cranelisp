@@ -180,6 +180,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             (false, None) => { /* conventional shape OK — no spelling bit */ }
         }
 
+        // Read from the form as received, before the HK rewrite below, so the
+        // writer record's label does not depend on that normalisation.
+        let authored_label = impl_.authored_label();
+
         // Step 4: slot-2 interpretation per the known kind, plus effective-target
         // normalization for HK.
         let rewritten_impl;
@@ -414,6 +418,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             state.current_module.clone(),
             method_names,
             Visibility::Public,
+            authored_label,
         );
 
         Ok(PreparedTraitImpl {

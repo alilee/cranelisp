@@ -1,5 +1,5 @@
 use super::*;
-use cranelisp_types::{Sexp, Visibility};
+use cranelisp_types::{Sexp, Span, Visibility};
 
 /// Helper: parse source text into sexps via the reader.
 fn parse(src: &str) -> Vec<Sexp> {
@@ -9,6 +9,27 @@ fn parse(src: &str) -> Vec<Sexp> {
 fn extract(src: &str) -> (ExtractedDeclarations, Vec<Sexp>) {
     let sexps = parse(src);
     extract_module_declarations(&ModuleFullPath::from("test"), &sexps).expect("extraction failed")
+}
+
+/// A `Name` entry binding `local` to `source`.
+fn name(source: &str, local: &str) -> ImportEntry {
+    ImportEntry::Name {
+        source: source.into(),
+        local: local.into(),
+    }
+}
+
+/// A plain entry: the written name binds itself.
+fn plain(n: &str) -> ImportEntry {
+    name(n, n)
+}
+
+fn member_glob(parent: &str) -> ImportEntry {
+    ImportEntry::MemberGlob(parent.into())
+}
+
+fn specific(entries: &[ImportEntry]) -> ImportNames {
+    ImportNames::Specific(entries.to_vec())
 }
 
 // -- mod declarations --
@@ -56,14 +77,10 @@ fn test_import_specific_names() {
     assert_eq!(ms.import_specs.len(), 1);
     assert_eq!(&*ms.import_specs[0].module_path, "core.option");
     assert!(ms.import_specs[0].alias.is_none());
-    match &ms.import_specs[0].names {
-        ImportNames::Specific(names) => {
-            assert_eq!(names.len(), 2);
-            assert_eq!(&*names[0], "Some");
-            assert_eq!(&*names[1], "None");
-        }
-        other => panic!("expected Specific, got {:?}", other),
-    }
+    assert_eq!(
+        ms.import_specs[0].names,
+        specific(&[plain("Some"), plain("None")])
+    );
     assert!(remaining.is_empty());
 }
 
@@ -76,16 +93,17 @@ fn test_import_glob() {
     assert_eq!(ms.import_specs[0].names, ImportNames::Glob);
 }
 
-// spec: 08-modules §8.3.3 — member glob import
+// spec: 08-modules §8.3.3 — member glob import: a singleton `[Display.*]` is a
+// one-entry specific list (design/frontend/modules.md §2.1).
 #[test]
 fn test_import_member_glob() {
     let (ms, _) = extract("(import [core.fmt [Display.*]])");
     assert_eq!(ms.import_specs.len(), 1);
     assert_eq!(&*ms.import_specs[0].module_path, "core.fmt");
-    match &ms.import_specs[0].names {
-        ImportNames::MemberGlob(base) => assert_eq!(&**base, "Display"),
-        other => panic!("expected MemberGlob, got {:?}", other),
-    }
+    assert_eq!(
+        ms.import_specs[0].names,
+        specific(&[member_glob("Display")])
+    );
 }
 
 // spec: 08-modules §8.3.4 — aliased import
@@ -95,14 +113,10 @@ fn test_import_alias() {
     assert_eq!(ms.import_specs.len(), 1);
     assert_eq!(&*ms.import_specs[0].module_path, "core.string");
     assert_eq!(ms.import_specs[0].alias.as_ref().unwrap().as_ref(), "str");
-    match &ms.import_specs[0].names {
-        ImportNames::Specific(names) => {
-            assert_eq!(names.len(), 2);
-            assert_eq!(&*names[0], "concat");
-            assert_eq!(&*names[1], "join");
-        }
-        other => panic!("expected Specific, got {:?}", other),
-    }
+    assert_eq!(
+        ms.import_specs[0].names,
+        specific(&[plain("concat"), plain("join")])
+    );
 }
 
 // spec: 08-modules §8.3.5 — alias-only import (empty names list)
@@ -222,12 +236,207 @@ fn test_export_multiple() {
     assert_eq!(&*ms.export_specs[0].module_path, "core");
     assert_eq!(ms.export_specs[0].names, ImportNames::Glob);
     assert_eq!(&*ms.export_specs[1].module_path, "primitives");
-    match &ms.export_specs[1].names {
-        ImportNames::Specific(names) => {
-            assert_eq!(names.len(), 1);
-            assert_eq!(&*names[0], "vec-len");
+    assert_eq!(ms.export_specs[1].names, specific(&[plain("vec-len")]));
+}
+
+// -- entry classification (design/frontend/modules.md §2.1, §5) --
+
+/// The names list of the first pair of `(import [m <list>])`.
+fn import_names(list: &str) -> ImportNames {
+    let (ms, _) = extract(&format!("(import [m {list}])"));
+    ms.import_specs[0].names.clone()
+}
+
+/// The names list of the first pair of `(export [m <list>])`.
+fn export_names(list: &str) -> ImportNames {
+    let (ms, _) = extract(&format!("(export [m {list}])"));
+    ms.export_specs[0].names.clone()
+}
+
+/// The error for `src`, extracted inside module `test`.
+fn extract_err(src: &str) -> CranelispError {
+    let sexps = parse(src);
+    extract_module_declarations(&ModuleFullPath::from("test"), &sexps)
+        .expect_err(&format!("`{src}` must be rejected"))
+}
+
+/// Assert `err` is located inside the first occurrence of `element` in `src`.
+fn assert_located_at(err: &CranelispError, src: &str, element: &str) {
+    let start = src.find(element).expect("element occurs in source") as u32;
+    let end = start + element.len() as u32;
+    let span = err.span();
+    assert!(
+        span.start >= start && span.end <= end,
+        "`{src}`: error {span} must lie within `{element}` at {start}..{end}: {err}"
+    );
+}
+
+// spec: 08-modules §8.3.11 — each entry is classified on its own; a member glob
+// beside other entries keeps them (ACT-1056), a dotted entry binds its member
+// (ACT-1055), and a rename binds its local (ACT-0997). The same element list
+// yields equal entries under `import` and `export` (one pair parser, §8.4).
+#[test]
+fn each_entry_is_classified_on_its_own_under_import_and_export() {
+    let cases: &[(&str, &[ImportEntry])] = &[
+        (
+            "[Option Option.*]",
+            &[plain("Option"), member_glob("Option")],
+        ),
+        (
+            "[Option.* helper]",
+            &[member_glob("Option"), plain("helper")],
+        ),
+        ("[Option.None]", &[name("Option.None", "None")]),
+        ("[(Some Just) None]", &[name("Some", "Just"), plain("None")]),
+        ("[(Option.Some Just)]", &[name("Option.Some", "Just")]),
+        ("[(Some Some)]", &[plain("Some")]),
+        (
+            "[+ - * /]",
+            &[plain("+"), plain("-"), plain("*"), plain("/")],
+        ),
+        ("[a.b.c]", &[name("a.b.c", "c")]),
+    ];
+    for (list, expected) in cases {
+        assert_eq!(import_names(list), specific(expected), "import {list}");
+        assert_eq!(export_names(list), specific(expected), "export {list}");
+    }
+}
+
+// spec: 08-modules §8.3 names_list, §8.3.2 — the list shape is decided first:
+// `[]` is None, a sole `*` is Glob, a singleton member glob is a one-entry
+// specific list, and `*` among other entries is the operator.
+#[test]
+fn list_shape_is_decided_before_entries() {
+    for names in [import_names, export_names] {
+        assert_eq!(names("[]"), ImportNames::None);
+        assert_eq!(names("[*]"), ImportNames::Glob);
+        assert_eq!(names("[Display.*]"), specific(&[member_glob("Display")]));
+        assert_eq!(names("[* x]"), specific(&[plain("*"), plain("x")]));
+    }
+}
+
+// spec: 08-modules §8.3 name / member_glob productions, §8.3.4, §8.3.5 — a
+// malformed entry is a located error at the element, under either form, and
+// names the form it was written in.
+#[test]
+fn malformed_entries_are_located_at_the_element() {
+    // (names list, offending element, message fragment)
+    let cases: &[(&str, &str, &str)] = &[
+        ("[ok m/x]", "m/x", "qualified name"),
+        ("[ok m/Option.None]", "m/Option.None", "qualified name"),
+        ("[ok (m/x y)]", "m/x", "qualified name"),
+        ("[ok m/Option.*]", "m/Option.*", "not a member glob"),
+        ("[ok A.B.*]", "A.B.*", "not a member glob"),
+        ("[ok (Option.* X)]", "Option.*", "cannot be renamed"),
+        ("[ok (a b c)]", "(a b c)", "exactly two symbols"),
+        ("[ok (a)]", "(a)", "exactly two symbols"),
+        ("[ok (Some [x])]", "[x]", "must be a symbol"),
+        ("[ok (Some a/b)]", "a/b", "binder"),
+        ("[ok (Some A.b)]", "A.b", "binder"),
+        ("[ok 42]", "42", "names-list entry"),
+    ];
+    for noun in ["import", "export"] {
+        for (list, element, fragment) in cases {
+            let src = format!("({noun} [m {list}])");
+            let err = extract_err(&src);
+            let message = err.to_string();
+            assert!(
+                message.contains(fragment),
+                "`{src}`: expected `{fragment}` in: {message}"
+            );
+            assert_located_at(&err, &src, element);
+            if *fragment != "binder" {
+                assert!(
+                    message.contains(noun),
+                    "`{src}`: the diagnostic names the form: {message}"
+                );
+            }
         }
-        other => panic!("expected Specific, got {:?}", other),
+    }
+}
+
+// spec: 08-modules §8.3 member_glob — an empty parent cannot be read from
+// source (the reader rejects `.*`), so the extraction seam's own guard is
+// pinned on a constructed form.
+#[test]
+fn member_glob_with_empty_parent_is_rejected() {
+    let at = |start| Span::new(start, start + 1);
+    let form = Sexp::List(
+        vec![
+            Sexp::Symbol("import".into(), at(1)),
+            Sexp::Bracket(
+                vec![
+                    Sexp::Symbol("m".into(), at(9)),
+                    Sexp::Bracket(vec![Sexp::Symbol(".*".into(), at(12))], at(11)),
+                ],
+                at(8),
+            ),
+        ],
+        at(0),
+    );
+    let err = extract_module_declarations(&ModuleFullPath::from("test"), &[form])
+        .expect_err("an empty member-glob parent is rejected");
+    assert!(err.to_string().contains("not a member glob"), "{err}");
+    assert_eq!(err.span(), at(12));
+}
+
+// spec: 08-modules §8.4.4 — an export's `(path alias)` is its mount and travels
+// in `ExportSpec::alias`, with or without names (ACT-1056); an unaliased export
+// mounts nothing.
+#[test]
+fn export_specifier_carries_its_mount_alias() {
+    let (ms, _) = extract("(export [(core.string str) [concat]])");
+    let spec = &ms.export_specs[0];
+    assert_eq!(&*spec.module_path, "core.string");
+    assert_eq!(spec.alias.as_ref().map(|a| a.as_ref()), Some("str"));
+    assert_eq!(spec.names, specific(&[plain("concat")]));
+
+    let (ms, _) = extract("(export [(core.string str) []])");
+    assert_eq!(
+        ms.export_specs[0].alias.as_ref().map(|a| a.as_ref()),
+        Some("str")
+    );
+    assert_eq!(ms.export_specs[0].names, ImportNames::None);
+
+    // `(export [m []])`: emitted as written, no alias and no names (§8.4.4 no-op).
+    let (ms, _) = extract("(export [m [x] n []])");
+    assert!(ms.export_specs[0].alias.is_none());
+    assert!(ms.export_specs[1].alias.is_none());
+    assert_eq!(ms.export_specs[1].names, ImportNames::None);
+}
+
+// spec: 08-modules §8.3.4 — an export mount alias is a binder: a qualified or
+// dotted spelling rejects at the alias.
+#[test]
+fn export_mount_alias_qualified_or_dotted_is_rejected() {
+    for alias in ["a/str", "a.str"] {
+        let src = format!("(export [(core.string {alias}) [concat]])");
+        let err = extract_err(&src);
+        assert!(err.to_string().contains("binder"), "`{src}`: {err}");
+        assert_located_at(&err, &src, alias);
+    }
+}
+
+// spec: 08-modules §8.3.8, §8.4 — `super` is rewritten under `export` as under
+// `import`, and is a located error in a root module for either form.
+#[test]
+fn super_is_rewritten_for_export_and_rejected_at_root_for_both_forms() {
+    let sexps = parse("(export [super [x]])");
+    let (ms, _) = extract_module_declarations(&ModuleFullPath::from("math.test"), &sexps)
+        .expect("extraction failed");
+    assert_eq!(&*ms.export_specs[0].module_path, "math");
+
+    for noun in ["import", "export"] {
+        let src = format!("({noun} [super [x]])");
+        let sexps = parse(&src);
+        let err = extract_module_declarations(&ModuleFullPath::from("root"), &sexps)
+            .expect_err("super in a root module is rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("super") && message.contains(noun) && message.contains("no parent"),
+            "`{src}`: {message}"
+        );
+        assert_located_at(&err, &src, "super");
     }
 }
 
@@ -271,15 +480,10 @@ fn test_export_specific() {
     let (ms, _) = extract("(export [core.option [Option Some None]])");
     assert_eq!(ms.export_specs.len(), 1);
     assert_eq!(&*ms.export_specs[0].module_path, "core.option");
-    match &ms.export_specs[0].names {
-        ImportNames::Specific(names) => {
-            assert_eq!(names.len(), 3);
-            assert_eq!(&*names[0], "Option");
-            assert_eq!(&*names[1], "Some");
-            assert_eq!(&*names[2], "None");
-        }
-        other => panic!("expected Specific, got {:?}", other),
-    }
+    assert_eq!(
+        ms.export_specs[0].names,
+        specific(&[plain("Option"), plain("Some"), plain("None")])
+    );
 }
 
 // spec: 08-modules §8.2 — mod with no name is an error

@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use cranelisp_types::{
-    CranelispError, Decl, ErrorLocation, ImportNames, ImportSpec, Life, ModDecl, ModuleFullPath,
-    PlatformSpec, Realization, Span, Symbol, WrittenTraitImpl,
+    CranelispError, Decl, ErrorLocation, ImportSpec, Life, ModDecl, ModuleFullPath, PlatformSpec,
+    Realization, Span, Symbol, WrittenTraitImpl,
 };
 
 use crate::cache::dependency_record::{
@@ -97,7 +97,7 @@ pub(super) fn try_cache_hit_load<'a>(
     // returned by any path (`design/int/int.md` §7.1).
     let symbols = std::mem::take(&mut specs.symbols);
     let load_hold =
-        register_cached_with_scheduler(ctx, dep, dep_file, symbols, source, needs_inmem_load);
+        register_cached_with_scheduler(ctx, dep, dep_file, symbols, source, needs_inmem_load)?;
     walk_restored_module(ctx, dep, &specs, load_hold.as_ref())?;
 
     Ok(true)
@@ -327,7 +327,8 @@ fn extract_cached_specs(
     // and once the prelude's own `.meta.json` caches (0387) its cache-restore
     // must load those targets or a bare `str` resolves to nothing
     // (`undefined variable: str`). Capture the exports as `ImportSpec`-shaped
-    // specs (drop the missing `alias`) so the same transitive walk handles them.
+    // specs so the same transitive walk handles them; the mount alias is not
+    // carried, because the declared-alias installer mounts it from `exports`.
     let reexport_deps: Vec<ImportSpec> = cached
         .symbol_table
         .exports
@@ -499,7 +500,9 @@ fn reresolve_cached_platforms(
 
 /// Phases 5–8 of `try_cache_hit_load`: scheduler register (object / no-object),
 /// typecheck-product create, record-cache-hit, cached-module insert, and the
-/// file_to_module mapping. Returns the object-load hold, if one was placed.
+/// file_to_module mapping. Returns the object-load hold, if one was placed; a
+/// refused module-path route in the restored declarations is an error.
+#[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
 fn register_cached_with_scheduler<'a>(
     ctx: &ModuleCompiler<'a>,
     dep: &ModuleFullPath,
@@ -507,9 +510,24 @@ fn register_cached_with_scheduler<'a>(
     symbols: std::collections::HashSet<Symbol>,
     source: RestoredSource,
     needs_inmem_load: bool,
-) -> Option<CachedLoadHold<'a>> {
-    let shared = ctx.shared_state?;
+) -> Result<Option<CachedLoadHold<'a>>, CranelispError> {
+    let Some(shared) = ctx.shared_state else {
+        return Ok(None);
+    };
     let scheduler: &'a CompileScheduler = ctx.scheduler;
+
+    // Establish the session-env companions (prelude-fallback bit + aliases) from
+    // the just-installed table's structural fields (S102 CS-D3a, §6.2.2). The
+    // cache-restore path populated none of them, so a `/mod {dep}` turn would
+    // otherwise typecheck with no prelude fallback (`undefined variable: +`) and
+    // no aliases — the /port D3 / FIXME 0487 env wall. It runs before the scheduler
+    // registration, so a refused route leaves the module unregistered.
+    crate::imports::install_module_session_env(
+        ctx.symbol_tables,
+        dep,
+        ctx.module_aliases,
+        ctx.prelude_fallback,
+    )?;
 
     // 5. Register with scheduler at TypecheckDone. A generic-only module with no
     //    `.o` (FIXME 0387) registers as already-inmem-done (no codegen load to
@@ -534,18 +552,6 @@ fn register_cached_with_scheduler<'a>(
         tp.file_path = Some(dep_file.to_path_buf());
     }
 
-    // Establish the session-env companions (prelude-fallback bit + aliases) from
-    // the just-installed table's structural fields (S102 CS-D3a, §6.2.2). The
-    // cache-restore path populated none of them, so a `/mod {dep}` turn would
-    // otherwise typecheck with no prelude fallback (`undefined variable: +`) and
-    // no aliases — the /port D3 / FIXME 0487 env wall.
-    crate::imports::install_module_session_env(
-        ctx.symbol_tables,
-        dep,
-        ctx.module_aliases,
-        ctx.prelude_fallback,
-    );
-
     // 7. Record cache hit with the record it validated under.
     shared
         .cache
@@ -561,7 +567,7 @@ fn register_cached_with_scheduler<'a>(
             .unwrap_or_else(|e| e.into_inner())
             .insert(canonical, dep.clone());
     }
-    load_hold
+    Ok(load_hold)
 }
 
 /// Walk a cached module's `imports`, resolved against its `declared`
@@ -574,7 +580,7 @@ fn register_transitive_cached_imports(
     declared: &DeclaredChildren,
 ) -> Result<(), CranelispError> {
     for spec in imports {
-        if matches!(&spec.names, ImportNames::None) {
+        if !crate::imports::names_load(&spec.names) {
             continue;
         }
         register_cached_dependency(ctx, &declared.resolve(&spec.module_path))?;

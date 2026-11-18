@@ -32,6 +32,7 @@ use cranelisp_types::{
 use std::collections::BTreeSet;
 
 use crate::scheduler::{SourceContinuation, SourceProvenance};
+use crate::session_v4::{BuiltIdentity, ImplIdentities, definition_identity};
 use crate::worker::{
     ClusterOnce, ModuleCompiler, build_program_compat, check_program_compat, leading_annotation_len,
 };
@@ -272,11 +273,12 @@ fn attempt_cluster(
 /// The ordinary definitions one cluster attempt has built, each with its
 /// staged authored-form record (`design/int/session-persistence.md` §2.4.1).
 /// The records reach the live introspection map only through the cluster's
-/// publication; a gap or error drops them with this attempt.
+/// publication, which keys each `impl` record from its writer record; a gap or
+/// error drops them with this attempt.
 #[derive(Default)]
 struct BuiltProgram {
     forms: Vec<TopLevel>,
-    records: Vec<(FQSymbol, crate::session_v4::Introspection)>,
+    records: Vec<(BuiltIdentity, crate::session_v4::Introspection)>,
 }
 
 impl BuiltProgram {
@@ -287,7 +289,7 @@ impl BuiltProgram {
             let source = verbatim_source_slice(ctx, module, built.authored_origin)
                 .unwrap_or_else(|| crate::pretty::pretty_print_plain(built.authored_origin));
             for top in &built.forms {
-                let Some(key) = crate::session_v4::definition_result_symbol(module, top) else {
+                let Some(key) = definition_identity(module, top) else {
                     continue;
                 };
                 let ast = match top {
@@ -533,7 +535,10 @@ fn finish_pass2(
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
-            let mut outcome = finalize_cluster(
+            let Finalized {
+                mut outcome,
+                impl_identities,
+            } = finalize_cluster(
                 ctx,
                 module,
                 origin_sexps,
@@ -550,10 +555,12 @@ fn finish_pass2(
             if matches!(outcome, ClusterOnce::Done { .. })
                 && let Some(definitions) = turn_definitions.as_deref_mut()
             {
-                let published: Vec<FQSymbol> = expanded_program
+                definitions.settle(&impl_identities)?;
+                let published = expanded_program
                     .iter()
-                    .filter_map(|top| crate::session_v4::definition_result_symbol(module, top))
-                    .collect();
+                    .filter_map(|top| definition_identity(module, top))
+                    .map(|identity| impl_identities.key_of(&identity))
+                    .collect::<Result<Vec<FQSymbol>, _>>()?;
                 if !definitions.mark_published(&published) {
                     return Err(CranelispError::CodegenError {
                         message: "published definition was absent from the turn receipt"
@@ -639,9 +646,9 @@ fn finalize_cluster(
     origin_sexps: &[Sexp],
     expanded_program: &[TopLevel],
     prefix: &ExpandedPrefix,
-    records: Vec<(FQSymbol, crate::session_v4::Introspection)>,
+    records: Vec<(BuiltIdentity, crate::session_v4::Introspection)>,
     program: &SourceProvenance,
-) -> Result<ClusterOnce, CranelispError> {
+) -> Result<Finalized, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
     // Automatic IO scheduling (spec §10.12; design/int/bind-chain-analysis.md
@@ -767,11 +774,11 @@ fn finalize_cluster(
             let continuation = prefix.continuation_with([]);
             store_pool_continuation(ctx, module, &continuation, true);
             drive_module_dep(ctx, module, &dep, ref_span)?;
-            return Ok(ClusterOnce::Gap {
+            return Ok(Finalized::unpublished(ClusterOnce::Gap {
                 dep,
                 continuation,
                 generation_started: true,
-            });
+            }));
         }
         // Not an FQ-module gap we can act on — surface a hard error so the
         // failure is not silently swallowed.
@@ -783,6 +790,21 @@ fn finalize_cluster(
 
     // The expanded program travels back to the driver with the cluster.
     let program: Vec<TopLevel> = expanded_program.to_vec();
+
+    // Each `impl` is keyed from the record its check wrote: the staging
+    // table's, or the live table's when the check committed directly
+    // (`design/int/int.md` §6.13, Live-turn timing).
+    let impl_identities = match &prepared {
+        Some(prepared) => ImplIdentities::settle(module, prepared.written_trait_impls(), &program)?,
+        None => match ctx.symbol_tables.get(module) {
+            Some(table) => ImplIdentities::settle(module, &table.written_trait_impls, &program)?,
+            None => ImplIdentities::settle(module, &[], &program)?,
+        },
+    };
+    let records = records
+        .into_iter()
+        .map(|(identity, record)| Ok((impl_identities.key_of(&identity)?, record)))
+        .collect::<Result<Vec<_>, CranelispError>>()?;
 
     // Cluster-level metadata. The per-symbol staging entries already committed
     // to live inside `check_program_compat`; the typecheck warning channel
@@ -804,7 +826,26 @@ fn finalize_cluster(
         processed.pending_codegen_notification = Some((module.clone(), Vec::new()));
     }
 
-    Ok(ClusterOnce::Done { processed, program })
+    Ok(Finalized {
+        outcome: ClusterOnce::Done { processed, program },
+        impl_identities,
+    })
+}
+
+/// A finalized cluster attempt: its outcome, and the identities its `impl`
+/// forms were keyed by, which the turn receipt settles from.
+struct Finalized {
+    outcome: ClusterOnce,
+    impl_identities: ImplIdentities,
+}
+
+impl Finalized {
+    fn unpublished(outcome: ClusterOnce) -> Self {
+        Finalized {
+            outcome,
+            impl_identities: ImplIdentities::default(),
+        }
+    }
 }
 
 /// The single author of the §8.5.4 "module X has no member Y" diagnostic (I4,
@@ -1083,11 +1124,11 @@ enum DefinitionEmissionMarker {
 
 fn record_turn_definition(
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
-    symbol: FQSymbol,
+    identity: BuiltIdentity,
     published: bool,
 ) {
     if let Some(definitions) = turn_definitions.as_deref_mut() {
-        definitions.record(symbol, published);
+        definitions.record(identity, published);
     }
 }
 
@@ -1112,12 +1153,16 @@ fn record_definition_emissions(
                         location: ErrorLocation::from_span(Span::SYNTHETIC),
                     });
                 };
-                if let Some(symbol) = crate::session_v4::definition_result_symbol(module, top) {
-                    record_turn_definition(turn_definitions, symbol, false);
+                if let Some(identity) = definition_identity(module, top) {
+                    record_turn_definition(turn_definitions, identity, false);
                 }
             }
             DefinitionEmissionMarker::PublishedMacro(symbol) => {
-                record_turn_definition(turn_definitions, symbol.clone(), true);
+                record_turn_definition(
+                    turn_definitions,
+                    BuiltIdentity::Keyed(symbol.clone()),
+                    true,
+                );
             }
         }
     }
@@ -1185,10 +1230,10 @@ fn pass2_check_bodies_with_expansion(
                 );
                 record_turn_definition(
                     turn_definitions,
-                    FQSymbol {
+                    BuiltIdentity::Keyed(FQSymbol {
                         module: module.clone(),
                         symbol: info.name,
-                    },
+                    }),
                     true,
                 );
                 idx += 1;
@@ -1473,10 +1518,10 @@ fn process_regular_form_with_origin(
                 );
                 record_turn_definition(
                     turn_definitions,
-                    FQSymbol {
+                    BuiltIdentity::Keyed(FQSymbol {
                         module: module.clone(),
                         symbol: info.name,
-                    },
+                    }),
                     true,
                 );
                 continue;

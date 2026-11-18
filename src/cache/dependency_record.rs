@@ -11,13 +11,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CodeStore, ExportSpec, ImportNames, ImportSpec, LinkerStore, ModDecl, ModuleFullPath,
-    SymbolTable,
+    CodeStore, ExportSpec, ImportSpec, LinkerStore, ModDecl, ModuleFullPath, SymbolTable,
 };
 
 use crate::callee_edges::binding_callees;
 use crate::code::SessionSymbolTable;
-use crate::imports::{DeclaredChildren, declared_child_path};
+use crate::imports::{DeclaredChildren, declared_child_path, names_load};
 use crate::session_v4::SharedState;
 
 const PRELUDE: &str = "prelude";
@@ -130,11 +129,11 @@ pub(crate) fn recorded_edges<C: CodeStore, L: LinkerStore>(
     edges
 }
 
-/// A module's reload edges as `table` records them: each `import` that loads
-/// and each `export` target, resolved through its declared children; `prelude`
-/// when `prelude_fallback` holds; and its callee modules and lookup
-/// dependencies. A null import loads nothing (spec §8.3.7) and is no edge; a
-/// use through it is recorded as a callee or lookup dependency. Declared
+/// A module's reload edges as `table` records them: each `import` and `export`
+/// that loads, resolved through its declared children; `prelude` when
+/// `prelude_fallback` holds; and its callee modules and lookup dependencies. A
+/// name-less import or export loads nothing (spec §8.3.7, §8.4.0) and is no
+/// edge; a use through it is recorded as a callee or lookup dependency. Declared
 /// children are not reload edges: a `mod` declaration compiles no reference
 /// into the child. Reload selection and order and the publication cycle check
 /// read this one predicate, each supplying the fallback bit of the generation
@@ -145,12 +144,18 @@ pub(crate) fn reload_edges(
     prelude_fallback: bool,
 ) -> BTreeSet<ModuleFullPath> {
     let declared = DeclaredChildren::of(module, &table.submodules);
-    let mut edges: BTreeSet<ModuleFullPath> = table
+    let imports = table
         .imports
         .iter()
-        .filter(|spec| !matches!(spec.names, ImportNames::None))
-        .map(|spec| &spec.module_path)
-        .chain(table.exports.iter().map(|spec| &spec.module_path))
+        .filter(|spec| names_load(&spec.names))
+        .map(|spec| &spec.module_path);
+    let exports = table
+        .exports
+        .iter()
+        .filter(|spec| names_load(&spec.names))
+        .map(|spec| &spec.module_path);
+    let mut edges: BTreeSet<ModuleFullPath> = imports
+        .chain(exports)
         .map(|spelling| declared.resolve(spelling))
         .collect();
     if prelude_fallback {

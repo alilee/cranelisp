@@ -66,7 +66,8 @@ fn install_import_specs(
         .iter()
         .map(|spec| declared.resolve_import(spec))
         .collect();
-    install_imports(tables, &module, aliases, &no_pf(), &resolved)
+    let mut routes = ModuleRoutes::declared(declared.clone(), &[], &[]);
+    install_imports(tables, &module, aliases, &mut routes, &resolved)
 }
 
 /// The re-export counterpart of [`install_import_specs`].
@@ -97,6 +98,7 @@ fn glob_spec(module: &str) -> ImportSpec {
 fn glob_export(module: &str) -> ExportSpec {
     ExportSpec {
         module_path: ModuleFullPath::from(module),
+        alias: None,
         names: ImportNames::Glob,
         span: Span::SYNTHETIC,
     }
@@ -189,7 +191,7 @@ fn specific_spec(module: &str, name: &str) -> ImportSpec {
     ImportSpec {
         module_path: ModuleFullPath::from(module),
         alias: None,
-        names: ImportNames::Specific(vec![Symbol::from(name)]),
+        names: ImportNames::Specific(vec![plain_entry(name)]),
         span: Span::SYNTHETIC,
     }
 }
@@ -197,7 +199,8 @@ fn specific_spec(module: &str, name: &str) -> ImportSpec {
 fn specific_export(module: &str, name: &str) -> ExportSpec {
     ExportSpec {
         module_path: ModuleFullPath::from(module),
-        names: ImportNames::Specific(vec![Symbol::from(name)]),
+        alias: None,
+        names: ImportNames::Specific(vec![plain_entry(name)]),
         span: Span::SYNTHETIC,
     }
 }
@@ -448,7 +451,7 @@ fn import_installs_from_its_resolved_module() {
             &tables,
             &a,
             &aliases,
-            &no_pf(),
+            &mut ModuleRoutes::declared(declared.clone(), &[], &[]),
             &[declared.resolve_import(&spec)],
         )
         .expect("the resolved module's table exists");
@@ -497,7 +500,7 @@ fn missing_resolved_module_is_an_error_naming_it() {
             &tables,
             &a,
             &ModuleAliases::default(),
-            &no_pf(),
+            &mut ModuleRoutes::declared(declared.clone(), &[], &[]),
             &[declared.resolve_import(&import)],
         ),
         install_exports(
@@ -554,7 +557,7 @@ fn session_env_plain_module_sets_prelude_bit_on() {
     let tables = tables();
     ensure(&tables, "m");
     let (aliases, fallback) = env_maps();
-    install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback);
+    install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback).unwrap();
     assert_eq!(
         fallback.get(&ModuleFullPath::from("m")).map(|b| *b),
         Some(true),
@@ -570,7 +573,7 @@ fn session_env_explicit_prelude_import_keeps_bit_off() {
     ensure(&tables, "m");
     set_imports(&tables, "m", vec![glob_spec("prelude")]);
     let (aliases, fallback) = env_maps();
-    install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback);
+    install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback).unwrap();
     assert!(
         fallback.get(&ModuleFullPath::from("m")).map(|b| *b) != Some(true),
         "a module importing prelude explicitly must NOT get the implicit-fallback bit",
@@ -589,7 +592,8 @@ fn session_env_prelude_module_never_gets_bit() {
         &ModuleFullPath::from("prelude"),
         &aliases,
         &fallback,
-    );
+    )
+    .unwrap();
     assert!(
         fallback.get(&ModuleFullPath::from("prelude")).is_none(),
         "prelude must not fall back to itself",
@@ -610,7 +614,7 @@ fn session_env_reregisters_import_alias() {
     };
     set_imports(&tables, "m", vec![aliased]);
     let (aliases, fallback) = env_maps();
-    install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback);
+    install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback).unwrap();
     let entry = aliases.get(&ModuleFullPath::from("m.u"));
     assert!(
         entry.is_some(),
@@ -644,7 +648,8 @@ fn session_env_import_alias_targets_the_resolved_module() {
             }
         }
         let (aliases, fallback) = env_maps();
-        install_module_session_env(&tables, &ModuleFullPath::from("a"), &aliases, &fallback);
+        install_module_session_env(&tables, &ModuleFullPath::from("a"), &aliases, &fallback)
+            .unwrap();
         aliases
             .get(&ModuleFullPath::from("a.qq"))
             .map(|entry| entry.target.to_string())
@@ -678,7 +683,8 @@ fn session_env_reregisters_submodule_alias() {
         }];
     }
     let (aliases, fallback) = env_maps();
-    install_module_session_env(&tables, &ModuleFullPath::from("shell"), &aliases, &fallback);
+    install_module_session_env(&tables, &ModuleFullPath::from("shell"), &aliases, &fallback)
+        .unwrap();
     let entry = aliases.get(&ModuleFullPath::from("shell.child"));
     assert!(
         entry.is_some(),
@@ -699,8 +705,8 @@ fn session_env_is_idempotent() {
     ensure(&tables, "m");
     let (aliases, fallback) = env_maps();
     let m = ModuleFullPath::from("m");
-    install_module_session_env(&tables, &m, &aliases, &fallback);
-    install_module_session_env(&tables, &m, &aliases, &fallback);
+    install_module_session_env(&tables, &m, &aliases, &fallback).unwrap();
+    install_module_session_env(&tables, &m, &aliases, &fallback).unwrap();
     assert_eq!(fallback.get(&m).map(|b| *b), Some(true));
 }
 
@@ -1076,4 +1082,414 @@ fn candidate_closure_noop_for_private_write() {
         res.is_ok(),
         "a private import edge is not a public phantom: {res:?}"
     );
+}
+
+// -----------------------------------------------------------------------
+// Names-list entries and module-path routes (`design/int/int.md` §6.13).
+// -----------------------------------------------------------------------
+
+/// `lib` with public `Shade.Red`, `Shade.Blue`, `Hue.Dark` and `square`, and
+/// an empty importer `user`.
+fn entry_tables() -> SessionTables {
+    let tables = tables();
+    ensure(&tables, "lib");
+    ensure(&tables, "user");
+    let mut lib = tables.get_mut(&ModuleFullPath::from("lib")).unwrap();
+    for name in ["Shade.Red", "Shade.Blue", "Hue.Dark", "square"] {
+        install_primitive(&mut lib, name);
+    }
+    drop(lib);
+    tables
+}
+
+fn entries_spec(module: &str, entries: Vec<ImportEntry>) -> ImportSpec {
+    ImportSpec {
+        module_path: ModuleFullPath::from(module),
+        alias: None,
+        names: ImportNames::Specific(entries),
+        span: Span::SYNTHETIC,
+    }
+}
+
+fn named(source: &str, local: &str) -> ImportEntry {
+    ImportEntry::Name {
+        source: Symbol::from(source),
+        local: Symbol::from(local),
+    }
+}
+
+/// The source of every candidate `user` binds under `local`.
+fn bound_sources(tables: &SessionTables, local: &str) -> Vec<String> {
+    let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+    let mut sources: Vec<String> = user
+        .name_candidates(&Symbol::from(local))
+        .into_iter()
+        .map(|candidate| candidate.source.to_string())
+        .collect();
+    sources.sort();
+    sources
+}
+
+// spec: spec/08-modules.md §8.3.11 — each entry of a mixed list is classified
+// and installed on its own: a member glob beside named entries drops neither
+// (ACT-1056, T-R2-a).
+#[test]
+fn mixed_entry_list_installs_every_entry() {
+    let tables = entry_tables();
+    let spec = entries_spec(
+        "lib",
+        vec![
+            ImportEntry::MemberGlob(Symbol::from("Shade")),
+            plain_entry("square"),
+            ImportEntry::MemberGlob(Symbol::from("Hue")),
+        ],
+    );
+    install_import_specs(&tables, "user", &ModuleAliases::default(), &[spec]).unwrap();
+    for (local, source) in [
+        ("Red", "lib/Shade.Red"),
+        ("Blue", "lib/Shade.Blue"),
+        ("Dark", "lib/Hue.Dark"),
+        ("square", "lib/square"),
+    ] {
+        assert_eq!(bound_sources(&tables, local), vec![source], "`{local}`");
+    }
+}
+
+// spec: spec/08-modules.md §8.3.11 — `Shade.Blue` binds `Blue` and not the
+// dotted spelling; with `Shade.*` beside it the member is bound once (ACT-1055,
+// T-DUP).
+#[test]
+fn dotted_entry_binds_its_member_and_not_its_dotted_spelling() {
+    let tables = entry_tables();
+    let spec = entries_spec("lib", vec![named("Shade.Blue", "Blue")]);
+    install_import_specs(&tables, "user", &ModuleAliases::default(), &[spec]).unwrap();
+    assert_eq!(bound_sources(&tables, "Blue"), vec!["lib/Shade.Blue"]);
+    assert!(bound_sources(&tables, "Shade.Blue").is_empty());
+    assert!(bound_sources(&tables, "Red").is_empty());
+
+    let twin = entries_spec(
+        "lib",
+        vec![
+            named("Shade.Blue", "Blue"),
+            ImportEntry::MemberGlob(Symbol::from("Shade")),
+        ],
+    );
+    install_import_specs(&tables, "user", &ModuleAliases::default(), &[twin]).unwrap();
+    assert_eq!(bound_sources(&tables, "Blue"), vec!["lib/Shade.Blue"]);
+}
+
+// spec: spec/08-modules.md §8.3.5, §8.4.5 — a rename binds its local name
+// only, for an import and a re-export alike (ACT-0997, T-R2-b, T-R2-c); a
+// missing source is an error naming the source, not the local name.
+#[test]
+fn renamed_entry_binds_local_only() {
+    let tables = entry_tables();
+    let import = entries_spec("lib", vec![named("square", "sq")]);
+    install_import_specs(&tables, "user", &ModuleAliases::default(), &[import]).unwrap();
+    assert_eq!(bound_sources(&tables, "sq"), vec!["lib/square"]);
+    assert!(bound_sources(&tables, "square").is_empty());
+
+    let export = ExportSpec {
+        module_path: ModuleFullPath::from("lib"),
+        alias: None,
+        names: ImportNames::Specific(vec![named("Shade.Red", "Crimson")]),
+        span: Span::SYNTHETIC,
+    };
+    install_export_specs(&tables, "user", &[export]).unwrap();
+    let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+    let crimson = sole_candidate(&user, "Crimson");
+    assert_eq!(crimson.visibility, Visibility::Public);
+    assert!(user.name_candidates(&Symbol::from("Red")).is_empty());
+    drop(user);
+
+    let missing = entries_spec("lib", vec![named("cube", "square")]);
+    match install_import_specs(&tables, "user", &ModuleAliases::default(), &[missing]) {
+        Err(CranelispError::TypeError { message, .. }) => {
+            assert!(message.contains("'cube' not found"), "{message}")
+        }
+        other => panic!("expected the missing source to be named, got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.4.0, §8.4.4 — a name-less export loads nothing:
+// `(export [m []])` installs nothing and needs no table for `m`, and with no
+// alias it mounts nothing (T-EXP0).
+#[test]
+fn name_less_export_loads_nothing_and_mounts_nothing() {
+    let tables = tables();
+    ensure(&tables, "user");
+    let user = ModuleFullPath::from("user");
+    let spec = ExportSpec {
+        module_path: ModuleFullPath::from("absent"),
+        alias: None,
+        names: ImportNames::None,
+        span: Span::SYNTHETIC,
+    };
+    assert!(!names_load(&spec.names));
+    install_export_specs(&tables, "user", std::slice::from_ref(&spec))
+        .expect("a name-less export reads no table");
+    let aliases = ModuleAliases::default();
+    let declared = DeclaredChildren::of(&user, std::iter::empty());
+    ModuleRoutes::declared(declared.clone(), &[], &[])
+        .install_export_mount(&user, &aliases, &declared.resolve_export(&spec))
+        .unwrap();
+    assert!(aliases.is_empty(), "no alias, no mount");
+}
+
+fn mount(module: &str, alias: &str, names: ImportNames) -> ExportSpec {
+    ExportSpec {
+        module_path: ModuleFullPath::from(module),
+        alias: Some(ModuleName::from(alias)),
+        names,
+        span: Span::new(40, 50),
+    }
+}
+
+fn import_alias(module: &str, alias: &str) -> ImportSpec {
+    ImportSpec {
+        module_path: ModuleFullPath::from(module),
+        alias: Some(ModuleName::from(alias)),
+        names: ImportNames::None,
+        span: Span::new(10, 20),
+    }
+}
+
+/// One declaration of `p`, in the order the module writes it.
+enum Declared {
+    Import(ImportSpec),
+    Export(ExportSpec),
+}
+
+/// Write `declarations` the fresh way: each through its writer, with the
+/// routes the earlier declarations recorded. Returns the first refusal.
+fn fresh_routes(
+    aliases: &ModuleAliases,
+    children: &[cranelisp_types::ModDecl],
+    declarations: &[Declared],
+) -> Result<(), CranelispError> {
+    let p = ModuleFullPath::from("p");
+    let declared = DeclaredChildren::of(&p, children);
+    let mut imports = Vec::new();
+    let mut exports = Vec::new();
+    for declaration in declarations {
+        let mut routes = ModuleRoutes::declared(declared.clone(), &imports, &exports);
+        match declaration {
+            Declared::Import(spec) => {
+                routes.install_import_alias(&p, aliases, &declared.resolve_import(spec))?;
+                imports.push(spec.clone());
+            }
+            Declared::Export(spec) => {
+                routes.install_export_mount(&p, aliases, &declared.resolve_export(spec))?;
+                exports.push(spec.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn alias_entry(aliases: &ModuleAliases, alias: &str) -> Option<(String, Visibility)> {
+    aliases
+        .get(&ModuleFullPath::from(format!("p.{alias}")))
+        .map(|entry| (entry.target.to_string(), entry.visibility))
+}
+
+fn refusal_message(outcome: Result<(), CranelispError>) -> (String, Span) {
+    match outcome {
+        Err(CranelispError::ModuleError { message, location }) => (message, location.span),
+        other => panic!("expected a module refusal, got {other:?}"),
+    }
+}
+
+// spec: spec/08-modules.md §8.4.4 — a mount installs a `Public` route on the
+// fresh route and on restore, and a repeated mount to the same module is
+// idempotent.
+#[test]
+fn mount_installs_one_public_route_on_both_routes() {
+    let aliases = ModuleAliases::default();
+    let spec = mount("lib", "s", ImportNames::None);
+    fresh_routes(
+        &aliases,
+        &[],
+        &[
+            Declared::Export(spec.clone()),
+            Declared::Export(spec.clone()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        alias_entry(&aliases, "s"),
+        Some(("lib".into(), Visibility::Public))
+    );
+
+    let tables = tables();
+    ensure(&tables, "p");
+    tables.get_mut(&ModuleFullPath::from("p")).unwrap().exports = vec![spec.clone(), spec];
+    let restored = ModuleAliases::default();
+    install_module_session_env(&tables, &ModuleFullPath::from("p"), &restored, &no_pf()).unwrap();
+    assert_eq!(
+        alias_entry(&restored, "s"),
+        Some(("lib".into(), Visibility::Public))
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4, §8.6.4 — a mount alias equal to a declared
+// child is refused whether the `mod` form comes before or after the `export`
+// (the children are the cluster's, not the order's), located at the spec
+// (T-MNT-a).
+#[test]
+fn mount_alias_equal_to_a_declared_child_refuses() {
+    let aliases = ModuleAliases::default();
+    let outcome = fresh_routes(
+        &aliases,
+        &[mod_decl("s")],
+        &[Declared::Export(mount("lib", "s", ImportNames::Glob))],
+    );
+    let (message, span) = refusal_message(outcome);
+    assert!(
+        message.contains("`s`") && message.contains("p.s"),
+        "{message}"
+    );
+    assert_eq!(span, Span::new(40, 50));
+    assert!(alias_entry(&aliases, "s").is_none(), "nothing is mounted");
+}
+
+// spec: spec/08-modules.md §8.4.4, §8.6.4 — a second mount of one alias to a
+// different module refuses, in the same form or a later one (T-MNT-b).
+#[test]
+fn second_mount_to_a_different_module_refuses() {
+    let aliases = ModuleAliases::default();
+    let outcome = fresh_routes(
+        &aliases,
+        &[],
+        &[
+            Declared::Export(mount("lib1", "s", ImportNames::None)),
+            Declared::Export(mount("lib2", "s", ImportNames::None)),
+        ],
+    );
+    let (message, _) = refusal_message(outcome);
+    assert!(
+        message.contains("'lib1'") && message.contains("'lib2'"),
+        "{message}"
+    );
+    assert_eq!(
+        alias_entry(&aliases, "s"),
+        Some(("lib1".into(), Visibility::Public)),
+        "the first mount is not rerouted"
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4 (S124-Q4) — an import alias and a mount of
+// one spelling to the same module form one `Public` route in either order,
+// on the fresh route and on restore (T-Q4-a).
+#[test]
+fn import_alias_and_mount_to_one_module_leave_one_public_entry() {
+    let import = || Declared::Import(import_alias("lib", "s"));
+    let export = || Declared::Export(mount("lib", "s", ImportNames::Glob));
+    for order in [[import(), export()], [export(), import()]] {
+        let aliases = ModuleAliases::default();
+        fresh_routes(&aliases, &[], &order).unwrap();
+        assert_eq!(
+            alias_entry(&aliases, "s"),
+            Some(("lib".into(), Visibility::Public))
+        );
+    }
+
+    let tables = tables();
+    ensure(&tables, "p");
+    {
+        let mut p = tables.get_mut(&ModuleFullPath::from("p")).unwrap();
+        p.imports = vec![import_alias("lib", "s")];
+        p.exports = vec![mount("lib", "s", ImportNames::Glob)];
+    }
+    let restored = ModuleAliases::default();
+    install_module_session_env(&tables, &ModuleFullPath::from("p"), &restored, &no_pf()).unwrap();
+    assert_eq!(
+        alias_entry(&restored, "s"),
+        Some(("lib".into(), Visibility::Public))
+    );
+}
+
+// spec: spec/08-modules.md §8.4.4, §8.6.4 (S124-Q4) — an import alias and a
+// mount of one spelling to different modules refuse in either order, at the
+// second declaration, and the first route stands (T-Q4-b).
+#[test]
+fn import_alias_and_mount_to_different_modules_refuse_in_either_order() {
+    let aliases = ModuleAliases::default();
+    let (_, span) = refusal_message(fresh_routes(
+        &aliases,
+        &[],
+        &[
+            Declared::Import(import_alias("lib1", "s")),
+            Declared::Export(mount("lib2", "s", ImportNames::Glob)),
+        ],
+    ));
+    assert_eq!(span, Span::new(40, 50), "located at the mount");
+    assert_eq!(
+        alias_entry(&aliases, "s"),
+        Some(("lib1".into(), Visibility::Private))
+    );
+
+    let aliases = ModuleAliases::default();
+    let (_, span) = refusal_message(fresh_routes(
+        &aliases,
+        &[],
+        &[
+            Declared::Export(mount("lib2", "s", ImportNames::Glob)),
+            Declared::Import(import_alias("lib1", "s")),
+        ],
+    ));
+    assert_eq!(span, Span::new(10, 20), "located at the import");
+    assert_eq!(
+        alias_entry(&aliases, "s"),
+        Some(("lib2".into(), Visibility::Public))
+    );
+}
+
+// spec: spec/08-modules.md §8.6.4 — a second import alias for one spelling
+// to a different module refuses, through the installer too (R-A2, T-ALIAS);
+// the control with distinct aliases installs both.
+#[test]
+fn second_import_alias_to_a_different_module_refuses() {
+    let aliases = ModuleAliases::default();
+    let (message, _) = refusal_message(fresh_routes(
+        &aliases,
+        &[],
+        &[
+            Declared::Import(import_alias("lib1", "z")),
+            Declared::Import(import_alias("lib2", "z")),
+        ],
+    ));
+    assert!(message.contains("an import alias"), "{message}");
+    assert_eq!(
+        alias_entry(&aliases, "z"),
+        Some(("lib1".into(), Visibility::Private))
+    );
+
+    let tables = tables();
+    ensure(&tables, "p");
+    tables.get_mut(&ModuleFullPath::from("p")).unwrap().imports =
+        vec![import_alias("lib1", "z"), import_alias("lib2", "z")];
+    assert!(
+        install_module_session_env(
+            &tables,
+            &ModuleFullPath::from("p"),
+            &ModuleAliases::default(),
+            &no_pf()
+        )
+        .is_err(),
+        "the restore route raises the same refusal"
+    );
+
+    let aliases = ModuleAliases::default();
+    fresh_routes(
+        &aliases,
+        &[],
+        &[
+            Declared::Import(import_alias("lib1", "y")),
+            Declared::Import(import_alias("lib2", "z")),
+        ],
+    )
+    .unwrap();
+    assert_eq!(alias_entry(&aliases, "y").map(|e| e.0), Some("lib1".into()));
+    assert_eq!(alias_entry(&aliases, "z").map(|e| e.0), Some("lib2".into()));
 }

@@ -311,13 +311,13 @@ pub use lifecycle::{
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CallablePublicationRecord, CallableSlot, CodeStore,
     CompiledOwnerRejection, CompiledPublicationRejection, EnrolOutcome, EnsureOutcome, ExportSpec,
-    GotExhausted, ImportNames, ImportSpec, LinkerStore, MacroParam, ModDecl, ModuleAliasEntry,
-    ModuleAliases, PlatformSpec, PublicationRecord, RetainedCallables, SlotMintError,
-    StagedImplShell, StagedPublicationDecision, SymbolTable, SymbolTables, WrittenTraitImpl,
-    drop_glue_symbol_name, enrol_written_trait_impl, ensure_module_exists, for_each_in_module,
-    get_implementing_types_chain, get_impls_for_type_chain, got_data_symbol_name, install_module,
-    lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
-    resolve_terminal_entry_and_home,
+    GotExhausted, ImportEntry, ImportNames, ImportSpec, LinkerStore, MacroParam, ModDecl,
+    ModuleAliasEntry, ModuleAliases, PlatformSpec, PublicationRecord, RetainedCallables,
+    SlotMintError, StagedImplShell, StagedPublicationDecision, SymbolTable, SymbolTables,
+    WrittenTraitImpl, drop_glue_symbol_name, enrol_written_trait_impl, ensure_module_exists,
+    for_each_in_module, get_implementing_types_chain, get_impls_for_type_chain,
+    got_data_symbol_name, install_module, lookup_trait_decl_chain, lookup_type_def_chain,
+    resolve_module_by_name_chain, resolve_terminal_entry_and_home,
 };
 pub use scheduling::{Acquire, ConcurrencyDescriptor, Poll, PollFn, ResourceRole};
 // ADT-entry builder (S110 R-2, the registration-mirror cure; Principle 24

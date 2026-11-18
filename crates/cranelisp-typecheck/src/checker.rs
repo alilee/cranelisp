@@ -1343,19 +1343,19 @@ where
         }
     }
 
-    /// Resolve a trait reference to its defining module via per-symbol
-    /// chain-follow from `state.current_module`. Phase B Part 5 successor
-    /// to `trait_home_for` — returns `Result<ModuleFullPath, ResolveError>`.
+    /// Resolve a trait reference to its declaration's identity: the resolved
+    /// terminal's canonical module paired with the `TraitRecord`'s own name,
+    /// never the spelling. A renamed import (`(import [lib [(Size Sz)]])`)
+    /// therefore yields `lib/Size`, not `lib/Sz`
+    /// (`design/typecheck/typecheck.md` §7.3.2).
     ///
-    /// Per Principle 17 shape 1 + Decision 45 Pattern B. No fallback —
-    /// callers no longer need to combine this with a separate existence
-    /// probe; the typed error carries the diagnostic context.
+    /// No fallback: the typed error carries the diagnostic context.
     pub(crate) fn resolve_trait(
         &self,
         state: &CheckState,
         trait_name: &str,
         span: Span,
-    ) -> Result<ModuleFullPath, ResolveError> {
+    ) -> Result<cranelisp_types::FQTraitName, ResolveError> {
         let trait_not_found = || ResolveError::TraitNotFound {
             name: TraitName::from(trait_name),
             from_module: state.current_module.clone(),
@@ -1366,17 +1366,20 @@ where
             .map_err(|e| project_not_found(e, trait_not_found))?;
         match resolved.entry {
             Binding {
-                declaration: Decl::Trait(_),
+                declaration: Decl::Trait(cranelisp_types::TraitRecord { info, .. }),
                 ..
-            } => Ok(resolved.canonical.module),
+            } => Ok(cranelisp_types::FQTraitName::new(
+                resolved.canonical.module,
+                info.name,
+            )),
             _ => Err(trait_not_found()),
         }
     }
 
     /// Resolve a trait reference as written (`design/typecheck/typecheck.md`
     /// §7.3.2 step R, §3.5): a qualifier names the module that decides it,
-    /// after alias substitution, and the result pairs the trait's canonical
-    /// home with the spelled name. Shared by the type-or-trait annotation and
+    /// after alias substitution, and the result is the declaration's identity
+    /// from [`Self::resolve_trait`]. Shared by the type-or-trait annotation and
     /// every member of a stacked bound, so the two cannot diverge.
     ///
     /// The failure records nothing until its caller makes it the form's
@@ -1392,13 +1395,8 @@ where
             Some(module) => format!("{module}/{name}"),
             None => name.to_string(),
         };
-        let home = self
-            .resolve_trait(state, &spelled, span)
-            .map_err(TypePositionFailure)?;
-        Ok(cranelisp_types::FQTraitName::new(
-            home,
-            TraitName::from(name),
-        ))
+        self.resolve_trait(state, &spelled, span)
+            .map_err(TypePositionFailure)
     }
 
     /// The trait reading of a single named parameter or value annotation whose

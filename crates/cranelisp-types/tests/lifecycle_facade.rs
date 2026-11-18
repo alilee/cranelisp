@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use cranelisp_types::{
     Binding, CallableArmDraft, CallableOrigin, CallableTarget, ConcreteType, ConstrainedMeta, Decl,
-    DefnVariant, Expr, FQSymbol, FQTypeName, InstanceLink, Life, MacroClauseDraft, ModeSummary,
-    MonoDefnVariant, MonoExpr, Realization, Scheme, Sexp, Span, SpecialFormRecord,
-    StagedPublicationDecision, Symbol, SymbolTable, SymbolTables, SynthSpec, TemplateBody,
-    TemplateKind, TraitDeclInfo, TraitMethodRecord, TraitName, TraitRecord, Type, TypeName,
-    Visibility, WrittenTraitImpl, member_key,
+    DefnVariant, ExportSpec, Expr, FQSymbol, FQTypeName, ImportEntry, ImportNames, InstanceLink,
+    Life, MacroClauseDraft, ModeSummary, MonoDefnVariant, MonoExpr, Realization, Scheme, Sexp,
+    Span, SpecialFormRecord, StagedPublicationDecision, Symbol, SymbolTable, SymbolTables,
+    SynthSpec, TemplateBody, TemplateKind, TraitDeclInfo, TraitMethodRecord, TraitName,
+    TraitRecord, Type, TypeName, Visibility, WrittenTraitImpl, member_key,
 };
 
 fn scheme(ty: Type) -> Scheme {
@@ -315,6 +315,7 @@ fn external_consumer_can_author_lifecycle_records_and_instance_funnel() {
         "consumer".into(),
         vec![Symbol::from("display")],
         Visibility::Public,
+        Symbol::from("Display.Thing"),
     );
     let mut trait_home = SymbolTable::new("traits".into());
     let staged = trait_home.stage_trait_impl_shell(&written).unwrap();
@@ -491,4 +492,34 @@ fn external_consumer_can_replace_unpublished_synthesized_callables() {
             ..
         }
     ));
+}
+
+// spec: design/arch/interfaces.md §Import and export entries — the frontend
+// authors entries and export specs from outside this crate.
+#[test]
+fn import_entries_and_export_specs_are_authorable_across_the_crate_boundary() {
+    let entries = vec![
+        ImportEntry::Name {
+            source: Symbol::from("Shape.area"),
+            local: Symbol::from("area"),
+        },
+        ImportEntry::MemberGlob(Symbol::from("Shape")),
+    ];
+    let export = ExportSpec {
+        module_path: "dep.shapes".into(),
+        alias: Some("sh".into()),
+        names: ImportNames::Specific(entries),
+        span: Span::SYNTHETIC,
+    };
+    let ImportNames::Specific(entries) = &export.names else {
+        panic!("a names list was authored");
+    };
+    let locals: Vec<&str> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            ImportEntry::Name { local, .. } => Some(local.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(locals, ["area"]);
 }

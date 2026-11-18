@@ -260,7 +260,11 @@ fn reload_replaces_declaration_records_and_failed_reload_clears_them() {
     std::fs::write(&path, DECLS_V2).unwrap();
     attempt(s.reload_module(&user, &path, Default::default(), &Default::default())).unwrap();
     let type_v2 = record_of(&s, "user", "T").unwrap();
-    let impl_v2 = record_of(&s, "user", "Disp.T").unwrap();
+    let impl_key = cranelisp_types::trait_impl_key(
+        &cranelisp_types::FQTypeName::new(user.clone(), "T".into()),
+        &cranelisp_types::FQTraitName::new(user.clone(), "Disp".into()),
+    );
+    let impl_v2 = record_of(&s, "user", impl_key.as_ref()).unwrap();
     assert_eq!(
         type_v2.sexp.as_ref().map(Sexp::format_flat),
         Some(flat("(deftype T \"edited\" [:Int v])"))
@@ -279,7 +283,7 @@ fn reload_replaces_declaration_records_and_failed_reload_clears_them() {
         attempt(s.reload_module(&user, &path, Default::default(), &Default::default())).is_err()
     );
     assert!(record_of(&s, "user", "T").is_none());
-    assert!(record_of(&s, "user", "Disp.T").is_none());
+    assert!(record_of(&s, "user", impl_key.as_ref()).is_none());
     s.shutdown();
 }
 
@@ -932,6 +936,7 @@ const PROLOGUE_LIB: &str = "(import [primitives [*]])\n(deftrait Sh (sh [x] Int)
                             (defn id [x] x)\n";
 const PROLOGUE_FULL: &str = ";; The user module.\n\n(import [primitives [*]])\n\
                              (import [lib [id Sh]])\n(import [(lib l) []])\n(mod child)\n\
+                             (export [(lib lm) []])\n\
                              (defn plain [] 1)\n(defn fam ([:Int x] x) ([:String s] (str-len s)))\n\
                              (defn tid [x] x)\n(defn uses-tid [] (tid 1))\n(deftype P [:Int a])\n\
                              (deftrait Tr (tr [x] Int))\n(impl Sh Int (defn sh [x] 1))\n\
@@ -986,6 +991,14 @@ fn rebuild_prologue_establishes_exactly_what_the_saved_source_keeps() {
     assert_eq!(imported_id, 1, "`id` is imported once");
     assert!(s.shared.module_aliases.get(&alias("l")).is_some());
     assert!(s.shared.module_aliases.get(&alias("child")).is_some());
+    assert_eq!(
+        s.shared
+            .module_aliases
+            .get(&alias("lm"))
+            .map(|entry| entry.visibility),
+        Some(cranelisp_types::Visibility::Public),
+        "the export mount"
+    );
     assert!(table_of(&s, "lib").get(shell.as_ref()).is_some());
 
     let owners = compiled_owners(&kept);
@@ -1007,6 +1020,10 @@ fn rebuild_prologue_establishes_exactly_what_the_saved_source_keeps() {
     assert!(s.eval("(id 5)").is_err(), "`id` is unresolved");
     assert!(s.shared.module_aliases.get(&alias("l")).is_none());
     assert!(s.shared.module_aliases.get(&alias("child")).is_none());
+    assert!(
+        s.shared.module_aliases.get(&alias("lm")).is_none(),
+        "the rebuild removes the mount"
+    );
     assert!(
         table_of(&s, "lib").get(shell.as_ref()).is_none(),
         "the foreign trait home holds no shell"

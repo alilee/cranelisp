@@ -16,15 +16,15 @@
 //! them to construct a structural-decl store they'll never use.
 //!
 //! Per BC invariant #3 (`super` resolved at frontend), the
-//! `containing_module` parameter is mandatory:
-//! `ImportSpec.module_path` NEVER contains the literal `"super"` past
-//! this boundary. All `super`-resolution happens against the parsing
-//! module's own path per spec §8.3.7.
+//! `containing_module` parameter is mandatory: neither an
+//! `ImportSpec.module_path` nor an `ExportSpec.module_path` contains the
+//! literal `"super"` past this boundary. All `super`-resolution happens
+//! against the parsing module's own path per spec §8.3.8.
 
 use crate::ast_builder::{HeadKind, StructuralKind, classify_head};
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath,
-    ModuleName, PlatformSpec, Sexp, Span, Visibility,
+    CranelispError, ErrorLocation, ExportSpec, ImportEntry, ImportNames, ImportSpec, ModDecl,
+    ModuleFullPath, ModuleName, PlatformSpec, Sexp, Span, Visibility,
 };
 
 /// Extracted module-level declarations from top-level S-expressions.
@@ -66,7 +66,9 @@ pub struct ExtractedDeclarations {
     /// #3 (`super` resolved at frontend), no `ImportSpec.module_path`
     /// contains the literal `"super"` past this boundary.
     pub import_specs: Vec<ImportSpec>,
-    /// `(export [...])` declarations in source order.
+    /// `(export [...])` declarations in source order, parsed by the same
+    /// pair parser as imports: `super` is resolved, and a `(path alias)`
+    /// specifier's mount alias is in `ExportSpec::alias`.
     pub export_specs: Vec<ExportSpec>,
     /// `(platform name)` declarations in source order.
     pub platform_specs: Vec<PlatformSpec>,
@@ -87,9 +89,9 @@ pub struct ExtractedDeclarations {
 ///
 /// - `containing_module` — the path of the module whose source provides
 ///   `sexps`. **Required** because BC invariant #3 mandates `super`
-///   resolution at parse time: `ImportSpec.module_path` MUST never carry
-///   the literal `"super"` past the frontend boundary. Per spec §8.3.7,
-///   inside `a.b.c` the form `(import [super [...]])` resolves to `a.b`.
+///   resolution at parse time: no `ImportSpec` or `ExportSpec` module path
+///   carries the literal `"super"` past the frontend boundary. Per spec
+///   §8.3.8, inside `a.b.c` the form `(import [super [...]])` resolves to `a.b`.
 ///   The path is needed to do that rewrite. It is also preserved on the
 ///   returned `ExtractedDeclarations.path`.
 /// - `sexps` — the parsed source forms in source order.
@@ -125,12 +127,24 @@ pub fn extract_module_declarations(
                             mod_decls.push(decl);
                         }
                         StructuralKind::Import => {
-                            let specs = parse_import(elems, *span, containing_module)?;
-                            import_specs.extend(specs);
+                            let pairs =
+                                parse_pair_form(elems, *span, containing_module, PairForm::Import)?;
+                            import_specs.extend(pairs.into_iter().map(|pair| ImportSpec {
+                                module_path: pair.module_path,
+                                alias: pair.alias,
+                                names: pair.names,
+                                span: pair.span,
+                            }));
                         }
                         StructuralKind::Export => {
-                            let specs = parse_export(elems, *span)?;
-                            export_specs.extend(specs);
+                            let pairs =
+                                parse_pair_form(elems, *span, containing_module, PairForm::Export)?;
+                            export_specs.extend(pairs.into_iter().map(|pair| ExportSpec {
+                                module_path: pair.module_path,
+                                alias: pair.alias,
+                                names: pair.names,
+                                span: pair.span,
+                            }));
                         }
                         StructuralKind::Platform => {
                             let spec = parse_platform(elems, *span)?;
@@ -207,230 +221,316 @@ fn parse_mod_decl(
 }
 
 // ---------------------------------------------------------------------------
-// import parsing
+// import and export parsing — one pair parser (design/frontend/modules.md §2.1)
 // ---------------------------------------------------------------------------
 
-/// Parse `(import [module-spec names-list ...])`.
+/// Which declaration a `module-spec names-list` pair belongs to. Import and
+/// export are one operation differing only in visibility (spec §8.4.0), so this
+/// is the only thing the shared parser is told: it names the form in
+/// diagnostics and nothing else.
+#[derive(Debug, Clone, Copy)]
+enum PairForm {
+    Import,
+    Export,
+}
+
+impl PairForm {
+    fn noun(self) -> &'static str {
+        match self {
+            PairForm::Import => "import",
+            PairForm::Export => "export",
+        }
+    }
+}
+
+/// One parsed `module-spec names-list` pair, before it is wrapped in the
+/// form's record (`ImportSpec` or `ExportSpec`).
+struct DeclPair {
+    module_path: ModuleFullPath,
+    alias: Option<ModuleName>,
+    names: ImportNames,
+    span: Span,
+}
+
+/// The entry shapes a names list accepts (spec §8.3 `name` and `member_glob`),
+/// named by every entry diagnostic.
+const ENTRY_SHAPES: &str =
+    "a name, a dotted member `Type.member`, a member glob `Type.*`, or a rename `(source local)`";
+
+fn module_err(message: String, span: Span) -> CranelispError {
+    CranelispError::ModuleError {
+        message,
+        location: ErrorLocation::from_span_file(span, None),
+    }
+}
+
+/// Parse `(import [module-spec names-list ...])` or
+/// `(export [module-spec names-list ...])` into its pairs, in source order.
 ///
-/// The bracket contents are pairs: `module-spec names-list module-spec names-list ...`
-/// where module-spec is a symbol, `super`, or `(module alias)`, and names-list is `[names]`.
-///
-/// `containing_module` is the path of the module whose source contains this
-/// import form; it is required to rewrite `super` to the parent module path
-/// per spec §8.3.7.
-fn parse_import(
+/// `containing_module` is the path of the module whose source contains the
+/// form; it is required to rewrite `super` to the parent module path (spec
+/// §8.3.8), for both forms.
+fn parse_pair_form(
     elems: &[Sexp],
     span: Span,
     containing_module: &ModuleFullPath,
-) -> Result<Vec<ImportSpec>, CranelispError> {
+    form: PairForm,
+) -> Result<Vec<DeclPair>, CranelispError> {
+    let noun = form.noun();
     if elems.len() != 2 {
-        return Err(CranelispError::ModuleError {
-            message: "import requires exactly one bracket argument".to_string(),
-            location: ErrorLocation::from_span_file(span, None),
-        });
+        return Err(module_err(
+            format!("{noun} requires exactly one bracket argument"),
+            span,
+        ));
     }
-
-    let entries = match &elems[1] {
-        Sexp::Bracket(items, _) => items,
-        _ => {
-            return Err(CranelispError::ModuleError {
-                message: "import argument must be a bracket list".to_string(),
-                location: ErrorLocation::from_span_file(elems[1].span(), None),
-            });
-        }
+    let Sexp::Bracket(items, _) = &elems[1] else {
+        return Err(module_err(
+            format!("{noun} argument must be a bracket list"),
+            elems[1].span(),
+        ));
     };
 
-    parse_import_entries(entries, span, containing_module)
-}
-
-/// Parse pairs of `module-spec names-list` from bracket contents.
-///
-/// Rewrites `super` module specifiers to the parent of `containing_module`
-/// per spec §8.3.7: inside `a.b.c`, `super` resolves to `a.b`. Using `super`
-/// in a root module produces a compile-time error. After this function
-/// returns, no `ImportSpec.module_path` contains the literal string `"super"`.
-fn parse_import_entries(
-    items: &[Sexp],
-    form_span: Span,
-    containing_module: &ModuleFullPath,
-) -> Result<Vec<ImportSpec>, CranelispError> {
-    let mut specs = Vec::new();
+    let mut pairs = Vec::new();
     let mut i = 0;
-
     while i < items.len() {
-        let (raw_module_path, alias, mod_span) = parse_module_spec(&items[i])?;
-
-        // Rewrite `super` to the parent module path (spec §8.3.7).
-        let module_path = if raw_module_path == "super" {
-            match containing_module.as_ref().rsplit_once('.') {
-                Some((parent, _)) => parent.to_string(),
-                None => {
-                    return Err(CranelispError::ModuleError {
-                        message: format!(
-                            "'super' import used in top-level module '{}' (no parent)",
-                            containing_module.as_ref()
-                        ),
-                        location: ErrorLocation::from_span_file(mod_span, None),
-                    });
-                }
-            }
-        } else {
-            raw_module_path
+        let (module_path, alias, mod_span) = parse_module_spec(&items[i], containing_module, form)?;
+        i += 1;
+        let Some(names_sexp) = items.get(i) else {
+            return Err(module_err(
+                format!("{noun}: missing names list after module '{module_path}'"),
+                span,
+            ));
         };
-
+        let names = parse_names_list(names_sexp, form)?;
         i += 1;
-        if i >= items.len() {
-            return Err(CranelispError::ModuleError {
-                message: format!("import: missing names list after module '{}'", module_path),
-                location: ErrorLocation::from_span_file(form_span, None),
-            });
-        }
-
-        let (names, _names_span) = parse_names_list(&items[i])?;
-        let spec_span = mod_span.merge(items[i].span());
-        i += 1;
-
-        specs.push(ImportSpec {
-            module_path: ModuleFullPath::from(module_path),
-            alias: alias.map(ModuleName::from),
+        pairs.push(DeclPair {
+            module_path,
+            alias,
             names,
-            span: spec_span,
+            span: mod_span.merge(names_sexp.span()),
         });
     }
-
-    Ok(specs)
+    Ok(pairs)
 }
 
-/// Parse a module specifier: bare symbol, `super`, or `(module alias)`.
+/// Parse a module specifier: a module path, `super`, or `(path alias)`.
 ///
-/// Returns `(module_path, optional_alias, span)`.
-fn parse_module_spec(sexp: &Sexp) -> Result<(String, Option<String>, Span), CranelispError> {
-    match sexp {
-        Sexp::Symbol(name, span) => Ok((name.clone(), None, *span)),
+/// The path is a reference and may be dotted. `super` is rewritten here to the
+/// parent of `containing_module` (spec §8.3.8): inside `a.b.c` it is `a.b`, and
+/// in a root module it is a located error. No returned path is the literal
+/// `"super"` (BC invariant 3). The alias is a binder (spec §8.3.4, which covers
+/// export mount aliases too) and rejects a qualified or dotted spelling.
+fn parse_module_spec(
+    sexp: &Sexp,
+    containing_module: &ModuleFullPath,
+    form: PairForm,
+) -> Result<(ModuleFullPath, Option<ModuleName>, Span), CranelispError> {
+    let noun = form.noun();
+    let (written_path, alias, span) = match sexp {
+        Sexp::Symbol(name, span) => (name.clone(), None, *span),
         Sexp::List(elems, span) => {
-            // (module alias) form
             if elems.len() != 2 {
-                return Err(CranelispError::ModuleError {
-                    message: "aliased module spec must be (module alias)".to_string(),
-                    location: ErrorLocation::from_span_file(*span, None),
-                });
+                return Err(module_err(
+                    format!(
+                        "{noun}: an aliased module specifier is `(module alias)` — exactly \
+                         two symbols, got {}",
+                        sexp.format_flat()
+                    ),
+                    *span,
+                ));
             }
             let module = expect_symbol(&elems[0], "module path in alias")?;
             let alias = expect_symbol(&elems[1], "alias name")?;
-            // The module path (elems[0]) is a REFERENCE — a qualified/dotted path
-            // is permitted. The alias (elems[1]) is a LOCAL binder (spec §5
-            // binder-positions table, §8.3.4) — a qualified spelling rejects,
-            // same diagnostic family as the other local binders.
             crate::ast_builder::reject_qualified_binder_head(&alias, elems[1].span())?;
-            Ok((module, Some(alias), *span))
+            (module, Some(ModuleName::from(alias)), *span)
         }
-        other => Err(CranelispError::ModuleError {
-            message: "expected module specifier (symbol or (module alias))".to_string(),
-            location: ErrorLocation::from_span_file(other.span(), None),
-        }),
-    }
-}
-
-/// Parse a names list: `[name1 name2]`, `[*]`, `[Display.*]`, or `[]`.
-///
-/// Returns `(ImportNames, span)`.
-fn parse_names_list(sexp: &Sexp) -> Result<(ImportNames, Span), CranelispError> {
-    match sexp {
-        Sexp::Bracket(items, span) => {
-            if items.is_empty() {
-                return Ok((ImportNames::None, *span));
-            }
-
-            // Check for glob: single `*`
-            if items.len() == 1
-                && let Sexp::Symbol(name, _) = &items[0]
-            {
-                if name == "*" {
-                    return Ok((ImportNames::Glob, *span));
-                }
-                // Check for member glob: `Display.*`
-                if let Some(base) = name.strip_suffix(".*") {
-                    return Ok((ImportNames::MemberGlob(base.to_string().into()), *span));
-                }
-            }
-
-            // Specific names
-            let mut names = Vec::new();
-            for item in items {
-                let name = expect_symbol(item, "import name")?;
-                // Check for member glob in multi-item list
-                if let Some(base) = name.strip_suffix(".*") {
-                    return Ok((ImportNames::MemberGlob(base.to_string().into()), *span));
-                }
-                names.push(name.into());
-            }
-            Ok((ImportNames::Specific(names), *span))
-        }
-        other => Err(CranelispError::ModuleError {
-            message: "expected bracket names list".to_string(),
-            location: ErrorLocation::from_span_file(other.span(), None),
-        }),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// export parsing
-// ---------------------------------------------------------------------------
-
-/// Parse `(export [module names-list ...])`.
-fn parse_export(elems: &[Sexp], span: Span) -> Result<Vec<ExportSpec>, CranelispError> {
-    if elems.len() != 2 {
-        return Err(CranelispError::ModuleError {
-            message: "export requires exactly one bracket argument".to_string(),
-            location: ErrorLocation::from_span_file(span, None),
-        });
-    }
-
-    let entries = match &elems[1] {
-        Sexp::Bracket(items, _) => items,
-        _ => {
-            return Err(CranelispError::ModuleError {
-                message: "export argument must be a bracket list".to_string(),
-                location: ErrorLocation::from_span_file(elems[1].span(), None),
-            });
+        other => {
+            return Err(module_err(
+                format!(
+                    "{noun}: expected a module specifier (a module path, `super`, or \
+                     `(module alias)`), got {}",
+                    other.format_flat()
+                ),
+                other.span(),
+            ));
         }
     };
 
-    parse_export_entries(entries, span)
+    let module_path = if written_path == "super" {
+        match containing_module.as_ref().rsplit_once('.') {
+            Some((parent, _)) => parent.to_string(),
+            None => {
+                return Err(module_err(
+                    format!(
+                        "'super' {noun} used in top-level module '{}' (no parent)",
+                        containing_module.as_ref()
+                    ),
+                    span,
+                ));
+            }
+        }
+    } else {
+        written_path
+    };
+    Ok((ModuleFullPath::from(module_path), alias, span))
 }
 
-/// Parse pairs of `module names-list` from bracket contents.
-fn parse_export_entries(
-    items: &[Sexp],
-    form_span: Span,
-) -> Result<Vec<ExportSpec>, CranelispError> {
-    let mut specs = Vec::new();
-    let mut i = 0;
-
-    while i < items.len() {
-        let module_path = expect_symbol(&items[i], "export module path")?;
-        let mod_span = items[i].span();
-
-        i += 1;
-        if i >= items.len() {
-            return Err(CranelispError::ModuleError {
-                message: format!("export: missing names list after module '{}'", module_path),
-                location: ErrorLocation::from_span_file(form_span, None),
-            });
-        }
-
-        let (names, _names_span) = parse_names_list(&items[i])?;
-        let spec_span = mod_span.merge(items[i].span());
-        i += 1;
-
-        specs.push(ExportSpec {
-            module_path: ModuleFullPath::from(module_path),
-            names,
-            span: spec_span,
-        });
+/// Parse a names list (spec §8.3, §8.3.11; design/frontend/modules.md §2.1).
+///
+/// The list shape is decided first: `[]` is [`ImportNames::None`], a sole `*`
+/// is [`ImportNames::Glob`], and anything else is [`ImportNames::Specific`],
+/// with every element classified on its own, in source order. Among other
+/// elements `*` is the multiplication operator, an ordinary entry. No returned
+/// `Specific` is empty.
+fn parse_names_list(sexp: &Sexp, form: PairForm) -> Result<ImportNames, CranelispError> {
+    let Sexp::Bracket(items, _) = sexp else {
+        return Err(module_err(
+            format!(
+                "{}: expected bracket names list, got {}",
+                form.noun(),
+                sexp.format_flat()
+            ),
+            sexp.span(),
+        ));
+    };
+    match items.as_slice() {
+        [] => Ok(ImportNames::None),
+        [Sexp::Symbol(only, _)] if only == "*" => Ok(ImportNames::Glob),
+        _ => items
+            .iter()
+            .map(|item| parse_entry(item, form))
+            .collect::<Result<_, _>>()
+            .map(ImportNames::Specific),
     }
+}
 
-    Ok(specs)
+/// Classify one element of a specific names list.
+///
+/// | Element | Entry |
+/// |---|---|
+/// | `name` | `Name { source: name, local: name }` |
+/// | `Type.member` | `Name { source: Type.member, local: member }` |
+/// | `(source local)` | `Name { source, local }` |
+/// | `Parent.*` | `MemberGlob(Parent)` |
+///
+/// `local` is derived here and nowhere else (Principle 24): the member of a
+/// dotted entry is what follows its last `.`, through the crate's one dotted
+/// splitter. Anything else is a located module error at the element.
+fn parse_entry(item: &Sexp, form: PairForm) -> Result<ImportEntry, CranelispError> {
+    match item {
+        Sexp::Symbol(written, span) => {
+            if let Some(parent) = written.strip_suffix(".*") {
+                return parse_member_glob(parent, written, *span, form);
+            }
+            reject_qualified_entry_source(written, *span, form)?;
+            let local = crate::ast_builder::split_dotted_name(written)
+                .map_or(written.as_str(), |(_, member)| member);
+            Ok(ImportEntry::Name {
+                source: written.as_str().into(),
+                local: local.into(),
+            })
+        }
+        Sexp::List(parts, span) => parse_rename(parts, *span, form),
+        other => Err(module_err(
+            format!(
+                "{}: expected a names-list entry ({ENTRY_SHAPES}), got {}",
+                form.noun(),
+                other.format_flat()
+            ),
+            other.span(),
+        )),
+    }
+}
+
+/// A member glob's parent is one bare type or trait name of the source module
+/// (spec §8.3 `member_glob = symbol '.*'`).
+fn parse_member_glob(
+    parent: &str,
+    written: &str,
+    span: Span,
+    form: PairForm,
+) -> Result<ImportEntry, CranelispError> {
+    use crate::ast_builder::{split_dotted_name, split_qualified_name};
+    if parent.is_empty()
+        || split_qualified_name(parent).is_some()
+        || split_dotted_name(parent).is_some()
+    {
+        return Err(module_err(
+            format!(
+                "{}: '{written}' is not a member glob — its parent must be one bare type or \
+                 trait name of the source module (`Type.*`)",
+                form.noun()
+            ),
+            span,
+        ));
+    }
+    Ok(ImportEntry::MemberGlob(parent.into()))
+}
+
+/// The source of an entry names something in the module the pair already
+/// names, so it carries no `/` qualifier (spec §8.3 `name` production).
+fn reject_qualified_entry_source(
+    written: &str,
+    span: Span,
+    form: PairForm,
+) -> Result<(), CranelispError> {
+    match crate::ast_builder::split_qualified_name(written) {
+        None => Ok(()),
+        Some((_, bare)) => Err(module_err(
+            format!(
+                "{}: '{written}' is a qualified name, but a names-list entry names something in \
+                 the module it is paired with — write '{bare}' ({ENTRY_SHAPES})",
+                form.noun()
+            ),
+            span,
+        )),
+    }
+}
+
+/// Parse a renamed entry `(source local)` (spec §8.3.5, §8.4.5).
+///
+/// The source is a reference, bare or dotted; the local is a binder and goes
+/// through the shared binder reject (spec §8.3.4). A self-rename `(Some Some)`
+/// is valid and yields `source == local`.
+fn parse_rename(parts: &[Sexp], span: Span, form: PairForm) -> Result<ImportEntry, CranelispError> {
+    let noun = form.noun();
+    let [source_sexp, local_sexp] = parts else {
+        return Err(module_err(
+            format!(
+                "{noun}: a renamed entry is `(source local)` — exactly two symbols, got {} \
+                 element(s)",
+                parts.len()
+            ),
+            span,
+        ));
+    };
+    let rename_symbol = |sexp: &Sexp, role: &str| match sexp {
+        Sexp::Symbol(name, span) => Ok((name.clone(), *span)),
+        other => Err(module_err(
+            format!(
+                "{noun}: the {role} of a renamed entry `(source local)` must be a symbol, got {}",
+                other.format_flat()
+            ),
+            other.span(),
+        )),
+    };
+    let (source, source_span) = rename_symbol(source_sexp, "source")?;
+    let (local, local_span) = rename_symbol(local_sexp, "local name")?;
+    if source.ends_with(".*") {
+        return Err(module_err(
+            format!(
+                "{noun}: '{source}' is a member glob and cannot be renamed — a renamed entry's \
+                 source is a name or a dotted member"
+            ),
+            source_span,
+        ));
+    }
+    reject_qualified_entry_source(&source, source_span, form)?;
+    crate::ast_builder::reject_qualified_binder_head(&local, local_span)?;
+    Ok(ImportEntry::Name {
+        source: source.into(),
+        local: local.into(),
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -2,8 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName, Span, Symbol,
-    Visibility,
+    ExportSpec, ImportNames, ImportSpec, ModDecl, ModuleFullPath, ModuleName, Span, Visibility,
 };
 
 use super::*;
@@ -91,6 +90,7 @@ impl World {
     fn export(self, from: &str, to: &str, names: ImportNames) -> Self {
         self.table(from).exports.push(ExportSpec {
             module_path: ModuleFullPath::from(to),
+            alias: None,
             names,
             span: Span::SYNTHETIC,
         });
@@ -134,7 +134,12 @@ impl World {
 }
 
 fn names(list: &[&str]) -> ImportNames {
-    ImportNames::Specific(list.iter().copied().map(Symbol::from).collect())
+    ImportNames::Specific(
+        list.iter()
+            .copied()
+            .map(crate::imports::plain_entry)
+            .collect(),
+    )
 }
 
 fn set(items: &[&str]) -> BTreeSet<String> {

@@ -133,9 +133,12 @@ splits to empty halves and is NOT qualified (Principle 16).
 compile-time error too, because `.` is type/trait *qualification* — a reference
 device — and the language has no notion of binding into a nested path. The
 widening is exactly **one** sibling splitter `split_dotted_name` (rsplit at the
-last `.`, both halves non-empty, mirroring the `/` guard) consumed **only**
-inside `reject_qualified_binder_head`. Two structural rules hold the single
-source (Principle 7; 0703's no-new-mirror constraint):
+last `.`, both halves non-empty, mirroring the `/` guard). For binder checks it
+is consumed **only** inside `reject_qualified_binder_head`; its one reference
+reader is `module_extract`'s entry classification, which derives a dotted
+entry's bound `local` (`Type.member` binds `member`) and recognises a non-bare
+member-glob parent (`design/frontend/modules.md` §2.2). Two structural rules
+hold the single source (Principle 7; 0703's no-new-mirror constraint):
 
 - **`split_qualified_name` stays `/`-only — never widen it.** It serves
   REFERENCES, where a dot is legal (`Maybe.Some`, `core.io/pure`, dotted module
@@ -161,7 +164,7 @@ qualified param died downstream as an incidental `module … not found` at a
 degenerate `0..0` span) and the §5 native heads (defn / deftype-both-arms / deftrait-caller /
 defmacro / method-sig / con_var); `deftype` **constructor names** (both arms) and
 **field names** (both arms); `defmacro` **params** (`parse_param_items` +
-`parse_bracket_pattern`); the `import`/`export` **module alias**
+`parse_bracket_pattern`); the `import`/`export` **module alias** and a **renamed entry's local**
 (`module_extract`); and — **since S114 W-D2** — the **value-level local binders**:
 `defn`/`fn`/`defmacro` params (`build_annotated_params`, both arms), `let` names
 (`build_let_bindings`), and `match` var-patterns (`build_pattern`, the lowercase
@@ -248,9 +251,14 @@ session is the invariant. Auto-gensym in templates only fires at depth 0.
   and `::Constructor` (handled by the macro pipeline / ADT synthesis, not the
   `TopLevel` dispatch). A trailing `:Type` with nothing to bind is a parse error.
 - `extract_module_declarations` requires `containing_module`: it rewrites `super`
-  to the parent path (spec §8.3.7) so `ImportSpec.module_path` NEVER carries the
-  literal `"super"` past the boundary (BC invariant 3). `super` in a root module
-  is a compile-time error.
+  to the parent path (spec §8.3.8) so no `ImportSpec` or `ExportSpec` module path
+  carries the literal `"super"` past the boundary (BC invariant 3). `super` in a
+  root module is a compile-time error for either form.
+- `import` and `export` share **one pair parser** (`parse_pair_form`); they differ
+  only in the record they wrap and the form noun in diagnostics. Do not add an
+  export-side copy — that is how exports lost `(path alias)` (ACT-1056). Each
+  names-list element is classified on its own into an `ImportEntry`, and `local`
+  is derived there once; consumers never re-derive it.
 
 ## deftype field desugaring
 

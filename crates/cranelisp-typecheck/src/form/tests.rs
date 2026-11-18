@@ -1268,6 +1268,82 @@ fn stacked_bound_bare_members_unchanged() {
     );
 }
 
+// ---- Renamed trait references (typecheck.md §7.3.2, the declaration's identity) ----
+
+/// Module `b` declares `Tr` and `Tu`, each implemented for `Int`; the test
+/// module binds `b/Tr` under the renamed local `Sz`, as
+/// `(import [b [(Tr Sz)]])` would (spec §8.3.5).
+fn seed_renamed_trait_import(modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>) {
+    seed_trait_module_b(modules, true);
+    check_source_in(
+        modules,
+        ModuleFullPath::from("b"),
+        &no_aliases(),
+        "(deftrait Tu (tu [x] self)) (impl Tu Int (defn tu [x] x))",
+    )
+    .expect("module b checks");
+    modules
+        .get_mut(&module_path())
+        .unwrap()
+        .expose_candidate(
+            Symbol::from("Sz"),
+            cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from("b"),
+                symbol: Symbol::from("Tr"),
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+}
+
+// spec: spec/08-modules.md §8.3.5; spec/03-types.md §3.9.3 — a parameter
+// constraint written through a renamed trait names the declaration `b/Tr`,
+// so a call at `Int` finds `b`'s impl.
+#[test]
+fn renamed_trait_param_constraint_is_the_declarations_and_finds_its_impl() {
+    let modules = modules();
+    seed_renamed_trait_import(&modules);
+    check_source_in(&modules, module_path(), &no_aliases(), "(defn h [:Sz x] 7)")
+        .expect("`Sz` names the trait `b/Tr`");
+    assert_eq!(
+        param_constraints_of(&modules, "h"),
+        vec!["b/Tr".to_string()]
+    );
+    check_source_in(&modules, module_path(), &no_aliases(), "(defn g [] (h 5))")
+        .expect("`b/Tr` is implemented for `Int`");
+}
+
+// spec: spec/08-modules.md §8.3.5; spec/03-types.md §3.3.3 — a value
+// annotation through a renamed trait checks the declaration's impl.
+#[test]
+fn renamed_trait_value_annotation_checks_the_declarations_impl() {
+    let modules = modules();
+    seed_renamed_trait_import(&modules);
+    check_source_in(&modules, module_path(), &no_aliases(), "(defn h [] :Sz 5)")
+        .expect("`b/Tr` is implemented for `Int`");
+}
+
+// spec: spec/08-modules.md §8.3.5; spec/03-types.md §3.9.2 — a stacked
+// member written through a renamed trait names the declaration, never the
+// spelling, and a call at `Int` finds both impls.
+#[test]
+fn renamed_trait_stacked_member_is_the_declarations_and_finds_its_impl() {
+    let modules = modules();
+    seed_renamed_trait_import(&modules);
+    check_source_in(
+        &modules,
+        module_path(),
+        &no_aliases(),
+        "(defn f [:b/Tu :Sz x] 7)",
+    )
+    .expect("both stacked members name traits in `b`");
+    let mut constraints = param_constraints_of(&modules, "f");
+    constraints.sort();
+    assert_eq!(constraints, vec!["b/Tr".to_string(), "b/Tu".to_string()]);
+    check_source_in(&modules, module_path(), &no_aliases(), "(defn g [] (f 5))")
+        .expect("both stacked members are implemented for `Int`");
+}
+
 // spec: spec/08-modules.md §8.6.5, §8.6.6 step 1; spec/06-pattern-matching.md
 // §6.2.1 — P1: an alias-qualified constructor pattern resolves in the aliased
 // module, as its value twin does.

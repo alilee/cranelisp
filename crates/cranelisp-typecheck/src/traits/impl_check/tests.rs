@@ -1588,3 +1588,157 @@ fn reentry_shapes_check_at_template_time_without_a_caller() {
         );
     }
 }
+
+// ---- The writer record's authored label (typecheck.md §12 T7; traits.md §3.0.1) ----
+
+/// Register the public nullary type `Box` (constructor `MkBox`) in `module`.
+fn register_box_in(tc: &mut crate::checker::TestFixture, module: &ModuleFullPath) {
+    tc.set_current_module(module.clone());
+    tc.register_type_def_self(
+        &TypeName::from("Box"),
+        &None,
+        &[],
+        &[cranelisp_types::ConstructorDef {
+            name: Symbol::from("MkBox"),
+            docstring: None,
+            fields: vec![],
+            span: Span::SYNTHETIC,
+        }],
+        Visibility::Public,
+        Span::SYNTHETIC,
+    )
+    .unwrap();
+}
+
+/// A `user` module that sees `primitives` and declares `Display`.
+fn user_with_display(tc: &mut crate::checker::TestFixture) -> ModuleFullPath {
+    let user = ModuleFullPath::from("user");
+    tc.set_current_module(user.clone());
+    seed_glob_import(tc, &ModuleFullPath::from("primitives"));
+    tc.register_trait_decl_self(&disp_decl("Display")).unwrap();
+    user
+}
+
+fn type_ref_expr(module: Option<&str>, name: &str) -> TypeExpr {
+    TypeExpr::Named(cranelisp_types::TypeRef::new(
+        module.map(ModuleFullPath::from),
+        TypeName::from(name),
+    ))
+}
+
+/// The writer's records as `(label, settled impl type)`, in registration order.
+fn written_labels(
+    tc: &crate::checker::TestFixture,
+    writer: &ModuleFullPath,
+) -> Vec<(String, String)> {
+    tc.modules
+        .get(writer)
+        .unwrap()
+        .written_trait_impls
+        .iter()
+        .map(|record| {
+            (
+                record.authored_label.to_string(),
+                record.impl_type.to_string(),
+            )
+        })
+        .collect()
+}
+
+// spec: spec/08-modules.md §8.3.5; spec/07-traits.md §7.3 — a head written
+// through a renamed type import records its spelling, beside the settled pair.
+#[test]
+fn written_record_labels_a_renamed_type_head_as_spelled() {
+    let mut tc = tf_prims();
+    let lib = ModuleFullPath::from("lib");
+    register_box_in(&mut tc, &lib);
+    let user = user_with_display(&mut tc);
+    tc.symbol_table_mut()
+        .expose_candidate(
+            Symbol::from("B"),
+            cranelisp_types::FQSymbol {
+                module: lib,
+                symbol: Symbol::from("Box"),
+            },
+            Visibility::Private,
+        )
+        .unwrap();
+
+    tc.register_trait_impl_self(&disp_impl("Display", type_ref_expr(None, "B")))
+        .expect("`B` is `lib/Box`");
+
+    assert_eq!(
+        written_labels(&tc, &user),
+        vec![("Display.B".to_string(), "lib/Box".to_string())]
+    );
+}
+
+// spec: spec/08-modules.md §8.5; spec/07-traits.md §7.3 — a qualified trait
+// keeps its written qualifier in the label; identity stays canonical.
+#[test]
+fn written_record_labels_a_qualified_trait_with_its_qualifier() {
+    let mut tc = tf_prims();
+    let fmt = ModuleFullPath::from("fmt");
+    tc.set_current_module(fmt.clone());
+    tc.register_trait_decl_self(&disp_decl("Display")).unwrap();
+    let user = ModuleFullPath::from("user");
+    tc.set_current_module(user.clone());
+    seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+
+    let mut impl_ = disp_impl("Display", type_ref_expr(None, "Int"));
+    impl_.trait_name =
+        cranelisp_types::TraitRef::new(Some(fmt.clone()), TraitName::from("Display"));
+    tc.register_trait_impl_self(&impl_).unwrap();
+
+    let writer = tc.modules.get(&user).unwrap();
+    let [record] = writer.written_trait_impls.as_slice() else {
+        panic!("one record: {:?}", writer.written_trait_impls);
+    };
+    assert_eq!(record.authored_label.as_ref(), "fmt/Display.Int");
+    assert_eq!(record.trait_name.to_string(), "fmt/Display");
+    assert_eq!(record.impl_type.to_string(), "primitives/Int");
+}
+
+// spec: spec/07-traits.md §7.3.5 Case 2 — a higher-kinded impl records the
+// pairing's constructor, the label of the form as received.
+#[test]
+fn written_record_labels_a_higher_kinded_impl_by_its_constructor() {
+    let mut tc = tf_prims();
+    register_option(&mut tc);
+    tc.register_trait_decl_self(&functor_decl()).unwrap();
+    let writer = tc.state.current_module.clone();
+    let impl_ = functor_impl(
+        Some("f"),
+        pairing("Functor", "Option"),
+        Expr::var(Symbol::from("None"), Span::SYNTHETIC),
+    );
+    tc.register_trait_impl_self(&impl_).unwrap();
+
+    let labels = written_labels(&tc, &writer);
+    assert_eq!(labels.len(), 1, "{labels:?}");
+    assert_eq!(labels[0].0, "Functor.Option");
+    assert_eq!(labels[0].0, impl_.authored_label().to_string());
+}
+
+// spec: spec/08-modules.md §8.5; spec/07-traits.md §7.3 — two impls in one
+// writer whose heads differ only by qualifier record distinct labels.
+#[test]
+fn written_records_of_heads_differing_by_qualifier_have_distinct_labels() {
+    let mut tc = tf_prims();
+    register_box_in(&mut tc, &ModuleFullPath::from("a"));
+    register_box_in(&mut tc, &ModuleFullPath::from("b"));
+    let user = user_with_display(&mut tc);
+
+    for module in ["a", "b"] {
+        tc.register_trait_impl_self(&disp_impl("Display", type_ref_expr(Some(module), "Box")))
+            .unwrap_or_else(|e| panic!("{module}/Box: {e}"));
+    }
+
+    assert_eq!(
+        written_labels(&tc, &user),
+        vec![
+            ("Display.a/Box".to_string(), "a/Box".to_string()),
+            ("Display.b/Box".to_string(), "b/Box".to_string()),
+        ]
+    );
+}

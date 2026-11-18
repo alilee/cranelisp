@@ -63,15 +63,16 @@ fn parse_err(message: &str, span: Span) -> CranelispError {
 /// types-crate surface, no cross-crate need). Every place that used to hand-roll
 /// `name.rsplit_once('/')` with the both-halves-non-empty guard
 /// (`reject_qualified_binder_head`, `type_ref_from_name`, `trait_ref_from_name`,
-/// the `type_expr_to_trait_ref` structural assert) delegates here so the split
-/// grammar cannot drift across sites.
-fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
+/// the `type_expr_to_trait_ref` structural assert, and `module_extract`'s
+/// import/export entry classification) delegates here so the split grammar
+/// cannot drift across sites.
+pub(crate) fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
     name.rsplit_once('/')
         .filter(|(module, bare)| !module.is_empty() && !bare.is_empty())
 }
 
-/// The ONE dotted-name splitter for the **binder-reject axis**
-/// (`design/frontend/binder-head-reject.md` §2.2; 0702 Ruling 1).
+/// The ONE dotted-name splitter (`design/frontend/binder-head-reject.md` §2.2;
+/// 0702 Ruling 1; `design/frontend/modules.md` §2.2).
 ///
 /// A written name is a dotted spelling **iff** splitting at the LAST `.` yields
 /// two NON-EMPTY halves — the exact both-halves-non-empty discipline
@@ -85,12 +86,16 @@ fn split_qualified_name(name: &str) -> Option<(&str, &str)> {
 /// Deliberately **NOT** a widening of [`split_qualified_name`]: that one serves
 /// **references** (`type_ref_from_name` / `trait_ref_from_name`), where a dotted
 /// spelling is LEGAL (`Maybe.Some`, a dotted module path in an import) and
-/// splitting it would corrupt the reference. The `.` axis is a binder-reject-only
-/// concern, so it is consumed **only** inside [`reject_qualified_binder_head`] —
-/// the single-source property the 0703 no-new-mirror constraint requires
-/// (Principle 7): there is no second `.`-checking predicate for binder purposes
-/// anywhere in the crate.
-fn split_dotted_name(name: &str) -> Option<(&str, &str)> {
+/// splitting it would corrupt the reference.
+///
+/// Two readers, and only two. For binder checks it is consumed **only** inside
+/// [`reject_qualified_binder_head`] — the single-source property the 0703
+/// no-new-mirror constraint requires (Principle 7): there is no second
+/// `.`-checking predicate for binder purposes anywhere in the crate. The one
+/// reference reader is `module_extract`'s import/export entry classification,
+/// which derives a dotted entry's bound local name (`Type.member` binds
+/// `member`) and recognises a non-bare member-glob parent.
+pub(crate) fn split_dotted_name(name: &str) -> Option<(&str, &str)> {
     name.rsplit_once('.')
         .filter(|(head, member)| !head.is_empty() && !member.is_empty())
 }

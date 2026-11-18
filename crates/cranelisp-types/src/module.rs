@@ -1244,17 +1244,36 @@ pub struct WrittenTraitImpl {
     pub methods: Vec<Symbol>,
     /// `Public` per spec §5.11.1.
     pub visibility: Visibility,
+    /// The label of the `impl` head as its writer spelled it, from
+    /// [`TraitImpl::authored_label`](crate::TraitImpl::authored_label):
+    /// unresolved, each reference with its written qualifier.
+    ///
+    /// It associates the record with the authored form it came from, so a
+    /// consumer holding a form reads the settled pair from the one record that
+    /// carries the form's label. It is opaque: compared for equality only,
+    /// never split, resolved or displayed, and never an identity source.
+    /// Identity and display come from `trait_name` and `impl_type`.
+    ///
+    /// The label is not part of the record's key and its uniqueness within a
+    /// writer is not enforced. A consumer treats anything other than exactly
+    /// one matching record as no match, never a pick. Serde-mandatory: an
+    /// empty default would silently match nothing.
+    pub authored_label: Symbol,
 }
 
 impl WrittenTraitImpl {
     /// Construct the single record shared by fresh registration's staged
     /// trait-home shell and its success-only writer-side upsert.
+    ///
+    /// `authored_label` is the form's
+    /// [`TraitImpl::authored_label`](crate::TraitImpl::authored_label).
     pub fn new(
         trait_name: FQTraitName,
         impl_type: FQTypeName,
         impl_module: ModuleFullPath,
         methods: Vec<Symbol>,
         visibility: Visibility,
+        authored_label: Symbol,
     ) -> Self {
         WrittenTraitImpl {
             trait_name,
@@ -1262,6 +1281,7 @@ impl WrittenTraitImpl {
             impl_module,
             methods,
             visibility,
+            authored_label,
         }
     }
 }
@@ -4913,12 +4933,45 @@ pub enum MacroParam {
 
 // --- Import/Export (Ring 2) ---
 
-/// What names to import from a module.
+/// One entry of an import or export names list (spec §8.3, §8.3.11, §8.4).
+///
+/// Each entry is classified on its own, so one list may mix named entries and
+/// member globs. The frontend's module extraction is the only producer. It
+/// derives [`ImportEntry::Name::local`] once; a consumer binds `local` to
+/// `source` and never re-derives a local name from a written spelling.
+///
+/// Serde-visible through `SymbolTable.imports` and `exports`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ImportEntry {
+    /// One name from the source module, bound under `local`.
+    Name {
+        /// The name in the source module. It may be dotted (`Parent.member`)
+        /// and carries no `/` qualifier.
+        source: Symbol,
+        /// The bare name the entry binds, always present: the written name of
+        /// a plain entry, the member of a dotted entry, or the second symbol
+        /// of a rename.
+        local: Symbol,
+    },
+    /// Every member of the named parent (`Parent.*`), each bound under its
+    /// bare member name.
+    MemberGlob(Symbol),
+}
+
+/// The names list of an import or export declaration.
+///
+/// Deliberately not `#[non_exhaustive]`: consumers match it exhaustively, so a
+/// new list shape must be revisited by every installer, regenerator and
+/// selector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ImportNames {
-    Specific(Vec<Symbol>),
+    /// The written entries, in source order. An empty list is a definite
+    /// no-op.
+    Specific(Vec<ImportEntry>),
+    /// Every public name of the module (`*`).
     Glob,
-    MemberGlob(Symbol),
+    /// No names list: the declaration names the module only.
     None,
 }
 
@@ -4935,6 +4988,10 @@ pub struct ImportSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSpec {
     pub module_path: ModuleFullPath,
+    /// The mount alias under which the module is re-exported (spec §8.4.4),
+    /// mirroring [`ImportSpec::alias`]. `None` when the declaration mounts
+    /// nothing.
+    pub alias: Option<ModuleName>,
     pub names: ImportNames,
     pub span: Span,
 }

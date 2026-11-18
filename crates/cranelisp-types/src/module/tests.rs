@@ -1933,7 +1933,11 @@ fn compiled_staged_publication_commits_preserve_change_template_and_new_as_one_c
     });
     live.exports.push(ExportSpec {
         module_path: ModuleFullPath::from("dep.export"),
-        names: ImportNames::Specific(vec![Symbol::from("x")]),
+        alias: None,
+        names: ImportNames::Specific(vec![ImportEntry::Name {
+            source: Symbol::from("x"),
+            local: Symbol::from("x"),
+        }]),
         span: Span::SYNTHETIC,
     });
     live.platforms.push(PlatformSpec {
@@ -2028,6 +2032,7 @@ fn compiled_staged_publication_commits_preserve_change_template_and_new_as_one_c
         ModuleFullPath::from("m"),
         vec![Symbol::from("eq")],
         Visibility::Public,
+        Symbol::from("Eq.Other"),
     );
     staging
         .written_trait_impls
@@ -3408,12 +3413,17 @@ fn impl_type() -> FQTypeName {
 }
 
 fn written_impl(writer: &str, method: &str) -> WrittenTraitImpl {
+    labelled_written_impl(writer, method, "Display.Thing")
+}
+
+fn labelled_written_impl(writer: &str, method: &str, label: &str) -> WrittenTraitImpl {
     WrittenTraitImpl::new(
         trait_name(),
         impl_type(),
         ModuleFullPath::from(writer),
         vec![Symbol::from(method)],
         Visibility::Public,
+        Symbol::from(label),
     )
 }
 
@@ -4643,7 +4653,13 @@ fn written_impl_upsert_is_one_per_key_and_writer_checked() {
     let mut other = written_impl("writer", "other");
     other.impl_type = FQTypeName::new(ModuleFullPath::from("types"), TypeName::from("Other"));
     table.upsert_written_trait_impl(other.clone()).unwrap();
-    assert_eq!(table.written_trait_impls, vec![replacement, other]);
+    assert_eq!(table.written_trait_impls, vec![replacement, other.clone()]);
+
+    // The label is not part of the key: a second head spelling of one
+    // implementation replaces the record and its label.
+    let respelled = labelled_written_impl("writer", "replacement", "fmt/Display.t/Thing");
+    table.upsert_written_trait_impl(respelled.clone()).unwrap();
+    assert_eq!(table.written_trait_impls, vec![respelled, other]);
 
     let before = table.written_trait_impls.clone();
     assert!(
@@ -4659,6 +4675,7 @@ fn written_impl_upsert_is_one_per_key_and_writer_checked() {
         ModuleFullPath::from("writer"),
         Vec::new(),
         Visibility::Public,
+        Symbol::from("Display.Thing"),
     );
     assert!(table.upsert_written_trait_impl(empty).is_err());
     assert_eq!(table.written_trait_impls, before);
@@ -5754,4 +5771,65 @@ fn release_refusals_are_exact_and_leave_the_table_unchanged() {
     );
     assert_eq!(table.name_candidates(&alias).len(), 1);
     table.validate_lifecycle().unwrap();
+}
+
+// spec: design/arch/trait-impl-cache-carrier.md §2.1 — the label is serde-mandatory
+#[test]
+fn written_impl_record_without_its_authored_label_does_not_decode() {
+    let record = labelled_written_impl("writer", "display", "fmt/Display.t/Thing");
+    let mut json = serde_json::to_value(&record).unwrap();
+    let decoded: WrittenTraitImpl = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(decoded, record);
+    assert_eq!(decoded.authored_label.as_ref(), "fmt/Display.t/Thing");
+
+    // A record from before the carrier must fail, not decode with an empty
+    // label that matches no form.
+    assert!(
+        json.as_object_mut()
+            .unwrap()
+            .remove("authored_label")
+            .is_some()
+    );
+    assert!(serde_json::from_value::<WrittenTraitImpl>(json).is_err());
+}
+
+// spec: spec §8.3.11, §8.4.4 — mixed entry lists and the export mount persist
+#[test]
+fn import_entries_and_export_mount_round_trip_in_source_order() {
+    let names = ImportNames::Specific(vec![
+        ImportEntry::Name {
+            source: Symbol::from("Box"),
+            local: Symbol::from("B"),
+        },
+        ImportEntry::MemberGlob(Symbol::from("Shape")),
+        ImportEntry::Name {
+            source: Symbol::from("Shape.area"),
+            local: Symbol::from("area"),
+        },
+    ]);
+    let export = ExportSpec {
+        module_path: ModuleFullPath::from("dep.shapes"),
+        alias: Some(ModuleName::from("sh")),
+        names: names.clone(),
+        span: Span::SYNTHETIC,
+    };
+
+    let decoded: ExportSpec =
+        serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap();
+    assert_eq!(decoded.names, names);
+    assert_eq!(decoded.alias, Some(ModuleName::from("sh")));
+
+    // A rename is not its plain entry: `local` is part of the persisted entry.
+    let plain = ImportNames::Specific(vec![ImportEntry::Name {
+        source: Symbol::from("Box"),
+        local: Symbol::from("Box"),
+    }]);
+    let renamed = ImportNames::Specific(vec![ImportEntry::Name {
+        source: Symbol::from("Box"),
+        local: Symbol::from("B"),
+    }]);
+    let decoded_renamed: ImportNames =
+        serde_json::from_value(serde_json::to_value(&renamed).unwrap()).unwrap();
+    assert_eq!(decoded_renamed, renamed);
+    assert_ne!(decoded_renamed, plain);
 }

@@ -26,12 +26,17 @@ fn import(target: &str, alias: Option<&str>, names: ImportNames) -> ImportSpec {
 }
 
 fn named_import(target: &str) -> ImportSpec {
-    import(target, None, ImportNames::Specific(vec!["f".into()]))
+    import(
+        target,
+        None,
+        ImportNames::Specific(vec![crate::imports::plain_entry("f")]),
+    )
 }
 
 fn reexport(target: &str) -> ExportSpec {
     ExportSpec {
         module_path: m(target),
+        alias: None,
         names: ImportNames::Glob,
         span: Span::SYNTHETIC,
     }

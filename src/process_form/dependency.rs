@@ -16,11 +16,11 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
-    CranelispError, ErrorLocation, ExportSpec, ImportNames, ImportSpec, ModuleFullPath, Sexp, Span,
-    Symbol, Visibility,
+    CranelispError, ErrorLocation, ExportSpec, ImportSpec, ModuleFullPath, Sexp, Span, Symbol,
+    Visibility,
 };
 
-use crate::imports::DeclaredChildren;
+use crate::imports::{DeclaredChildren, ModuleRoutes, names_load};
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
 
 use super::cache_restore::try_cache_hit_load;
@@ -142,6 +142,7 @@ pub(super) fn handle_import(
     specs: Vec<ImportSpec>,
     declared: &DeclaredChildren,
 ) -> Result<BlockAction, CranelispError> {
+    let mut routes = ModuleRoutes::recorded(ctx.symbol_tables, &ctx.current_module, declared);
     for spec in &specs {
         let resolved = declared.resolve_import(spec);
         let dep = resolved.module();
@@ -149,12 +150,8 @@ pub(super) fn handle_import(
         // A name-less import loads nothing (§8.3.7); an alias-only one still
         // registers its alias (§8.3.6), and a qualified reference through it
         // auto-loads the target (§8.5.4).
-        if matches!(&spec.names, ImportNames::None) {
-            crate::imports::install_import_alias(
-                &ctx.current_module,
-                ctx.module_aliases,
-                &resolved,
-            );
+        if !names_load(&spec.names) {
+            routes.install_import_alias(&ctx.current_module, ctx.module_aliases, &resolved)?;
             continue;
         }
 
@@ -199,7 +196,7 @@ pub(super) fn handle_import(
                 ctx.symbol_tables,
                 &ctx.current_module,
                 ctx.module_aliases,
-                ctx.prelude_fallback,
+                &mut routes,
                 std::slice::from_ref(&resolved),
             )?;
             continue;
@@ -229,7 +226,7 @@ pub(super) fn handle_import(
                 ctx.symbol_tables,
                 &ctx.current_module,
                 ctx.module_aliases,
-                ctx.prelude_fallback,
+                &mut routes,
                 std::slice::from_ref(&resolved),
             )?;
             continue;
@@ -665,6 +662,21 @@ fn import_declarations(sexps: &[Sexp], module: &ModuleFullPath) -> Vec<ImportSpe
         .collect()
 }
 
+/// The `export` specs among `module`'s forms. A form that fails to classify
+/// declares nothing here; Pass 0 reports it.
+fn export_declarations(sexps: &[Sexp], module: &ModuleFullPath) -> Vec<ExportSpec> {
+    sexps
+        .iter()
+        .filter_map(
+            |sexp| match super::form_dispatch::classify_form(sexp, module) {
+                Ok(super::form_dispatch::FormKind::Export(specs)) => Some(specs),
+                _ => None,
+            },
+        )
+        .flatten()
+        .collect()
+}
+
 /// The children a cluster of `module` may name in its `import` and `export`
 /// specs: the cluster's own `mod` forms together with the declarations earlier
 /// turns recorded on the module's table (`design/int/int.md` §6.9). Computed
@@ -696,8 +708,8 @@ enum DeclaredEdges {
 
 /// The modules `module`'s `sexps` depend on through their declarations, each
 /// resolved against `declared`, with the span of the first such declaration
-/// (for a cycle diagnostic). A null import (`ImportNames::None`, spec §8.3.7)
-/// loads nothing and is no edge.
+/// (for a cycle diagnostic). A name-less import or export (spec §8.3.7,
+/// §8.4.0) loads nothing and is no edge.
 fn declared_dependencies(
     sexps: &[Sexp],
     module: &ModuleFullPath,
@@ -709,10 +721,7 @@ fn declared_dependencies(
     for sexp in sexps {
         match super::form_dispatch::classify_form(sexp, module) {
             Ok(super::form_dispatch::FormKind::Import(specs)) => {
-                for spec in specs {
-                    if matches!(spec.names, ImportNames::None) {
-                        continue;
-                    }
+                for spec in specs.iter().filter(|spec| names_load(&spec.names)) {
                     first_span.get_or_insert(spec.span);
                     deps.push(declared.resolve(&spec.module_path));
                 }
@@ -720,7 +729,7 @@ fn declared_dependencies(
             Ok(super::form_dispatch::FormKind::Export(specs))
                 if edges == DeclaredEdges::ImportsAndExports =>
             {
-                for spec in specs {
+                for spec in specs.iter().filter(|spec| names_load(&spec.names)) {
                     first_span.get_or_insert(spec.span);
                     deps.push(declared.resolve(&spec.module_path));
                 }
@@ -1008,11 +1017,13 @@ pub(super) fn attempt_dependencies(
 /// symbols; it follows no prelude edge and no declared child. `None` when the
 /// prelude does not reach `module`.
 ///
-/// A walked file's qualifiers are substituted through the aliases that file
-/// declares, not the session carrier, which the walked module's Pass 0 may not
-/// yet have written. Every alias the session writes is private to its
-/// declaring module, so those are all the aliases the file's qualifiers can
-/// read; a writable public module alias would falsify this.
+/// A walked file's qualifiers are substituted through the aliases the walked
+/// files declare, not the session carrier, which the walked module's Pass 0 may
+/// not yet have written. A qualifier through another module's export mount
+/// (`p.s/y`) resolves only once `p` has been walked. A mount whose export
+/// loads names is also an `export` edge of `p`, so the walk still reaches its
+/// target; a name-less mount is no edge, and a qualifier read through it
+/// before `p` is walked is a reach this walk misses.
 pub(super) fn prelude_reach_cycle(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,
@@ -1027,12 +1038,16 @@ pub(super) fn prelude_reach_cycle(
             continue;
         };
         let submodules = mod_declarations(&parsed, &visiting);
+        // A refused route is the walked file's own Pass-0 error; here it only
+        // leaves that alias out of the walk.
         crate::imports::install_declared_aliases(
             &visiting,
             &aliases,
             &import_declarations(&parsed, &visiting),
+            &export_declarations(&parsed, &visiting),
             &submodules,
-        );
+        )
+        .ok();
         let declared = DeclaredChildren::of(&visiting, &submodules);
         let (declarations, _) = declared_dependencies(
             &parsed,
@@ -1154,7 +1169,8 @@ pub(super) fn gate_body_on_signature_barrier(
 /// and return `BlockAction::Block`.
 ///
 /// Each spec is resolved once against the cluster's `declared` children
-/// (`design/int/int.md` §6.9); that module feeds the load and installation.
+/// (`design/int/int.md` §6.9); that module feeds the mount, the load and
+/// installation.
 pub(super) fn handle_export(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -1165,9 +1181,16 @@ pub(super) fn handle_export(
         .iter()
         .map(|spec| declared.resolve_export(spec))
         .collect();
+    let mut routes = ModuleRoutes::recorded(ctx.symbol_tables, &ctx.current_module, declared);
     for resolved in &resolved_specs {
         let spec = resolved.spec();
         let dep = resolved.module();
+        // The mount is registered before any load decision, and a name-less
+        // export loads nothing (§8.4.0, §8.4.4): `(export [m []])` is a no-op.
+        routes.install_export_mount(&ctx.current_module, ctx.module_aliases, resolved)?;
+        if !names_load(&spec.names) {
+            continue;
+        }
         refuse_failed_table(ctx, module, dep, spec.span)?;
 
         // Already loaded — register the re-export and continue.

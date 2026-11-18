@@ -633,7 +633,7 @@ impl CompilerSession {
                 path,
                 &self.shared.module_aliases,
                 &self.shared.prelude_fallback,
-            );
+            )?;
             if let Some(src_file) = self.find_module_source(path) {
                 crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, path);
                 if let Some(mut tp) = self.shared.typecheck_products.get_mut(path) {
@@ -875,21 +875,9 @@ impl CompilerSession {
         out
     }
 
-    /// REPL `/imports [MODULE]` — list the import declarations in a target
-    /// module. Returns one `ImportSpec` per `ModuleEntry::Import`, carrying
-    /// the source module + the local binding name (per
-    /// `cranelisp_types::ImportSpec`). Reexports are listed separately by
-    /// `module_exports` when the module publishes them.
-    ///
-    /// Per-binding reconstruction shape: `ModuleEntry::Import` stores only
-    /// the source `FQSymbol` per binding; the parse-time `ImportSpec` is not
-    /// retained on the symbol table. Each returned spec is therefore a
-    /// single-name `Specific([local_name])` against the source module, with
-    /// `alias = None` and `span = Span::SYNTHETIC`. Aliased imports (local
-    /// != source.symbol) collapse to the local name on the binding side —
-    /// the source.symbol distinction is recoverable from the
-    /// `module_exports` of the source module. Threading the original
-    /// parse-time `ImportSpec` through to here is tracked by FIXME 0194.
+    /// The `(import …)` declarations a module's table records, as written:
+    /// each spec keeps its alias and its entries, a rename's `local` included.
+    /// Re-exports are listed separately by `module_exports`.
     pub fn module_imports(&self, module: &ModuleFullPath) -> Vec<cranelisp_types::ImportSpec> {
         self.shared
             .symbol_tables
@@ -2419,10 +2407,17 @@ impl CompilerSession {
         module: &ModuleFullPath,
         displaced: &SessionSymbolTable,
     ) -> Result<(), CranelispError> {
-        let aliases = displaced
+        let import_aliases = displaced
             .imports
             .iter()
-            .filter_map(|spec| spec.alias.as_ref().map(|alias| alias.as_ref()))
+            .filter_map(|spec| spec.alias.as_ref());
+        let mounts = displaced
+            .exports
+            .iter()
+            .filter_map(|spec| spec.alias.as_ref());
+        let aliases = import_aliases
+            .chain(mounts)
+            .map(|alias| alias.as_ref())
             .chain(displaced.submodules.iter().map(|decl| decl.name.as_ref()));
         for alias in aliases {
             self.shared

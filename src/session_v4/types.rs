@@ -9,7 +9,8 @@
 use std::path::PathBuf;
 
 use cranelisp_types::{
-    CodegenBehaviour, FQSymbol, ModuleFullPath, Sexp, Symbol, TopLevel, Type, TypeExpr, Warning,
+    CodegenBehaviour, CranelispError, ErrorLocation, FQSymbol, ModuleFullPath, Sexp, Span, Symbol,
+    TopLevel, Type, Warning, WrittenTraitImpl,
 };
 
 // ---------------------------------------------------------------------------
@@ -151,38 +152,61 @@ pub enum EvalResult {
 /// Stack-owned collection of the definitions emitted by one entered REPL
 /// statement. Macro checkpoints can become durable before the ordinary HM
 /// batch, so each row records whether its own publication boundary has
-/// completed. The collection never enters shared/session state.
+/// completed. An `impl` row is recorded by its form and keyed at publication
+/// ([`Self::settle`]). The collection never enters shared/session state.
 #[derive(Default)]
 pub(crate) struct TurnDefinitions {
     rows: Vec<TurnDefinition>,
 }
 
 struct TurnDefinition {
-    symbol: FQSymbol,
+    identity: BuiltIdentity,
     published: bool,
 }
 
 impl TurnDefinitions {
-    pub(crate) fn record(&mut self, symbol: FQSymbol, published: bool) {
-        if let Some(existing) = self.rows.iter_mut().find(|row| row.symbol == symbol) {
+    pub(crate) fn record(&mut self, identity: BuiltIdentity, published: bool) {
+        if let Some(existing) = self.rows.iter_mut().find(|row| row.identity == identity) {
             existing.published |= published;
             return;
         }
-        self.rows.push(TurnDefinition { symbol, published });
+        self.rows.push(TurnDefinition {
+            identity,
+            published,
+        });
+    }
+
+    /// Key every `impl` row from its writer record, in place, so the receipt
+    /// keeps the emitted order. Rows that settle to one identity merge.
+    pub(crate) fn settle(&mut self, identities: &ImplIdentities) -> Result<(), CranelispError> {
+        let mut settled: Vec<TurnDefinition> = Vec::with_capacity(self.rows.len());
+        for row in self.rows.drain(..) {
+            let identity = BuiltIdentity::Keyed(identities.key_of(&row.identity)?);
+            match settled.iter_mut().find(|kept| kept.identity == identity) {
+                Some(kept) => kept.published |= row.published,
+                None => settled.push(TurnDefinition {
+                    identity,
+                    published: row.published,
+                }),
+            }
+        }
+        self.rows = settled;
+        Ok(())
     }
 
     /// Mark an ordinary batch published without inventing receipt rows. Every
     /// symbol must already have been recorded at its emitted position; a
     /// missing row means the source-order collector and typed program diverged.
     pub(crate) fn mark_published(&mut self, symbols: &[FQSymbol]) -> bool {
+        let row_for = |row: &TurnDefinition, symbol: &FQSymbol| matches!(&row.identity, BuiltIdentity::Keyed(keyed) if keyed == symbol);
         if symbols
             .iter()
-            .any(|symbol| !self.rows.iter().any(|row| row.symbol == *symbol))
+            .any(|symbol| !self.rows.iter().any(|row| row_for(row, symbol)))
         {
             return false;
         }
         for symbol in symbols {
-            if let Some(row) = self.rows.iter_mut().find(|row| row.symbol == *symbol) {
+            if let Some(row) = self.rows.iter_mut().find(|row| row_for(row, symbol)) {
                 row.published = true;
             }
         }
@@ -193,47 +217,165 @@ impl TurnDefinitions {
         self.rows
             .iter()
             .filter(|row| row.published)
-            .map(|row| row.symbol.clone())
+            .filter_map(|row| match &row.identity {
+                BuiltIdentity::Keyed(symbol) => Some(symbol.clone()),
+                BuiltIdentity::Impl(_) => None,
+            })
             .collect()
     }
 }
 
-/// Canonical REPL result identity introduced by one authored/emitted top-level
-/// form. Derived from the typed top-level representation, never from spelling
-/// conventions or an ambient symbol-table scan.
-pub(crate) fn definition_result_symbol(
-    module: &ModuleFullPath,
-    top: &TopLevel,
-) -> Option<FQSymbol> {
-    let symbol = match top {
-        TopLevel::Defn(defn) => defn.name.clone(),
-        TopLevel::TraitDecl(trait_decl) => Symbol::from(trait_decl.name.to_string()),
-        TopLevel::TraitImpl(trait_impl) => Symbol::from(format!(
-            "{}.{}",
-            trait_impl.trait_name.name,
-            impl_echo_type_name(trait_impl)
-        )),
-        TopLevel::TypeDef { name, .. } => Symbol::from(name.to_string()),
-        TopLevel::Expr(_) => return None,
-    };
-    Some(FQSymbol {
-        module: module.clone(),
-        symbol,
-    })
+/// The canonical identity one built top-level definition form introduces, as
+/// the build stage knows it (`design/int/int.md` §6.13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BuiltIdentity {
+    /// A `defn`, `deftrait` or `deftype`, keyed by its declared name at build.
+    Keyed(FQSymbol),
+    /// An `impl`, keyed only once typecheck has written its record: by the
+    /// one writer record that carries the form's authored label.
+    Impl(ImplForm),
 }
 
-pub(crate) fn impl_echo_type_name(trait_impl: &cranelisp_types::TraitImpl) -> String {
-    if trait_impl.head_con_var.is_some()
-        && let TypeExpr::Applied(_, args) = &trait_impl.target
-        && let Some(constructor) = args.first().and_then(TypeExpr::head_ref)
-    {
-        return constructor.name.to_string();
+/// An `impl` form awaiting its writer record: its authored label, and the
+/// form's span for the invariant error when no single record carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImplForm {
+    label: Symbol,
+    span: Span,
+}
+
+/// The identity a built top-level form introduces; `None` for an expression.
+/// Derived from the typed top-level representation, never from spelling
+/// conventions or an ambient symbol-table scan.
+pub(crate) fn definition_identity(
+    module: &ModuleFullPath,
+    top: &TopLevel,
+) -> Option<BuiltIdentity> {
+    let keyed = |symbol: Symbol| {
+        Some(BuiltIdentity::Keyed(FQSymbol {
+            module: module.clone(),
+            symbol,
+        }))
+    };
+    match top {
+        TopLevel::Defn(defn) => keyed(defn.name.clone()),
+        TopLevel::TraitDecl(trait_decl) => keyed(Symbol::from(trait_decl.name.to_string())),
+        TopLevel::TypeDef { name, .. } => keyed(Symbol::from(name.to_string())),
+        TopLevel::TraitImpl(trait_impl) => Some(BuiltIdentity::Impl(ImplForm {
+            label: trait_impl.authored_label(),
+            span: trait_impl.span,
+        })),
+        TopLevel::Expr(_) => None,
     }
-    trait_impl
-        .target
-        .head_ref()
-        .map(|reference| reference.name.to_string())
-        .unwrap_or_else(|| "_".to_string())
+}
+
+/// The canonical identity of a written implementation: its writer module and
+/// the settled pair, held injectively by the types-owned key.
+pub(crate) fn impl_identity(record: &WrittenTraitImpl) -> FQSymbol {
+    FQSymbol {
+        module: record.impl_module.clone(),
+        symbol: cranelisp_types::trait_impl_key(&record.impl_type, &record.trait_name),
+    }
+}
+
+/// What a keyed read of a writer's records by an authored label found.
+#[derive(Debug)]
+pub(crate) enum ImplRecordMatch<'r> {
+    /// Exactly one record carries the label: the form's record.
+    One(&'r WrittenTraitImpl),
+    /// No record carries it.
+    Unmatched,
+    /// Several do. Never a pick: the label is not a key.
+    Several,
+}
+
+/// The record among `writer`'s that carries `label`, under the exactly-one
+/// rule (approved row D10, `design/arch/interfaces.md`): none or several is no
+/// match.
+pub(crate) fn match_impl_record<'r>(
+    records: &'r [WrittenTraitImpl],
+    writer: &ModuleFullPath,
+    label: &Symbol,
+) -> ImplRecordMatch<'r> {
+    let mut carrying = records
+        .iter()
+        .filter(|record| record.impl_module == *writer && record.authored_label == *label);
+    match (carrying.next(), carrying.next()) {
+        (Some(record), None) => ImplRecordMatch::One(record),
+        (None, _) => ImplRecordMatch::Unmatched,
+        (Some(_), Some(_)) => ImplRecordMatch::Several,
+    }
+}
+
+/// The identities of one cluster's `impl` forms, read by authored label from
+/// the records its check wrote (Principle 26: derived once they have settled).
+#[derive(Debug, Default)]
+pub(crate) struct ImplIdentities {
+    by_label: Vec<(Symbol, FQSymbol)>,
+}
+
+impl ImplIdentities {
+    /// Key every `impl` form of `program` from `writer`'s `records`. A form
+    /// that no single record carries is a located invariant error: no fixed
+    /// source produces one (spec §8.6.5, §8.6.4).
+    pub(crate) fn settle(
+        writer: &ModuleFullPath,
+        records: &[WrittenTraitImpl],
+        program: &[TopLevel],
+    ) -> Result<Self, CranelispError> {
+        let mut by_label: Vec<(Symbol, FQSymbol)> = Vec::new();
+        for top in program {
+            let Some(BuiltIdentity::Impl(form)) = definition_identity(writer, top) else {
+                continue;
+            };
+            if by_label.iter().any(|(label, _)| *label == form.label) {
+                continue;
+            }
+            match match_impl_record(records, writer, &form.label) {
+                ImplRecordMatch::One(record) => by_label.push((form.label, impl_identity(record))),
+                found => return Err(unkeyed_impl(writer, &form, &found)),
+            }
+        }
+        Ok(ImplIdentities { by_label })
+    }
+
+    /// The settled identity of a built definition.
+    pub(crate) fn key_of(&self, identity: &BuiltIdentity) -> Result<FQSymbol, CranelispError> {
+        match identity {
+            BuiltIdentity::Keyed(symbol) => Ok(symbol.clone()),
+            BuiltIdentity::Impl(form) => self
+                .by_label
+                .iter()
+                .find(|(label, _)| *label == form.label)
+                .map(|(_, symbol)| symbol.clone())
+                .ok_or_else(|| CranelispError::CodegenError {
+                    message: format!(
+                        "internal: the `impl` form labelled `{}` was not keyed at publication",
+                        form.label
+                    ),
+                    location: ErrorLocation::from_span(form.span),
+                }),
+        }
+    }
+}
+
+fn unkeyed_impl(
+    writer: &ModuleFullPath,
+    form: &ImplForm,
+    found: &ImplRecordMatch<'_>,
+) -> CranelispError {
+    let count = match found {
+        ImplRecordMatch::Unmatched => "no",
+        _ => "more than one",
+    };
+    CranelispError::CodegenError {
+        message: format!(
+            "internal: {count} implementation record written by module '{writer}' carries the \
+             `impl` form's label `{}`, so the form has no identity",
+            form.label
+        ),
+        location: ErrorLocation::from_span(form.span),
+    }
 }
 
 impl EvalResult {
@@ -363,13 +505,14 @@ mod eval_result_tests {
             symbol: cranelisp_types::Symbol::from("later"),
         };
 
+        let keyed = |symbol: &FQSymbol| BuiltIdentity::Keyed(symbol.clone());
         let mut definitions = TurnDefinitions::default();
-        definitions.record(ordinary_before.clone(), false);
-        definitions.record(macro_checkpoint.clone(), true);
+        definitions.record(keyed(&ordinary_before), false);
+        definitions.record(keyed(&macro_checkpoint), true);
 
         // Retry replays the uncommitted ordinary prefix but not the macro.
-        definitions.record(ordinary_before.clone(), false);
-        definitions.record(ordinary_after.clone(), false);
+        definitions.record(keyed(&ordinary_before), false);
+        definitions.record(keyed(&ordinary_after), false);
         definitions.mark_published(&[ordinary_before.clone(), ordinary_after.clone()]);
 
         assert_eq!(
@@ -389,10 +532,107 @@ mod eval_result_tests {
             symbol: cranelisp_types::Symbol::from("missing"),
         };
         let mut definitions = TurnDefinitions::default();
-        definitions.record(recorded, false);
+        definitions.record(BuiltIdentity::Keyed(recorded), false);
 
         assert!(!definitions.mark_published(&[missing]));
         assert!(definitions.published_symbols().is_empty());
+    }
+
+    fn impl_top(source: &str) -> TopLevel {
+        let sexp = cranelisp_frontend::parse(source).unwrap().remove(0);
+        crate::worker::build_program_compat(std::slice::from_ref(&sexp))
+            .unwrap()
+            .remove(0)
+    }
+
+    fn written(type_home: &str, type_name: &str, label: &str) -> cranelisp_types::WrittenTraitImpl {
+        cranelisp_types::WrittenTraitImpl::new(
+            cranelisp_types::FQTraitName::new("prelude".into(), "Show".into()),
+            cranelisp_types::FQTypeName::new(type_home.into(), type_name.into()),
+            "user".into(),
+            vec![cranelisp_types::Symbol::from("show")],
+            cranelisp_types::Visibility::Public,
+            label.into(),
+        )
+    }
+
+    // spec: design/int/int.md §6.13 — the live turn keys an `impl` from the
+    // writer record carrying its authored label: a form whose head is the
+    // renamed `B` takes the record's settled `lib/Box`, held injectively, and
+    // the receipt row recorded at build settles in place.
+    #[test]
+    fn live_turn_keys_an_impl_from_its_writer_record() {
+        let user = ModuleFullPath::from("user");
+        let program = vec![
+            impl_top("(impl Show B (defn show [x] \"lib\"))"),
+            impl_top("(impl Show Box (defn show [x] \"local\"))"),
+        ];
+        let records = [
+            written("user", "Box", "Show.Box"),
+            written("lib", "Box", "Show.B"),
+        ];
+        let identities = ImplIdentities::settle(&user, &records, &program).unwrap();
+
+        let keys: Vec<FQSymbol> = program
+            .iter()
+            .map(|top| {
+                identities
+                    .key_of(&definition_identity(&user, top).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![impl_identity(&records[1]), impl_identity(&records[0])]
+        );
+        assert_ne!(keys[0], keys[1], "same-named types stay two identities");
+
+        let mut definitions = TurnDefinitions::default();
+        for top in &program {
+            definitions.record(definition_identity(&user, top).unwrap(), false);
+        }
+        assert!(
+            definitions.published_symbols().is_empty(),
+            "an unsettled impl row is never published"
+        );
+        definitions.settle(&identities).unwrap();
+        assert!(definitions.mark_published(&keys));
+        assert_eq!(definitions.published_symbols(), keys);
+    }
+
+    // spec: design/int/int.md §6.13 — none or several records carrying the
+    // form's label is the live turn's located invariant error, never a pick.
+    // The records are planted directly: no fixed source produces them.
+    #[test]
+    fn live_turn_refuses_an_impl_with_no_single_record() {
+        let user = ModuleFullPath::from("user");
+        let source = "(impl Show B (defn show [x] 1))";
+        let program = vec![impl_top(source)];
+        let span = match &program[0] {
+            TopLevel::TraitImpl(trait_impl) => trait_impl.span,
+            other => panic!("expected an impl, got {other:?}"),
+        };
+
+        let one = [written("lib", "Box", "Show.B")];
+        assert!(
+            ImplIdentities::settle(&user, &one, &program).is_ok(),
+            "control"
+        );
+
+        let several = [
+            written("lib", "Box", "Show.B"),
+            written("alt", "Box", "Show.B"),
+        ];
+        let unmatched = [written("lib", "Box", "Show.lib/Box")];
+        for records in [&several[..], &unmatched[..]] {
+            match ImplIdentities::settle(&user, records, &program) {
+                Err(CranelispError::CodegenError { message, location }) => {
+                    assert!(message.contains("`Show.B`"), "{message}");
+                    assert_eq!(location.span, span, "located at the impl form");
+                }
+                other => panic!("expected the invariant error, got {other:?}"),
+            }
+        }
     }
 
     // API: a definition batch deliberately has no singular inferred type.

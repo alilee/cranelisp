@@ -28,6 +28,12 @@ pub(crate) struct PreparedCommit {
 }
 
 impl PreparedCommit {
+    /// The implementation records this cluster's check wrote to its staging
+    /// table: the records its `impl` forms are keyed from at publication.
+    pub(crate) fn written_trait_impls(&self) -> &[cranelisp_types::WrittenTraitImpl] {
+        &self.staging.written_trait_impls
+    }
+
     /// Record lookup dependencies that int, not typecheck, observed for this
     /// publication (`design/int/int.md` §7.6.2). They reach the live table
     /// only if the prepared staging is published.

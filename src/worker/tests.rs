@@ -2317,13 +2317,13 @@ fn writer_records_imports_in_source_order() {
     let import_a = ImportSpec {
         module_path: "core".into(),
         alias: None,
-        names: ImportNames::Specific(vec!["a".into()]),
+        names: ImportNames::Specific(vec![crate::imports::plain_entry("a")]),
         span: Span::new(10, 20),
     };
     let import_b = ImportSpec {
         module_path: "extras".into(),
         alias: None,
-        names: ImportNames::Specific(vec!["b".into()]),
+        names: ImportNames::Specific(vec![crate::imports::plain_entry("b")]),
         span: Span::new(30, 40),
     };
 
@@ -2483,12 +2483,16 @@ fn save_generate_module_source_reads_structural_decls_from_symbol_table() {
     st.imports.push(ImportSpec {
         module_path: "core".into(),
         alias: None,
-        names: ImportNames::Specific(vec!["foo".into(), "bar".into()]),
+        names: ImportNames::Specific(vec![
+            crate::imports::plain_entry("foo"),
+            crate::imports::plain_entry("bar"),
+        ]),
         span: Span::SYNTHETIC,
     });
     st.exports.push(cranelisp_types::ExportSpec {
         module_path: "user".into(),
-        names: ImportNames::Specific(vec!["foo".into()]),
+        alias: None,
+        names: ImportNames::Specific(vec![crate::imports::plain_entry("foo")]),
         span: Span::SYNTHETIC,
     });
     st.submodules.push(ModDecl {
@@ -4310,6 +4314,7 @@ fn declaring(
         .iter()
         .map(|target| cranelisp_types::ExportSpec {
             module_path: ModuleFullPath::from(*target),
+            alias: None,
             names: ImportNames::Glob,
             span: Span::SYNTHETIC,
         })

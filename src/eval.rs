@@ -72,26 +72,6 @@ pub(crate) fn record_defining_turn_source(
     }
 }
 
-/// The implementing type NAME for a trait-impl registration echo
-/// (`impl <trait> for <type>`, repl/spec.md §1.1).
-///
-/// For the settled echo-the-head HKT form `(impl (Functor f) (Functor Option)
-/// …)` (spec §7.3.5 Case 2), slot-2 `t.target` is the pairing
-/// `Applied(Functor, [Option])` and the RESOLVED implementing type is the
-/// constructor ARGUMENT `Option`, NOT the pairing head `Functor`. This mirrors
-/// typecheck's Case-3 effective-target extraction (`traits/impl_check.rs` Step
-/// 4), which registers the impl under the constructor
-/// (`ModuleEntry::TraitImpl.impl_type = home/Option`) — so the echo names the
-/// type dispatch actually registered the impl under. Re-deriving from the raw
-/// head (`t.target.head_ref()`) printed the pairing head — the S112 W5
-/// `impl user/Functor for user/Functor` display defect (Principle 26 — render
-/// from settled state, not a re-derivation of the surface syntax).
-///
-/// The discriminator is `head_con_var.is_some()`, the parser's echo-the-head
-/// bit: on a well-typed impl it is `Some` iff the trait is higher-kinded
-/// (Case-3 rejects the two mismatched shapes), and this echo runs only after a
-/// successful typecheck. The conventional / bare-head form — and any target
-/// already rewritten to `Named` — falls through to the plain head.
 impl CompilerSession {
     /// Block the REPL-eval thread on the persistent worker pool driving a
     /// dependency (and its transitive deps) to `inmem_done`, then return so the
@@ -865,86 +845,6 @@ mod tests {
         assert_eq!(m.len(), 1, "Val results never write");
         // Batch mode (store absent): a defining result is a silent no-op.
         record_defining_turn_source(None, &defining_turn("user", "solo"), "(defn solo [x] x)");
-    }
-
-    // -----------------------------------------------------------------------
-    // S112 W5 — the trait-impl registration echo names the RESOLVED
-    // implementing type (`impl <trait> for <type>`, repl/spec.md §1.1 /
-    // §4.1.4), NOT the settled echo-the-head pairing head. The label
-    // `impl_echo_type_name` mints is the `Trait.Type` key that format.rs's
-    // §1.1 echo splits into `impl <trait> for <type>`.
-    // -----------------------------------------------------------------------
-    mod impl_echo_display {
-        use crate::session_v4::impl_echo_type_name;
-        use cranelisp_types::{
-            Span, Symbol, TraitImpl, TraitName, TraitRef, TypeExpr, TypeName, TypeRef,
-        };
-
-        fn tref(name: &str) -> TypeRef {
-            TypeRef::new(None, TypeName::from(name))
-        }
-
-        // spec: repl/spec.md §1.1/§4.1.4 (spec §7.3.5 Case 2) — the echo-the-head
-        // HKT impl `(impl (Functor f) (Functor Option) …)` echoes the implementing
-        // CONSTRUCTOR `Option` (slot-2 pairing's argument), NOT the pairing head
-        // `Functor`. Guards the S112 `impl user/Functor for user/Functor` defect.
-        #[test]
-        fn echo_head_hkt_impl_names_the_constructor_not_the_pairing_head() {
-            let t = TraitImpl {
-                trait_name: TraitRef::new(None, TraitName::from("Functor")),
-                head_con_var: Some(Symbol::from("f")),
-                // slot-2 `(Functor Option)` — the settled pairing form.
-                target: TypeExpr::Applied(tref("Functor"), vec![TypeExpr::Named(tref("Option"))]),
-                type_constraints: vec![],
-                methods: vec![],
-                span: Span::default(),
-            };
-            assert_eq!(
-                impl_echo_type_name(&t),
-                "Option",
-                "the HKT echo-the-head impl MUST resolve to the implementing \
-                 constructor `Option`, never the pairing head `Functor`"
-            );
-            // The composed label is what the §1.1 echo splits on `.` into
-            // `impl <trait> for <type>` — MUST be `Functor.Option`.
-            let label = format!("{}.{}", t.trait_name.name, impl_echo_type_name(&t));
-            assert_eq!(label, "Functor.Option");
-            let (trait_seg, type_seg) = label.split_once('.').unwrap();
-            assert_eq!((trait_seg, type_seg), ("Functor", "Option"));
-        }
-
-        // spec: repl/spec.md §1.1 — a conventional (kind-`*`) impl
-        // `(impl Sizeable Circle …)` is UNCHANGED: slot-2 is the bare type head.
-        #[test]
-        fn conventional_impl_names_the_bare_target_head() {
-            let t = TraitImpl {
-                trait_name: TraitRef::new(None, TraitName::from("Sizeable")),
-                head_con_var: None,
-                target: TypeExpr::Named(tref("Circle")),
-                type_constraints: vec![],
-                methods: vec![],
-                span: Span::default(),
-            };
-            assert_eq!(impl_echo_type_name(&t), "Circle");
-            let label = format!("{}.{}", t.trait_name.name, impl_echo_type_name(&t));
-            assert_eq!(label, "Sizeable.Circle");
-        }
-
-        // A target already rewritten to `Named` while `head_con_var` is set
-        // (defence in depth: if the settled-target rewrite ever reaches this
-        // seam) falls through to the plain head — still the constructor.
-        #[test]
-        fn rewritten_named_target_falls_through_to_the_head() {
-            let t = TraitImpl {
-                trait_name: TraitRef::new(None, TraitName::from("Functor")),
-                head_con_var: Some(Symbol::from("f")),
-                target: TypeExpr::Named(tref("Option")),
-                type_constraints: vec![],
-                methods: vec![],
-                span: Span::default(),
-            };
-            assert_eq!(impl_echo_type_name(&t), "Option");
-        }
     }
 
     // -----------------------------------------------------------------------

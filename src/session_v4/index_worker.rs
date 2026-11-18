@@ -1196,14 +1196,11 @@ fn index_typecheck_into_private(
         .iter()
         .map(|spec| declared.resolve_export(spec))
         .collect();
-    crate::imports::install_imports(
-        priv_tables,
-        module,
-        priv_aliases,
-        prelude_fallback,
-        &imports,
-    )
-    .map_err(|e| format!("import install error: {e}"))?;
+    // The index path writes import aliases into its private map and no export
+    // mount (`design/int/int.md` §6.13).
+    let mut routes = crate::imports::ModuleRoutes::declared(declared.clone(), &[], &[]);
+    crate::imports::install_imports(priv_tables, module, priv_aliases, &mut routes, &imports)
+        .map_err(|e| format!("import install error: {e}"))?;
     // FIXME 0604 §2.2: the BACKGROUND index typecheck is isolated (R13 — never
     // writes live session state), so it passes `None` for `declared_exports` — it
     // records no `D(M)` into the live map. (Its private tables are discarded; the

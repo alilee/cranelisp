@@ -39,16 +39,15 @@ mod types;
 // types.rs — DTOs + leaf pure helpers (S87 §2.1). Re-exported to preserve
 // `session_v4::X` paths used by main.rs / eval.rs / repl.rs / worker.rs /
 // cluster.rs / platform.rs.
-#[cfg(test)]
-pub(crate) use self::types::impl_echo_type_name;
+pub(crate) use self::types::{
+    BuiltIdentity, FailedModule, FailureCause, ImplIdentities, ImplRecordMatch, TurnDefinitions,
+    dedup_platform_names_preserving_order, definition_identity, file_display_name, impl_identity,
+    intrinsic_type_from_name, is_comment_only, match_impl_record, parens_balanced,
+    resolve_priority_worker_count,
+};
 pub use self::types::{
     CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode, SessionSettings,
     StartupRecovery, SymbolCategory, SymbolInfo, TypecheckProduct, parens_balanced_pub,
-};
-pub(crate) use self::types::{
-    FailedModule, FailureCause, TurnDefinitions, dedup_platform_names_preserving_order,
-    definition_result_symbol, file_display_name, intrinsic_type_from_name, is_comment_only,
-    parens_balanced, resolve_priority_worker_count,
 };
 
 // test_runner — the shared test runner behind `--test`, `/run-tests` and
