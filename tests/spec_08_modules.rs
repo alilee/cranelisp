@@ -5648,7 +5648,12 @@ fn s124_modules_mnt_same_target() {
 (defn inside [] (s/y))
 "#;
     let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
-    out.run_again().run("app.cl").output().assert_exit(14);
+    out.run_again()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("app.cl")
+        .output()
+        .assert_stderr_contains("cache hit (.meta valid) for p")
+        .assert_exit(14);
 }
 
 // spec: spec/08-modules.md §8.4.4 — T-q4_equal_import_first, public route and cache restart
@@ -5659,7 +5664,12 @@ fn s124_modules_q4_equal_import_first() {
 (defn inside [] (s/y))
 "#;
     let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
-    out.run_again().run("app.cl").output().assert_exit(14);
+    out.run_again()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("app.cl")
+        .output()
+        .assert_stderr_contains("cache hit (.meta valid) for p")
+        .assert_exit(14);
 }
 
 // spec: spec/08-modules.md §8.4.4 — T-q4_equal_export_first, public route and cache restart
@@ -5670,7 +5680,12 @@ fn s124_modules_q4_equal_export_first() {
 (defn inside [] (s/y))
 "#;
     let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
-    out.run_again().run("app.cl").output().assert_exit(14);
+    out.run_again()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("app.cl")
+        .output()
+        .assert_stderr_contains("cache hit (.meta valid) for p")
+        .assert_exit(14);
 }
 
 // spec: spec/08-modules.md §8.4; repl/spec/15-session-persistence.md §15.4 — T-reg_rename
