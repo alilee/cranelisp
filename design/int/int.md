@@ -897,8 +897,50 @@ FQ type-only loading. Typecheck's half produces the `Type` gap
   - its name is the gap's member;
   - its qualifier is the gap's module, either as written or after
     `cranelisp_types::substitute_module_alias` from the cluster's module.
-- **Why both forms.** The gap's module has two provenances, and the gap does
-  not say which one applies:
+- **The gap's module** (designed 2026-11-18; needs an inter-crate contract
+  change, not built). Every gap names the module that resolution probed,
+  after alias substitution (spec §8.6.6). The gap arm, the drive and the
+  "no member" diagnostic take that module as given, and int substitutes
+  nothing.
+  - *The fault.* For a member missing from a present module, typecheck's
+    gap names the qualifier as written (`resolve_qualified`). When that
+    qualifier is an alias, the gap arm drives a module named after the
+    alias. Observed by `design` on the debug build at `9580856a`: with
+    `zz.cl` defining `zf`, an entry holding `(import [(zz z) [zf]])` and
+    calling `(z/nope)` reports `module 'z' referenced by 'z/...' not found`
+    under `--run`; spelled `zz/nope` it reports `module 'zz' has no member
+    'nope'`. When the aliased module is still in flight, the same arm
+    refuses a legal program: `s124_declared_child_alias_graph_repl_orders_agree`
+    is RED on it.
+  - *Why the producer, not int.* The written alias past the resolution seam
+    is the defect marker of
+    [Principle 24](../arch/principles/24-resolve-once.md) (resolution
+    products travel typed). Int cannot substitute safely either: the gap
+    does not say which form it carries, and substituting an
+    already-substituted module is wrong when an alias is named like a
+    module prefix (aliases `a → b.c` and `b → q` turn the absent `b.c` into
+    `q.c`). `dev`'s int-side control, which substituted at the gap seam,
+    turned the nine `s124_declared_child*` cells green; it is rejected on
+    those grounds.
+  - *The inter-crate delta* (for `arch` and the user's gate). Semantic only:
+    `ResolutionGap::SymbolTypechecked(FQSymbol)`, raised by
+    `cranelisp-typecheck` for a member absent from a present module, carries
+    in `module` the alias-substituted module that resolution probed, as the
+    absent-module gap already does. No type, variant, field or signature
+    changes if typecheck takes the module from the substitution its resolve
+    applied; `public-api.txt` is then +0/−0. If `arch` instead has the
+    `cranelisp-types` resolver report the probed module on its `*NotFound`
+    errors, that is a field addition and a baseline delta. No schema or ABI
+    effect: a gap is never persisted. Consumers: the gap arm and the
+    reference-site lookup in `src/process_form.rs`. `arch` should confirm
+    whether frontend's `MacroInMem` for an alias-spelled macro head carries
+    the written or the resolved module.
+  - *Int's change once approved* (`src/process_form.rs`, tests beside the
+    lookup rows): the match rule keeps only the substituted form, and row 5
+    becomes a value gap on `zz/f` located at `z/f`. Turn green: the alias
+    cell above and the terminal repro. Stay green: rows 1–4 and FT-4.
+- **Why both forms (until the gap's module is resolved).** The gap's module
+  has two provenances, and the gap does not say which one applies:
   - an absent module (every `Type` gap and the absent-module value gap) names
     the alias-substituted module (spec §8.6.6);
   - a member missing from a present module (value gaps only) names the
@@ -1399,8 +1441,10 @@ Status:
   a whole-file rebuild; a fresh load is not covered (*Failed dependency*
   below);
 - the declaration readiness gate (ACT-1016 Face 2) is built at `870aacd8`;
-- route independence through a declared child (ACT-1081) is designed and
-  not built; its error clause waits on the user's ruling.
+- route independence through a declared child (ACT-1081): rules 1 and 2 are
+  built at `b8b6df58` and corrected at `9580856a`; rule 1 for a
+  cache-restored parent is designed and not built (*A restored parent*
+  below); the error clause waits on the user's ruling.
 
 Private to `src/`; no public API, carrier, schema or ABI change.
 
@@ -1605,10 +1649,11 @@ table it loads as today. `refuse_failed_table` still runs first.
   publication writes only that child's own records into `D`'s table, such as
   an implementation of `D`'s trait, and a reader reads those at typecheck
   as it reads any module's.
-- **`try_cache_hit_load`'s guard is unchanged.** The handlers no longer reach
-  it with a table. Its other callers keep its answer: a parent's drive of a
-  child already in flight, which must not wait, and the prelude injection,
-  which never waits (§6.12).
+- **`try_cache_hit_load`'s guard is unchanged.** Neither Pass-0 handler nor
+  the qualified-reference drive reaches it with a table: both wait on a
+  module in flight first. A parent's drive of a declared child in flight
+  waits on the child (*Route independence*, rule 1). The prelude injection
+  keeps the guard's answer, because it never waits (§6.12).
 - **Not changed.** The signature barrier's members still exclude export
   targets (§6.12, *Not taken*). The wait is the body-free dependency wait an
   import already takes. Declared children are no edge in any graph that
@@ -1635,8 +1680,10 @@ back to the declaring parent. This design does not answer that question.
 Whatever the answer, the outcome must not depend on the route
 ([ACT-1081](../../sprints/actions/ACT-1081-module-graph-through-a-declared-child-is-accepted-or-refused-by-load-route-intake.md)).
 
-**Route independence** (ACT-1081; designed 2026-11-18, not in source at
-`66bc7b8a`). Private to `src/`; no public API, carrier, schema or ABI change.
+**Route independence** (ACT-1081; designed 2026-11-18; rules 1 and 2 built
+at `b8b6df58`, corrected at `9580856a`; the restored-parent leg of rule 1 is
+designed and not built). Private to `src/`; no public API, carrier, schema or
+ABI change.
 
 *The fault.* This section expected the program above to be accepted on
 every route; the source does not deliver that. `qa` measured it on
@@ -1725,8 +1772,7 @@ either ruling.
   a declaration.
 
 Until the ruling, the error clause keeps today's answer, so the
-ruling-independent rules 1 and 2 make every route accept ACT-1081. When to
-build them is `sprint`'s decision.
+ruling-independent rules 1 and 2 make every route accept ACT-1081.
 
 *Cost.* Reach through declared children makes the gate's walk parse each
 visited module's declared children, once per cluster under the existing
@@ -1759,6 +1805,122 @@ cells, as listed under *End-to-end cells* above. For `qa` to allocate:
 `y`'s case, with a child's implementation of its parent's trait used from
 `y` on every route; and, once ruled, the outcome clause and the save and
 restart legs of REPRO-1081.
+
+*As built (`b8b6df58`, `9580856a`; `src/process_form/dependency.rs`,
+`src/scheduler.rs`).*
+
+- **The completion graph's qualifiers.** Each walked file's written
+  qualifiers are substituted through the aliases the walked files declare,
+  not the session carrier, and a qualifier through another module's mount
+  resolves at the fixpoint ([§6.12](#612-the-implicit-prelude-dependency),
+  *Aliases come from the walked file*). The prelude-reach walk and the
+  completion graph share one walk-local qualifier set, so the two cannot
+  substitute differently. A walked module whose live table exists also
+  contributes the edges that table records. Without these, the graph
+  depended on load order: a qualified reference that closes the cycle was
+  missing until the writer's Pass 0 had run.
+- **A qualified reference waits on a module in flight.** When the module a
+  gap names has a table and is not ready for declaration, the drive refuses
+  a failed table and otherwise waits on it, as a Pass-0 declaration does.
+  Before this, the drive fell through to `try_cache_hit_load`, whose guard
+  answered "satisfied" for any table, and the referrer was requeued forever.
+  The livelock needs no alias: with `P/c.cl` holding `(defn cf [] (z/zf))`,
+  a REPL turn `(z/zf)` timed out and now evaluates. No end-to-end cell
+  covers that leg alone; the unit row is
+  `qualified_drive_of_an_in_flight_module_waits_on_it`.
+- **A declared child already `Failed` refuses its parent** with the child's
+  failure, before the wait as during it, on the pool and the eval path, and
+  records the child as the refusing dependency. The parent's outcome
+  therefore does not depend on when the child failed. In a whole-file
+  rebuild this changes one outcome: a parent whose declared child still
+  stands `Failed` is refused, and its outcome is settled by the deferral
+  rules ([REPL lifecycle §1.2](repl-lifecycle.md#12-poll-and-reload),
+  *Refused by a later member*; §1.3.1). It resumes when the child rebuilds
+  in the same pass and waits when the child's failure stands. Before this,
+  the parent succeeded while its child failed, which a restart does not do.
+- **Module rows:** `completion_graph_marks_the_members_on_a_cycle_through_a_declaration`,
+  `completion_graph_reads_qualified_references_through_walked_aliases_and_recorded_edges`,
+  `barrier_opens_at_publication_only_for_a_member_on_a_cycle`,
+  `drive_of_an_in_flight_declared_child_waits_for_its_completion`,
+  `eval_drive_of_an_in_flight_declared_child_returns_after_its_completion`,
+  `qualified_drive_of_an_in_flight_module_waits_on_it` and
+  `a_declared_child_failed_before_the_drive_fails_the_parent_as_one_failed_after`
+  (`src/process_form/dependency.rs`);
+  `barrier_reads_a_cycle_member_at_publication_and_another_at_completion`
+  and `eval_barrier_on_a_completion_member_waits_past_its_publication`
+  (`src/scheduler/tests.rs`).
+- **Still RED:** `tests/spec_08_modules.rs::s124_declared_child_alias_graph_repl_orders_agree`,
+  on the alias gap at the dependency drive
+  ([§6.3.1](#631-locating-a-gap-at-its-reference-site), *The gap's module*),
+  which is a separate fault.
+
+*A restored parent* (designed 2026-11-18; not built). Rule 1 holds for a
+parent restored from cache too (§7.5).
+
+- **The fault.** A restored parent registers at `TypecheckDone` before its
+  declared children are enrolled, and the enrolment discards a child that
+  misses. A reader of the parent's completion then runs before the child
+  publishes. Two faces:
+  - a child that misses while the parent's key matches: its `.o` is absent,
+    the decoder refuses a sidecar, or a platform or trait home is
+    unrestorable. A child with no stored `.meta` already makes the parent
+    miss (§7.6.3, *Validating*, rule 3);
+  - the interval inside one restore between the parent's registration and
+    the enrolment of a child that hits.
+- **Observed** (`design`, 2026-11-18, the debug build at `9580856a`). `P.cl`
+  declares `(deftrait Tr (tr [self] Int))` and `(mod c)`; `P/c.cl` imports
+  `super`'s `Tr` and implements it for `Int` with result 7; the entry imports
+  `P [tr]` and returns `(Pure (tr 1))`. Cold, and warm with an edited entry,
+  it exits 7. With only `c.o` removed and the entry edited, `P` restores, `c`
+  builds fresh, and the entry fails in 3 of 3 runs with `resolved_target
+  'P.c/Tr.tr$primitives/Int' … fetched no symbol-table entry`. With `c.o`
+  and `c.meta.json` both removed, `P` misses and the entry exits 7 in 5 of 5.
+- **The rule.** A restored parent's restore ends at publication. The parent
+  turns terminal by the same wait on its declared children that a fresh
+  parent takes: on each child the walk registers, and on each child it finds
+  in flight. A child that hits is restored before the walk returns. A parent
+  with no declared children registers terminal, as today.
+  - The scheduler records the restored parent as published and waiting on
+    those children. The release of that wait completes the parent; it does
+    not requeue it, because a restored parent has no source left to process.
+  - A child that fails, or stands `Failed`, refuses the parent with the
+    child's failure and records it as the refusing dependency, as on the
+    fresh path.
+  - Readers keep their readiness. A declaration, a qualified reference and
+    a barrier member on a cycle with the waiter read the parent at
+    publication. Any other completion reader waits for the children. The
+    parent's in-memory completion is set only once it is terminal (§6.1.2).
+- **Why this, not a miss.** Making the parent miss when a child misses
+  closes only the first face. The miss would be decided either after the
+  parent is installed and registered, which needs an unwind (the
+  provisional-record-plus-repair shape that
+  [Principle 26](../arch/principles/26-record-from-settled-state.md)
+  rejects), or before, by a probe that copies the child's restore gates
+  ([Principle 7](../arch/principles/07-single-source-of-truth.md)). It
+  leaves the second face open. The wait is the fresh path's own lifecycle
+  point, which §7.5 requires
+  ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
+- **What `dev` builds** (`src/process_form/cache_restore.rs`,
+  `src/scheduler.rs`). The restored-parent registration at publication, the
+  wait on registered and in-flight children whose release completes the
+  parent, and the refusal by a failed child. Module rows:
+  - a restored parent whose child misses is published and not terminal
+    until the child completes; a completion reader waits, and a declaration
+    reader installs;
+  - a restored parent whose children all hit is terminal only after the
+    walk returns;
+  - a missed child that fails refuses the restored parent, with the child as
+    refusing dependency;
+  - negative: a restored parent with no declared children is terminal at
+    registration.
+- **Cells for `qa` to allocate:** the observation above in `--run`, `--link`
+  and the REPL, with its two controls (cold; both of the child's files
+  removed). Turn green: those legs. Stay green: the REPRO-1081 cells, the
+  partial-cache legs `test` already ran, and
+  `tests/test_runner.rs::run_neg_refuses_discover_tests_reference_restored_from_cache`.
+- **Falsifier.** With the rule built, `CRANELISP_SCHEDULER_TRACE` shows a
+  restored parent turning terminal before a declared child, or a completion
+  reader of a restored parent that runs before the child publishes.
 
 *Falsifiers.*
 
@@ -2944,7 +3106,7 @@ returns `Result<bool, CranelispError>`:
 
 | Relationship | Fresh path | Restore rule |
 |---|---|---|
-| Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs, so a child's `super` import sees it. Private and public children take one path, and an existing child is a no-op. |
+| Declared children | `dependency.rs::enrol_declared_submodule` after the parent's cluster commits | The same registrar, over the persisted `submodules`, after the parent table installs, so a child's `super` import sees it. Private and public children take one path, and an existing child is a no-op. The restored parent is published, not terminal, until those children complete, as a fresh parent is ([§6.11](#611-module-cycles-at-publication), *A restored parent*; designed, not built: today it registers terminal first). |
 | Trait impls the module wrote | The typecheck producer appends `WrittenTraitImpl` records (`design/arch/trait-impl-cache-carrier.md`) | Restore each foreign trait home first. After the writer table installs, re-enrol every record through the types-owned `enrol_written_trait_impl`. `Enrolled` and `AlreadyEnrolled` succeed; a divergence is an error, never a silent pick. An empty record vector is trusted as written: never default it, rescan the trait home or rebuild it from mangled names. |
 | Module aliases | Session `ModuleAliases`, keyed by `cranelisp_types::module_alias_key` (`design/arch/module-alias-scoped-lookup.md`) | Rebuilt from the persisted `imports` and `submodules` by the same writers. The resolver in [§6.9](#69-bare-module-names-in-import-and-export) resolves each import alias's target. The map is unserialized session state, so aliases add no cache field. |
 | Import and re-export targets | The resolver in [§6.9](#69-bare-module-names-in-import-and-export), over the cluster's declared children | The same resolver, over the restored table's `submodules`. The restore walk never reads a persisted bare spelling as an absolute module. |
@@ -4215,14 +4377,15 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `c53a3f4b`, ACT-0973's refusal at `68f042d5` after the exemplar's split
   (`efa4d8df`), the refusal of a `main` whose result type is not fixed at
   `098f0980`, and ACT-1052's shared decode at `2d3a5b3e`.
-  - *Still open after W8 (read at `66bc7b8a`):*
-    - the location of the batch `discover-tests` refusal (ACT-1036's last
-      leg), designed in
-      [test runner §7.3](test-runner.md#73-batch-refusal-of-discover-tests),
-      Location;
-    - route independence of a graph through a declared child (ACT-1081),
-      designed in §6.11, *Route independence*; its outcome waits on the
-      user's ruling;
+  - The location of the batch `discover-tests` refusal (ACT-1036's last
+    leg) landed at `52de1aad`, and ACT-1081's rules 1 and 2 at `b8b6df58`
+    and `9580856a`.
+  - *Still open (read at `9580856a`):*
+    - ACT-1081's restored-parent leg of rule 1 (§6.11, *A restored parent*)
+      and its error clause, which waits on the user's ruling;
+    - the gap's module for an alias-spelled member-absent reference
+      ([§6.3.1](#631-locating-a-gap-at-its-reference-site)), at `arch` and
+      the user's gate;
     - Face 1's fresh-load gap (§6.11, *Failed dependency*).
   - *Designed, not scheduled:* a qualified reference through a mount loads
     the mount's owner (ACT-1079,

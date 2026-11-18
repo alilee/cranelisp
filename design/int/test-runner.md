@@ -2,7 +2,8 @@
 
 **Owner:** `design` (int). **Status:** implemented and verified in `src/`,
 except §6.5 (the test child) and the location of the batch refusal of
-`discover-tests` (§7.3, Location), which is designed and not built. `dev`(src) built §6.5 in S123 W1, and `design`
+`discover-tests` (§7.3, Location), which is built at `52de1aad` and awaits
+review and the suite run. `dev`(src) built §6.5 in S123 W1, and `design`
 (int) checked it against source on 2026-11-15. Independent review and the
 suite run are still to come. The child runs §§6.2–6.3 in its own process.
 Verification evidence and acceptance status are recorded in `sprints/archive/sprint-122.md`.
@@ -634,11 +635,11 @@ that for all three batch seams:
   one referencing function, names the REPL as where the primitive is
   available, and names `--test` as the way to have the compiler discover and
   run the tests (§16.6). It never offers `--run`.
-- **Location (ACT-1036; designed 2026-11-18, not in source at `66bc7b8a`).**
+- **Location (ACT-1036; designed 2026-11-18, built at `52de1aad`).**
   The refusal is located at the written top-level form that defined the
-  function it names, in that function's module file (REPL §5.5, §5.1). As
-  built it is raised at the synthetic span with no file, so every seam prints
-  `1:1` and `0..0`.
+  function it names, in that function's module file (REPL §5.5, §5.1).
+  Before `52de1aad` it was raised at the synthetic span with no file, so
+  every seam printed `1:1` and `0..0`.
   - *Span source.* The definition origin the session keeps for every
     definition it publishes, in every mode. It is the record the `main` gate
     reads ([io-integration §1](io-integration.md#1-running-a-program),
@@ -664,8 +665,8 @@ that for all three batch seams:
     schedule.
   - *Which function.* When several functions reference the primitive, the
     gate names a located candidate before an unlocated one, then the first by
-    module path, then the earliest origin in that module. As built the walk
-    follows map order, which varies between processes.
+    module path, then the earliest origin in that module, so the choice does
+    not depend on table order.
   - *What `dev` builds* (`src/exe.rs` and the three seams). The gate takes
     the session's origin record and each module's file beside the tables.
     It is crate-private, so no public item changes. The text and category of

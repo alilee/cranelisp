@@ -85,7 +85,7 @@ listed in `int.md` §16.0, and the standing review rejects in `int.md` §12.1.
 | `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
 | `multi-sig-introspection.md` | Multi-signature introspection: one line per arm, each with its own constraints (§2.4). |
 | `private-submodule-import.md` | Private submodule import refusal, with its open unloaded-parent case. |
-| `test-runner.md` | `--test` and the crate-private runner it shares with `/run-tests` and `/run-all-tests`: selection, the one eligibility scan, prepare/execute/report, test-result release and the batch refusal of `discover-tests`. Implemented and verified, except the S123 test child that restarts after a panic (§6.5). The child is built and checked against source. It awaits review, the suite run, and a `dev` change: the reason of a non-panic fail must carry the fault's cause (§6.5, *The cause of a fail*). The location of the batch `discover-tests` refusal (§7.3) is designed and not built. |
+| `test-runner.md` | `--test` and the crate-private runner it shares with `/run-tests` and `/run-all-tests`: selection, the one eligibility scan, prepare/execute/report, test-result release and the batch refusal of `discover-tests`. Implemented and verified, except the S123 test child that restarts after a panic (§6.5). The child is built and checked against source. It awaits review, the suite run, and a `dev` change: the reason of a non-panic fail must carry the fault's cause (§6.5, *The cause of a fail*). The location of the batch `discover-tests` refusal (§7.3) is built and awaits review and the suite run. |
 
 ### Reference lineage
 
