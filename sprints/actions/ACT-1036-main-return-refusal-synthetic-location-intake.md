@@ -75,11 +75,30 @@ the [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#34-repro-0915-
   required, so it is a durable public witness of FIXME 0915's location
   requirement.
 
-## Disposition
+## At the W8 exit (qa, 2026-11-18, `2d3a5b3e`)
 
-Fix or carry is the user's decision under METHOD §2.4. QA retains this intake.
+- **Corrected (`e294852f`, with `98ea54a0`).** Every refusal about a bound
+  `main` is located at its definition origin under `--run` and `--link`:
+  the non-`IO` return, the arity arm, a macro `main`, a macro-produced
+  `main` (at the written call, also across a dependency retry) and a
+  multi-arity `main`. The committed cell and the `s124_main_location_*`
+  cells pass; `qa` read each RED on the location before the correction
+  ([evidence delta §14](../../tests/plan/s124-evidence-delta.md#14-the-evidence-after-wave-w8)).
+- **Not corrected: the `discover-tests` refusal.**
+  `src/exe.rs::refuse_dev_session_externs` still reports
+  `p.cl:1:1: error: codegen error at 0..0: `p/main` references `discover-tests` …`
+  with the reference on line 3, in both batch modes.
+  `tests/test_runner.rs::s124_discover_batch_location_run` and `_link` are
+  RED on it. No design names a span source for this refusal:
+  [test runner §7.3](../../design/int/test-runner.md#73-batch-refusal-of-discover-tests)
+  states the detector and the wording only.
+- **Open for:** `design`(int) to state the location (the referencing
+  function's definition origin is available to the same session), then
+  `dev`(`src/`) with a module row. Whether that lands in S124 or is carried
+  is the user's decision.
 
 ## Completion evidence
 
-The cell goes RED for the location, then GREEN after the correction in both
-batch modes, with the refusal text unchanged.
+Every cell goes RED for the location, then GREEN after the correction in
+both batch modes, with the refusal text unchanged. Met for the refusals
+about `main`; open for the `discover-tests` refusal.

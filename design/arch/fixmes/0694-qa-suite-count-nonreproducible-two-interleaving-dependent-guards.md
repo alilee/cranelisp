@@ -102,7 +102,7 @@ that are defects. Record: [S124 evidence delta](../../../tests/plan/s124-evidenc
   member or the reactor panic. The Class I faces still owed above are
   unchanged.
 - **A run-dependent maintenance check is attributed separately**:
-  [ACT-1061](../../../sprints/actions/ACT-1061-sh-save-notice-arrives-after-the-next-prompt-intake.md).
+  ACT-1061 (closed S124).
 - ACT-1025 was a fixture assumption, corrected at S123; its filing is
   deleted and it is not a member of this record.
 

@@ -1684,7 +1684,7 @@ projects. Neither is a 6a change: both match the W5 logs.
     schedules for retirement in S124 with its spec ruling and API packet
     ([ACT-0953](../../sprints/actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md)).
     Until then the behaviour is conformant, so no defect RED is owed.
-    `tests/repl_redefinition.rs::same_type_ownership_abi_change_is_rejected_before_slot_patch`
+    `tests/repl_redefinition.rs::same_type_ownership_abi_change_is_rejected_before_slot_patch` <!-- doc-check: literal reason="Cell as it stood at S123; row D7 retired the gate and deba008a removed the cell" -->
     already covers the gate on a parameter-mode change.
   - The demo dates from Sprint 58, before the S121 gate. *Handoff to
     `test`:* make step 5c's replacement ABI-preserving, such as `(+ x 1)` to

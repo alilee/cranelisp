@@ -44,7 +44,7 @@ deliberately leave already-generated definitions at their materialized bodies
 until an explicit recompilation boundary; those definitions are neither stale
 nor broken.
 
-### 18.1 Callable Redefinition [Uncovered S124 — was Uncovered S121]
+### 18.1 Callable Redefinition [Uncovered S121]
 
 Declaration visibility is immutable during live redefinition of an existing
 canonical callable. Changing `defn` to `defn-`, or `defn-` to `defn`, MUST be
@@ -62,9 +62,16 @@ realization details are not part of that language type.
   documentation and patches the callable's existing slot. Calls and callable
   values that already refer through that slot reach the replacement body on
   their next invocation. No dependent is re-typechecked and no redefinition
-  report is printed beyond the ordinary definition confirmation. [Uncovered S124 — was Tested+Neg
+  report is printed beyond the ordinary definition confirmation. [Tested+Neg
   `tests/repl_redefinition.rs::redefine_body_only_stale_closure_late_binds_new_body`,
-  `tests/repl_redefinition.rs::redefine_body_only_neg_no_cascade_report_no_dependent_recompiles`]
+  `tests/repl_redefinition.rs::redefine_body_only_neg_no_cascade_report_no_dependent_recompiles`,
+  `tests/repl_redefinition.rs::s124_d7_single_moves_on`,
+  `tests/repl_redefinition.rs::s124_d7_single_moves_off`,
+  `tests/repl_redefinition.rs::s124_d7_generic_moves_on`,
+  `tests/repl_redefinition.rs::s124_d7_generic_moves_off`
+  — a replacement whose inferred ownership modes differ publishes, a direct
+  caller and a function value taken before it reach the new body, the
+  session balances against a twin that keeps its modes, and a restart agrees]
 - A replacement with a different language type is legal only when the existing
   definition has no blocking dependent under §18.2. If any blocking dependent
   exists, the compiler MUST reject the replacement before publication, retain
@@ -237,7 +244,7 @@ impls and dispatch remain live. A different interface requires a new trait
 name; the implementation MUST NOT reinterpret existing impls or checked trait
 constraints under an unversioned changed interface.
 
-### 18.7 Impl Redefinition — Re-entering an `impl` [Uncovered S124 — was S115]
+### 18.7 Impl Redefinition — Re-entering an `impl` [S115]
 
 A trait implementation is replaced at whole `(trait, target-type)` pair grain.
 A re-`impl` MUST conform completely to the committed trait interface. Once the
@@ -251,6 +258,11 @@ current default template. [Tested+Neg
 A conforming re-`impl` preserves every materialized method's language type. A
 candidate that would change one of those types is rejected as non-conforming;
 it does not enter the ordinary-callable no-dependent path.
+[Tested
+`tests/repl_redefinition.rs::s124_d7_impl_moves_on`,
+`tests/repl_redefinition.rs::s124_d7_impl_moves_off`
+— a same-type re-`impl` whose inferred ownership modes change publishes and
+balances]
 
 Replacement uses the turn/publication atomicity defined above. The complete
 impl candidate is validated and compiled before publication. If any method

@@ -17,8 +17,8 @@
 > §14.2; `repl/spec/15-session-persistence.md` §15.4;
 > `repl/spec/16-test-discovery.md` §16.1 and §16.6.
 > **Checkpoint:** `main` at `4b58ab93` for sections 1 to 13, and `main` at
-> `7888c515` for section 14, the state of the evidence after waves W6 and
-> W7. Section 14.5's census reading is at `84719eb6`.
+> `2d3a5b3e` for section 14, the state of the evidence after wave W8,
+> including its census reading.
 > **Scope:** sections 1 to 7 are intake, attribution and the reproductions
 > that do not depend on the S124 designs. Sections 8 to 13 are the conditions for the S124
 > corrections and the Phase 3 readiness judgment. Section 14 is the standing state
@@ -40,7 +40,7 @@ passed, 49 failed, 1 skipped (153 s).
 |---|---|---|---|
 | The filed guards | 44 | Acceptance evidence, intended RED | The set is identical to the S123 close set; `arch` mapped each guard to its filing in the [architecture review](../../sprints/s124-architecture-review.md#71-the-mapping-verified) §7.1. `qa` confirmed the set, not the per-guard mapping. |
 | `citation_drift`, all three tests | 3 | Maintenance check | [S124 scope](../../sprints/SPRINT.md#included) item 6, owner `sprint`, wave W0. The converged checker exits 2 with `inventory.root_memory must be AGENTS.md`, so it inspects nothing. Until W0 lands, no claim rests on the document gate. |
-| `user_samples`, both tests | 2 | Maintenance check, run-dependent | [ACT-1061](../../sprints/actions/ACT-1061-sh-save-notice-arrives-after-the-next-prompt-intake.md), §5.1. |
+| `user_samples`, both tests | 2 | Maintenance check, run-dependent | ACT-1061 (closed S124), §5.1. |
 
 - **Stable failing set: 47.** The two `user_samples` tests are run-dependent
   and are named separately, under the
@@ -584,7 +584,7 @@ in ACT-1050's change-set. No leg of a to c imports the primitive `bind`.
 
 ### 3.9 REPRO-1063 — a host-promised primitive as a value
 
-Observations and attribution: [ACT-1063](../../sprints/actions/ACT-1063-bind-as-a-value-refused-at-codegen-intake.md).
+Observations and attribution: ACT-1063 (closed S124).
 The correction is [compile-to-module §12.1](../../design/backend/compile-to-module.md#121-host-promised-primitives-as-values-act-1063-s124),
 backend row B12. No prelude, `(import [primitives [*]])`.
 
@@ -824,7 +824,7 @@ deleted; FIXME 0694 no longer links it.
   late run the notices follow the next prompt and precede its result.
 - **Classified: a product defect** in `src/`, by the user's S124-Q6 ruling,
   and in S124 scope. Reproduction and conditions: §3.6;
-  [ACT-1061](../../sprints/actions/ACT-1061-sh-save-notice-arrives-after-the-next-prompt-intake.md).
+  ACT-1061 (closed S124).
 - Until the correction lands, a suite count names both tests as
   run-dependent.
 
@@ -895,7 +895,7 @@ lead, not of the row.
 | `design`(typecheck), `dev`(typecheck) | (1) §2.2: confirm the two sites; unit rows with the correction. T-1034-d shows a third: the instance is published and the site inside it is not redirected. T-Q7-c's REPL leg shows the dispatch hop from a free-function instance that an earlier cluster published (§9.1). (2) The counting unit is settled as the implementation instantiation ([monomorphisation §3.10.3](../../design/typecheck/monomorphisation.md#3103-recursion-through-dispatch)); T-DEPTH-c is its cell. (3) A lead, not observed: the mint recurses once per chain element on the compile worker's stack, and that stack is exhausted today by a source expression about 56 forms deep in the debug build (ACT-1067). T-DEPTH-a and T-DEPTH-c are the falsifiers of "the deepest admitted chain fits"; `dev`'s boundary row 6 should run on a worker-sized stack. (4) `CRANELISP_OWNERSHIP_TRACE` prints no summary for a member of a multi-signature family. No cell depends on it (§9.4); it is recorded as a gap in a diagnostic observer. |
 | `design`(int) | (1) [ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md): place the correction once it is scheduled, and say whether `section_entry_claimed_or_excluded` is repaired or removed. (2) With `dev`(`src/`): the §4.2 module test when ACT-0994 is scheduled. |
 | `dev`(`src/`) | ACT-1060's completion check is met at `8667a868`; the filing is `dev`'s to resolve. |
-| `sprint` | (1) ACT-1068 needs a scheduling decision from the user: its correction is in no S124 row and it loses user data. (2) Suite readings are taken in the primary harness: thirteen tests fail only in the Codex sandbox (§14.1). (3) The overload leg of T-D7-b is a residual that needs the user's approval (§9.4). (4) The document gate fails on 600 findings, 577 of them ignored-path; their disposal is with the user, and until it is decided no claim rests on that gate. (5) `tests/plan/spec_coverage_reconcile.py` counts a cleared row only when its tag has a "was" clause, so a new obligation tagged `[Uncovered S124]` alone is outside the close gate (§11). The repair is `qa`'s, with its detection test, and needs a pass that may run it. (6) Two questions are queued for the user and hold no cell (§10). (7) ACT-1067 is carried with its reproduction RED. (8) [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) has no correction in any S124 wave and ACT-1050's is predicted not to move it (§14.4): it needs a route or a recorded carry. |
+| `sprint` | (1) ACT-1068 needs a scheduling decision from the user: its correction is in no S124 row and it loses user data. (2) Suite readings are taken in the primary harness: thirteen tests fail only in the Codex sandbox (§14.4). (3) The overload leg of T-D7-b is a residual that needs the user's approval (§9.4). (4) The document gate fails, mostly on ignored-path findings whose disposal is with the user (§14.8); until it is decided no claim rests on that gate. (5) `tests/plan/spec_coverage_reconcile.py` counts a cleared row only when its tag has a "was" clause, so a new obligation tagged `[Uncovered S124]` alone is outside the close gate (§11). The repair is `qa`'s, with its detection test, and needs a pass that may run it. (6) Two questions are queued for the user and hold no cell (§10). (7) ACT-1067 is carried with its reproduction RED. (8) [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) has no correction in any S124 wave and ACT-1050's is predicted not to move it (§14.4): it needs a route or a recorded carry. |
 | `spec` | (1) [Appendix D](../../spec/appendix-d-open-questions.md), S124-Q7: the "counting-unit gap — unresolved" paragraph is stale at `2c690be5`. The design counts implementation instantiations, as spec §3.10 states; the remaining question is the method-level re-entry (§10). (2) Three places where spec §3.10 and §10.6 leave the observation open: §10's list. (3) Whether the language limits the nesting depth of a source expression (ACT-1067), for the user. |
 
 ## 7. What was run, and limits
@@ -1031,7 +1031,7 @@ Intake: [ACT-1062](../../sprints/actions/ACT-1062-match-field-binder-takes-anoth
 ### 8.4 `bind` as a value
 
 Classified as a defect on spec §3.2.1: §3.9 and
-[ACT-1063](../../sprints/actions/ACT-1063-bind-as-a-value-refused-at-codegen-intake.md).
+ACT-1063 (closed S124).
 
 ## 9. Conditions for the S124 corrections
 
@@ -1353,19 +1353,25 @@ from 23.
 | Spec §12.4.3, appendix C.3.1 | Restored with the strict-trace cells added | T-1038-a covers the exception; the former cells observe the unchanged rule outside a trace |
 | Spec §4.12.2 | Still cleared; its tag no longer states ACT-1038's and ACT-1069's defects | Both are corrected. Item 3 waits on ACT-1039 |
 
+**Edited at the W8 exit.** The close gate lists 6 cleared rows, from 14.
+
+| Row | Edit | Why |
+|---|---|---|
+| Spec §10.6, the heading and its two new rows | Restored on the committed return-type cell, the arity and missing-`main` cells, T-Q9-a and T-Q9-b | Green with `e294852f` |
+| REPL §5.1, item 2 and the heading | Restored: three cells that read a position, and T-Q8's cells for the exception. The heading is `[Tested]`, the level of items 1 and 3 | Green with `e294852f` |
+| REPL §5.5, the heading | Still cleared; its tag names the `discover-tests` refusal and FIXME 0915's two faces | REPRO-0915-loc's `discover-tests` leg is RED (ACT-1036) |
+| REPL §14.2, the `/sh` sentence | Restored with the three T-1061 cells | Green with `b3e3887e`; O-1061 is recorded (§14.2) |
+| REPL §18.1's first bullet | Restored with the four T-D7 cells for an ordinary function and a generic realization. The heading returns to `[Uncovered S121]`, its state before S124 | Green with row D7 |
+| REPL §18.7 | The conformance paragraph cites T-D7-b's impl-method cells. The heading returns to `[S115]`, its state before S124 | Green with row D7 |
+
 **Restored when.**
 
 | Row | Restored when |
 |---|---|
 | Spec §4.12, §4.12.2 | T-1039 and T-1039-w are green (T-1038-a and T-1038-b are) |
-| REPL §14.2, the `/sh` sentence | T-1061 is green and O-1061 is recorded |
 | REPL §15.4 rule 2 and the authorship note | Carried with ACT-1005: REPRO-1005-b is RED until that correction. F-1005-d covers only the macro exception. The note's `begin` cells are restored to it with rule 2 |
-| REPL §18.1 and its first bullet, §18.7 | T-D7 and T-D7-b are green |
 | Spec §3.10, the heading | Not restored while a child bullet is uncovered (candidate filtering has been since S121) |
-| Spec §10.6, the two new rows | T-Q9-a; T-Q9-b |
-| Spec §10.6, the heading | Its rows, REPRO-0915-loc's arity leg and the committed return-type cell are green |
-| REPL §5.1 item 2 and the heading | T-Q8 is green for the exception and for item 1's category, and a cell that reads a position is cited for the rule: REPRO-0915-loc's subjects qualify |
-| REPL §5.5, the heading | T-1036, REPRO-0915-loc with its two added legs, T-Q8 and T-Q9-a are green. It stays partial while FIXME 0915's prefix and subject faces are open (§4.4) |
+| REPL §5.5, the heading | REPRO-0915-loc's `discover-tests` leg is green (ACT-1036). It stays partial while FIXME 0915's prefix and subject faces are open (§4.4) |
 
 REPL §1.5's rows kept their citations; the cited cells assert display only,
 which is what the amended prose requires. A row still cleared at close is
@@ -1499,151 +1505,164 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
 - Counts are single runs unless a row gives a rate. Every §8.2 subject
   failed on each of its runs.
 
-## 14. The evidence after waves W6 and W7
+## 14. The evidence after wave W8
 
-**W7's exit is accepted with one cell returned; W6's exit is not met.**
+**W8's exit is accepted with one cell family still RED.** Every W8 row is
+in source and its cells pass in every mode, except the `discover-tests`
+refusal of ACT-1036, which is still located at `0..0` (2 cells). W6's exit
+is unchanged: open on the user for the traced set and for row D13.
 
-- **W7.** Every guard and §9.5 cell of rows D3 and D10, ACT-0997, ACT-1055,
-  ACT-1056, ACT-1057, ACT-1059, ACT-1064 and audit R1 to R5 passes, with
-  T-1065-d. T-SUP's three cells fail on a fixture that is a dependency
-  cycle, not on row D3 (§14.3 item 1). One defect entered with the wave
-  ([ACT-1079](../../sprints/actions/ACT-1079-qualified-reference-through-a-mount-needs-its-owner-loaded-intake.md)).
-- **W6.** The landed rows are accepted: B6, B7, B9, B11, B12, row D11 and
-  the ACT-1038 half of B10. REPRO-1063 passes and a raise-helper bypass
-  does not compile. Two parts of the exit are open, both waiting on the
-  user: the ACT-1039 half of B10, so one trace guard and T-1039-w stay
-  RED, and B8 (rows D6 and D9).
-- **Defects taken in at this exit:** ACT-1079,
-  [ACT-1078](../../sprints/actions/ACT-1078-cached-trace-form-object-references-unloaded-module-got-intake.md)
-  and [ACT-1080](../../sprints/actions/ACT-1080-return-annotation-mismatch-names-expected-and-actual-reversed-intake.md).
-  ACT-1078 and ACT-1080 predate W3.
+- **Corrected at W8, each read RED before and green now:** row D7 with
+  ACT-0953; ACT-1061; ACT-1036's refusals about `main` with row D12,
+  S124-Q8 and Q9; ACT-1052; both faces of ACT-1016; ACT-0973.
+- **Closed at this exit:** ACT-0973, ACT-1016, ACT-1061 and ACT-1063 are
+  deleted. ACT-1052 is resolved and its file stays while `sprint`'s
+  documents link to it.
+- **Opened at this exit:**
+  [ACT-1081](../../sprints/actions/ACT-1081-module-graph-through-a-declared-child-is-accepted-or-refused-by-load-route-intake.md).
+  One module graph is accepted or refused as a cycle according to which of
+  its modules loads first.
+- **The settling target is not reachable on this tree** without decisions
+  that are the user's (§14.8).
 
-- **Read against:** `main` at `7888c515`; the commits after `7697cad3`.
+- **Read against:** `main` at `2d3a5b3e`; the commits after `bb98aa75`.
 - **What `qa` ran**, in the primary harness on the debug build of
-  `7888c515`:
-  - the full suite once, without the census variable (7,680 run, 106
-    failed);
-  - scratch programs for ACT-1078, ACT-1079, ACT-1080, T-SUP, T-1063-b,
-    T-Q4-a's restore, O-1038 and the library-held trace form, with the
-    release build of 2026-11-18 00:11 (the W2 tree) as the control for
-    "predates W3";
+  `2d3a5b3e`:
+  - the full suite once, with the census variable set: 7,747 run, 84
+    failed, 271 s with no rebuild;
+  - scratch programs for the `discover-tests` refusal, the
+    result-polymorphic `main`, the exemplar's warm balance on the former and
+    the present tree, ACT-1081, the cells
+    [int §6.11](../../design/int/int.md#611-module-cycles-at-publication)
+    leaves to `qa`, and the failed-dependency refusal at a fresh load;
+  - O-1061 and four warm starts of the exemplar's tests;
   - `spec_coverage_reconcile.py`, `spec_link_check.py` and the document
     checker, before and after this pass's edits.
 - **Limits.**
-  - No census was read on this tree. §14.5 is the reading at `84719eb6`;
-    W9's integrated gate takes the next one.
-  - `qa` did not see the review cells of `e023b47a` fail. Their RED on the
-    pre-correction tree is `test`'s report, relayed by the coordinator.
-  - The `src/` half of `42e6d929` established its module tests by planted
-    faults, not by a failing run before the change. That is a deviation
-    from the failing-first rule. `review` then found three defects in that
-    half which those tests passed; each now has an e2e cell.
-  - `review`'s findings were read as reported by the coordinator.
+  - The suite ran once. The run-dependent cells below are compared with
+    `dev`(`src/`)'s run of the same tree, which `qa` read as a list of
+    failing names.
+  - `review`'s findings on W8 were read from the coordinator's briefs, not
+    from `review`'s reports.
+  - No build other than `2d3a5b3e` was run. "RED before" for a W8 cell is
+    `qa`'s run at `7888c515` (§14.1 as it stood at `bb98aa75`), or `test`'s
+    report for the cells of `3c156f92`.
+  - The module rows of W8 were read as test names in the suite output and
+    as the authors' commit records. `qa` did not plant faults against them.
 
-### 14.1 The failing set at `7888c515`
+### 14.1 The failing set at `2d3a5b3e`
 
 | Class | Count | Traces to |
 |---|---|---|
-| Opening filed guards | 9 | §1: ACT-1016 (3), ACT-0973 (2), ACT-1036, ACT-1039, ACT-1018, ACT-1052 (1 each) |
-| S124 cells failing on their row's assertion, or by the signal their row names | 92 | The filings and approved rows below |
-| T-SUP, failing on its fixture | 3 | §14.3 item 1 |
-| `citation_drift::project_documents_conform_to_the_checked_in_declaration` | 1 | Maintenance check (§6, `sprint` item 4) |
-| `public_api_relocations::public_api_check_runs_against_all_seven_crates` | 1 | Maintenance check (M-API). It clears when the baselines are regenerated at the Phase 5 checkpoint; `arch` compares each line with the packet then |
+| S124 cells failing on their row's assertion, or by the signal their row names | 80 | The filings below |
+| Opening filed guards | 2 | `trace::trace_records_user_function_calls_in_every_mode` (ACT-1039); `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing` (ACT-1018), which now fails on its setup (§14.3 item 2) |
+| `citation_drift::project_documents_conform_to_the_checked_in_declaration` | 1 | Maintenance check (M-W0) |
+| `public_api_relocations::public_api_check_runs_against_all_seven_crates` | 1 | Maintenance check (M-API). It clears when the baselines are regenerated |
 | Anything else | 0 | No genuine regression |
 
-- **Change from W5 (192).** Passing now: ACT-1063 (38), ACT-1056 (23),
-  ACT-1057 (13), ACT-0997 (11), ACT-1055 (6), ACT-1059 (3), ACT-1064 (2),
-  ACT-1038 (2), T-EXP0 and T-ALIAS (5), and the golden lane; the collapse
-  witness is removed. Failing as allocated: ACT-1076 (15) and ACT-1077 (1).
-  Three run-dependent cells failed in this run.
+The 80, by filing:
+
+| Traces to | Cells | Face | Correction |
+|---|---|---|---|
+| [ACT-1076](../../sprints/actions/ACT-1076-trait-dispatch-selects-on-the-first-argument-not-the-self-position-intake.md) | 15 | signal, wrong value or refusal | Unscheduled |
+| [ACT-1075](../../sprints/actions/ACT-1075-polymorphic-candidate-selected-from-a-shared-spelling-is-undefined-at-codegen-intake.md), with T-1065-f | 9 | refusal | Unscheduled |
+| [ACT-1079](../../sprints/actions/ACT-1079-qualified-reference-through-a-mount-needs-its-owner-loaded-intake.md) | 8 | refusal | Unscheduled |
+| [ACT-1071](../../sprints/actions/ACT-1071-imported-impl-instance-calls-multi-signature-function-through-empty-slot-intake.md) | 7 | signal | Unscheduled |
+| [ACT-1005](../../sprints/actions/ACT-1005-macro-order-regeneration-edge-cases.md) | 6 | regenerated order | Carried past S124 |
+| [ACT-1074](../../sprints/actions/ACT-1074-impl-body-call-to-same-cluster-multi-signature-function-refused-intake.md) | 6 | refusal | Unscheduled |
+| [ACT-1062](../../sprints/actions/ACT-1062-match-field-binder-takes-another-parameters-type-intake.md) (REPRO-1062-e, -f) | 4 | signal | Unscheduled |
+| [ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md) | 4 | authored source deleted | Unscheduled |
+| [ACT-1080](../../sprints/actions/ACT-1080-return-annotation-mismatch-names-expected-and-actual-reversed-intake.md) | 4 | misleading diagnostic | Unscheduled |
+| [ACT-0977](../../sprints/actions/ACT-0977-scoped-launched-work-cancellation-evidence.md) | 3 | effects after cancellation | Carried past S124 |
+| [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) (T-1039-w) | 3, with 1 guard | no frames | W6, blocked on the user |
+| [ACT-1036](../../sprints/actions/ACT-1036-main-return-refusal-synthetic-location-intake.md), the `discover-tests` leg | 2 | diagnostic at `0..0` | Not designed |
+| [ACT-1067](../../sprints/actions/ACT-1067-deeply-nested-expression-overflows-compile-worker-stack-intake.md) | 2 | compiler aborts | Carried past S124 |
+| [ACT-1073](../../sprints/actions/ACT-1073-refused-cluster-leaves-an-earlier-implementation-shell-registered-intake.md) | 2 | refusal | Unscheduled |
+| [ACT-1078](../../sprints/actions/ACT-1078-cached-trace-form-object-references-unloaded-module-got-intake.md) | 2 | refusal | Blocked on the user |
+| [ACT-1070](../../sprints/actions/ACT-1070-jit-direct-call-out-of-range-of-allocator-placed-code-intake.md) | 1 | signal, 4 of 16 runs | Unscheduled |
+| [ACT-0981](../../sprints/actions/ACT-0981-multi-signature-io-scheduling-intake.md) | 1 | lost overlap | Carried past S124 |
+| [ACT-1077](../../sprints/actions/ACT-1077-same-named-local-leaves-an-unrelated-bind-chain-sequential-intake.md) | 1 | lost overlap | Unscheduled |
+
+- **Change from the W6 and W7 read (106).**
+  - Passing now: ACT-1036 with row D12, Q8 and Q9 (15 of 17), ACT-0973 (9),
+    ACT-1016 (3), T-SUP as re-pointed (3), row D7 (2), ACT-1061 (2) and
+    ACT-1052 (1).
+  - Failing as allocated at the last exit: ACT-1079 (8), ACT-1080 (4) and
+    ACT-1078 (2).
+  - One run-dependent cell that failed then passes in this run.
 - **Run-dependent members.** A pass in a loaded run is not a correction.
-  `dev`(`src/`)'s full run of the same tree failed 103: this run's set
-  without the three cells that differ below.
+  `dev`(`src/`)'s run of this tree failed 83: this run's set without
+  `trace::s124_1039_w_subject_link`.
 
 | Cell | In `qa`'s run | In `dev`'s run | Cause |
 |---|---|---|---|
-| `spec_07_traits::s124_1070_jit_call_range_subject` | fails | fails | [ACT-1070](../../sprints/actions/ACT-1070-jit-direct-call-out-of-range-of-allocator-placed-code-intake.md) |
-| `spec_07_traits::s124_two_member_depth_64_run` | fails, signal 11 | passes | ACT-1070: one run of the program the sixteen-run cell repeats |
-| `trace::s124_1039_w_subject_link` | fails | passes | [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) |
-| `repl_watch::s124_1061_watched_save_subject` | fails | passes | [ACT-1061](../../sprints/actions/ACT-1061-sh-save-notice-arrives-after-the-next-prompt-intake.md)'s late face |
-| `repl_watch::s124_1061_save_without_notification` | fails | fails | ACT-1061 |
-| `cache::cache_restored_text_after_abi_change_preserves_importer_calls_across_modes` | fails | fails | ACT-1052 |
-| `user_samples::user_documentation_samples_match_the_compiler` | passes | passes | ACT-1061 (§5.1) |
-| `spec_07_traits::s124_1070_jit_call_range_arena_control` | passes | passes | The control reports under load since `8b73a486` |
+| `trace::s124_1039_w_subject_link` | fails | passes | ACT-1039 |
+| `spec_07_traits::s124_1070_jit_call_range_subject` | fails | fails | ACT-1070 |
+| `spec_07_traits::s124_two_member_depth_64_run` | passes | passes | ACT-1070: one run of the program the sixteen-run cell repeats. It failed in the run at `7888c515` |
+| `trace::s124_1078_subject_run`, `_link` | fail | fail | ACT-1078. Reported run-dependent by the coordinator; both failed in both runs |
+| `repl_watch::s124_1061_*`, both `user_samples` tests | pass | pass | Corrected (ACT-1061, closed); O-1061 below |
 
-The 92, by filing or approved row, with the wave that corrects each:
-
-| Traces to | Cells | Opening guards of the same filing | Correction |
-|---|---|---|---|
-| ACT-1076 | 15 | — | Unscheduled |
-| ACT-1036 | 10 | 1 | W8 |
-| ACT-1075 (six subject legs and T-1065-f) | 9 | — | Unscheduled |
-| ACT-0973 | 7 | 2 | W8 |
-| ACT-1071 | 7 | — | Unscheduled |
-| ACT-1005 | 6 | — | Carried past S124 |
-| ACT-1074 | 6 | — | Unscheduled |
-| Row D12, S124-Q8 and Q9 (T-Q8, T-Q9-a) | 6 | — | W8 |
-| ACT-1062 (REPRO-1062-e, REPRO-1062-f) | 4 | — | Unscheduled |
-| ACT-1068 | 4 | — | Unscheduled |
-| ACT-0977 | 3 | — | Carried past S124 |
-| ACT-1039 (T-1039-w) | 3 | 1 | W6, blocked on the user |
-| ACT-1061 | 2 | — | W8 |
-| ACT-1067 | 2 | — | Carried past S124 |
-| ACT-1070 | 2 | — | Unscheduled |
-| ACT-1073 | 2 | — | Unscheduled |
-| Row D7 (T-D7, T-D7-b) | 2 | — | W8 |
-| ACT-0981 | 1 | — | Carried past S124 |
-| ACT-1077 | 1 | — | Unscheduled |
-
-ACT-1016 (3), ACT-1018 and ACT-1052 hold opening guards only. ACT-1016 and
-ACT-1052 are W8's; ACT-1018 carries on its measured residual (§14.4).
+- **`spec_08_modules::failed_import_has_one_located_prefix_neg`** was
+  reported still RED. It passes in this run, in `dev`'s and in `qa`'s run
+  at `7888c515`.
+- **Duration.** 271 s for 7,747 tests with nothing to build. `qa`'s earlier
+  runs took 204 s (`7888c515`, 7,680 tests) and about 230 s. The run cannot
+  end before `user_samples::user_documentation_samples_match_the_compiler`
+  does: 125 s here, and 92 to 98 s in the earlier runs. Every other test had
+  finished by about 204 s. The census variable was set in this run and not
+  in the 204 s run; whether it accounts for the difference was not
+  measured. `dev`'s 336 s was not reproduced.
 
 ### 14.2 Row groups
 
-"Accepted" means every RED leg was read failing on the row's assertion and
-every control and fence passed in the full run. "Accepted green" means the
-row's cells were RED on their assertion before the correction and pass in
-`qa`'s full run with no change to their assertions.
+"Accepted green" means the row's cells were RED on their assertion before
+the correction and pass in `qa`'s full run with no change to their
+assertions.
 
 | Rows | Judgment | Note |
 |---|---|---|
-| REPRO-1063, REPRO-1063-p, M-1063 | Accepted green | W6, row B12. 89 cells. T-1063-b is not written (§14.3 item 4) |
-| T-1038-a, T-1038-b, M-1038 | Accepted green | W6, row D8. The traced run declines sparks and records the no-lenient frame count; the untraced twin spawns |
-| O-1038 | Recorded | A lenient binding made outside a trace and forced inside it: 5 frames in 30 of 30 REPL runs (`spawns=4`, `trace_declines=2`), and 5 with `CRANELISP_NO_LENIENT=1`. No variation observed |
-| M-P15 | Accepted | W6, B6. The census passes the clean tree and fails its planted declaration |
-| M-LAY, rows R10-9 and R10-10 | Accepted | W6, B11. The golden lane passes; module evidence is `dev`'s gate (§14.4) |
-| Row D11 | Accepted | Nothing emits either retired symbol; the golden re-baseline is scoped to the catalog removal (`e6d566bf`) |
-| T-1039, T-1039-w | Accepted, still RED | W6, blocked. RED on zero frames |
-| T-D3's committed guards, T-R2-a to c, T-DUP, T-EXP0, T-ALIAS | Accepted green | W7 |
-| T-MNT-a, T-MNT-b, T-Q4-a, T-Q4-b, T-D10, T-REG | Accepted green, remaining clauses read | W7. Both declaration orders, the later form and the later turn are refused at the second declaration's line; equal targets resolve inside and from an importer; each regeneration leg restarts cold on the saved file. T-Q4-a's restore clause executes and is not asserted (§14.3 item 6) |
-| REPRO-1064 | Accepted green | W7. The restart values run and agree |
-| REPRO-R1 with the S124-Q2 controls, T-Q3, REPRO-R3, R3-risk | Accepted green | W7 |
-| T-1065-d | Accepted | W7. Green on arrival, as §9 expected once a rename parses. A wall-clock ratio against a serial reference, as REPRO-0981 uses |
-| The review cells of `e023b47a`: a rename beside a glob, a selective `*`, a prelude cycle through a mount | Adequate for the three findings | Written by `test` without an allocation, because the findings were newer than this record. Each has its control; the regeneration cells restart cold with the cache removed. They do not cover a mount of a mount (ACT-1079) |
-| T-SUP | Returned | §14.3 item 1 |
-| ACT-1076: subjects A to E, controls A, C and D | Accepted | 15 legs RED, 12 control legs pass |
-| ACT-1077 | Accepted | RED on the serial regime |
-| ACT-1075, T-1065-f, ACT-1071, ACT-1070, ACT-1073, ACT-1074, REPRO-1062-e and -f, REPRO-1068 | Accepted, still RED | No correction scheduled |
-| REPRO-0977, REPRO-0981, REPRO-1067, REPRO-1005-a to c | Accepted | Carried RED past S124 |
-| T-1061, REPRO-0915-loc, T-Q8, T-Q9-a, T-Q9-b, T-D7, T-D7-b, T-0973, T-0973-c, T-1016, T-1036, T-1052 | Accepted | W8 |
-| Rows corrected at W2 to W5 | Green | T-D4, T-D4-t, T-D5, T-FR, the ACT-1034, ACT-1050, ACT-1072 and Q7 families, REPRO-1062-a to d, REPRO-1066 |
+| T-D7, T-D7-b, X-D7 | Accepted green | Row D7 (`7cceedc4`). Six cells: an ordinary function, a generic realization and an impl method, each with moves on and off. Each asserts the premise (two different summaries in the ownership trace), both routes to the new body, a restart and marginal balance against a twin that keeps its modes. The retired rejection cell is removed (`deba008a`) and `spec_link_check.py` reports no mis-cited anchor |
+| T-1061, M-1061 | Accepted green | `b3e3887e`. The withheld-notification subject, the watched-name subject and the no-save control pass. The module row is `watch::tests::an_armed_poll_compares_every_recorded_source` |
+| O-1061 | Recorded | 40 runs of the `user_samples` reload transcript, four at a time under 20 busy processes on 14 processors: the notices follow the `/sh` line in 40 of 40. The rate before the correction was 1 late in 12 |
+| T-1036, REPRO-0915-loc's legs about `main`, T-Q8, T-Q9-a, T-Q9-b | Accepted green | `e294852f`. Eighteen `s124_main_*` cells, four of them controls, and the committed cell, under `--run` and `--link` |
+| REPRO-0915-loc's `discover-tests` leg | Accepted, still RED | Not corrected (§14.7) |
+| T-1052, M-1052, O-1052 | Accepted green | `3c4c0f7b`, `f3f9cc47`, `c53a3f4b`, `2d3a5b3e`. K-6 passes in every mode with its control. Four warm debug runs of `--run exemplar/tests.cl`: 0.89 to 0.94 s, against 0.96 s before the change. A second decode remains in `worker.rs::load_cached_module_via_linker`; it predates the change and no condition covers it |
+| T-1016, both faces | Accepted green | `f95f0a3a`, `870aacd8`. The three opening guards, the reload leg, the acyclic control and the three `s124_modules_super_cycle_neg_*` cells pass. Face 1's fresh-load gap is §14.4 |
+| T-SUP as re-pointed | Accepted green | A child's `(export [super [x]])` reaches a third module in every mode |
+| T-0973, T-0973-c | Accepted green | `68f042d5`, after the exemplar's split (`efa4d8df`). A nested and a root-level child refuse in every mode, the entry placement loads, a dependency importing `platform.<name>` works, and a module cached as an entry is not restored as a dependency |
+| The review cells of `3c156f92` | Adequate for two findings; one cell returned | Written by `test` without an allocation, because the findings were newer than this record. The retry cells assert the written macro call's position after a dependency retry, with a premise clause and a twin that has no retry; they were RED before `98ea54a0`. The result-polymorphic `main` cell asserts only that the compiler does not panic, because the outcome was not designed when it was written (§14.3 item 4) |
+| Review finding: fresh loads and the failed-dependency refusal | No cell | `test` did not reproduce it. `qa`'s fixture agrees (§14.4) |
+| Review finding: a stored layout outliving its `.meta` | Module tier | `c53a3f4b`. The face needs the index worker to rewrite a `.meta` between a validation and the member's restore, which no e2e fixture orders. `dev`'s row `a_stored_meta_overwrite_is_read_by_the_next_validation` covers it |
+| REPRO-1078, REPRO-1079-a to -c, REPRO-1080 | Accepted, still RED | Each fails on the text its filing predicts; REPRO-1079-c and its control are RED together, as allocated |
+| T-1063-b | Accepted green | Nine cells. ACT-1063 is closed |
+| T-Q4-a's restore clause | Accepted | The second invocation asserts the cache hit for `p` |
+| ACT-1076, ACT-1077, ACT-1075, T-1065-f, ACT-1071, ACT-1070, ACT-1073, ACT-1074, REPRO-1062-e and -f, REPRO-1068, REPRO-0977, REPRO-0981, REPRO-1067, REPRO-1005-a to c, T-1039, T-1039-w | Accepted, still RED | As at the last exit |
+| Rows corrected at W2 to W7 | Green | No cell of an earlier wave fails in this run |
 
 ### 14.3 Returned to `test`
 
-In order. Items 1 to 3 are REDs that corrections wait on.
+In order. Items 1 and 2 are REDs.
 
 | Order | Item | Expected on arrival |
 |---|---|---|
-| 1 | **T-SUP: re-point the three `s124_modules_super_*` cells.** The condition is that a child's `(export [super [x]])` re-exports the parent's `x`. The fixture also has the parent read `p.child/x`, which makes `p` and `p.child` depend on each other. Use a third module as the consumer: `p.cl` holds `(mod child) (defn x [] 49)`, `p/child.cl` holds `(export [super [x]])`, and the entry reads `x` once through `(import [p.child [x]])` and once as `p.child/x`. Keep today's fixture as a negative cell under [ACT-1016](../../sprints/actions/ACT-1016-cycle-follow-on-and-export-cycle-diagnostic-intake.md): it must be refused with a circular-dependency error naming `p` and `p.child` (spec §8.5.4 item 6) | The re-pointed cells pass in every mode (`qa`'s probe: 49 under `--run`, `--link` and the REPL). The cycle cell is RED on `'x' not found in module 'p'` |
-| 2 | **REPRO-1078**, as [ACT-1078](../../sprints/actions/ACT-1078-cached-trace-form-object-references-unloaded-module-got-intake.md) allocates | Both subjects RED on `unresolved symbol: __cranelisp_got_x`; three controls green |
-| 3 | **REPRO-1079-a, -b and -c**, as ACT-1079 allocates | Subjects RED on `not found`; controls A and B green; REPRO-1079-c and its control RED until the resolver and the walk are both corrected |
-| 4 | **T-1063-b** (§3.9): `bind`, `race` and `select` | Green; ACT-1063 then closes |
-| 5 | **REPRO-1080**, as ACT-1080 allocates | Both subjects RED on the exchanged roles |
-| 6 | **T-Q4-a and `s124_modules_mnt_same_target`:** assert that the second invocation restores `p` (`cache hit (.meta valid) for p` under `CRANELISP_MODULE_TRACE`). Without it the restore clause can stop executing unnoticed | Unchanged results |
-| 7 | **Trace lines, no assertion changes.** Add `fixed=S124/<commit>` and past-tense framing to the cells corrected at W6 and W7: ACT-1063 (`777412a7`), ACT-1038 (`3cdca9dc`), ACT-1059 (`7b9963bd`), ACT-1057 (`4dcf6cca`), ACT-0997, ACT-1055, ACT-1056 and ACT-1064 (`42e6d929`), and the review cells (`2dec7450`, `74aa7a52`) | Unchanged results |
-| 8, with their corrections | X-D7 (W8). T-1039-lib is held on the user's ruling ([ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md)) | As §9 states |
+| 1 | **REPRO-1081**, as [ACT-1081](../../sprints/actions/ACT-1081-module-graph-through-a-declared-child-is-accepted-or-refused-by-load-route-intake.md) allocates. It asserts that the routes agree, not which outcome is right | RED on the disagreement; the control gives 10 from every route |
+| 2 | **Re-point `exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing` at `smoke.cl`.** Keep the assertion at exact balance. The residual of 2 is ACT-1018's defect and is not written into the assertion. Correct the comments that name `solver.cl` as the entry | RED on `retained == 2` (14,872 allocations, 14,870 frees), with the premise cell green |
+| 3 | **`regression::wave6_exemplar_solver_full_run_does_not_stack_overflow`:** run `exemplar/smoke.cl` and require exit 0. Today it runs `exemplar/solver.cl`, which is refused for having no `main`, and the cell passes because a refusal is not a signal. Its own comment already says exit success is required | Green |
+| 4 | **The result-polymorphic `main`.** Replace the no-panic assertion of `s124_result_polymorphic_main_does_not_panic_run`: with `main` on line 4, the program is refused with exit 1 as a `type error` that says `ambiguous type`, names `main`, is located on line 4 and carries no `0..0`. Add the `--link` leg. Trace spec §3.11.1 beside spec §10.6. The control stays | Green: `qa` observed that text in both modes |
+| 5 | **Two fences for the declaration readiness gate** (`870aacd8`), every mode where one applies. (a) A child that declares `(export [p [x]])` by its parent's full path beside `(export [super [y]])`: a third module reads both. (b) `/mod p` where `p` declares two children that import `super`; a definition turn in `p` right after the switch; then, from `user`, both children's functions and the new definition; then a restart | Green: 99 in every mode for (a); the same transcript in 8 of 8 runs for (b) |
+| 6 | **Trace lines, no assertion changes.** Add `fixed=S124/<commit>` and past-tense framing to the cells corrected at W8: row D7 (`7cceedc4`), ACT-1061 (`b3e3887e`), ACT-1036's `main` refusals with T-Q8 and T-Q9 (`e294852f`), ACT-1052 (`3c4c0f7b`), ACT-1016 (`f95f0a3a` for the reload cell, `870aacd8` for the export cells), ACT-0973 (`68f042d5`), the retry cells (`98ea54a0`) and the result-polymorphic cell (`098f0980`) | Unchanged results |
+| 7 | **`cargo fmt` on `tests/spec_07_traits.rs`**, the one file `cargo fmt --all --check` reports | Unchanged results |
+| 8, held | T-1039-lib, and the outcome clause of REPRO-1081, each on the user's ruling | — |
 
-O-1061 is `qa`'s reading on the corrected tree.
+- **`repl/demos/08-sudoku.demo` needs no change.** Its line 4 names
+  `exemplar/user.cl` and `exemplar/solver.cl` as the exemplar's files; both
+  exist and `solver.cl` is still the solver.
+- **No repeat-run cell is allocated for the readiness gate's arrival-order
+  falsifier.** Thirty cold runs each of the export-closed cycle and of a
+  child importing its parent, under eight busy processes, gave one outcome
+  each (the cycle named 30 of 30; exit 99, 30 of 30). The committed cells
+  run under the suite's load in every run. ACT-1081 is the observed
+  dependence on order, and it does not vary between runs of one route.
 
 ### 14.4 Residuals
 
@@ -1654,193 +1673,235 @@ O-1061 is `qa`'s reading on the corrected tree.
 - **Six defects refuse a legal program and have no correction scheduled:**
   ACT-1073, ACT-1074, ACT-1075, ACT-1078, ACT-1079, and ACT-1076's refusal
   face.
+- **ACT-1081 has no correction and no ruling.** Until it is ruled, the same
+  program is accepted from one entry and refused from another.
 - **ACT-1068 is unscheduled** and deletes authored source in every session
   that defines anything beside a multi-signature function.
-- **Tracing is not delivered outside the REPL prompt and a linked `main`.**
-  ACT-1039: `--run` records no user function, and a cached callee is
-  recorded in no mode. A form outside `main` records nothing under `--run`
-  or in a REPL entry file. ACT-1078: a cached module holding a form can
-  stop a later program loading. All of it waits on one ruling.
-- **Row D3's mounts are evidenced only through a loaded owner** (ACT-1079).
-- **The cycle walk's fixpoint over a chain of mounts has no executed
-  evidence.** `review` read it as incomplete; the binary cannot reach it
-  until ACT-1079's resolver is corrected. Its module row is allocated in
-  the filing.
-- **ACT-1073's owner is still provisional.** `dev`(typecheck) probes which
-  state survives the refusal before correcting it.
+- **Tracing is not delivered outside the REPL prompt and a linked `main`**
+  (ACT-1039, ACT-1078). All of it waits on one ruling.
+- **Row D3's mounts are evidenced only through a loaded owner** (ACT-1079),
+  and the cycle walk's fixpoint over a chain of mounts has no executed
+  evidence.
+- **The failed-dependency refusal does not run at a fresh load**
+  ([int §6.11](../../design/int/int.md#611-module-cycles-at-publication),
+  *Failed dependency*). The design names the falsifier: a module that
+  compiles at a restart and is refused by a session rebuild. `qa` did not
+  reproduce it. On one fixture, where `a` re-exports `c`'s `k` and then
+  fails in a body, and `b` uses only `a/k`, a fresh start and a session
+  save of the failing `a` both lock on `a.cl` and both leave `b/g` unknown.
+  One fixture; the gap stays asserted with its falsifier.
+- **The transitive `mod` case is undecided by the specification** and is
+  with the user. No cell asserts either outcome; REPRO-1081 asserts only
+  agreement.
+- **ACT-1018 carries on a measured residual of 2.** It reads 2 on
+  `exemplar/smoke.cl` at `2d3a5b3e`. No S124 change-set owns it. Its guard
+  measures nothing until §14.3 item 2 lands.
+- **A warm-start decode remains** in `worker.rs::load_cached_module_via_linker`.
+  It predates S124; the warm start is back at its pre-S124 time.
+- **ACT-1073's owner is still provisional,** and the clauses behind a first
+  RED have not executed for REPRO-1068, ACT-1073's cell and T-1065-f.
 - **A multi-signature family's mode-changing redefinition has no cell**
   (§9.4). Awaiting the user's approval.
-- **Clauses behind a first RED have not executed** for REPRO-1068,
-  ACT-1073's cell and T-1065-f. The adequacy pass of each correction reads
-  them.
-- **ACT-1018 carries on a measured residual of 2** (O-1018, at `84719eb6`).
-  No S124 change-set owns it.
 - **The bind-chain pass's import assertion has no evidence.** Its named
   falsifier is T-1065-f, which executes once ACT-1075 is corrected.
-- **ACT-1077** leaves an eligible pair sequential. Its harm is lost overlap.
-- **ACT-1080** exchanges the two types in one diagnostic. It refuses
-  nothing it should accept.
-- **Three module-evidence gaps the backend's authors reported need no
-  row.**
-  - *Which offset a Vec load uses.* A wrong use-site changes emitted code,
-    which the golden lane rejects (shown by the authors' planted fault),
-    and every e2e Vec value cell reads a wrong value. A module row would
-    repeat them.
-  - *A version-32 sidecar refused at 33.* The check is an equality;
-    `cache_schema_version_mismatch_falls_through` covers any other version
-    and the round-trip row pins 33.
-  - *`vec_codegen_offsets_are_the_intrinsics_layout`* compares constants
-    that B11 made one definition. It can no longer fail on a divergence.
-    Keeping or removing it is `dev`(backend)'s; no claim rests on it.
+- **ACT-1077** leaves an eligible pair sequential, and **ACT-1080**
+  exchanges the two types in one diagnostic. Neither refuses a legal
+  program.
 - **R10-2 was built as a deletion** where the approved row narrows the
-  items to crate-private. The public surface is the same either way and no
-  behaviour changes; the deviation from the row is the user's to confirm.
+  items to crate-private. The public surface is the same either way; the
+  deviation from the row is the user's to confirm.
 - **A proposed `cranelisp-types` change is held for the user's gate:**
   `CallableOrigin::TraitMethod` carrying its member (`240b3a8a`).
+- **The build is not warning-free:** `CheckPass::Register` in
+  `crates/cranelisp-typecheck/src/program/callees.rs` is never constructed.
 - **Suite readings from the Codex sandbox overstate the failing set** by
   thirteen tests. A reading that gates a wave is taken in the primary
   harness.
 
 ### 14.5 The category census
 
-**The census reads zero from every program on the tree that holds step 2
-and B5** (`84719eb6`). FIXME 0903 is closed on it (`09e92046`). No reading
-was taken at `7888c515`.
+**The census reads zero from every program at `2d3a5b3e`.** This is the
+first reading that includes the programs W6 to W8 moved from refused to
+compiled.
 
 - **The instrument.** The absent, field and frame points, each with its
   planted positive leg and concrete twin in the backend's module tests.
-  The retain and release points left with their arms.
-- **The reading at `84719eb6`** (`qa`'s full run; 225,531 lines):
+- **The reading** (`qa`'s full run; 223,941 lines):
 
-| Partition | Frames compiled | Distinct symbols | Records on an arm or a non-concrete field class, from a program |
+| Partition | Frames compiled | Distinct symbols | Records on the absent arm or a non-concrete field class, from a program |
 |---|---|---|---|
-| `Plain` | 142,234 | 3,468 | 0 |
-| `TraitMethod` | 50,928 | 777 | 0 |
-| `Ctor` | 30,892 | 863 | 0 |
-| `Accessor` | 1,461 | 130 | 0 |
+| `Plain` | 141,468 | 3,488 | 0 |
+| `TraitMethod` | 50,068 | 784 | 0 |
+| `Ctor` | 30,932 | 869 | 0 |
+| `Accessor` | 1,457 | 131 | 0 |
 
-- **Sixteen records are not frames**, and all sixteen are the backend's
-  module fixtures: fifteen planted legs and row D1's planted negative.
-- **The reading's conditions held:** fresh cache directories, frames in
+- **Sixteen records are not frames,** and all sixteen are the backend's
+  module fixtures: six on the absent arm and ten field reads. Nine of their
+  frame names occur only in the census module's tests, five carry the
+  test-only frame, and the frame `f` of module `user` is row D1's planted negative
+  in `ctor_field_channel_tests.rs`. The reading at `84719eb6` held thirteen;
+  the three more are fixtures added since.
+- **The reading's conditions held:** per-test cache directories, frames in
   every partition, the ACT-1034, ACT-1050 and REPRO-1062-a to d cells
-  passing in the same run, and no unattributed failure.
+  passing in the same run (74), and no unattributed failure.
 - **What the zero does not cover.** A program refused before emission
-  compiles no frame for the refused definition. W6 and W7 moved about a
-  hundred such cells from refused to compiled (ACT-1063, ACT-1056,
-  ACT-0997, ACT-1055), so their frames are in no reading yet. W9's reading
-  is the first that includes them.
+  compiles no frame for the refused definition; the 80 failing cells
+  include such programs.
 - **Still not licensed:** any claim about a concrete but wrong type (safety
   register R18). ACT-1062's remaining readers and ACT-1076 show it is live.
+- **For W9.** Rows K11-a to K11-d change no emitted code, so the reading on
+  the final tree is expected to repeat this one. It is taken in the same
+  run as the final suite by setting the variable.
 
 ### 14.6 Value-flattening retirement (B5, row D4)
 
 **Adequately evidenced** at W5 and unchanged: `HeapCategory::Value` and its
 arms are deleted, T-D4-t went red to green, T-D4 and the golden corpora
-pass, and the one-word `Copy` classification no longer reaches emission
-(`qa`'s twin programs at `84719eb6`). The collapse witness is removed.
+pass, and the one-word `Copy` classification no longer reaches emission.
 Stack-placement retirement (B1) stands as accepted at W2.
 
 ### 14.7 Defects and leads read at this exit
 
 | Filing | Defect | Entered | Face | Owner |
 |---|---|---|---|---|
-| [ACT-1078](../../sprints/actions/ACT-1078-cached-trace-form-object-references-unloaded-module-got-intake.md) | A cached object holding a trace form references the indirection table of every module loaded when it compiled | Before W3 | A legal program is refused under `--run` and `--link` after another program cached the module | backend; blocked on the traced-set ruling |
-| [ACT-1079](../../sprints/actions/ACT-1079-qualified-reference-through-a-mount-needs-its-owner-loaded-intake.md) | A reference through an export mount resolves only when the mount's owner is already loaded | W7 (`42e6d929`) | A legal program refused, every mode | `src/`, provisional mechanism |
-| [ACT-1080](../../sprints/actions/ACT-1080-return-annotation-mismatch-names-expected-and-actual-reversed-intake.md) | A return-annotation mismatch names the two types in exchanged roles | Before W3 | A misleading diagnostic | typecheck, provisional |
+| [ACT-1081](../../sprints/actions/ACT-1081-module-graph-through-a-declared-child-is-accepted-or-refused-by-load-route-intake.md) | A graph that returns to a parent through its declared child is refused as a cycle when the parent or the third module loads first, and accepted when the child does | Not established | One program, two outcomes; a REPL module evaluates after being reported failed | `src/`, provisional; outcome with the user |
+| [ACT-1036](../../sprints/actions/ACT-1036-main-return-refusal-synthetic-location-intake.md), remaining leg | The batch `discover-tests` refusal is located at `1:1` and `0..0` | Before S124 | A diagnostic that does not point at the reference | `design`(int), then `src/` |
 
-- **T-SUP is not a defect in row D3.** A child's `(export [super [x]])`
-  re-exports the parent's `x` to a third module in every mode. The
-  committed fixture is a parent-and-child cycle. The specification decides
-  it: an export is an import with public visibility (§8.4.0), a module is
-  fully processed before a module that depends on it (§8.10.3), and a
-  qualified reference that closes a cycle is a circular-dependency error
-  naming the path (§8.5.4 item 6). It is therefore refused, and no question
-  goes to the user. What the compiler reports is ACT-1016's second face,
-  the wrong diagnostic. `qa` accepted the fixture at W1 without reading it
-  as a cycle; that is a miss in this record's acceptance, corrected by
-  §14.3 item 1.
-- **A library-held trace form called with its caller's function** (`arch`'s
-  unprobed cell) records the caller's calls under `--link` and nothing
-  under `--run` or in a REPL entry file, cold and warm. The same holds
-  with everything in one module, so the difference is ACT-1039's and not
-  the library's. The table is in ACT-1039.
-- **Why coverage missed the three review findings on `42e6d929`.** T-REG
-  enumerates one entry kind per import spec. Two of the findings need two
-  kinds in one spec, or an operator name as the only entry. The third
-  needs a prelude that reaches a module through another module's mount; no
-  cell combined rows D3 and the prelude edge. `test`'s cells close those
-  three shapes.
+- **The result-polymorphic `main` is settled by the specification.**
+  `(defn main [] (Pure None))` has type `(Fn [] (IO (Option a)))`. Running
+  it is a use that reaches code generation with nothing to pin `a`, which
+  spec §3.11.1 makes an ambiguity type error and §3.11.4 lists as
+  disposition 2; §3.11.1 exempts neither a determinate representation nor a
+  phantom variable. `design`(int) reads it so, and `qa` relies on that
+  reading. The compiler reports it as a located type error under `--run`
+  and `--link` (`098f0980`).
+- **The reference-count lead on the exemplar is two different programs, not
+  a regression.** The former `solver.cl`, run as an entry, and the present
+  `smoke.cl` read the same warm statistics on this compiler: `rc_inc`
+  73,222, 14,872 allocations, 14,870 frees. A workload that imports the
+  former `solver.cl`, which declared a platform outside the entry, is
+  refused by ACT-0973's correction before it runs, and its statistics are
+  the compile's alone (`rc_inc` 293 on a cold refusal). `dev`'s 5 and 72,216
+  were not reproduced as numbers, and no build without the correction was
+  run; the allocation counts equal those recorded at `8667a868`.
+- **Why coverage missed ACT-1081.** Every committed cycle cell has one
+  entry, so each graph is loaded by one route. The condition REPRO-1081
+  adds is the same graph from each of its modules.
+- **Why coverage missed the vacuous exemplar cell.** It asserts the absence
+  of a signal and no positive outcome, so a refusal satisfies it. §14.3
+  item 3 adds the positive clause.
 
 ### 14.8 Handoffs, in order
 
 **Decisions that are the user's** and are not assumed here:
 
-1. Which modules a trace form covers
+1. **Which modules a trace form covers**
    ([tracing §5.1](../../design/arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)).
-   It holds ACT-1039, ACT-1078, the rest of B10 and T-1039-lib.
-2. Row D13, which B8 needs before rows D6 and D9 can land.
-3. R10-2 as a deletion (§14.4).
-4. Whether ACT-1070, ACT-1071, ACT-1076 and ACT-1062's two readers are
-   corrected in S124. Each ends a legal program on a signal.
-5. Scheduling of ACT-1073, ACT-1074, ACT-1075, ACT-1077, ACT-1068,
-   ACT-1079 and ACT-1080.
-6. `CallableOrigin::TraitMethod` carrying its member.
-7. The questions already queued in §10 and the sprint plan's notes.
+   Today `(trace (f))` records nothing under `--run`, and a cached module
+   holding a trace form can stop a later program loading. It holds
+   ACT-1039, ACT-1078, the rest of B10 and T-1039-lib.
+2. **Row D13.** Removing the borrowed-sibling carrier needs
+   `SymbolTable::install_extern` to lose a parameter that the approved row
+   D6 does not name. B8 (rows D6 and D9) waits on it.
+3. **Whether a `mod` declaration can close a dependency cycle** (ACT-1081).
+   A parent declares a child; the child imports a third module; that module
+   imports the parent. Either this is a legal program in every mode, or it
+   is a circular-dependency error in every mode. Today it is one or the
+   other by entry.
+4. **Whether ACT-1070, ACT-1071, ACT-1076 and ACT-1062's two readers are
+   corrected in S124.** Each ends a legal program on a signal: a trait
+   method dispatched on a non-first `self`, an imported instance calling a
+   multi-signature function, a deep trait recursion under `--run`, and the
+   display or trace of a type whose fields are out of parameter order.
+5. **Scheduling of the defects that refuse or mislead:** ACT-1073,
+   ACT-1074, ACT-1075, ACT-1079 (a name reached through an export mount is
+   not found unless the mounting module is already loaded), ACT-1077,
+   ACT-1080, and ACT-1036's `discover-tests` location.
+6. **ACT-1068:** saving a session deletes every multi-signature function
+   from the module file.
+7. **ACT-1018's carry** on a residual of two blocks per run, one per
+   `print` call.
+8. **R10-2 as a deletion** (§14.4).
+9. **`CallableOrigin::TraitMethod` carrying its member.**
+10. **The document gate's 566 ignored-path findings,** which decide
+    whether the settling target's document clause can be met.
+11. The questions already queued in §10 and the sprint plan's notes.
 
-**`test`:** §14.3, items 1 to 7. Item 1 lands before W8's ACT-1016
-change-set, which then has its third cell.
+**`test`:** §14.3, items 1 to 7.
 
-**`spec`:** confirm that §8.5.4's load-on-reference covers the module that
-declares a mount (ACT-1079, "Reading relied on"). If it does not, subjects
-A and C of that filing go to the user.
+**`design`(int):**
 
-**`design`(int):** state in §6.13 whether a reference through a mount loads
-the mount's owner (ACT-1079); the T-SUP fixture is a cycle to be refused
-by path, which the export readiness gate of §6.11 delivers with ACT-1016.
+1. Name the location of the batch `discover-tests` refusal
+   ([test runner §7.3](../../design/int/test-runner.md#73-batch-refusal-of-discover-tests));
+   ACT-1036 stays open for it.
+2. ACT-1081: record that two of three batch routes refuse the program §6.11
+   states as accepted, and place the correction once the outcome is ruled.
 
 **`dev`(`src/`):**
 
-1. W8's rows, each against its committed RED (§14.2).
-2. ACT-1079, if the user pulls it in: the resolver first, then the cycle
+1. ACT-1036's `discover-tests` location, once designed, against its two
+   REDs.
+2. ACT-1081, once ruled, against REPRO-1081, with a scheduler row.
+3. ACT-1079, if the user pulls it in: the resolver first, then the cycle
    walk with its module row.
-3. ACT-1062's display reader, if scheduled.
+4. Resolve ACT-1060; its completion check is met (no `ctx.txt` after this
+   run).
 
-**`dev`(backend):**
-
-1. B8, once row D13 is approved.
-2. B10's selection with ACT-1078, once the traced set is ruled; the module
-   rows of trace codegen §1.3 land with it.
-3. ACT-1070 and ACT-1062's descriptor baker, if scheduled.
+**`dev`(backend):** B8, once row D13 is approved; B10's selection with
+ACT-1078, once the traced set is ruled; ACT-1070 and ACT-1062's descriptor
+baker, if scheduled.
 
 **`dev`(typecheck)**, if scheduled, each against its committed RED:
-ACT-1076, ACT-1071 (probing the seam first), ACT-1075, ACT-1073 (probing
-which state survives), ACT-1074, ACT-1080.
+ACT-1076, ACT-1071, ACT-1075, ACT-1073, ACT-1074, ACT-1080. Also the
+unused `CheckPass::Register` variant (§14.4).
 
-**`arch`:** resolve [ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md)
-when the regenerated baseline is confirmed; row D11 is in source and
-nothing names `rc_underflow_check`.
+**`arch`:** resolve ACT-0953, whose restriction row D7 retired (T-D7 is
+green), and ACT-1033 when the regenerated baseline is confirmed.
+
+**`sprint`:**
+
+1. Rows K11-b, K11-c and K11-d are in no wave and not in source:
+   `IntrinsicEntry::is_runtime` is still a field, `SymbolTable::settle_template`
+   and `settle_concrete` are still `pub`, and `MonoExpr::lenient_from_expr`
+   is still `pub`. They land before K11-a.
+2. `sprints/SPRINT.md` and `sprints/ROADMAP.md` link to ACT-1052, which is
+   resolved; its file is deleted when those links go.
+3. Root `AGENTS.md` states about 170 s for the suite at 5,687 tests. This
+   run took 271 s at 7,747.
 
 **`docs`, in Phase 6:** `user/guide/modules.md` still says renamed imports
-are tracked in ACT-0997. They are delivered. ACT-0997 is resolved and its
-file stays until that link and the audit's are dropped.
+are tracked in ACT-0997.
 
-**Before W8 starts:** nothing in the evidence blocks it. Its REDs are
-committed and accepted. `test`'s item 1 lands first so that ACT-1016's
-correction is read against all three of its shapes.
+**What W9 has, and what it still needs.**
 
-**Before the settling target (G-0):**
+| W9 evidence | Held at `2d3a5b3e` | Still needed |
+|---|---|---|
+| Rows K11-b, -c, -d | Nothing: none is in source | `dev`(intrinsics) for K11-b; `arch` for K11-c and K11-d, with the test call sites of K11-d moved; then `review` |
+| Row K11-a | Nothing | `test` for the guard's command and `tests/AGENTS.md`; `arch` for the direct compile fence the row requires first, and for `design/arch/AGENTS.md` |
+| Full suite on the final tree | A reading one change-set short of final: 84 failed, all attributed | One run in the primary harness after the last row, with the census variable set |
+| Census | Zero from programs at `2d3a5b3e` | The same run |
+| Document checker | Exit 1: 595 findings, 566 of them ignored-path. `qa` cleared six in its own records in this pass | The user's disposal of the ignored-path class; the other 29 by their owners, mostly `sprint` (two paths that no longer exist, cited from the sprint plan, the S123 packet and two other records) and `design`(intrinsics) (seven establishment findings) |
+| `public-api.txt` | Not regenerated; the guard is RED on drift in every changed crate | `arch` regenerates once after K11-a and compares each line with the packet; the user confirms a non-empty diff |
+| `review` of the integrated diff | Not held | `review`, after the last row |
+| `qa` adequacy | This section | A re-read of §14.1 against the final run |
+| Traceability band | Six rows cleared, each with a named carry (§11) | Restores as their cells pass; the rest are carried by name at close |
 
-1. W8 corrects 34 of the failing cells and guards: ACT-1036 with row D12
-   (17), ACT-0973 (9), ACT-1016 (3), row D7 (2), ACT-1061 (2) and
-   ACT-1052 (1).
-2. The user's ruling on the traced set, then B10 (ACT-1039's four cells)
-   and ACT-1078, or a recorded carry.
-3. Row D13, then B8.
-4. The four crashes corrected, or the user's decision to carry each.
-5. Each remaining RED carried by a recorded decision: ACT-1073, ACT-1074,
-   ACT-1075, ACT-1077, ACT-1068, ACT-1079 and ACT-1080 are not yet
-   decided; ACT-0977, ACT-0981, ACT-1005, ACT-1067 and ACT-1018 are.
-6. W9: the baselines regenerated and compared with the packet, the
-   document gate's disposal decided, a census reading on the final tree,
-   and the fourteen band rows still cleared restored or carried by name
-   (§11).
+**What stands between `2d3a5b3e` and the settling target (G-0).**
+
+1. **Failures.** 84 fail. Two are maintenance checks that W9 clears or the
+   user disposes. Of the other 82:
+   - 12 are carried by a recorded decision: ACT-0977 (3), ACT-0981 (1),
+     ACT-1005 (6) and ACT-1067 (2);
+   - 1 is ACT-1018's guard, whose carry on a residual of 2 is queued for
+     the user;
+   - 6 wait on the traced-set ruling (ACT-1039, ACT-1078);
+   - 63 belong to twelve filings with neither a scheduled correction nor a
+     recorded carry: ACT-1076 (15), ACT-1075 (9), ACT-1079 (8), ACT-1071
+     (7), ACT-1074 (6), ACT-1062 (4), ACT-1068 (4), ACT-1080 (4), ACT-1036
+     (2), ACT-1073 (2), ACT-1070 (1) and ACT-1077 (1).
+   REPRO-1081 adds REDs when `test` commits it.
+2. **Census.** Zero from programs; met, to be repeated on the final tree.
+3. **ACT-1050 and ACT-1052's guards.** Pass in every mode; met.
+4. **Document checker.** Fails; it cannot pass without the user's disposal
+   of the ignored-path class.
+5. **Unlanded approved rows.** K11-a to K11-d; rows D6 and D9 behind D13.

@@ -51,7 +51,7 @@ same path.
 These are latent now only because no rename reaches the compiler:
 
 - **Impl identity in persistence (S122 review F1).** Save labels an impl from
-  settled names (`src/save.rs::impl_label`). The live turn and rehydration use
+  settled names (`src/save.rs::impl_label`). The live turn and rehydration use <!-- doc-check: literal reason="Seam as it stood when filed; row D10 (42e6d929) removed the function" -->
   the written head name (`definition_result_symbol`). Under a rename these
   keys differ. Every later regeneration of the module would then be refused,
   and later definitions lost at exit. The correction's evidence must include

@@ -1,7 +1,7 @@
 ---
 id: ACT-1052
 title: A dependent's cached object may embed a moved entry slot after the entry's text is restored
-status: open
+status: resolved
 priority: high
 from: arch
 to: qa
@@ -65,3 +65,22 @@ Reproduced by `qa` on HEAD `390201c3` (`target/debug/cranelisp`),
 - `test`: commit K-6 RED, with its sibling control.
 - `design`(int): place the correction; `qa` then allocates `dev`'s unit row.
 - `qa` keeps this action until the fix lands and K-6 is stamped.
+
+## Resolved (qa, 2026-11-18, `2d3a5b3e`)
+
+- **Correction:** a recorded member is keyed by its source hash with its
+  authored slot layout (`3c4c0f7b`), with the backend's schema 34
+  (`f3f9cc47`), the end of a stored layout at a `.meta` rewrite
+  (`c53a3f4b`) and one decode shared by validation and restore
+  (`2d3a5b3e`).
+- **Evidence.** K-6,
+  `tests/cache.rs::cache_restored_text_after_abi_change_preserves_importer_calls_across_modes`,
+  was RED on the signal in `qa`'s runs through `7888c515` and passes in
+  `qa`'s full run at `2d3a5b3e` with its control. The module rows are
+  `cache::dependency_record::tests::slot_layout::*`.
+- **Cost.** Four warm debug runs of `--run exemplar/tests.cl` took 0.89 to
+  0.94 s, against 0.96 s before the change and 1.23 s with the first
+  version of it.
+- **Left:** `test` stamps K-6 `fixed=S124/3c4c0f7b`. This file stays until
+  `sprints/SPRINT.md` and `sprints/ROADMAP.md` drop their links to it.
+

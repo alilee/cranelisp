@@ -2,14 +2,14 @@
 
 ## 5. Error Presentation [S122 — partial; see the subsections]
 
-### 5.1 Error Format [Uncovered S124 — was a section summary; item 2 is uncovered]
+### 5.1 Error Format [Tested]
 
 **User ruling, 2026-11-15.** Runtime panics end the process under [language §12.7](../../spec/12-runtime.md#127-error-model). The continuation requirements in §5.1–§5.2 apply to compiler and command errors, not runtime panics.
 
 Compiler and command errors MUST display:
 
 1. The error category (parse error, type error, etc.) [Tested tests/repl_negative::type_error_arg_mismatch]
-2. The source location (file/line/column or character span), except for the file-level missing-`main` refusal in §5.5 [Uncovered S124 — was tests/repl_negative::type_error_arg_mismatch, which asserts the category and no location, so it never evidenced this item; owed: a cell that reads a position, and S124 cell T-Q8 for the exception]
+2. The source location (file/line/column or character span), except for the file-level missing-`main` refusal in §5.5 [Tested+Neg tests/spec_10_io::batch_main_non_io_return_refusal_is_located_at_main, tests/spec_10_io::s124_main_location_arity_run, tests/spec_10_io::s124_main_location_macro_produced_run — each reads the line of the subject form and rejects `0..0`; tests/spec_10_io::s124_main_missing_definitions_run, tests/spec_10_io::s124_main_missing_empty_run — the missing-`main` refusal names the file and its category and carries no position]
 3. A human-readable message [Tested tests/repl_negative::type_error_arg_mismatch]
 
 Compiler and command errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Compiler and command errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after those errors. Runtime panics report their message and end the process (§12.7). [Tested+Neg tests/repl_negative::type_error_arg_mismatch, tests/repl_negative::type_error_neg_stderr_empty_and_session_survives, tests/spec_12_runtime::vec_get_index_past_length_panics_and_exits — a compiler error leaves the session running; a runtime panic reports on stderr and ends it] [Tested tests/spec_07_traits::repl_concrete_impl_call_survives_later_parametric_impl, tests/spec_07_traits::repl_concrete_impl_call_survives_parametric_impl_only_begin — a parametric impl entered after a concrete impl of the same trait, alone or inside `begin`, leaves the session running and the concrete method callable; `repl_concrete_impl_call_with_parametric_impl_first_control` and `w4_impl_begin_with_keep_retains_code_control` are the controls]
@@ -99,7 +99,7 @@ seam (FIXME 0708); the requirement above is on the **located +
 self-documenting + no-silent-degradation** contract, which holds for every case,
 not on any single message's exact prose. [S115]
 
-### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [Uncovered S124 — was tests/spec_10_io::batch_main_non_io_return_refusal_is_located_at_main (RED; ACT-1036); FIXME 0915]
+### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [Uncovered S124 — was tests/spec_10_io::batch_main_non_io_return_refusal_is_located_at_main, which passes since `e294852f` with the arity, macro, macro-produced and overload legs of `s124_main_location_*`; still nonconforming: the batch `discover-tests` refusal is located at `0..0` (tests/test_runner::s124_discover_batch_location_run and `_link`, RED; ACT-1036), and FIXME 0915's prefix and subject faces are open]
 
 §5.4 carried the self-documenting contract *down* to the reader. This section
 carries it *up* to the stages a user never names: monomorphisation, code

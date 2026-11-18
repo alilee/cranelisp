@@ -117,3 +117,19 @@ O-1018, taken on the tree that corrects ACT-1050: the guard reads **2**
 its refutation clause did not fire. The residual is not the bind-chain
 rewrite's. This record carries on the number 2; the reduction is still
 unscheduled, and the carry is the user's decision.
+
+## After the exemplar's entry moved (qa, 2026-11-18, `2d3a5b3e`)
+
+- **The guard no longer measures.** `exemplar/solver.cl` is a library since
+  `efa4d8df` and has no `main`, so the cell's cold run is refused and the
+  cell fails before it reads a balance. The workload moved unchanged to
+  `exemplar/smoke.cl`.
+- **The residual is still 2.** A warm `--run smoke.cl` on a scratch copy,
+  with the cell's environment, reads 14,872 allocations against 14,870
+  frees, twice. The former tree's `solver.cl`, run as an entry on the same
+  compiler, reads the same two numbers, so the split changed nothing the
+  cell measures.
+- **`test` re-points the cell at `smoke.cl`** and keeps the assertion at
+  exact balance. It then fails on the residual of 2, which is this record's
+  defect; the number is not written into the assertion.
+

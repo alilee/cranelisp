@@ -138,7 +138,7 @@ ungraded). All routed into NC-2 family B + FIXME 0929's extension.
   because they fabricate BEFORE the boundary and pass it after. Pinned
   allow-list at author time, every entry citing 0929:
   `crates/cranelisp-backend/src/compiler/context.rs:280`,
-  `crates/cranelisp-backend/src/compiler/fn_compiler.rs:1214` (dead arm —
+  `crates/cranelisp-backend/src/compiler/fn_compiler.rs:1214` (dead arm — <!-- doc-check: literal reason="Allow-list site as recorded at S119; the file has since shrunk below this line" -->
   filter-guaranteed `Some`; correct spelling is `expect`/`filter_map`),
   `src/eval.rs:586`, `src/repl/commands.rs:632`, `src/pipeline.rs:133`
   (int-layer result/display defaults; severity ungraded — 0929).
