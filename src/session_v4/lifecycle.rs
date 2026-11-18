@@ -151,7 +151,6 @@ impl CompilerSession {
             repl_check_state: Mutex::new(Some(CheckState::new(entry_module.clone()))),
             repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
             warnings: Vec::new(),
-            entry_module,
             // Unconfigured outside the REPL; the REPL prologue calls
             // `enable_agent` before the startup banner.
             #[cfg(feature = "agent")]
@@ -362,6 +361,7 @@ impl CompilerSession {
             retained_code: Mutex::new(Vec::new()),
             fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode,
+            entry_module: entry_module.clone(),
             test_runner_state,
         });
 
@@ -2707,7 +2707,7 @@ impl CompilerSession {
     pub fn mark_entry_eval_owned(&self) {
         self.shared
             .scheduler
-            .release_entry_sexps(&self.entry_module);
+            .release_entry_sexps(&self.shared.entry_module);
     }
 
     /// Promotes nice workers to normal priority before blocking, ensuring
@@ -2753,8 +2753,8 @@ impl CompilerSession {
     /// active modules stale here, BEFORE the caller's `wait_object_complete`,
     /// pins the persisted snapshot to the session's FINAL table state.
     pub fn flush_final_persist(&self) {
-        self.shared.scheduler.mark_object_stale(&self.entry_module);
-        if self.current_repl_module != self.entry_module {
+        self.shared.scheduler.mark_object_stale(&self.shared.entry_module);
+        if self.current_repl_module != self.shared.entry_module {
             self.shared
                 .scheduler
                 .mark_object_stale(&self.current_repl_module);

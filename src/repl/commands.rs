@@ -357,7 +357,7 @@ impl CompilerSession {
     /// Bare `/mod` returns to the entry module.
     pub(crate) fn handle_mod(&mut self, name: &str) -> Option<ModReport> {
         let target = if name.is_empty() {
-            self.entry_module.clone()
+            self.shared.entry_module.clone()
         } else {
             self.resolve_mod_target(name)
         };
@@ -436,7 +436,7 @@ impl CompilerSession {
     /// of each module that failed. The entry module, a module compiled from
     /// source and a module not yet loaded are left as they are.
     fn recompile_cache_installed_module(&mut self, module: &ModuleFullPath) -> Option<String> {
-        if *module == self.entry_module || !self.shared.scheduler.is_cached_module(module) {
+        if *module == self.shared.entry_module || !self.shared.scheduler.is_cached_module(module) {
             return None;
         }
         let backing = self

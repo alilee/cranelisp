@@ -327,6 +327,14 @@ pub struct SharedState {
     /// `introspection.is_some()` proxy.
     pub run_mode: RunMode,
 
+    /// The session's ENTRY module — the `main`-bearing / REPL-target module
+    /// the session was asked to compile (S78 §1), fixed at construction. Named
+    /// by the CLI target, defaulting to `"user"` only when no target is given.
+    /// `/mod` with no argument returns the REPL cursor here; `/mod` moves the
+    /// cursor, never the entry. Only the entry may declare a platform
+    /// (`spec/10-io.md` §10.9.1).
+    pub(crate) entry_module: ModuleFullPath,
+
     /// Session-lifetime retention pool for superseded code
     /// (`design/int/session-transaction.md` §6). Append-only, never drained
     /// (the `kept_dlls` precedent): a publication pushes each displaced
@@ -482,17 +490,6 @@ pub struct CompilerSession {
     /// `pub(crate)` (FIXME 0109 Wave D) — reached by relocated `eval.rs` /
     /// `repl.rs` methods (module-scoped field privacy).
     pub(crate) warnings: Vec<Warning>,
-
-    /// The session's ENTRY module — the `main`-bearing / REPL-target module
-    /// the session was asked to compile (S78 §1). Named by the CLI target,
-    /// defaulting to `"user"` only when no target is given. It is the "home"
-    /// module: `/mod` with no argument returns the REPL cursor here. `"user"`
-    /// is ONLY its default name, never a privileged identity — every program
-    /// has an entry module, but most have NO `user` module at all.
-    ///
-    /// `pub(crate)` (FIXME 0109 Wave D) — reached by relocated `eval.rs` /
-    /// `repl.rs` methods (module-scoped field privacy).
-    pub(crate) entry_module: ModuleFullPath,
 
     /// The embedded agent's state (Sprint 88 Phase 5 Wave 3 — Advisor MVP core).
     /// `#[cfg(feature="agent")]`-gated so feature-off the field does NOT exist

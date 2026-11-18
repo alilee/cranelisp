@@ -208,7 +208,7 @@ impl CompilerSession {
             tables: &self.shared.symbol_tables,
             products: &self.shared.typecheck_products,
             prelude_fallback: &self.shared.prelude_fallback,
-            entry: &self.entry_module,
+            entry: &self.shared.entry_module,
             project_root: &self.shared.project_root,
         }
     }

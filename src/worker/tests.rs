@@ -3284,6 +3284,7 @@ fn test_shared_state() -> crate::session_v4::SharedState {
         retained_code: Mutex::new(Vec::new()),
         fresh_jit_drop_glues: dashmap::DashMap::new(),
         run_mode: crate::session_v4::RunMode::Repl,
+        entry_module: ModuleFullPath::from("user"),
         test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
     }
 }
