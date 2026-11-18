@@ -172,13 +172,27 @@ owns the coordinated addition of `--omit auto-trait-impls` to this command and
 the guard, with all seven baselines regenerated together. Until that migration,
 use the command above. Its order:
 
-1. A compile fence lands first, in the platform crate's module tests: `CLInt`,
-   `CLBool`, `CLFloat`, `CLString`, `CLAdt<T>`, `CLOwned<T>` and `CLIO<CL>` are
-   `Send + Sync`. A platform author's effect closure must be `Send + Sync`, so
-   it may capture these values only while they are; no workspace crate is
-   obliged to capture each of them. No other generated auto-trait row is a
-   cross-crate promise: the negative rows follow from raw-pointer fields and
-   no contract states them.
+1. A compile fence lands first, in the platform crate's module tests. It is
+   test-only, changes no public item and leaves the platform baseline at +0.
+   It asserts the promise exactly as the generated rows state it today:
+   - `CLInt`, `CLBool`, `CLFloat` and `CLString` are `Send` and `Sync`.
+   - `CLAdt<T>`, `CLIO<CL>` and `CLOwned<T>` are `Send` when their parameter
+     is `Send`, and `Sync` when it is `Sync`. Each of the six implications is
+     a generic assertion over every parameter the type's own bound admits
+     (`CLAdtType`, `CLType`, `CLHeap`), not only over one instantiation.
+   - The instantiations a platform author writes hold both: `CLAdt<M>` for a
+     unit-struct marker `M`, `CLIO` over each scalar and over `CLAdt<M>`, and
+     `CLOwned` over `CLString` and over `CLAdt<M>`.
+
+   The promise is conditional because `CLAdtType` and `CLType` are public and
+   unsealed, and the parametric types carry their parameter as a field or a
+   `PhantomData`. Making it unconditional would be a new public bound or
+   explicit impl; no consumer needs one, since a marker is a unit struct and
+   every in-crate `CLType` is `Send + Sync`. A platform author's effect
+   closure must be `Send + Sync`, so it may capture these values only while
+   they are; no workspace crate is obliged to capture each of them. No other
+   generated auto-trait row is a cross-crate promise: the negative rows
+   follow from raw-pointer fields and no contract states them.
 2. The seven baselines are regenerated in the present format on the final
    source tree. That diff carries the functional rows and is compared with
    the approval packets.
