@@ -1,7 +1,8 @@
 # `--test` and the shared test runner
 
 **Owner:** `design` (int). **Status:** implemented and verified in `src/`,
-except §6.5 (the test child). `dev`(src) built §6.5 in S123 W1, and `design`
+except §6.5 (the test child) and the location of the batch refusal of
+`discover-tests` (§7.3, Location), which is designed and not built. `dev`(src) built §6.5 in S123 W1, and `design`
 (int) checked it against source on 2026-11-15. Independent review and the
 suite run are still to come. The child runs §§6.2–6.3 in its own process.
 Verification evidence and acceptance status are recorded in `sprints/archive/sprint-122.md`.
@@ -633,6 +634,52 @@ that for all three batch seams:
   one referencing function, names the REPL as where the primitive is
   available, and names `--test` as the way to have the compiler discover and
   run the tests (§16.6). It never offers `--run`.
+- **Location (ACT-1036; designed 2026-11-18, not in source at `66bc7b8a`).**
+  The refusal is located at the written top-level form that defined the
+  function it names, in that function's module file (REPL §5.5, §5.1). As
+  built it is raised at the synthetic span with no file, so every seam prints
+  `1:1` and `0..0`.
+  - *Span source.* The definition origin the session keeps for every
+    definition it publishes, in every mode. It is the record the `main` gate
+    reads ([io-integration §1](io-integration.md#1-running-a-program),
+    Location; [Principle 7](../arch/principles/07-single-source-of-truth.md)),
+    and for a function a macro produced it is the written macro call. The
+    reference's own span is not used: in a macro-produced function it is the
+    expansion's synthetic span, and the message's subject is the function, so
+    the location points at the subject.
+  - *A cache-restored definition.* A restore records no origin. The restored
+    body keeps the source spans of its module's file, whose hash the restore
+    matched, so the location is the restored declaration's span. For a
+    directly written `defn` that is the written form, the span a fresh build
+    records.
+  - *Residual: a macro-produced function restored from cache.* Its
+    declaration carries the expansion's synthetic span, so its refusal would
+    still render at `0..0`. Reaching it takes a macro-produced function that
+    references `discover-tests`, cached by a REPL session and restored into a
+    batch run. *Falsifier:* `qa` observes it. *Remedy if triggered:* the
+    stored module carries each definition's origin, which is a backend schema
+    change and a facade change through `arch` and the user gate. It is not
+    taken now because the refusal and its wording stay correct in that case;
+    the missing position is a known nonconformance for the user to accept or
+    schedule.
+  - *Which function.* When several functions reference the primitive, the
+    gate names a located candidate before an unlocated one, then the first by
+    module path, then the earliest origin in that module. As built the walk
+    follows map order, which varies between processes.
+  - *What `dev` builds* (`src/exe.rs` and the three seams). The gate takes
+    the session's origin record and each module's file beside the tables.
+    It is crate-private, so no public item changes. The text and category of
+    the diagnostic are unchanged. Unit row: §10, refusal gate, row 4.
+  - *Cells.* Turn green: `tests/test_runner.rs::s124_discover_batch_location_run`
+    and `_link`. Stay green, in `tests/test_runner.rs`:
+    `batch_modes_neg_refuse_uncalled_discover_tests_reference_with_one_diagnostic`,
+    `run_neg_refuses_discover_tests_reference_restored_from_cache`,
+    `batch_modes_accept_import_only_of_discover_tests` and
+    `repl_test_child_refuses_discover_tests_before_any_test_runs`; and
+    `tests/link.rs::link_module_referencing_discover_tests_extern_fails_with_friendly_message`.
+    For `qa` to allocate: the `--test` leg; a reference in an imported
+    module, located in that module's file; a macro-produced referencing
+    function, located at the written call; and the line of the restored leg.
 - **Exit.** The error takes each driver's existing error path: stderr and
   exit 1.
 - **Cached bodies load before the refusal.** A cache-restored module that
@@ -750,6 +797,11 @@ RED against it; the others arrived green with the seam they test.
      `mod/discover-tests`, are not refused.
   3. `run_tests` on a session whose program references the extern returns
      `Err` and runs no test body; the REPL runner is unaffected.
+  4. The refusal carries the referencing function's origin span and its
+     module's file (§7.3, Location). A definition with no origin record is
+     located at its declaration span. With referencing functions in two
+     modules, the function named does not depend on table order. RED before
+     the change on the span and the file.
 - **`main.rs`**:
   1. `--test` parses to a test action, with `RunMode::Run` and
      in-memory-and-object codegen.

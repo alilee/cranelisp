@@ -1398,7 +1398,9 @@ Status:
 - the failed-dependency refusal (ACT-1016 Face 1) is built at `f95f0a3a` for
   a whole-file rebuild; a fresh load is not covered (*Failed dependency*
   below);
-- the declaration readiness gate (ACT-1016 Face 2) is built at `870aacd8`.
+- the declaration readiness gate (ACT-1016 Face 2) is built at `870aacd8`;
+- route independence through a declared child (ACT-1081) is designed and
+  not built; its error clause waits on the user's ruling.
 
 Private to `src/`; no public API, carrier, schema or ABI change.
 
@@ -1575,8 +1577,9 @@ table it loads as today. `refuse_failed_table` still runs first.
   as the terminal-pool test. Both Pass-0 handlers read it, and so does the
   tracked branch of the qualified-reference gate (`fq_module_is_loaded`),
   whose own documentation says it mirrors the import gate (Principle 7). The
-  signature barrier and every other terminal-typecheck reader keep the
-  terminal predicate.
+  signature barrier reads it for a member that shares a cycle with the
+  waiter (*Route independence* below); every other terminal-typecheck reader
+  keeps the terminal predicate.
 - **Publication wakes the declaration waiters.** When the fact is set, the
   scheduler releases every module waiting on `D` through a whole-module
   dependency edge, as the terminal sweep does. The eval thread's wait at a
@@ -1608,8 +1611,9 @@ table it loads as today. `refuse_failed_table` still runs first.
   which never waits (§6.12).
 - **Not changed.** The signature barrier's members still exclude export
   targets (§6.12, *Not taken*). The wait is the body-free dependency wait an
-  import already takes. Declared children are still no edge in any graph
-  (§6.9).
+  import already takes. Declared children are no edge in any graph that
+  decides a cycle (§6.9) until the ruling below; the barrier reads them only
+  for reach (*Route independence*).
 
 *Effect.* An export to a module in flight becomes a wait edge. At a fresh
 load the scheduler therefore reports `a -> b -> a` before either module
@@ -1620,21 +1624,141 @@ qualified reference drives `p.child` before `p` publishes, so the child's
 declaration of `super` waits on an unpublished `p` that waits on it, and the
 scheduler reports `p -> p.child -> p`.
 
-*Undecided by the spec* (for `sprint`, to `spec` and the user). Parent `P`
-declares `(mod c)`; `c` imports `z`; `z`, which is not `P`'s child, imports
-`P`; `P` reaches neither `c` nor `z` except through the declaration. Spec
-§8.10.1 lists `mod` in the dependency graph, which makes `P → c → z → P` a
-cycle; read the same way, the direct `super` import of row 1 would be a
-cycle, which §8.3.8 accepts. The spec does not say whether §8.3.8's
-acceptance covers only a child's direct dependency on its parent, or means a
-`mod` declaration never closes a cycle back to the declaring parent. This
-design does not answer that question. It keeps the one answer int's other
-three graphs already give (declared children are no edge, so the program is
-accepted), because a fresh load that refused it would diverge from a session
-save, which the publication check accepts. If the user rules it a cycle, the
-declared-child edge enters the one shared edge predicate, and all four graphs
-change together; this gate does not change. Today's source answers by
-timing: an install from `P`'s seeded table or from its published one.
+*Undecided by the spec* (with the user). Parent `P` declares `(mod c)`; `c`
+imports `z`; `z`, which is not `P`'s child, imports `P`; `P` reaches neither
+`c` nor `z` except through the declaration. Spec §8.10.1 lists `mod` in the
+dependency graph, which makes `P → c → z → P` a cycle; read the same way, the
+direct `super` import of row 1 would be a cycle, which §8.3.8 accepts. The
+spec does not say whether §8.3.8's acceptance covers only a child's direct
+dependency on its parent, or means a `mod` declaration never closes a cycle
+back to the declaring parent. This design does not answer that question.
+Whatever the answer, the outcome must not depend on the route
+([ACT-1081](../../sprints/actions/ACT-1081-module-graph-through-a-declared-child-is-accepted-or-refused-by-load-route-intake.md)).
+
+**Route independence** (ACT-1081; designed 2026-11-18, not in source at
+`66bc7b8a`). Private to `src/`; no public API, carrier, schema or ABI change.
+
+*The fault.* This section expected the program above to be accepted on
+every route; the source does not deliver that. `qa` measured it on
+`2d3a5b3e`:
+
+- under `--run` it is refused as a cycle when the entry imports `P` or `z`,
+  and runs when the entry imports `P.c`;
+- in the REPL, `(z/zf)` reports the cycle, and `(P.c/cf)` in the next turn
+  evaluates;
+- a save that closes the graph is accepted, and a restart agrees.
+
+The mechanism, read from source at `66bc7b8a`:
+
+- The static gate and the publication check read no declared-child edge, so
+  they accept the program.
+- A parent's drive of a declared child it registers waits on the child
+  (`drive_submodule` through `block_dep`). That edge is in the wait graph and
+  not in the shared predicate.
+- The signature barrier waits for each closure member's terminal typecheck
+  (`gate_body_on_signature_barrier`). A parent is not terminal until its
+  declared children are, so `z`'s barrier on `P` waits behind `P`'s wait on
+  `c`, which waits on `z`: `z -> P -> P.c -> z`. The barrier exempts the
+  root's ancestors by the shape of their names. That covers row 1 and not a
+  third module.
+- A parent's drive of a child already in flight does not wait. When the entry
+  imports `P.c`, `P` therefore goes terminal before `c`, `z`'s barrier opens,
+  and no wait cycle forms.
+- A REPL turn that follows a failure takes the route its own expression
+  names, so a module reported failed can evaluate in a later turn.
+
+*The rule.* Whether a module graph is accepted depends on its files, never
+on the route or the arrival order that loads them. One **completion graph**
+`C` carries every edge the shared predicate yields (imports that load,
+exports, qualified references, recorded edges and the prelude edge) and,
+besides those, an edge from each parent to each declared child.
+
+1. **A parent's completion includes every declared child,** whether its
+   drive registers the child or finds it already in flight. A drive of an
+   in-flight child waits on it too. Otherwise a reader of the parent's
+   completion would see a child's records on some routes and not others.
+2. **The signature barrier reads one of two readinesses, per member.** A
+   member that lies on a cycle of `C` with the waiting root is read at its
+   publication (*Declaration readiness*). Any other member is read at its
+   completion, which is today's terminal predicate. Both are fixed by the
+   files. This replaces the barrier's name-shape ancestor exclusion, which
+   is deleted ([Principle 19](../arch/principles/19-no-module-privileged-by-name.md)):
+   a child that depends on its parent lies on the cycle formed by the parent's
+   declaration and the child's own edge back, so it reads the parent at
+   publication as before. The root itself stays excluded.
+3. **Which cycles of `C` are errors is decided in one place.** The static gate
+   runs at the top of every cluster, rooted at the compiling module, and a
+   module on a cycle reaches it. Any route that loads a module of an error
+   cycle therefore compiles one and refuses there. The publication check
+   refuses a save that closes an error cycle, and the gate refuses the same
+   files at a restart.
+
+Together these give one outcome on every route. An error cycle is refused
+before any of its waits. An accepted cycle forms no wait cycle, because
+around every cycle of `C` each dependent reads its dependency at publication,
+and a module publishes before it drives its children. The REPL retry face
+goes with them, because a retried turn derives the same outcome from the
+same files.
+
+*The ruling point.* One fact changes with the user's ruling: the error
+clause of the cycle predicate in the one edge home
+(`src/process_form/dependency.rs`, beside `DeclaredEdges`), which the static
+gate and the publication check both read. Rules 1 and 2 are the same under
+either ruling.
+
+- **If a `mod` declaration can close a cycle:** every cycle of `C` is an
+  error except §8.3.8's direct pair, the declared-child edge to `c`
+  followed by `c`'s own dependency on its declaring parent (row 1). ACT-1081
+  is refused on every route. The path is named from the module the route
+  compiles first, so it is `P -> P.c -> z -> P` or a rotation of it. A
+  grandchild that imports its grandparent is refused too, because it is not
+  the direct pair.
+- **If a `mod` declaration never closes a cycle:** a cycle of `C` is an
+  error only when it holds no declared-child edge, which is today's answer.
+  ACT-1081 runs on every route. By rule 2, `z` typechecks before `c`
+  publishes on every route. `z` therefore never sees a record that `c` adds
+  to `P`, such as an implementation of `P`'s trait. A use of one is refused
+  as a missing implementation on every route, although spec §7.11.1 makes
+  an implementation visible wherever its trait and type are reachable. The
+  user's question therefore carries this consequence. Under the other
+  ruling, §7.11.1 holds unchanged, because no accepted cycle passes through
+  a declaration.
+
+Until the ruling, the error clause keeps today's answer, so the
+ruling-independent rules 1 and 2 make every route accept ACT-1081. When to
+build them is `sprint`'s decision.
+
+*Cost.* Reach through declared children makes the gate's walk parse each
+visited module's declared children, once per cluster under the existing
+memo. The full suite's wall time is the measurement.
+
+*Falsifiers.*
+
+- REPRO-1081's routes disagree, in a batch mode or in a REPL order.
+- `CRANELISP_SCHEDULER_TRACE` shows a barrier wait on a member that shares a
+  cycle of `C` with the waiter, or a parent that turns terminal before an
+  in-flight declared child.
+- A module that reaches a parent and does not lie on a cycle with its
+  children sees a child's implementation on one route and not on another.
+
+*What `dev` builds* (`src/process_form/dependency.rs`, `src/scheduler.rs`),
+with module rows:
+
+- the drive of an in-flight declared child waits on it, and the parent turns
+  terminal only after the child;
+- `z`'s barrier on `P`, in the ACT-1081 shape, opens at `P`'s publication;
+  `y`, which imports `P` and does not lie on a cycle with `c`, stays blocked
+  until `c` completes; row 1's child opens at its parent's publication with
+  the ancestor exclusion deleted;
+- the gate's walk reaches a declared child, and under today's error clause a
+  cycle through a declaration is no error while a cycle without one is.
+
+*End-to-end cells.* Turn green: REPRO-1081, which asserts agreement and not
+the outcome. Stay green: row 1's and row 2's cells and the §6.12 prelude
+cells, as listed under *End-to-end cells* above. For `qa` to allocate:
+`y`'s case, with a child's implementation of its parent's trait used from
+`y` on every route; and, once ruled, the outcome clause and the save and
+restart legs of REPRO-1081.
 
 *Falsifiers.*
 
@@ -1685,7 +1809,8 @@ declaration readiness, and `/mod` waits for in-memory completion.
   §6.12 prelude cells.
 - For `qa` to allocate:
   - the undecided program in `--run` and the REPL, and a session save that
-    closes it, both accepted under this design;
+    closes it: allocated as REPRO-1081, which asserts that the routes agree
+    (*Route independence*);
   - an `(export [p [x]])` from a child, spelled by its parent's full path,
     beside `super`;
   - a repeat-run cell for the arrival-order falsifier;
@@ -3391,9 +3516,9 @@ passed its finding-scoped re-review.
 
 **Status: built at `3c4c0f7b`, with the backend's `CACHE_SCHEMA_VERSION` 34
 and the `dependency_hashes` rustdoc correction at `f3f9cc47`; the stored
-layout ends at a `.meta` rewrite at `c53a3f4b`.** Its warm-start cost is
-attributed and its remedy, the shared decode, is not in source at
-`c53a3f4b` (*Cost* below). Private to `src/`. No
+layout ends at a `.meta` rewrite at `c53a3f4b`; the shared decode that
+repays its warm-start cost is built at `2d3a5b3e`, and the cost obligation
+is closed (*Cost* below).** Private to `src/`. No
 public API change: `CachedModuleRef::dependency_hashes` stays a map of opaque
 strings and `check_manifest` is unchanged ([BC](../arch/bounded-contexts.md)
 §6, the cached object's validity record). It changes what a persisted value
@@ -3481,10 +3606,25 @@ the cache exists to make fast is material.
   backend's public `try_load_cached_module` and `CachedModule` unchanged, so
   it is private to `src/`. It changes no persisted value, no schema and no
   public item.
-- **Why this meets the bar.** The decodes return to one per restored member,
-  which is the count before the change. What remains of the added cost is
-  the live half, 7 to 8 ms, which is not material. The live half therefore
-  gets no memo.
+- **Why this meets the bar.** Validation and the metadata restore share one
+  decode per restored member, so the decode the change added is gone. What
+  remains of the added cost is the live half, 7 to 8 ms, which is not
+  material. The live half therefore gets no memo.
+- **Measured at `2d3a5b3e`** (`qa`, four warm debug runs of `--run
+  exemplar/tests.cl`): 0.89 to 0.94 s, against 0.96 s before the change. The
+  bar is met.
+- **The object load's decode is not part of this obligation.** A restored
+  member is still decoded twice: once for validation and its metadata
+  restore, and once more when its object is loaded
+  (`worker.rs::load_cached_module_via_linker`, 33 of 70 decodes on that
+  run). The second read predates S124, so it is in the 0.96 s baseline; the
+  attribution above omitted it. No requirement or bar asks for it, so the
+  design asks for nothing further.
+  - *Potential extension.* The object load takes the facts it needs from
+    the decode the metadata restore already took, or from the restored
+    table, instead of reading the file again. *Trigger:* a warm-start
+    requirement, or a profile in which that decode is the largest share of
+    a warm start the project wants faster.
 - **Not taken: a manifest self-key.** Recording each member's derivation key
   in its own manifest entry would remove validation's decode, but the
   member's restore would still decode the file. It saves a decode only for a
@@ -3494,7 +3634,8 @@ the cache exists to make fast is material.
   validation decodes a material number of members that are never restored.
 - **Falsifier.** With the shared decode, the warm start stays materially
   above 0.96 s, or the profile shows more than one decode for a restored
-  member. The cost is then elsewhere and is profiled again.
+  member outside its object load. The cost is then elsewhere and is profiled
+  again. Neither was observed at `2d3a5b3e`.
 - **What `dev` builds** (`src/cache.rs`, `src/process_form/cache_restore.rs`).
   The held decoded module in place of the held layout, the take at the
   metadata restore, and the end when the session first holds a table.
@@ -4070,17 +4211,18 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `e294852f`, ACT-1052 at `3c4c0f7b` with the backend's bump at `f3f9cc47`,
   ACT-1016 Face 1 at `f95f0a3a`, the declaration readiness gate (ACT-1016
   Face 2) at `870aacd8`, the definition origin across a dependency retry at
-  `98ea54a0`, and the end of a stored layout at a `.meta` rewrite at
-  `c53a3f4b`. Checked against `c53a3f4b`, ACT-0973's refusal is not in
-  source.
-  - *Still open in W8's rows:*
-    - ACT-0973's refusal, built as a patch and held because
-      `exemplar/solver.cl` declares `(platform stdio)` outside the entry,
-      which spec §10.9.1 forbids, so the exemplar is the correction;
-    - ACT-1052's shared decode
-      ([§7.6.3](#763-slot-layout-identity-act-1052), *Cost*);
-    - the refusal of a `main` whose result type is not fixed
-      ([io-integration §1](io-integration.md#1-running-a-program));
+  `98ea54a0`, the end of a stored layout at a `.meta` rewrite at
+  `c53a3f4b`, ACT-0973's refusal at `68f042d5` after the exemplar's split
+  (`efa4d8df`), the refusal of a `main` whose result type is not fixed at
+  `098f0980`, and ACT-1052's shared decode at `2d3a5b3e`.
+  - *Still open after W8 (read at `66bc7b8a`):*
+    - the location of the batch `discover-tests` refusal (ACT-1036's last
+      leg), designed in
+      [test runner §7.3](test-runner.md#73-batch-refusal-of-discover-tests),
+      Location;
+    - route independence of a graph through a declared child (ACT-1081),
+      designed in §6.11, *Route independence*; its outcome waits on the
+      user's ruling;
     - Face 1's fresh-load gap (§6.11, *Failed dependency*).
   - *Designed, not scheduled:* a qualified reference through a mount loads
     the mount's owner (ACT-1079,
@@ -4215,9 +4357,10 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     2026-11-17). D10 is the impl-identity part of §6.13.
   - **Order and dependencies.**
     1. Independent of the other surfaces, in any order: ACT-1036, ACT-0973,
-       ACT-1016, ACT-1052. ACT-1052 carries a cache-schema bump. ACT-0973's
-       refusal lands after the exemplar moves its platform declaration to
-       its entry.
+       ACT-1016, ACT-1052, ACT-1081. ACT-1052 carries a cache-schema bump.
+       ACT-0973's refusal lands after the exemplar moves its platform
+       declaration to its entry. ACT-1081's error clause lands after the
+       user's ruling; its other two rules do not wait on it.
     2. D3: after the types carrier and the frontend producer, as one
        callee-first migration with its own schema bump. The impl-identity
        part (row D10) lands in D3's migration and shares D3's bump. The mount

@@ -75,8 +75,8 @@ contract is `design/arch/platform-interface.md`.
       for its shape, never by selecting the zero-argument arm, and locates it
       at the written `defn` form's line. It renders today's category for this
       refusal, `codegen error`, which the spec does not fix.
-  - **A `main` whose result type is not fixed** (S124 W8; not in source at
-    `c53a3f4b`). The gate refuses a `main` whose type keeps a type variable,
+  - **A `main` whose result type is not fixed** (S124 W8; built at
+    `098f0980`). The gate refuses a `main` whose type keeps a type variable,
     such as `(defn main [] (Pure None))` of type `∀a. (Fn [] (IO (Option a)))`.
     The refusal is the ambiguity type error of `spec/03-types.md` §3.11,
     located at `main`'s definition origin like the gate's other refusals.
@@ -106,12 +106,13 @@ contract is `design/arch/platform-interface.md`.
       refusal, an accepted `main` has a type with no variable, so typecheck
       has published concrete code for it. The invariant remains an
       invariant. *Falsifier:* an accepted `main` that reaches it.
-    - *Evidence.* RED:
-      `tests/spec_10_io.rs::s124_result_polymorphic_main_does_not_panic_run`;
-      control `s124_concrete_option_main_control_run`. The unit row for
-      `dev`: `validate_main` refuses a nullary `main` of type
-      `(Fn [] (IO (Option a)))` as a located type error and accepts
-      `(Fn [] (IO (Option Int)))`.
+    - *Evidence.* `qa` observed the located `type error` under `--run` and
+      `--link` at `2d3a5b3e`.
+      `tests/spec_10_io.rs::s124_result_polymorphic_main_does_not_panic_run`
+      asserts only that the compiler does not panic; its assertion of the
+      refusal and its `--link` leg are with `test`. Control:
+      `s124_concrete_option_main_control_run`. The unit row is
+      `src/exe.rs::validate_main_refuses_a_result_polymorphic_main`.
   - **A trait method named `main` is not `main`** (`spec/10-io.md` §10.6). The
     gate reads only the entry table's `main` binding. A trait method's
     binding lives under its canonical name, and the bare `main` holds only a
@@ -281,7 +282,7 @@ never sees a panic, chooses no panic status and formats no panic text.
 The frontend extracts `(platform …)` forms, and `process_form` routes each one
 to `handle_platform` (`src/process_form/platform.rs`).
 
-**Entry only (S124, ACT-0973; not in source at `f3f9cc47`).** A `platform`
+**Entry only (S124, ACT-0973; built at `68f042d5`).** A `platform`
 form in any module other than the session's entry module is a compile-time
 error located at the form (`spec/10-io.md` §10.9.1). The handler decides it by
 comparing the compiling module with the session's entry module, never by the
@@ -294,11 +295,9 @@ shape of the module's name
   compiling context's shared-state handle, as it reaches every other session
   fact. `/mod` changes the REPL's current module, not the entry. Built at
   `109f008b`.
-- **Held.** The refusal is built as a patch and not landed:
-  `exemplar/solver.cl`, which `exemplar/main.cl` imports, declares
-  `(platform stdio)`. Spec §10.9.1 makes that an error, so the exemplar moves
-  the declaration to its entry (a `dev`(exemplar) change), and the refusal
-  lands after it.
+- **The check** is `platform_declaration_scope`
+  (`src/process_form/platform.rs`). The form handler and the restore's
+  parity test both call it, so the two cannot disagree.
 - **Order.** The refusal precedes the DLL load and the platform's recording
   on the table, so a refused form loads nothing and is not persisted.
 - **Replaces** the source's skip of any module whose path contains `.`. That
@@ -370,4 +369,4 @@ from the persisted declarations, and a failure is a cache miss
 ## 3. Open gaps
 
 None is open here. The non-entry platform form, the one gap read from source
-on 2026-09-25, is designed in §2.1 and carried by ACT-0973 until it lands.
+on 2026-09-25, is refused as §2.1 states since `68f042d5`.
