@@ -3130,7 +3130,27 @@ impl CompilerSession {
         // §16.6: refuse a program that references `discover-tests` before
         // anything is written (`design/int/test-runner.md` §7.3).
         self.refuse_dev_session_externs()?;
+        self.refuse_stopped_object_passes()?;
         Ok(self.link_accepted_entry(&module, module_name, output_override)?)
+    }
+
+    /// Refuse the link while any module's latest object pass stopped
+    /// (`design/int/int.md` §7.7). Linked without that module's object, the
+    /// system linker would fail later on a symbol that names neither the
+    /// module nor the cause.
+    fn refuse_stopped_object_passes(&self) -> Result<(), CranelispError> {
+        let stopped = self.shared.cache.stopped_passes();
+        if stopped.is_empty() {
+            return Ok(());
+        }
+        let passes: Vec<String> = stopped
+            .iter()
+            .map(|(module, stop)| format!("the object pass for `{module}` {stop}"))
+            .collect();
+        Err(CranelispError::ModuleError {
+            message: format!("cannot link: {}", passes.join("; ")),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        })
     }
 
     /// Link an entry whose `main` the gate accepted (`link_by_name`).
@@ -4400,6 +4420,83 @@ mod entry_registration_tests {
     #[test]
     fn link_mode_refuses_a_missing_entry_before_registration() {
         assert_missing_entry_refused(RunMode::Link);
+    }
+
+    /// A cached `--link` session over a `user` entry whose object work has
+    /// drained, and the executable path it links to.
+    fn drained_link_session(root: &Path) -> (CompilerSession, PathBuf) {
+        // The bundle is built beside the binary, one level above this test
+        // executable's `deps/` directory.
+        let bundle = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("libcranelisp_exe_bundle.a");
+        // SAFETY: nextest runs each test in its own process, and this runs
+        // before the session spawns its workers.
+        unsafe { std::env::set_var("CRANELISP_BUNDLE_PATH", bundle) };
+        std::fs::write(
+            root.join("user.cl"),
+            "(import [primitives [Pure]]) (defn main [] (Pure 0))\n",
+        )
+        .unwrap();
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: false,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 1,
+                run_mode: RunMode::Link,
+            },
+            root.to_path_buf(),
+            "user",
+        )
+        .expect("test session bootstrap");
+        s.set_lib_dirs(Vec::new());
+        s.register_module("user").unwrap();
+        s.wait_object_complete().unwrap();
+        (s, root.join("linked"))
+    }
+
+    // spec: design/int/int.md §7.7 — under `--link`, a module whose object
+    // pass stopped refuses the link before the system linker runs, with an
+    // error naming the module and the cause.
+    #[test]
+    fn a_link_refuses_a_stopped_object_pass_before_the_system_linker() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut s, executable) = drained_link_session(root.path());
+        s.shared.cache.settle_object_pass(
+            &ModuleFullPath::from("user"),
+            Err(crate::cache::StoppedPass {
+                stage: crate::cache::PassStage::Object,
+                cause: "no space left on device".into(),
+            }),
+        );
+
+        let refusal = match s.link_by_name("user", Some(&executable)) {
+            Err(crate::session_v4::BatchError::Compiler(error)) => error.to_string(),
+            other => panic!("a stopped object pass refuses the link: {other:?}"),
+        };
+        assert!(refusal.contains("`user`"), "{refusal}");
+        assert!(refusal.contains("no space left on device"), "{refusal}");
+        assert!(!executable.exists(), "the system linker did not run");
+        s.shutdown();
+    }
+
+    // spec: design/int/int.md §7.7 — a clean `--link` session holds no
+    // stopped-pass record and links.
+    #[test]
+    fn a_clean_link_session_holds_no_record_and_links() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut s, executable) = drained_link_session(root.path());
+        assert!(s.shared.cache.stopped_passes().is_empty());
+
+        s.link_by_name("user", Some(&executable))
+            .unwrap_or_else(|e| panic!("a clean session links: {e:?}"));
+        assert!(executable.exists());
+        s.shutdown();
     }
 
     // spec: repl/spec/00-cli-invocation.md §0.5.5 Error Handling — rule 2: the

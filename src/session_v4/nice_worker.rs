@@ -15,6 +15,7 @@ use cranelisp_types::ModuleFullPath;
 
 use super::SharedState;
 use crate::cache::dependency_record::{ModuleEdges, record_manifest_entry};
+use crate::cache::{PassStage, StoppedPass};
 
 // ---------------------------------------------------------------------------
 // Nice worker spawning + loop (Step 10)
@@ -133,19 +134,12 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 /// Compile a single module to `.o` and `.meta.json` files in the cache directory.
 ///
 /// Sprint 58 Step 5b: reads `SymbolTable` directly via the shared
-/// `defined_symbols()` predicate (Decision 22). The transitional
-/// `codegen_programs` stash is gone — the backend never read from it, and
-/// the "had compilable defns" presence signal collapses to "did
-/// `defined_symbols()` return anything".
+/// `defined_symbols()` predicate (Decision 22).
 ///
 /// Errors are logged to stderr and do not halt the worker — the module is still
-/// marked object-complete so the scheduler lifecycle proceeds.
-///
-/// S87 §3.3: decomposed into phase-helpers (`write_module_meta`,
-/// `enumerate_codegen_targets`, `record_loaded_module`, `emit_object`,
-/// `write_object_and_record`). The orchestrator preserves every early `return`
-/// and the load-bearing ordering (.meta.json is DECOUPLED from `.o` output —
-/// persists whenever the module type-checked).
+/// marked object-complete so the scheduler lifecycle proceeds. A pass that
+/// stops is recorded with its cause for `--link`, and a later successful pass
+/// for the module clears the record (`design/int/int.md` §7.7).
 fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_dir: &Path) {
     run_object_pass(shared, module, cache_dir, crate::cache::publish_object);
 }
@@ -159,6 +153,19 @@ fn run_object_pass(
     cache_dir: &Path,
     publish: PublishObject,
 ) {
+    let outcome = object_pass(shared, module, cache_dir, publish);
+    shared.cache.settle_object_pass(module, outcome);
+}
+
+/// S87 §3.3: the pass's phases in their load-bearing order — the `.meta.json`
+/// is DECOUPLED from `.o` output and persists whenever the module
+/// type-checked.
+fn object_pass(
+    shared: &SharedState,
+    module: &ModuleFullPath,
+    cache_dir: &Path,
+    publish: PublishObject,
+) -> Result<(), StoppedPass> {
     use cranelisp_backend::cache;
 
     // Resolve cache paths up front — `.meta.json` persistence is DECOUPLED from
@@ -170,10 +177,8 @@ fn run_object_pass(
     let (meta_path, o_path) = cache::module_cache_path(cache_dir, module);
 
     // Phase 1: write `.meta.json` (typecheck-driven; ensures the parent dir;
-    // retires the earlier `.o`). A failure aborts the whole pass.
-    if !write_module_meta(shared, module, &meta_path) {
-        return;
-    }
+    // retires the earlier `.o`). A failure stops the whole pass.
+    write_module_meta(shared, module, &meta_path)?;
 
     // Phase 2: enumerate codegen-compilable symbols. A generic-only,
     // types-only or imports-only module emits no `.o` but is still recorded in
@@ -182,19 +187,14 @@ fn run_object_pass(
     let targets = enumerate_codegen_targets(shared, module);
     if targets.is_empty() {
         record_loaded_module(shared, module);
-        return;
+        return Ok(());
     }
 
-    // Phase 3: build + emit the `.o` bytes. `None` on any non-fatal codegen
-    // failure (the caller returns — the module is still marked object-complete
-    // by `nice_worker_loop`).
-    let obj_bytes = match emit_object(shared, module, &targets) {
-        Some(bytes) => bytes,
-        None => return,
-    };
+    // Phase 3: build + emit the `.o` bytes.
+    let obj_bytes = emit_object(shared, module, &targets)?;
 
     // Phase 4: write the `.o` + record in manifest + append for the linker.
-    write_object_and_record(shared, module, &o_path, &obj_bytes, publish);
+    write_object_and_record(shared, module, &o_path, &obj_bytes, publish)
 }
 
 /// Phase 1 (S87 §3.3): write `.meta.json` for cache-hit restoration via the
@@ -208,21 +208,25 @@ fn run_object_pass(
 /// structural specifications inline (cache-hit derives transitive deps from
 /// `imports` directly).
 ///
-/// Returns `false` (caller aborts the pass) on a meta-dir create failure or a
-/// failed `.meta` write: an `.o` or manifest entry written after it would pair
-/// with whichever `.meta` the failed write left (`design/int/int.md` §7.7).
-fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &Path) -> bool {
+/// A meta-dir create failure or a failed `.meta` write stops the pass: an
+/// `.o` or manifest entry written after it would pair with whichever `.meta`
+/// the failed write left (`design/int/int.md` §7.7).
+fn write_module_meta(
+    shared: &SharedState,
+    module: &ModuleFullPath,
+    meta_path: &Path,
+) -> Result<(), StoppedPass> {
     // Ensure parent directory exists (used by both the `.meta.json` and `.o`
     // writes below).
     if let Some(parent) = meta_path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
-        eprintln!(
-            "nice-worker: cannot create cache dir '{}': {}",
-            parent.display(),
-            e
-        );
-        return false;
+        let cause = format!("cannot create cache dir '{}': {e}", parent.display());
+        eprintln!("nice-worker: {cause}");
+        return Err(StoppedPass {
+            stage: PassStage::Metadata,
+            cause,
+        });
     }
 
     let symbol_table = shared
@@ -231,15 +235,17 @@ fn write_module_meta(shared: &SharedState, module: &ModuleFullPath, meta_path: &
         .map(|guard| guard.clone())
         .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
 
-    if let Err(e) = shared.cache.write_meta(module, &symbol_table) {
+    shared.cache.write_meta(module, &symbol_table).map_err(|e| {
         eprintln!(
             "nice-worker: .meta.json write failed for {}: {}",
             module,
             e.message()
         );
-        return false;
-    }
-    true
+        StoppedPass {
+            stage: PassStage::Metadata,
+            cause: e.message().to_string(),
+        }
+    })
 }
 
 /// Phase 2 (S87 §3.3): enumerate codegen-compilable symbols via the shared
@@ -274,49 +280,38 @@ fn record_loaded_module(shared: &SharedState, module: &ModuleFullPath) {
     record_manifest_entry(shared, module, source_hash, edges);
 }
 
+/// A stop in the object's codegen. Logged only under
+/// `CRANELISP_CODEGEN_TRACE`: the in-memory compilation may have succeeded,
+/// so only `--link` reads it, through the record.
+fn codegen_stop(module: &ModuleFullPath, cause: String) -> StoppedPass {
+    if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
+        eprintln!("nice-worker: {cause} for {module}");
+    }
+    StoppedPass {
+        stage: PassStage::Object,
+        cause,
+    }
+}
+
 /// Phase 3b (S87 §3.3): build the ObjectModule with PIC ISA and emit the `.o`
-/// bytes via the unified `compile_to_module` path. Returns `None` on any
-/// non-fatal codegen failure (ISA build / ObjectBuilder / compile / emit) — the
-/// `CRANELISP_CODEGEN_TRACE`-gated `eprintln!`s stay verbatim. Intrinsics are
-/// declared on the module internally; cross-module refs resolve from
-/// `symbol_tables`.
+/// bytes via the unified `compile_to_module` path. Intrinsics are declared on
+/// the module internally; cross-module refs resolve from `symbol_tables`.
 fn emit_object(
     shared: &SharedState,
     module: &ModuleFullPath,
     targets: &[cranelisp_types::CallableTarget],
-) -> Option<Vec<u8>> {
-    // Build ObjectModule with PIC ISA.
-    let isa = match cranelisp_backend::build_isa(true) {
-        Ok(isa) => isa,
-        Err(e) => {
-            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                eprintln!(
-                    "nice-worker: ISA build failed for {}: {}",
-                    module,
-                    e.message()
-                );
-            }
-            return None;
-        }
-    };
-    let obj_builder = match cranelisp_backend::cranelift_object::ObjectBuilder::new(
+) -> Result<Vec<u8>, StoppedPass> {
+    let isa = cranelisp_backend::build_isa(true)
+        .map_err(|e| codegen_stop(module, format!("ISA build failed: {}", e.message())))?;
+    let obj_builder = cranelisp_backend::cranelift_object::ObjectBuilder::new(
         isa,
         format!("cranelisp_{}", module),
         cranelisp_backend::cranelift_module::default_libcall_names(),
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                eprintln!("nice-worker: ObjectBuilder failed for {}: {e}", module);
-            }
-            return None;
-        }
-    };
+    )
+    .map_err(|e| codegen_stop(module, format!("ObjectBuilder failed: {e}")))?;
     let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
 
-    // Compile using the unified compile_to_module path. Intrinsics are declared
-    // on the module internally; cross-module refs resolve from `symbol_tables`.
-    match cranelisp_backend::compile_to_module(
+    cranelisp_backend::compile_to_module(
         module.clone(),
         targets,
         &shared.symbol_tables,
@@ -324,55 +319,38 @@ fn emit_object(
         // FIXME 0325: nice-worker `.o` codegen is always batch (cache-write
         // side) — never consumed by introspection, so skip CLIF rendering.
         false,
-    ) {
-        Ok(_result) => {
-            // Emit .o bytes from the ObjectModule.
-            match obj_module.finish().emit() {
-                Ok(bytes) => Some(bytes),
-                Err(e) => {
-                    if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                        eprintln!("nice-worker: .o emit failed for {}: {e}", module);
-                    }
-                    None
-                }
-            }
-        }
-        Err(e) => {
-            // Log .o compilation errors only when CRANELISP_CODEGEN_TRACE is set.
-            // These are non-fatal (in-memory compilation may have succeeded).
-            if std::env::var("CRANELISP_CODEGEN_TRACE").is_ok() {
-                eprintln!("nice-worker: .o compilation failed for {}: {}", module, e);
-            }
-            None
-        }
-    }
+    )
+    .map_err(|e| codegen_stop(module, format!(".o compilation failed: {e}")))?;
+    obj_module
+        .finish()
+        .emit()
+        .map_err(|e| codegen_stop(module, format!(".o emit failed: {e}")))
 }
 
-/// Phase 4 (S87 §3.3): write the `.o` file, record the module in the manifest
-/// for cache-hit detection on the next session, and append the `.o` path for
-/// the linker (all via the `ObjectCache` facade — Sprint 67 Cluster B
-/// sub-fire 3). The parent dir was ensured by `write_module_meta` (shared
-/// parent). A `.o` write failure is logged and returns (the module stays
-/// object-complete via `nice_worker_loop`).
+/// Phase 4 (S87 §3.3): publish the `.o` file, then record the module in the
+/// manifest for cache-hit detection on the next session and append the `.o`
+/// path for the linker. A failed publication is logged and stops the pass
+/// with no entry recorded.
 fn write_object_and_record(
     shared: &SharedState,
     module: &ModuleFullPath,
     o_path: &Path,
     obj_bytes: &[u8],
     publish: PublishObject,
-) {
+) -> Result<(), StoppedPass> {
     // The parent dir was ensured for the `.meta.json` write, which shares it.
     if let Err(e) = publish(o_path, obj_bytes) {
-        eprintln!("nice-worker: cannot write '{}': {}", o_path.display(), e);
-        return;
+        let cause = format!("cannot write '{}': {e}", o_path.display());
+        eprintln!("nice-worker: {cause}");
+        return Err(StoppedPass {
+            stage: PassStage::Object,
+            cause,
+        });
     }
 
-    // Record module in manifest for cache-hit detection on next session.
     record_loaded_module(shared, module);
-
-    // Append the .o path for the linker. Sprint 67 Cluster B sub-fire 3:
-    // ObjectCache facade.
     shared.cache.append_o_path(o_path.to_path_buf());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -381,8 +359,8 @@ mod tests {
 
     use cranelisp_types::{CodegenBehaviour, ModuleFullPath};
 
-    use crate::cache::StoredObject;
     use crate::cache::dependency_record::ModuleSources;
+    use crate::cache::{PassStage, StoredObject};
     use crate::session_setup::CacheValidity;
     use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
 
@@ -443,6 +421,58 @@ mod tests {
             std::io::Write::write_all(file, &bytes[..bytes.len() / 2])?;
             Err(std::io::Error::other("the write stops part-way"))
         })
+    }
+
+    /// The stage at which each module's latest object pass stopped.
+    fn stopped_stages(s: &CompilerSession) -> Vec<(ModuleFullPath, PassStage)> {
+        s.shared
+            .cache
+            .stopped_passes()
+            .into_iter()
+            .map(|(module, stop)| (module, stop.stage))
+            .collect()
+    }
+
+    // spec: design/int/int.md §7.7 — a pass stopped at the `.meta` write
+    // records the module, and a later successful pass clears the record.
+    #[test]
+    fn a_pass_stopped_at_its_metadata_stands_until_a_later_pass_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = compiled_session(root.path(), "(defn g [] 41)\n");
+        let lib = ModuleFullPath::from("lib");
+        let cache_dir = s.shared.cache.cache_dir().expect("cache enabled");
+        assert_eq!(stopped_stages(&s), [], "a clean pass leaves no record");
+        let object_path = cranelisp_backend::cache::module_cache_path(&cache_dir, &lib).1;
+        std::fs::remove_file(&object_path).unwrap();
+        std::fs::create_dir(&object_path).unwrap();
+
+        super::run_object_pass(&s.shared, &lib, &cache_dir, crate::cache::publish_object);
+        assert_eq!(stopped_stages(&s), [(lib.clone(), PassStage::Metadata)]);
+
+        std::fs::remove_dir(&object_path).unwrap();
+        super::run_object_pass(&s.shared, &lib, &cache_dir, crate::cache::publish_object);
+        assert_eq!(stopped_stages(&s), []);
+        s.shutdown();
+    }
+
+    // spec: design/int/int.md §7.7 — a pass stopped at the object write
+    // records the module with its cause, and a later successful pass clears
+    // the record.
+    #[test]
+    fn a_pass_stopped_at_its_object_stands_until_a_later_pass_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = compiled_session(root.path(), "(defn g [] 41)\n");
+        let lib = ModuleFullPath::from("lib");
+        let cache_dir = s.shared.cache.cache_dir().expect("cache enabled");
+
+        super::run_object_pass(&s.shared, &lib, &cache_dir, stopped_publication);
+        assert_eq!(stopped_stages(&s), [(lib.clone(), PassStage::Object)]);
+        let stop = &s.shared.cache.stopped_passes()[&lib];
+        assert!(stop.cause.contains("the write stops part-way"), "{stop}");
+
+        super::run_object_pass(&s.shared, &lib, &cache_dir, crate::cache::publish_object);
+        assert_eq!(stopped_stages(&s), []);
+        s.shutdown();
     }
 
     // spec: design/int/int.md §7.7 — an object publication that stops after

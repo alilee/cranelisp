@@ -24,6 +24,7 @@
 // minimum-this-sprint surface is the ones that have actual callers
 // (everything in `crate::session_v4` + `crate::worker`).
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -75,6 +76,36 @@ pub struct ObjectCache {
     /// file it read. Correctness never depends on an entry: a missing one is
     /// decoded from the file.
     stored: dashmap::DashMap<ModuleFullPath, Option<StoredMeta>>,
+
+    /// Each module whose latest object pass stopped without publishing its
+    /// object (`design/int/int.md` §7.7). `--link` refuses while any stands.
+    stopped_passes: Mutex<BTreeMap<ModuleFullPath, StoppedPass>>,
+}
+
+/// Where an object pass stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PassStage {
+    /// The cache directory, the old object's retirement or the `.meta` write.
+    Metadata,
+    /// The object's codegen, emission or publication.
+    Object,
+}
+
+/// An object pass that stopped at `stage` for `cause`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoppedPass {
+    pub(crate) stage: PassStage,
+    pub(crate) cause: String,
+}
+
+impl std::fmt::Display for StoppedPass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stage = match self.stage {
+            PassStage::Metadata => "its metadata",
+            PassStage::Object => "its object",
+        };
+        write!(f, "stopped at {stage}: {}", self.cause)
+    }
 }
 
 /// What a restore loads for a decoded stored module (`design/int/int.md`
@@ -164,6 +195,7 @@ impl ObjectCache {
             state: Mutex::new(state),
             compiled_o_paths: Mutex::new(Vec::new()),
             stored: dashmap::DashMap::new(),
+            stopped_passes: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -391,6 +423,35 @@ impl ObjectCache {
         if !guard.contains(&path) {
             guard.push(path);
         }
+    }
+
+    /// Record how `module`'s object pass ended: a stop stands until a later
+    /// pass for the module succeeds.
+    pub(crate) fn settle_object_pass(
+        &self,
+        module: &ModuleFullPath,
+        outcome: Result<(), StoppedPass>,
+    ) {
+        let mut stopped = self
+            .stopped_passes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match outcome {
+            Ok(()) => {
+                stopped.remove(module);
+            }
+            Err(stop) => {
+                stopped.insert(module.clone(), stop);
+            }
+        }
+    }
+
+    /// The modules whose latest object pass stopped, with how it stopped.
+    pub(crate) fn stopped_passes(&self) -> BTreeMap<ModuleFullPath, StoppedPass> {
+        self.stopped_passes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Snapshot the collected `.o` paths for `--link`. Returns a clone.
