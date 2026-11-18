@@ -1,9 +1,9 @@
 # The compilation entry — `compile_to_module`
 
 > **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
-> **Status**: current design, verified against source 2026-09-25; §12 at
-> `4b58ab93`, 2026-11-17, with §12.1 designed and not yet landed; §2.6 at
-> `441e31ea`, 2026-11-18.
+> **Status**: current design, verified against source 2026-09-25; §2.6 at
+> `441e31ea`, 2026-11-18; §1, §10, §12 and §14 at `1e4b0ce4`, 2026-11-18,
+> with §12.1 built at `777412a7`.
 > **Authority**: `design/arch/bounded-contexts.md` §3 owns the boundary and its
 > invariants; the rustdoc in `crates/cranelisp-backend/src/lib.rs` owns the exact
 > signatures. This document explains how the one entry is organised and why.
@@ -26,9 +26,9 @@ target's GOT slot, and returns the introspection byproducts.
 - **It decides nothing it could be told.** Targets, bodies, identities and
   ownership summaries arrive resolved on the symbol tables ([backend master](backend.md) §2).
 
-The public codegen surface around it is small: `load_object` (§10),
-`produce_disasm` (§11), `build_isa` and the `Jit` construct boundary. Their
-exact shape is the crate-root rustdoc.
+The public codegen surface around it is small: `produce_disasm` (§11),
+`build_isa` and the `Jit` construct boundary. Their exact shape is the
+crate-root rustdoc.
 
 ## 2. The entry contract
 
@@ -337,11 +337,9 @@ what skips publication.
 The live cache-hit path is `cache::load_cached_object`. It maps a cached object
 into a caller-prepared `Linker` and returns one address per semantic
 `CallableTarget`; [module caching](module-caching.md) §8 states its rules.
-
-The crate-root free function `load_object` builds its own linker, loads object
-bytes and returns a `LinkerArtefact` keyed by binding name. It registers no
-externals and has no production caller. Keeping, wiring or removing it is an
-inter-crate public-API decision for `arch` and the user.
+It is the only object-loading entry. The crate-root `load_object`, which had no
+production caller, and its artefact types were deleted in S124 (rows R10-1 and
+R10-2, `06210347`).
 
 ## 11. On-demand disassembly
 
@@ -397,21 +395,31 @@ and was refused.
   name. Both apply to the fn-as-value wrapper and to the auto-curry wrapper's
   builtin arm.
 - **Partial application.** Of the family, `bind`, `race` and `sconcat` take
-  two operands, so only they have a partial face; `sconcat`'s partial works
-  today because its shim symbol exists. The curry builtin arm's last resort
-  imports any unlisted builtin by its bare name. A bare import resolves
-  against whatever the host process exports, not against an entry. A partial
-  `bind` therefore does not fail at finalisation: it links, and aborts at run
-  time on a misaligned pointer (observed by `qa`). That it links to the C
-  library's socket `bind`, whose integer result is read as an IO node, is a
-  source reading. `race` resolves to nothing, so JIT finalisation panics the
-  compile worker. Rule 4
-  removes both faces for this family. The curry builtin arm also loses the
-  bare-name fallback. Its rules are inline Vec primitive, host-promised
-  (rule 4), extern shim, then GOT slot (rule 5). A name that none of them
-  claims is a located internal error, not a symbol lookup. That makes a
-  collision with a host-process symbol unconstructable for every name, not
-  just avoided for this family.
+  two operands, so only they have a partial face. Before rule 4, the curry
+  builtin arm's last resort imported any unlisted builtin by its bare name,
+  which resolves against whatever the host process exports rather than
+  against an entry. A partial `bind` linked and aborted at run time, and a
+  partial `race` panicked the compile worker. Rule 4 removes both faces, and
+  the bare-name fallback is gone.
+- **The auto-curry wrapper's rules, as built.** Rule 4 is decided first, from
+  the curry carrier or from the `BuiltinFn` carrier's name in `primitives`.
+  For a `BuiltinFn` target the remaining rules, in order, are:
+  - (a) inline Vec primitive;
+  - (b) extern shim;
+  - (c) inline scalar primitive (`primitives_inline`, for example `add-i64`),
+    emitted inline as a direct call is. If the inline table declines a name
+    that `primitives_inline` lists as known, the call goes through that
+    primitive's GOT slot;
+  - (d) otherwise a located internal error, never a symbol lookup.
+
+  Every other resolution takes rule 5. A collision with a host-process symbol
+  is therefore unconstructable for every name, not just avoided for this
+  family. Rule (c) was already the arm's rule, and dropping it would change
+  emission.
+- **As built narrower than designed (2026-11-18).** No module row observes
+  rule (d), the refusal of an unclaimed `BuiltinFn` name. The row is owed by
+  `dev`(backend): a planted unclaimed name yields the located error and
+  declares no import, and a claimed name does not.
 - **One lowering per primitive** (Principle 07). The combinator
   classification (`IoCombinator`), the IO node layouts, the disposer
   derivation and the Trace accessor ABI mapping each keep one home. Both the
@@ -422,12 +430,12 @@ and was refused.
   scope-stack value and never reaches this rule. A user `bind` resolves to its
   own entry.
 - **The wrapper's builder.** The lowering emits into the wrapper's function,
-  not the enclosing body. `dev` chooses between two realisations: an inner
-  body compiler over the wrapper's builder, as lambda bodies have, which
-  compiles no expression and consults no plan; or lowering cores parameterised
-  by the builder. A copy of a lowering written for the wrapper is not
-  admissible. That is how the curry arm's private list of extern primitives,
-  `is_extern_primitive_in_wrapper`, drifted from `is_extern_primitive`.
+  not the enclosing body. As built, an inner body compiler over the wrapper's
+  builder, as lambda bodies have, compiles no expression and consults no plan.
+  A copy of a lowering written for the wrapper is not admissible. Such a copy
+  is how the curry arm's private list of extern primitives drifted from
+  `is_extern_primitive`. That list is deleted, and the arm reads
+  `is_extern_primitive`.
 - **Disposer type.** An IO combinator's result disposer is derived from its
   first operand's concrete type. Direct application reads that operand's
   expression type. The fn-as-value wrapper reads the first parameter of the
@@ -461,7 +469,7 @@ and was refused.
   error. Neither has been observed. The trigger for designing either is a
   program that reaches it.
 - **Falsifier.** The design is falsified if any REPRO-1063 or REPRO-1063-p
-  leg fails once rule 4 lands. It is also falsified if a value use or partial
+  leg fails with rule 4 built. It is also falsified if a value use or partial
   application emits an IO node whose tag, fields or disposer differ from the
   direct application's (T-1063-b, M-1063).
 
@@ -475,8 +483,8 @@ and was refused.
 
 ## 14. Open points
 
-- `load_object` has no production caller (§10).
-- The cache packet API has no live consumer ([module caching](module-caching.md) §7).
+None. The two S124 entries were removed: `load_object` (§10) and the cache
+packet family ([module caching](module-caching.md) §7).
 
 ## 15. Failure attribution
 

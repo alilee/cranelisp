@@ -239,46 +239,34 @@ with a trap, and no raising frame returns a sentinel. Closing
   guard, each placing one of the spec's §12.7.2.1 messages in an anonymous
   data object. The redefinition trap stub, a former fourth consumer, retired
   at S123 W4 ([ownership codegen](ownership-codegen.md) §8.1).
-  - **Grade as built: measured, with a known bypass.** The helper takes a raw
-    `FuncId`, and any code holding `runtime/panic`'s id can make its own
-    `FuncRef`: the public `CompileContext::panic_func_id`, or the
-    intrinsic declaration loop's by-name map
-    (`jit::IntrinsicFuncIds::by_name`), which seeds every compile's
-    `func_ids`. The census `raise::tests::raise_helper_is_the_only_panic_call_emitter`
-    matches spelling, not identity, so an alias evades it (W1 review advisory
-    B1). Until the hardening below lands, the architecture's falsifier
-    applies: a `runtime/panic` call followed by reachable code.
-- **Hardening (S124, P-15; safety register R13).** After row D2 makes the
-  `compiler` module crate-private:
-  - **One handle.** `raise` defines a panic handle whose only field, the
-    `FuncId`, is private to `raise`. Only `raise` constructs one, and only
-    `emit_raise` reads its id. `CompileContext`, the intrinsic declaration
-    result and every consumer (the match-failure block, the division guard in
+- **One handle (P-15; safety register R13).** Built at `ff227dea`, after row
+  D2 made the `compiler` module crate-private (`b89c6186`).
+  - `raise::PanicHandle` wraps the declared panic funnel. Its `FuncId` is
+    private to `raise`, only `raise` constructs one, and only `emit_raise`
+    opens it. `CompileContext`, the intrinsic declaration result and every
+    consumer (the match-failure block, the division guard in
     `primitives_inline`, the Vec index guard, the value-position wrappers)
-    hold and pass the handle, never a `FuncId`. `raise::declared` returns
-    the handle.
+    hold and pass the handle, never a `FuncId`.
   - **No second path to the id.** The intrinsic declaration loop hands the
-    declared `runtime/panic` to `raise`, which wraps it. That entry is not
-    inserted into the by-name map, so no compile's `func_ids` contains it and
-    no by-name lookup yields it. The panic symbol's name appears in this
-    crate's production source only in `raise`.
-  - **Grade after: structural** for reuse of the declared id: code outside
-    `raise` holds no value from which to build the call. **Measured,
-    lexically, for one residual:** Cranelift's `declare_function` returns the
-    same id for a symbol declared again by name, so a by-name re-declaration
-    anywhere in the crate would bypass the handle. That cannot be made
-    unwritable inside this crate. The existing census is rewritten to that
-    residual: it counts production mentions of the panic symbol's name outside
-    `raise`, and its detection proof plants one by-name declaration and stays
-    silent without it. The spelling census of `FuncRef` construction is
-    retired, since the handle makes it moot. The grade is safety register
-    R13's.
+    funnel's catalog entry to `raise::claim` and keeps it out of the by-name
+    map, so no compile's `func_ids` contains it and no by-name lookup yields
+    it.
+  - **Grade: structural** for reuse of the declared id. Code outside `raise`
+    holds no value from which to build the call.
+  - **Measured, lexically, for one residual.** Cranelift's `declare_function`
+    returns the same id for a symbol declared again by name, so a by-name
+    re-declaration anywhere in the crate would bypass the handle. That cannot
+    be made unwritable inside this crate.
+    `raise::tests::panic_symbol_is_named_only_in_raise` counts production
+    mentions of the panic symbol's name outside `raise`. Its detection proof,
+    `raise::tests::panic_symbol_census_detects_a_planted_declaration`, plants
+    one by-name declaration and stays silent without it. The grade is safety
+    register R13's.
   - **The census's blind spot** is a declaration whose name is computed and
     never spelled, such as a second loop over the intrinsics catalog. The
     intrinsic declaration loop stays the crate's one catalog-driven
     declaration site; `review` rejects a second (R13).
-  - No public item is added; D2 removes the field from the public surface
-    first.
+  - No public item was added.
 - **What the backend relies on, in intrinsics' terms.** `runtime/panic` never
   returns, on any thread, and its catalog entry declares no result (ACT-1033's
   derived pair). The import is declared from that entry. The exit path, the
@@ -355,7 +343,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
 | RC discipline | `ring2-rc.md` | The calling convention as emitted, extern consumption, the IO extern's balance and the RC emission primitives. |
-| Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count, and each one's disposition under Principle 27 (§0): confined atomicity retired at S123 W4, stack placement at S124 B1 and value flattening at S124 B5; the spark density axis and the borrowed-sibling carrier retire in S124, each with its change-set designed. Also the reuse counters, the redefinition slots and the supporting contracts. |
+| Ownership codegen | `ownership-codegen.md` | The mechanisms that read ownership facts without deciding a count, and each one's disposition under Principle 27 (§0): confined atomicity retired at S123 W4, stack placement at S124 B1, value flattening at S124 B5 and the spark density axis at S124 B9. The borrowed-sibling carrier retires with rows D6 and D9 (§9). Also the reuse counters, the redefinition slots and the supporting contracts. |
 | Transitive drop glue | `transitive-drop-glue.md` | One named drop function per concrete owning type; declaration-first construction; no depth cutoff, no shallow fallback. |
 | Non-concrete release | `non-concrete-release-contract.md` | Category before operation, no fabricated concreteness, the IO node's release, and the S124 structural close: the census with its frame record, the constructor field channel, concrete binder types and the narrowings B4 left (B4′), all built (§7.3–§7.4, landed order §7.7). The lifecycle disposition and refusal frame stay open. |
 | Binder identity | `binding-scope.md` | A binder is its slot, never its name. Delivered. |
@@ -364,30 +352,45 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims (ACT-1039), and the backend's half of strict evaluation and allocation-free wrappers (ACT-1038). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims (ACT-1039; blocked on `arch`'s module-set ruling), and the backend's half of strict evaluation and allocation-free wrappers (ACT-1038; built). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
 
-Every S124 backend item, its design and what it waits on. A row leaves when
-its change lands. Public rows are the S124 and S123 packets' as indexed in
+Every S124 backend item still open, its design and what it waits on. A row
+leaves when its change lands. Public rows are the S124 and S123 packets' as
+indexed in
 [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124).
 
 | # | Change-set | Design | Waits on |
 |---|---|---|---|
-| B6 | Row D2, then the panic handle (P-15) | §7 above | — ; the handle follows D2 |
-| B7 | Rows R10-1, -2, -3, -5, -7 as one contraction (R10-6 is superseded by R10-9, B11) | [BC §3](../arch/bounded-contexts.md#3-backend-cratescranelisp-backend) | B6's D2 |
-| B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | the types change of D6, in the same change-set |
-| B9 | Spark density retirement | [ownership codegen](ownership-codegen.md) §13.4 | — |
-| B10 | Trace: claim-based traced set (ACT-1039); `in_trace_body` deleted (ACT-1038); the descriptor baker's and schema walk's shared substitution pairs by declared parameter (ACT-1062's backend reader; [release contract](non-concrete-release-contract.md) §7.4 step 1) | [trace codegen](trace-codegen.md) | the claim-based set: — . The deletion: intrinsics' row D8 change with this crate's descriptor-test adaptation ([trace codegen](trace-codegen.md) §2) |
-| B11 | Heap layouts read from intrinsics, rows R10-9 and R10-10 | §9.1 below | intrinsics' additions ([heap layout owners](../intrinsics/heap-layout.md) §5) |
-| B12 | A host-promised primitive as a value or partially applied (value uses refused; a partial `bind` aborts; a partial `race` panics the worker), closing ACT-1063 | [compile-to-module](compile-to-module.md) §12.1 | REPRO-1063 and REPRO-1063-p committed RED ([evidence delta](../../tests/plan/s124-evidence-delta.md) §3.9) |
+| B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | `arch`'s types half of D6, made in the same commit (the commit shape is in §9 there) |
+| B10 | The traced set fixed by slot claims (ACT-1039) | [trace codegen](trace-codegen.md) §1 | `arch`'s ruling on which modules contribute, and the change it names for `macros`' slot claims ([trace codegen](trace-codegen.md) §1.3) |
 
-- The S124 close is landed through B5 (`441e31ea`;
-  [release contract](non-concrete-release-contract.md) §7.7). B6 to B10 and
-  B12 have no dependency on it; `sprint` places them. Each emission-affecting
-  one carries its own scoped re-baseline in its own change-set.
-- `CACHE_SCHEMA_VERSION` is 32 after B5. It is bumped by B8, and by two change-sets that
+- **Landed in W6.** Each emission-affecting change-set carried its own scoped
+  re-baseline.
+  - B6: row D2 (`b89c6186`), then the panic handle (`ff227dea`; §7).
+  - B7: rows R10-1, -2, -5 and -7 (`06210347`), and R10-3 (`1e4b0ce4`).
+    *As built, R10-2 deletes rather than narrows* the `artefact` module,
+    `LinkerArtefact` and `ObjectArtefact`. Once R10-1 removed `load_object`,
+    they had no producer, and narrowing them would have left dead code. The
+    public effect is the same removal.
+  - B9: the spark density axis (`4b8660c9`;
+    [ownership codegen](ownership-codegen.md) §13.4).
+  - B10's ACT-1038 half: `in_trace_body` was deleted with intrinsics' row D8
+    (`3cdca9dc`), and module row M-1038 landed at `997c6c2d`
+    ([trace codegen](trace-codegen.md) §2).
+  - B11: heap layouts read from intrinsics (`e83adaf0`; §9.1).
+  - B12: host-promised primitives as values and partially applied
+    (`777412a7`; [compile-to-module](compile-to-module.md) §12.1).
+- **Not scheduled:** ACT-1062's backend reader, the shared substitution
+  `schema::subst_for_ctor_fields` that the descriptor baker and the schema
+  walk use, paired by declared parameter
+  ([release contract](non-concrete-release-contract.md) §7.4 step 1). It is
+  not part of B10 as scheduled and is not in source. Whether it is pulled in
+  is the user's decision
+  ([evidence delta](../../tests/plan/s124-evidence-delta.md) §14.8).
+- `CACHE_SCHEMA_VERSION` is 32. It is bumped by B8, and by two change-sets that
   land on other surfaces but must edit this crate's constant: row D3's and
   ACT-1052's ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache
   discipline; [int §7.6.3](../int/int.md#763-slot-layout-identity-act-1052)).
@@ -402,68 +405,25 @@ its change lands. Public rows are the S124 and S123 packets' as indexed in
   ACT-1050's correction, unchanged by it (O-1018 at `8667a868`,
   [evidence delta](../../tests/plan/s124-evidence-delta.md) §14.4).
 
-### 9.1 Rows R10-9 and R10-10 — the backend half
+### 9.1 Heap layouts are intrinsics'
 
-The backend half of [S124 packet](../../sprints/s124-api-packet.md) rows R10-9
-and R10-10, both approved by the user on 2026-11-17; R10-9 supersedes S123 row
-R10-6. The
-owner, the added items and the rule "one defining module per layout" are
-[heap layout owners](../intrinsics/heap-layout.md) §1–§2. Source read at
-`4b58ab93`, 2026-11-16.
+Built at `e83adaf0` (S124 rows R10-9 and R10-10). The owner and the rule "one
+defining module per layout" are
+[heap layout owners](../intrinsics/heap-layout.md) §1–§2.
 
-**Deleted from `heap.rs`, all public.** The `heap` module stays, with
-`HeapCategory` and `NULLARY_THRESHOLD_I64`.
-
-- `HeapAdt`: the struct, fields `header` and `tag`, `TAG_OFFSET`,
-  `FIELDS_START`, `field_offset`, `payload_size`, and its two constant locks.
-- `HeapClosure`: the struct, fields `header`, `code_ptr` and `drop_glue_ptr`,
-  `CODE_PTR_OFFSET`, `DROP_GLUE_PTR_OFFSET`, `CAPTURES_START`,
-  `capture_offset`, `payload_size`, and its three constant locks.
-- `HeapVec`: the struct, fields `header`, `len`, `cap` and `data_ptr`,
-  `LEN_OFFSET`, `CAP_OFFSET`, `DATA_PTR_OFFSET`, `payload_size`, and its four
-  constant locks.
-
-**Readers instead.**
-
-- ADT and closure readers name `cranelisp_intrinsics::alloc::{HeapAdt,
-  HeapClosure}`, and the Vec payload size reader names
-  `vec_runtime::PAYLOAD_SIZE`, under R10-9's own consumer list. The item names
-  and integer types match, so each change is an import.
-- **The Vec offset readers are row R10-10's edge**, approved by the user on
-  2026-11-17: backend → `vec_runtime::{LEN_OFFSET, CAP_OFFSET,
-  DATA_PTR_OFFSET}`, three existing `pub const … : usize` items with no reader
-  outside intrinsics at `4b58ab93`. The row adds no item and changes no
-  signature, so the backend baseline moves +0 for it. The constants are
-  `usize` where the deleted `HeapVec` constants were `i32`: `heap.rs` converts
-  each once, in a constant context, naming the intrinsics constant, and
-  `compiler/vec_codegen.rs` reads the converted values. The rustdoc naming
-  these readers is intrinsics', in the same change-set; the root's edge to two
-  of the constants is int's ([int §16.0](../int/int.md)).
+- The backend defines no ADT, closure or Vec layout. Its readers name
+  `cranelisp_intrinsics::alloc::{HeapAdt, HeapClosure}` and
+  `vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`.
+- The Vec offsets are `usize`. `heap.rs` converts each once, in a constant
+  context, to the `i32` codegen offset that `compiler/vec_codegen.rs` reads.
 - Constants composed from these layouts keep their compositions and pins and
   read the intrinsics items, for example `compiler/apply.rs`'s
-  `PURE_GLUE_ABS_OFFSET` (release contract §5.5).
-- `compiler/control_flow/dependent_spark.rs`'s `IVAR_RC_OFFSET`, a literal
-  `8` for the header's count, is deleted for `HeapHeader::RC_OFFSET`.
-
-**Outside this crate, in the same callee-first migration.** The binary's
-readers move to the intrinsics items: `src/display.rs` (`HeapAdt`, `HeapVec`)
-and `src/session_v4/test_runner/run.rs` and its tests (`HeapAdt`).
-`src/session_v4/test_runner.rs` writes the ADT, closure and Vec layouts as
-literals, the closure capture at `32` among them; the row approves its edge to
-`alloc::HeapClosure`, and replacing those literals is int's
-([int §16.0](../int/int.md)).
-
-**Expected baseline effect.** Backend `public-api.txt` −49 lines in the
-current format (`HeapAdt` 15, `HeapClosure` 17, `HeapVec` 17), or −28 in
-K11-a's format, all R10-9's; R10-10 adds +0. No schema, ABI or layout value changes, so emission is
-byte-identical and the golden corpus is unaffected.
-
-- **R10-6 does not land.** `HeapClosure` is deleted, not narrowed, so B7
-  carries no `HeapClosure` change and its 17 lines are within this row's −49.
+  `PURE_GLUE_ABS_OFFSET` ([release contract](non-concrete-release-contract.md)
+  §5.5). The IVar count offset reads `HeapHeader::RC_OFFSET`.
+- No layout value changed, so emission was byte-identical.
 - **Residual.** A literal offset against an ADT, closure or Vec base evades a
-  census of named constants; `IVAR_RC_OFFSET` is one such instance here. The
-  falsifier is intrinsics' ([heap layout owners](../intrinsics/heap-layout.md)
-  §4).
+  census of named constants. The falsifier is intrinsics'
+  ([heap layout owners](../intrinsics/heap-layout.md) §4).
 
 ## 10. Cross-references
 

@@ -144,11 +144,11 @@ releaser, or a heap-header or C-ABI change.
   Defining glue mid-body in a fresh Cranelift context is safe; the capture
   envelope established that pattern.
 - **D2 — release seams take a `ConcreteType`.** A non-concrete type at a
-  release site is a located `CodegenError`, never a shallow dec. The one live
-  exception is the type-keyed arm in `emit_release`, the one plan-drop release
-seam. Its disposition belongs to
-  [the non-concrete release contract](non-concrete-release-contract.md) §4 and
-  §7.4, and is open under FIXME 0903.
+  release site is a located `CodegenError`, never a shallow dec. The former
+  type-keyed arm in `emit_release` was deleted at S124 B4: binder types are
+  concrete, and `emit_release` takes a `ConcreteType`
+  ([the non-concrete release contract](non-concrete-release-contract.md)
+  §7.4).
 - **D5 — emission order is input-dependent; behaviour must not be.** The first
   request for a type defines its body wherever that happens, so glue functions
   appear in varying order. Identity is the type, so this is harmless. Any
@@ -263,10 +263,12 @@ exclusion for curried partial application (`tests/gen_ownership_flows.rs`), and
 
 ### 7.5 The non-concrete release arm
 
-Making release type-directed surfaced the one class that cannot supply a
-concrete type (§4.1). The arm remains type-keyed. A frame-keyed narrowing was
-measured and reverted. FIXME 0891 is deferred on FIXME 0903, and the contract's
-reject list forbids re-landing the frame key alone
+Making release type-directed surfaced the one class that could not supply a
+concrete type (§4.1). A frame-keyed narrowing was measured and reverted. The
+class was closed at its producers instead, and the type-keyed arm was deleted
+at S124 B4 once the category census read zero
+([non-concrete release contract](non-concrete-release-contract.md) §7.4). The
+contract's reject list still forbids re-landing a frame key
 ([non-concrete release contract](non-concrete-release-contract.md) §8).
 
 ## 8. The atomic deletion condition (S118 arch ruling 10)

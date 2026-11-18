@@ -85,8 +85,7 @@ Under `CRANELISP_SPARK_ADMIT=syntactic`, a candidate is worth sparking iff:
 - it is an `Apply`;
 - its callee is not one of the cheap builtins
   `+ - * / = < > <= >= not and or`;
-- its callee is not a data constructor, compared by bare member name; and
-- the density axis (§2.7) does not decline it.
+- its callee is not a data constructor, compared by bare member name.
 
 A computed callee, such as `((get-fn) arg)`, counts as worth sparking because
 its cost is unknown. Literals, variable references and unapplied lambdas are
@@ -100,35 +99,26 @@ It remains as the comparison row for measurement.
 
 **Rule (spec §4.12.2 item 2; [tracing §7](../arch/tracing.md#7-strict-evaluation-within-the-trace-extent)
 rule 1):** no spark is admitted anywhere in a trace's dynamic extent, including
-code compiled outside the `(trace …)` form.
+code compiled outside the `(trace …)` form. Built at `3cdca9dc` (S124 packet
+row D8).
 
-- **As built, the exclusion is lexical and too narrow.** Both sites test
-  `in_trace_body`, which is set only while the trace form's own body compiles.
-  A callee compiled elsewhere still sparks during the trace, its workers run
-  through the installed wrappers, and they neither record nor release
-  (ACT-1038).
 - **The decision is the runtime's, at the one admission point.** Every
   admitted site reaches a spark only through the create-gate's
   `cranelisp_spark_budget_try_reserve` (§3.6.2); no other emission path
   creates or sparks an IVar. That intrinsic declines (returns 0) while the
   calling thread holds the trace role, so the gate takes its direct arm, the
-  site's sequential lowering. Its signature does not change. The predicate and
+  site's sequential lowering. Its signature did not change. The predicate and
   its unit evidence are `design`(intrinsics)'s (§3.6.1).
-- **`in_trace_body` is deleted** with the change, together with its two
-  admission tests and the save and restore in `compile_trace`. It answers the
-  same question as the runtime decline for a subset of sites. A trace body's
-  sites therefore gain a create-gate, which is a scoped golden diff confined to
-  trace forms.
-- **Order.** The decline changes the documented contract of an intrinsic
-  export, which is S124 packet row D8, approved 2026-11-17. The intrinsics
-  decline lands first, and the flag's deletion follows it; otherwise a trace
-  form's own body would spark.
-- **Evidence.** The ACT-1038 cells' premise (a worker ran a traced call)
-  becomes permanently unsatisfiable, so `qa` reallocates them to observe the
-  decline, as the action states; intrinsics' `trace_declines` statistic tells
-  a trace decline from a budget or depth decline
-  ([trace runtime](../intrinsics/trace-runtime.md) §2). A backend module row
-  shows a trace-form site emitting the gate.
+- **No lexical exclusion.** The former `in_trace_body` flag answered the same
+  question for the trace form's own body only, so a callee compiled elsewhere
+  still sparked during the trace (ACT-1038). It is deleted, and a trace body's
+  sites take the ordinary create-gate.
+- **Evidence.** Module row M-1038 (`compiler/trace_codegen/tests.rs`) shows a
+  trace form's spark site calling the gate; restoring a lexical suppression
+  fails it. Intrinsics' `trace_declines` statistic tells a trace decline from
+  a budget or depth decline
+  ([trace runtime](../intrinsics/trace-runtime.md) §2). The ACT-1038 cells are
+  `qa`'s to reallocate to the decline, as the action states.
 
 ### 2.4 Opt-out and suppression
 
@@ -217,47 +207,23 @@ its body. Forcing from both the dependent thunk and Phase 2 is safe:
 first computes, and every other reader gets the resolved value. §4.5 is the
 emission.
 
-### 2.7 The allocation/RC-density axis (B4) — dormant
+### 2.7 The allocation/RC-density axis (B4) — retired
 
-B4 is a static contention proxy, reachable **only** through the syntactic
-predicate (§2.2) and **disabled by default** (`SPARK_DENSITY_MAX_DEFAULT = 0`).
-It is not part of default admission. The reason is recorded in §2.8.5. It is
-a tuning mechanism rather than parallel evaluation itself, so it retires in
-S124 under Principle 27 (`ownership-codegen.md` §0, §13.4); parallel
-evaluation and its admission heuristic stay. After the retirement the
-syntactic predicate admits on compute-worthiness alone, the opt-in row of
-[§2.8.5](#285-b4-is-off-by-default)
-no longer exists, and the description below is the record of what was
-removed until its section numbers stop being cited.
+Retired at S124 B9 (`4b8660c9`) under Principle 27
+([ownership codegen](ownership-codegen.md) §0, §13.4). B4 was a static
+contention proxy, reachable only through the syntactic predicate (§2.2) and
+disabled by default. It was a tuning mechanism rather than parallel evaluation
+itself; parallel evaluation and its admission heuristic stay.
 
-**Score.** `spark_density` walks the candidate subtree and reads only the
-per-site ownership facts pass 5 already annotated (`ownership-codegen.md`
-§13.4). For each heap-result allocation site that is not `NoEscape`:
-
-- **+1** on the heap-pressure axis; and
-- **+1** on the surviving-RC axis, unless the site is `Confined`. As built
-  the scorer also skips a site it reads as a borrow-elided projection, which
-  no longer exists (`ownership-codegen.md` §13.4).
-
-A `NoEscape` site scores 0, a scalar-result site is not scored, and a site with
-no fact counts as dense. Scoring a `NoEscape` site 0 assumed it would not
-allocate on the shared heap. Since stack placement retired at S124 B1
-(`ownership-codegen.md` §4) every construction does, so this exclusion
-under-counts in the same way as the borrow-elided one. The axis is disabled
-and retiring, so neither is corrected.
-
-**Activation.** The axis is **inert** when the subtree carries no ownership fact
-(for example under `CRANELISP_NO_OWNERSHIP=1`). This polarity is deliberate: a
-facts-absent build must not score everything dense and silently stop all
-sparking. When engaged, a candidate whose score exceeds
-`CRANELISP_SPARK_DENSITY_MAX=N` is declined. `0` disables the axis.
-`CRANELISP_SPARK_DENSITY_TRACE=1` prints one codegen-time line per scored
-candidate.
-
-**Standing.** The concept remains valid for the alloc/RC-dense compute-bound
-class. Its planned return is as the *input* to a density-aware depth allowance
-(0535, §2.8.8), not as an admission-decline filter. Any non-zero threshold must
-be set by measurement in the change-set that re-enables it.
+- **Admission is compute-worthiness alone.** No admission path reads an
+  ownership fact. `CRANELISP_SPARK_DENSITY_MAX` and
+  `CRANELISP_SPARK_DENSITY_TRACE` are no longer read.
+- **Evidence.** One module cell asserts that admission ignores ownership
+  facts at both spark sites (`control_flow/sparkability_tests.rs`).
+- **Standing.** The concept remains valid for the alloc/RC-dense
+  compute-bound class. Its planned return is as the *input* to a density-aware
+  depth allowance (0535, §2.8.8), not as an admission-decline filter. A
+  re-introduction sets any threshold by measurement in its own change-set.
 
 ### 2.8 The utilization model — spark for core occupancy
 
@@ -337,7 +303,7 @@ recursion is the structural "probably large" signal.
 **Soundness is toward decline.** A candidate is declined, never guessed as
 recursive, when it is not an `Apply`, its callee is computed or reached through
 a closure or HOF, or its callee `Def` is not loaded. M-static deliberately does
-not consult the cheap-builtin, constructor or density checks. A cheap builtin or
+not consult the cheap-builtin or constructor checks. A cheap builtin or
 constructor is never in a recursive SCC.
 
 **Discrimination:**
@@ -411,15 +377,11 @@ on either path.
 
 #### 2.8.5 B4 is off by default
 
-At full cores on the recursion/search class, B4 is net-harmful. It declines the
-coarse divide-and-conquer sparks, which score dense, while the fine accessor
-sparks, which score 0, stay admitted. Measured on F4-hard: 112 s with B4 on,
-24 s with admit-all, 0.9 s serial.
-
-That "decline coarse, admit nested fine" state must never be a default. With
-M-static owning selection and depth decline owning quantity, B4 has no role in
-default admission. `CRANELISP_SPARK_DENSITY_MAX=N` (with
-`CRANELISP_SPARK_ADMIT=syntactic`) remains the opt-in diagnostic row.
+Retired with §2.7. The measurement that kept it off: at full cores on the
+recursion/search class, B4 declined the coarse divide-and-conquer sparks,
+which score dense, while the fine accessor sparks, which score 0, stayed
+admitted. F4-hard took 112 s with B4 on, 24 s with admit-all and 0.9 s serial.
+A "decline coarse, admit nested fine" state must never be a default.
 
 #### 2.8.6 Codegen seams and the unit-scenario space
 
@@ -445,7 +407,7 @@ Scenario classes the unit tier must hold:
   batch is all-or-nothing.
 - **Backoff:** the wait resolves to the claimant's value and re-raises a ferried
   panic.
-- **B4:** the facts-absent and threshold-0 inert cases, plus score arithmetic.
+- **Admission ignores ownership facts** at both sites (§2.7).
 
 #### 2.8.7 Measurement rules
 
@@ -590,8 +552,8 @@ wrapping and wedging the budget permanently to direct.
 
 `cranelisp_spark_budget_try_reserve(n) -> {0,1}`:
 
-0. **Trace extent** (§2.3, designed for S124): return 0 while the calling
-   thread holds the trace role. The predicate is intrinsics'.
+0. **Trace extent** (§2.3): return 0 while the calling thread holds the
+   trace role. The predicate is intrinsics'.
 1. **Depth check** (§2.8.4): return 0 if `SPARK_DEPTH ≥ MAX_DEPTH` and decline
    is on.
 2. **Fast reject:** return 0 if a single load shows `cur + n > cap`. The

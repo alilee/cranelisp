@@ -180,12 +180,8 @@ accepted, or the module compiles from scratch.
 - **Int writes the object.** The nice worker writes the emitted `.o` bytes with
   a plain file write, not the backend's atomic helper. It records the manifest
   entry only after that write succeeds.
-- **Open: the packet API has no live consumer.** `build_cache_packet`,
-  `process_cache_packet`, `CacheWritePacket`, `ObjectCompileInput` and
-  `ProcessedPacket` are public, but no live production path calls them. Their
-  only int caller, `src/cache_writer.rs`, is marked dormant and passes an empty
-  symbol-table map. Keeping, wiring or removing them is an inter-crate
-  public-API decision for `arch` and the user.
+- **No packet API.** The cache-packet family and its dormant int writer,
+  which no live path called, were deleted in S124 (row R10-3, `1e4b0ce4`).
 
 ## 8. Pipeline Integration Points
 

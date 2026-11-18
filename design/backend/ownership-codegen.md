@@ -15,7 +15,8 @@ tests cite them. §0 records each mechanism's disposition under
 the dev tier keeps an optimisation only against a change of growth rate.
 Verified against source on 2026-11-16, and §0, §1, §4 and §13 again after
 S124 B1 on 2026-11-17, and §0, §2.1, §7 and §10 at `441e31ea` on
-2026-11-18. The increment ladders, as-built
+2026-11-18, and §0, §1, §4, §5, §9 and §13 at `1e4b0ce4` on 2026-11-18.
+The increment ladders, as-built
 narratives and falsified analyses are in Git history.
 
 **Governing authority:** [the ownership spine](../arch/ownership-inference.md)
@@ -52,7 +53,7 @@ spec rulings). A retiring mechanism's typecheck facts keep being produced.
 | Redefinition machinery (backend half) | §8 | Fresh slots built; the trap stub retired at S123 W4 (P13) | Not an optimisation |
 | Dual-symbol extern convention | §9 | Retired: no position borrows | The carrier leaves in S124 with packet row D6 (§9) |
 | Vec-query trio in value position | §12.7 | Built | A required lowering, not an optimisation |
-| Spark density axis | §13.4 | Built, disabled by default | Retires in S124 (§13.4). Parallel evaluation itself stays (Principle 27's carve-out) |
+| Spark density axis | §13.4 | Retired at S124 B9 | Tuning, not parallel evaluation. Parallel evaluation itself stays (Principle 27's carve-out) |
 | Supporting contracts (golden oracle, counters, wrapper contracts, unit scenarios, producer pins) | §13 | Current | — |
 | RC/alloc seam assertion density | §15 | Row 6 built; rows 2 and 5 retired; rows 1, 3 and 4 open | — |
 
@@ -67,18 +68,16 @@ store. The main ones, by module (the seam map is `crates/cranelisp-backend/AGENT
   atomicity decision (`use_nonatomic_arm`) and
   `HeapCategory::classify`. The atomicity decision lives only here. Header layout is also read by
   `compiler/rc_emission.rs` and `drop_glue.rs`.
-- **`compiler/fn_compiler.rs`** — the site-fact readers `node_escapes` and
-  `node_confined`, whose only consumer is the spark density axis.
 - **`compiler/vec_codegen.rs`** — the inline COW cores and their reuse
   counters.
 - **`compiler/control_flow/fn_as_value.rs`** — value-position and auto-curry
   wrappers.
-- **`compiler/control_flow/sparkability.rs`** — the spark density axis.
 - **`cache/`** — the ownership toggle as a manifest key.
 
-Typecheck supplies advisory site facts on `MonoExpr` nodes. The backend reads
-the escape and confinement facts, reads no mode summary for emission, and
-derives no ownership, escape, confinement or uniqueness of its own.
+Typecheck supplies advisory site facts on `MonoExpr` nodes. Since the density
+retirement (§13.4) the backend reads neither the escape nor the confinement
+fact, reads no mode summary for emission, and derives no ownership, escape,
+confinement or uniqueness of its own.
 
 ---
 
@@ -150,8 +149,7 @@ constant per construction and changes no growth rate. The mechanism's
 description is in Git history. What stays live:
 
 - **Kept:** typecheck's escape fact, produced and tested where it is computed.
-  The backend's remaining reader of it, `node_escapes`, is the spark density
-  scorer's, and it leaves with the density retirement (§13.4).
+  The backend reads it nowhere since the density retirement (§13.4).
 - **Kept:** the shared self-call predicate `is_self_call`, consumed by the TCO
   back-edge decision and the spark classifier. The stack gate was its third
   reader.
@@ -217,8 +215,8 @@ only input is the process-global `CRANELISP_NONATOMIC_RC` probe (§2.4). There
 is no per-site atomicity input. Every emitted RC operation is atomic unless the
 probe is set.
 
-`node_confined` stays as a site-fact reader for the spark density scorer
-(§13.4) and leaves with that axis in S124. Each probe-selected helper has a
+The backend reads no confinement fact since the density retirement (§13.4).
+Each probe-selected helper has a
 unit cell for both polarities, run in a child process because the probe is
 read once per process.
 
@@ -417,17 +415,61 @@ Retired at S123 W2 with §9.1–§9.4. A borrowed-convention extern sibling has 
 position to serve, because no position borrows
 ([uniform counting](uniform-counting.md) §1). The carrier
 `Realization::ExternShim { borrowed_sibling }` has had no producer since
-ACT-0974 and leaves `cranelisp-types` in S124 (packet row D6). The backend's
-half, in the same change-set:
+ACT-0974 and leaves `cranelisp-types` in S124 (packet row D6, with row D9).
+Not in source at `1e4b0ce4` (read 2026-11-18).
 
-- the cache loader's validation of the persisted sibling slot
-  (`cache/serialize.rs`) is deleted with the field, and with it the module cell
-  that plants an out-of-range sibling slot;
-- `CACHE_SCHEMA_VERSION` is bumped, because `Realization` is persisted;
-- the public variant `CacheStale::SiblingSlotOutOfRange` is removed with its
-  only producer (packet row D9, approved 2026-11-16), together with its
-  diagnostic tag arm, its display arm and its row in the `cache/serialize.rs`
-  module table. Backend `public-api.txt` loses three lines.
+**The backend's half.**
+
+- The cache loader's validation of the persisted sibling slot is deleted with
+  the field. That is the `ExternShim { borrowed_sibling: Some(slot) }` arm in
+  `cache/serialize.rs`, together with its row in that module's validation
+  table.
+- The public variant `CacheStale::SiblingSlotOutOfRange` is removed with its
+  only producer (row D9, approved 2026-11-16). Its diagnostic tag arm and its
+  display arm go with it. Backend `public-api.txt` loses three lines.
+- `CACHE_SCHEMA_VERSION` goes from 32 to 33 (`cache/mod.rs`), because
+  `Realization` is persisted. The schema pin cell in
+  `cache/serialize/tests.rs` follows it.
+- In `cache/serialize/tests.rs`, the sibling fixtures
+  (`install_primitive_with_sibling`, `roundtrip_sibling_slot`) and the cell
+  that plants an out-of-range sibling slot are deleted. The cells that cover
+  every persisted index, the accept fence and the class-distinctness cell,
+  lose their sibling leg and keep the rest.
+- Every backend call of `SymbolTable::install_extern` drops the sibling
+  argument if `arch`'s change removes that parameter. Every such call is in
+  test code: `compiler/extern_call.rs`'s test module and four test files.
+
+**Commit shape: one commit, types first in the working tree.** `sprint`
+sequences it as one callee-first migration:
+
+1. `arch` removes the field from `cranelisp-types`, touching `lifecycle.rs`,
+   `module.rs` and the types tests. The workspace then stops compiling, and
+   the broken build is the checklist. `SymbolTable::install_extern` takes the
+   sibling as a parameter. The packet row names neither that parameter nor
+   typecheck's production callers of it, so before this step `arch` confirms
+   that the approved delta covers the parameter, or returns the row to the
+   user.
+2. `dev`(backend) makes the half above.
+3. `dev`(typecheck) follows in its own crate: the `install_extern` calls in
+   `result.rs` and `builtins.rs`, and the field in three test fixtures
+   (`infer/tests.rs`, `program/finalize/tests.rs` and
+   `program/mono_collect/tests/multi_sig.rs`). The binary has no reader.
+4. The workspace builds, the suite runs, and the tree is committed once.
+
+Two constraints force this shape:
+
+- **The schema bump belongs to the commit that changes the persisted shape.**
+  A commit with the field removed and the version unchanged would read
+  sidecars of the other shape as current.
+- **Neither half compiles without the other.** The backend matches the field
+  by name, and the types change removes it. A backend-first commit would also
+  delete the validation while the field is still persisted.
+
+No commit leaves the workspace unbuildable. No e2e cell is owed: the default
+emission is unchanged, and a pre-bump sidecar is a miss under the existing
+version cell ([evidence delta](../../tests/plan/s124-evidence-delta.md) §9.4).
+Safety register row R5's wording for the sibling slot is `arch`'s and changes
+in the same commit.
 
 ---
 
@@ -586,28 +628,16 @@ reduced repro.
 
 ### 13.4 Spark density — the fact supply
 
-The density admission axis is designed in [lenient-eval.md](lenient-eval.md)
-§2.7 and ships disabled by default (`SPARK_DENSITY_MAX_DEFAULT = 0`). It is a
-tuning mechanism, not parallel evaluation itself, so it retires in S124
-(Principle 27's carve-out excludes it); with it go the backend's last readers
-of `node_escapes` and `node_confined`. Until then, this design's obligation is
-the fact supply: `spark_density` scores a candidate
-subtree through the same `node_escapes` and `node_confined` readers, counting heap-result sites not covered by `NoEscape` and RC sites not
-confined. **As built, the scorer also excludes sites it reads as borrow-elided
-projections.** Nothing elides them since the S123 cutover, so that exclusion
-under-counts; removing it is `dev`'s, and the axis ships disabled. A subtree
-carrying no ownership fact returns `None`, so the axis is inert and admission
-unchanged whenever analysis did not run.
-
-**The retirement** deletes the scorer (`spark_density` and its accumulator),
-the decline verdict, the threshold and trace statics with their
+The fact supply has no consumer: the density axis retired at S124 B9
+(`4b8660c9`; Principle 27). It was a tuning mechanism, disabled by default,
+not parallel evaluation itself. The scorer, the
+decline verdict, the threshold and trace statics with their
 `CRANELISP_SPARK_DENSITY_MAX` and `CRANELISP_SPARK_DENSITY_TRACE` variables,
-and `node_confined`; `node_escapes` goes as §4 states. The admission predicate
-becomes the compute-worthiness test alone
-([lenient evaluation](lenient-eval.md) §2.7). The axis is disabled by default,
-so the default configuration's emission is byte-identical; only the opt-in
-comparison row disappears. It has no public item and no dependency on the
-other S124 change-sets.
+and the fact readers `node_escapes` and `node_confined` are deleted. Admission
+is the compute-worthiness test alone
+([lenient evaluation](lenient-eval.md) §2.7). Default emission was
+byte-identical. One module cell asserts that admission ignores ownership facts
+at both spark sites (`compiler/control_flow/sparkability_tests.rs`).
 
 ### 13.5 Unit scenario spaces
 
@@ -622,7 +652,6 @@ oracle.
 | Wrappers (`fn_as_value.rs`) | dispatch kind {user function, extern, inline primitive, constructor, trait method, operator} × use {HOF argument, partial application, returned, stored, bound} × instantiation count {1, 2 same op, 2 different ops, n} × mode {REPL, `--run`} |
 | COW cores (`vec_codegen.rs`) | branch {mutate, copy, grow} × source count {1, >1} × call site {static, wrapper, curry} → the source is always owned; mutate and grow forward its reference, copy releases it; the result owns exactly one reference on every branch. Counting scenarios are the ownership plan's ([uniform counting](uniform-counting.md) §8) |
 | Vec literal element move-in | element {fresh temporary, COW-aliased result} × escape |
-| Spark density (`sparkability.rs`) — retires with §13.4 | facts {present, absent} × body {allocation-dense, compute-dense, mixed} × threshold boundary → admitted, declined, inert |
 | GOT | exhaustion, freeze, in-place patch |
 
 ### 13.6 Producer pins

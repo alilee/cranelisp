@@ -352,9 +352,8 @@ bodies and trait-method instances.
 3. **Field types come from the constructor**, as the keyed field types
    instantiated at the scrutinee's concrete type. They never come from the
    accessor's result type.
-4. **Counted positions are concrete.** The residual-variable faces of
-   FIXME 0903, a generic accessor's `self` and generic trait-method instances,
-   stay under
+4. **Counted positions are concrete.** The residual-variable faces, a
+   generic accessor's `self` and generic trait-method instances, stay under
    [non-concrete-release-contract.md](non-concrete-release-contract.md), whose
    shallow-release arm was deleted at S124 B4; no fix may reintroduce one.
 5. **An owned element is released by its type** (R1).
