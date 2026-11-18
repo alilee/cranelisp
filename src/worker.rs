@@ -540,6 +540,78 @@ pub(crate) struct PublicationCheck<'a> {
     pub(crate) working: &'a [TopLevel],
 }
 
+/// Refuse a whole-source generation of `module` that has an edge to a module
+/// standing `Failed`, with that module's own error, recording it as
+/// `module`'s failure dependency (`design/int/int.md` §6.11, Failed
+/// dependency; ACT-1016 Face 1). Name resolution does not catch this: the
+/// failed table keeps its attempt's declarations. Exempt are an increment,
+/// whose earlier generations were checked when they published; a member the
+/// pass rebuilds later, whose standing is pre-plan; and the prelude reached
+/// only through the fallback bit, on which a fresh load does not wait.
+fn refuse_failed_dependency_target(
+    shared: &crate::session_v4::SharedState,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+    check: &PublicationCheck<'_>,
+) -> Result<(), CranelispError> {
+    use crate::cache::dependency_record::reload_edges;
+    let Some(later_members) = check.later_members else {
+        return Ok(());
+    };
+    let mut targets = reload_edges(module, staging, false);
+    targets.extend(check.lookup_dependencies.iter().cloned());
+    if let Some(live) = shared.symbol_tables.get(module) {
+        targets.extend(reload_edges(module, &live, false));
+    }
+    for target in targets
+        .iter()
+        .filter(|target| *target != module && !later_members.contains(*target))
+    {
+        let span = first_reference_span(shared, module, staging, check.working, target);
+        shared
+            .scheduler
+            .refuse_failed_dependency(module, target, span)?;
+    }
+    Ok(())
+}
+
+/// Where a refusal of `module`'s generation over its edge to `reached` is
+/// located: the program's first reference to `reached`, else its head.
+fn first_reference_span(
+    shared: &crate::session_v4::SharedState,
+    module: &ModuleFullPath,
+    staging: &crate::code::SessionSymbolTable,
+    working: &[TopLevel],
+    reached: &ModuleFullPath,
+) -> Span {
+    staging
+        .all_symbols()
+        .flat_map(|(_, binding)| crate::callee_edges::binding_callees(binding))
+        .find(|callee| callee.module == *reached)
+        .map(|callee| {
+            crate::process_form::gap_reference_span(
+                working,
+                &crate::process_form::GapReference {
+                    module: reached,
+                    member: callee.symbol.as_ref(),
+                    referring_module: module,
+                    module_aliases: &shared.module_aliases,
+                },
+            )
+        })
+        .filter(|span| *span != Span::SYNTHETIC)
+        .or_else(|| {
+            working.first().map(|head| match head {
+                TopLevel::Defn(defn) => defn.span,
+                TopLevel::TypeDef { span, .. } => *span,
+                TopLevel::TraitDecl(decl) => decl.span,
+                TopLevel::TraitImpl(impl_) => impl_.span,
+                TopLevel::Expr(expr) => expr.span(),
+            })
+        })
+        .unwrap_or(Span::SYNTHETIC)
+}
+
 /// Refuse a generation of `module` whose publication would close a module
 /// cycle, recording the module it would reach first as `module`'s failure
 /// dependency (`design/int/int.md` §6.11; `design/int/repl-lifecycle.md`
@@ -568,34 +640,7 @@ fn refuse_publication_cycle(
         .scheduler
         .record_failure_dependencies(module, [reached.clone()]);
     shared.scheduler.record_cycle_failure(module);
-    let working = check.working;
-    let first_reference = staging
-        .all_symbols()
-        .flat_map(|(_, binding)| crate::callee_edges::binding_callees(binding))
-        .find(|callee| callee.module == *reached)
-        .map(|callee| {
-            crate::process_form::gap_reference_span(
-                working,
-                &crate::process_form::GapReference {
-                    module: reached,
-                    member: callee.symbol.as_ref(),
-                    referring_module: module,
-                    module_aliases: &shared.module_aliases,
-                },
-            )
-        })
-        .filter(|span| *span != Span::SYNTHETIC);
-    let span = first_reference
-        .or_else(|| {
-            working.first().map(|head| match head {
-                TopLevel::Defn(defn) => defn.span,
-                TopLevel::TypeDef { span, .. } => *span,
-                TopLevel::TraitDecl(decl) => decl.span,
-                TopLevel::TraitImpl(impl_) => impl_.span,
-                TopLevel::Expr(expr) => expr.span(),
-            })
-        })
-        .unwrap_or(Span::SYNTHETIC);
+    let span = first_reference_span(shared, module, staging, check.working, reached);
     Err(CranelispError::ModuleError {
         message: format!("circular dependency detected: {}", cycle.render()),
         location: ErrorLocation::from_span_file(span, None),
@@ -1287,6 +1332,7 @@ fn plan_staging_commit_inner(
         None,
         Some(&shared.scheduler),
     )?;
+    refuse_failed_dependency_target(shared, module, &staging, cycle_check)?;
     refuse_publication_cycle(shared, module, &staging, cycle_check)?;
 
     let tables = dashmap::DashMap::new();

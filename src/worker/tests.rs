@@ -4480,3 +4480,165 @@ fn publication_cycle_reads_no_edge_through_a_null_import() {
         None
     );
 }
+
+mod failed_dependency_refusal {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const W_ERROR: &str = "type error in w";
+
+    /// A session whose `w` has a table holding `one` and stands `Failed`
+    /// (or compiled), and a staged generation of `m` calling `w/one`.
+    fn fixture(
+        w_failed: bool,
+    ) -> (
+        crate::session_v4::SharedState,
+        crate::code::SessionSymbolTable,
+    ) {
+        let shared = test_shared_state();
+        let (m, w) = (ModuleFullPath::from("m"), ModuleFullPath::from("w"));
+        let mut w_table = crate::code::SessionSymbolTable::new_with_params(w.clone());
+        let _ = crate::repl::test_support::install_userfn(
+            &mut w_table,
+            "one",
+            None,
+            Visibility::Public,
+        );
+        shared.symbol_tables.insert(w.clone(), w_table);
+        shared.symbol_tables.insert(
+            m.clone(),
+            crate::code::SessionSymbolTable::new_with_params(m.clone()),
+        );
+        let empty = || std::sync::Arc::from(Vec::new());
+        shared.scheduler.register_module(m.clone(), empty(), false);
+        shared.scheduler.register_module(w.clone(), empty(), false);
+        if w_failed {
+            shared.scheduler.notify_module_failed(
+                &w,
+                CranelispError::TypeError {
+                    message: W_ERROR.to_string(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                },
+            );
+        } else {
+            shared.scheduler.notify_typecheck_done(&w);
+        }
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(m.clone());
+        let _ = crate::repl::test_support::install_userfn_with_callees(
+            &mut staging,
+            "h",
+            None,
+            Visibility::Public,
+            vec![FQSymbol {
+                module: w,
+                symbol: Symbol::from("one"),
+            }],
+        );
+        (shared, staging)
+    }
+
+    fn refuse(
+        shared: &crate::session_v4::SharedState,
+        staging: &crate::code::SessionSymbolTable,
+        later_members: Option<&BTreeSet<ModuleFullPath>>,
+    ) -> Result<(), CranelispError> {
+        let lookups = BTreeSet::new();
+        refuse_failed_dependency_target(
+            shared,
+            &ModuleFullPath::from("m"),
+            staging,
+            &PublicationCheck {
+                lookup_dependencies: &lookups,
+                later_members,
+                working: &[],
+            },
+        )
+    }
+
+    // spec: spec/08-modules.md §8.5.4 item 5, §8.10.3; design/int/int.md
+    // §6.11 (Failed dependency; ACT-1016 Face 1) — a whole-source generation
+    // whose staged callee is in a module standing `Failed` is refused with that
+    // module's error and records it as a failure dependency, although the
+    // failed table still holds the called name.
+    #[test]
+    fn a_whole_source_generation_reaching_a_failed_module_is_refused() {
+        let (shared, staging) = fixture(true);
+        let refusal = refuse(&shared, &staging, Some(&BTreeSet::new()))
+            .expect_err("the failed dependency refuses the generation");
+        assert!(refusal.to_string().contains(W_ERROR), "{refusal}");
+        assert_eq!(
+            shared
+                .scheduler
+                .failure_dependencies(&ModuleFullPath::from("m")),
+            BTreeSet::from([ModuleFullPath::from("w")])
+        );
+    }
+
+    // spec: design/int/int.md §6.11 (Failed dependency) negative — accepted
+    // with the dependency compiled, with it among the members the pass
+    // rebuilds later, and for an increment.
+    #[test]
+    fn a_compiled_later_or_increment_target_is_not_refused() {
+        let (shared, staging) = fixture(false);
+        assert!(
+            refuse(&shared, &staging, Some(&BTreeSet::new())).is_ok(),
+            "compiled"
+        );
+
+        let (shared, staging) = fixture(true);
+        let later = BTreeSet::from([ModuleFullPath::from("w")]);
+        assert!(
+            refuse(&shared, &staging, Some(&later)).is_ok(),
+            "later member"
+        );
+        assert!(refuse(&shared, &staging, None).is_ok(), "increment");
+        assert!(
+            shared
+                .scheduler
+                .failure_dependencies(&ModuleFullPath::from("m"))
+                .is_empty()
+        );
+    }
+
+    // spec: design/int/int.md §6.11, §6.12 — the prelude reached only through
+    // the fallback bit does not refuse a rebuild while it stands `Failed`.
+    #[test]
+    fn the_prelude_reached_through_the_fallback_bit_is_exempt() {
+        let shared = test_shared_state();
+        let (x, prelude) = (ModuleFullPath::from("x"), ModuleFullPath::from("prelude"));
+        for module in [&x, &prelude] {
+            shared.symbol_tables.insert(
+                module.clone(),
+                crate::code::SessionSymbolTable::new_with_params(module.clone()),
+            );
+            shared.scheduler.register_module(
+                module.clone(),
+                std::sync::Arc::from(Vec::new()),
+                false,
+            );
+        }
+        shared.scheduler.notify_module_failed(
+            &prelude,
+            CranelispError::ModuleError {
+                message: "prelude failed".to_string(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            },
+        );
+        shared.prelude_fallback.insert(x.clone(), true);
+        let lookups = BTreeSet::new();
+        let staging = crate::code::SessionSymbolTable::new_with_params(x.clone());
+        assert!(
+            refuse_failed_dependency_target(
+                &shared,
+                &x,
+                &staging,
+                &PublicationCheck {
+                    lookup_dependencies: &lookups,
+                    later_members: Some(&BTreeSet::new()),
+                    working: &[],
+                },
+            )
+            .is_ok()
+        );
+    }
+}
