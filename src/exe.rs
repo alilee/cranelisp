@@ -601,7 +601,8 @@ pub(crate) fn validate_main(
             {
                 return Err(unresolved_dispatch_error(site).into());
             }
-            classify_main_return_type(&callable.arm.scheme.ty, at_origin).map_err(Into::into)
+            classify_main_return_type(&callable.arm.scheme.ty, at_origin.clone())?;
+            refuse_unfixed_main_type(&callable.arm.scheme, at_origin).map_err(Into::into)
         }
         _ => Err(CranelispError::CodegenError {
             message: "'main' in entry module is not a function definition".to_string(),
@@ -609,6 +610,27 @@ pub(crate) fn validate_main(
         }
         .into()),
     }
+}
+
+/// A `main` whose type keeps a type variable has nothing at the batch call to
+/// pin it, and no variable is defaulted: the spec §3.11 ambiguity. An accepted
+/// `main` therefore always has published concrete code.
+fn refuse_unfixed_main_type(
+    scheme: &cranelisp_types::Scheme,
+    location: ErrorLocation,
+) -> Result<(), CranelispError> {
+    if !scheme.ty.contains_var() {
+        return Ok(());
+    }
+    Err(CranelispError::TypeError {
+        message: format!(
+            "ambiguous type: `main` has type `{}`, whose result type is not fixed — \
+             nothing pins it when the program runs; add a `:Type` annotation to \
+             fix it (spec §3.11)",
+            crate::display::format_scheme_type(scheme)
+        ),
+        location,
+    })
 }
 
 /// The ONE §3.11 ambiguity diagnostic shared by both class-(b) consumers — the
@@ -1326,6 +1348,42 @@ mod tests {
             .expect("user-function fixture installs");
     }
 
+    /// A `main` whose scheme quantifies `type_var`: a template, which has no
+    /// compiled code until a use pins it.
+    fn install_template_main(
+        table: &mut crate::code::SessionSymbolTable,
+        ty: Type,
+        type_var: cranelisp_types::TypeId,
+    ) {
+        let variant = DefnVariant {
+            params: vec![],
+            body: Expr::IntLit {
+                value: 0,
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            },
+            span: Span::SYNTHETIC,
+        };
+        table
+            .install_template(
+                Symbol::from("main"),
+                Scheme {
+                    type_vars: vec![type_var],
+                    constraints: HashMap::new(),
+                    ty,
+                },
+                Vec::new(),
+                None,
+                0,
+                CallableOrigin::Plain,
+                TemplateBody::Ast(variant),
+                cranelisp_types::TemplateKind::Parametric,
+                Vec::new(),
+                Visibility::Public,
+            )
+            .expect("template fixture installs");
+    }
+
     fn install_main(table: &mut crate::code::SessionSymbolTable, ty: Type) {
         install_user_fn(
             table,
@@ -1605,6 +1663,50 @@ mod tests {
             ),
         );
         // An `(Fn [] (IO Int))` main is the canonical batch shape — accepted.
+        assert!(gate(&st).is_ok());
+    }
+
+    fn nullary_io_option(inner: Type) -> Type {
+        let fq = |name: &str| {
+            cranelisp_types::FQTypeName::new(
+                ModuleFullPath::from("primitives"),
+                TypeName::from(name),
+            )
+        };
+        Type::Fn(
+            vec![],
+            Box::new(Type::ADT(
+                fq("IO"),
+                vec![Type::ADT(fq("Option"), vec![inner])],
+            )),
+        )
+    }
+
+    // spec: spec/03-types.md §3.11; spec/10-io.md §10.6.1;
+    // design/int/io-integration.md §1 — a `main` whose result type keeps a
+    // type variable is the ambiguity type error at its definition origin; the
+    // same shape with the variable fixed is accepted.
+    #[test]
+    fn validate_main_refuses_a_result_polymorphic_main() {
+        let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        install_template_main(&mut st, nullary_io_option(Type::Var(0)), 0);
+        match gate(&st).unwrap_err() {
+            CranelispError::TypeError { message, location } => {
+                assert!(
+                    message.contains("ambiguous type")
+                        && message.contains("`main`")
+                        && message.contains("(Fn [] (primitives/IO (primitives/Option a)))")
+                        && message.contains(":Type")
+                        && message.contains("§3.11"),
+                    "{message}"
+                );
+                assert_eq!(location.span, MAIN_ORIGIN);
+            }
+            other => panic!("expected a located TypeError, got {other:?}"),
+        }
+
+        let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        install_main(&mut st, nullary_io_option(Type::Int));
         assert!(gate(&st).is_ok());
     }
 
