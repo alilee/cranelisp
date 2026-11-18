@@ -531,8 +531,8 @@ language specification, not new surface. Command experience is `spec`'s
   surface int already consumes. There is no new edge, no new public item and
   no `CACHE_SCHEMA_VERSION` change.
 - `cranelisp-types` is untouched by §11.
-- No API delta from this track is pending. Any future one takes the root
-  inter-crate public-API user gate.
+- No API delta from this track is pending. Any future one takes the
+  [public-API gate](AGENTS.md#public-api-discipline).
 
 ### §11.9 Ruling labels
 

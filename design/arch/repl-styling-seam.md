@@ -110,8 +110,8 @@ manifestation.
 - **Parked enhancement:** dimming the `module/` prefix inside `:module/Type`
   needs sub-spans within a rendered type. If the user ratifies it, the seam is a
   span-emitting type walk in `cranelisp-types` with `render_type` reimplemented
-  as its concatenation — still one walk, and a public-API change needing the
-  user gate. **Never implement it as an int-side lexical pass over the rendered
+  as its concatenation — still one walk, and a public-API change under the
+  [gate](AGENTS.md#public-api-discipline). **Never implement it as an int-side lexical pass over the rendered
   type string**, which reintroduces the re-parse defect. Until then the whole
   annotation is one span.
 - [Display protocol](display-protocol.md) is orthogonal: it extends what the

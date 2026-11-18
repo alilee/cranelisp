@@ -913,8 +913,8 @@ and primitives (§4b, §4a); the platform ABI (§5).
 - **In:** the public surface of every other context.
 - **Out:** nothing to another crate — this is the application root. The
   root library's session surface serves its own binary target and tests; it has
-  no generated baseline, but a public change still takes contract review and the
-  applicable user approval. The exe-bundle exposes a startup stub to the system
+  no generated baseline, but a public change still takes the
+  [public-API gate](AGENTS.md#public-api-discipline). The exe-bundle exposes a startup stub to the system
   linker only.
 - **Windows:** cadence-scoped and never exposed.
 

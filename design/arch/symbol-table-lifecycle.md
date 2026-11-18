@@ -381,6 +381,6 @@ The unified lifecycle replaced fragmented per-kind states and the public symbol
 map. Completed source inventories, API forecasts, phase ordering and schema-window
 instructions live in Git and the closed S121 outcome. They do not schedule a
 second wash or override later schema versions. Source rustdoc and generated
-baselines describe the implemented APIs; exact future API changes retain the
-repository's two user gates. Active S122 identity work has its own retained
+baselines describe the implemented APIs; exact future API changes take the
+[public-API gate](AGENTS.md#public-api-discipline). Active S122 identity work has its own retained
 contract linked above.

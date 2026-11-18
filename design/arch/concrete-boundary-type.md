@@ -204,7 +204,7 @@ them was the original leak; treat any new one as a defect.
     `MonoExpr::from_expr` is the sole view builder, once synthesised bodies are stamped with
     real concrete node types. `synthetic_local_from_expr` has production callers in typecheck
     and `src/bootstrap.rs` and stays public. The lenient builder has no production caller
-    outside `cranelisp-types`; its narrowing to `pub(crate)` with a `test_support` re-export is
+    outside `cranelisp-types`; its narrowing to `pub(crate)` with a forwarding `test_support` function is
     approved (S123 packet row K11-d) and not in source at `e6d566bf`
     ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
 

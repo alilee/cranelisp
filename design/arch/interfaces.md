@@ -364,15 +364,18 @@ rebuilt. Contract: [trait-implementation persistence](trait-impl-cache-carrier.m
 - **`MacroInMem` has no producer.** Frontend raises no gap. The binary's macro-head
   recognition substitutes the alias itself and drives the module without a gap value; a head
   whose module is present and lacks the member is not a macro and reaches typecheck as a
-  value reference. Only a module test in the binary constructs the variant.
+  value reference. Only a module test in the binary constructs the variant. Its removal is
+  approved ([batch record](#approved-changes-not-yet-in-source-s124), row ACT-1084).
 - **The module a gap names, in source.** An absent module is named after alias substitution
   (spec §8.6.6), because the resolver's error supplies it. A member absent from a present
   module is named by the qualifier as written, so an alias-spelled reference names a module
   that does not exist.
-- **Proposal — awaiting the user's approval, not in source.** Every gap names the module
-  resolution probed: the written qualifier after one alias substitution from the referring
-  module. A gap's module is then an identity like every other resolved-stage `FQSymbol`
-  ([Principle 24](principles/24-resolve-once.md)), and the binary substitutes nothing.
+- **Approved by `arch` 2026-11-19, not in source, not scheduled.** Every gap names the
+  module resolution probed: the written qualifier after one alias substitution from the
+  referring module. A gap's module is then an identity like every other resolved-stage
+  `FQSymbol` ([Principle 24](principles/24-resolve-once.md)), and the binary substitutes
+  nothing. The specification already requires the behaviour (§8.6.6, §8.5.4 edge 4).
+  ACT-1082's four failing cells carry it.
   - Typecheck applies `substitute_module_alias` to the written qualifier in the
     member-absent arm, with the alias table and referring module its scope resolve used.
     Typecheck already calls that function, so no consumer edge is added.
@@ -463,7 +466,8 @@ ownership, slot conservation and atomic publication. This section maps the facad
 
 **Approved, not in source at `4b58ab93`.** `settle_template` and `settle_concrete` have no
 cross-crate production caller; production settles through the `settle_checked_*` pair. They
-become `pub(crate)` in S124 (S123 packet row K11-c).
+leave the public surface in S124 ([batch record](#approved-changes-not-yet-in-source-s124), row
+K11-c).
 
 ### Checked-registration transaction facade
 
@@ -744,30 +748,63 @@ single-constructor value classifies as a heap value. The binary's display walk
 
 ## Approved changes not yet in source (S124)
 
-Navigation for the S124 designs. Every row is absent from source at `66bc7b8a` and approved
-by the user. The exact delta, consumer list and expected baseline effect of each row are in
-the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and R10-10) and the
-[S123 packet](../../sprints/s123-api-packet.md) Part B (K11 rows and R10-1 to R10-8); this
-table does not restate them. S123 row R10-6 is superseded by R10-9 and does not land. A
-design that needs a public change outside these rows stops and returns to `arch`. Remove a row when its change lands; remove the section when it is empty.
+The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
+decided change that no phase checkpoint has reported yet. The user approved the rows marked
+*user*; `arch` approved the rows dated 2026-11-19 against the criteria. The exact delta of a
+*user* row is in the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and
+R10-10) or the [S123 packet](../../sprints/s123-api-packet.md) Part B (K11 and R10-1 to
+R10-8), and is not restated. S123 row R10-6 is superseded by R10-9 and does not land. A
+design that needs a public change outside these rows stops and returns to `arch`.
 
-| Row | Change | Owning surface | Other surfaces that change | Contract |
-|---|---|---|---|---|
-| D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed. Waits on the user's approval of one further delta the row does not name: `SymbolTable::install_extern` loses the matching parameter | types | backend cache validation; primitives (the one production caller of `install_extern`); test callers in backend, typecheck and the binary | [safety invariants](safety-invariants.md) row R5 |
-| D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | [safety invariants](safety-invariants.md) row R5 |
-| K11-b | `IntrinsicEntry::is_runtime` removed | intrinsics | — | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) invariant 11 |
-| K11-c | `SymbolTable::{settle_template, settle_concrete}` leave the public surface. Their only callers are the types crate's module tests, so they compile under `#[cfg(test)]` as `pub(crate)` | types | — | [lifecycle authoring facade](#lifecycle-authoring-facade) |
-| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature | types | test code in the binary and the backend; their dev-dependencies on `cranelisp-types` enable `test-support` | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
-| K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
+| Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
+|---|---|---|---|---|---|---|
+| D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed; `CACHE_SCHEMA_VERSION` goes up by one | types | backend cache validation; test fixtures in typecheck | types −1, 1 changed | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
+| D13 | `SymbolTable::install_extern` loses its sixth parameter, `borrowed_sibling: Option<CallableSlot>`. Every caller passes `None`. No schema effect beyond D6's | types | primitives (the one production caller); test callers in backend, typecheck and the binary | types 1 changed | `arch`, 2026-11-19 | [safety invariants](safety-invariants.md) row R5 |
+| D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | backend −3 | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
+| K11-c | `SymbolTable::{settle_template, settle_concrete}` leave the public surface. Their only callers are the types crate's module tests, so they compile under `#[cfg(test)]` as `pub(crate)` | types | — | types −2 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [lifecycle authoring facade](#lifecycle-authoring-facade) |
+| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature | types | test code in the binary and the backend; their dev-dependencies on `cranelisp-types` enable `test-support` | types −1 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
+| R10-2 | The backend's `artefact` module, `LinkerArtefact`, `ObjectArtefact` and their root re-exports are deleted. The row approved narrowing; with `load_object` gone (R10-1) the types have no producer. The public effect is the row's. In source at `06210347` | backend | — | backend −42 | user, 2026-11-16; deletion `arch`, 2026-11-19 | — |
+| Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
+| ACT-1084 | `ResolutionGap::MacroInMem` removed. It has no producer | types | the binary's two match arms and one module test; stale comments in frontend and `tests/process_form_dispatch.rs` | types −1 | `arch`, 2026-11-19 | [resolution gaps](#resolution-gaps) |
+| Trace reader | `cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos` removed with its catalog entry. It has no caller | intrinsics | backend drops the name from `is_extern_primitive`; [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) conventions table and [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) | intrinsics −1 | `arch`, 2026-11-19 | [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) |
+| K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
-Order between rows that the designs respect:
+Build order. `arch` builds the types changes; `dev` builds each other surface, one surface
+per invocation.
 
-- D6 has no architectural dependency on another row; its place is `sprint`'s.
-  D9 lands in D6's change-set, a callee-first migration from types through its callers.
-- D6 bumps `CACHE_SCHEMA_VERSION` in its own change-set.
-- K11-b and K11-c each change one crate and have no order against another row.
-- K11-d lands compatibly in four steps: types adds the `test_support` function; the backend's
-  and then the binary's test callers move to it; types narrows the method.
-- K11-a lands last, alone, after every other row and after the baselines are regenerated in
-  the present format, so its contraction is not mixed with a functional delta
+- **D6, D13 and D9 are one commit**, a callee-first migration: `arch` removes the field and
+  the parameter in types and its tests; then `dev` in primitives, backend (with D9 and the
+  schema bump), typecheck and the binary drops the argument at each caller. The tree does
+  not build between steps.
+- **K11-c** is one types change-set with no order against another row.
+- **K11-d** lands in four steps that each build: types adds the `test_support` function; the
+  backend's and then the binary's test callers move to it; types narrows the method.
+- **ACT-1084** is one commit: `arch` removes the variant; `dev` in the binary removes the
+  arms and the module test; the two comments follow in frontend (`dev`) and `tests/` (`test`).
+- **Trace reader** is one commit: `dev` in intrinsics removes the function, its catalog entry
+  and its tests; `dev` in backend removes the name; `arch` corrects the two documents.
+- **Gap module** has a typecheck step only: `substitute_module_alias` in the member-absent
+  arm of `resolve_qualified`, with its module test. The binary changes nothing unless a
+  reader is found that substitutes again.
+- **K11-a** lands last, alone, after every other row and after the baselines are regenerated
+  in the present format, so its contraction is not mixed with a functional delta
   ([baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close)).
+
+Declined, `arch`, 2026-11-19:
+
+- **`CallableOrigin::TraitMethod` carrying its member** (`member: Symbol`; types +1,
+  schema bump). Typecheck writes the origin and is the only reader that wants the member,
+  so the field would grow a shared persisted type for one crate's interior (criteria 1 and
+  2). Typecheck recovers the member by matching each of the trait's members' mangled entry
+  name, and refuses an entry no member names. Grade: asserted. Reopened by a second reader
+  in another crate, or by two members of one trait mangling to one entry.
+
+Escalated to the user, 2026-11-19:
+
+- **A typed batch outcome for a `--link` refusal with no position**
+  ([int §7.7](../int/int.md#77-one-generation-beside-an-entry-act-1083)). The delta is one
+  variant of the root library's `BatchError` beside `MissingMain`, with one new arm in the
+  binary's formatter. It meets the criteria. It is escalated because the rendering it
+  serves needs a specification change: REPL §5.1 and §5.5 except only the missing-`main`
+  refusal from the location requirement. The variant is approved when the user rules for
+  that exception and is not built before.

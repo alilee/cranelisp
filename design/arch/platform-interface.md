@@ -92,8 +92,9 @@ is the generated type-layout artifact.
   [Principle 14](principles/14-ffi-layout-discipline.md)'s `#[repr(C)]`
   discipline. Grade: asserted. Falsifier: a platform built by a toolchain whose
   `&str` representation differs from the host's, which the `ABI_VERSION` gate
-  does not detect. No change is approved; re-representing it is a public-ABI
-  change under the user gate.
+  does not detect. No change is approved; re-representing it changes what a
+  platform author compiles against, so the
+  [gate](AGENTS.md#public-api-discipline) escalates it to the user.
 - **Platform-name collision with the module-path escape image.** The
   `platform.<name>` GOT symbol keeps a verbatim join rather than the escaped
   mint, so a platform name beginning `d`, `h`, `u` or `_` can collide with a
@@ -103,7 +104,7 @@ is the generated type-layout artifact.
 - **The GOT and layout-hash symbol names are formatted inline** on the emit and
   consume sides; only the manifest name has a shared helper (§5.5.5). Adding
   sibling helpers is an optional consolidation and a public-API change under the
-  user gate. It is not owed.
+  [gate](AGENTS.md#public-api-discipline). It is not owed.
 - **Lazy reactor construction** is a workload-triggered refinement, not an
   obligation (§6.8.0a).
 

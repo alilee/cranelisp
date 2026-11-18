@@ -17,7 +17,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 |---|---|
 | [Architecture overview](overview.md) | System vocabulary and orientation. |
 | [Bounded contexts](bounded-contexts.md) | Responsibilities, dependency direction and shared guarantees, including process-ending panics, the environment supply and baked link-time switches. |
-| [Boundary types](interfaces.md) | Narrative companion to the types crate and its rustdoc; its last section lists approved public changes not yet in source. |
+| [Boundary types](interfaces.md) | Narrative companion to the types crate and its rustdoc; its last section is the public-API batch record. |
 | [Architectural principles](principles.md) | Sole membership index for principle bodies. |
 | [Symbol-table lifecycle](symbol-table-lifecycle.md) | Declaration ownership, slot conservation and atomic publication. |
 | [Concrete codegen boundary](concrete-boundary-type.md) | Concrete-only typed body contract. |
@@ -116,14 +116,73 @@ crate. [Source conventions](../../src/AGENTS.md) apply to source work.
 ## Public-API discipline
 
 `pub(crate)` is the default; each public item needs rustdoc explaining the
-cross-boundary promise. Public-surface and consumer-edge changes pass the root
-[inter-crate public-API user gate](../../AGENTS.md#roles), which owns the
-approval, baseline-regeneration timing and generated-delta confirmation rules.
+cross-boundary promise. The root [inter-crate public-API gate](../../AGENTS.md#roles)
+owns what counts as a change, the baseline-regeneration timing and the
+checkpoint report. This section owns the criteria, the escalation test and the
+record.
 
-`arch` owns the contract and approval packet; the implementing crate regenerates
-its baseline, and independent review compares the source, rustdoc and actual
-diff against the approval. A new or mismatching item or consumer edge returns to
-that gate. Source rustdoc and BC statements replace retired facade-spec files.
+**Criteria.** `arch` approves a batch when every change in it holds all six.
+The concern is the effect on each touched module's simplicity and
+maintainability.
+
+1. **A consumer decides it.** An added item has a named consumer in another
+   crate that needs it now. A removed or narrowed item has none
+   ([Principle 02](principles/02-narrow-interfaces.md)).
+2. **The surface does not grow without replacing something.** A module's
+   surface gets smaller or stays the same size. An addition is admitted when
+   it removes a consumer-side derivation, wrapper or second copy of the same
+   fact ([Principle 06](principles/06-complexity-has-a-budget.md),
+   [Principle 07](principles/07-single-source-of-truth.md),
+   [Principle 24](principles/24-resolve-once.md)).
+3. **The fact stays with its owner.** The item lives in the crate that owns
+   its behaviour, and no crate dependency is added or reversed
+   ([Principle 15](principles/15-facade-types-live-with-behavior.md),
+   [Principle 03](principles/03-dependency-flows-toward-stability.md)).
+4. **A public value has one meaning.** Every producer gives it that meaning
+   and no consumer has to work out which form it holds. Where a
+   representation can enforce it, the representation does
+   ([Principle 20](principles/20-model-invariants-by-representation.md),
+   [Principle 18](principles/18-enforce-invariants-structurally.md)). No
+   change lowers an invariant's grade in the
+   [safety register](safety-invariants.md).
+5. **Test access stays off the default surface.** An item only tests call is
+   crate-private, or sits behind the owning crate's `test-support` feature
+   ([Principle 05](principles/05-testability-is-structural.md)).
+6. **A persisted or ABI shape changes with its version.** The schema or ABI
+   version moves in the change-set that changes the shape
+   ([Principle 14](principles/14-ffi-layout-discipline.md)).
+
+**Escalation.** `arch` sends a change to the user with a brief, and does not
+approve it, when any of these holds:
+
+- it moves a responsibility or the ownership of a datum between modules, so
+  a [bounded-context](bounded-contexts.md) statement changes;
+- it adds a crate dependency, or a mechanism new to a facade: a public
+  type, trait or entry point that replaces nothing;
+- it changes behaviour the specification does not already require, or needs
+  a specification change;
+- it changes what an out-of-tree platform author compiles against;
+- it fails a criterion and `arch` still recommends it.
+
+The brief states the delta, the modules whose surface or contract steps, the
+criterion at issue, the alternatives and `arch`'s recommendation.
+
+**Batch record.** The last section of
+[boundary types](interfaces.md#approved-changes-not-yet-in-source-s124) holds
+one row per decided change until a phase checkpoint reports it: the exact
+delta or a link to it, producers and consumers, schema or ABI effect, expected
+baseline effect, who decided it and when, and the build order. A declined or
+escalated change is a line there too, with the observation that would reopen
+it or the decision it waits on.
+
+- The implementing crate regenerates its baseline. Independent review
+  compares source, rustdoc and the actual diff with the row.
+- A design or change-set that needs a public change outside the record stops
+  and returns to `arch`.
+- At the phase checkpoint `arch` compares each regenerated diff with the
+  record, reports it to the user and removes the reported rows.
+
+Source rustdoc and BC statements replace retired facade-spec files.
 
 ## Facade convention — `lib.rs` mechanics
 
@@ -144,8 +203,8 @@ that gate. Source rustdoc and BC statements replace retired facade-spec files.
 
 The seven guarded library baselines are enumerated by
 [the public-API guard](../../tests/public_api_relocations.rs). Root and
-`cranelisp-exe-bundle` lack these baselines; their public changes still require
-contract review and the applicable user approval.
+`cranelisp-exe-bundle` lack these baselines. Their public changes take the same
+[gate](#public-api-discipline) with the source diff as the evidence.
 
 Regenerate an affected baseline in the implementing change-set with the
 canonical command:
@@ -161,9 +220,9 @@ cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crat
   auto-trait implementations remain in the current format.
 - Generate the production/default-feature surface, never with `test-support`.
 - Co-land changed source, corresponding rustdoc/BC contracts and the generated
-  diff. Review checks the approved and actual surfaces; the user confirms a
-  non-empty actual diff before promotion, per the root
-  [API gate](../../AGENTS.md#roles). A baseline is not a substitute for rustdoc
+  diff. Review checks the approved and actual surfaces; `arch` compares the
+  diff with the [batch record](#public-api-discipline) and reports it to the
+  user at the phase checkpoint. A baseline is not a substitute for rustdoc
   currentness review.
 
 **Approved format change, not yet implemented:**
@@ -195,7 +254,7 @@ use the command above. Its order:
    follow from raw-pointer fields and no contract states them.
 2. The seven baselines are regenerated in the present format on the final
    source tree. That diff carries the functional rows and is compared with
-   the approval packets.
+   the batch record and the sprint's approval packets.
 3. The guard, `tests/AGENTS.md` and this section take the new flag together,
    and the baselines are regenerated again from the same tree. This diff must
    contain removals only, each a generated auto-trait row. Explicit
@@ -204,5 +263,5 @@ use the command above. Its order:
 4. The guard's detection proof is repeated in the new format: a planted
    public item fails it and the clean tree passes.
 
-The format choice is approved. The user confirms the step 2 diff and the
-step 3 contraction separately.
+The format choice is approved. `arch` reports the step 2 diff and the step 3
+contraction to the user separately.

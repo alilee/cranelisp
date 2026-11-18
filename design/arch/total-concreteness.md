@@ -166,13 +166,12 @@ types at a concrete instantiation for category and glue purposes.
   module. No approval to remove it is in force:
   - `arch` ruled its deletion a contraction (2026-09-01) scoped to the `vec-len` de-slot
     change-set. That change-set landed without the deletion, so the ruling's condition has
-    passed, and an `arch` ruling never satisfied the user gate.
-  - Removal is an inter-crate public-API change under root `AGENTS.md` §Inter-crate
-    public-API user gate. Before implementation `arch` presents the exact delta: one baseline
-    line (`pub mod cranelisp_primitives::vec`), no Rust importer, and the e2e guard
+    passed.
+  - Removal is an inter-crate public-API change under the
+    [gate](AGENTS.md#public-api-discipline) and has not been put to it. The delta is one
+    baseline line (`pub mod cranelisp_primitives::vec`), no Rust importer, and the e2e guard
     `tests/facade_pif_rows.rs` that asserts the line's presence, which `test` revises in the
-    same change-set. After implementation the generated `public-api.txt` diff returns to the
-    user.
+    same change-set.
   - The contraction needs no shim or deprecation window.
 
 ### 3.3 The uniform-realization roster

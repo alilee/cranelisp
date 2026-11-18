@@ -249,8 +249,8 @@ every other intrinsic.
 `cranelisp_trace_first_child_nanos` has no caller at `1790531f`: the backend
 declares no call to it and no host code reads it. It was the reader of a
 `/run-tests` re-run under `trace` that the runner no longer performs. Removing
-it is an intrinsics public-API change and passes the
-[API gate](AGENTS.md#public-api-discipline); it is not approved.
+it is an intrinsics public-API change, approved by `arch` on 2026-11-19 and not
+in source ([batch record](interfaces.md#approved-changes-not-yet-in-source-s124)).
 
 **Name agreement has one owner.** The catalog and its tests own the trace
 name set: a renamed or dropped symbol is a catalog test failure, not a runtime
