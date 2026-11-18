@@ -86,6 +86,11 @@ This supersedes the release-build skip that
   keying error, a residual instantiation and a short declaration are located
   refusals ([release contract](non-concrete-release-contract.md) §7.4 step 1),
   and each refusal is measured by `compiler/context/ctor_field_channel_tests.rs`.
+- **One keyed reader stays release-silent: the platform schema walk.** Its
+  public entries, `compute_layout_hash` and `generate_schema`, return a
+  `String`, so a miss is skipped under a debug assertion. The consequence is
+  a wrong layout hash, which the platform load refuses
+  ([trace codegen](trace-codegen.md) §3).
 
 ## 3. Internal shape
 
@@ -338,7 +343,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Uniform reference counting | `uniform-counting.md` | **Built (S123 W2); W2 evidence adequate.** Reading U′: every binder owns, last-use move and in-place update at count 1 are the only retained rules, one ownership plan per body. The backend's one counting design. |
 | S122 delivery record | `s122-closure.md` | Retired: anchors only, each pointing at its rule's current home; the record is in Git history. |
 | Compilation entry shape | `compile-to-module.md` | The one entry's contract and phase order, constructor codegen, GOT emission, finalisation and publication, and its error contract. |
-| JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. |
+| JIT/object convergence | `jit-object-convergence.md` | The convergence invariant, what may differ at the fixup boundary, and the falsifier that has no executing guard. §3: the JIT compiles every call far (ACT-1070; designed, row B13). |
 | Per-module GOT | `per-module-got.md` | The two-GOT model as emitted, and why it is shaped that way. |
 | Module caching | `module-caching.md` | Cache keys, serialisation, invalidation, the load path. |
 | Executable generation | `executable-generation.md` | `--link` mode. |
@@ -352,29 +357,71 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims (ACT-1039, with ACT-1078; blocked on the user's ruling on which modules a trace form covers), and the backend's half of strict evaluation and allocation-free wrappers (ACT-1038; built). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims (ACT-1039, with ACT-1078; what `dev` builds under each ruling on which modules a form covers, §1.3), the backend's half of strict evaluation and allocation-free wrappers (ACT-1038; built), and constructor field types paired by declared parameter (ACT-1062; designed, row B14). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
 
-Every S124 backend item still open, its design and what it waits on. A row
-leaves when its change lands. Public rows are the S124 and S123 packets' as
-indexed in
+The backend is S124's focus module (`sprints/METHOD.md` §Delivery
+principles): it exits with no failing test attributed to it, no build warning
+and no open review finding. This section lists every S124 backend item still
+open, its design and what it waits on. A row leaves when its change lands.
+Public rows are indexed in
 [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124).
+Verified against source at `081134ba` on 2026-11-19.
 
-| # | Change-set | Design | Waits on |
-|---|---|---|---|
-| B8 | Borrowed-sibling carrier, rows D6 and D9 | [ownership codegen](ownership-codegen.md) §9 | The user's decision on row D13: `SymbolTable::install_extern` loses its sibling parameter, which the approved D6 does not name. Then `arch`'s types half of D6, made in the same commit (the commit shape is in §9 there). Not scheduled. |
-| B10 | The traced set fixed by slot claims (ACT-1039), and with it ACT-1078 | [trace codegen](trace-codegen.md) §1 | The user's ruling on which modules a trace form covers ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)), then the change it names for `macros`' slot claims ([trace codegen](trace-codegen.md) §1.3). Not scheduled. |
+| # | Change-set | Design | Waits on | Cells it turns green |
+|---|---|---|---|---|
+| B14 | ACT-1062's backend reader: one helper pairs a constructor's field types with the declared parameters, for the descriptor baker and the schema walk | [trace codegen](trace-codegen.md) §3 | Nothing | `match_field_parameter_order::s124_1062_f_subject_run`, `_link`, `_repl` |
+| B13 | ACT-1070: the JIT compiles every call far | [JIT/object convergence](jit-object-convergence.md) §3 | `arch`'s batch review of the public delta stated there | `spec_07_traits::s124_1070_jit_call_range_subject`; the `s124_two_member_depth_64_*` cells stop varying |
+| B8 | The borrowed-sibling carrier leaves: rows D6, D13 and D9 | [ownership codegen](ownership-codegen.md) §9 | Nothing: `arch` approved D13 on 2026-11-19. One cross-crate commit, sequenced there | None; no e2e cell is owed |
+| B15 | Row "Trace reader": `cranelisp_trace_first_child_nanos` leaves `is_extern_primitive` (`compiler/apply.rs`) | [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124) | The same commit as intrinsics' removal of the export | None |
+| B16 | Row K11-d, step 2: `test_support.rs`'s two `lenient_from_expr` calls move to `cranelisp_types::test_support::lenient_from_expr`, and the dev-dependency on `cranelisp-types` enables `test-support` | [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124) | `arch`'s types step 1, not in source at `081134ba` | None |
+| B10 | The traced set (ACT-1039, with ACT-1078) | [trace codegen](trace-codegen.md) §1.3 | The user's ruling on [tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18). Then, under `arch`'s proposal, `arch`'s route for the covered set; under the alternative, `arch`'s registry contract | `trace::trace_records_user_function_calls_in_every_mode`, `trace::s124_1039_w_subject_run`, `_link`, `_repl`, `trace::s124_1078_subject_run`, `_link` |
+
+**Order.** Source-touching work is serial; this is the order `dev`(backend)
+takes the rows in.
+
+1. **B14** first: it waits on nothing, and it edits `compiler/trace_codegen.rs`,
+   which B10 edits later.
+2. **B13** next, once `arch` has reviewed its delta. It touches only `jit.rs`
+   and makes later full-suite readings stable: until it lands, the
+   `s124_two_member_depth_64_*` cells pass or fail by allocator placement.
+   If the review has not returned when B14 lands, B8 goes ahead of it.
+3. **B8**, the cross-crate commit of ownership codegen §9.
+4. **B10** last: it is the only row waiting on the user, and it edits the file
+   B14 changed.
+
+B15 and B16 touch files no other row touches. Each lands whenever its
+counterpart step is ready. The baseline-format row K11-a lands after every
+other row, alone.
+
+**What stays RED after these rows, and is not the backend's.**
+`match_field_parameter_order::s124_1062_e_subject_repl` is the binary's
+display reader (`src/display.rs::build_adt_subst`), carried with
+`dev`(`src/`). No other open filing attributes a failing cell to the backend
+(`qa`'s read at `79a8c94c`,
+[evidence delta](../../tests/plan/s124-evidence-delta.md) §14.1).
+ACT-1075 and ACT-1076 name typecheck. ACT-1067's provisional attribution is
+the compile worker's recursion over the source form, which is not a backend
+stage.
+
+**If B10's ruling does not come this sprint**, six cells stay RED and are
+attributed to the backend, so the backend cannot exit clean and green. That
+carry needs the user's sign-off.
+
+**ACT-0964 (advisory, to `design`).** Its completion evidence is met:
+item 1 is §2's ruling and its measured rows, item 2 is §3's
+keep-separate decision, and item 3 was completed in S122. The action is
+ready to resolve.
 
 - **Landed in W6.** Each emission-affecting change-set carried its own scoped
   re-baseline.
   - B6: row D2 (`b89c6186`), then the panic handle (`ff227dea`; §7).
   - B7: rows R10-1, -2, -5 and -7 (`06210347`), and R10-3 (`1e4b0ce4`).
-    *As built, R10-2 deletes rather than narrows* the `artefact` module,
-    `LinkerArtefact` and `ObjectArtefact`. Once R10-1 removed `load_object`,
-    they had no producer, and narrowing them would have left dead code. The
-    public effect is the same removal.
+    R10-2 was built as a deletion of the `artefact` module, `LinkerArtefact`
+    and `ObjectArtefact`, which had no producer once R10-1 removed
+    `load_object`. `arch` approved the deletion on 2026-11-19.
   - B9: the spark density axis (`4b8660c9`;
     [ownership codegen](ownership-codegen.md) §13.4).
   - B10's ACT-1038 half: `in_trace_body` was deleted with intrinsics' row D8
@@ -383,25 +430,19 @@ indexed in
   - B11: heap layouts read from intrinsics (`e83adaf0`; §9.1).
   - B12: host-promised primitives as values and partially applied
     (`777412a7`; [compile-to-module](compile-to-module.md) §12.1).
-- **Not scheduled:** ACT-1062's backend reader, the shared substitution
-  `schema::subst_for_ctor_fields` that the descriptor baker and the schema
-  walk use, paired by declared parameter
-  ([release contract](non-concrete-release-contract.md) §7.4 step 1). It is
-  not part of B10 as scheduled and is not in source. Whether it is pulled in
-  is the user's decision
-  ([evidence delta](../../tests/plan/s124-evidence-delta.md) §14.8).
-- `CACHE_SCHEMA_VERSION` is 34 (read at `79a8c94c`). Row D3's change-set took
+- `CACHE_SCHEMA_VERSION` is 34 (read at `081134ba`). Row D3's change-set took
   it to 33 (`42e6d929`) and ACT-1052's to 34 (`f3f9cc47`;
   [int §7.6.3](../int/int.md#763-slot-layout-identity-act-1052)). B8 bumps it
-  again when it lands ([crate guidance](../../crates/cranelisp-backend/AGENTS.md),
-  cache discipline).
+  again ([crate guidance](../../crates/cranelisp-backend/AGENTS.md), cache
+  discipline). B13 and B14 change no persisted shape, so they owe no bump. B14 changes
+  the descriptor bytes baked for an out-of-order type, and a new build
+  identity already invalidates objects from the earlier compiler
+  ([int §7.6](../int/int.md#76-dependency-record-and-validity)).
 - `f3f9cc47` also corrected the rustdoc of `CachedModuleRef::dependency_hashes`
   (`cache/manifest.rs`): the values are opaque validity keys whose form is
   int's, not source hashes. `check_manifest`'s parameter keeps its older name,
   `dependency_source_hashes`; the design names the values by what they are
   ([module caching](module-caching.md) §3).
-- The approved baseline-format row K11-a lands last, alone, after every other
-  row.
 - ACT-1018 has no backend item. Its residual measured 2 blocks after
   ACT-1050's correction, unchanged by it (O-1018 at `8667a868`,
   [evidence delta](../../tests/plan/s124-evidence-delta.md) §14.4).

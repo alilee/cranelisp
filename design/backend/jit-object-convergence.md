@@ -52,6 +52,7 @@ BC §4b invariant 5, and that address's retention owner is the entry `Code`
 | Produce the per-symbol entry address | Read from the finalized function after finalize | Unavailable at compile time; resolved later on cache-hit through `Linker::get_symbol(bare_name)` |
 | Retention root | `Code::Jit(Arc<Jit>)` | `Code::Linker(Arc<Linker>)` |
 | Reclamation primitive | `Jit::Drop` frees the JIT's executable memory at refcount 0 | `Linker::Drop` reclaims the mmap'd pages at refcount 0 |
+| Reach a compilation-local callee | Every call is compiled far: an absolute address and an indirect branch (§3) | A pc-relative call within the object's one text section |
 
 The last two rows name *what* reclaims an owner, not *when*: staged and compiled
 publication in a live session move displaced `Code` into the session-lifetime
@@ -91,6 +92,109 @@ document states the questions, not a test plan:
 1. the same source produces the same CLIF under both `Module` types;
 2. a fresh build fails loudly if any defined symbol's slot is unpopulated — the
    cache-hit leg of the same question is already a structural hard error.
+
+## §3 Call reach in the JIT (ACT-1070)
+
+**Status:** designed 2026-11-19 against `081134ba`; not in source. The public
+delta below goes to `arch`'s batch review before `dev` starts.
+
+**Fault.** `cranelift-jit` 0.116 takes each function's code memory from the
+global allocator, so two functions of one JIT module can land any distance
+apart. A call that the CLIF marks `colocated` compiles to a pc-relative call
+(`bl` on aarch64, ±128 MB; `call rel32` on x86-64, ±2 GB). Beyond that range
+the displacement wraps or the relocation asserts
+([ACT-1070](../../sprints/actions/ACT-1070-jit-direct-call-out-of-range-of-allocator-placed-code-intake.md),
+attributed by `qa` with the `MALLOC_ARENA_MAX=1` control).
+
+- Every function the backend declares with `Linkage::Local` or `Export` is
+  `colocated` when referenced: drop glue, lambda bodies, function-value
+  wrappers, continuations, poll functions and trace wrappers. Calls to
+  language functions go through the GOT (§1.1) and calls to intrinsics are
+  imports, so neither is exposed.
+- Data references are not exposed on the supported hosts: aarch64 without
+  PIC lowers every symbol address to an absolute literal.
+- The object path is not exposed. The in-process linker copies one text
+  section into one mapping, and the system linker places one text section.
+
+**Decision: the JIT compiles every call far.** The JIT's module is a backend
+wrapper over `JITModule`. Its function-definition entry clears `colocated` on
+every external function of the context and then delegates. Upstream does the
+same for its hotswap mode. A far call is an absolute address and an indirect
+branch, so placement cannot put a callee out of reach.
+
+- **Grade: structural.** `Jit` holds only the wrapper and hands out only the
+  wrapper, so every function the JIT defines passes through the one
+  definition entry. No emission site can opt out, and none needs to change.
+- **CLIF is unchanged** in both modes. The rewrite happens after capture, at
+  the fixup boundary (§1.2 row 6). Captured and dumped CLIF still shows
+  `colocated` on local callees; the JIT's machine code reaches them far.
+- **Cost.** One literal load per call to a compilation-local callee. No
+  object, cache or golden-CLIF change, so no `CACHE_SCHEMA_VERSION` change.
+- **Unchanged:** `Jit::new`, the ISA flags, the host-symbol lookup, and
+  the object path.
+
+**Rejected.**
+
+- *Clear `colocated` in the CLIF, in both modes,* through one declaration
+  helper and a lexical census. It needs no public change, but its grade is
+  only lexical. It also changes every golden CLIF and makes every local call
+  in a cached object a GOT load through the in-process linker, a path the
+  defect does not touch.
+- *PIC with upstream hotswap.* The JIT's own GOT and PLT entries also come from
+  the global allocator, and the `adrp` reaching them has a ±4 GB range. The
+  failure class stays and every data reference joins it.
+- *A contiguous code arena.* `cranelift-jit` 0.116 offers no memory provider.
+  Upgrading Cranelift is a technology selection, which is `arch`'s.
+- *Restricting the allocator,* as the control does. It is process-wide,
+  glibc-specific and unenforced, so it controls the symptom, not the
+  mechanism.
+
+**Public delta for `arch`** (backend only; no consumer source changes,
+because every caller passes `jit.jit_module()` straight to
+`compile_to_module`):
+
+| Item | Change |
+|---|---|
+| `cranelisp_backend::jit::FarJitModule` | Added: a `pub` struct owning the `JITModule`. Its fields are private, and it has no public constructor or inherent method |
+| `impl cranelift_module::Module for FarJitModule` | Added: delegation, except that function definition clears `colocated` first |
+| `impl cranelisp_backend::CodeFinalizer for FarJitModule` | Added: the current `JITModule` implementation, moved |
+| `impl cranelisp_backend::CodeFinalizer for cranelift_jit::JITModule` | Removed (four baseline lines) |
+| `Jit::jit_module(&mut self)` | Returns `&mut FarJitModule` instead of `&mut JITModule` |
+
+The type name is a proposal; `arch` may rename it. The baseline also gains the
+new type's auto-trait lines until row K11-a removes that class.
+
+**What `dev`(backend) builds** (`jit.rs`, and its test module):
+
+1. The wrapper and its two trait implementations. `Jit` stores the wrapper.
+   Its drop frees the inner module's memory as it does today.
+2. Module row M-1070-a. Define a caller with a `colocated` call to a second
+   function through the wrapper, then read the compiled code's relocations.
+   It must hold no pc-relative call relocation (`Arm64Call` or
+   `X86CallPCRel4`). The same context defined through a bare `JITModule`
+   must hold one. That control proves the row can detect the fault.
+3. Rustdoc on the wrapper stating the invariant and why it exists.
+
+`qa` allocated a module row that places two functions of one JIT module out
+of range of each other. It cannot be built deterministically on 0.116,
+because code placement is private to `cranelift-jit` and follows the
+allocator. M-1070-a observes the property that makes placement irrelevant.
+Its adequacy is `qa`'s call.
+
+**Cells that turn green:** `spec_07_traits::s124_1070_jit_call_range_subject`,
+with `s124_1070_jit_call_range_arena_control` passing throughout. The
+run-dependent `spec_07_traits::s124_two_member_depth_64_run` and `_link`
+cells stop varying between runs.
+
+**Residual, asserted.** The in-process linker's `adrp` relocation arm
+(`apply_elf_aarch64_reloc`, and its Mach-O twin) writes the page delta
+without a range check, unlike its `CALL26` arm. A text mapping and the
+data or GOT-slot mapping it addresses more than 4 GB apart would be
+patched to the wrong page. Anonymous mappings are placed adjacent in
+practice, so this is not observed. *Falsifier:* a cache-hit load whose text
+and data mappings are more than 4 GB apart. *Trigger:* any change that places
+those mappings apart. The remedy is a located error in that arm, matching
+`CALL26`.
 
 ## Cross-references
 

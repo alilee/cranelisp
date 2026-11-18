@@ -147,7 +147,7 @@ returns one `Linker` implementation per supported host (§12).
 
 ### What it contains
 
-- **`cranelisp-runtime` symbols**: `cranelisp_alloc`, `cranelisp_dealloc`, `cranelisp_panic`, `cranelisp_run_io`, and all primitive functions (`cranelisp_add_i64`, `cranelisp_string_eq`, etc.).
+- **Runtime symbols**: the exports of `cranelisp-intrinsics` and `cranelisp-primitives` that emitted code imports.
 - **`cranelisp-platform` contract types**: `HostCallbacks`, `PlatformManifest`.
 - **`cranelisp_init_platform`**: the platform initialisation function called by the startup stub. This is defined in the bundle crate itself (not in runtime) because it bridges the platform manifest calling convention.
 - **Rust standard library subset**: `std::process::exit`, allocator, etc. — included automatically by `staticlib` crate type.
@@ -160,10 +160,10 @@ Users must build the bundle before using `--link`:
 cargo build -p cranelisp-exe-bundle
 ```
 
-The bundle `.a` appears in `target/debug/` or `target/release/`. The locator function searches:
+The bundle `.a` appears in Cargo's output directory for the build profile. The locator, `src/exe.rs::find_bundle_lib`, searches:
 1. `CRANELISP_BUNDLE_PATH` environment variable (for CI or custom layouts).
 2. Same directory as the `cranelisp` binary (typical for `cargo run`).
-3. Sibling directories under `target/` (debug/release).
+3. The `debug` and `release` directories beside that directory.
 
 If not found, a clear error directs the user to build it.
 

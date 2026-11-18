@@ -15,7 +15,8 @@ tests cite them. §0 records each mechanism's disposition under
 the dev tier keeps an optimisation only against a change of growth rate.
 Verified against source on 2026-11-16, and §0, §1, §4 and §13 again after
 S124 B1 on 2026-11-17, and §0, §2.1, §7 and §10 at `441e31ea` on
-2026-11-18, and §0, §1, §4, §5, §9 and §13 at `1e4b0ce4` on 2026-11-18.
+2026-11-18, and §0, §1, §4, §5, §9 and §13 at `1e4b0ce4` on 2026-11-18,
+and §9 at `081134ba` on 2026-11-19.
 The increment ladders, as-built
 narratives and falsified analyses are in Git history.
 
@@ -415,10 +416,11 @@ Retired at S123 W2 with §9.1–§9.4. A borrowed-convention extern sibling has 
 position to serve, because no position borrows
 ([uniform counting](uniform-counting.md) §1). The carrier
 `Realization::ExternShim { borrowed_sibling }` has had no producer since
-ACT-0974 and leaves `cranelisp-types` in S124 (packet row D6, with row D9).
-Not in source at `79a8c94c` (read 2026-11-18), and not scheduled: it waits on
-the user's decision on row D13, the removal of `install_extern`'s sibling
-parameter (step 1 below).
+ACT-0974 and leaves `cranelisp-types` in S124 with rows D6, D13 and D9
+([interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
+Row D13, the removal of `install_extern`'s sibling parameter, was approved by
+`arch` on 2026-11-19. Not in source at `081134ba` (read 2026-11-19); in scope
+as backend row B8.
 
 **The backend's half.**
 
@@ -430,7 +432,7 @@ parameter (step 1 below).
   only producer (row D9, approved 2026-11-16). Its diagnostic tag arm and its
   display arm go with it. Backend `public-api.txt` loses three lines.
 - `CACHE_SCHEMA_VERSION` goes up by one from its value when B8 lands (34 at
-  `79a8c94c`; `cache/mod.rs`), because `Realization` is persisted. The schema pin cell in
+  `081134ba`; `cache/mod.rs`), because `Realization` is persisted. The schema pin cell in
   `cache/serialize/tests.rs` follows it.
 - In `cache/serialize/tests.rs`, the sibling fixtures
   (`install_primitive_with_sibling`, `roundtrip_sibling_slot`) and the cell
@@ -438,25 +440,30 @@ parameter (step 1 below).
   every persisted index, the accept fence and the class-distinctness cell,
   lose their sibling leg and keep the rest.
 - Every backend call of `SymbolTable::install_extern` drops the sibling
-  argument if `arch`'s change removes that parameter. Every such call is in
-  test code: `compiler/extern_call.rs`'s test module and four test files.
+  argument (row D13). Every such call is in test code:
+  `compiler/extern_call.rs`'s test module, `cache/serialize/tests.rs`,
+  `got_slab_tests.rs`, `compiler/apply/extern_entry_convention_tests.rs` and
+  `compiler/trace_codegen/tests.rs`.
 
 **Commit shape: one commit, types first in the working tree.** `sprint`
 sequences it as one callee-first migration:
 
-1. `arch` removes the field from `cranelisp-types`, touching `lifecycle.rs`,
-   `module.rs` and the types tests. The workspace then stops compiling, and
-   the broken build is the checklist. `SymbolTable::install_extern` takes the
-   sibling as a parameter. The packet row names neither that parameter nor
-   typecheck's production callers of it, so the parameter's removal went back
-   to the user as row D13, which is not yet decided. This step does not start
-   before it is.
-2. `dev`(backend) makes the half above.
-3. `dev`(typecheck) follows in its own crate: the `install_extern` calls in
-   `result.rs` and `builtins.rs`, and the field in three test fixtures
-   (`infer/tests.rs`, `program/finalize/tests.rs` and
-   `program/mono_collect/tests/multi_sig.rs`). The binary has no reader.
-4. The workspace builds, the suite runs, and the tree is committed once.
+1. `arch` removes the field and the `install_extern` parameter from
+   `cranelisp-types`, touching `lifecycle.rs`, `module.rs` and
+   `module/tests.rs`. The workspace then stops compiling, and the broken
+   build is the checklist.
+2. `dev`(primitives) drops the argument at the one production caller,
+   `declarations.rs`.
+3. `dev`(backend) makes the half above.
+4. `dev`(typecheck) drops the argument at its test callers (`result.rs` and
+   `builtins.rs` test modules, `form/tests.rs`) and the field in three test
+   fixtures (`infer/tests.rs`, `program/finalize/tests.rs` and
+   `program/mono_collect/tests/multi_sig.rs`).
+5. `dev`(`src/`) drops the argument at its test callers (`agent/mod.rs`'s
+   test support, `imports/tests.rs`,
+   `session_v4/bare_primitive_value_path_tests.rs`). The binary reads no
+   sibling.
+6. The workspace builds, the suite runs, and the tree is committed once.
 
 Two constraints force this shape:
 

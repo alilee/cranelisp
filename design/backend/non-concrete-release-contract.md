@@ -697,18 +697,11 @@ step 1 corrected).
   the trace descriptor baker, has no reference and refuses at
   `Span::SYNTHETIC`; locating it is §7.2's span obligation.
 - **Declaration field types stay in `CtorMeta`** for two readers that feed no
-  RC seam: the trace descriptor baker (`trace_codegen::build_adt_subst`) and the
-  platform schema walk (`schema.rs`). Both substitute through the shared
-  helper `schema::subst_for_ctor_fields`, which still pairs arguments by first
-  appearance: the defect step 1 removed from the match, and ACT-1062's
-  remaining backend reader (signal 11 on an out-of-order product under
-  `trace`). The correction pairs each argument with the declaration's
-  parameter in its position, as `ctor_field_types_at` does, once in the
-  helper for both callers (Principle 7). The schema walk's output is hashed
-  into the platform layout hash, so that change-set reports whether any
-  platform-visible type mentions its parameters out of declaration order;
-  if none does, the hash is unchanged. Neither reader can reach a category,
-  because the classifier accepts only a `ConcreteType`.
+  RC seam: the trace descriptor baker and the platform schema walk. Neither
+  can reach a category, because the classifier accepts only a `ConcreteType`.
+  Both still pair arguments by first appearance, ACT-1062's remaining backend
+  reader. The correction pairs them by declared position in one helper for
+  both, and is [trace codegen §3](trace-codegen.md#3-field-types-in-descriptors-and-the-schema-act-1062).
 
 **Why step 1 preceded step 2.** Step 2 types every match field through step
 1's accessor (the step 2 table), so it could not be built first.

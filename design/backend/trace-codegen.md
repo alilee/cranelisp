@@ -10,14 +10,14 @@ swap and the nested-trace guard are
 
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
-- §1's selection is designed and **not in source** at `79a8c94c` (read
-  2026-11-18), and is not scheduled. `dev` built it and reverted it, because
-  it fails `--link` (§1.2). It and ACT-1078 wait on the user's ruling on
-  which modules a trace form covers
-  ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18));
-  §1.3 is the backend's recommendation to that ruling.
-- The descriptor baker's substitution correction (ACT-1062's backend reader)
-  is not scheduled and is not in source.
+- §1's selection is designed and **not in source** at `081134ba` (read
+  2026-11-19). `dev` built it and reverted it, because it fails `--link`
+  (§1.2). It and ACT-1078 wait on the user's ruling on which modules a trace
+  form covers
+  ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18)).
+  §1.3 states what `dev` builds under each ruling.
+- §3, the substitution correction (ACT-1062's backend reader), is designed
+  and in scope (backend row B14); it is not in source at `081134ba`.
 
 **Authority:** spec §4.12.2, §4.12.3 and §4.12.9;
 [tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table) for the
@@ -100,46 +100,95 @@ Read against `dev`'s reverted patch and probed with the built binary at
 
 ### 1.3 Blocked on `arch`: which modules contribute
 
-The backend cannot close either gap inside its boundary.
+The backend cannot close either gap inside its boundary. Which modules a form
+covers is [tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers--with-the-user-2026-11-18):
+`arch`'s proposal, now with the user. Which modules an image defines a GOT
+for is int's.
 
-- [Tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table)
-  specifies "every module in `symbol_tables`, with no project-root filter and
-  no reachability set". The rationale in §3.5 governs any filter.
-- Which modules an image defines a GOT for is int's. Which modules claim
-  slots is bootstrap's and `cranelisp-types`'.
+**A correction to this section's earlier recommendation.** It drew the traced
+set from the form's import closure and claimed that no call outside that
+closure could happen during the trace: a closure, a function value or a trait
+implementation would reach the body only from code in the closure. `arch`
+refuted that claim with a library form, `(defn profile [f] (trace (f)))`. The
+library's importer passes in its own function, which sits outside the
+library's closure. A closure-drawn set is therefore a narrowing of spec
+§4.12.3, not a restatement of it. The recommendation's second item,
+seeding `macros`' constructors without slots, is also withdrawn: neither
+ruling below reads `macros`' claims. Constructor slots are FIXME 0931's
+subject.
 
-**Recommendation to `arch`.** Neither part changes a public item.
+**Common to the rulings that correct ACT-1039.** Selection reads claims
+(§1.1; the reverted patch realises it). The
+`discovery_skips_empty_got_slots_and_non_fn_schemes` row is rewritten to the
+§1.1 row. Neither lands without the rest of its ruling's change, because
+alone it makes §1.2's references unconditional.
 
-1. **The traced set is drawn from the trace form's module and its transitive
-   imports.** Those are the modules every image holding the object also holds.
-   With [ACT-1052](../int/int.md#763-slot-layout-identity-act-1052), their slot
-   layout is covered by the object's dependency key, so the set becomes a
-   function of that key. This is not the static callee graph that §3.5
-   rejects. A closure, a function value or a trait implementation reaches the
-   trace body only from code in that closure, so every call the body can make
-   goes through a slot of a module in it.
-   - *Falsifier:* a call made during a trace through the slot of a module
-     outside the trace module's import closure.
-2. **A mounted module that holds no code claims no slot.** The synthetic
-   constructors in `macros` are seeded without a slot, as its host-promised
-   callables already are (FIXME 0360, recorded in `src/bootstrap.rs`). The
-   alternative is for a linked image to define a GOT for every table the JIT
-   binds. That alternative keeps a claim that no image can fill, and every
-   trace swaps a table that is always empty.
+#### Ruling A: `arch`'s proposal
 
-**What `dev`(backend) builds once the ruling is made:**
+The form covers its own module, every module its load edges reach
+transitively, and the compiler-owned modules whose GOT every image defines
+(`primitives`, and the platform modules those declare). A form in a library
+does not record calls made in modules the library does not reach, and spec
+§4.12.3 is restated to say so.
 
-- §1.1, unchanged. The reverted patch realises it.
-- The module filter of item 1, in `discover_traced_fns_from_tables`, if the
-  ruling adopts it.
-- Its module rows:
-  - a claim in a module outside the closure is not selected;
-  - a claim in an imported module is selected;
-  - a claim in the trace module's own module is selected.
+- **Prerequisite outside the backend.** The covered set must reach the
+  backend through one route, which `arch` takes to the public-API gate. Int
+  owns the load-edge enumeration
+  ([int §7.6](../int/int.md#76-dependency-record-and-validity)), and its
+  planned home, `cache/dependency_record.rs` in the binary, is crate-private
+  there. The backend cannot call it, and composing a second copy is rejected
+  (Principle 7).
+  - **Recommended route: the compile entry receives the set.**
+    `compile_to_module` gains one parameter, `trace_modules: &[ModuleFullPath]`,
+    after `symbol_tables`: the covered set of `module_path`, which int computes
+    with the restore walk's enumerator. The other route moves the enumeration,
+    with the null-import rule, into `cranelisp-types`. It is a larger public
+    change, and it separates the rule from the walk that owns it.
+- **What `dev`(backend) builds** (`compiler/trace_codegen.rs` and its tests):
+  - §1.1's selection.
+  - Discovery reads only the covered modules' tables. A covered module with
+    no table is a located codegen error, not a skip (§2 of
+    [backend.md](backend.md#2-the-reading-discipline--a-pure-keyed-consumer)).
+  - Module rows:
+    - a claim in a module outside the set is not selected;
+    - a claim in a covered import, and one in the form's own module, are
+      selected;
+    - a claimed slot that is still empty is selected;
+    - a slotless entry and a non-function scheme are not selected;
+    - a covered module whose table is missing is refused.
+- `macros` is outside the set, so its claims are never read and nothing
+  changes there.
+- **Cells that turn green:**
+  `trace::trace_records_user_function_calls_in_every_mode`,
+  `trace::s124_1039_w_subject_run`, `_link` and `_repl`, and
+  `trace::s124_1078_subject_run` and `_link`. `test` writes the held cell
+  T-1039-lib to expect no caller frames, and it passes.
 
-Item 2 lands before the backend change, or `--link` regresses. Its owners are
-the ones `arch` names. Without item 1, the `e1`/`e2` failure stays, and it
-needs `qa` intake as its own defect.
+#### Ruling B: spec §4.12.3 stands
+
+This is `arch`'s alternative. Each module's object owns the wrappers and
+descriptors of its own slotted functions, and a form swaps an image-wide
+registry. The backend cannot start until `arch` publishes the registry
+contract: the new intrinsic exports, and the table that int defines in every
+image. The backend's half is then:
+
+- each module's compile emits a wrapper and its descriptor for every slotted
+  function of that module, and exports the module's wrapper table beside its
+  GOT. The wrapper body and the descriptor bake are today's, moved from the
+  form's compile to the defining module's compile;
+- the form emits the registry swap and imports no other module's GOT;
+- discovery at the form is deleted, and §1.1 with it, because the set is the
+  running image.
+
+The cells are Ruling A's, and T-1039-lib expects the caller's frames. The
+cost is a wrapper and descriptors in every object, and a descriptor bake in
+every compile, whether or not the program traces.
+
+#### No ruling this sprint
+
+The six cells above stay RED and are attributed to the backend, so the backend
+cannot exit clean and green. Carrying them needs the user's explicit
+sign-off ([METHOD §2.4](../../sprints/METHOD.md#24-deferral)).
 
 ## 2. The trace extent and the wrapper's allocation
 
@@ -180,3 +229,81 @@ half was a deletion and an unchanged call sequence.
   can still call through a wrapper during the extent. Under rule 2 that call is
   unrecorded and allocates nothing. *Falsifier:* a trace whose body forces an
   IVar created outside it, showing a residual or a lost frame.
+
+## 3. Field types in descriptors and the schema (ACT-1062)
+
+**Status:** designed; in scope as backend row B14; not in source at
+`081134ba`.
+
+**Fault.** `schema::subst_for_ctor_fields` pairs a type's arguments with the
+type variables of its constructors' fields in order of first appearance. Its
+two callers are the trace descriptor baker (`trace_codegen`'s
+`build_adt_subst`) and the platform schema walk (`schema::ctors_of`). For
+`(deftype (P a b) (MkP [:b y :a x]))` at `(P Int String)`, the baker gives
+`y` the type `Int` and `x` the type `String`. The descriptor then formats the
+integer as a string, which faults with signal 11
+([ACT-1062](../../sprints/actions/ACT-1062-match-field-binder-takes-another-parameters-type-intake.md),
+REPRO-1062-f). A parameter that no field mentions shifts every later pairing
+in the same way.
+
+**Decision: pair each argument with the declared parameter in its
+position.** This is the rule `cranelisp_types::ctor_field_types_at` applies
+(release contract §7.4 step 1), here over `Type` rather than `ConcreteType`.
+A traced function's scheme can still carry a residual variable.
+
+- **One helper, both callers** (Principle 7). For one constructor, it takes
+  the constructor's scheme, `Fn(fields, ADT(name, params))` or a bare
+  `ADT(name, params)` when nullary, and the instantiation's type arguments.
+  It pairs `params[i]` with `args[i]` and returns the constructor's field
+  types under that substitution.
+  - A declared parameter that is not a variable must equal its argument; a
+    mismatch is the same keying error as `InstantiationMismatch`.
+  - An argument count that differs from the declared count is a keying
+    error.
+  - The baker propagates either error as a located codegen error. The schema
+    walk treats it as it treats its other keying misses today, because its
+    public entries return a `String`. A miss there yields a wrong layout hash,
+    which the DLL load refuses; it never reaches memory. Making the walk's
+    misses errors changes `compute_layout_hash` and `generate_schema`, a
+    public change that no failing test asks for.
+  - The identity elision of FIXME 0284 stays: a declared `Var(id)` paired
+    with `Var(id)` is not inserted.
+- **Per constructor, not across constructors.** Each constructor's own result
+  parameters decide its fields, so the result does not depend on whether
+  constructors share variable ids.
+- **Readers.** The baker reads each constructor's scheme through
+  `CompileContext`, keyed as `constructor_metas` keys it today. The schema walk
+  already holds each constructor's scheme. `subst_for_ctor_fields` and
+  `collect_var_ids` are deleted with their last caller. The module rows that
+  pin the identity elision move to the new helper.
+- **No public item changes.** `src/display.rs::build_adt_subst` is the
+  binary's own copy of the same rule and is not touched here (below).
+
+**Platform layout hash.** The schema walk's output feeds
+`compute_layout_hash`. The hash changes only for a schema type whose fields
+name its parameters out of declared order, or omit one. The only in-tree
+platform type in a schema is `shapes`' `Rectangle`, which has no parameters.
+*Read from the in-tree platform sources on 2026-11-19*: no hash changes.
+*Falsifier:* a platform DLL's layout-hash check failing after this change.
+
+**What `dev`(backend) builds** (`schema.rs`, `compiler/trace_codegen.rs`,
+`schema/tests.rs`):
+
+1. The helper, and both callers moved onto it.
+2. Module rows, each RED against the first-appearance pairing:
+   - an out-of-order product (`P` above) yields `[String, Int]` for `MkP` at
+     `(P Int String)`;
+   - a sum whose constructors disagree on first appearance;
+   - an unmentioned parameter (`(deftype (R a b) (MkR [:b y]))` at
+     `(R Int String)` yields `[String]`);
+   - the identity elision, carried over.
+3. The existing in-order cells pass unchanged.
+
+**Cells.** Of the four REPRO-1062 cells still RED, this change turns three
+green: `match_field_parameter_order::s124_1062_f_subject_run`, `_link` and
+`_repl`. Their ordered, scalar and untraced controls pass throughout.
+`s124_1062_e_subject_repl` stays RED. Its locus is the binary's display
+reader `src/display.rs::build_adt_subst`, owned by `dev`(`src/`) and carried
+outside the focus module. The binary can keep its own copy of the rule, or
+`arch` can publish a type-level helper for both crates; that decision is
+`arch`'s, not the backend's.
