@@ -32,7 +32,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{repl_output_lines, Cranelisp, PreludeVariant, REPL_IO_NOTICE};
+use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
 use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================

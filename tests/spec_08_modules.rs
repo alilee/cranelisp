@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 use std::time::Duration;
 
 // =============================================================================
@@ -6374,8 +6374,10 @@ fn s124_declared_child_batch_outcomes(returns_to_parent: bool) -> Vec<bool> {
 #[test]
 fn s124_declared_child_graph_batch_routes_agree() {
     let outcomes = s124_declared_child_batch_outcomes(true);
-    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]),
-        "the same graph must agree across P, z, P.c entry routes (true=value, false=cycle): {outcomes:?}");
+    assert!(
+        outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        "the same graph must agree across P, z, P.c entry routes (true=value, false=cycle): {outcomes:?}"
+    );
 }
 
 // spec: spec/08-modules.md §8.10.2 — REPRO-1081 control removes only z's return edge to P.
@@ -6413,8 +6415,10 @@ fn s124_declared_child_repl_outcomes(returns_to_parent: bool) -> Vec<bool> {
 fn s124_declared_child_graph_repl_orders_agree() {
     let mut outcomes = s124_declared_child_repl_outcomes(true);
     outcomes.extend(s124_declared_child_batch_outcomes(true));
-    assert!(outcomes.iter().all(|outcome| *outcome == outcomes[0]),
-        "REPL z-first, child-first and batch routes must agree (true=value, false=cycle): {outcomes:?}");
+    assert!(
+        outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        "REPL z-first, child-first and batch routes must agree (true=value, false=cycle): {outcomes:?}"
+    );
 }
 
 // spec: spec/08-modules.md §8.10.2 — REPRO-1081 control: both cold REPL orders produce 10 without the return edge.
@@ -6463,9 +6467,7 @@ fn s124_parent_path_and_super_exports(mode: &str) {
                 .assert_stderr_empty();
         }
         "link" => {
-            cr.link_then_run("app.cl")
-                .output()
-                .assert_exit(99);
+            cr.link_then_run("app.cl").output().assert_exit(99);
         }
         _ => {
             cr.cli_flag("app.cl")
