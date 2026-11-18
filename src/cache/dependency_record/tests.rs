@@ -212,6 +212,7 @@ impl Session {
                 .scheduler
                 .register_module_cached(m(module), HashSet::new(), Vec::new()),
         );
+        self.shared.scheduler.end_restore(&m(module), &Ok(()));
         self.shared
             .cache
             .record_source_hash(&m(module), hash.to_string());
@@ -226,6 +227,7 @@ impl Session {
                 .scheduler
                 .register_module_cached(m(module), HashSet::new(), Vec::new()),
         );
+        self.shared.scheduler.end_restore(&m(module), &Ok(()));
         let record = DependencyRecord(
             record
                 .iter()
@@ -441,6 +443,7 @@ fn unsettled_when_a_typechecked_member_has_no_stashed_hash() {
             .scheduler
             .register_module_cached(m("d"), HashSet::new(), Vec::new()),
     );
+    session.shared.scheduler.end_restore(&m("d"), &Ok(()));
     assert_eq!(
         session.build("m", &["d"]),
         RecordOutcome::Unsettled { member: m("d") }

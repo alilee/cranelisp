@@ -821,8 +821,8 @@ impl CompileScheduler {
 
     /// Register a module loaded from cache, with type info available but
     /// in-memory code not yet loaded. Object codegen is pre-satisfied.
-    /// With no `declared_children` it enters TypecheckDone; otherwise it is
-    /// published and turns terminal after them, from [`Self::end_restore`].
+    /// It is published, and turns terminal after its walk and its
+    /// `declared_children`, from [`Self::end_restore`].
     /// Satisfies any pending typecheck waiters on this module's symbols.
     ///
     /// The object load is held until the returned hold drops
@@ -1048,22 +1048,16 @@ impl CompileScheduler {
     }
 
     /// Enter a just-registered cache-restored `module` into its pool
-    /// (`design/int/int.md` §6.11, *A restored parent*). With no declared
-    /// children it is terminal at once. Otherwise it is published and not
-    /// terminal, and waits on `declared_children` from [`Self::end_restore`];
-    /// its in-memory completion is set only once it is terminal.
+    /// (`design/int/int.md` §6.11, *A restored parent*). It is published and
+    /// not terminal until its walk returns to [`Self::end_restore`], which
+    /// fails it on a failed walk and otherwise waits on `declared_children`,
+    /// none included; its in-memory completion is set only once it is
+    /// terminal.
     fn enter_restored_locked(
         state: &mut SchedulerState,
         module: &ModuleFullPath,
         declared_children: Vec<ModuleFullPath>,
     ) {
-        if declared_children.is_empty() {
-            // Enters TypecheckDone directly (bypasses `set_pool_locked`) —
-            // record the was-terminal history (0571.3).
-            state.typecheck_done.push_back(module.clone());
-            state.ever_terminal.insert(module.clone());
-            return;
-        }
         if let Some(ms) = state.modules.get_mut(module) {
             ms.pool = ModulePool::TypecheckBlocked;
             ms.generation_published = true;
@@ -3070,8 +3064,8 @@ impl CompileScheduler {
         }
         // Record the was-terminal history (0571.3) — monotone, never removed.
         // This is the single chokepoint for the normal typecheck→terminal and
-        // Complete transitions (`notify_typecheck_done`, `notify_module_complete`);
-        // the cache-hit register paths (`new_cached*`) mark it directly.
+        // Complete transitions (`notify_typecheck_done`, `notify_module_complete`),
+        // and for a cache restore at the end of its walk.
         if pool.is_terminal_typecheck() {
             state.ever_terminal.insert(module.clone());
         }

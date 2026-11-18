@@ -562,8 +562,8 @@ fn register_cached_with_scheduler<'a>(
         ctx.prelude_fallback,
     )?;
 
-    // 5. Register with the scheduler: terminal when `dep` declares no
-    //    children, otherwise published until the caller ends the restore. A
+    // 5. Register with the scheduler: published, and not terminal until the
+    //    caller ends the restore after the walk (`end_restore`). A
     //    generic-only module with no `.o` (FIXME 0387) has no codegen load to
     //    schedule; any other cached module registers with its `.o` load held
     //    for the caller to release.
