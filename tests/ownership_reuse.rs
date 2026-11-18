@@ -826,21 +826,21 @@ fn s124_d4_capture_repl() {
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t trace, run
-// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev fixed=S124/441e31ea
 #[test]
 fn s124_d4_trace_run() {
     s124_d4("trace", "run");
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t trace, link
-// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev fixed=S124/441e31ea
 #[test]
 fn s124_d4_trace_link() {
     s124_d4("trace", "link");
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t trace, repl
-// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev fixed=S124/441e31ea
 #[test]
 fn s124_d4_trace_repl() {
     s124_d4("trace", "repl");
@@ -883,21 +883,21 @@ fn s124_d4_trace_control_repl() {
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t small
-// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev fixed=S124/441e31ea
 #[test]
 fn s124_d4_trace_small_run() {
     s124_d4("trace_small", "run");
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t small
-// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev fixed=S124/441e31ea
 #[test]
 fn s124_d4_trace_small_link() {
     s124_d4("trace_small", "link");
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-D4-t small
-// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev
+// defect: class=display-envelope-mirror locus=crates/cranelisp-intrinsics/src/trace_format.rs::render_adt found=S124 owner=/dev fixed=S124/441e31ea
 #[test]
 fn s124_d4_trace_small_repl() {
     s124_d4("trace_small", "repl");

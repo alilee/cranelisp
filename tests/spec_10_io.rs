@@ -2413,7 +2413,7 @@ fn s124_1065_imported_then_run() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1065_prelude_bind_run() {
     s124_value(
@@ -2520,7 +2520,7 @@ fn s124_1065_imported_then_link() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1065_prelude_bind_link() {
     s124_value(
@@ -2627,7 +2627,7 @@ fn s124_1065_imported_then_repl() {
 }
 
 // spec: spec/04-expressions.md §4.6
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1065_prelude_bind_repl() {
     s124_value(

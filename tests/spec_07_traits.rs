@@ -4827,21 +4827,21 @@ fn s124_sibling_members(count: usize, self_first: bool, mode: &str) {
 }
 
 // spec: spec/03-types.md §3.10 — ACT-1072 subject
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev fixed=S124/951622cf
 #[test]
 fn s124_1072_subject_run() {
     s124_sibling_members(65, false, "run");
 }
 
 // spec: spec/03-types.md §3.10 — ACT-1072 subject
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev fixed=S124/951622cf
 #[test]
 fn s124_1072_subject_link() {
     s124_sibling_members(65, false, "link");
 }
 
 // spec: spec/03-types.md §3.10 — ACT-1072 subject
-// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/monomorphise.rs::receiver_in found=S124 owner=/dev fixed=S124/951622cf
 #[test]
 fn s124_1072_subject_repl() {
     s124_sibling_members(65, false, "repl");

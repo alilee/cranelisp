@@ -5987,42 +5987,42 @@ fn s124_selected_candidate_value(mode: &str, leg: CandidateSelectionLeg) {
 }
 
 // spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic callable from two candidates
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1075_polymorphic_call_run() {
     s124_selected_candidate_value("run", CandidateSelectionLeg::PolymorphicCall);
 }
 
 // spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic callable from two candidates
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1075_polymorphic_call_link() {
     s124_selected_candidate_value("link", CandidateSelectionLeg::PolymorphicCall);
 }
 
 // spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic callable from two candidates
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1075_polymorphic_call_repl() {
     s124_selected_candidate_value("repl", CandidateSelectionLeg::PolymorphicCall);
 }
 
 // spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic value by the expected function type
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1075_polymorphic_value_run() {
     s124_selected_candidate_value("run", CandidateSelectionLeg::PolymorphicValue);
 }
 
 // spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic value by the expected function type
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1075_polymorphic_value_link() {
     s124_selected_candidate_value("link", CandidateSelectionLeg::PolymorphicValue);
 }
 
 // spec: spec/08-modules.md §8.6.5 — ACT-1075 — select an imported polymorphic value by the expected function type
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/candidate_selection.rs found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck/src/program/mono_collect.rs::collect_mono_call_sites found=S124 owner=/dev
 #[test]
 fn s124_1075_polymorphic_value_repl() {
     s124_selected_candidate_value("repl", CandidateSelectionLeg::PolymorphicValue);
