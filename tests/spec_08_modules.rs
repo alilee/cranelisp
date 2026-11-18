@@ -6063,3 +6063,53 @@ fn s124_1075_monomorphic_control_link() {
 fn s124_1075_monomorphic_control_repl() {
     s124_selected_candidate_value("repl", CandidateSelectionLeg::MonomorphicCall);
 }
+
+fn s124_mount_prelude_cycle(qualifier: &str, opt_out: bool) -> Cranelisp {
+    let x = if opt_out {
+        "(import [prelude []])\n(defn y [] 37)"
+    } else {
+        "(defn y [:PreludeType v] 37)"
+    };
+    Cranelisp::new()
+        .prelude(&format!(
+            "(import [p [f]])\n(deftype PreludeType P)\n(defn reach [] ({qualifier}/y P))"
+        ))
+        .file(
+            "p.cl",
+            "(import [prelude []])\n(export [(x s) []])\n(defn f [] 1)",
+        )
+        .file("x.cl", x)
+        .timeout(Duration::from_secs(15))
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6, §8.4.4 — a qualified dependency through a mount closes a prelude cycle
+// defect: class=enumeration-miss locus=src/process_form/dependency.rs::prelude_reach_cycle found=S124 owner=/dev
+// Review of 42e6d929; design/int/int.md prelude_reach_cycle fixpoint rule.
+#[test]
+fn s124_prelude_cycle_through_nameless_export_mount_reports_cycle() {
+    let out = s124_mount_prelude_cycle("p.s", false)
+        .stdin("/quit\n")
+        .output();
+    let text = combined(&out);
+    assert!(names_prelude_x_cycle(&text),
+        "qualified p.s/y must report the x/prelude cycle rather than x's unresolved PreludeType; {text}");
+}
+
+// spec: spec/08-modules.md §8.5.4 item 6 — direct qualifier control for the same cycle
+#[test]
+fn s124_prelude_cycle_direct_qualifier_control() {
+    let out = s124_mount_prelude_cycle("x", false)
+        .stdin("/quit\n")
+        .output();
+    assert!(names_prelude_x_cycle(&combined(&out)), "{}", combined(&out));
+}
+
+// spec: spec/08-modules.md §8.4.4, §8.3.7 — a name-less mount resolves qualified use without a cycle when x opts out
+#[test]
+fn s124_nameless_export_mount_without_prelude_cycle_control() {
+    s124_mount_prelude_cycle("p.s", true)
+        .prelude("(import [p [f]])\n(defn reach [] (p.s/y))")
+        .stdin("(reach)\n/quit\n")
+        .output()
+        .assert_stdout_contains(":primitives/Int 37");
+}
