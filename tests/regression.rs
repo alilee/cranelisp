@@ -2962,7 +2962,7 @@ fn wave6_run_tests_batched_html_completes_without_crash() {
 // exemplar solver `--run` entry stack-overflow on full 81-cell puzzle.
 // Distinct angle from the d6_exemplar_* cluster above (synthetic single-
 // form repros, no IO): this exercises the **real solver entry**
-// (`--run exemplar/solver.cl::main`) including the IO trampolines that
+// (`--run exemplar/smoke.cl::main`) including the IO trampolines that
 // the synthetic repros elide. Differential observation: when /backend
 // resolves the recursion depth issue, this guard becomes passing; if it
 // still fails after the synthetic d6_exemplar_* guards pass, the
@@ -2976,6 +2976,7 @@ fn wave6_run_tests_batched_html_completes_without_crash() {
 // exemplar/solver.cl.
 //
 // (carry: legacy/wave6_demo_repros.rs::exemplar_solver_does_not_stack_overflow_on_small_puzzle)
+// spec: spec/12-runtime.md §12.3.1 — composed solver workload completes without a stack overflow.
 #[test]
 fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
     use std::process::{Command, Stdio};
@@ -2996,12 +2997,12 @@ fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
         .join("target")
         .join("debug");
 
-    // Use --run with the entry pointing to the real solver.cl. The
+    // Use --run with the entry pointing to the real smoke.cl. The
     // CRANELISP_LIB env var points to the workspace stdlib so prelude
     // resolves.
     let out = Command::new(&binary)
         .current_dir(cwd)
-        .args(["--run", "exemplar/solver.cl"])
+        .args(["--run", "exemplar/smoke.cl"])
         .env("CRANELISP_LIB", stdlib)
         .env("CRANELISP_PLATFORM_PATH", platform)
         .stdin(Stdio::null())
@@ -3010,20 +3011,10 @@ fn wave6_exemplar_solver_full_run_does_not_stack_overflow() {
         .output()
         .expect("failed to invoke binary");
 
-    let exit = out.status.code();
-    // Stack overflow may surface as SIGABRT (None / SIGSEGV depending on
-    // platform / runtime) — Rust's stack-overflow handler aborts the
-    // process. Either way, exit success is required.
-    let signal_segv = exit == Some(139);
-    let killed_by_signal = exit.is_none();
     assert!(
-        !signal_segv && !killed_by_signal,
-        "exemplar solver crashed with exit={exit:?}. Per Defect 6 \
-         (exemplar/AGENTS.md Known Issues) propagate/solve stack-overflow \
-         on full 81-cell grids. Once /backend resolves this, /port can \
-         re-enable test-easy-puzzle, test-hard-puzzle, test-unsolvable \
-         in exemplar/solver.cl. \
-         stdout=\n{}\nstderr=\n{}",
+        out.status.success(),
+        "exemplar smoke entry must exit successfully: status={}\nstdout=\n{}\nstderr=\n{}",
+        out.status,
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
