@@ -2696,6 +2696,17 @@ fn s124_scheduling_sample(
     second: bool,
     unrelated_local: Option<&str>,
 ) -> u128 {
+    s124_scheduling_sample_with_bind(multi, dependent, second, unrelated_local, "bind", 3)
+}
+
+fn s124_scheduling_sample_with_bind(
+    multi: bool,
+    dependent: bool,
+    second: bool,
+    unrelated_local: Option<&str>,
+    bind_name: &str,
+    attempts: usize,
+) -> u128 {
     let b = if dependent {
         "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 a) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
     } else {
@@ -2705,6 +2716,7 @@ fn s124_scheduling_sample(
         Some(name) => format!("(if (eq-i64 d 0) (let [{name} 1] (Pure {name})) {b})"),
         None => b.to_owned(),
     };
+    let b = b.replace("(bind ", &format!("({bind_name} "));
     let def = if !multi {
         format!("(defn f [d] {b})")
     } else if second {
@@ -2713,10 +2725,15 @@ fn s124_scheduling_sample(
         format!("(defn f ([d] {b}) ([d e] (Pure e)))")
     };
     let args = if second { "300 0" } else { "300" };
+    let bind_import = if bind_name == "bind" {
+        "*".to_owned()
+    } else {
+        format!("Pure sub-i64 add-i64 eq-i64 (bind {bind_name})")
+    };
     let src = format!(
-        "(platform poll-pool) (import [platform.poll-pool [poll-read]]) (import [primitives [*]]) {def} (defn main [] (f {args}))"
+        "(platform poll-pool) (import [platform.poll-pool [poll-read]]) (import [primitives [{bind_import}]]) {def} (defn main [] (f {args}))"
     );
-    (0..3)
+    (0..attempts)
         .map(|_| {
             let out = Cranelisp::new()
                 .use_workspace_platforms()
@@ -4054,5 +4071,21 @@ fn s124_1063_direct_vec_control_repl() {
         r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,
         "repl",
         5,
+    );
+}
+
+// spec: spec/10-io.md §10.12.1; spec/08-modules.md §8.3.5 — T-1065-d, renamed primitive keeps independent-call overlap
+#[test]
+fn s124_1065_d_renamed_primitive_bind_keeps_overlap() {
+    let serial = s124_scheduling_sample_with_bind(false, true, false, None, "bind", 1);
+    let direct = s124_scheduling_sample_with_bind(false, false, false, None, "bind", 3);
+    let renamed = s124_scheduling_sample_with_bind(false, false, false, None, "then", 3);
+    assert!(
+        direct * 4 < serial * 3,
+        "unrenamed control must overlap: direct {direct}ms, serial {serial}ms"
+    );
+    assert!(
+        renamed * 4 < serial * 3,
+        "renamed primitive must overlap: renamed {renamed}ms, direct {direct}ms, serial {serial}ms"
     );
 }
