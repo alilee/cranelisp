@@ -57,8 +57,9 @@ macro-free module; that write is removed.
 - **The fault.** The write re-keyed a stale importer's manifest entry and
   rewrote its `.meta`, and left the `.o` that an earlier launch built under
   the old key. The next cached launch validated the new entry and restored
-  the old object: a wrong value, or a call through a retired slot
-  ([ACT-1083](../../sprints/actions/ACT-1083-index-worker-revalidates-a-stale-cached-object-intake.md)).
+  the old object: a wrong value, or a call through a retired slot. `qa`
+  reproduced it as REPRO-1083, which fails on the wrong value and passes
+  after the correction, read at `79a8c94c`.
   This met the former reopen trigger: an index-written record diverged
   from what the foreground writer would produce for the files beside it.
 - **The rule.** The index pass writes no cache artefact. For a module whose
