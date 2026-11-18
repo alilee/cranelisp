@@ -32,7 +32,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
+use helpers::e2e::{repl_output_lines, Cranelisp, PreludeVariant, REPL_IO_NOTICE};
 use helpers::marginal::{Child, MarginalPair};
 
 // =============================================================================
@@ -4201,27 +4201,40 @@ fn s124_1063_balance_select_repl() {
     s124_1063_heap_payload_balance("select", "repl");
 }
 
-// spec: spec/10-io.md §10.6 — "The return type of main MUST be IO _ (IO of any type)".
-// Whether an unconstrained result variable is runnable or needs a located refusal
-// is not explicit here. This cell asserts only that user input cannot reach a
-// host panic; the concrete Option result below is its control.
+fn result_polymorphic_main_is_located_ambiguity(mode: &str) {
+    let cr = Cranelisp::new().file(
+        "p.cl",
+        "\n\n\n(defn main [] (primitives/Pure primitives/None))\n",
+    );
+    let out = if mode == "link" {
+        cr.link("p.cl").output()
+    } else {
+        cr.run("p.cl").output()
+    }
+    .assert_exit(1);
+    assert!(
+        out.stderr.contains("type error")
+            && out.stderr.contains("ambiguous type")
+            && out.stderr.contains("main")
+            && out.stderr.contains("p.cl:4:1:")
+            && !out.stderr.contains("0..0"),
+        "result-polymorphic main must be a located ambiguity at line 4: {}",
+        out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1; spec/10-io.md §10.6 — an unpinned main result is a located ambiguity.
 // defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev
 #[test]
 fn s124_result_polymorphic_main_does_not_panic_run() {
-    let out = Cranelisp::new()
-        .file("p.cl", "(defn main [] (primitives/Pure primitives/None))\n")
-        .run("p.cl")
-        .output();
-    let text = format!("{}{}", out.stdout, out.stderr);
-    assert!(
-        out.status.code().is_some()
-            && out.status.code() != Some(101)
-            && !text.contains("panicked at")
-            && !text.contains("internal error:")
-            && !text.contains("invariant:"),
-        "a result-polymorphic main must not panic in the compiler: status={}\n{text}",
-        out.status
-    );
+    result_polymorphic_main_is_located_ambiguity("run");
+}
+
+// spec: spec/03-types.md §3.11.1; spec/10-io.md §10.6 — an unpinned main result is a located ambiguity.
+// defect: class=check-gate-leak locus=src/session_v4/lifecycle.rs::CompilerSession::read_main_entry found=S124 owner=/dev
+#[test]
+fn s124_result_polymorphic_main_is_located_ambiguity_link() {
+    result_polymorphic_main_is_located_ambiguity("link");
 }
 
 // spec: spec/10-io.md §10.6, §10.6.1 — concrete Option result controls the polymorphic-main probe.
