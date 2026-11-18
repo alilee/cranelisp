@@ -153,7 +153,7 @@ pub use cranelift::codegen::isa::TargetIsa;
 // Re-export Cranelift module types for callers of compile_to_module.
 pub use cranelift_module;
 pub use cranelift_object;
-pub mod compiler;
+pub(crate) mod compiler;
 mod drop_glue;
 pub mod exe;
 pub mod got_observer;

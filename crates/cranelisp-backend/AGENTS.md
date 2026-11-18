@@ -106,7 +106,7 @@ off and are byte-identical off.
 
 Codegen is `impl FnCompiler` blocks across `compiler/` submodules, re-exported
 through the hubs `compiler/mod.rs` and `compiler/control_flow.rs`.
-`CompileContext` is the only public item under `compiler::`.
+The `compiler` module is crate-private.
 
 | Area | Files |
 |---|---|
