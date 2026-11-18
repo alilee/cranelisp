@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — W5 accepted; W6 next
+**Status**: PHASE 5 LANGUAGE — W7 accepted; W6 open on two user gates; W8 next
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -364,6 +364,23 @@ The third-deferral groups and ACT-1067 (Notes).
   argument, not the `self` position; crash, wrong value or refusal, including
   two spec §7.1.4 examples; predates S124), ACT-1077 (a same-named local
   leaves an unrelated bind chain sequential).
+- **W6 read by `qa` (`bb98aa75`), exit not met:** B6, B7, B9, B11, B12, D11
+  and the ACT-1038 half of B10 accepted (`b89c6186`..`e6d566bf`). Open on the
+  user: B8 (needs row D13 — `SymbolTable::install_extern` loses its sixth
+  parameter; the approved D6 names only the field); the ACT-1039 half of B10
+  and ACT-1078 (need a ruling on which modules a trace form covers,
+  `design/arch/tracing.md` §5.1); R10-2 built as a deletion where the row
+  approved narrowing (`06210347`).
+- **W7 accepted by `qa` (`bb98aa75`):** rows D3, D10, T5, T7 as one commit
+  (`42e6d929`); frontend rows (`7b9963bd`..`0ff6a6f1`); three review findings
+  on regeneration and the cycle walk corrected (`2dec7450`, `74aa7a52`).
+  Suite 7,680 run, 106 failed, nothing unattributed (delta §14). Closed:
+  ACT-1038, 1055, 1056, 1057, 1059, 1064, 1065; ACT-0997 resolved.
+- **Filed at the W6/W7 read:** ACT-1078 (a cached trace form references every
+  module loaded when it compiled), ACT-1079 (a qualified reference through an
+  export mount is refused unless the mount's owner is loaded; reachable only
+  since W7), ACT-1080 (annotation-mismatch diagnostic swaps expected and
+  got; predates S124).
 - **Awaiting the user's gate:** `CallableOrigin::TraitMethod` carrying its
   member (`cranelisp-types`; raised by review of `951622cf`, half-fixed in
   `240b3a8a`). Not started.
