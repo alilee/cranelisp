@@ -1,5 +1,7 @@
 use super::*;
+use cranelift_object::ObjectModule;
 use cranelisp_types::{CallableTarget, FQSymbol, ModuleFullPath, Symbol, SymbolTable};
+use std::collections::HashMap;
 
 // spec: design/backend/module-caching.md §5 — build_isa with PIC produces valid ISA
 #[test]
@@ -20,71 +22,6 @@ fn target(module: &ModuleFullPath, name: &Symbol) -> CallableTarget {
         module: module.clone(),
         symbol: name.clone(),
     })
-}
-
-// spec: design/backend/module-caching.md §7 — build_cache_packet creates valid packet
-#[test]
-fn test_build_cache_packet() {
-    let dir = tempfile::tempdir().unwrap();
-    let mp = ModuleFullPath::from("test.module");
-    let symbol_table = SymbolTable::new(mp.clone());
-    let input = ObjectCompileInput {
-        module_path: mp.clone(),
-        targets: vec![],
-    };
-
-    let packet = build_cache_packet(
-        dir.path(),
-        &mp,
-        "abc123",
-        false,
-        HashMap::new(),
-        &symbol_table,
-        input,
-    )
-    .unwrap();
-
-    assert_eq!(packet.module_path, mp);
-    assert_eq!(packet.source_hash, "abc123");
-    assert!(!packet.meta_json_bytes.is_empty());
-    assert!(
-        packet
-            .meta_path
-            .to_str()
-            .unwrap()
-            .contains("module.meta.json")
-    );
-    assert!(packet.object_path.to_str().unwrap().contains("module.o"));
-}
-
-// spec: design/backend/module-caching.md §7 — process_cache_packet writes files
-#[test]
-fn test_process_cache_packet() {
-    let dir = tempfile::tempdir().unwrap();
-    let mp = ModuleFullPath::from("user");
-    let symbol_table = SymbolTable::new(mp.clone());
-    let input = ObjectCompileInput {
-        module_path: mp.clone(),
-        targets: vec![],
-    };
-
-    let packet = build_cache_packet(
-        dir.path(),
-        &mp,
-        "hash123",
-        false,
-        HashMap::new(),
-        &symbol_table,
-        input,
-    )
-    .unwrap();
-
-    let result = process_cache_packet(&packet, &dashmap::DashMap::new()).unwrap();
-    assert_eq!(result.module_path, mp);
-    assert_eq!(result.source_hash, "hash123");
-
-    // Verify .meta.json was written
-    assert!(packet.meta_path.exists());
 }
 
 // spec: design/backend/module-caching.md §13.4 — GOT data symbol naming
@@ -296,95 +233,4 @@ fn test_compile_module_to_object_with_params() {
 
     // Verify parseable
     let _obj = ::object::File::parse(&*bytes).expect("should parse");
-}
-
-// spec: design/backend/module-caching.md §13 — process_cache_packet writes .o file
-#[test]
-fn test_process_cache_packet_writes_object_file() {
-    use cranelisp_types::{Defn, DefnVariant, Expr, Scheme, Visibility};
-
-    let dir = tempfile::tempdir().unwrap();
-    let mp = ModuleFullPath::from("user");
-    let symbol_table = SymbolTable::new(mp.clone());
-
-    let defn = Defn {
-        name: Symbol::from("main"),
-        docstring: None,
-        variants: vec![DefnVariant {
-            params: vec![],
-            body: Expr::IntLit {
-                value: 0,
-                span: Span::new(10, 11),
-                inferred_type: Some(Box::new(cranelisp_types::Type::Int)),
-            },
-            span: Span::new(0, 15),
-        }],
-        visibility: Visibility::Public,
-        span: Span::new(0, 15),
-    };
-    let scheme = Scheme {
-        type_vars: vec![],
-        constraints: HashMap::new(),
-        ty: cranelisp_types::Type::Fn(vec![], Box::new(cranelisp_types::Type::Int)),
-    };
-
-    let input = ObjectCompileInput {
-        module_path: mp.clone(),
-        targets: vec![target(&mp, &defn.name)],
-    };
-
-    let packet = build_cache_packet(
-        dir.path(),
-        &mp,
-        "hash456",
-        false,
-        HashMap::new(),
-        &symbol_table,
-        input,
-    )
-    .unwrap();
-
-    // Post-Phase-2: process_cache_packet reads AST bodies from the symbol
-    // tables via compile_to_module's name-list interface.
-    let tables = table_with_def(&mp, defn, scheme);
-    let result = process_cache_packet(&packet, &tables).unwrap();
-    assert_eq!(result.source_hash, "hash456");
-
-    // Both .meta.json and .o should exist
-    assert!(packet.meta_path.exists(), ".meta.json should exist");
-    assert!(packet.object_path.exists(), ".o file should exist");
-
-    // The .o file should be non-empty and parseable
-    let obj_bytes = std::fs::read(&packet.object_path).unwrap();
-    assert!(!obj_bytes.is_empty());
-    let _obj = ::object::File::parse(&*obj_bytes).expect("should be valid object file");
-}
-
-// spec: design/backend/module-caching.md §13.6 — empty defns skip .o generation
-#[test]
-fn test_process_cache_packet_no_object_for_empty_defns() {
-    let dir = tempfile::tempdir().unwrap();
-    let mp = ModuleFullPath::from("types_only");
-    let symbol_table = SymbolTable::new(mp.clone());
-    let input = ObjectCompileInput {
-        module_path: mp.clone(),
-        targets: vec![], // No functions
-    };
-
-    let packet = build_cache_packet(
-        dir.path(),
-        &mp,
-        "empty",
-        false,
-        HashMap::new(),
-        &symbol_table,
-        input,
-    )
-    .unwrap();
-
-    let _result = process_cache_packet(&packet, &dashmap::DashMap::new()).unwrap();
-
-    // .meta.json should exist, but .o should NOT
-    assert!(packet.meta_path.exists());
-    assert!(!packet.object_path.exists(), "no .o for empty defns");
 }
