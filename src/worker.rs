@@ -2017,7 +2017,7 @@ where
     ) -> Result<cranelisp_backend::CompilationArtifacts, CranelispError>,
 {
     publish_prepared_generation_with(processed, shared, capture_clif, compile)?;
-    processed.install_published_records(shared.introspection.as_ref());
+    processed.install_published_records(shared.introspection.as_ref(), &shared.definition_origins);
     Ok(())
 }
 

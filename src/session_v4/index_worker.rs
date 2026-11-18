@@ -2051,6 +2051,7 @@ mod tests {
             fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode: crate::session_v4::RunMode::Repl,
             entry_module: cranelisp_types::ModuleFullPath::from("user"),
+            definition_origins: dashmap::DashMap::new(),
             test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
         }
     }

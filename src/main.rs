@@ -37,7 +37,7 @@ use std::time::Instant;
 use cranelisp_types::{CodegenBehaviour, CranelispError, ModuleFullPath};
 
 use cranelisp::observability;
-use cranelisp::session_v4::{CommandResult, CompilerSession, RunMode, SessionSettings};
+use cranelisp::session_v4::{BatchError, CommandResult, CompilerSession, RunMode, SessionSettings};
 use cranelisp::{got_trace, io_trace, project_root_candidate};
 
 // Sprint 106 (FIXMEs 0544 + 0551): the REPL input abstraction — TTY (rustyline
@@ -235,7 +235,7 @@ fn main() {
     let entry_file = entry_file(&spec.project_root, &spec.entry_module);
 
     if let Err(e) = run(spec) {
-        eprintln!("{}", format_error(&e, &entry_file));
+        eprintln!("{}", format_batch_error(&e, &entry_file));
         process::exit(1);
     }
 }
@@ -244,6 +244,36 @@ fn main() {
 /// mapping: the error formatter's fallback location.
 fn entry_file(project_root: &Path, entry_module: &str) -> PathBuf {
     project_root_candidate(&ModuleFullPath::from(entry_module), project_root)
+}
+
+/// The category the missing-`main` refusal renders under: the subject is the
+/// entry module's contents. It restates `CranelispError::ModuleError`'s
+/// display label (`design/int/io-integration.md` §1, Rendering).
+const MISSING_MAIN_CATEGORY: &str = "module error";
+
+/// Render a batch outcome's error once: a compiler error through
+/// [`format_error`]; a missing `main` as the formatter's shape without a
+/// position, naming the entry file (`repl/spec/05-error-presentation.md`
+/// §5.5).
+fn format_batch_error(error: &BatchError, entry_file: &Path) -> String {
+    match error {
+        BatchError::Compiler(error) => format_error(error, entry_file),
+        BatchError::MissingMain { entry_file } => format!(
+            "{}: error: {MISSING_MAIN_CATEGORY}: entry module has no 'main' function — batch mode requires (defn main [] ...)",
+            display_file(entry_file)
+        ),
+    }
+}
+
+/// A file as the error formatter names it: the file name alone when it is in
+/// the working directory, otherwise the path.
+fn display_file(file: &Path) -> String {
+    match (std::env::current_dir().ok(), file.file_name()) {
+        (Some(cwd), Some(fname)) if file.parent() == Some(&cwd) => {
+            fname.to_string_lossy().into_owned()
+        }
+        _ => file.to_string_lossy().into_owned(),
+    }
 }
 
 /// Format a `CranelispError` with a `file:line:col` prefix derived from the
@@ -276,14 +306,7 @@ fn format_error(err: &CranelispError, entry_file: &Path) -> String {
     } else {
         derive_line_col(&file, loc.span.start as usize)
     };
-    // Friendly filename: prefer file name only when its parent matches cwd.
-    let display_file = match (std::env::current_dir().ok(), file.file_name()) {
-        (Some(cwd), Some(fname)) if file.parent() == Some(&cwd) => {
-            fname.to_string_lossy().into_owned()
-        }
-        _ => file.to_string_lossy().into_owned(),
-    };
-    format!("{display_file}:{line}:{col}: error: {err}")
+    format!("{}:{line}:{col}: error: {err}", display_file(&file))
 }
 
 /// Convert a byte offset within a source file into 1-based (line, column).
@@ -340,7 +363,7 @@ fn register_trace_exit_hook() {
 /// One CompilerSession, one code path. Workers are persistent for the
 /// session lifetime. Run/Link/REPL differ only in what happens after
 /// compilation.
-fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
+fn run(spec: LaunchSpec) -> Result<(), BatchError> {
     let LaunchSpec {
         action,
         project_root,
@@ -353,7 +376,7 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
         test_client_args,
     } = spec;
     if let Action::TestSupervisor = action {
-        return run_test_supervisor(&test_client_args);
+        return Ok(run_test_supervisor(&test_client_args)?);
     }
     let project_root: &Path = &project_root;
     let entry_module_name: &str = &entry_module;
@@ -390,7 +413,7 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
         // IO result yields exit code 0.
         Action::Run => {
             startup?;
-            s.wait_inmem_complete()?;
+            s.wait_inmem_complete().map_err(CranelispError::from)?;
             // `design/int/result-owner.md` §4.3 — the binding order is
             // **observe → release → object-wait/shutdown → trace flush →
             // exit**. `trampoline` hands back the ONE program-result owner;
@@ -400,7 +423,7 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
             let result = s.trampoline(entry_module_name)?;
             let exit_code = result.exit_code();
             result.release();
-            s.wait_object_complete()?;
+            s.wait_object_complete().map_err(CranelispError::from)?;
             s.shutdown();
             process::exit(exit_code);
         }
@@ -411,20 +434,20 @@ fn run(spec: LaunchSpec) -> Result<(), CranelispError> {
         // and records each for its supervisor. It writes no report.
         Action::TestChild(child) => {
             startup?;
-            s.wait_inmem_complete()?;
+            s.wait_inmem_complete().map_err(CranelispError::from)?;
             s.run_tests(
                 &child.records,
                 child.modules.as_deref(),
                 child.resume_after.as_ref(),
             )?;
             if child.modules.is_none() {
-                s.wait_object_complete()?;
+                s.wait_object_complete().map_err(CranelispError::from)?;
             }
         }
         // §8: Link mode.
         Action::Link => {
             startup?;
-            s.wait_object_complete()?;
+            s.wait_object_complete().map_err(CranelispError::from)?;
             s.link_by_name(entry_module_name, output_override)?;
         }
         // §6: REPL mode.
@@ -1255,6 +1278,44 @@ fn make_absolute(path: &Path, base: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use cranelisp_types::{FQSymbol, ModuleFullPath};
+
+    // spec: repl/spec/05-error-presentation.md §5.5 (missing-`main`
+    // exception), §5.1 item 1 — the missing-`main` outcome renders as the
+    // formatter's shape without a position: the entry file, `module error`
+    // and `main`, and no line, column or span. A located refusal keeps them.
+    #[test]
+    fn missing_main_renders_without_a_position() {
+        let file = std::env::current_dir().unwrap().join("p.cl");
+        let missing = format_batch_error(
+            &BatchError::MissingMain {
+                entry_file: file.clone(),
+            },
+            &file,
+        );
+        assert!(
+            missing.starts_with("p.cl: error: module error: ") && missing.contains("'main'"),
+            "{missing}"
+        );
+        assert!(
+            !missing.contains("0..0") && !missing.contains("p.cl:1:"),
+            "{missing}"
+        );
+
+        let located = format_batch_error(
+            &BatchError::Compiler(CranelispError::CodegenError {
+                message: "main must return `IO _`".to_string(),
+                location: cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span {
+                    start: 0,
+                    end: 1,
+                }),
+            }),
+            &file,
+        );
+        assert!(
+            located.starts_with("p.cl:1:1: error: codegen error"),
+            "{located}"
+        );
+    }
 
     /// Spec §8.11.1: the project root is the directory *containing the entry
     /// file*. When the target names a `<name>.cl` file in cwd, that file is the

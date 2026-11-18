@@ -557,18 +557,27 @@ fn build_startup_func(
 /// is exempt (§10.6.2 — no `main` requirement), so this seam (reached only by
 /// the two batch entry modes) is the correct enforcement point, NOT typecheck.
 ///
-/// Returns `Ok(())` for an acceptable `(Fn [] (IO _))` main; a spec-grounded
-/// error naming the required `(Fn [] (IO _))` shape otherwise.
-pub fn validate_main(
-    entry_symbols: &crate::code::SessionSymbolTable,
+/// The entry module binds no `main` (an absent table counts): the unlocated
+/// [`BatchError::MissingMain`] naming `entry_file`. Every refusal about a
+/// bound `main` — its shape, or a binding that is not a single function — is
+/// located at `main_origin`, the written top-level form that declared it
+/// (`design/int/io-integration.md` §1, Location). An unresolved return
+/// dispatch in `main`'s body keeps its own site.
+pub(crate) fn validate_main(
+    entry_symbols: Option<&crate::code::SessionSymbolTable>,
     unresolved_dispatch: &[cranelisp_typecheck::UnresolvedDispatchSite],
-) -> Result<(), CranelispError> {
-    let entry = entry_symbols
-        .get("main")
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: "entry module has no 'main' function".to_string(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
+    main_origin: Option<Span>,
+    entry_file: &Path,
+) -> Result<(), crate::session_v4::BatchError> {
+    let Some(entry) = entry_symbols.and_then(|table| table.get("main")) else {
+        return Err(crate::session_v4::BatchError::MissingMain {
+            entry_file: entry_file.to_path_buf(),
+        });
+    };
+    let origin = main_origin.unwrap_or_else(|| {
+        unreachable!("invariant: a published `main` has a recorded definition origin")
+    });
+    let at_origin = ErrorLocation::from_span_file(origin, Some(entry_file.to_path_buf()));
 
     match entry.callable() {
         Some(callable) => {
@@ -590,14 +599,15 @@ pub fn validate_main(
             if let Some(body_span) = body_span
                 && let Some(site) = first_dispatch_within(unresolved_dispatch, body_span)
             {
-                return Err(unresolved_dispatch_error(site));
+                return Err(unresolved_dispatch_error(site).into());
             }
-            classify_main_return_type(&callable.arm.scheme.ty)
+            classify_main_return_type(&callable.arm.scheme.ty, at_origin).map_err(Into::into)
         }
         _ => Err(CranelispError::CodegenError {
             message: "'main' in entry module is not a function definition".to_string(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }),
+            location: at_origin,
+        }
+        .into()),
     }
 }
 
@@ -814,7 +824,7 @@ fn body_references_dev_session_extern(
 /// Only the `IO` ADT return satisfies the gate; a bare `Int`/`Bool`/… return is
 /// rejected (no lenient "or Int" acceptance — spec §10.6 / §12.6, ruling
 /// SPRINT.md 0317 fork). A non-zero-arity main is also rejected.
-fn classify_main_return_type(ty: &Type) -> Result<(), CranelispError> {
+fn classify_main_return_type(ty: &Type, location: ErrorLocation) -> Result<(), CranelispError> {
     match ty {
         Type::Fn(params, ret) if params.is_empty() => match ret.as_ref() {
             Type::ADT(name, _) if name.name.as_ref() == "IO" => Ok(()),
@@ -823,7 +833,7 @@ fn classify_main_return_type(ty: &Type) -> Result<(), CranelispError> {
                     "main must return `IO _` (required shape `(Fn [] (IO _))`), found: {}",
                     type_display_brief(other)
                 ),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
+                location,
             }),
         },
         _ => Err(CranelispError::CodegenError {
@@ -832,7 +842,7 @@ fn classify_main_return_type(ty: &Type) -> Result<(), CranelispError> {
                  (required shape `(Fn [] (IO _))`), found: {}",
                 type_display_brief(ty)
             ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
+            location,
         }),
     }
 }
@@ -1004,35 +1014,28 @@ pub fn generate_main_alias_object(
 
 /// Look up the `main` GOT slot for the given entry module's symbol table.
 ///
-/// Returns the slot index pinned at typecheck time. Errors if `main` is
-/// missing or has no slot allocated (defensive — `validate_main` should
-/// have caught the missing case).
-pub fn entry_main_got_slot(
+/// Returns the slot index pinned at typecheck time. Reached only after the
+/// `main` gate accepted a bound, callable `main`; errors if typecheck pinned
+/// it no slot.
+pub(crate) fn entry_main_got_slot(
     entry_table: &crate::code::SessionSymbolTable,
 ) -> Result<usize, CranelispError> {
     let entry = entry_table
         .get("main")
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: "entry module has no 'main' function (alias generation)".to_string(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-    // The callable slot now rides on the `DefKind` variant (S83 reshape,
-    // FIXME 0356/0357) — read it through the `callable_got_slot()` chokepoint.
-    // `main` is a concrete user fn, so a pinned slot is expected.
-    match entry.callable() {
-        Some(_) => entry
-            .callable_got_slot()
-            .ok_or_else(|| CranelispError::CodegenError {
-                message: "entry module's 'main' has no GOT slot — typecheck did \
-                          not pin a slot index"
-                    .to_string(),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            }),
-        _ => Err(CranelispError::CodegenError {
-            message: "entry module's 'main' is not a Def entry".to_string(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }),
+        .unwrap_or_else(|| unreachable!("invariant: the `main` gate accepted a bound `main`"));
+    if entry.callable().is_none() {
+        unreachable!("invariant: the `main` gate accepted a callable `main`");
     }
+    // The callable slot rides on the `DefKind` variant (S83 reshape, FIXME
+    // 0356/0357) — read it through the `callable_got_slot()` chokepoint.
+    entry
+        .callable_got_slot()
+        .ok_or_else(|| CranelispError::CodegenError {
+            message: "entry module's 'main' has no GOT slot — typecheck did \
+                      not pin a slot index"
+                .to_string(),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })
 }
 
 // ── Link executable ─────────────────────────────────────────────────────
@@ -1546,7 +1549,7 @@ mod tests {
     fn validate_main_bare_int_return_is_rejected() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         install_main(&mut st, Type::Fn(vec![], Box::new(Type::Int)));
-        let err = validate_main(&st, &[]).unwrap_err();
+        let err = gate(&st).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(
@@ -1568,7 +1571,7 @@ mod tests {
     fn validate_main_bare_bool_return_is_rejected() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         install_main(&mut st, Type::Fn(vec![], Box::new(Type::Bool)));
-        let err = validate_main(&st, &[]).unwrap_err();
+        let err = gate(&st).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(
@@ -1602,19 +1605,85 @@ mod tests {
             ),
         );
         // An `(Fn [] (IO Int))` main is the canonical batch shape — accepted.
-        assert!(validate_main(&st, &[]).is_ok());
+        assert!(gate(&st).is_ok());
     }
 
-    // spec: design/backend/executable-generation.md §7 — missing main is error
+    /// The definition origin the gate fixtures record for `main`.
+    const MAIN_ORIGIN: Span = Span { start: 2, end: 37 };
+
+    /// The `main` gate over `st` with a recorded origin, where a missing
+    /// `main` is not expected.
+    #[allow(clippy::result_large_err)] // CranelispError is the crate-wide error carrier
+    fn gate(st: &crate::code::SessionSymbolTable) -> Result<(), CranelispError> {
+        match validate_main(Some(st), &[], Some(MAIN_ORIGIN), Path::new("p.cl")) {
+            Ok(()) => Ok(()),
+            Err(crate::session_v4::BatchError::Compiler(error)) => Err(error),
+            Err(other) => panic!("expected a compiler refusal, got {other:?}"),
+        }
+    }
+
+    // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 —
+    // an entry that binds no `main`, or has no table, is the one unlocated
+    // refusal: it names the entry file and carries no form span.
     #[test]
-    fn validate_main_missing() {
+    fn validate_main_missing_is_the_unlocated_refusal() {
         let st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
-        let err = validate_main(&st, &[]).unwrap_err();
-        match err {
-            CranelispError::CodegenError { message, .. } => {
-                assert!(message.contains("no 'main' function"));
+        for table in [Some(&st), None] {
+            match validate_main(table, &[], None, Path::new("p.cl")) {
+                Err(crate::session_v4::BatchError::MissingMain { entry_file }) => {
+                    assert_eq!(entry_file, Path::new("p.cl"));
+                }
+                other => panic!("expected MissingMain, got {other:?}"),
             }
-            _ => panic!("expected CodegenError"),
+        }
+    }
+
+    // spec: spec/10-io.md §10.6; repl/spec/05-error-presentation.md §5.5 —
+    // every refusal about a bound `main` (its shape, or a binding that is not
+    // a function) is located at its recorded definition origin in the entry
+    // file, never at a synthetic span.
+    #[test]
+    fn validate_main_refusals_are_located_at_the_definition_origin() {
+        let mut shaped =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        install_main(&mut shaped, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
+        let mut overloaded =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        overloaded
+            .install_overloaded(
+                Symbol::from("main"),
+                None,
+                0,
+                vec![cranelisp_types::CallableArmDraft::template(
+                    Scheme {
+                        type_vars: vec![0],
+                        constraints: Default::default(),
+                        ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Int)),
+                    },
+                    Vec::new(),
+                    TemplateBody::Ast(DefnVariant {
+                        params: vec![(Symbol::from("x"), None)],
+                        body: Expr::IntLit {
+                            value: 0,
+                            span: Span::SYNTHETIC,
+                            inferred_type: None,
+                        },
+                        span: Span::SYNTHETIC,
+                    }),
+                    cranelisp_types::TemplateKind::Parametric,
+                    Vec::new(),
+                )],
+                Visibility::Public,
+            )
+            .unwrap();
+        for (label, table) in [("shape", &shaped), ("not a function", &overloaded)] {
+            let refusal = gate(table).expect_err(label);
+            assert_eq!(refusal.span(), MAIN_ORIGIN, "{label}: {refusal}");
+            assert_eq!(
+                refusal.location().file.as_deref(),
+                Some(Path::new("p.cl")),
+                "{label}"
+            );
         }
     }
 
@@ -1623,7 +1692,7 @@ mod tests {
     fn validate_main_wrong_return_type() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         install_main(&mut st, Type::Fn(vec![], Box::new(Type::String)));
-        let err = validate_main(&st, &[]).unwrap_err();
+        let err = gate(&st).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(
@@ -1640,7 +1709,7 @@ mod tests {
     fn validate_main_with_params() {
         let mut st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
         install_main(&mut st, Type::Fn(vec![Type::Int], Box::new(Type::Int)));
-        let err = validate_main(&st, &[]).unwrap_err();
+        let err = gate(&st).unwrap_err();
         match err {
             CranelispError::CodegenError { message, .. } => {
                 assert!(message.contains("zero-argument"));

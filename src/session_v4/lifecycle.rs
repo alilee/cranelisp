@@ -362,6 +362,7 @@ impl CompilerSession {
             fresh_jit_drop_glues: dashmap::DashMap::new(),
             run_mode,
             entry_module: entry_module.clone(),
+            definition_origins: dashmap::DashMap::new(),
             test_runner_state,
         });
 
@@ -2563,28 +2564,11 @@ impl CompilerSession {
     pub fn trampoline(
         &mut self,
         module_name: &str,
-    ) -> Result<crate::result_owner::OwnedProgramResult, CranelispError> {
+    ) -> Result<crate::result_owner::OwnedProgramResult, super::BatchError> {
         // Enforce the batch-mode signature `(Fn [] (IO _))` before running
-        // (spec §10.6 / §12.6). `--run` reaches `main` through this seam (NOT
-        // `link_by_name`), so the same `validate_main` gate the `--link` path
-        // applies must be applied here — otherwise a bare-`Int`/`Bool` main
-        // would be leniently accepted under `--run`. The REPL never calls
-        // `trampoline`, so it stays exempt (§10.6.2).
-        let module_path = ModuleFullPath::from(module_name);
-        if let Some(table) = self.module_table(&module_path) {
-            // 0611: the entry module's unresolved-return-poly-dispatch carrier
-            // (EMPTY for every valid module) — `validate_main` rejects a `main`
-            // whose body carries one with the §3.11 ambiguity (class (b)).
-            let dispatch = self
-                .shared
-                .typecheck_products
-                .get(&module_path)
-                .map(|tp| tp.unresolved_dispatch.clone())
-                .unwrap_or_default();
-            crate::exe::validate_main(&table, &dispatch)?;
-        }
-        // (If the entry table is absent, the code-ptr lookup below produces the
-        // "no `main`" diagnostic — no separate handling needed here.)
+        // (spec §10.6 / §12.6). `--run` and `--link` share this gate; the REPL
+        // never calls `trampoline`, so it stays exempt (§10.6.2).
+        self.validate_entry_main(&ModuleFullPath::from(module_name))?;
         // §16.6: refuse a program that references `discover-tests` before any
         // of it runs (`design/int/test-runner.md` §7.3).
         crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
@@ -2594,7 +2578,7 @@ impl CompilerSession {
         // lifetime owner — `design/int/result-owner.md` §4.3: the owner
         // constructor takes its type from the same read that produced the code
         // pointer, never from a second lookup that could fall back.
-        let main = self.read_main_entry(module_name)?;
+        let main = self.read_main_entry(module_name);
         let code_ptr = main.code_ptr;
         let result_type = main.result_type.clone();
 
@@ -2618,14 +2602,48 @@ impl CompilerSession {
             main.code_owner.as_ref(),
             &self.shared.fresh_jit_drop_glues,
         );
-        crate::result_owner::OwnedProgramResult::new(
+        Ok(crate::result_owner::OwnedProgramResult::new(
             value,
             crate::pipeline::driver_result_type(result_type),
             main.codegen_result_ty,
             &ModuleFullPath::from(module_name),
             &self.shared.symbol_tables,
             &resolver,
-        )
+        )?)
+    }
+
+    /// The batch `main` gate over the entry module (`design/int/
+    /// io-integration.md` §1): the one producer of the missing-`main` refusal,
+    /// and of every refusal about a bound `main`, located at its definition
+    /// origin. An absent entry table is an entry with no `main`.
+    fn validate_entry_main(&self, module: &ModuleFullPath) -> Result<(), super::BatchError> {
+        let table = self.module_table(module);
+        // 0611: the entry module's unresolved-return-poly-dispatch carrier
+        // (EMPTY for every valid module) routes a `main` whose body carries one
+        // to the §3.11 ambiguity (class (b)).
+        let dispatch = self
+            .shared
+            .typecheck_products
+            .get(module)
+            .map(|tp| tp.unresolved_dispatch.clone())
+            .unwrap_or_default();
+        let main_origin = self
+            .shared
+            .definition_origins
+            .get(&FQSymbol {
+                module: module.clone(),
+                symbol: Symbol::from("main"),
+            })
+            .map(|origin| *origin);
+        let entry_file = self
+            .shared
+            .typecheck_products
+            .get(module)
+            .and_then(|tp| tp.file_path.clone())
+            .unwrap_or_else(|| {
+                unreachable!("invariant: batch registration resolved the entry module's file")
+            });
+        crate::exe::validate_main(table.as_deref(), &dispatch, main_origin, &entry_file)
     }
 
     /// One read of the entry module's `main` entry, yielding everything the
@@ -2640,14 +2658,8 @@ impl CompilerSession {
     /// one read there is no second lookup and therefore no fallback: an absent
     /// or non-`Fn`-schemed `main` produces the same "no `main`" diagnostic the
     /// pointer half always produced.
-    fn read_main_entry(&self, module_name: &str) -> Result<MainEntryRead, CranelispError> {
+    fn read_main_entry(&self, module_name: &str) -> MainEntryRead {
         let module_path = ModuleFullPath::from(module_name);
-        let no_main = || CranelispError::ModuleError {
-            message: "entry module has no `main` function — batch mode requires (defn main [] ...)"
-                .into(),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        };
-
         // GOT is the single source of callable addresses (D41/D35); read
         // `main`'s pointer from its GOT slot rather than a `Code::ptr`.
         // The callable slot now rides on the `DefKind` variant (S83 reshape,
@@ -2656,10 +2668,14 @@ impl CompilerSession {
             .shared
             .symbol_tables
             .get(&module_path)
-            .ok_or_else(no_main)?;
-        let entry = table.get("main").ok_or_else(no_main)?;
+            .unwrap_or_else(|| {
+                unreachable!("invariant: the `main` gate accepted this entry's table")
+            });
+        let entry = table
+            .get("main")
+            .unwrap_or_else(|| unreachable!("invariant: the `main` gate accepted a bound `main`"));
         let Some(callable) = entry.callable() else {
-            return Err(no_main());
+            unreachable!("invariant: the `main` gate accepted a callable `main`");
         };
         let Life::Concrete {
             realization:
@@ -2670,25 +2686,25 @@ impl CompilerSession {
             ..
         } = &callable.arm.life
         else {
-            return Err(no_main());
+            unreachable!("invariant: an accepted `main` has published compiled code");
         };
-        let slot = entry.callable_got_slot().ok_or_else(no_main)?;
+        let slot = entry
+            .callable_got_slot()
+            .unwrap_or_else(|| unreachable!("invariant: compiled `main` has a GOT slot"));
         let code_ptr = table.got.load_slot(slot);
         if code_ptr.is_null() {
-            return Err(no_main());
+            unreachable!("invariant: compiled `main`'s GOT slot is populated");
         }
-        // `validate_main` (run before this read) guarantees `(Fn [] (IO _))`,
-        // so a non-`Fn` scheme here is unreachable; it takes the same
-        // diagnostic rather than defaulting to a type nobody derived.
+        // The gate guarantees `(Fn [] (IO _))`.
         let Type::Fn(_, ret) = &callable.arm.scheme.ty else {
-            return Err(no_main());
+            unreachable!("invariant: the `main` gate accepted a function type");
         };
-        Ok(MainEntryRead {
+        MainEntryRead {
             code_ptr,
             result_type: *ret.clone(),
             code_owner: Some(code_owner.clone()),
             codegen_result_ty: entry.codegen_view().map(|view| view.body.ty().clone()),
-        })
+        }
     }
 
     /// Wait until all registered modules have object codegen complete.
@@ -2763,7 +2779,9 @@ impl CompilerSession {
     /// active modules stale here, BEFORE the caller's `wait_object_complete`,
     /// pins the persisted snapshot to the session's FINAL table state.
     pub fn flush_final_persist(&self) {
-        self.shared.scheduler.mark_object_stale(&self.shared.entry_module);
+        self.shared
+            .scheduler
+            .mark_object_stale(&self.shared.entry_module);
         if self.current_repl_module != self.shared.entry_module {
             self.shared
                 .scheduler
@@ -3084,39 +3102,30 @@ impl CompilerSession {
         &mut self,
         module_name: &str,
         output_override: Option<&Path>,
-    ) -> Result<(), CranelispError> {
+    ) -> Result<(), super::BatchError> {
         let module = ModuleFullPath::from(module_name);
 
-        // Validate main exists and determine return kind (Int vs IO).
-        let entry_table =
-            self.module_table(&module)
-                .ok_or_else(|| CranelispError::ModuleError {
-                    message: format!("entry module '{}' not found in typechecker", module_name),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                })?;
         // Enforce the batch-mode signature `(Fn [] (IO _))` (spec §10.6 /
         // §12.6). A valid `main` always returns `IO _` after this gate — the
         // startup stub therefore always trampolines the IO result.
-        // 0611: the entry module's unresolved-return-poly-dispatch carrier
-        // (EMPTY for every valid module) routes a `main` whose body carries one
-        // to the §3.11 ambiguity (class (b)) instead of `main has no GOT slot`.
-        let dispatch = self
-            .shared
-            .typecheck_products
-            .get(&module)
-            .map(|tp| tp.unresolved_dispatch.clone())
-            .unwrap_or_default();
-        crate::exe::validate_main(&entry_table, &dispatch)?;
-        drop(entry_table);
+        self.validate_entry_main(&module)?;
         // §16.6: refuse a program that references `discover-tests` before
         // anything is written (`design/int/test-runner.md` §7.3).
         crate::exe::refuse_dev_session_externs(&self.shared.symbol_tables)?;
-        let entry_table =
-            self.module_table(&module)
-                .ok_or_else(|| CranelispError::ModuleError {
-                    message: format!("entry module '{}' not found in typechecker", module_name),
-                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                })?;
+        Ok(self.link_accepted_entry(&module, module_name, output_override)?)
+    }
+
+    /// Link an entry whose `main` the gate accepted (`link_by_name`).
+    fn link_accepted_entry(
+        &mut self,
+        module: &ModuleFullPath,
+        module_name: &str,
+        output_override: Option<&Path>,
+    ) -> Result<(), CranelispError> {
+        let module = module.clone();
+        let entry_table = self.module_table(&module).unwrap_or_else(|| {
+            unreachable!("invariant: the `main` gate accepted this entry's table")
+        });
         // Sprint 58 Wave 2 / Decision 36: read the entry module's `main`
         // GOT slot index now (before dropping the table guard). The alias
         // `.o` (emitted below) routes the system linker's `_main` import

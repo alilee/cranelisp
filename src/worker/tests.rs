@@ -3285,6 +3285,7 @@ fn test_shared_state() -> crate::session_v4::SharedState {
         fresh_jit_drop_glues: dashmap::DashMap::new(),
         run_mode: crate::session_v4::RunMode::Repl,
         entry_module: ModuleFullPath::from("user"),
+        definition_origins: dashmap::DashMap::new(),
         test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
     }
 }

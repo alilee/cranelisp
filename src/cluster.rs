@@ -82,6 +82,10 @@ pub struct ProcessedCluster {
     /// ([`Self::install_published_records`]).
     pub(crate) introspection_records: Vec<(FQSymbol, Introspection)>,
 
+    /// Each built definition's authored-form span, in every mode, installed
+    /// only by the cluster's publication ([`Self::install_published_records`]).
+    pub(crate) definition_origins: Vec<(FQSymbol, cranelisp_types::Span)>,
+
     /// The 0611 carrier — return-poly dispatch sites still UNRESOLVED at
     /// finalize (`design/typecheck/return-poly-dispatch-signal.md`). EMPTY for
     /// every valid program. The eval driver consults these at the `__expr`
@@ -132,7 +136,11 @@ impl ProcessedCluster {
     pub(crate) fn install_published_records(
         &mut self,
         introspection: Option<&dashmap::DashMap<FQSymbol, Introspection>>,
+        definition_origins: &dashmap::DashMap<FQSymbol, cranelisp_types::Span>,
     ) {
+        for (key, span) in std::mem::take(&mut self.definition_origins) {
+            definition_origins.insert(key, span);
+        }
         let records = std::mem::take(&mut self.introspection_records);
         let Some(introspection) = introspection else {
             return;
@@ -174,6 +182,7 @@ impl ProcessedCluster {
             warnings,
             resolved_imports,
             introspection_records,
+            definition_origins: Vec::new(),
             unresolved_dispatch: Vec::new(),
             prepared: None,
             pending_codegen_notification: None,
@@ -189,6 +198,7 @@ impl ProcessedCluster {
             warnings: Vec::new(),
             resolved_imports: Vec::new(),
             introspection_records: Vec::new(),
+            definition_origins: Vec::new(),
             unresolved_dispatch: Vec::new(),
             prepared: None,
             pending_codegen_notification: None,

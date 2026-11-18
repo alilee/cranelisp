@@ -303,6 +303,7 @@ fn nice_worker_lifecycle_spawn_and_shutdown() {
         // is an inert default here.
         run_mode: crate::session_v4::RunMode::Repl,
         entry_module: cranelisp_types::ModuleFullPath::from("user"),
+        definition_origins: dashmap::DashMap::new(),
         // Sprint 66 Wave 3a-γ: TestRunnerState stub for the scheduler
         // unit test. The test exercises the nice-worker lifecycle, not
         // test/trace intrinsics — a default state with empty/null

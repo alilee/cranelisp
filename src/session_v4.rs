@@ -36,6 +36,26 @@ pub use crate::repl::QUIT_SENTINEL;
 // (`crate::session_v4::X`) resolve unchanged (the compatibility membrane).
 mod types;
 
+/// The outcome of a batch entry operation that does not run or link
+/// (`design/int/io-integration.md` §1; S124-Q8). `MissingMain` is the one
+/// refusal without a source position: the entry module binds no `main`.
+/// Every other refusal, located or not, is `Compiler`.
+#[derive(Debug)]
+pub enum BatchError {
+    /// The entry module binds no `main`; `entry_file` is the entry module's
+    /// source file as registration resolved it.
+    MissingMain {
+        entry_file: std::path::PathBuf,
+    },
+    Compiler(cranelisp_types::CranelispError),
+}
+
+impl From<cranelisp_types::CranelispError> for BatchError {
+    fn from(error: cranelisp_types::CranelispError) -> Self {
+        BatchError::Compiler(error)
+    }
+}
+
 // types.rs — DTOs + leaf pure helpers (S87 §2.1). Re-exported to preserve
 // `session_v4::X` paths used by main.rs / eval.rs / repl.rs / worker.rs /
 // cluster.rs / platform.rs.
@@ -334,6 +354,14 @@ pub struct SharedState {
     /// cursor, never the entry. Only the entry may declare a platform
     /// (`spec/10-io.md` §10.9.1).
     pub(crate) entry_module: ModuleFullPath,
+
+    /// The written top-level form each published definition came from, by its
+    /// span, in every mode (`design/int/io-integration.md` §1, The
+    /// definition-origin span). An ordinary definition's span publishes with
+    /// its generation; a macro's at its checkpoint. A macro-produced
+    /// definition is attributed to the macro call the user wrote. The batch
+    /// `main` gate locates its refusals here.
+    pub(crate) definition_origins: dashmap::DashMap<FQSymbol, cranelisp_types::Span>,
 
     /// Session-lifetime retention pool for superseded code
     /// (`design/int/session-transaction.md` §6). Append-only, never drained

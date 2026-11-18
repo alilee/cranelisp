@@ -279,12 +279,23 @@ fn attempt_cluster(
 struct BuiltProgram {
     forms: Vec<TopLevel>,
     records: Vec<(BuiltIdentity, crate::session_v4::Introspection)>,
+    /// The authored top-level form's span for every built definition, in
+    /// every mode; installed with the generation's publication.
+    origins: Vec<(BuiltIdentity, Span)>,
 }
 
 impl BuiltProgram {
     /// Append `built`, staging one record per definition when the session
     /// keeps introspection. Every member takes the authored top-level form.
     fn extend(&mut self, ctx: &ModuleCompiler, module: &ModuleFullPath, built: Built<'_>) {
+        let origin = built.authored_origin.span();
+        self.origins.extend(
+            built
+                .forms
+                .iter()
+                .filter_map(|top| definition_identity(module, top))
+                .map(|identity| (identity, origin)),
+        );
         if ctx.introspection.is_some() {
             let source = verbatim_source_slice(ctx, module, built.authored_origin)
                 .unwrap_or_else(|| crate::pretty::pretty_print_plain(built.authored_origin));
@@ -311,6 +322,32 @@ impl BuiltProgram {
         }
         self.forms.extend(built.forms);
     }
+}
+
+/// Record a published macro's definition origin: the written top-level form
+/// its checkpoint came from (`design/int/io-integration.md` §1).
+fn record_macro_origin(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    name: &cranelisp_types::Symbol,
+    authored: &Sexp,
+) {
+    if let Some(shared) = ctx.shared_state {
+        shared.definition_origins.insert(
+            FQSymbol {
+                module: module.clone(),
+                symbol: name.clone(),
+            },
+            authored.span(),
+        );
+    }
+}
+
+/// A cluster attempt's staged per-definition records, keyed once the
+/// generation's `impl` identities settle.
+struct StagedRecords {
+    records: Vec<(BuiltIdentity, crate::session_v4::Introspection)>,
+    origins: Vec<(BuiltIdentity, Span)>,
 }
 
 /// One authored form's build: its top-level definitions and the expansion
@@ -528,6 +565,7 @@ fn finish_pass2(
     let BuiltProgram {
         forms: expanded_program,
         records,
+        origins,
     } = built;
     let expanded_program = expanded_program.as_slice();
     match pass2_result {
@@ -544,7 +582,7 @@ fn finish_pass2(
                 origin_sexps,
                 expanded_program,
                 prefix,
-                records,
+                StagedRecords { records, origins },
                 &program,
             )?;
             if let ClusterOnce::Done { processed, .. } = &mut outcome
@@ -646,7 +684,7 @@ fn finalize_cluster(
     origin_sexps: &[Sexp],
     expanded_program: &[TopLevel],
     prefix: &ExpandedPrefix,
-    records: Vec<(BuiltIdentity, crate::session_v4::Introspection)>,
+    staged: StagedRecords,
     program: &SourceProvenance,
 ) -> Result<Finalized, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
@@ -801,9 +839,15 @@ fn finalize_cluster(
             None => ImplIdentities::settle(module, &[], &program)?,
         },
     };
-    let records = records
+    let records = staged
+        .records
         .into_iter()
         .map(|(identity, record)| Ok((impl_identities.key_of(&identity)?, record)))
+        .collect::<Result<Vec<_>, CranelispError>>()?;
+    let origins = staged
+        .origins
+        .into_iter()
+        .map(|(identity, span)| Ok((impl_identities.key_of(&identity)?, span)))
         .collect::<Result<Vec<_>, CranelispError>>()?;
 
     // Cluster-level metadata. The per-symbol staging entries already committed
@@ -814,6 +858,7 @@ fn finalize_cluster(
     // only when this cluster's generation publishes.
     let mut processed =
         crate::cluster::ProcessedCluster::from_parts(cluster_warnings, Vec::new(), records);
+    processed.definition_origins = origins;
     // 0611 carrier — the return-poly dispatch sites still unresolved at
     // finalize (EMPTY for every valid program). The eval driver consults these
     // at the `__expr` eval-result boundary (class (b), Principle 19): a bare
@@ -1228,6 +1273,7 @@ fn pass2_check_bodies_with_expansion(
                     sexp,
                     authored_source,
                 );
+                record_macro_origin(ctx, module, &info.name, sexp);
                 record_turn_definition(
                     turn_definitions,
                     BuiltIdentity::Keyed(FQSymbol {
@@ -1516,6 +1562,7 @@ fn process_regular_form_with_origin(
                     authored_origin,
                     verbatim_source_slice(ctx, module, authored_origin),
                 );
+                record_macro_origin(ctx, module, &info.name, authored_origin);
                 record_turn_definition(
                     turn_definitions,
                     BuiltIdentity::Keyed(FQSymbol {
@@ -1651,6 +1698,7 @@ fn process_regular_form_with_origin(
                 authored_origin,
                 authored_source,
             );
+            record_macro_origin(ctx, module, &info.name, authored_origin);
             emission_markers.push(DefinitionEmissionMarker::PublishedMacro(FQSymbol {
                 module: module.clone(),
                 symbol: info.name,
