@@ -1109,3 +1109,213 @@ fn s124_1078_no_trace_control_run() {
 fn s124_1078_no_trace_control_link() {
     s124_cached_trace_fewer_modules("link", false, false);
 }
+
+// The name counter runs after tracing, so it contributes no frames of its own.
+const S124_COUNT_NAMED: &str = r#"
+(import [primitives [Int Pure TraceCall add-i64 sub-i64 mul-i64 str-eq]])
+(import [macros [SCons SNil]])
+(defn count-named [wanted xs]
+  (match xs
+    [SNil 0
+     (SCons h t)
+       (match h [(TraceCall n p r c ns)
+         (add-i64 (if (str-eq n wanted) 1 0)
+           (add-i64 (count-named wanted c) (count-named wanted t)))])]))
+"#;
+
+fn s124_trace_invoke(cr: Cranelisp, mode: &str) -> helpers::e2e::CrOutput {
+    let cr = cr
+        .env("CRANELISP_NO_LENIENT", "1")
+        .env("CRANELISP_MODULE_TRACE", "1");
+    match mode {
+        "run" => cr.run("app.cl").output(),
+        "link" => cr.link_then_run("app.cl").output(),
+        "repl" => cr.cli_flag("app.cl").stdin("(main)\n").output(),
+        _ => unreachable!(),
+    }
+}
+
+fn s124_trace_score(out: &helpers::e2e::CrOutput, mode: &str) -> i32 {
+    assert!(
+        !out.stderr.contains("error:")
+            && !out.stdout.contains("error:")
+            && !out.stdout.contains("[errors:")
+            && !out.stdout.contains("Cannot evaluate:"),
+        "fixture must execute before frame assertions: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    if mode == "repl" {
+        assert!(out.status.success(), "{}{}", out.stdout, out.stderr);
+        out.stdout
+            .lines()
+            .filter_map(|line| line.split_once(":primitives/Int "))
+            .filter_map(|(_, value)| value.trim().parse().ok())
+            .last()
+            .unwrap_or_else(|| panic!("missing main result: {}{}", out.stdout, out.stderr))
+    } else {
+        if mode == "link" {
+            assert!(out.linked_execution_elapsed.is_some(), "link must run");
+        }
+        out.status.code().expect("fixture must not crash")
+    }
+}
+
+fn s124_trace_cold_warm(cr: Cranelisp, mode: &str, cached_module: &str) -> [i32; 2] {
+    let cold = s124_trace_invoke(cr, mode);
+    let cold_score = s124_trace_score(&cold, mode);
+    let warm = s124_trace_invoke(cold.run_again(), mode);
+    assert!(
+        warm.stderr
+            .contains(&format!("cache hit (.meta valid) for {cached_module}")),
+        "warm leg must restore {cached_module}: {}{}",
+        warm.stdout,
+        warm.stderr
+    );
+    [cold_score, s124_trace_score(&warm, mode)]
+}
+
+fn s124_library_trace_scope(mode: &str) {
+    let library = r#"
+(import [primitives [Int add-i64]])
+(defn own [:Int n] (add-i64 n 1))
+(defn profile [f] (trace (add-i64 (own 10) (f))))
+"#;
+    let app = format!(
+        r#"{FIB_AND_FRAMES}{S124_COUNT_NAMED}
+(import [u [profile]])
+(defn work [] (fib 3))
+(defn main []
+  (Pure (match (profile work) [(TraceCall n p r c ns)
+    (add-i64 (mul-i64 10 (count-named "u/own" c))
+      (sub-i64 (frames c) (count-named "u/own" c)))])))
+"#
+    );
+    let scores = s124_trace_cold_warm(
+        Cranelisp::new().file("u.cl", library).file("app.cl", &app),
+        mode,
+        "u",
+    );
+    assert_eq!(
+        scores,
+        [10, 10],
+        "{mode} [cold, warm]: score = 10 * library own frames + other frames (caller work/fib; arithmetic is inline); must record one u/own and no caller frames"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-lib: library calls recorded, caller's function excluded, cold/warm
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_1039_lib_neg_caller_frames_run() {
+    s124_library_trace_scope("run");
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-lib: library calls recorded, caller's function excluded, cold/warm
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_1039_lib_neg_caller_frames_link() {
+    s124_library_trace_scope("link");
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-lib: library calls recorded, caller's function excluded, cold/warm
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_1039_lib_neg_caller_frames_repl() {
+    s124_library_trace_scope("repl");
+}
+
+fn s124_finished_module_trace(mode: &str, import_position: &str) {
+    let import = "(import [x [f]])\n";
+    let app = format!(
+        r#"{S124_COUNT_NAMED}
+{}
+(defn g [h] (trace (h 1)))
+(defmacro boundary [x] x)
+{}
+(defn main [] (boundary (Pure (match (g x/f) [(TraceCall n p r c ns) (count-named "x/f" c)]))))
+"#,
+        if import_position == "above" {
+            import
+        } else {
+            ""
+        },
+        if import_position == "below" {
+            import
+        } else {
+            ""
+        },
+    );
+    let scores = s124_trace_cold_warm(
+        Cranelisp::new().file("app.cl", &app).file(
+            "x.cl",
+            "(import [primitives [Int add-i64]])\n(defn f [:Int n] (add-i64 n 1))\n",
+        ),
+        mode,
+        "x",
+    );
+    assert_eq!(
+        scores,
+        [1, 1],
+        "{mode}/{import_position} [cold, warm]: entry-held trace before a macro cluster boundary must record the later x/f call"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — entry-file trace covers the whole program, including a later qualified-only reference
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_finished_module_qualified_run() {
+    s124_finished_module_trace("run", "absent");
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — entry-file trace covers the whole program, including a later qualified-only reference
+#[test]
+fn s124_finished_module_qualified_link() {
+    s124_finished_module_trace("link", "absent");
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — entry-file trace covers the whole program, including a later qualified-only reference
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_finished_module_qualified_repl() {
+    s124_finished_module_trace("repl", "absent");
+}
+
+// spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — imports below a trace form take effect before definitions
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_finished_module_import_below_run() {
+    s124_finished_module_trace("run", "below");
+}
+
+// spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — imports below a trace form take effect before definitions
+#[test]
+fn s124_finished_module_import_below_link() {
+    s124_finished_module_trace("link", "below");
+}
+
+// spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — imports below a trace form take effect before definitions
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_finished_module_import_below_repl() {
+    s124_finished_module_trace("repl", "below");
+}
+
+// spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.9 — import-above twin of the import-below fixture, cold/warm
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_finished_module_import_above_run() {
+    s124_finished_module_trace("run", "above");
+}
+
+// spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.9 — import-above twin of the import-below fixture, cold/warm
+#[test]
+fn s124_finished_module_import_above_link() {
+    s124_finished_module_trace("link", "above");
+}
+
+// spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.9 — import-above twin of the import-below fixture, cold/warm
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+#[test]
+fn s124_finished_module_import_above_repl() {
+    s124_finished_module_trace("repl", "above");
+}
