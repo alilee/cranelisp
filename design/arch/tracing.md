@@ -642,7 +642,7 @@ each target.
 
   `targets` changes its element type and the `trace_modules` parameter is
   removed. The bounds are unchanged.
-- **Delta, types.**
+- **Delta, types (in source, `bb217cdc`).**
   `CallableArm::<C>::template_module(&self) -> Option<&ModuleFullPath>`: the
   module that defines the template a minted instance was made from, and
   `None` for any other arm. It reads `Life::Concrete::minted_from` and

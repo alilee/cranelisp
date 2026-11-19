@@ -764,8 +764,8 @@ design that needs a public change outside these rows stops and returns to `arch`
 | D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed; `CACHE_SCHEMA_VERSION` goes up by one | types | backend cache validation; test fixtures in typecheck | types −1: the field line. The variant line is unchanged, because a unit variant and a struct variant print alike. In source at `07bb8e84` | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
 | D13 | `SymbolTable::install_extern` loses its sixth parameter, `borrowed_sibling: Option<CallableSlot>`. Every caller passes `None`. No schema effect beyond D6's | types | primitives (the one production caller); test callers in backend, typecheck and the binary | types 1 changed. In source at `07bb8e84` | `arch`, 2026-11-19 | [safety invariants](safety-invariants.md) row R5 |
 | D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | backend −3. In source at `07bb8e84` | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
-| K11-c | `SymbolTable::{settle_template, settle_concrete}` leave the public surface. Their only callers are the types crate's module tests, so they compile under `#[cfg(test)]` as `pub(crate)` | types | — | types −2 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [lifecycle authoring facade](#lifecycle-authoring-facade) |
-| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature | types | test code only: two calls in the backend's `test_support.rs` and nineteen in the binary's test modules. Neither crate's dev-dependency on `cranelisp-types` enables `test-support` yet | types −1 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
+| K11-c | `SymbolTable::{settle_template, settle_concrete}` leave the public surface. Their only callers are the types crate's module tests, so they compile under `#[cfg(test)]` as `pub(crate)`. In source at `cc04b162` | types | — | types −2 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [lifecycle authoring facade](#lifecycle-authoring-facade) |
+| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature. The forwarding function is in source at `bf15e0d6`; the method is still public | types | test code only: two calls in the backend's `test_support.rs` and nineteen in the binary's test modules. Neither crate's dev-dependency on `cranelisp-types` enables `test-support` yet | types −1 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
 | R10-2 | The backend's `artefact` module, `LinkerArtefact`, `ObjectArtefact` and their root re-exports are deleted. The row approved narrowing; with `load_object` gone (R10-1) the types have no producer. The public effect is the row's. In source at `06210347` | backend | — | backend −42 | user, 2026-11-16; deletion `arch`, 2026-11-19 | — |
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
 | ACT-1084 | `ResolutionGap::MacroInMem` removed. It has no producer | types | the binary's two match arms in `src/process_form/dependency.rs` and one module test; a stale comment in `tests/process_form_dispatch.rs` | types −1 | `arch`, 2026-11-19 | [resolution gaps](#resolution-gaps) |
@@ -773,20 +773,22 @@ design that needs a public change outside these rows stops and returns to `arch`
 | B13 (ACT-1070) | `Jit::jit_module` returns `&mut (impl cranelift_module::Module + CodeFinalizer)`, not `&mut JITModule`. `impl CodeFinalizer for cranelift_jit::JITModule` is removed. The returned module is a crate-private wrapper that compiles every call far. No public type is added. The method's rustdoc states the promise: no call in a function defined through this module depends on where the JIT places code. In source at `790f4c9a` as `jit::FarCallModule` | backend | none; the binary's four callers pass the value straight to `compile_to_module` and do not name its type | backend −4, 1 changed, +0; measured at the build | `arch`, 2026-11-19 | [JIT/object convergence §3](../backend/jit-object-convergence.md#3-call-reach-in-the-jit-act-1070) |
 | B10 (ACT-1039, ACT-1078) | `compile_to_module` gains `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules a trace form in `module_path` covers besides `module_path`. Passed at every call | backend | the binary's two production callers, from int's one reference-edge enumerator; test callers in backend and the binary | backend 1 changed; no persisted shape. In source at `69cd9c18` and `f8c55626` | `arch`, 2026-11-19, after the user's ruling on the covered set the same day | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
 | B10-C2 (ACT-1086) | The covered set travels with each target. New `cranelisp_backend::CodegenTarget<'a>`, with private fields and `new(&'a CallableTarget, &'a BTreeSet<ModuleFullPath>)`. `compile_to_module` takes `targets: &[CodegenTarget<'_>]` and loses `trace_modules`. A target's set is every module a form in its body covers, including the module whose source holds the body; the backend adds none, and reads from `module_path`'s table only the instances whose template module is listed when `module_path` is not | backend | the binary's two production callers derive one set per module of origin and pair each target with its set; test callers in backend and the binary | backend +9 in the present format (the type, `new`, seven generated auto-trait rows); `compile_to_module` changed again. No persisted shape, schema or ABI; an object holding a form in an instance changes content and the build identity separates it | `arch`, 2026-11-20, under the user's ruling of 2026-11-19 (spec §4.12.3) | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
-| Template module (ACT-1086) | `CallableArm::<C>::template_module(&self) -> Option<&ModuleFullPath>`: the module defining the template of a minted instance, read from `Life::Concrete::minted_from`; `None` otherwise. One reading of the fact for the two crates that need it | types | the binary (which module holds a target's body) and the backend (which instances in `module_path`'s table a form covers) | types +1; no persisted shape | `arch`, 2026-11-20 | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
-| B15 (FIXME 0915) | A codegen failure with no failing member is its own variant. `CompilationError` gains `ModuleFailed { module: ModuleFullPath, cause: String, location: ErrorLocation }`. `impl From<CranelispError> for CompilationError` is removed: it is the conversion that fills `module` and `symbol` with empty strings, and the backend converts through a crate-private function that takes the module. `CompilationError::ModuleError` is removed; it has no producer. `CodegenFailed` keeps its fields and always names a failing target | backend | none in production: the binary reaches the type only through `From<CompilationError> for CranelispError`, which stays and gains the new arm. `src/worker/tests.rs` matches `CodegenFailed` and is unchanged | backend +8, −12: the enum is listed at two paths (the new variant and its three fields; `ModuleError` and its three fields) and the conversion at two (the impl and its function). No persisted shape | `arch`, 2026-11-20 | [the unattributed failure](#the-unattributed-codegen-failure-row-b15) |
+| Template module (ACT-1086) | `CallableArm::<C>::template_module(&self) -> Option<&ModuleFullPath>`: the module defining the template of a minted instance, read from `Life::Concrete::minted_from`; `None` otherwise. One reading of the fact for the two crates that need it. In source at `bb217cdc` | types | the binary (which module holds a target's body) and the backend (which instances in `module_path`'s table a form covers) | types +1; no persisted shape | `arch`, 2026-11-20 | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
+| B15 (FIXME 0915) | A codegen failure with no failing member is its own variant. `CompilationError` gains `ModuleFailed { module: ModuleFullPath, cause: String, location: ErrorLocation }`. `impl From<CranelispError> for CompilationError` is removed: it is the conversion that fills `module` and `symbol` with empty strings, and the backend converts through a crate-private function that takes the module. `CompilationError::ModuleError` is removed; it has no producer. `CodegenFailed` keeps its fields and always names a failing target. In source at `9bee5930` | backend | none in production: the binary reaches the type only through `From<CompilationError> for CranelispError`, which stays and gains the new arm. `src/worker/tests.rs` matches `CodegenFailed` and is unchanged | backend +8, −12: the enum is listed at two paths (the new variant and its three fields; `ModuleError` and its three fields) and the conversion at two (the impl and its function). `dev`(backend) read the same +8, −12 from source against the committed listing at the build; the generator has not run. No persisted shape | `arch`, 2026-11-20 | [the unattributed failure](#the-unattributed-codegen-failure-row-b15) |
 | K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
 In source and awaiting the checkpoint report: D6, D13 and D9 (`07bb8e84`), R10-2
-(`06210347`), B13 (`790f4c9a`) and B10 (`69cd9c18`, `f8c55626`). The gap-module row is not
+(`06210347`), B13 (`790f4c9a`), B10 (`69cd9c18`, `f8c55626`), B15 (`9bee5930`), the
+template module (`bb217cdc`) and K11-c (`cc04b162`). K11-d is part built: its forwarding
+function is in source (`bf15e0d6`) and its narrowing is step 2d. The gap-module row is not
 scheduled.
 
 ### The unattributed codegen failure (row B15)
 
-- **The state it removes.** A failure outside any one target, such as a missing module
+- **The state it removed.** A failure outside any one target, such as a missing module
   table, a missing intrinsic, the glue fence or GOT emission, has a module and no symbol.
-  `CodegenFailed::symbol` is a `Symbol`, so the generic conversion fills it, and `module`,
-  with an empty string, and the failure renders `codegen failed for /`
+  `CodegenFailed::symbol` is a `Symbol`, so the generic conversion filled it, and `module`,
+  with an empty string, and the failure rendered `codegen failed for /`
   ([release contract](../backend/non-concrete-release-contract.md) §7.2.1,
   *Unattributed*).
 - **Contract.** `CodegenFailed` is a failing target: `module` and `symbol` name it and
@@ -810,19 +812,17 @@ scheduled.
 **Remaining build order.** The rows land one after another, in this order, when the build is
 free. `arch` builds the types changes; `dev` builds each other surface, one surface per
 invocation; `test` owns files under `tests/`. No row changes a persisted shape or a schema
-version. Steps A1 to A3 precede step 1: A1 completes the backend change-set in progress, and
-A3 turns failing cells green. They share no line with steps 1 to 4.
+version. Built and removed from this table: A1 (row B15, `9bee5930`), A2 (the object pass
+waits for an unpublished covered member,
+[int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10) C1,
+`fe385164`; no public item), A3a (`bb217cdc`), step 1 (`cc04b162`) and step 2a
+(`bf15e0d6`). A3b and A3c come next and turn failing cells green.
 
 | # | Row and step | Role | Builds alone | Commit |
 |---|---|---|---|---|
-| A1 | **B15.** `design`(backend) restates release contract §7.2.1, *Unattributed*, to the row. The variant, the two removals and the crate-private conversion land with that section's Rules 1 to 3 and a module row for a failure with no failing target | `design`(backend), then `dev`(backend) | yes | one, with Rules 1 to 3 |
-| A2 | **The object pass waits** ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10), C1). No public item; listed because A3 edits the same files | `dev`(`src/`) | yes | one |
-| A3a | **Template module.** Types adds `CallableArm::template_module` with a module test: an installed instance answers its template's module, an authored callable answers `None` | `arch` | yes | one |
-| A3b | **B10-C2.** `design`(backend) and `design`(int) restate their halves to [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend). The backend adds `CodegenTarget`, changes `compile_to_module` and discovery, and moves its test callers | `design`(backend), `design`(int), then `dev`(backend) | no | one commit with A3c, from one uncommitted tree |
+| A3b | **B10-C2.** On `CallableArm::template_module` (A3a, built). `design`(backend) and `design`(int) restate their halves to [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend). The backend adds `CodegenTarget`, changes `compile_to_module` and discovery, and moves its test callers | `design`(backend), `design`(int), then `dev`(backend) | no | one commit with A3c, from one uncommitted tree |
 | A3c | The binary derives one set per module of origin at commit planning and at the object pass, includes that module in its set, and pairs each target with its set | `dev`(`src/`) | yes, on A3b | with A3b |
-| 1 | **K11-c.** Both methods become `#[cfg(test)] pub(crate)`; the [lifecycle authoring facade](#lifecycle-authoring-facade) text follows | `arch` | yes | one |
-| 2a | **K11-d.** Types adds `test_support::lenient_from_expr` | `arch` | yes | one |
-| 2b | The backend's dev-dependency enables `test-support`; its two test calls and the rustdoc link beside them move | `dev`(backend) | yes | one |
+| 2b | **K11-d.** On `test_support::lenient_from_expr` (2a, built). The backend's dev-dependency enables `test-support`; its two test calls and the rustdoc link beside them move | `dev`(backend) | yes | one |
 | 2c | The binary's dev-dependency enables `test-support`; its nineteen test calls move | `dev`(`src/`) | yes | one |
 | 2d | Types narrows the method; [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) follows | `arch` | yes | one |
 | 3a | **Trace reader.** The backend drops the name from `is_extern_primitive` and the comments that cite it | `dev`(backend) | yes | one |
@@ -837,13 +837,9 @@ A3 turns failing cells green. They share no line with steps 1 to 4.
 - A3b and A3c are callee-first: the binary's callers pass the removed parameter, so the tree
   does not build between them. The cascade closes on `tests/trace.rs::s124_1086_subject_run`
   and its two siblings passing with the six controls unchanged, and on the full suite.
-- A2 before A3c keeps the object pass's wait and its per-module sets in separate commits.
-  Either order is correct.
-- Steps 1 to 3 build at every commit, so each is dispatched and committed alone.
-- Steps 1 and 2d each drop one source comment that cites the deleted FIXME 0931
-  (`module.rs` beside `mint_callable_slot`; the lenient builder's rustdoc in `mono_expr.rs`).
-- Step 1 must leave the types crate without a dead-code warning in a non-test build. A
-  private helper that only the two methods call takes the same `#[cfg(test)]`.
+- Steps 2b to 3 build at every commit, so each is dispatched and committed alone.
+- Step 2d drops the source comment that cites the deleted FIXME 0931 (the lenient builder's
+  rustdoc in `mono_expr.rs`).
 - Step 3a precedes 3b so that no commit names an absent symbol. Nothing emits a call to the
   reader, so 3a changes no generated code.
 - Step 4 is callee-first: the binary's two arms name the variant, so the tree does not build
@@ -857,7 +853,8 @@ are estimates; the regenerated diff is the exact figure. The table includes the 
 left this record when they were built, whose deltas are in the
 [S124 packet](../../sprints/s124-api-packet.md) and the
 [S123 packet](../../sprints/s123-api-packet.md) Part B. A line outside this table returns
-to the user.
+to the user. Of the remaining rows, the template module, K11-c and B15 are in source since
+`f8c55626`; their figures are unchanged.
 
 | Crate | In source at `f8c55626` | Remaining rows | At the checkpoint |
 |---|---|---|---|
