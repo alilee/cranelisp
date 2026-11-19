@@ -85,7 +85,6 @@ pub(in crate::compiler) fn primitives() -> DashMap<ModuleFullPath, SymbolTable> 
                 vec![Symbol::from("s")],
                 None,
                 0,
-                None,
                 Some(summary),
                 Visibility::Public,
             )

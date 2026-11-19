@@ -611,9 +611,7 @@ fn install_manual_bool_competitor(tc: &mut TestFixture, module: &str) {
             None,
             0,
             CallableOrigin::RustPrimitive,
-            Realization::ExternShim {
-                borrowed_sibling: None,
-            },
+            Realization::ExternShim,
             None,
             vec![],
             Visibility::Public,

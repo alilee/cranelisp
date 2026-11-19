@@ -43,7 +43,6 @@
 //! | Persisted index | Corrupt-bytes hazard | Validation arm | `CacheStale` class |
 //! |---|---|---|---|
 //! | `callable_got_slot()` | OOB slot → `store_slot`/`load_slot` `assert!` panics on disk content | `< GOT_TABLE_SIZE` | [`CacheStale::GotSlotOutOfRange`] |
-//! | `PrimitiveBody::Extern.borrowed_sibling_slot` (R5 carrier) | OOB → the same GOT panic when its first consumer reads it | `< GOT_TABLE_SIZE` when present | [`CacheStale::SiblingSlotOutOfRange`] |
 //! | summary param index — `ResultMode::{ProjectionOf,AliasOf,MayAliasOf}(k)` | `k ≥ arity` → a raw `args[k]` index PANIC at the consume seam (see below) | `k < arity` (signature arity, `param_names` fallback), all three index-carrying variants; `Fresh` and `MayAliasAny` name no parameter and are unconditionally admitted | [`CacheStale::SummaryParamIndexOutOfRange`] |
 //! | `Def.callees` FQs (feeds the reverse who-calls-whom index) | empty module/symbol component → resolve / reverse-index corruption | non-empty module AND symbol | [`CacheStale::MalformedCalleeFq`] |
 //! | `codegen_view` span | `start > end` → out-of-source slice / keyed-read miss at the diagnostic seam | `start ≤ end` | [`CacheStale::MalformedSpanKey`] |
@@ -140,20 +139,9 @@ pub enum CacheStale {
         path: std::path::PathBuf,
         slot: usize,
     },
-    /// A restored entry carried a `borrowed_sibling_slot >= GOT_TABLE_SIZE`
-    /// (S115 W3 change-set 4; R6 census row 2). The R5 sibling-slot carrier is
-    /// a GOT index like any other: an out-of-range value on disk would reach the
-    /// always-on `store_slot`/`load_slot` `assert!` as a panic on disk content
-    /// when its first consumer reads it. Validated at load defensively (the
-    /// co-landing rule); the CONSUMER itself stays parked to its first reader
-    /// (FIXME 0637 / the re-affirmed R5 ruling).
-    SiblingSlotOutOfRange {
-        path: std::path::PathBuf,
-        slot: usize,
-    },
     /// A restored ownership summary carried an index-carrying `ResultMode`
     /// (`ProjectionOf`/`AliasOf`/`MayAliasOf`) with `k >= arity` (S115 W3
-    /// change-set 4; R6 census row 3, widened to all three variants by FIXME
+    /// change-set 4; R6 census, widened to all three variants by FIXME
     /// 0750). The consume seam reads `arg_origins` through a checked `.get(k)`
     /// but the `ProjectionOf` arm then indexes `args[k]` raw — an out-of-range
     /// `k` from disk panics there, which is the hazard this row exists for.
@@ -163,7 +151,7 @@ pub enum CacheStale {
         arity: usize,
     },
     /// A restored entry carried a malformed `callees` FQ — an empty module or
-    /// symbol component (S115 W3 change-set 4; R6 census row 4). The `callees`
+    /// symbol component (S115 W3 change-set 4; R6 census). The `callees`
     /// edge set feeds resolution and the reverse who-calls-whom index; an empty
     /// component is not a nameable key and would corrupt both.
     MalformedCalleeFq {
@@ -171,7 +159,7 @@ pub enum CacheStale {
         symbol: String,
     },
     /// A restored mono codegen view carried a malformed span (`start > end`)
-    /// (S115 W3 change-set 4; R6 census row 5). Spans locate diagnostics and key
+    /// (S115 W3 change-set 4; R6 census). Spans locate diagnostics and key
     /// the producer-side sidecars; an inverted span yields a keyed-read miss or
     /// an out-of-source slice at the diagnostic seam.
     MalformedSpanKey {
@@ -200,7 +188,6 @@ impl CacheStale {
             CacheStale::Deserialise { .. } => "deserialise",
             CacheStale::PathMismatch { .. } => "path_mismatch",
             CacheStale::GotSlotOutOfRange { .. } => "got_slot_out_of_range",
-            CacheStale::SiblingSlotOutOfRange { .. } => "sibling_slot_out_of_range",
             CacheStale::SummaryParamIndexOutOfRange { .. } => "summary_param_index_out_of_range",
             CacheStale::MalformedCalleeFq { .. } => "malformed_callee_fq",
             CacheStale::MalformedSpanKey { .. } => "malformed_span_key",
@@ -253,12 +240,6 @@ impl std::fmt::Display for CacheStale {
             CacheStale::GotSlotOutOfRange { path, slot } => write!(
                 f,
                 "cache GOT slot out of range at {}: slot {slot} >= {GOT_TABLE_SIZE}",
-                path.display()
-            ),
-            CacheStale::SiblingSlotOutOfRange { path, slot } => write!(
-                f,
-                "cache borrowed-sibling GOT slot out of range at {}: slot {slot} >= \
-                 {GOT_TABLE_SIZE}",
                 path.display()
             ),
             CacheStale::SummaryParamIndexOutOfRange { path, index, arity } => write!(
@@ -483,25 +464,6 @@ pub(crate) fn deserialise_meta_with_build_id(
             return Err(CacheStale::GotSlotOutOfRange {
                 path: path.to_path_buf(),
                 slot,
-            });
-        }
-        if let Some(callable) = entry.callable()
-            && matches!(
-                callable.origin,
-                cranelisp_types::CallableOrigin::RustPrimitive
-            )
-            && let cranelisp_types::Life::Concrete {
-                realization:
-                    cranelisp_types::Realization::ExternShim {
-                        borrowed_sibling: Some(slot),
-                    },
-                ..
-            } = &callable.arm.life
-            && slot.index() >= GOT_TABLE_SIZE
-        {
-            return Err(CacheStale::SiblingSlotOutOfRange {
-                path: path.to_path_buf(),
-                slot: slot.index(),
             });
         }
         // EVERY index-carrying `ResultMode` variant (FIXME 0750). All three are

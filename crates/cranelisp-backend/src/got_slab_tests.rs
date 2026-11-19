@@ -30,7 +30,6 @@ fn mint_slot(st: &mut SymbolTable, index: usize) -> usize {
         None,
         index as u64,
         None,
-        None,
         Visibility::Private,
     )
     .expect("fresh table has free slots")
@@ -81,7 +80,6 @@ fn slab_base_is_stable_across_full_allocation_and_store_churn() {
         vec![],
         None,
         GOT_TABLE_SIZE as u64,
-        None,
         None,
         Visibility::Private,
     );

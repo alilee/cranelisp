@@ -176,7 +176,6 @@ mod tests {
                 None,
                 0,
                 None,
-                None,
                 Visibility::Private,
             )
             .expect("within-bounds allocation");
@@ -188,7 +187,6 @@ mod tests {
                 vec![],
                 None,
                 0,
-                None,
                 None,
                 Visibility::Private,
             )

@@ -73,9 +73,7 @@ fn install_candidate_callable(tc: &mut TestFixture, module: &str, name: &str, pa
             None,
             0,
             CallableOrigin::RustPrimitive,
-            Realization::ExternShim {
-                borrowed_sibling: None,
-            },
+            Realization::ExternShim,
             None,
             vec![],
             Visibility::Public,

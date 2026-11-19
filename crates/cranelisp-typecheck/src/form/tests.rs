@@ -2310,7 +2310,6 @@ fn got_exhaustion_renders_clean_diagnosed_message_at_check_forms_boundary() {
             None,
             0,
             None,
-            None,
             Visibility::Private,
         )
         .expect("within-bounds allocation");
@@ -2322,7 +2321,6 @@ fn got_exhaustion_renders_clean_diagnosed_message_at_check_forms_boundary() {
             vec![],
             None,
             0,
-            None,
             None,
             Visibility::Private,
         )

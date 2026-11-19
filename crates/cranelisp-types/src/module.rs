@@ -2868,7 +2868,21 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
         Ok((name, slot))
     }
 
-    /// Install a primitive extern shim as a born-settled callable.
+    /// Install a primitive extern shim as a born-settled callable and return
+    /// its fresh slot.
+    ///
+    /// The entry is [`CallableOrigin::RustPrimitive`] with
+    /// [`Realization::ExternShim`]. The caller owns the slot's contents: it
+    /// must store the shim's address at the returned slot before any code
+    /// calls the callable, and nothing else writes it. `mode_summary` is the
+    /// shim's hand-declared ownership fact, which is analysis input only; the
+    /// entry itself consumes every heap argument (see
+    /// [`Realization::ExternShim`]).
+    ///
+    /// # Errors
+    ///
+    /// Fails without changing the table when `scheme` is not concrete, when
+    /// the module's slots are exhausted, or when `name` is already bound.
     #[allow(clippy::too_many_arguments)]
     pub fn install_extern(
         &mut self,
@@ -2877,7 +2891,6 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
         param_names: Vec<Symbol>,
         docstring: Option<String>,
         seq: u64,
-        borrowed_sibling: Option<CallableSlot>,
         mode_summary: Option<ModeSummary>,
         visibility: Visibility,
     ) -> Result<CallableSlot, LifecycleError> {
@@ -2893,7 +2906,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
                     param_names,
                     Life::Concrete {
                         slot,
-                        realization: Realization::ExternShim { borrowed_sibling },
+                        realization: Realization::ExternShim,
                         minted_from: None,
                         ast: None,
                         callees: Vec::new(),
@@ -4879,7 +4892,7 @@ fn validate_origin_state<C: CodeStore>(
         (
             RustPrimitive,
             Life::Concrete {
-                realization: Realization::ExternShim { .. } | Realization::FacadeOf { .. },
+                realization: Realization::ExternShim | Realization::FacadeOf { .. },
                 ..
             },
         ) => true,

@@ -826,7 +826,6 @@ fn plain_callable_docstring_refusals_are_exact_and_atomic() {
             vec![Symbol::from("arg")],
             Some("primitive doc".into()),
             9,
-            None,
             Some(ModeSummary::default()),
             Visibility::Public,
         )
@@ -1050,7 +1049,6 @@ fn slotted_rust_primitive_table() -> SymbolTable<String, ()> {
             None,
             0,
             None,
-            None,
             Visibility::Public,
         )
         .unwrap();
@@ -1136,7 +1134,6 @@ fn compiled_owner_publication_conserves_submitted_and_displaced_owners() {
             Vec::new(),
             None,
             2,
-            None,
             None,
             Visibility::Private,
         )
@@ -2157,7 +2154,6 @@ fn owner_coverage_staging() -> SymbolTable<String, ()> {
             None,
             4,
             None,
-            None,
             Visibility::Public,
         )
         .unwrap();
@@ -2987,9 +2983,7 @@ fn life_for(origin: &CallableOrigin, state: State) -> Life<()> {
         State::Concrete => {
             let realization = match origin {
                 CallableOrigin::PlatformEffect { .. } => Realization::Dll,
-                CallableOrigin::RustPrimitive => Realization::ExternShim {
-                    borrowed_sibling: None,
-                },
+                CallableOrigin::RustPrimitive => Realization::ExternShim,
                 _ => body(),
             };
             Life::Concrete {
@@ -3728,7 +3722,6 @@ fn inline_and_extern_installers_preserve_declared_mode_summary() {
             Vec::new(),
             None,
             1,
-            None,
             Some(summary.clone()),
             Visibility::Public,
         )

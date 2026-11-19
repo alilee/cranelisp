@@ -473,7 +473,6 @@ pub(crate) mod test_support {
                 None,
                 0,
                 None,
-                None,
                 cranelisp_types::Visibility::Public,
             )
             .expect("extern fixture installs");

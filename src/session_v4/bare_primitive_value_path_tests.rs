@@ -28,7 +28,6 @@ fn install_primitive(
             docstring.map(str::to_owned),
             0,
             None,
-            None,
             Visibility::Public,
         )
         .expect("primitive fixture installs");

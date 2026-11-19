@@ -39,7 +39,6 @@ fn install_primitive(table: &mut SessionSymbolTable, name: &str) {
             None,
             0,
             None,
-            None,
             Visibility::Public,
         )
         .expect("primitive fixture installs");

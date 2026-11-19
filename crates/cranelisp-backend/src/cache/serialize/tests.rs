@@ -82,7 +82,7 @@ fn result_context_instances_round_trip_complete_links() {
     // Bump tripwire: the round trip below is version-agnostic, so this literal
     // exists only to make a `CACHE_SCHEMA_VERSION` change re-read this cell.
     // Advance it once the version-log entry for the new epoch is written.
-    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 34);
+    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 35);
     let table = result_context_instances();
     let bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = deserialise_meta(
@@ -288,7 +288,7 @@ fn install(table: &mut SymbolTable, name: &str, binding: Binding) -> CallableSlo
             slot
         }
         Life::Concrete {
-            realization: Realization::ExternShim { borrowed_sibling },
+            realization: Realization::ExternShim,
             mode_summary,
             ..
         } => table
@@ -298,7 +298,6 @@ fn install(table: &mut SymbolTable, name: &str, binding: Binding) -> CallableSlo
                 callable.arm.param_names.clone(),
                 callable.docstring.clone(),
                 callable.seq,
-                *borrowed_sibling,
                 mode_summary.clone(),
                 binding.visibility,
             )
@@ -868,31 +867,6 @@ fn cache_load_rejects_out_of_range_got_slot_as_stale() {
 // meta LOADS, and the assertion that it was refused fails.
 // =============================================================================
 
-/// Install an extern whose borrowed convention points at a lifecycle-minted
-/// sibling capability.
-fn install_primitive_with_sibling(
-    table: &mut SymbolTable,
-    name: &str,
-    sibling: CallableSlot,
-) -> CallableSlot {
-    table
-        .install_extern(
-            Symbol::from(name),
-            Scheme {
-                type_vars: vec![],
-                constraints: HashMap::new(),
-                ty: Type::Fn(vec![], Box::new(Type::Int)),
-            },
-            vec![],
-            None,
-            0,
-            Some(sibling),
-            None,
-            Visibility::Public,
-        )
-        .expect("install extern sibling fixture")
-}
-
 /// A Def whose ownership summary declares `MayAliasOf(index)` over a signature
 /// of `arity` parameters.
 fn make_def_with_may_alias(index: usize, arity: usize) -> Binding {
@@ -1047,70 +1021,6 @@ fn roundtrip_tampered(
     load_meta(&meta_path)
 }
 
-/// Build the borrowed-sibling cache fixture as one legal lifecycle table. The
-/// sibling is a manifest-owned callable because that is the public facade that
-/// can lawfully mint the exact boundary slot without filling or forging the
-/// intervening ordinary slots. Corruption, when requested, happens only after
-/// serialization at the untrusted cache boundary.
-fn roundtrip_sibling_slot(
-    dir: &std::path::Path,
-    name: &str,
-    sibling_slot: usize,
-    tampered_slot: Option<usize>,
-) -> Result<SymbolTable, CacheStale> {
-    let meta_path = dir.join(format!("{name}.meta.json"));
-    let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
-    let sibling = install_manifest_slot(&mut table, "borrowed-convention", sibling_slot);
-    install_primitive_with_sibling(&mut table, name, sibling);
-
-    let mut bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
-    if let Some(slot) = tampered_slot {
-        tamper_first_number(&mut bytes, "borrowed_sibling", slot as u64);
-    }
-    std::fs::write(&meta_path, bytes).unwrap();
-    load_meta(&meta_path)
-}
-
-// spec: design/arch/safety-invariants.md §4 R6 — the R5 borrowed-sibling slot is
-// a GOT index like any other; an out-of-range value on disk must be diagnosed at
-// load, not left to panic in `store_slot`/`load_slot` when its first consumer
-// reads it (the co-landing rule — validation lands now, the CONSUMER stays
-// parked per FIXME 0637).
-#[test]
-fn cache_load_rejects_out_of_range_sibling_slot_as_stale() {
-    let dir = tempfile::tempdir().unwrap();
-    let loaded =
-        roundtrip_sibling_slot(dir.path(), "ok", cranelisp_types::GOT_TABLE_SIZE - 1, None)
-            .expect("the exact highest in-bounds sibling slot must load");
-    let loaded_sibling = loaded
-        .get("ok")
-        .and_then(Binding::callable)
-        .and_then(|callable| match &callable.arm.life {
-            Life::Concrete {
-                realization: Realization::ExternShim { borrowed_sibling },
-                ..
-            } => *borrowed_sibling,
-            _ => None,
-        })
-        .map(|slot| slot.index());
-    assert_eq!(
-        loaded_sibling,
-        Some(cranelisp_types::GOT_TABLE_SIZE - 1),
-        "the positive cache fixture must retain the exact highest legal sibling slot"
-    );
-    match roundtrip_sibling_slot(
-        dir.path(),
-        "bad",
-        cranelisp_types::GOT_TABLE_SIZE - 1,
-        Some(cranelisp_types::GOT_TABLE_SIZE),
-    ) {
-        Err(CacheStale::SiblingSlotOutOfRange { slot, .. }) => {
-            assert_eq!(slot, cranelisp_types::GOT_TABLE_SIZE);
-        }
-        other => panic!("expected SiblingSlotOutOfRange, got {other:?}"),
-    }
-}
-
 // spec: design/arch/safety-invariants.md §4 R6 — a persisted
 // `ResultMode::MayAliasOf(k)` with `k >= arity` is the `arg_origins[k]` OOB read
 // the register row names. Boundary-exact: `k == arity - 1` loads, `k == arity`
@@ -1259,8 +1169,7 @@ fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join("all.meta.json");
     let mut table = SymbolTable::new(ModuleFullPath::from("r6"));
-    let sibling = install(&mut table, "slot", make_def("slot"));
-    install_primitive_with_sibling(&mut table, "sib", sibling);
+    install(&mut table, "slot", make_def("slot"));
     install(
         &mut table,
         "alias",
@@ -1278,7 +1187,7 @@ fn cache_load_accepts_a_valid_meta_with_every_persisted_index_populated() {
     );
     write_meta(&meta_path, &table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = load_meta(&meta_path).expect("a fully-populated valid meta must load clean");
-    assert_eq!(loaded.all_symbols().count(), 5);
+    assert_eq!(loaded.all_symbols().count(), 4);
 }
 
 // spec: design/arch/safety-invariants.md §4 R6 — the classes are DISTINCT, so a
@@ -1295,7 +1204,6 @@ fn r6_stale_classes_are_distinct_per_family() {
             "slot",
             cranelisp_types::GOT_TABLE_SIZE,
         ),
-        roundtrip_sibling_slot(dir.path(), "b", 1, Some(cranelisp_types::GOT_TABLE_SIZE)),
         roundtrip(dir.path(), "c", make_def_with_may_alias(5, 1)),
         roundtrip(dir.path(), "d", make_def_with_callee("", "f")),
         roundtrip(dir.path(), "e", make_def_with_view_span(9, 1)),

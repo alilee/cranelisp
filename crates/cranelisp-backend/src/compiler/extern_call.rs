@@ -167,7 +167,6 @@ mod tests {
                 None,
                 0,
                 None,
-                None,
                 Visibility::Public,
             )
             .expect("install extern primitive fixture")

@@ -1156,7 +1156,6 @@ pub(crate) fn seed_test_primitives<C, L>(
                         docstring,
                         0,
                         None,
-                        None,
                         Visibility::Public,
                     )
                     .unwrap_or_else(|e| unreachable!("extern primitive fixture must install: {e}"));

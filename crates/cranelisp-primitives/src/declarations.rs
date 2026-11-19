@@ -798,7 +798,6 @@ pub(crate) fn build_table(table: &mut SymbolTable<(), ()>, declarations: &[Primi
                     param_names.clone(),
                     Some((*docstring).to_string()),
                     seq,
-                    None,
                     Some(ownership.clone()),
                     Visibility::Public,
                 )

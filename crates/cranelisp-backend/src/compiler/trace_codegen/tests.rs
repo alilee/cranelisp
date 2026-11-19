@@ -274,7 +274,6 @@ fn discovery_includes_all_modules_and_primitives() {
             None,
             0,
             None,
-            None,
             Visibility::Public,
         )
         .expect("install primitive discovery fixture")

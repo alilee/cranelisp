@@ -255,9 +255,7 @@ impl Realization<()> {
     fn into_concrete<C: crate::CodeStore>(self) -> Realization<C> {
         match self {
             Realization::Body { view, code: _ } => Realization::Body { view, code: None },
-            Realization::ExternShim { borrowed_sibling } => {
-                Realization::ExternShim { borrowed_sibling }
-            }
+            Realization::ExternShim => Realization::ExternShim,
             Realization::Dll => Realization::Dll,
             Realization::FacadeOf { abi_name } => Realization::FacadeOf { abi_name },
         }
@@ -912,12 +910,12 @@ pub enum Realization<C: crate::CodeStore = ()> {
     /// fact that statically-resolved call sites adapt to; no primary entry
     /// realizes a `Borrowed` parameter or an `IntoResult` flow, and value
     /// wrappers do not adapt to it (`design/arch/ownership-inference.md` §3.1).
-    ExternShim {
-        /// Optional sibling slot using the borrowed calling convention, chosen
-        /// explicitly by statically-resolved call sites and never by a value
-        /// wrapper.
-        borrowed_sibling: Option<CallableSlot>,
-    },
+    ///
+    /// The slot is the callable's only entry: no second slot offers another
+    /// calling convention. The compiler never writes this slot; the installer
+    /// stores the shim's address into it
+    /// ([`SymbolTable::install_extern`](crate::SymbolTable::install_extern)).
+    ExternShim,
     /// Platform DLL owns and populates the manifest-indexed slot.
     Dll,
     /// Per-instantiation alias over one uniform hand-written body.

@@ -1017,9 +1017,7 @@ fn constrained_template_carries_no_callable_slot() {
             None,
             0,
             CallableOrigin::RustPrimitive,
-            Realization::ExternShim {
-                borrowed_sibling: None,
-            },
+            Realization::ExternShim,
             None,
             vec![],
             Visibility::Public,
