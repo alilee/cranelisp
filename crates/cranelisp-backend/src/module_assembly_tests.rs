@@ -1079,8 +1079,8 @@ fn compile_to_module_requests_glue_for_the_canonical_result_root() {
 //
 // Negative: insert a `ModuleEntry::Def { ast: None, .. }` into the symbol
 // table and pass its name in `names`. `compile_to_module` must return
-// `Err(CranelispError::CodegenError)` whose message names the symbol —
-// no panic, no silent skip.
+// `Err(CompilationError::ModuleFailed)` naming the module, whose cause names
+// the symbol — no panic, no silent skip (§7.2.1, Unattributed).
 #[test]
 fn sprint56_compile_to_module_ast_none_errors() {
     use cranelisp_types::{
@@ -1147,26 +1147,63 @@ fn sprint56_compile_to_module_ast_none_errors() {
         "error message should mention the ast: None invariant violation, got: {msg}"
     );
     match err {
-        crate::CompilationError::CodegenFailed {
+        crate::CompilationError::ModuleFailed {
             module,
-            symbol,
+            cause,
             location,
-            ..
         } => {
             assert_eq!(
                 module.as_ref(),
                 "user",
-                "an unattributed failure names the compiled module (§7.2.1 Rule 3)"
+                "a target-collection failure is the module's (§7.2.1, Unattributed)"
             );
-            assert_eq!(
-                symbol.as_ref(),
-                "",
-                "the body-only helper must not stamp a target-collection error"
+            assert!(
+                cause.contains(name.as_ref()),
+                "the cause names the refused target: {cause}"
             );
             assert_eq!(location.span, Span::SYNTHETIC);
         }
-        other => panic!("ast: None must retain the generic CodegenFailed mapping, got {other:?}"),
+        other => panic!("ast: None is a failure of the module, not of a target, got {other:?}"),
     }
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.2.1, Unattributed
+// (row B15) — a failure outside any target, here a `module_path` with no table
+// in `symbol_tables`, is `ModuleFailed` naming that module, and renders with
+// one category prefix and no failing-target subject.
+#[test]
+fn a_failure_outside_any_target_is_the_modules() {
+    let module = ModuleFullPath::from("diagnostics.absent");
+    let tables = empty_tables();
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT");
+    let error = match compile_names_to_module(
+        module.clone(),
+        &[Symbol::from("anything")],
+        &tables,
+        jit.jit_module(),
+        true,
+    ) {
+        Ok(_) => panic!("a module with no table must not compile"),
+        Err(error) => error,
+    };
+    match &error {
+        CompilationError::ModuleFailed { module: actual, .. } => assert_eq!(actual, &module),
+        other => panic!("expected ModuleFailed, got {other:?}"),
+    }
+    let rendered = CranelispError::from(error).to_string();
+    assert_eq!(
+        rendered.matches("codegen error at").count(),
+        1,
+        "one prefix: {rendered}"
+    );
+    assert!(
+        !rendered.contains("codegen failed for"),
+        "no failing target is named: {rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("codegen failed in {module}: ")),
+        "{rendered}"
+    );
 }
 
 // spec: design/backend/compile-to-module.md §4 — no multi-sig expansion in backend

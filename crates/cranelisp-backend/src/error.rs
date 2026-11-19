@@ -31,7 +31,8 @@ pub enum CompilationError {
         symbol: Symbol,
     },
 
-    /// Cranelift codegen failed for a defined symbol. The `cause` is the
+    /// Cranelift codegen failed for a defined symbol: `module` and `symbol`
+    /// name the failing target, and neither is empty. The `cause` is the
     /// underlying Cranelift verifier/builder message; `location` is the
     /// owning defn's `ErrorLocation` (per Decision 39 — coordinates as
     /// data; formatting downstream in `int`).
@@ -42,14 +43,15 @@ pub enum CompilationError {
         location: ErrorLocation,
     },
 
-    /// `JITModule::define_function` or `Module::declare_function` returned
-    /// an error. Distinct from `CodegenFailed` because this is a Cranelift
-    /// `cranelift_module::ModuleError`, surfacing relocation or linkage
-    /// failures rather than codegen-IR rejection.
-    ModuleError {
+    /// The module's compilation failed outside any one target: a missing
+    /// module table, a refused target during collection, a missing
+    /// intrinsic, the glue fence or GOT emission. The module is the only
+    /// subject; `cause` and `location` are the inner error's
+    /// (`non-concrete-release-contract.md` §7.2.1, *Unattributed*).
+    ModuleFailed {
         module: ModuleFullPath,
-        symbol: Symbol,
         cause: String,
+        location: ErrorLocation,
     },
 }
 
@@ -98,11 +100,9 @@ impl std::fmt::Display for CompilationError {
                 cause,
                 ..
             } => write!(f, "codegen failed for {symbol} in {module}: {cause}"),
-            CompilationError::ModuleError {
-                module,
-                symbol,
-                cause,
-            } => write!(f, "module error for {symbol} in {module}: {cause}"),
+            CompilationError::ModuleFailed { module, cause, .. } => {
+                write!(f, "codegen failed in {module}: {cause}")
+            }
         }
     }
 }
@@ -118,22 +118,14 @@ impl std::error::Error for CompilationError {}
 impl From<CompilationError> for cranelisp_types::CranelispError {
     fn from(err: CompilationError) -> Self {
         let location = match &err {
-            CompilationError::CodegenFailed { location, .. } => location.clone(),
+            CompilationError::CodegenFailed { location, .. }
+            | CompilationError::ModuleFailed { location, .. } => location.clone(),
             _ => cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
         };
         cranelisp_types::CranelispError::CodegenError {
             message: err.to_string(),
             location,
         }
-    }
-}
-
-/// Bridge a `CranelispError` to `CompilationError::CodegenFailed` with an
-/// empty `module` and `symbol` (Decision 37), for a caller that has neither.
-/// `compile_to_module` does not use it: it names the compiled module.
-impl From<cranelisp_types::CranelispError> for CompilationError {
-    fn from(err: cranelisp_types::CranelispError) -> Self {
-        codegen_failed(ModuleFullPath::from(""), Symbol::from(""), err)
     }
 }
 
@@ -147,16 +139,38 @@ pub(crate) fn codegen_failed(
     symbol: Symbol,
     err: cranelisp_types::CranelispError,
 ) -> CompilationError {
-    let cause = match &err {
-        cranelisp_types::CranelispError::Platform(platform) => platform.to_string(),
-        other => other.message().to_owned(),
-    };
+    let (cause, location) = cause_and_location(err);
     CompilationError::CodegenFailed {
         module,
         symbol,
         cause,
-        location: err.location().clone(),
+        location,
     }
+}
+
+/// `err` as a failure of `module`'s compilation with no failing target
+/// (§7.2.1, *Unattributed*), under the same Rule 1 extraction as
+/// [`codegen_failed`].
+pub(crate) fn module_failed(
+    module: ModuleFullPath,
+    err: cranelisp_types::CranelispError,
+) -> CompilationError {
+    let (cause, location) = cause_and_location(err);
+    CompilationError::ModuleFailed {
+        module,
+        cause,
+        location,
+    }
+}
+
+/// The one home of Rule 1: `cause` is the inner message and `location` the
+/// inner location; a platform error keeps its whole rendering as `cause`.
+fn cause_and_location(err: cranelisp_types::CranelispError) -> (String, ErrorLocation) {
+    let cause = match &err {
+        cranelisp_types::CranelispError::Platform(platform) => platform.to_string(),
+        other => other.message().to_owned(),
+    };
+    (cause, err.location().clone())
 }
 
 impl std::fmt::Display for LinkerError {

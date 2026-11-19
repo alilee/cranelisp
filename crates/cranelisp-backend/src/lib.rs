@@ -642,8 +642,8 @@ where
 
 /// A failure inside `compile_to_module`, before the entry names its module.
 /// A failure that names its member is already a `CompilationError`; any
-/// other takes the compiled module at the boundary, never an empty one
-/// (`non-concrete-release-contract.md` §7.2.1 Rule 3).
+/// other is the module's, `ModuleFailed` naming the compiled module
+/// (`non-concrete-release-contract.md` §7.2.1, *Unattributed*).
 enum EntryFailure {
     Attributed(CompilationError),
     Unattributed(CranelispError),
@@ -653,9 +653,7 @@ impl EntryFailure {
     fn in_module(self, module_path: &ModuleFullPath) -> CompilationError {
         match self {
             EntryFailure::Attributed(error) => error,
-            EntryFailure::Unattributed(error) => {
-                error::codegen_failed(module_path.clone(), Symbol::from(""), error)
-            }
+            EntryFailure::Unattributed(error) => error::module_failed(module_path.clone(), error),
         }
     }
 }
