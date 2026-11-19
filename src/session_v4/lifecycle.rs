@@ -2772,7 +2772,17 @@ impl CompilerSession {
         // Wake workers so they observe the promotion flag.
         self.shared.scheduler.wake_object_workers();
 
+        for held in self.shared.scheduler.begin_object_wait() {
+            self.shared.cache.settle_object_pass(
+                &held.module,
+                Err(super::nice_worker::unpublished_member_stop(&held.member)),
+            );
+            self.shared
+                .scheduler
+                .notify_object_codegen_complete(&held.module);
+        }
         let result = self.shared.scheduler.wait_object_complete();
+        self.shared.scheduler.end_object_wait();
 
         // Flush the cache manifest to disk so the next session can detect
         // cache hits, including entries whose records settled after their

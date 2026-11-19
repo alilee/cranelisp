@@ -7,6 +7,7 @@
 // `return` and the load-bearing ordering. Moved verbatim from `session_v4.rs`
 // (S87 §2.1 / §3.3).
 
+use std::collections::BTreeSet;
 use std::path::Path;
 #[cfg(test)]
 use std::sync::Arc;
@@ -15,9 +16,10 @@ use cranelisp_types::ModuleFullPath;
 
 use super::SharedState;
 use crate::cache::dependency_record::{
-    CoveredSet, ModuleEdges, covered_set, record_manifest_entry,
+    CoveredSet, ModuleEdges, UnpublishedPrelude, covered_set, record_manifest_entry,
 };
 use crate::cache::{PassStage, StoppedPass};
+use crate::scheduler::ObjectHold;
 
 // ---------------------------------------------------------------------------
 // Nice worker spawning + loop (Step 10)
@@ -86,11 +88,14 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
         if let Some(module) = shared.scheduler.try_take_object_codegen() {
             // Attempt .o compilation if caching is enabled. Sprint 67 Cluster B
             // sub-fire 3: cache dir via ObjectCache facade.
-            if let Some(cache_dir) = shared.cache.cache_dir() {
-                compile_module_object(shared, &module, &cache_dir);
+            let outcome = match shared.cache.cache_dir() {
+                Some(cache_dir) => compile_module_object(shared, &module, &cache_dir),
+                None => PassOutcome::Settled,
+            };
+            // A held pass reports no completion (`design/int/int.md` §7.6.4).
+            if outcome == PassOutcome::Settled {
+                shared.scheduler.notify_object_codegen_complete(&module);
             }
-            // Notify scheduler that object codegen is done for this module.
-            shared.scheduler.notify_object_codegen_complete(&module);
             continue;
         }
 
@@ -142,21 +147,60 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 /// marked object-complete so the scheduler lifecycle proceeds. A pass that
 /// stops is recorded with its cause for `--link`, and a later successful pass
 /// for the module clears the record (`design/int/int.md` §7.7).
-fn compile_module_object(shared: &SharedState, module: &ModuleFullPath, cache_dir: &Path) {
-    run_object_pass(shared, module, cache_dir, crate::cache::publish_object);
+fn compile_module_object(
+    shared: &SharedState,
+    module: &ModuleFullPath,
+    cache_dir: &Path,
+) -> PassOutcome {
+    run_object_pass(shared, module, cache_dir, crate::cache::publish_object)
 }
 
 /// Writes a module's emitted object bytes to its object path.
 type PublishObject = fn(&Path, &[u8]) -> std::io::Result<()>;
+
+/// Whether an object pass settled, or went back on the object queue held on
+/// an unpublished member (`design/int/int.md` §7.6.4, *Deferral*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassOutcome {
+    Settled,
+    Held,
+}
+
+/// How an object pass ended short of its object.
+#[derive(Debug, PartialEq, Eq)]
+enum PassEnd {
+    Stopped(StoppedPass),
+    Held,
+}
+
+impl From<StoppedPass> for PassEnd {
+    fn from(stop: StoppedPass) -> Self {
+        PassEnd::Stopped(stop)
+    }
+}
 
 fn run_object_pass(
     shared: &SharedState,
     module: &ModuleFullPath,
     cache_dir: &Path,
     publish: PublishObject,
-) {
-    let outcome = object_pass(shared, module, cache_dir, publish);
-    shared.cache.settle_object_pass(module, outcome);
+) -> PassOutcome {
+    let settled = match object_pass(shared, module, cache_dir, publish) {
+        Ok(()) => Ok(()),
+        Err(PassEnd::Stopped(stop)) => Err(stop),
+        Err(PassEnd::Held) => return PassOutcome::Held,
+    };
+    shared.cache.settle_object_pass(module, settled);
+    PassOutcome::Settled
+}
+
+/// The stop of an object pass whose covered member had not published when
+/// objects came to be awaited (`design/int/int.md` §7.6.4, *No deadlock*).
+pub(crate) fn unpublished_member_stop(member: &ModuleFullPath) -> StoppedPass {
+    StoppedPass {
+        stage: PassStage::Object,
+        cause: format!("covered module '{member}' had not published when objects were awaited"),
+    }
 }
 
 /// S87 §3.3: the pass's phases in their load-bearing order — the `.meta.json`
@@ -167,7 +211,7 @@ fn object_pass(
     module: &ModuleFullPath,
     cache_dir: &Path,
     publish: PublishObject,
-) -> Result<(), StoppedPass> {
+) -> Result<(), PassEnd> {
     use cranelisp_backend::cache;
 
     // Resolve cache paths up front — `.meta.json` persistence is DECOUPLED from
@@ -196,7 +240,9 @@ fn object_pass(
     let obj_bytes = emit_object(shared, module, &targets)?;
 
     // Phase 4: write the `.o` + record in manifest + append for the linker.
-    write_object_and_record(shared, module, &o_path, &obj_bytes, publish)
+    Ok(write_object_and_record(
+        shared, module, &o_path, &obj_bytes, publish,
+    )?)
 }
 
 /// Phase 1 (S87 §3.3): write `.meta.json` for cache-hit restoration via the
@@ -302,7 +348,7 @@ fn emit_object(
     shared: &SharedState,
     module: &ModuleFullPath,
     targets: &[cranelisp_types::CallableTarget],
-) -> Result<Vec<u8>, StoppedPass> {
+) -> Result<Vec<u8>, PassEnd> {
     let isa = cranelisp_backend::build_isa(true)
         .map_err(|e| codegen_stop(module, format!("ISA build failed: {}", e.message())))?;
     let obj_builder = cranelisp_backend::cranelift_object::ObjectBuilder::new(
@@ -312,23 +358,12 @@ fn emit_object(
     )
     .map_err(|e| codegen_stop(module, format!("ObjectBuilder failed: {e}")))?;
     let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
-    // The object pass follows the module's last publication, whose batches
-    // each waited for their members, so every member is taken as published
-    // (`design/int/int.md` §7.6.4). Asserted; a stop here falsifies it.
-    let trace_modules = match covered_set(
+    let trace_modules = object_trace_modules(
         module,
         &shared.symbol_tables,
         &shared.prelude_fallback,
-        |_| true,
-    ) {
-        CoveredSet::Covered(trace_modules) => trace_modules,
-        CoveredSet::Unpublished(member) => {
-            return Err(codegen_stop(
-                module,
-                format!("covered module '{member}' has no symbol table"),
-            ));
-        }
-    };
+        &shared.scheduler,
+    )?;
 
     cranelisp_backend::compile_to_module(
         module.clone(),
@@ -341,10 +376,44 @@ fn emit_object(
         false,
     )
     .map_err(|e| codegen_stop(module, format!(".o compilation failed: {e}")))?;
-    obj_module
+    Ok(obj_module
         .finish()
         .emit()
-        .map_err(|e| codegen_stop(module, format!(".o emit failed: {e}")))
+        .map_err(|e| codegen_stop(module, format!(".o emit failed: {e}")))?)
+}
+
+/// The modules a trace form in `module`'s object covers
+/// (`design/int/int.md` §7.6.4, *The object pass waits*). Every member, the
+/// prelude included, is read through the published predicate commit planning
+/// uses; an unpublished member holds the pass on it.
+fn object_trace_modules(
+    module: &ModuleFullPath,
+    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    scheduler: &crate::scheduler::CompileScheduler,
+) -> Result<BTreeSet<ModuleFullPath>, PassEnd> {
+    let member = match covered_set(
+        module,
+        tables,
+        prelude_fallback,
+        UnpublishedPrelude::Answer,
+        |member| scheduler.has_published(member),
+    ) {
+        CoveredSet::Covered(trace_modules) => return Ok(trace_modules),
+        CoveredSet::Unpublished(member) => member,
+    };
+    // A published member the walk answered has no table, and will not get one.
+    if !tables.contains_key(&member) && scheduler.has_published(&member) {
+        return Err(codegen_stop(
+            module,
+            format!("covered module '{member}' has no symbol table"),
+        )
+        .into());
+    }
+    match scheduler.hold_object_pass(module, &member) {
+        ObjectHold::Held => Err(PassEnd::Held),
+        ObjectHold::Stop => Err(unpublished_member_stop(&member).into()),
+    }
 }
 
 /// Phase 4 (S87 §3.3): publish the `.o` file, then record the module in the
@@ -545,5 +614,107 @@ mod tests {
                 object: StoredObject::NothingToLoad,
             }
         );
+    }
+
+    /// The modules of ACT-1087's fixture: `prelude` re-exports `m`, whose
+    /// declared child `m.c` takes the implicit prelude import; `p` is the
+    /// module the prelude re-exports once its Pass 0 finishes.
+    mod prelude_child {
+        use std::collections::BTreeSet;
+
+        use cranelisp_types::{ExportSpec, ImportNames, ModuleFullPath, Span};
+
+        use crate::code::SessionSymbolTable;
+        use crate::scheduler::{CompileScheduler, HeldObjectPass, ObjectHold};
+
+        use super::super::{PassEnd, object_trace_modules};
+
+        fn m(path: &str) -> ModuleFullPath {
+            ModuleFullPath::from(path)
+        }
+
+        fn reexport(target: &str) -> ExportSpec {
+            ExportSpec {
+                module_path: m(target),
+                alias: None,
+                names: ImportNames::Glob,
+                span: Span::SYNTHETIC,
+            }
+        }
+
+        /// The tables as they stand while the prelude is blocked in Pass 0
+        /// after recording its `export` of `m`.
+        fn in_flight_tables() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+            let tables = dashmap::DashMap::new();
+            for module in ["m", "m.c", "p", "primitives"] {
+                tables.insert(m(module), SessionSymbolTable::new_with_params(m(module)));
+            }
+            let mut prelude = SessionSymbolTable::new_with_params(m("prelude"));
+            prelude.exports = vec![reexport("m")];
+            tables.insert(m("prelude"), prelude);
+            tables
+        }
+
+        /// `m.c` typechecked, its object pass claimed, the prelude still in
+        /// flight.
+        fn scheduler() -> CompileScheduler {
+            let sched = CompileScheduler::new();
+            sched.register_module(m("prelude"), std::sync::Arc::from(Vec::new()), true);
+            sched.register_module(m("m.c"), std::sync::Arc::from(Vec::new()), false);
+            sched.notify_typecheck_done(&m("m.c"));
+            assert_eq!(sched.try_take_object_codegen(), Some(m("m.c")));
+            sched
+        }
+
+        // spec: design/int/int.md §7.6.4 *The object pass waits* — a child of
+        // a prelude dependency, reached before the prelude publishes, holds
+        // its object pass; once the prelude publishes, the object's set holds
+        // the module the prelude re-exports.
+        #[test]
+        fn a_child_built_before_the_prelude_publishes_covers_its_reexport() {
+            let tables = in_flight_tables();
+            let fallback = cranelisp_typecheck::PreludeFallback::default();
+            fallback.insert(m("m.c"), true);
+            let sched = scheduler();
+            assert_eq!(
+                object_trace_modules(&m("m.c"), &tables, &fallback, &sched),
+                Err(PassEnd::Held)
+            );
+
+            tables
+                .get_mut(&m("prelude"))
+                .unwrap()
+                .exports
+                .push(reexport("p"));
+            sched.notify_typecheck_done(&m("prelude"));
+            let claimed: BTreeSet<_> =
+                std::iter::from_fn(|| sched.try_take_object_codegen()).collect();
+            assert!(claimed.contains(&m("m.c")), "{claimed:?}");
+            assert_eq!(
+                object_trace_modules(&m("m.c"), &tables, &fallback, &sched),
+                Ok(["m", "p", "prelude", "primitives"].map(m).into())
+            );
+        }
+
+        // spec: design/int/int.md §7.6.4 *No deadlock* — a pass that meets an
+        // unpublished member while objects are awaited stops, naming it.
+        #[test]
+        fn a_pass_reaching_an_unpublished_prelude_while_objects_are_awaited_stops() {
+            let tables = in_flight_tables();
+            let fallback = cranelisp_typecheck::PreludeFallback::default();
+            fallback.insert(m("m.c"), true);
+            let sched = scheduler();
+            assert_eq!(sched.begin_object_wait(), Vec::<HeldObjectPass>::new());
+            let Err(PassEnd::Stopped(stop)) =
+                object_trace_modules(&m("m.c"), &tables, &fallback, &sched)
+            else {
+                panic!("the pass must stop while objects are awaited");
+            };
+            assert!(stop.cause.contains("'prelude'"), "{stop}");
+            assert_eq!(
+                sched.hold_object_pass(&m("m.c"), &m("prelude")),
+                ObjectHold::Stop
+            );
+        }
     }
 }

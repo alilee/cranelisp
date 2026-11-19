@@ -236,6 +236,11 @@ pub struct ModuleState {
     /// The `object_gen` value at the current/most-recent nice-worker claim.
     pub object_claimed_gen: u64,
 
+    /// The unpublished member this module's object pass is held on
+    /// (`design/int/int.md` §7.6.4, *The object pass waits*). The pass is
+    /// claimable again once the member has published.
+    object_held_on: Option<ModuleFullPath>,
+
     /// Error that caused this module to fail, if any.
     pub error: Option<CranelispError>,
 
@@ -334,6 +339,7 @@ impl ModuleState {
             object_done: false,
             object_gen: 0,
             object_claimed_gen: 0,
+            object_held_on: None,
             error: None,
             static_closure_memo: None,
             continuation,
@@ -363,6 +369,7 @@ impl ModuleState {
             object_done: true,
             object_gen: 0,
             object_claimed_gen: 0,
+            object_held_on: None,
             error: None,
             static_closure_memo: None,
             continuation: None,
@@ -395,6 +402,7 @@ impl ModuleState {
             object_done: true,
             object_gen: 0,
             object_claimed_gen: 0,
+            object_held_on: None,
             error: None,
             static_closure_memo: None,
             continuation: None,
@@ -666,6 +674,10 @@ struct SchedulerState {
     /// publication or failure hook for the parent itself.
     settled_restorations: Vec<ModuleFullPath>,
 
+    /// A session is waiting for every object, so an object pass that meets
+    /// an unpublished member stops rather than holds.
+    objects_awaited: bool,
+
     shutdown: bool,
 }
 
@@ -679,6 +691,7 @@ impl SchedulerState {
             cached_modules: HashSet::new(),
             ever_terminal: HashSet::new(),
             settled_restorations: Vec::new(),
+            objects_awaited: false,
             shutdown: false,
         }
     }
@@ -687,6 +700,24 @@ impl SchedulerState {
 // ---------------------------------------------------------------------------
 // CompileScheduler
 // ---------------------------------------------------------------------------
+
+/// What became of an object pass that found an unpublished member
+/// ([`CompileScheduler::hold_object_pass`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectHold {
+    /// Back on the object queue; no completion is reported.
+    Held,
+    /// Objects are awaited, so the pass stops; its claim stands.
+    Stop,
+}
+
+/// An object pass held on a member that had not published when objects came
+/// to be awaited ([`CompileScheduler::begin_object_wait`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeldObjectPass {
+    pub(crate) module: ModuleFullPath,
+    pub(crate) member: ModuleFullPath,
+}
 
 /// Central coordination structure for scheduler-driven compilation.
 ///
@@ -1256,6 +1287,7 @@ impl CompileScheduler {
                 // reloaded module object-done with a pre-reload table.
                 object_gen: ms.object_gen + 1,
                 object_claimed_gen: ms.object_claimed_gen,
+                object_held_on: None,
                 error: None,
                 // Source changed — the static closure must be re-walked.
                 static_closure_memo: None,
@@ -1731,9 +1763,11 @@ impl CompileScheduler {
         let mut state = self.lock();
         Self::notify_module_failed_locked(&mut state, module, error);
 
-        // Wake condvars — failed modules affect completion checks.
+        // Wake condvars — failed modules affect completion checks, and an
+        // object pass held on the failed module becomes claimable.
         drop(state);
         self.priority_work_available.notify_all();
+        self.object_work_available.notify_all();
         self.completion.notify_all();
     }
 
@@ -1797,22 +1831,7 @@ impl CompileScheduler {
             if state.shutdown {
                 return None;
             }
-            // Scan for a TypecheckDone module needing object codegen
-            // that is not already being worked on by another nice worker.
-            let found = state.typecheck_done.iter().find_map(|module| {
-                state
-                    .modules
-                    .get(module)
-                    .filter(|ms| !ms.object_done && !ms.object_working)
-                    .map(|_| module.clone())
-            });
-            if let Some(module) = found {
-                // Claim the module while holding the lock (snapshotting the
-                // staleness generation — S101 R18 lost-update fix).
-                if let Some(ms) = state.modules.get_mut(&module) {
-                    ms.object_working = true;
-                    ms.object_claimed_gen = ms.object_gen;
-                }
+            if let Some(module) = Self::claim_object_work_locked(&mut state) {
                 return Some(module);
             }
             // No work available — park until woken.
@@ -1834,21 +1853,7 @@ impl CompileScheduler {
         if state.shutdown {
             return None;
         }
-        let found = state.typecheck_done.iter().find_map(|module| {
-            state
-                .modules
-                .get(module)
-                .filter(|ms| !ms.object_done && !ms.object_working)
-                .map(|_| module.clone())
-        });
-        if let Some(module) = found {
-            if let Some(ms) = state.modules.get_mut(&module) {
-                ms.object_working = true;
-                ms.object_claimed_gen = ms.object_gen;
-            }
-            return Some(module);
-        }
-        None
+        Self::claim_object_work_locked(&mut state)
     }
 
     /// Park a nice worker until object-codegen work, index work, or shutdown may
@@ -1889,21 +1894,43 @@ impl CompileScheduler {
         !state.shutdown
     }
 
-    /// Whether any `TypecheckDone` module still needs object codegen — not yet
-    /// done and not currently claimed by a nice worker. This is the EXACT
-    /// predicate `take_object_codegen` / `try_take_object_codegen` scan for,
-    /// extracted so [`Self::park_nice_worker`] can re-check it under the lock
-    /// before parking (the S95 window-#2 lost-wakeup fix). Keeping it a single
-    /// shared predicate prevents the park-time check from drifting from the
-    /// claim-time scan (Principle 7 single-source-of-truth).
+    /// Whether any `TypecheckDone` module still needs object codegen — the
+    /// claim scan's own predicate, so [`Self::park_nice_worker`] can re-check
+    /// it under the lock before parking (the S95 window-#2 lost-wakeup fix).
     fn has_pending_object_work_locked(state: &SchedulerState) -> bool {
-        state.typecheck_done.iter().any(|module| {
-            state
-                .modules
-                .get(module)
-                .map(|ms| !ms.object_done && !ms.object_working)
-                .unwrap_or(false)
-        })
+        Self::next_object_work_locked(state).is_some()
+    }
+
+    /// The first `TypecheckDone` module whose object pass is claimable: not
+    /// done, not claimed by a nice worker, and not held on a member that has
+    /// yet to publish (`design/int/int.md` §7.6.4, *Deferral*).
+    fn next_object_work_locked(state: &SchedulerState) -> Option<ModuleFullPath> {
+        state
+            .typecheck_done
+            .iter()
+            .find(|module| {
+                state.modules.get(*module).is_some_and(|ms| {
+                    !ms.object_done
+                        && !ms.object_working
+                        && ms
+                            .object_held_on
+                            .as_ref()
+                            .is_none_or(|member| Self::has_published_locked(state, member))
+                })
+            })
+            .cloned()
+    }
+
+    /// Claim the next claimable object pass, snapshotting the staleness
+    /// generation (S101 R18 lost-update fix) and releasing any hold.
+    fn claim_object_work_locked(state: &mut SchedulerState) -> Option<ModuleFullPath> {
+        let module = Self::next_object_work_locked(state)?;
+        if let Some(ms) = state.modules.get_mut(&module) {
+            ms.object_working = true;
+            ms.object_claimed_gen = ms.object_gen;
+            ms.object_held_on = None;
+        }
+        Some(module)
     }
 
     /// Re-enqueue a module for nice-worker object codegen after its live
@@ -1944,6 +1971,81 @@ impl CompileScheduler {
         }
         drop(state);
         self.object_work_available.notify_all();
+    }
+
+    /// Whether `member` has published all a covered-set walk may read: it is
+    /// ready for declaration, or it failed and stands as it is
+    /// (`design/int/int.md` §7.6.4, *Settled members*). Commit planning and
+    /// the object pass read members through this one predicate.
+    pub(crate) fn has_published(&self, member: &ModuleFullPath) -> bool {
+        Self::has_published_locked(&self.lock(), member)
+    }
+
+    fn has_published_locked(state: &SchedulerState, member: &ModuleFullPath) -> bool {
+        Self::ready_for_declaration_locked(state, member)
+            || state
+                .modules
+                .get(member)
+                .is_some_and(|ms| ms.pool == ModulePool::Failed)
+    }
+
+    /// Put `module`'s claimed object pass back on the object queue, held on
+    /// the unpublished `member` (`design/int/int.md` §7.6.4, *Deferral*). It
+    /// reports no completion while held and is claimable again once `member`
+    /// has published. While objects are awaited the pass is not held but
+    /// stops: its claim stands for the caller to settle.
+    pub(crate) fn hold_object_pass(
+        &self,
+        module: &ModuleFullPath,
+        member: &ModuleFullPath,
+    ) -> ObjectHold {
+        let mut state = self.lock();
+        if state.objects_awaited && !Self::has_published_locked(&state, member) {
+            return ObjectHold::Stop;
+        }
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.object_working = false;
+            ms.object_held_on = Some(member.clone());
+        }
+        drop(state);
+        // The member may have published since the pass read it.
+        self.object_work_available.notify_all();
+        ObjectHold::Held
+    }
+
+    /// Objects are now awaited: every pass still held on an unpublished
+    /// member is claimed for the caller to stop, and later holds stop rather
+    /// than wait (`design/int/int.md` §7.6.4, *No deadlock*). A pass held on a
+    /// member that has since published stays claimable.
+    pub(crate) fn begin_object_wait(&self) -> Vec<HeldObjectPass> {
+        let mut state = self.lock();
+        state.objects_awaited = true;
+        let stopped: Vec<HeldObjectPass> = state
+            .modules
+            .iter()
+            .filter_map(|(module, ms)| {
+                let member = ms.object_held_on.as_ref()?;
+                (!Self::has_published_locked(&state, member)).then(|| HeldObjectPass {
+                    module: module.clone(),
+                    member: member.clone(),
+                })
+            })
+            .collect();
+        for held in &stopped {
+            if let Some(ms) = state.modules.get_mut(&held.module) {
+                ms.object_held_on = None;
+                ms.object_working = true;
+                ms.object_claimed_gen = ms.object_gen;
+            }
+        }
+        drop(state);
+        self.object_work_available.notify_all();
+        stopped
+    }
+
+    /// The wait [`Self::begin_object_wait`] began has returned.
+    pub(crate) fn end_object_wait(&self) {
+        self.lock().objects_awaited = false;
     }
 
     /// Object codegen for a module is complete (.o written).

@@ -263,23 +263,39 @@ pub(crate) enum CoveredSet {
     Unpublished(ModuleFullPath),
 }
 
+/// How a covered-set walk treats a prelude that has not published
+/// (`design/int/int.md` §7.6.4, *The object pass waits*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnpublishedPrelude {
+    /// Covered as it stands, its edges not followed. Commit planning cannot
+    /// wait on the prelude: `prelude → parent → child → prelude` would
+    /// deadlock.
+    ReadAsItStands,
+    /// Answered like any other unpublished member. The object pass is off
+    /// every publication path, so it can wait.
+    Answer,
+}
+
 /// The covered set of `root` in `tables`: the transitive closure of reference
 /// edges from `root`, each member's edges read from its own table, plus
 /// `primitives`, less `root` and `macros` (`design/int/int.md` §7.6.4).
 ///
 /// A member is unpublished when it has no table or `published` denies it; the
-/// walk answers the first such member. Two kinds of member are never answered:
-/// a compiler-owned module, which no load publishes, and the prelude, which is
-/// read as it stands. An unpublished prelude is covered, but its edges are not
-/// followed: a module compiled before the prelude publishes reaches nothing
-/// through it.
+/// walk answers the first such member. A compiler-owned module, which no load
+/// publishes, is never answered; the caller chooses, by `unpublished_prelude`,
+/// whether an unpublished prelude is.
 pub(crate) fn covered_set(
     root: &ModuleFullPath,
     tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    unpublished_prelude: UnpublishedPrelude,
     published: impl Fn(&ModuleFullPath) -> bool,
 ) -> CoveredSet {
     let prelude = ModuleFullPath::from(PRELUDE);
+    let answers = |member: &ModuleFullPath| {
+        !is_compiler_owned(member)
+            && (*member != prelude || unpublished_prelude == UnpublishedPrelude::Answer)
+    };
     let prelude_table = tables.contains_key(&prelude);
     let mut covered = BTreeSet::new();
     let mut seen = BTreeSet::from([root.clone(), ModuleFullPath::from(MACROS)]);
@@ -287,7 +303,7 @@ pub(crate) fn covered_set(
     while let Some(member) = walk.pop_front() {
         if member != *root {
             let settled = tables.contains_key(&member) && published(&member);
-            if !settled && member != prelude && !is_compiler_owned(&member) {
+            if !settled && answers(&member) {
                 return CoveredSet::Unpublished(member);
             }
             covered.insert(member.clone());

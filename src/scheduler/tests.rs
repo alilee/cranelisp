@@ -3390,3 +3390,99 @@ fn restored_parent_claimed_load_failed_while_waiting_fails_the_parent() {
     assert!(loaded.is_typechecked(&parent));
     assert!(loaded.lock().modules[&parent].inmem_done);
 }
+
+// ---------------------------------------------------------------------------
+// The object pass waits (`design/int/int.md` §7.6.4, C1)
+// ---------------------------------------------------------------------------
+
+mod held_object_pass {
+    use super::*;
+
+    /// Every object pass claimable now, claimed.
+    fn claims(sched: &CompileScheduler) -> BTreeSet<ModuleFullPath> {
+        std::iter::from_fn(|| sched.try_take_object_codegen()).collect()
+    }
+
+    /// A scheduler holding `child`'s claimed object pass on the unpublished
+    /// `prelude`.
+    fn child_held_on_prelude() -> CompileScheduler {
+        let sched = CompileScheduler::new();
+        sched.register_module(mod_path("prelude"), no_sexps(), true);
+        sched.register_module(mod_path("m.c"), no_sexps(), false);
+        sched.notify_typecheck_done(&mod_path("m.c"));
+        assert_eq!(claims(&sched), BTreeSet::from([mod_path("m.c")]));
+        assert_eq!(
+            sched.hold_object_pass(&mod_path("m.c"), &mod_path("prelude")),
+            ObjectHold::Held
+        );
+        sched
+    }
+
+    // spec: design/int/int.md §7.6.4 *Deferral* — a held pass reports no
+    // completion and is not claimable until its member publishes; then it is.
+    #[test]
+    fn a_held_pass_runs_when_its_member_publishes() {
+        let sched = child_held_on_prelude();
+        assert_eq!(claims(&sched), BTreeSet::new(), "held on the prelude");
+        assert_eq!(
+            sched.module_pool(&mod_path("m.c")),
+            Some(ModulePool::TypecheckDone)
+        );
+        assert!(!sched.lock().modules[&mod_path("m.c")].object_done);
+        sched.notify_typecheck_done(&mod_path("prelude"));
+        assert_eq!(
+            claims(&sched),
+            BTreeSet::from([mod_path("m.c"), mod_path("prelude")])
+        );
+    }
+
+    // spec: design/int/int.md §7.6.4 *Deferral* — a held pass runs when its
+    // member fails.
+    #[test]
+    fn a_held_pass_runs_when_its_member_fails() {
+        let sched = child_held_on_prelude();
+        sched.notify_module_failed(&mod_path("prelude"), dummy_error("prelude"));
+        assert_eq!(claims(&sched), BTreeSet::from([mod_path("m.c")]));
+    }
+
+    // spec: design/int/int.md §7.6.4 *No deadlock* — when objects come to be
+    // awaited, a pass still held on an unpublished member is handed to the
+    // waiter to stop, naming the member; one held on a member that has since
+    // published stays claimable; and a hold made while objects are awaited
+    // stops instead of waiting.
+    #[test]
+    fn awaiting_objects_stops_a_pass_held_on_an_unpublished_member() {
+        let sched = child_held_on_prelude();
+        sched.register_module(mod_path("q"), no_sexps(), false);
+        sched.register_module(mod_path("r"), no_sexps(), false);
+        sched.notify_typecheck_done(&mod_path("r"));
+        assert_eq!(claims(&sched), BTreeSet::from([mod_path("r")]));
+        assert_eq!(
+            sched.hold_object_pass(&mod_path("r"), &mod_path("q")),
+            ObjectHold::Held
+        );
+        sched.notify_typecheck_done(&mod_path("q"));
+
+        assert_eq!(
+            sched.begin_object_wait(),
+            [HeldObjectPass {
+                module: mod_path("m.c"),
+                member: mod_path("prelude"),
+            }]
+        );
+        assert_eq!(
+            claims(&sched),
+            BTreeSet::from([mod_path("q"), mod_path("r")]),
+            "the stopped pass stays claimed; the pass on a published member is claimable"
+        );
+        assert_eq!(
+            sched.hold_object_pass(&mod_path("r"), &mod_path("prelude")),
+            ObjectHold::Stop
+        );
+        sched.end_object_wait();
+        assert_eq!(
+            sched.hold_object_pass(&mod_path("q"), &mod_path("prelude")),
+            ObjectHold::Held
+        );
+    }
+}

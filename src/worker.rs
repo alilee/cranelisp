@@ -18,7 +18,7 @@ use cranelisp_types::{
 
 use cranelisp_typecheck::CheckState;
 
-use crate::cache::dependency_record::CoveredSet;
+use crate::cache::dependency_record::{CoveredSet, UnpublishedPrelude};
 
 pub(crate) struct PreparedCommit {
     module: ModuleFullPath,
@@ -1422,17 +1422,20 @@ fn plan_staging_commit_inner(
 }
 
 /// The covered set of `module` in a prepared view (`design/int/int.md`
-/// §7.6.4). A member has published once the scheduler holds it ready for
-/// declaration; a failed member has published all it will, and is read as it
-/// stands.
+/// §7.6.4). An unpublished prelude is read as it stands: waiting on it here
+/// could deadlock.
 fn covered_set(
     view: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     shared: &crate::session_v4::SharedState,
 ) -> CoveredSet {
-    crate::cache::dependency_record::covered_set(module, view, &shared.prelude_fallback, |member| {
-        shared.scheduler.is_ready_for_declaration(member) || shared.scheduler.is_failed(member)
-    })
+    crate::cache::dependency_record::covered_set(
+        module,
+        view,
+        &shared.prelude_fallback,
+        UnpublishedPrelude::ReadAsItStands,
+        |member| shared.scheduler.has_published(member),
+    )
 }
 
 /// The agent Build-mode pre-flight validator (`design/int/agent.md §16.1`,

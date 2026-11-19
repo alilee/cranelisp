@@ -1299,6 +1299,9 @@ mod covered_set {
         tables
     }
 
+    const PLANNING: UnpublishedPrelude = UnpublishedPrelude::ReadAsItStands;
+    const OBJECT_PASS: UnpublishedPrelude = UnpublishedPrelude::Answer;
+
     fn covered(modules: &[&str]) -> CoveredSet {
         CoveredSet::Covered(modules.iter().map(|module| m(module)).collect())
     }
@@ -1308,7 +1311,7 @@ mod covered_set {
     // the module does not import.
     #[test]
     fn the_covered_set_is_the_closure_plus_primitives() {
-        let set = covered_set(&m("e"), &chain(), &Default::default(), |_| true);
+        let set = covered_set(&m("e"), &chain(), &Default::default(), PLANNING, |_| true);
         assert_eq!(set, covered(&["primitives", "u", "x"]));
     }
 
@@ -1317,12 +1320,12 @@ mod covered_set {
     #[test]
     fn an_unpublished_or_absent_member_is_answered() {
         let tables = chain();
-        let unpublished = covered_set(&m("e"), &tables, &Default::default(), |module| {
+        let unpublished = covered_set(&m("e"), &tables, &Default::default(), PLANNING, |module| {
             module.as_ref() != "x"
         });
         assert_eq!(unpublished, CoveredSet::Unpublished(m("x")));
         tables.remove(&m("x"));
-        let absent = covered_set(&m("e"), &tables, &Default::default(), |_| true);
+        let absent = covered_set(&m("e"), &tables, &Default::default(), PLANNING, |_| true);
         assert_eq!(absent, CoveredSet::Unpublished(m("x")));
     }
 
@@ -1338,11 +1341,34 @@ mod covered_set {
         tables.insert(m("p"), table("p"));
         let fallback = cranelisp_typecheck::PreludeFallback::default();
         fallback.insert(m("e"), true);
-        let unpublished = covered_set(&m("e"), &tables, &fallback, |module| {
+        let unpublished = covered_set(&m("e"), &tables, &fallback, PLANNING, |module| {
             !matches!(module.as_ref(), "prelude" | "p")
         });
         assert_eq!(unpublished, covered(&["prelude", "primitives", "u", "x"]));
-        let published = covered_set(&m("e"), &tables, &fallback, |_| true);
+        let published = covered_set(&m("e"), &tables, &fallback, PLANNING, |_| true);
+        assert_eq!(
+            published,
+            covered(&["p", "prelude", "primitives", "u", "x"])
+        );
+    }
+
+    // spec: design/int/int.md §7.6.4 *The object pass waits* — the walk the
+    // object pass asks for answers an unpublished prelude like any member, and
+    // reads a published one as commit planning does.
+    #[test]
+    fn the_object_pass_walk_answers_an_unpublished_prelude() {
+        let tables = chain();
+        let mut prelude = table("prelude");
+        prelude.imports = vec![named_import("p")];
+        tables.insert(m("prelude"), prelude);
+        tables.insert(m("p"), table("p"));
+        let fallback = cranelisp_typecheck::PreludeFallback::default();
+        fallback.insert(m("e"), true);
+        let unpublished = covered_set(&m("e"), &tables, &fallback, OBJECT_PASS, |module| {
+            module.as_ref() != "prelude"
+        });
+        assert_eq!(unpublished, CoveredSet::Unpublished(m("prelude")));
+        let published = covered_set(&m("e"), &tables, &fallback, OBJECT_PASS, |_| true);
         assert_eq!(
             published,
             covered(&["p", "prelude", "primitives", "u", "x"])
