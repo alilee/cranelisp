@@ -102,7 +102,7 @@ pub struct MonoMatchArm {
 /// **Live (S114 Phase 5 carrier flip).** Carried non-optionally on
 /// [`MonoExpr::Var`]`.resolution`; produced totally by typecheck into
 /// `MethodResolutions.var_refs` (keyed by `Var` span); transported by
-/// [`MonoExpr::from_expr`] / [`MonoExpr::lenient_from_expr`], whose miss
+/// [`MonoExpr::from_expr`] and the crate-private lenient builder, whose miss
 /// behaviour is the phase-boundary gate ([`ViewBuildError::Unresolved`] /
 /// the tier-3 seam assert). Serde-visible on the persisted `codegen_view`
 /// (`CACHE_SCHEMA_VERSION` 22 window).
@@ -159,14 +159,17 @@ pub enum ApplyRef {
 ///
 /// - [`ViewBuildError::NotConcrete`] — a node's type is absent / non-concrete
 ///   (the pre-flip `NotConcrete` failure, re-wrapped). Legitimate for
-///   multi-sig `f$Var` variants and forward-reference result vars; the caller
-///   MAY fall back to [`MonoExpr::lenient_from_expr`].
+///   multi-sig `f$Var` variants and forward-reference result vars. The
+///   caller decides: typecheck defaults eligible residual parameters and
+///   retries, and otherwise reports a located error. No production caller
+///   builds a lenient view; that builder is crate-private and reaches other
+///   crates' tests only through `test_support::lenient_from_expr`.
 /// - [`ViewBuildError::Unresolved`] — a real-span `Var`/`Apply` has NO
 ///   `var_refs`/`apply_refs` verdict. This is the phase-boundary gate the
 ///   carrier exists for: a reference typecheck could not classify surfaces
-///   HERE as a **located typecheck-phase error** — it MUST NOT be swallowed
-///   into the lenient fallback (doing so re-opens the check-gate-leak class
-///   one level up; the lenient walk seam-asserts on the same miss).
+///   HERE as a **located typecheck-phase error** — it MUST NOT be routed as
+///   `NotConcrete` (doing so re-opens the check-gate-leak class one level
+///   up; the lenient walk seam-asserts on the same miss).
 ///
 /// **NOT `#[non_exhaustive]`** — same closed-sum exception class as
 /// [`VarRef`]/[`ApplyRef`] (types `AGENTS.md` §Public-surface mechanics): the
@@ -175,7 +178,7 @@ pub enum ApplyRef {
 /// variant into the wrong leg.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewBuildError {
-    /// Type incompleteness at a node — the caller may lenient-fall-back.
+    /// Type incompleteness at a node; the caller may retry or report it.
     NotConcrete(NotConcrete),
     /// Resolution incompleteness: a real-span reference with no typed verdict
     /// in the sidecar maps. `span`/`name` locate the reference (for an
@@ -474,7 +477,7 @@ impl MonoExpr {
     /// - The resolution verdict is read BEFORE the node's type: a node that
     ///   is both unresolved and non-concrete reports `Unresolved`, so a
     ///   resolution miss can never slip into the caller's `NotConcrete`
-    ///   lenient fallback (where the same miss would seam-assert).
+    ///   route.
     /// - A [`Span::SYNTHETIC`] node with no map entry takes the all-local
     ///   verdict (`VarRef::Local { binding_span: Span::SYNTHETIC }` /
     ///   [`ApplyRef::ViaCallee`]): synthetic nodes are structurally OUTSIDE
@@ -531,7 +534,7 @@ impl MonoExpr {
             } => {
                 // Verdict BEFORE type: an unresolved reference must surface as
                 // the located `Unresolved` gate error, never leak to the
-                // caller's `NotConcrete` lenient fallback.
+                // caller's `NotConcrete` route.
                 let resolution =
                     var_verdict(name, *span, var_refs).ok_or(ViewBuildError::Unresolved {
                         span: *span,
@@ -826,20 +829,13 @@ impl MonoExpr {
     /// not classify a node by it. Byte-identical to the strict builder on a
     /// fully-concrete body (every `node_ty` succeeds; carriers identical).
     ///
-    /// **STAGED RETIREMENT (S119 ruling, register row R-11 / FIXME 0913;
-    /// `design/arch/concrete-boundary-type.md` §3.1.1).** The
-    /// `unwrap_or(ConcreteType::Int)` below is the types-crate fabrication
-    /// site the concreteness programme closes: (1) S119 CS-3 replaces the
-    /// fabricating default for the populations typecheck owns, with a
-    /// lenient-fallback census whose zero reading is the flip criterion;
-    /// (2) the S120 ctor tranche (FIXME 0931) deletes the largest legitimate
-    /// lenient population (generic ctor/accessor templates stop being codegen
-    /// targets; A-MINT instances are built with real concrete node types);
-    /// (3) end state (S121, census-gated): this builder DELETES and
-    /// [`MonoExpr::from_expr`] is the sole view builder
-    /// (`synthetic_local_from_expr` retires with it once synthesis stamps
-    /// types).
-    pub fn lenient_from_expr(
+    /// **Crate-private.** Its callers are
+    /// [`MonoExpr::synthetic_local_from_expr`] and the feature-gated
+    /// `test_support::lenient_from_expr`, which forwards to it for other
+    /// crates' test fixtures. No production code outside this crate builds a
+    /// lenient view. The ruled end state deletes this builder
+    /// (`design/arch/concrete-boundary-type.md` §3.1.1).
+    pub(crate) fn lenient_from_expr(
         expr: &Expr,
         pattern_ctors: &HashMap<Span, FQSymbol>,
         var_refs: &HashMap<Span, VarRef>,
@@ -1083,7 +1079,7 @@ impl MonoExpr {
     ///   door.
     ///
     /// **All-local mode of the ONE shared walk (S114 Phase 5 flip).** The
-    /// interior delegates to [`MonoExpr::lenient_from_expr`] with empty
+    /// interior delegates to the crate-private lenient builder with empty
     /// resolution maps: under the shared walk's [`Span::SYNTHETIC`] carve-out
     /// every (asserted-synthetic) `Var` takes `VarRef::Local { binder,
     /// binding_span: Span::SYNTHETIC }` and every `Apply` takes

@@ -220,10 +220,12 @@ Use the read-throughs; never re-pattern the lifecycle set:
   before touching a `result` arm.
 - `ownership_analysis_off()` is read once per process and is a backend cache
   global key.
-- **`ViewBuildError` routing is load-bearing.** `NotConcrete` may fall back to
-  `lenient_from_expr`; `Unresolved` — a real-span `Var`/`Apply` with no typed
-  verdict — is a located typecheck error and must never enter the fallback.
-  `lenient_from_expr` tolerates types only; a real-span verdict miss panics.
+- **`ViewBuildError` routing is load-bearing.** `NotConcrete` is the caller's
+  to retry or report; `Unresolved` — a real-span `Var`/`Apply` with no typed
+  verdict — is a located typecheck error and must never take that route.
+  The lenient builder is `pub(crate)` and reaches other crates' tests only
+  through `test_support::lenient_from_expr`; it tolerates types only, and a
+  real-span verdict miss panics.
   `MonoExpr::synthetic_local_from_expr` is the one all-local builder for
   `Span::SYNTHETIC` bodies, and asserts that span; never widen it for a real
   body.

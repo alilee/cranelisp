@@ -201,11 +201,9 @@ them was the original leak; treat any new one as a defect.
     tracked by safety-register row R18. Ruled end state: both builders are deleted and
     `MonoExpr::from_expr` is the sole view builder, once synthesised bodies are stamped with
     real concrete node types. `synthetic_local_from_expr` has production callers in typecheck
-    and `src/bootstrap.rs` and stays public. The lenient builder has no production caller
-    outside `cranelisp-types`. Test code reaches it through
-    `cranelisp_types::test_support::lenient_from_expr`; narrowing the method to `pub(crate)`
-    is approved (S123 packet row K11-d) and waits for the test callers to move
-    ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
+    and `src/bootstrap.rs` and stays public. The lenient builder is `pub(crate)`: its one
+    production caller is `synthetic_local_from_expr`, and other crates' test fixtures reach
+    it through `cranelisp_types::test_support::lenient_from_expr`.
 
 ### 3.1.2 The S124 close — no RC operation on a word without a category
 

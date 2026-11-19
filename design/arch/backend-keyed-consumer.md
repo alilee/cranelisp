@@ -25,7 +25,7 @@ pinned diffs and gating verdicts) is in Git history.
   never the written spelling and never a display name.
 - The carriers are `MonoExpr::Var.resolution: VarRef`,
   `MonoExpr::Apply.dispatch: ApplyRef` and `MonoMatchArm.resolved_ctor`,
-  populated by `MonoExpr::from_expr` / `lenient_from_expr` from the three
+  populated by `MonoExpr::from_expr` and the crate-private lenient walk from the three
   span-keyed sidecars of `MethodResolutions` (`var_refs`, `apply_refs`,
   `pattern_ctors`), which are required parameters: a view cannot be built
   without answering the question
@@ -273,16 +273,16 @@ producer never recording a self-`SigDispatch` for a shadowed call (Principle
 - Typecheck builds the codegen view for every codegen-reached body and the
   backend compiles only present views: a codegen-reached entry without a view
   is a hard error. Both view builders live in `cranelisp-types` beside each
-  other with the same required sidecar parameters
-  (`MonoExpr::from_expr`, `MonoExpr::lenient_from_expr`).
-- The lenient builder serves the entry classes that legitimately fail the
-  strict builder on **types only**: constructor `Def` synthetic bodies,
-  synthesised field accessors, `f$Var` multi-sig variants, generic templates
-  reached by direct compile, REPL `__expr` bodies and non-concretized
-  macro-clause bodies. Resolution verdicts are total in both builders; a
-  real-span miss in the lenient walk is an always-on seam assertion, never a
-  manufactured local. The CLIF byte-identity gate for these classes is
-  `tests/golden_clif_w0b.rs` over `tests/fixtures/clif_w0b/`.
+  other with the same required sidecar parameters: the public
+  `MonoExpr::from_expr` and a crate-private lenient walk.
+- The lenient walk tolerates **types only**. Its one production entry is
+  `MonoExpr::synthetic_local_from_expr`; other crates' test fixtures reach it
+  through `cranelisp_types::test_support::lenient_from_expr`. No production
+  code outside `cranelisp-types` builds a lenient view. Resolution verdicts
+  are total in both builders; a real-span miss in the lenient walk is an
+  always-on seam assertion, never a manufactured local.
+  `tests/golden_clif_w0b.rs` pins the CLIF of the entry classes that took the
+  lenient arm when typecheck became the sole view producer.
 - **Synthetic bodies get their carriers directly.** Every synthesised node is
   `Span::SYNTHETIC`, so a span-keyed sidecar structurally cannot address them.
   Synthesis holds the identities: accessor bodies take
@@ -378,8 +378,7 @@ Exact promises live in rustdoc; this is the inventory a schema reader needs.
 - `cranelisp-types`: `MethodResolutions.{pattern_ctors, var_refs, apply_refs}`
   (`check.rs`); `MonoExpr::Var.resolution: VarRef`,
   `MonoExpr::Apply.dispatch: ApplyRef`, `MonoMatchArm.resolved_ctor`
-  (`mono_expr.rs`); `MonoExpr::{from_expr, lenient_from_expr,
-  synthetic_local_from_expr}`; `ResolvedCall::TraitMethod.impl_module` and
+  (`mono_expr.rs`); `MonoExpr::{from_expr, synthetic_local_from_expr}`; `ResolvedCall::TraitMethod.impl_module` and
   `ImplShell.impl_module` (both required, no serde default);
   `Resolved.canonical` on the resolution walk.
 - `cranelisp-backend`: the `CompileContext` reader of §1.3; the unit harness

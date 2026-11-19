@@ -103,8 +103,8 @@ the display name. Constructor instantiation is the single mint point.
 ### 10.2 Transport on the mono node
 
 `MonoMatchArm.resolved_ctor` is `Some` for constructor-pattern arms and `None`
-for wildcard and variable arms. `MonoExpr::from_expr` and
-`MonoExpr::lenient_from_expr` take the `pattern_ctors` map as a required
+for wildcard and variable arms. `MonoExpr::from_expr` and the
+crate-private lenient walk take the `pattern_ctors` map as a required
 parameter, so a codegen view cannot be built without answering the question
 ([Principle 18](principles/18-enforce-invariants-structurally.md)). Typecheck is the
 sole producer of mono views; synthesized bodies, whose nodes have no source
