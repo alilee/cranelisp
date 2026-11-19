@@ -1521,8 +1521,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     ///
     /// This raw allocator is private and used only beneath
     /// `mint_callable_slot`, which pairs allocation with the concreteness
-    /// check. That is the C1 realization of FIXME 0931; sprint administration
-    /// retains and closes the marker after the downstream wash.
+    /// check.
     fn allocate_got_slot_with_claims(
         &self,
         claimed: &HashSet<usize>,
@@ -2142,7 +2141,11 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     }
 
     /// Settle a declared callable as a non-concrete template.
-    pub fn settle_template(
+    ///
+    /// Module tests only: production settles a checked body through
+    /// [`Self::settle_checked_template`].
+    #[cfg(test)]
+    pub(crate) fn settle_template(
         &mut self,
         name: &Symbol,
         body: TemplateBody,
@@ -2207,7 +2210,11 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
 
     /// Settle a declaration as a concrete callable, atomically pairing its
     /// concrete scheme, codegen view and re-bound-or-fresh slot.
-    pub fn settle_concrete(
+    ///
+    /// Module tests only: production settles a checked body through
+    /// [`Self::settle_checked_concrete`].
+    #[cfg(test)]
+    pub(crate) fn settle_concrete(
         &mut self,
         name: &Symbol,
         realization: Realization<C>,

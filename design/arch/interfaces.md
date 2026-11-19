@@ -446,6 +446,8 @@ ownership, slot conservation and atomic publication. This section maps the facad
   only aliases, ambiguity sentinels and non-callable declarations.
 - Checked source bodies settle through `settle_checked_template` and
   `settle_checked_concrete`, atomically across scheme, source body, view, callees and slot.
+  They are the only public settle entries; the unchecked `settle_template` and
+  `settle_concrete` compile for the types crate's module tests alone.
 - `publish_body_ownership` stamps an annotated view together with its summary; there is no
   one-sided summary setter.
 - `remove_non_callable` and `discard_declared` are the only live-table cleanup surfaces.
@@ -463,11 +465,6 @@ ownership, slot conservation and atomic publication. This section maps the facad
   through role-specific constructors. The external-consumer test
   `crates/cranelisp-types/tests/lifecycle_facade.rs` exercises them, because an in-crate test
   cannot detect a constructor missing from such a record.
-
-**Approved, not in source at `4b58ab93`.** `settle_template` and `settle_concrete` have no
-cross-crate production caller; production settles through the `settle_checked_*` pair. They
-leave the public surface in S124 ([batch record](#approved-changes-not-yet-in-source-s124), row
-K11-c).
 
 ### Checked-registration transaction facade
 

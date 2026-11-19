@@ -66,9 +66,10 @@ Use the read-throughs; never re-pattern the lifecycle set:
 ## Lifecycle writes go through funnels
 
 - **The `SymbolTable` lifecycle funnels are the only fresh-slot authority.**
-  `declare` + `settle_concrete` and the born-settled installers pair a concrete
-  scheme with the opaque `CallableSlot` in one act; raw allocation and
-  publication are private. `CallableSlot::rebind` is the checked reuse path.
+  `declare` + `settle_checked_concrete` and the born-settled installers pair a
+  concrete scheme with the opaque `CallableSlot` in one act; raw allocation and
+  publication are private. `settle_template` and `settle_concrete` are
+  `#[cfg(test)]` module-test entries, not a surface. `CallableSlot::rebind` is the checked reuse path.
   `validate_lifecycle` re-derives every live and retired claim after
   construction, clone or deserialisation. The reasons are the
   [symbol-table lifecycle](../../design/arch/symbol-table-lifecycle.md).
@@ -77,7 +78,7 @@ Use the read-throughs; never re-pattern the lifecycle set:
   `concrete_callable_key`, and returns `(key, slot)`. A key inconsistent with
   that derivation is `LifecycleError::InstanceKeyMismatch`, both at install
   and after deserialisation, where it reads as cache-stale. Ordinary
-  `settle_concrete`/`install_concrete` do not accept `minted_from`.
+  `settle_checked_concrete`/`install_concrete` do not accept `minted_from`.
 - **`callees`, `ast`, the concrete view, realization and slot enter together.**
   Checked bodies use `settle_checked_template`/`settle_checked_concrete`;
   a later callee harvest uses `replace_callees`. Ownership publishes its
