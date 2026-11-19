@@ -41,7 +41,6 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_trace_swap_got",
     "cranelisp_trace_restore_got",
     "cranelisp_collect_trace",
-    "cranelisp_trace_first_child_nanos",
     "cranelisp_trace_name",
     "cranelisp_trace_params",
     "cranelisp_trace_result",

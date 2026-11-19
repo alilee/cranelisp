@@ -275,11 +275,6 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
             extern "C" fn() -> i64,
         ),
         catalog_row!(
-            "cranelisp_trace_first_child_nanos",
-            crate::trace::cranelisp_trace_first_child_nanos,
-            extern "C" fn(i64) -> i64,
-        ),
-        catalog_row!(
             "cranelisp_trace_name",
             crate::trace::cranelisp_trace_name,
             extern "C" fn(i64) -> i64,

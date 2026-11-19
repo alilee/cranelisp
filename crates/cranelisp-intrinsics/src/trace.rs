@@ -593,52 +593,6 @@ pub extern "C" fn cranelisp_trace_exit(result: i64, result_str_ptr: i64) -> i64 
     result
 }
 
-/// Extract the `tnanos` field of the first child of the root Trace frame.
-/// Used by the `/run-tests` slash command and user-level test runners
-/// (composed from `discover-tests` + `run-test` builtins) to report per-test
-/// execution time. Returns 0 if the trace has no children.
-///
-/// TraceCall heap layout (base-pointer convention):
-/// `[alloc_size(+0) | rc(+8) | tag(+16) | tname(+24) | tparams(+32) | tresult(+40) | tchildren(+48) | tnanos(+56)]`
-///
-/// SList SCons layout: `[alloc_size(+0) | rc(+8) | tag=1(+16) | head(+24) | tail(+32)]`
-/// SNil = bare 0 (nullary tag).
-#[unsafe(no_mangle)]
-pub extern "C" fn cranelisp_trace_first_child_nanos(trace_adt: i64) -> i64 {
-    if trace_adt == 0 || (trace_adt as usize) < cranelisp_types::NULLARY_TAG_THRESHOLD {
-        return 0;
-    }
-    // SAFETY for all read_i64 calls below: `trace_adt` was verified above to
-    // be a heap pointer (above NULLARY_TAG_THRESHOLD). It was allocated by
-    // `build_trace_call` with the 5-field TraceCall layout, so the children and
-    // nanos fields are within bounds. Intermediate pointers (tchildren,
-    // first_child) are checked against NULLARY_THRESHOLD before
-    // dereferencing.
-
-    let tchildren = unsafe { read_i64(trace_adt, TRACE_TCHILDREN_OFFSET) };
-    let result = if tchildren < NULLARY_THRESHOLD {
-        0 // SNil
-    } else {
-        let scons_tag = unsafe { read_i64(tchildren, TAG_OFFSET) };
-        if scons_tag != TAG_SCONS {
-            0 // not SCons
-        } else {
-            // The SCons head.
-            let first_child = unsafe { read_i64(tchildren, FIELD0_OFFSET) };
-            if first_child < NULLARY_THRESHOLD {
-                0
-            } else {
-                unsafe { read_i64(first_child, TRACE_TNANOS_OFFSET) }
-            }
-        }
-    };
-    // Decision 24 (Sprint 56 Step 2c): consuming convention — release the
-    // Trace ADT (walks sub-refs if this was the last reference).
-    // SAFETY: this consuming extern received one transferred Trace owner.
-    consume_trace_call(unsafe { Owned::from_abi(trace_adt) });
-    result
-}
-
 /// Collect the root trace frame, release the trace role, and return the trace
 /// as a `Trace` ADT heap pointer.
 /// Must be called after all `cranelisp_trace_restore_got` calls for this

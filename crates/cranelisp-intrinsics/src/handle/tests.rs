@@ -166,7 +166,6 @@ fn typed_handle_trusted_base_matches_the_approved_intrinsics_allow_list() {
             ("trace.rs::consume_slist_of_trace", 2),
             ("trace.rs::consume_trace_call", 4),
             ("trace.rs::cranelisp_trace_children", 1),
-            ("trace.rs::cranelisp_trace_first_child_nanos", 1),
             ("trace.rs::cranelisp_trace_name", 1),
             ("trace.rs::cranelisp_trace_nanos", 1),
             ("trace.rs::cranelisp_trace_params", 1),

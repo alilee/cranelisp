@@ -545,60 +545,6 @@ fn accessor_nanos_reads_offset_no_rc_inc() {
     // (nanos is a bare Int, not RC-managed).
 }
 
-// spec: spec/04-expressions.md §4.12.4 + appendix-a-builtins — the /run-tests
-// helper `cranelisp_trace_first_child_nanos` walks tchildren -> first SCons
-// head -> that child's tnanos (offset 56), then consumes the root under the
-// Decision-24 convention. Build a root whose single child carries a known
-// nanos value.
-#[test]
-fn first_child_nanos_walks_slist_to_child_tnanos() {
-    let child = build_trace_call(
-        TraceFrame {
-            name: "child".to_string(),
-            params: vec![],
-            result: 0,
-            start: Instant::now(),
-            children: vec![],
-        },
-        999,
-    );
-    let root = build_trace_call(
-        TraceFrame {
-            name: "::trace::".to_string(),
-            params: vec![],
-            result: 0,
-            start: Instant::now(),
-            children: vec![child],
-        },
-        1,
-    );
-
-    let got = cranelisp_trace_first_child_nanos(root);
-    assert_eq!(got, 999, "must return the first child's tnanos");
-    // Root (and its child) consumed by the accessor.
-}
-
-// spec: spec/04-expressions.md §4.12.4 — first_child_nanos over a childless
-// root returns 0 (SNil tchildren) and still consumes the root.
-#[test]
-fn first_child_nanos_empty_children_returns_zero() {
-    let root = build_trace_call(
-        TraceFrame {
-            name: "::trace::".to_string(),
-            params: vec![],
-            result: 0,
-            start: Instant::now(),
-            children: vec![],
-        },
-        1,
-    );
-    assert_eq!(
-        cranelisp_trace_first_child_nanos(root),
-        0,
-        "no children -> 0"
-    );
-}
-
 // ── 0130 harvest: ::skipped:: concurrent-skip sentinel ────────────────────
 //
 // `design/arch/tracing.md` §4.2: when a DIFFERENT thread already owns the trace
