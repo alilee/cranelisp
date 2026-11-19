@@ -1,5 +1,5 @@
-//! C7 node identity, C8 callee identity and C9 binder scope
-//! (`design/int/bind-chain-analysis.md` §3.1, §3.6, §3.8, §6, §7).
+//! C7 node identity, C8 callee identity, C9 binder scope and C10 every body
+//! (`design/int/bind-chain-analysis.md` §3.1, §3.6, §3.8, §5.3, §6, §7).
 //!
 //! Every fixture node carries its own span, so a rewrite that reuses one
 //! written span on two output nodes is observable.
@@ -889,5 +889,47 @@ fn chain_binder_reaches_later_steps_only() {
     assert!(
         unchanged(&later, &body),
         "the later `bind` is the local: {body:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C10 — every body: each clause of a multi-signature definition (§5.3)
+// ---------------------------------------------------------------------------
+
+// spec: spec/10-io.md §10.12.1 — C10, each clause is scheduled with its own
+// parameters as the root scope (ACT-0981)
+#[test]
+fn each_clause_of_a_multi_signature_definition_is_scheduled() {
+    let fx = Fixture::new(BindExposure::Import);
+    let n = Nodes::new();
+    let with_local = n.independent_pair("bind");
+    let clause = |params: &[&str], body: Expr| DefnVariant {
+        params: params.iter().map(|p| (Symbol::from(*p), None)).collect(),
+        body,
+        span: n.span(),
+    };
+    let mut program = vec![TopLevel::Defn(Defn {
+        name: Symbol::from("main"),
+        docstring: None,
+        variants: vec![
+            clause(&["bind"], with_local.clone()),
+            clause(&["x", "y"], n.independent_pair("bind")),
+        ],
+        visibility: Visibility::Public,
+        span: Span::new(1, 2),
+    })];
+    fx.run(&mut program);
+    let TopLevel::Defn(defn) = &program[0] else {
+        unreachable!("the fixture is one definition")
+    };
+    assert!(
+        unchanged(&with_local, &defn.variants[0].body),
+        "the clause whose parameter is `bind` is left as written: {:?}",
+        defn.variants[0].body
+    );
+    assert!(
+        matches!(defn.variants[1].body, Expr::ParBind { .. }),
+        "the other clause's pair groups: {:?}",
+        defn.variants[1].body
     );
 }

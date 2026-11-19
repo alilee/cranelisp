@@ -553,12 +553,10 @@ pub fn resolve_prelude(project_root: &Path, lib_dirs: &[PathBuf]) -> Option<Path
 // The replacement is `SymbolTable::defined_symbols().count() > 0`, which is
 // the same predicate the priority worker uses (Decision 22). Helper deleted.
 
-/// Apply bind-chain analysis to every single-signature definition and
-/// trait-impl method in one cluster's program
+/// Apply bind-chain analysis to every definition and trait-impl method in one
+/// cluster's program, each variant of a multi-signature body included
 /// (`design/int/bind-chain-analysis.md` §5). `scope` is the cluster's
 /// committed resolution scope, built as macro recognition builds it.
-///
-/// Multi-signature definitions and methods are skipped (§5.3).
 pub(crate) fn apply_bind_chain_analysis<
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
@@ -572,20 +570,15 @@ pub(crate) fn apply_bind_chain_analysis<
     let declarations = ClusterDeclarations::of(program);
     for item in program.iter_mut() {
         match item {
-            TopLevel::Defn(defn) if !defn.is_multi_sig() => {
+            TopLevel::Defn(defn) => {
                 auto_schedule_defn(defn, scope, &declarations, current_module);
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in impl_.methods.iter_mut() {
-                    if !method.is_multi_sig() {
-                        auto_schedule_defn(method, scope, &declarations, current_module);
-                    }
+                    auto_schedule_defn(method, scope, &declarations, current_module);
                 }
             }
-            TopLevel::Defn(_)
-            | TopLevel::TraitDecl(_)
-            | TopLevel::TypeDef { .. }
-            | TopLevel::Expr(_) => {}
+            TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } | TopLevel::Expr(_) => {}
         }
     }
 }

@@ -16,8 +16,8 @@ use cranelisp_types::{
     Pattern, Program, ResolutionScope, Resolved, Span, Symbol, TopLevel, TypeExpr, free_vars_expr,
 };
 
-/// Rewrite the bind chains of one single-signature definition (§5.3), with
-/// its parameters as the root scope (§3.8).
+/// Rewrite the bind chains of each variant of `defn` (§5.3), with that
+/// variant's parameters as the root scope (§3.8).
 ///
 /// `scope` is the cluster's committed resolution scope and `declarations` the
 /// names its program declares (§3.1, layers 3 and 2).
@@ -27,21 +27,19 @@ pub(crate) fn auto_schedule_defn<C: CodeStore, L: LinkerStore>(
     declarations: &ClusterDeclarations,
     current_module: &ModuleFullPath,
 ) {
-    if defn.is_multi_sig() {
-        unreachable!("invariant: auto_schedule_defn called on multi-sig defn");
+    for variant in &mut defn.variants {
+        let params = variant.params.iter().map(|(p, _)| p.clone()).collect();
+        let mut pass = Pass::new(scope, declarations, current_module, params);
+        let body = std::mem::replace(
+            &mut variant.body,
+            Expr::BoolLit {
+                value: false,
+                span: variant.span,
+                inferred_type: None,
+            },
+        );
+        variant.body = pass.transform(body);
     }
-    let variant = &mut defn.variants[0];
-    let params = variant.params.iter().map(|(p, _)| p.clone()).collect();
-    let mut pass = Pass::new(scope, declarations, current_module, params);
-    let body = std::mem::replace(
-        &mut variant.body,
-        Expr::BoolLit {
-            value: false,
-            span: defn.span,
-            inferred_type: None,
-        },
-    );
-    variant.body = pass.transform(body);
 }
 
 // ---------------------------------------------------------------------------
