@@ -526,12 +526,15 @@ fn a_type_with_a_short_constructor_has_no_constructor_metadata_neg() {
     };
     let type_def = ctx.lookup_type_def(&fqtn("Sh")).expect("Sh");
     let err = ctx
-        .constructor_metas(&type_def)
+        .constructor_metas(&type_def, Span::SYNTHETIC)
         .expect_err("a short constructor has no metadata");
     assert!(err.to_string().contains("MkSh"), "{err}");
     assert!(
-        ctx.constructor_metas(&ctx.lookup_type_def(&fqtn("P")).expect("P"))
-            .is_ok()
+        ctx.constructor_metas(
+            &ctx.lookup_type_def(&fqtn("P")).expect("P"),
+            Span::SYNTHETIC
+        )
+        .is_ok()
     );
 }
 

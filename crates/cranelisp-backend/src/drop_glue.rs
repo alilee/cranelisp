@@ -28,6 +28,9 @@ struct RegistryEntry {
     symbol: LinkerSymbol,
     func_id: FuncId,
     state: DefinitionState,
+    /// Where the glue was first requested; every error raised later for this
+    /// entry, and for the glue nested inside it, is located here.
+    span: Span,
 }
 
 /// The compilation-local canonical registry — **module-borrow-free state**
@@ -37,7 +40,7 @@ struct RegistryEntry {
 /// call. That is what lets a live [`crate::compiler::FnCompiler`] — which itself
 /// holds `module: &'a mut M` — reach the registry through a *disjoint* field
 /// borrow (`self.glue.request_if_owning(self.module, self.ctx.symbol_tables,
-/// ty)`). Holding the module inside the registry made every consumer
+/// ty, span)`). Holding the module inside the registry made every consumer
 /// unreachable, which is why the S116 foundation had zero of them.
 ///
 /// Mid-body definition is safe: `define` builds each body in a fresh
@@ -66,12 +69,15 @@ impl DropGlueRegistry {
 
     /// Request canonical glue for `ty`, or `None` when the type owns nothing
     /// heap (`NeverHeap`). The single entry point for every release
-    /// seam.
+    /// seam. `span` is the requester's: the reference it releases, or its
+    /// frame's `Defn` when it holds no reference; a registry error is located
+    /// there (`non-concrete-release-contract.md` §7.2.1 Rule 2).
     pub(crate) fn request_if_owning<M, C, L>(
         &mut self,
         module: &mut M,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         ty: ConcreteType,
+        span: Span,
     ) -> Result<Option<FuncId>, CranelispError>
     where
         M: Module,
@@ -84,7 +90,7 @@ impl DropGlueRegistry {
         ) {
             return Ok(None);
         }
-        self.request(module, symbol_tables, ty).map(Some)
+        self.request(module, symbol_tables, ty, span).map(Some)
     }
 
     /// The `(i64) -> i64` adapter over canonical glue for `elem`, for the
@@ -100,16 +106,18 @@ impl DropGlueRegistry {
         module: &mut M,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         elem: &ConcreteType,
+        span: Span,
     ) -> Result<Option<FuncId>, CranelispError>
     where
         M: Module,
         C: CodeStore,
         L: LinkerStore,
     {
-        let Some(glue_id) = self.request_if_owning(module, symbol_tables, elem.clone())? else {
+        let Some(glue_id) = self.request_if_owning(module, symbol_tables, elem.clone(), span)?
+        else {
             return Ok(None);
         };
-        self.define_vec_elem_adapter(module, elem, glue_id)
+        self.define_vec_elem_adapter(module, elem, glue_id, span)
             .map(Some)
     }
 
@@ -118,6 +126,7 @@ impl DropGlueRegistry {
         module: &mut M,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         ty: ConcreteType,
+        span: Span,
     ) -> Result<FuncId, CranelispError>
     where
         M: Module,
@@ -132,13 +141,14 @@ impl DropGlueRegistry {
         sig.params.push(AbiParam::new(types::I64));
         let func_id = module
             .declare_function(symbol.as_ref(), Linkage::Export, &sig)
-            .map_err(|e| self.error(format!("failed to declare drop glue '{symbol}': {e}")))?;
+            .map_err(|e| error(span, format!("failed to declare drop glue '{symbol}': {e}")))?;
         self.entries.insert(
             ty.clone(),
             RegistryEntry {
                 symbol,
                 func_id,
                 state: DefinitionState::Declared,
+                span,
             },
         );
         self.define(module, symbol_tables, ty)?;
@@ -156,7 +166,7 @@ impl DropGlueRegistry {
         C: CodeStore,
         L: LinkerStore,
     {
-        let state = self.entries.get(&ty).expect("declared entry").state;
+        let RegistryEntry { state, span, .. } = *self.entries.get(&ty).expect("declared entry");
         if matches!(state, DefinitionState::Defining | DefinitionState::Defined) {
             return Ok(());
         }
@@ -164,10 +174,10 @@ impl DropGlueRegistry {
 
         // Resolve every child before borrowing a FunctionBuilder. Re-entry for
         // self/mutual recursion observes `Defining` and returns its declaration.
-        let shape = self.shape(symbol_tables, &ty)?;
+        let shape = self.shape(symbol_tables, &ty, span)?;
         let mut child_ids = HashMap::new();
         for child in shape.children() {
-            if let Some(id) = self.request_if_owning(module, symbol_tables, child.clone())? {
+            if let Some(id) = self.request_if_owning(module, symbol_tables, child.clone(), span)? {
                 child_ids.insert(child, id);
             }
         }
@@ -175,7 +185,7 @@ impl DropGlueRegistry {
             GlueShape::Vec(elem) => child_ids
                 .get(elem)
                 .copied()
-                .map(|id| self.define_vec_elem_adapter(module, elem, id))
+                .map(|id| self.define_vec_elem_adapter(module, elem, id, span))
                 .transpose()?,
             _ => None,
         };
@@ -194,7 +204,10 @@ impl DropGlueRegistry {
         match shape {
             GlueShape::Vec(_) => {
                 let vec_drop = self.vec_drop_id.ok_or_else(|| {
-                    self.error("runtime/vec_drop is required for Vec drop glue".into())
+                    error(
+                        span,
+                        "runtime/vec_drop is required for Vec drop glue".into(),
+                    )
                 })?;
                 let child_ptr = if let Some(id) = vec_elem_callback {
                     let rf = module.declare_func_in_func(id, builder.func);
@@ -230,15 +243,18 @@ impl DropGlueRegistry {
                     self.dealloc_id,
                 );
             }
-            GlueShape::Io => self.emit_io_drop(module, &mut builder, value)?,
+            GlueShape::Io => self.emit_io_drop(module, &mut builder, value, span)?,
             other => self.emit_outer_drop(module, &mut builder, value, &other, &child_ids)?,
         }
         builder.ins().return_(&[]);
         builder.seal_all_blocks();
         builder.finalize();
-        module
-            .define_function(func_id, &mut ctx)
-            .map_err(|e| self.error(format!("failed to define drop glue for '{ty:?}': {e}")))?;
+        module.define_function(func_id, &mut ctx).map_err(|e| {
+            error(
+                span,
+                format!("failed to define drop glue for '{ty:?}': {e}"),
+            )
+        })?;
         self.entries.get_mut(&ty).expect("declared entry").state = DefinitionState::Defined;
         Ok(())
     }
@@ -251,6 +267,7 @@ impl DropGlueRegistry {
         module: &mut M,
         elem: &ConcreteType,
         glue_id: FuncId,
+        span: Span,
     ) -> Result<FuncId, CranelispError> {
         let glue_symbol = drop_glue_symbol_name(&self.module_path, elem);
         let name = format!("{}__vec_elem_adapter", glue_symbol.as_ref());
@@ -262,7 +279,7 @@ impl DropGlueRegistry {
         sig.returns.push(AbiParam::new(types::I64));
         let id = module
             .declare_function(&name, Linkage::Local, &sig)
-            .map_err(|e| self.error(format!("failed to declare Vec glue adapter: {e}")))?;
+            .map_err(|e| error(span, format!("failed to declare Vec glue adapter: {e}")))?;
         let mut ctx = module.make_context();
         ctx.func.signature = sig;
         let mut fb_ctx = FunctionBuilderContext::new();
@@ -278,7 +295,7 @@ impl DropGlueRegistry {
         builder.finalize();
         module
             .define_function(id, &mut ctx)
-            .map_err(|e| self.error(format!("failed to define Vec glue adapter: {e}")))?;
+            .map_err(|e| error(span, format!("failed to define Vec glue adapter: {e}")))?;
         Ok(id)
     }
 
@@ -345,6 +362,7 @@ impl DropGlueRegistry {
         module: &mut M,
         builder: &mut FunctionBuilder,
         value: Value,
+        span: Span,
     ) -> Result<(), CranelispError> {
         let done = builder.create_block();
         let threshold = builder
@@ -382,10 +400,11 @@ impl DropGlueRegistry {
         sig.params.push(AbiParam::new(types::I64));
         let free_io = module
             .declare_function("runtime/free_io_node", Linkage::Import, &sig)
-            .map_err(|error| {
-                self.error(format!(
-                    "failed to declare runtime/free_io_node for IO drop glue: {error}"
-                ))
+            .map_err(|e| {
+                error(
+                    span,
+                    format!("failed to declare runtime/free_io_node for IO drop glue: {e}"),
+                )
             })?;
         let free_io = module.declare_func_in_func(free_io, builder.func);
         builder.ins().call(free_io, &[value]);
@@ -443,6 +462,7 @@ impl DropGlueRegistry {
         &self,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         ty: &ConcreteType,
+        span: Span,
     ) -> Result<GlueShape, CranelispError>
     where
         C: CodeStore,
@@ -453,18 +473,23 @@ impl DropGlueRegistry {
             ConcreteType::Fn(..) => Ok(GlueShape::Closure),
             ConcreteType::ADT(name, args) if is_vec(name) => match args.as_slice() {
                 [elem] => Ok(GlueShape::Vec(elem.clone())),
-                _ => Err(self.error(format!(
-                    "drop glue for '{name}' requires exactly one element type, received {}: {ty:?}",
-                    args.len()
-                ))),
+                _ => Err(error(
+                    span,
+                    format!(
+                        "drop glue for '{name}' requires exactly one element type, received {}: {ty:?}",
+                        args.len()
+                    ),
+                )),
             },
             ConcreteType::ADT(name, _) if is_io(name) => Ok(GlueShape::Io),
             ConcreteType::ADT(name, args) => Ok(GlueShape::Adt(self.ctor_shapes(
                 symbol_tables,
                 name,
                 args,
+                span,
             )?)),
-            ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => Err(self.error(
+            ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => Err(error(
+                span,
                 format!("non-owning type requested from drop-glue registry: {ty:?}"),
             )),
         }
@@ -475,25 +500,37 @@ impl DropGlueRegistry {
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
         name: &FQTypeName,
         args: &[ConcreteType],
+        span: Span,
     ) -> Result<Vec<CtorShape>, CranelispError>
     where
         C: CodeStore,
         L: LinkerStore,
     {
-        let table = symbol_tables
-            .get(&name.module)
-            .ok_or_else(|| self.error(format!("missing module '{}' for drop glue", name.module)))?;
+        let table = symbol_tables.get(&name.module).ok_or_else(|| {
+            error(
+                span,
+                format!("missing module '{}' for drop glue", name.module),
+            )
+        })?;
         let info = table
             .get(name.name.as_ref())
             .and_then(cranelisp_types::Binding::type_def_info)
             .cloned()
-            .ok_or_else(|| self.error(format!("missing type definition '{name}' for drop glue")))?;
+            .ok_or_else(|| {
+                error(
+                    span,
+                    format!("missing type definition '{name}' for drop glue"),
+                )
+            })?;
         if info.type_params.len() != args.len() {
-            return Err(self.error(format!(
-                "drop glue for '{name}' received {} concrete arguments for {} declared parameters",
-                args.len(),
-                info.type_params.len()
-            )));
+            return Err(error(
+                span,
+                format!(
+                    "drop glue for '{name}' received {} concrete arguments for {} declared parameters",
+                    args.len(),
+                    info.type_params.len()
+                ),
+            ));
         }
         // Every constructor must spell its result over the declared parameters,
         // in declared order and identically: the instantiation is one fact of
@@ -507,57 +544,76 @@ impl DropGlueRegistry {
                 None => (
                     ctor_name.clone(),
                     table.get(ctor_name.as_ref()).ok_or_else(|| {
-                        self.error(format!("missing constructor '{ctor_name}' of '{name}'"))
+                        error(
+                            span,
+                            format!("missing constructor '{ctor_name}' of '{name}'"),
+                        )
                     })?,
                 ),
             };
             let Some(callable) = entry.callable() else {
-                return Err(self.error(format!("constructor '{ctor_name}' is not a definition")));
+                return Err(error(
+                    span,
+                    format!("constructor '{ctor_name}' is not a definition"),
+                ));
             };
             let CallableOrigin::Ctor {
                 tag, field_count, ..
             } = &callable.origin
             else {
-                return Err(self.error(format!("'{ctor_name}' is not a constructor")));
+                return Err(error(span, format!("'{ctor_name}' is not a constructor")));
             };
             let result_ty = match &callable.arm.scheme.ty {
                 Type::Fn(_, result) => result.as_ref(),
                 result => result,
             };
             let Type::ADT(result_name, declared_args) = result_ty else {
-                return Err(self.error(format!(
-                    "constructor '{ctor_name}' has non-ADT result type in drop glue"
-                )));
+                return Err(error(
+                    span,
+                    format!("constructor '{ctor_name}' has non-ADT result type in drop glue"),
+                ));
             };
             if *result_name != *name || declared_args.len() != info.type_params.len() {
-                return Err(self.error(format!(
-                    "constructor '{ctor_name}' result does not preserve declared parameter order for '{name}'"
-                )));
+                return Err(error(
+                    span,
+                    format!(
+                        "constructor '{ctor_name}' result does not preserve declared parameter order for '{name}'"
+                    ),
+                ));
             }
             if !declared_args.iter().all(|arg| matches!(arg, Type::Var(_))) {
-                return Err(self.error(format!(
-                    "constructor '{ctor_name}' result parameter is not a declared type variable"
-                )));
+                return Err(error(
+                    span,
+                    format!(
+                        "constructor '{ctor_name}' result parameter is not a declared type variable"
+                    ),
+                ));
             }
             match declared {
                 Some(existing) if existing != declared_args.as_slice() => {
-                    return Err(self.error(format!(
-                        "constructor '{ctor_name}' disagrees on declared parameter identity for '{name}'"
-                    )));
+                    return Err(error(
+                        span,
+                        format!(
+                            "constructor '{ctor_name}' disagrees on declared parameter identity for '{name}'"
+                        ),
+                    ));
                 }
                 _ => declared = Some(declared_args.as_slice()),
             }
             let fields = cranelisp_types::ctor_field_types_at(&table, &key, args)
                 .map_err(|refusal| {
-                    self.error(format!(
+                    error(span, format!(
                         "constructor '{ctor_name}' of '{name}' has no field types at this instantiation: {refusal}"
                     ))
                 })?;
             if fields.len() != *field_count {
-                return Err(self.error(format!(
-                    "constructor '{ctor_name}' declares {field_count} fields but its scheme has {} parameters",
-                    fields.len()
-                )));
+                return Err(error(
+                    span,
+                    format!(
+                        "constructor '{ctor_name}' declares {field_count} fields but its scheme has {} parameters",
+                        fields.len()
+                    ),
+                ));
             }
             shapes.push(CtorShape { tag: *tag, fields });
         }
@@ -567,14 +623,15 @@ impl DropGlueRegistry {
     pub(crate) fn finish(
         self,
     ) -> Result<HashMap<ConcreteType, (LinkerSymbol, FuncId)>, CranelispError> {
-        if let Some((ty, _)) = self
+        if let Some((ty, entry)) = self
             .entries
             .iter()
             .find(|(_, e)| e.state != DefinitionState::Defined)
         {
-            return Err(self.error(format!(
-                "drop glue for '{ty:?}' did not reach Defined state"
-            )));
+            return Err(error(
+                entry.span,
+                format!("drop glue for '{ty:?}' did not reach Defined state"),
+            ));
         }
         Ok(self
             .entries
@@ -582,12 +639,14 @@ impl DropGlueRegistry {
             .map(|(ty, e)| (ty, (e.symbol, e.func_id)))
             .collect())
     }
+}
 
-    fn error(&self, message: String) -> CranelispError {
-        CranelispError::CodegenError {
-            message,
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }
+/// A registry refusal, located at the request it serves; there is no default
+/// location.
+fn error(span: Span, message: String) -> CranelispError {
+    CranelispError::CodegenError {
+        message,
+        location: ErrorLocation::from_span(span),
     }
 }
 
@@ -813,7 +872,7 @@ mod tests {
             prior.clone(),
         ] {
             registry
-                .request_if_owning(&mut module, &tables, root)
+                .request_if_owning(&mut module, &tables, root, Span::SYNTHETIC)
                 .unwrap();
         }
         let ids = registry.finish().unwrap();
@@ -872,7 +931,12 @@ mod tests {
         let dealloc = declare_dealloc(&mut module);
         let registry = DropGlueRegistry::new(module_path, dealloc, None);
         let shapes = registry
-            .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::String])
+            .ctor_shapes(
+                &tables,
+                &fq,
+                &[ConcreteType::Int, ConcreteType::String],
+                Span::SYNTHETIC,
+            )
             .unwrap();
         assert_eq!(shapes[0].fields, vec![ConcreteType::String]);
     }
@@ -947,20 +1011,25 @@ mod tests {
 
         let vec_of_string = adt("primitives", "Vec", vec![ConcreteType::String]);
         assert!(matches!(
-            registry.shape(&tables, &vec_of_string).unwrap(),
+            registry
+                .shape(&tables, &vec_of_string, Span::SYNTHETIC)
+                .unwrap(),
             GlueShape::Vec(ConcreteType::String)
         ));
         // The other two owning representations keep their own shapes, so the
         // ordering claim is a discrimination and not a blanket answer.
         assert!(matches!(
-            registry.shape(&tables, &ConcreteType::String).unwrap(),
+            registry
+                .shape(&tables, &ConcreteType::String, Span::SYNTHETIC)
+                .unwrap(),
             GlueShape::String
         ));
         assert!(matches!(
             registry
                 .shape(
                     &tables,
-                    &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int))
+                    &ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int)),
+                    Span::SYNTHETIC
                 )
                 .unwrap(),
             GlueShape::Closure
@@ -981,7 +1050,9 @@ mod tests {
 
         let io_string = adt("primitives", "IO", vec![ConcreteType::String]);
         assert!(matches!(
-            registry.shape(&tables, &io_string).unwrap(),
+            registry
+                .shape(&tables, &io_string, Span::SYNTHETIC)
+                .unwrap(),
             GlueShape::Io
         ));
     }
@@ -1001,11 +1072,11 @@ mod tests {
         let io_int = adt("primitives", "IO", vec![ConcreteType::Int]);
 
         let string_id = registry
-            .request_if_owning(&mut module, &tables, io_string.clone())
+            .request_if_owning(&mut module, &tables, io_string.clone(), Span::SYNTHETIC)
             .unwrap()
             .expect("IO String owns its node");
         let int_id = registry
-            .request_if_owning(&mut module, &tables, io_int.clone())
+            .request_if_owning(&mut module, &tables, io_int.clone(), Span::SYNTHETIC)
             .unwrap()
             .expect("IO Int owns its node");
         assert_ne!(string_id, int_id, "concrete IO identities remain distinct");
@@ -1079,7 +1150,7 @@ mod tests {
             .unwrap();
         let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
         registry
-            .request_if_owning(module, &tables, ConcreteType::String)
+            .request_if_owning(module, &tables, ConcreteType::String, Span::SYNTHETIC)
             .unwrap();
         let ids = registry.finish().unwrap();
         module.finalize_for_code_read().unwrap();
@@ -1147,7 +1218,7 @@ mod tests {
         let dealloc = declare_dealloc(&mut module);
         let registry = DropGlueRegistry::new(module_path, dealloc, None);
         let err = registry
-            .ctor_shapes(&tables, &fq, &[ConcreteType::Int])
+            .ctor_shapes(&tables, &fq, &[ConcreteType::Int], Span::SYNTHETIC)
             .unwrap_err();
         assert!(
             err.to_string()
@@ -1182,7 +1253,12 @@ mod tests {
         let dealloc = declare_dealloc(&mut module);
         let registry = DropGlueRegistry::new(module_path, dealloc, None);
         let shapes = registry
-            .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::String])
+            .ctor_shapes(
+                &tables,
+                &fq,
+                &[ConcreteType::Int, ConcreteType::String],
+                Span::SYNTHETIC,
+            )
             .unwrap();
         assert_eq!(
             shapes[0].fields,
@@ -1224,7 +1300,12 @@ mod tests {
         let dealloc = declare_dealloc(&mut module);
         let registry = DropGlueRegistry::new(module_path, dealloc, None);
         let err = registry
-            .ctor_shapes(&tables, &fq, &[ConcreteType::Int, ConcreteType::Int])
+            .ctor_shapes(
+                &tables,
+                &fq,
+                &[ConcreteType::Int, ConcreteType::Int],
+                Span::SYNTHETIC,
+            )
             .unwrap_err();
         assert!(
             err.to_string()
@@ -1258,19 +1339,19 @@ mod tests {
         let ty = ConcreteType::ADT(boxed, vec![]);
 
         let first = registry
-            .request_if_owning(&mut module, &tables, ty.clone())
+            .request_if_owning(&mut module, &tables, ty.clone(), Span::SYNTHETIC)
             .unwrap()
             .expect("owning type must get glue");
         // A second, independent request — the "second caller" — must NOT declare
         // or define a second body.
         let second = registry
-            .request_if_owning(&mut module, &tables, ty.clone())
+            .request_if_owning(&mut module, &tables, ty.clone(), Span::SYNTHETIC)
             .unwrap()
             .expect("owning type must get glue");
         assert_eq!(first, second, "one concrete type ⇒ one glue FuncId");
         // The child (`String`) was requested transitively exactly once too.
         let third = registry
-            .request_if_owning(&mut module, &tables, ConcreteType::String)
+            .request_if_owning(&mut module, &tables, ConcreteType::String, Span::SYNTHETIC)
             .unwrap()
             .expect("String is owning");
         let ids = registry.finish().unwrap();
@@ -1318,7 +1399,7 @@ mod tests {
             let mut registry = DropGlueRegistry::new(module_path, dealloc, None);
             for i in order {
                 registry
-                    .request_if_owning(&mut module, &tables, roots[*i].clone())
+                    .request_if_owning(&mut module, &tables, roots[*i].clone(), Span::SYNTHETIC)
                     .unwrap();
             }
             let mut out: Vec<(ConcreteType, LinkerSymbol)> = registry
@@ -1348,7 +1429,7 @@ mod tests {
         let dealloc = declare_dealloc(&mut module);
         let mut registry = DropGlueRegistry::new(module_path.clone(), dealloc, None);
         registry
-            .request_if_owning(&mut module, &tables, ConcreteType::String)
+            .request_if_owning(&mut module, &tables, ConcreteType::String, Span::SYNTHETIC)
             .unwrap();
         // Force the state back to `Defining`, the shape a re-entrant definition
         // failure would leave behind.
@@ -1379,7 +1460,9 @@ mod tests {
             },
             None,
         );
-        let err = registry.shape(&tables, &ConcreteType::Int).unwrap_err();
+        let err = registry
+            .shape(&tables, &ConcreteType::Int, Span::SYNTHETIC)
+            .unwrap_err();
         assert!(
             err.to_string().contains("non-owning type requested"),
             "{err}"
@@ -1407,7 +1490,9 @@ mod tests {
                 vec![ConcreteType::String, ConcreteType::Int],
             ),
         ] {
-            let err = registry.shape(&tables, &malformed).unwrap_err();
+            let err = registry
+                .shape(&tables, &malformed, Span::SYNTHETIC)
+                .unwrap_err();
             assert!(
                 err.to_string()
                     .contains("requires exactly one element type"),
@@ -1415,7 +1500,7 @@ mod tests {
             );
             // The refusal reaches the release seam's single entry point too.
             let err = registry
-                .request_if_owning(&mut module, &tables, malformed)
+                .request_if_owning(&mut module, &tables, malformed, Span::SYNTHETIC)
                 .unwrap_err();
             assert!(
                 err.to_string()
@@ -1426,12 +1511,14 @@ mod tests {
         // A scalar element builds its shape, and the element needs no release.
         let vec_of_int = adt("primitives", "Vec", vec![ConcreteType::Int]);
         assert!(matches!(
-            registry.shape(&tables, &vec_of_int).unwrap(),
+            registry
+                .shape(&tables, &vec_of_int, Span::SYNTHETIC)
+                .unwrap(),
             GlueShape::Vec(ConcreteType::Int)
         ));
         assert_eq!(
             registry
-                .request_if_owning(&mut module, &tables, ConcreteType::Int)
+                .request_if_owning(&mut module, &tables, ConcreteType::Int, Span::SYNTHETIC)
                 .unwrap(),
             None
         );

@@ -146,6 +146,7 @@ fn render(combinator: IoCombinator, path: Path) -> String {
         jit.jit_module(),
         ctx,
         crate::compiler::census::Frame::for_test(),
+        Span::SYNTHETIC,
         &mut glue,
         types.len(),
         plan,

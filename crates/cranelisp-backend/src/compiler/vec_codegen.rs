@@ -308,7 +308,7 @@ where
             return Err(missing_element_type("release", span));
         };
         self.glue
-            .request_vec_elem_adapter(self.module, self.ctx.symbol_tables, ty)
+            .request_vec_elem_adapter(self.module, self.ctx.symbol_tables, ty, span)
     }
 
     /// The heap category of the element type, which an element increment

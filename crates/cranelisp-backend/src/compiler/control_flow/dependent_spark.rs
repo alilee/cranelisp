@@ -220,6 +220,7 @@ where
             self.module,
             self.ctx.clone(),
             self.census.clone(),
+            self.frame_span,
             self.glue,
             0,
             plan,

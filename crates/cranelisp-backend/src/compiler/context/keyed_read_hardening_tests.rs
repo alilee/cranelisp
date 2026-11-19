@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use cranelift_module::FuncId;
-use cranelisp_types::{FQSymbol, FQTypeName, ModuleFullPath, Symbol, TypeDefInfo, TypeName};
+use cranelisp_types::{FQSymbol, FQTypeName, ModuleFullPath, Span, Symbol, TypeDefInfo, TypeName};
 
 use super::CompileContext;
 use crate::test_support::option_type_tables;
@@ -49,7 +49,8 @@ fn main_key(symbol: &str) -> FQSymbol {
 // control: every constructor of an intact type resolves.
 #[test]
 fn every_constructor_of_an_intact_type_resolves() {
-    let metas = with_context(|ctx| ctx.constructor_metas(&option_def(&["None", "Some"])));
+    let metas =
+        with_context(|ctx| ctx.constructor_metas(&option_def(&["None", "Some"]), Span::SYNTHETIC));
     assert_eq!(metas.expect("intact type").len(), 2);
 }
 
@@ -57,8 +58,9 @@ fn every_constructor_of_an_intact_type_resolves() {
 // planted constructor no probe can resolve is an error, not a dropped entry.
 #[test]
 fn a_constructor_no_probe_resolves_is_an_error_not_a_dropped_entry() {
-    let err = with_context(|ctx| ctx.constructor_metas(&option_def(&["None", "Ghost"])))
-        .expect_err("a missing constructor must fail");
+    let err =
+        with_context(|ctx| ctx.constructor_metas(&option_def(&["None", "Ghost"]), Span::SYNTHETIC))
+            .expect_err("a missing constructor must fail");
     assert!(err.to_string().contains("keying drift"), "{err}");
 }
 
@@ -68,7 +70,8 @@ fn a_constructor_no_probe_resolves_is_an_error_not_a_dropped_entry() {
 fn a_type_with_no_module_table_is_an_error() {
     let mut def = option_def(&["None"]);
     def.name = FQTypeName::new(ModuleFullPath::from("nowhere"), TypeName::from("Option"));
-    let err = with_context(|ctx| ctx.constructor_metas(&def)).expect_err("no table");
+    let err =
+        with_context(|ctx| ctx.constructor_metas(&def, Span::SYNTHETIC)).expect_err("no table");
     assert!(err.to_string().contains("keying drift"), "{err}");
 }
 

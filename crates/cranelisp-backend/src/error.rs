@@ -87,35 +87,22 @@ pub enum LinkerError {
 impl std::fmt::Display for CompilationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CompilationError::SymbolNotCompilable { module, symbol } => write!(
-                f,
-                "symbol not compilable: {}/{}",
-                module.as_ref(),
-                symbol.as_ref()
-            ),
+            // The symbol may already name a module (an instance key), so the
+            // module is a separate noun, never a path prefix (§7.2.1 Rule 3).
+            CompilationError::SymbolNotCompilable { module, symbol } => {
+                write!(f, "symbol not compilable: {symbol} in {module}")
+            }
             CompilationError::CodegenFailed {
                 module,
                 symbol,
                 cause,
                 ..
-            } => write!(
-                f,
-                "codegen failed for {}/{}: {}",
-                module.as_ref(),
-                symbol.as_ref(),
-                cause
-            ),
+            } => write!(f, "codegen failed for {symbol} in {module}: {cause}"),
             CompilationError::ModuleError {
                 module,
                 symbol,
                 cause,
-            } => write!(
-                f,
-                "module error for {}/{}: {}",
-                module.as_ref(),
-                symbol.as_ref(),
-                cause
-            ),
+            } => write!(f, "module error for {symbol} in {module}: {cause}"),
         }
     }
 }
@@ -141,33 +128,34 @@ impl From<CompilationError> for cranelisp_types::CranelispError {
     }
 }
 
-/// Bridge `CranelispError` produced inside backend codegen to the typed
-/// `CompilationError` at the boundary (Decision 37). Every shape becomes
-/// `CompilationError::CodegenFailed` with empty `module` and `symbol`, which
-/// the attributing caller fills.
-///
-/// An inner `CodegenError` or `ModuleError` gives `cause` its message alone
-/// and moves its location into `location`, so the one located prefix is the
-/// one rendered at the boundary
-/// (`design/backend/non-concrete-release-contract.md` §7.2). Any other shape
-/// keeps its whole rendering as `cause` at a synthetic location.
+/// Bridge a `CranelispError` to `CompilationError::CodegenFailed` with an
+/// empty `module` and `symbol` (Decision 37), for a caller that has neither.
+/// `compile_to_module` does not use it: it names the compiled module.
 impl From<cranelisp_types::CranelispError> for CompilationError {
     fn from(err: cranelisp_types::CranelispError) -> Self {
-        use cranelisp_types::CranelispError;
-        let (cause, location) = match err {
-            CranelispError::CodegenError { message, location }
-            | CranelispError::ModuleError { message, location } => (message, location),
-            other => (
-                other.to_string(),
-                cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
-            ),
-        };
-        CompilationError::CodegenFailed {
-            module: ModuleFullPath::from(""),
-            symbol: Symbol::from(""),
-            cause,
-            location,
-        }
+        codegen_failed(ModuleFullPath::from(""), Symbol::from(""), err)
+    }
+}
+
+/// `err` as the codegen failure of `symbol` in `module`. `cause` is the
+/// inner message and `location` the inner location, so the only located
+/// prefix is the one rendered at the boundary
+/// (`non-concrete-release-contract.md` §7.2.1 Rule 1). A platform error keeps
+/// its whole rendering, because its message alone drops the detail.
+pub(crate) fn codegen_failed(
+    module: ModuleFullPath,
+    symbol: Symbol,
+    err: cranelisp_types::CranelispError,
+) -> CompilationError {
+    let cause = match &err {
+        cranelisp_types::CranelispError::Platform(platform) => platform.to_string(),
+        other => other.message().to_owned(),
+    };
+    CompilationError::CodegenFailed {
+        module,
+        symbol,
+        cause,
+        location: err.location().clone(),
     }
 }
 

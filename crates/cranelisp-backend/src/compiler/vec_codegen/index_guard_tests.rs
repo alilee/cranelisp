@@ -84,7 +84,7 @@ fn build_probe(case: Case, elem: Elem) -> Probe {
     tables.insert(module_path.clone(), SymbolTable::new(module_path.clone()));
     let mut registry = crate::test_support::probe_glue_registry(module_path, &ids);
     let elem_release = registry
-        .request_vec_elem_adapter(module, &tables, &elem.concrete())
+        .request_vec_elem_adapter(module, &tables, &elem.concrete(), Span::SYNTHETIC)
         .expect("element release adapter");
 
     let mut sig = module.make_signature();

@@ -458,7 +458,7 @@ where
             // falls back to the bare value.
             return Ok(root);
         };
-        let metas = self.ctx.constructor_metas(&type_def)?;
+        let metas = self.ctx.constructor_metas(&type_def, span)?;
         // single_match: exactly one constructor whose name equals the type name
         // (spec §1.5 — suppress the `Type.` prefix, e.g. `(Point 3 4)`).
         let type_name = fqtn.name.as_ref();

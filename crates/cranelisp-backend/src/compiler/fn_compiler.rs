@@ -74,10 +74,13 @@ where
     /// The codegen target this body belongs to, which every census record it
     /// makes is attributed to; an inner compiler inherits its parent's.
     pub(crate) census: super::census::Frame,
+    /// The compiled `Defn`'s span, which locates a refusal whose requester
+    /// holds no reference of its own; an inner compiler inherits its parent's.
+    pub(crate) frame_span: Span,
     /// The compilation-local canonical drop-glue registry
     /// (`design/backend/transitive-drop-glue.md` §3.4 D1). A field disjoint
     /// from [`Self::module`] and [`Self::ctx`], so
-    /// `self.glue.request_if_owning(self.module, self.ctx.symbol_tables, ty)` is
+    /// `self.glue.request_if_owning(self.module, self.ctx.symbol_tables, ty, span)` is
     /// a legal three-way borrow; threaded into every inner compiler so nested
     /// bodies mint the same per-type body.
     pub(crate) glue: &'a mut crate::drop_glue::DropGlueRegistry,
@@ -152,6 +155,7 @@ where
         module: &'a mut M,
         ctx: CompileContext<'a, C, L>,
         census: super::census::Frame,
+        frame_span: Span,
         glue: &'a mut crate::drop_glue::DropGlueRegistry,
         fn_param_count: usize,
         plan: OwnershipPlan,
@@ -163,6 +167,7 @@ where
             captures: CaptureEnv::new(),
             ctx,
             census,
+            frame_span,
             glue,
             next_var: 0,
             plan,
@@ -266,6 +271,7 @@ where
             module,
             ctx,
             census,
+            defn.span,
             glue,
             defn.params().len(),
             plan,
@@ -741,9 +747,10 @@ where
     pub(crate) fn request_capture_glue(
         &mut self,
         ty: &ConcreteType,
+        span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
         self.glue
-            .request_if_owning(self.module, self.ctx.symbol_tables, ty.clone())
+            .request_if_owning(self.module, self.ctx.symbol_tables, ty.clone(), span)
     }
 
     /// The heap category of a value of type `ty`.

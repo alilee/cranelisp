@@ -143,6 +143,7 @@ pub(crate) fn append_runtime_ctor_fields<M, C, L>(
     tag: usize,
     constructed_type: &ConcreteType,
     authored_fields: &[Value],
+    span: Span,
 ) -> Result<Vec<Value>, CranelispError>
 where
     M: Module,
@@ -155,7 +156,7 @@ where
         return Ok(authored_fields.to_vec());
     };
 
-    let glue_id = glue.request_if_owning(module, symbol_tables, payload_type.clone())?;
+    let glue_id = glue.request_if_owning(module, symbol_tables, payload_type.clone(), span)?;
     let glue_value = if let Some(glue_id) = glue_id {
         let glue_ref = module.declare_func_in_func(glue_id, builder.func);
         builder.ins().func_addr(types::I64, glue_ref)
@@ -1106,6 +1107,7 @@ where
                 meta.tag,
                 &constructed_ty,
                 &arg_vals,
+                span,
             )?;
             return self.emit_adt_construct(meta.tag, &emitted_fields, span);
         }
@@ -1403,6 +1405,7 @@ where
             self.module,
             self.ctx.symbol_tables,
             payload_type.clone(),
+            span,
         )?;
 
         let tag = heap::heap_load(&mut self.builder, node_val, HeapAdt::TAG_OFFSET);
@@ -1974,6 +1977,7 @@ where
                 tag,
                 ty,
                 &field_vals,
+                span,
             )?
         } else {
             field_vals

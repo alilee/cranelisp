@@ -657,6 +657,7 @@ mod tests {
             jit.jit_module(),
             ctx,
             crate::compiler::census::Frame::for_test(),
+            Span::SYNTHETIC,
             &mut glue,
             1,
             crate::compiler::ownership_plan::OwnershipPlan::default(),

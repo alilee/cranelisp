@@ -180,7 +180,7 @@ where
                     heap_captures.push((i, CaptureRelease::ClosureBox));
                 }
                 CaptureReleaseKind::Glue => {
-                    if let Some(id) = self.request_capture_glue(&ty)? {
+                    if let Some(id) = self.request_capture_glue(&ty, span)? {
                         heap_captures.push((i, CaptureRelease::Glue(id)));
                     }
                 }
@@ -345,6 +345,7 @@ where
             self.module,
             self.ctx.clone(),
             self.census.clone(),
+            self.frame_span,
             self.glue,
             params.len(),
             plan,

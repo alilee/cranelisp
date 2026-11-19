@@ -125,9 +125,12 @@ where
         val: Value,
         ty: &ConcreteType,
     ) -> Result<(), CranelispError> {
-        let Some(glue_id) =
-            self.glue
-                .request_if_owning(self.module, self.ctx.symbol_tables, ty.clone())?
+        let Some(glue_id) = self.glue.request_if_owning(
+            self.module,
+            self.ctx.symbol_tables,
+            ty.clone(),
+            self.frame_span,
+        )?
         else {
             return Ok(());
         };

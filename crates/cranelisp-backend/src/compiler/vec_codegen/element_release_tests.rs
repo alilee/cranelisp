@@ -41,6 +41,7 @@ fn with_compiler(probe: impl FnOnce(&mut FnCompiler<'_, FarCallModule>)) {
         jit.far_call_module(),
         ctx,
         crate::compiler::census::Frame::for_test(),
+        Span::SYNTHETIC,
         &mut glue,
         0,
         crate::compiler::ownership_plan::OwnershipPlan::default(),

@@ -51,7 +51,7 @@ where
         span: Span,
     ) -> Result<Value, CranelispError> {
         let payload = canonical_payload(io, "IO", span)?.clone();
-        self.result_disposer_for_type(payload)
+        self.result_disposer_for_type(payload, span)
     }
 
     pub(crate) fn result_disposer_for_select_expr(
@@ -70,13 +70,17 @@ where
     ) -> Result<Value, CranelispError> {
         let branch = canonical_payload(branches, "Vec", span)?;
         let payload = canonical_payload(branch, "IO", span)?.clone();
-        self.result_disposer_for_type(payload)
+        self.result_disposer_for_type(payload, span)
     }
 
-    fn result_disposer_for_type(&mut self, payload: ConcreteType) -> Result<Value, CranelispError> {
+    fn result_disposer_for_type(
+        &mut self,
+        payload: ConcreteType,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
         let Some(glue_id) =
             self.glue
-                .request_if_owning(self.module, self.ctx.symbol_tables, payload)?
+                .request_if_owning(self.module, self.ctx.symbol_tables, payload, span)?
         else {
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };

@@ -1,6 +1,8 @@
 //! Relocated crate-root module-assembly + GOT-emission tests (FIXME 0495 step 1). Exercise `compile_to_module` (lib.rs) end-to-end: JIT + object-mode GOT-slot writes, Decision-23/36 object-symbol invariants, multi-sig + mono + default-method assembly. Verbatim relocation from `src/tests.rs`.
 
+use crate::CompilationError;
 use crate::test_support::*;
+use cranelisp_types::{FQTypeName, TypeName};
 
 // spec: 05-definitions §5.1 — single defn compiles and executes via JIT
 #[test]
@@ -1153,8 +1155,8 @@ fn sprint56_compile_to_module_ast_none_errors() {
         } => {
             assert_eq!(
                 module.as_ref(),
-                "",
-                "non-body target-collection errors retain generic attribution"
+                "user",
+                "an unattributed failure names the compiled module (§7.2.1 Rule 3)"
             );
             assert_eq!(
                 symbol.as_ref(),
@@ -1893,24 +1895,103 @@ fn s117_single_name_body_failure_is_attributed_to_member() {
     s117_assert_attributed_body_failure(&[Symbol::from("later")], &Symbol::from("later"), span);
 }
 
-// spec: design/backend/non-concrete-release-contract.md §7.2 "One category
-// prefix" — an attributed body failure renders one located prefix, the
-// boundary's, over the inner message.
-#[test]
-fn an_attributed_codegen_failure_renders_one_category_prefix() {
-    let module = ModuleFullPath::from("diagnostics.helper");
-    let defn = make_int_defn("member", 1);
-    let error = CranelispError::CodegenError {
-        message: "sentinel body cause".into(),
-        location: ErrorLocation::from_span(Span::new(701, 709)),
-    };
+/// The one failing member `name` of `diagnostics.batch`, compiled through
+/// `compile_to_module`, whose body is `missing-local` typed `result`.
+fn frame_failure(name: &str, result: Type, span: Span) -> (ModuleFullPath, CompilationError) {
+    let module = ModuleFullPath::from("diagnostics.batch");
+    let mut failing = s117_body_failure_defn(name, span);
+    if let Expr::Var { inferred_type, .. } = &mut failing.variants[0].body {
+        *inferred_type = Some(Box::new(result));
+    }
+    let tables = empty_tables();
+    let mut table = SymbolTable::new(module.clone());
+    install_def_entry_at_slot(&mut table, failing, 0);
+    tables.insert(module.clone(), table);
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT");
+    match compile_names_to_module(
+        module.clone(),
+        &[Symbol::from(name)],
+        &tables,
+        jit.jit_module(),
+        true,
+    ) {
+        Ok(_) => panic!("'{name}' must fail codegen"),
+        Err(error) => (module, error),
+    }
+}
 
-    let rendered = CranelispError::from(crate::attribute_body_codegen_error(&module, &defn, error))
-        .to_string();
+// spec: design/backend/non-concrete-release-contract.md §7.2.1 row 1 — a body
+// failing with a located codegen error renders one category prefix, at the
+// inner span.
+#[test]
+fn a_codegen_failure_renders_one_category_prefix() {
+    let (_, error) = frame_failure("later", Type::Int, Span::new(801, 809));
+    let rendered = CranelispError::from(error).to_string();
     assert_eq!(
-        rendered,
-        "codegen error at 701..709: codegen failed for diagnostics.helper/member: sentinel body cause"
+        rendered.matches("codegen error at").count(),
+        1,
+        "one prefix: {rendered}"
     );
+    assert!(
+        rendered.starts_with("codegen error at 801..809: "),
+        "{rendered}"
+    );
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.2.1 row 2 — an
+// instance target whose key names its template's module is named once, with no
+// module composed before it; a plain binding is named with its module once.
+#[test]
+fn a_failing_subject_is_named_once_with_its_module_apart() {
+    let instance = "(h/helper [Int] Int)";
+    let (module, error) = frame_failure(instance, Type::Int, Span::new(811, 819));
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains(&format!("{module}/")),
+        "no module before the key: {rendered}"
+    );
+    assert!(
+        rendered.starts_with(&format!("codegen failed for {instance} in {module}: ")),
+        "{rendered}"
+    );
+
+    let (module, control) = frame_failure("later", Type::Int, Span::new(821, 829));
+    let rendered = control.to_string();
+    assert!(
+        rendered.starts_with(&format!("codegen failed for later in {module}: ")),
+        "{rendered}"
+    );
+    assert_eq!(rendered.matches(module.as_ref()).count(), 1, "{rendered}");
+}
+
+// spec: design/backend/non-concrete-release-contract.md §7.2.1 row 3 — a
+// registry error reached through a body is located at that body's span, not
+// `0..0`: here the result-root glue of a type with no definition.
+#[test]
+fn a_registry_error_through_a_body_is_located_at_the_body() {
+    let span = Span::new(831, 839);
+    let ghost = Type::ADT(
+        FQTypeName::new(
+            ModuleFullPath::from("diagnostics.batch"),
+            TypeName::from("Ghost"),
+        ),
+        vec![],
+    );
+    let (module, error) = frame_failure("later", ghost, span);
+    match error {
+        CompilationError::CodegenFailed {
+            module: actual_module,
+            symbol,
+            cause,
+            location,
+        } => {
+            assert!(cause.contains("missing type definition"), "{cause}");
+            assert_eq!(location.span, span, "located at the body: {cause}");
+            assert_eq!(actual_module, module);
+            assert_eq!(symbol, Symbol::from("later"));
+        }
+        other => panic!("expected CodegenFailed, got {other:?}"),
+    }
 }
 
 #[test]

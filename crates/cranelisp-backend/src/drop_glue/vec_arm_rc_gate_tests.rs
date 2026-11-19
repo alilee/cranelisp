@@ -35,7 +35,7 @@
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    ConcreteType, FQTypeName, HeapHeader, ModuleFullPath, SymbolTable, TypeName,
+    ConcreteType, FQTypeName, HeapHeader, ModuleFullPath, Span, SymbolTable, TypeName,
 };
 
 use super::DropGlueRegistry;
@@ -67,7 +67,7 @@ fn jit_vec_string_glue() -> (crate::jit::Jit, usize) {
             ids.vec_drop,
         );
         registry
-            .request_if_owning(module, &tables, vec_of_string())
+            .request_if_owning(module, &tables, vec_of_string(), Span::SYNTHETIC)
             .expect("(Vec String) glue request")
             .expect("(Vec String) owns heap, so it has glue");
         let glue_ids = registry.finish().expect("every entry reached Defined");

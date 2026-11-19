@@ -630,13 +630,46 @@ where
     L: cranelisp_types::LinkerStore,
 {
     compile_to_module_impl::<M, C, L>(
-        module_path,
+        module_path.clone(),
         targets,
         symbol_tables,
         trace_modules,
         module,
         capture_clif,
     )
+    .map_err(|failure| failure.in_module(&module_path))
+}
+
+/// A failure inside `compile_to_module`, before the entry names its module.
+/// A failure that names its member is already a `CompilationError`; any
+/// other takes the compiled module at the boundary, never an empty one
+/// (`non-concrete-release-contract.md` §7.2.1 Rule 3).
+enum EntryFailure {
+    Attributed(CompilationError),
+    Unattributed(CranelispError),
+}
+
+impl EntryFailure {
+    fn in_module(self, module_path: &ModuleFullPath) -> CompilationError {
+        match self {
+            EntryFailure::Attributed(error) => error,
+            EntryFailure::Unattributed(error) => {
+                error::codegen_failed(module_path.clone(), Symbol::from(""), error)
+            }
+        }
+    }
+}
+
+impl From<CompilationError> for EntryFailure {
+    fn from(error: CompilationError) -> Self {
+        EntryFailure::Attributed(error)
+    }
+}
+
+impl From<CranelispError> for EntryFailure {
+    fn from(error: CranelispError) -> Self {
+        EntryFailure::Unattributed(error)
+    }
 }
 
 fn compile_to_module_impl<M, C, L>(
@@ -646,7 +679,7 @@ fn compile_to_module_impl<M, C, L>(
     trace_modules: &BTreeSet<ModuleFullPath>,
     module: &mut M,
     capture_clif: bool,
-) -> Result<CompilationArtifacts, CompilationError>
+) -> Result<CompilationArtifacts, EntryFailure>
 where
     M: Module + CodeFinalizer,
     C: cranelisp_types::CodeStore,
@@ -685,10 +718,6 @@ where
     // Declare and define result-root glue before ordinary bodies. The registry
     // inserts `Defining` entries before walking fields, so recursive and
     // mutually-recursive type graphs close through already-declared FuncIds.
-    let result_roots: Vec<ConcreteType> = bodies
-        .iter()
-        .map(|body| body.ty().result_root().clone())
-        .collect();
     let mut glue_registry = drop_glue::DropGlueRegistry::new(
         module_path.clone(),
         intrinsic_ids
@@ -703,8 +732,15 @@ where
     // demand (ruling 9 / FIXME 0745). Only `finish()` moved — it now runs after
     // body compilation, because body compilation is where the ordinary release
     // seams request their glue (S0).
-    for ty in result_roots {
-        glue_registry.request_if_owning(module, symbol_tables, ty)?;
+    for (defn, body) in defns.iter().zip(&bodies) {
+        glue_registry
+            .request_if_owning(
+                module,
+                symbol_tables,
+                body.ty().result_root().clone(),
+                defn.span,
+            )
+            .map_err(|error| attribute_body_codegen_error(&module_path, defn, error))?;
     }
 
     // No cross-module function declarations: under all-GOT calling
@@ -1091,18 +1127,7 @@ fn attribute_body_codegen_error(
     defn: &Defn,
     error: CranelispError,
 ) -> CompilationError {
-    let converted = CompilationError::from(error);
-    match converted {
-        CompilationError::CodegenFailed {
-            cause, location, ..
-        } => CompilationError::CodegenFailed {
-            module: module_path.clone(),
-            symbol: defn.name.clone(),
-            cause,
-            location,
-        },
-        other => other,
-    }
+    error::codegen_failed(module_path.clone(), defn.name.clone(), error)
 }
 
 /// Step 4a (S111 R5 §3.1 / `/arch` Decision 23 Bug B fix): emit the per-module

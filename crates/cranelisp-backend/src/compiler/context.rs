@@ -440,19 +440,24 @@ where
     /// A type whose owning table or one of whose constructors cannot be read
     /// is keying drift, and is an error in every profile: a dropped
     /// constructor would surface only as a wrong heap classification or drop
-    /// glue (ACT-0964 item 1).
+    /// glue (ACT-0964 item 1). Every error is located at `reference`, the
+    /// caller's span.
     pub(crate) fn constructor_metas(
         &self,
         type_def: &TypeDefInfo,
+        reference: Span,
     ) -> Result<Vec<CtorMeta>, CranelispError> {
         let table = self
             .symbol_tables
             .get(&type_def.name.module)
             .ok_or_else(|| {
-                keying_drift(format!(
-                    "type '{}' has no symbol table for its module",
-                    type_def.name
-                ))
+                keying_drift_at(
+                    reference,
+                    format!(
+                        "type '{}' has no symbol table for its module",
+                        type_def.name
+                    ),
+                )
             })?;
         type_def
             .constructors
@@ -470,11 +475,14 @@ where
                     .and_then(Self::extract_constructor)
                 {
                     Some(Ok((_, meta))) => Ok(meta),
-                    Some(Err(short)) => Err(short.refusal(&ctor_name, Span::SYNTHETIC)),
-                    None => Err(keying_drift(format!(
-                        "constructor '{ctor_name}' of '{}' has no resolvable Def",
-                        type_def.name
-                    ))),
+                    Some(Err(short)) => Err(short.refusal(&ctor_name, reference)),
+                    None => Err(keying_drift_at(
+                        reference,
+                        format!(
+                            "constructor '{ctor_name}' of '{}' has no resolvable Def",
+                            type_def.name
+                        ),
+                    )),
                 }
             })
             .collect()
@@ -593,11 +601,7 @@ fn residual_instantiation(
 }
 
 /// The error for a keyed type or constructor read that missed.
-fn keying_drift(detail: String) -> CranelispError {
-    keying_drift_at(Span::SYNTHETIC, detail)
-}
-
-/// [`keying_drift`] located at the reference that made the read.
+/// A keyed read that missed, located at the reference that made the read.
 pub(super) fn keying_drift_at(reference: Span, detail: String) -> CranelispError {
     CranelispError::CodegenError {
         message: format!("internal invariant violation (keying drift): {detail}"),

@@ -216,6 +216,7 @@ where
             self.module,
             self.ctx.clone(),
             self.census.clone(),
+            self.frame_span,
             self.glue,
             0, // fn_param_count=0: no binding names enter from the discarded result
             plan,

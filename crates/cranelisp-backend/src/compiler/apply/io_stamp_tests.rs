@@ -5,6 +5,7 @@ use crate::{drop_glue::DropGlueRegistry, test_support::make_object_module};
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 use cranelisp_intrinsics::alloc::HeapAdt;
+use cranelisp_types::Span;
 use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, SymbolTable, TypeName};
 use dashmap::DashMap;
 
@@ -48,6 +49,7 @@ fn stamp_clif(payload: ConcreteType) -> Result<String, cranelisp_types::Cranelis
         cranelisp_platform::IO_TAG_PURE as usize,
         &concrete_io(payload),
         &[payload_value],
+        Span::SYNTHETIC,
     )?;
     assert_eq!(
         fields.len(),

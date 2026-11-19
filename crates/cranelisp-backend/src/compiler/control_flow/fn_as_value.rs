@@ -583,6 +583,7 @@ where
                 ctor_info.tag,
                 &adt_ty,
                 user_params,
+                span,
             )?;
             return emit_adt_construct_into(
                 builder,
@@ -849,6 +850,7 @@ where
             self.module,
             self.ctx.clone(),
             self.census.clone(),
+            self.frame_span,
             self.glue,
             operands.len(),
             plan,
@@ -1180,7 +1182,7 @@ where
                 }
                 CaptureReleaseKind::Glue => {
                     let Some(ty) = arg_types.get(i) else { continue };
-                    if let Some(id) = self.request_capture_glue(ty)? {
+                    if let Some(id) = self.request_capture_glue(ty, span)? {
                         heap_indices.push((i, CaptureRelease::Glue(id)));
                     }
                 }
