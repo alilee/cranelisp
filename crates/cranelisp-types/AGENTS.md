@@ -245,7 +245,7 @@ Use the read-throughs; never re-pattern the lifecycle set:
   sole surface. Any surface change regenerates `public-api.txt` with the
   [canonical command](../../design/arch/AGENTS.md#baseline-diff-discipline-sprint-67-close)
   and without `--features test-support`, which keeps the `test_support`
-  builder off the frozen surface.
+  module off the frozen surface.
 - Every public lifecycle item, constructor, enum variant and public field has
   its own `///` contract; a type-level summary does not substitute for
   variant and field documentation.

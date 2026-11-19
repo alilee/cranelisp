@@ -240,7 +240,8 @@ pub(crate) mod resolve;
 pub(crate) mod scheduling;
 pub(crate) mod view;
 
-// Tier-2 test-support symbol-table construction helpers. Feature-gated so
+// Tier-2 test-support helpers: the symbol-table builder and the lenient
+// typed-view builder. Feature-gated so
 // they are visible to OTHER crates' test suites (`cranelisp-typecheck`'s unit
 // suite) without entering the production contract: the `public-api.txt`
 // baseline is generated WITHOUT `--features test-support`, so `test_support`

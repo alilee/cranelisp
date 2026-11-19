@@ -1,9 +1,28 @@
-//! Feature-gated helpers for constructing one symbol table in tests.
+//! Feature-gated helpers for other crates' tests: a symbol-table builder and
+//! the lenient typed-view builder.
+
+use std::collections::HashMap;
 
 use crate::{
-    Binding, CallableOrigin, CodeStore, LinkerStore, ModuleFullPath, Scheme, Symbol, SymbolTable,
-    Visibility,
+    ApplyRef, Binding, CallableOrigin, CodeStore, Expr, FQSymbol, LinkerStore, ModuleFullPath,
+    MonoExpr, Scheme, Span, Symbol, SymbolTable, VarRef, Visibility,
 };
+
+/// Build a typed view of a test fixture body whose node types need not be
+/// concrete.
+///
+/// Forwards to the lenient builder: a node with a non-concrete or absent type
+/// takes a placeholder `ConcreteType::Int`, which is a fabricated type and not
+/// a fact about the node. A real-span `Var` or `Apply` with no verdict in
+/// `var_refs` or `apply_refs` panics.
+pub fn lenient_from_expr(
+    expr: &Expr,
+    pattern_ctors: &HashMap<Span, FQSymbol>,
+    var_refs: &HashMap<Span, VarRef>,
+    apply_refs: &HashMap<Span, ApplyRef>,
+) -> MonoExpr {
+    MonoExpr::lenient_from_expr(expr, pattern_ctors, var_refs, apply_refs)
+}
 
 #[allow(clippy::large_enum_variant)]
 enum Entry<C: CodeStore> {
@@ -83,6 +102,34 @@ mod tests {
     use super::*;
     use crate::{Decl, Type, TypeRecord};
     use std::collections::HashMap;
+
+    #[test]
+    fn lenient_view_keeps_verdicts_and_fills_a_non_concrete_type() {
+        let span = Span::new(3, 12);
+        let global = FQSymbol {
+            module: ModuleFullPath::from("m"),
+            symbol: Symbol::from("generic"),
+        };
+        let var = Expr::Var {
+            name: Symbol::from("generic"),
+            span,
+            resolved_call: None,
+            inferred_type: Some(Box::new(Type::Var(0))),
+        };
+        let var_refs = HashMap::from([(span, VarRef::Global(global.clone()))]);
+
+        let view = lenient_from_expr(&var, &HashMap::new(), &var_refs, &HashMap::new());
+
+        // The strict builder refuses this node; the lenient one fills its type.
+        assert!(MonoExpr::from_expr(&var, &HashMap::new(), &var_refs, &HashMap::new()).is_err());
+        match view {
+            MonoExpr::Var { resolution, ty, .. } => {
+                assert_eq!(resolution, VarRef::Global(global));
+                assert_eq!(ty, crate::ConcreteType::Int);
+            }
+            other => panic!("expected a variable node, found {other:?}"),
+        }
+    }
 
     #[test]
     fn builder_populates_bindings_and_declarations() {
