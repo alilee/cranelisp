@@ -119,13 +119,15 @@ falls through to the generic function-as-value path (§12).
 `(map Some xs)` builds a zero-capture closure through the ordinary
 function-as-value path. Its wrapper body chooses by what is known:
 
-1. the constructor function is in this compilation unit — a direct call;
+1. the constructor function is in this compilation unit — a direct call (as
+   built; §12.2 replaces it with a call through the constructor's slot);
 2. otherwise the keyed constructor metadata is present — construct inline in the
    wrapper. This covers primitive constructors such as `Some`, whose GOT slot
    does not hold a callable constructor body, and constructors from other
    modules.
 
-The wrapper therefore never calls a constructor through the GOT.
+As built, the wrapper never calls a constructor through the GOT; under §12.2
+it calls a same-unit constructor function through its slot.
 
 #### 2.6.3 Value-flattened constructors
 
@@ -355,7 +357,8 @@ than CLIF capture, which is why it is not an artefact.
 A function used as a value becomes a closure over a generated wrapper body. The
 wrapper's call follows the first applicable rule:
 
-1. **target in this compilation** — a direct call;
+1. **target in this compilation** — a direct call (as built; the design is
+   §12.2, which replaces it);
 2. **constructor** — construct inline (§2.6.2);
 3. **inline Vec primitive** — emit the operation inline, since it has no slot;
 4. **host-promised primitive** — lower the call exactly as direct application
@@ -473,6 +476,55 @@ and was refused.
   application emits an IO node whose tag, fields or disposer differ from the
   direct application's (T-1063-b, M-1063).
 
+### 12.2 Every call to a slotted function goes through its slot
+
+**Decided; not in source at `26fbee2f`; not scheduled.** Tracing §3.5 states
+the obligation
+([tracing §3.5](../arch/tracing.md#35-got-copy-swap-and-completeness-by-construction)):
+no emitted call reaches a named function that claims a callable slot by any
+route but a load of that slot. §7 already rests the module's linkage on it
+("every call is GOT-indirect, including calls within a module").
+
+- **The one site that breaks it.** Rule 1 of §12. When the wrapper's target
+  is declared in this compilation unit, `emit_wrapper_call`
+  (`compiler/control_flow/fn_as_value.rs`) calls its `FuncId` directly. A
+  batch target always claims a slot (§4). (The function map is also seeded
+  with the intrinsics, §6; an intrinsic has no slot, and whether one is ever
+  a wrapper's target is for `dev` to report, since the rule below covers
+  batch targets only.) A function taken as a value in the batch that defines it is then
+  called past its slot:
+  - a trace that covers it records no frame for that call, while the same
+    value taken in a later batch is recorded
+    ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md));
+  - the call also reaches the code the batch compiled rather than whatever
+    the slot holds later, which is what redefinition depends on (§7).
+  The direct-application tail in `compiler/apply.rs` is not a second
+  site: it is reached only for an entry with no slot.
+- **Decision.** Rule 1 becomes: **target in this compilation — a
+  GOT-indirect call through its own slot**, emitted by the uniform
+  reference (§5.1) against `module_path`'s GOT. The slot is the target's
+  own, read from the unit's targets (the arm slot the entry already reads
+  for GOT data emission, §5.4), so a value whose reference has no carrier
+  still needs no name search. The direct call and its `FuncId` lookup for
+  this purpose go. Rules 2 to 5 are unchanged.
+- **Constructors.** A same-unit constructor's function is a callable
+  constructor body with a real slot, so it is called through that slot like
+  any other target (§2.6.2). A constructor with no callable body is still
+  constructed inline (rule 2).
+- **Cost.** One load per call through a value, a constant factor the dev
+  tier does not keep (Principle 27). Emission changes for every wrapper over
+  a same-unit target, so the change-set carries a scoped golden re-baseline:
+  each hunk replaces a direct `call` by a GOT load and `call_indirect`, and
+  nothing else. No public item, persisted shape or schema version changes.
+  An object built under the old rule stays valid: it only called directly.
+- **Module row.** A wrapper over a same-unit target, compiled through
+  `compile_to_module`, holds no direct call to the target's `FuncId`; its
+  CLIF loads the target's slot from `__cranelisp_got_{module_path}` and calls
+  indirectly. RED today. Control: a wrapper over a target in another module,
+  which already loads its slot.
+- **End to end.** Tracing §3.5's falsifier, `(trace (hof af))` with `af`
+  and `hof` in the entry file, is `qa`'s intake and cell.
+
 ## 13. Evidence
 
 - Entry contract, object mode, target collection and GOT emission:
@@ -501,8 +553,12 @@ no rollback, retention or transaction responsibility.
   side channel, a scan of the requested names or symbol tables, message
   parsing in the backend or the binary, and a new error variant or shared
   carrier to hold it.
-- **Out of scope:** a non-body batch error (target collection, declaration)
-  keeps the generic conversion and is not attributed by the body helper.
+- **Out of scope:** a non-body batch error (target collection, declaration,
+  the glue fence, GOT emission) is not attributed by the body helper. It is a
+  failure of the module, `CompilationError::ModuleFailed`, naming
+  `module_path` only (row B15; decided, not built;
+  [release contract](non-concrete-release-contract.md) §7.2.1,
+  *Unattributed*).
 - **Unit scenarios** (`module_assembly_tests.rs`, through production
   `compile_to_module`): a later member failing after an earlier success is
   attributed to the later member with its original source location, never to

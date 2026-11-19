@@ -8,15 +8,15 @@ architecture leaves to it. The emitted sequence, the descriptor blob, the GOT
 swap and the nested-trace guard are
 [tracing](../arch/tracing.md) §3–§6 and are not restated here.
 
-Verified against `compiler/trace_codegen.rs` and `schema.rs` at `81d186c6`
-(2026-11-20).
+Verified against `compiler/trace_codegen.rs`, `lib.rs` and `schema.rs` at
+`26fbee2f` (2026-11-20).
 
-- §1, the traced set, is built (row B10: int's enumerator at `69cd9c18`,
-  then the backend's parameter at `f8c55626`). The user ruled which modules
-  a form covers on 2026-11-19 (spec §4.12.3), and `arch` approved how the set
-  reaches the backend
-  ([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
-  One decision in §1.3 is open: the order within a covered module.
+- §1, the traced set, is built for one set per call (row B10: int's
+  enumerator at `69cd9c18`, then the backend's parameter at `f8c55626`), and
+  its within-module order at `e8a9cac5`. `arch` decided on 2026-11-20 that
+  the set travels with each target (row B10-C2,
+  [tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend));
+  that is designed in §1.3 and not built.
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
 - §3, the substitution correction (ACT-1062's backend reader), is built
@@ -110,50 +110,60 @@ the covered set would meet the same constraints.
 
 Spec §4.12.3 states the rule and
 [tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers) states it
-architecturally. Int computes the set; the backend reads it. Under this split
-the set is a function of the form's module's validity record, so it is the same
-cold, warm and in every mode, and an object references only GOTs that every
-image holding it defines (§1.2).
+architecturally. Int computes the set; the backend reads it and composes no
+copy of the enumeration
+([Principle 7](../arch/principles/07-single-source-of-truth.md)). The set is a
+function of the form's module's validity record, so it is the same cold, warm
+and in every mode, and an object references only GOTs that every image holding
+it defines (§1.2).
 
-- **Input.** `compile_to_module` takes
-  `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables` (row B10,
-  [tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
-  It names the modules a trace form in `module_path` covers besides
-  `module_path`. Every call passes it, whether or not a target holds a trace
-  form. The backend composes no copy of the enumeration
-  ([Principle 7](../arch/principles/07-single-source-of-truth.md)).
-- **The covered set is `module_path` and the listed modules.** The backend
-  adds no other module and privileges none by name
-  ([Principle 19](../arch/principles/19-no-module-privileged-by-name.md)):
-  `primitives` is covered because it is listed. A listed `module_path`
-  changes nothing.
-- **Discovery reads only the covered tables.** A covered module with no
-  table in `symbol_tables` is a located codegen error, not a skip
-  ([backend.md](backend.md#2-the-reading-discipline--a-pure-keyed-consumer)
-  §2). Within those tables, selection is §1.1's.
-- **Group order is the set's order** (built). Covered modules are visited in
-  the set's `BTreeSet` order.
-- **Within a group, entries are ordered by name** (decided; **not in source**
-  at `81d186c6`). Discovery today yields each covered table's entries in
-  `SymbolTable::all_symbols` order, which is hash-map iteration. That order
-  fixes the wrapper order, the descriptor order and the swapped-slot order in
-  the trace form's CLIF, so two compilations of one module, such as the JIT's
-  and the object pass's, can emit different CLIF. Each compilation is
-  self-consistent, so no trace records a wrong call; the breach is of the
-  emission rule ([backend](backend.md) §6) and of
-  [JIT/object convergence](jit-object-convergence.md) §1.3.
-  - *Change.* Discovery sorts each group's entries by symbol name before it
-    returns them. Names are unique within a table, so the order is total.
-    Private to `compiler/trace_codegen.rs`; no public, persisted or cache
-    change. A cached object compiled under the hash order stays valid: its
-    own emission is self-consistent.
-  - *Evidence.* One module row: discovery over a table holding several
-    claimed entries returns each group in name order. It is RED against hash
-    iteration whenever the table's iteration is not already sorted, so the
-    row should hold enough entries to make that near-certain. Whether a cell
-    is owed beyond it is `qa`'s.
-- **`macros` is never listed.** Its claims are never read, and nothing
-  changes there. Constructor slots are FIXME 0931's subject.
+**The form's module is the module whose source holds the form**, which for a
+monomorphised instance is its template's module, not the module whose batch
+compiles it (tracing §5.1, *The form's module*; ACT-1086). One set per
+`compile_to_module` call cannot state a batch whose targets were written in
+different modules, so the set travels with each target (row B10-C2, decided by
+`arch` 2026-11-20; **not built** at `26fbee2f`).
+
+- **Input (B10-C2).** `compile_to_module` takes
+  `targets: &[CodegenTarget<'_>]`; each `CodegenTarget` pairs a
+  `&CallableTarget` with the `&BTreeSet<ModuleFullPath>` a trace form in that
+  target's body covers. The call-wide `trace_modules` parameter is removed
+  ([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
+  Every target carries a set, whether or not its body holds a form.
+- **The set is the whole covered set.** It lists the module that holds the
+  body, the closure of that module's finished reference edges, and
+  `primitives`. The backend adds no module, `module_path` included, and
+  privileges none by name
+  ([Principle 19](../arch/principles/19-no-module-privileged-by-name.md)).
+  That the set lists the body's own module is the producer's obligation; the
+  backend does not ask which module holds a body.
+- **Where the set lives in the backend.** The body loop already builds one
+  `CompileContext` per target; its covered set is that target's. Inner
+  compilers (lambdas, wrappers) inherit the context, so a form in a lambda
+  inside the body reads the same set. No other reader takes it.
+- **Discovery, for a form in a target's body.** Groups are the modules of
+  the set together with `module_path`, visited in `BTreeSet` order.
+  - A listed module's table is read whole, under §1.1's selection.
+  - When `module_path` is not listed, its group holds only the entries whose
+    callable arm's `CallableArm::template_module()` is listed: the instances
+    of a covered module's templates that this batch's module demanded
+    (tracing §5.1). Every other entry of `module_path` is skipped.
+  - A listed module with no table in `symbol_tables` is a located codegen
+    error at the form, not a skip
+    ([backend.md](backend.md#2-the-reading-discipline--a-pure-keyed-consumer)
+    §2).
+- **Within a group, entries are ordered by name** (built, `e8a9cac5`, row
+  `discovery_orders_each_group_by_name`). Hash-map iteration would otherwise
+  fix the wrapper, descriptor and swapped-slot order, and two compilations of
+  one module could emit different CLIF ([backend](backend.md) §6;
+  [JIT/object convergence](jit-object-convergence.md) §1.3).
+- **`macros`.** The enumerator never lists it, so its claims are never read.
+- **Open, `spec`'s: an instance frame's name.** A frame's name is
+  `{module}/{entry}`. For an instance the entry is its canonical key, which
+  already names its template's module, so B10-C2's instance frames read
+  `lib/(h/helper [(base/Opt Int) Int] Int)`. Spec §4.12.4 says `name` is the
+  traced function's fully qualified name and does not say which spelling an
+  instance takes. The backend keeps today's spelling until `spec` states it.
 
 #### What the set must contain
 
@@ -186,24 +196,58 @@ owns the composition.
   transitive closure of the load edges alone would stop an entry form
   recording the standard-library frames that §4.12.3 and
   [tracing §3.5](../arch/tracing.md#35-got-copy-swap-and-completeness-by-construction)
-  require. The enumerator adds the prelude when the fallback is on. This is
-  returned to `arch` and int to state in §5.1.1 and int §7.6.
+  require. Int's enumerator adds the prelude when the fallback is on
+  ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10));
+  tracing §5.1 admits the prelude read as it stands.
 - **`macros`: consistent with §4.12.3.** §4.12.3 instruments a synthetic
   module's function only through a slot that holds a real code pointer, and
   no mode writes `macros`' GOT (§1.2). Excluding it therefore drops no
   frame. *Asserted; falsifier:* a write to `macros`' GOT in any mode.
 
-#### As built
+#### As built (B10) and what changes (B10-C2)
 
-`compile_to_module` threads `trace_modules` to discovery, with rustdoc
-stating its meaning, and the backend's test callers pass the set their
-fixture means, usually empty. Module rows in
-`compiler/trace_codegen/tests.rs`:
+Built at `f8c55626`: `compile_to_module` threads one call-wide `trace_modules`
+to discovery, which covers `module_path` and the listed modules.
 
-- `discovery_covers_module_path_and_listed_modules_only`: a claim outside the
-  set is not selected; a claim in a listed module and in `module_path` is;
-- `discovery_selects_claimed_slots_whatever_they_hold` (§1.1);
-- `discovery_refuses_a_covered_module_with_no_table`.
+**What `dev`(backend) builds for B10-C2** (`lib.rs`,
+`compiler/context.rs`, `compiler/trace_codegen.rs`, their tests, and every
+backend test caller of `compile_to_module`), in one commit with
+`dev`(`src/`)'s callers (batch record steps A3b and A3c), after `arch`'s
+`CallableArm::template_module` (A3a):
+
+1. `CodegenTarget<'a>` with private fields, `new(&'a CallableTarget,
+   &'a BTreeSet<ModuleFullPath>)`, `Clone`, `Copy` and `Debug`, and rustdoc
+   stating the set's meaning (above). Crate-private accessors only.
+2. `compile_to_module` takes `&[CodegenTarget<'_>]` and loses
+   `trace_modules`. Target collection reads each target's `CallableTarget`
+   as today. The body loop sets each target's `CompileContext` covered set
+   from its own `CodegenTarget`.
+3. Discovery reads the groups above. The `chain([module_path])` union is
+   replaced by the filtered `module_path` group.
+4. Test callers pass the set their fixture means. A fixture that relied on
+   `module_path` being added lists it.
+
+Module rows in `compiler/trace_codegen/tests.rs`, each RED against the
+built rule where it differs:
+
+- **A listed `module_path` is read whole; an unlisted one is not.** With
+  `module_path` absent from the set, an ordinary claim in its table is not
+  selected. RED today, because the backend adds `module_path`.
+- **An instance of a covered template is selected from `module_path`.**
+  `module_path` unlisted; its table holds an instance whose
+  `template_module()` is listed, and one whose template module is not. Only
+  the first is selected. RED today.
+- **Two targets, two sets, one batch.** Two targets whose bodies each hold a
+  form and carry different sets select different groups. RED today, because
+  one set serves the call.
+- Carried, adapted to the new input:
+  `discovery_covers_module_path_and_listed_modules_only` (renamed to the
+  listed-modules rule), `discovery_selects_claimed_slots_whatever_they_hold`,
+  `discovery_refuses_a_covered_module_with_no_table` and
+  `discovery_orders_each_group_by_name`.
+
+End to end, the ACT-1086 cells are `qa`'s; spec §4.12.3's generic library
+row names them.
 
 **Cache.** No persisted shape changed and no `CACHE_SCHEMA_VERSION` bump was
 owed. An object built under the old rule differs only in its own trace form's
@@ -221,6 +265,8 @@ descriptors and wrapper body are unchanged. So
   that residual's own experiment, run on a module holding a trace form.
 - B8's bump, 34 to 35, is for B8's own persisted shape. It landed before
   B10, so it does not separate B10's objects, and nothing needs it to.
+- B10-C2 is the same case. An object whose trace form sits in an instance
+  changes content, and the build identity separates it; no bump is owed.
 
 **End-to-end cells:** `trace::trace_records_user_function_calls_in_every_mode`,
 `trace::s124_1039_w_subject_run`, `_link` and `_repl`, and

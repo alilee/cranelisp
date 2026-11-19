@@ -218,8 +218,9 @@ interior facts worth stating once here:
     [that design](jit-object-convergence.md)) and the golden-CLIF oracle
     (§5) both rest on it, because the JIT and the object pass are separate
     compilations of one module. An emission order taken from hash-map
-    iteration breaks it. The one known site is the trace form's
-    within-module order (open; [trace codegen](trace-codegen.md) §1.3).
+    iteration breaks it. The one known site, the trace form's
+    within-module order, is corrected (`e8a9cac5`;
+    [trace codegen](trace-codegen.md) §1.3).
   - *Not required.* The object file as a whole: section, symbol and data
     order. Nothing reads object bytes as an identity. The cache keys on
     sources and the build identity ([module caching](module-caching.md)
@@ -376,7 +377,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers (built, row B10, §1; its within-module order is open, §1.3), the backend's half of strict evaluation and allocation-free wrappers (built), and constructor field types paired by declared parameter (built, row B14, §3). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers (built for one set per call, row B10; the per-target set, row B10-C2, is designed and not built, §1.3), the backend's half of strict evaluation and allocation-free wrappers (built), and constructor field types paired by declared parameter (built, row B14, §3). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
@@ -387,18 +388,23 @@ and no open review finding. This section lists every S124 backend item still
 open, its design and what it waits on. A row leaves when its change lands.
 Public rows are indexed in
 [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124).
-Verified against source at `81d186c6` on 2026-11-20.
+Verified against source at `26fbee2f` on 2026-11-20. Row names follow the
+[batch record](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)
+where it names them; its build order (steps A1 to A3c, then 1 to 4) is the
+sequence.
 
-| # | Change-set | Design | Waits on | Cells it turns green |
+| Row | Change-set | Design | Waits on | Evidence |
 |---|---|---|---|---|
-| B15 | Row "Trace reader": `cranelisp_trace_first_child_nanos` leaves `is_extern_primitive` (`compiler/apply.rs`) | [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124) | The same commit as intrinsics' removal of the export | None |
-| B16 | Row K11-d, step 2: `test_support.rs`'s two `lenient_from_expr` calls move to `cranelisp_types::test_support::lenient_from_expr`, and the dev-dependency on `cranelisp-types` enables `test-support` | [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124) | `arch`'s types step 1, not in source at `81d186c6` | None |
-| — | Trace order: discovery orders each covered module's entries by name, so the trace form's CLIF does not follow hash-map iteration. Private; `sprint` numbers and schedules it | [trace codegen](trace-codegen.md) §1.3 | Nothing | None. A module row, RED today, is `qa`'s to allocate (§6) |
+| B15 (step A1) | A codegen failure with no failing target is `CompilationError::ModuleFailed`; the generic `From<CranelispError>` and the producer-less `ModuleError` leave | [release contract](non-concrete-release-contract.md) §7.2.1, *Unattributed* | Nothing | Two module rows there |
+| B10-C2 (step A3b) | The covered set travels with each target: `CodegenTarget`, `compile_to_module` without `trace_modules`, discovery per target | [trace codegen](trace-codegen.md) §1.3 | `arch`'s `CallableArm::template_module` (A3a); one commit with `dev`(`src/`)'s callers (A3c) | Three new module rows there; the ACT-1086 cells are `qa`'s |
+| Trace reader | `cranelisp_trace_first_child_nanos` leaves `is_extern_primitive` (`compiler/apply.rs`) | [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124) | The same commit as intrinsics' removal of the export | None |
+| K11-d (step 2b) | `test_support.rs`'s two `lenient_from_expr` calls move to `cranelisp_types::test_support::lenient_from_expr`, and the dev-dependency on `cranelisp-types` enables `test-support` | [interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124) | `arch`'s step 2a, not in source at `26fbee2f` | None |
+| — (not scheduled) | Every call to a slotted function goes through its slot: the function-value wrapper stops calling a same-unit target directly. Private | [compile-to-module](compile-to-module.md) §12.2 | `sprint`'s scheduling; `qa`'s intake of tracing §3.5's falsifier | One module row there; a scoped golden re-baseline |
 
-B15 and B16 touch files no other row touches. Each lands whenever its
-counterpart step is ready. The trace-order row edits only
-`compiler/trace_codegen.rs` and its tests. The baseline-format row K11-a
-lands after every other row, alone.
+B15 and the slot row each touch files no other open row touches.
+B10-C2 edits `lib.rs`, which B15 also edits, so B15 lands first, as the
+build order states. The baseline-format row K11-a lands after every other
+row, alone.
 
 **What stays RED, and is not the backend's.** `qa`'s standing state at
 `f8c55626` attributes no failing test to the backend
@@ -410,10 +416,9 @@ display reader (`src/display.rs::build_adt_subst`), carried with
 its four candidate stages (§14.1). ACT-1086's provisional attribution is the
 binary's: the backend traces the set it is passed.
 
-**FIXME 0915's backend half** is on the exit list (`sprint`, 2026-11-20). Its
-design, three RED rows and the correction are
-[release contract](non-concrete-release-contract.md) §7.2.1. It waits on
-nothing; its one case without a failing member is returned to `arch` there.
+**FIXME 0915's backend half** is on the exit list (`sprint`, 2026-11-20).
+Rules 1–3 are built; row B15 completes it
+([release contract](non-concrete-release-contract.md) §7.2.1).
 
 - **Landed in S124.** Each emission-affecting change-set carried its own
   scoped re-baseline.
@@ -438,6 +443,12 @@ nothing; its one case without a failing member is returned to `arch` there.
     [ownership codegen](ownership-codegen.md) §9).
   - B10: the traced set over the covered modules, after int's enumerator
     step (`69cd9c18`, then `f8c55626`; [trace codegen](trace-codegen.md) §1).
+  - The pattern-constructor refusal row of ACT-0968 item 1 (`9bb1f0aa`).
+  - FIXME 0915's Rules 1–3: one prefix (`a9a8c0c6`), located registry
+    errors and the subject named once (`36e64f27`;
+    [release contract](non-concrete-release-contract.md) §7.2.1).
+  - Trace order within a covered module (`e8a9cac5`;
+    [trace codegen](trace-codegen.md) §1.3).
 - `CACHE_SCHEMA_VERSION` is 35 (read at `81d186c6`). B8 took it from 34
   (`07bb8e84`). B13, B14 and B10 changed no persisted shape
   ([trace codegen](trace-codegen.md) §1.3, *Cache*).

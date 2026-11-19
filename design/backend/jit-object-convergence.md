@@ -70,12 +70,11 @@ identically on both paths.
 state and byte-compare per function. Any divergence is a breach.
 `CRANELISP_CODEGEN_DUMP` supplies the dumps.
 
-**One known breach, semantics-preserving.** A trace form's CLIF follows
-hash-map iteration within each covered module, so two compilations of one
-module can order its wrappers, descriptors and swapped slots differently. Each
-compilation is self-consistent, so the trace records the same calls. The
-correction is [trace codegen](trace-codegen.md) §1.3 (open). It is the reason
-the rule is stated as a function of the inputs
+**A corrected breach.** A trace form's CLIF followed hash-map iteration within
+each covered module, so two compilations of one module could order its
+wrappers, descriptors and swapped slots differently. Discovery orders each
+group by name since `e8a9cac5` ([trace codegen](trace-codegen.md) §1.3). It is
+why the rule is stated as a function of the inputs
 ([backend](backend.md) §6), not as a property of one compilation.
 
 Slot *contents* are not a second falsification. A fresh JIT finalize and a
