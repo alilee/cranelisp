@@ -1,10 +1,11 @@
 //! `cranelisp-backend` — typed AST → Cranelift IR → executable.
 //!
 //! Owns codegen, reference-count (RC) emission, JIT lifecycle, caching, and
-//! linking. Paired with the backend-emitted runtime library (`cranelisp-primitives`
-//! + `cranelisp-intrinsics`, the D43 split of the former `cranelisp-runtime`, whose
-//! intrinsics the emitted CLIF calls). This crate is the only one that names Cranelift types; everything
-//! upstream of it flows in through `cranelisp-types`.
+//! linking. Paired with the backend-emitted runtime library
+//! (`cranelisp-primitives` and `cranelisp-intrinsics`, the D43 split of the
+//! former `cranelisp-runtime`, whose intrinsics the emitted CLIF calls). This
+//! crate is the only one that names Cranelift types; everything upstream of it
+//! flows in through `cranelisp-types`.
 //!
 //! # The codegen boundary — crate-root free functions
 //!

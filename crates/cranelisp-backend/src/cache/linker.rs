@@ -600,7 +600,7 @@ impl Linker {
 ///
 /// Conditioned on the parsed object's own `BinaryFormat` (not a host `cfg!`)
 /// so it stays correct for any object the linker is handed, cross-target or not.
-fn canonical_symbol_name<'a>(format: object::BinaryFormat, name: &'a str) -> &'a str {
+fn canonical_symbol_name(format: object::BinaryFormat, name: &str) -> &str {
     match format {
         object::BinaryFormat::MachO => name.strip_prefix('_').unwrap_or(name),
         _ => name,

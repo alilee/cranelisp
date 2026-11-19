@@ -518,6 +518,7 @@ where
     ///
     /// Every target consumes its arguments, as the wrapper's own closure
     /// protocol does, so the owned params are forwarded with no adaptation.
+    #[allow(clippy::too_many_arguments)]
     fn emit_wrapper_call(
         &mut self,
         builder: &mut FunctionBuilder,

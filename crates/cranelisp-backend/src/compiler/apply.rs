@@ -130,6 +130,7 @@ impl EvaluatedOperands {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn append_runtime_ctor_fields<M, C, L>(
     builder: &mut FunctionBuilder,
     module: &mut M,

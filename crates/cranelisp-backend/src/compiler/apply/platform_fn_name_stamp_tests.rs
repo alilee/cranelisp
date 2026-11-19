@@ -196,7 +196,7 @@ fn assert_tag_dominated_store(clif: &str, offset: i64, expected_tag: i64) -> Str
             let condition = parts.next()?;
             let taken = target_label(parts.next()?)?;
             let not_taken = target_label(parts.next()?)?;
-            (taken == store_block).then(|| (condition, not_taken))
+            (taken == store_block).then_some((condition, not_taken))
         })
         .collect();
     assert_eq!(
