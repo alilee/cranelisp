@@ -307,6 +307,7 @@ fn test_compile_load_and_execute_cached_module() {
         module.clone(),
         std::slice::from_ref(&crate::test_support::binding_target(&module, &defn.name)),
         &tables,
+        &std::collections::BTreeSet::new(),
         &mut obj_module,
         false,
     )

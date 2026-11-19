@@ -682,6 +682,30 @@ fn finish_pass2(
     }
 }
 
+/// Wait on a covered-set member that has not yet published, through the one
+/// dependency seam; the cluster retries from the top when it publishes
+/// (`design/int/int.md` §7.6.4). The member is reached through another
+/// module's edges, so the wait is located at the cluster's head.
+fn await_unpublished_member(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    origin_sexps: &[Sexp],
+    prefix: &ExpandedPrefix,
+    member: ModuleFullPath,
+) -> Result<Finalized, CranelispError> {
+    let head = origin_sexps
+        .first()
+        .map_or(Span::SYNTHETIC, |sexp| sexp.span());
+    let continuation = prefix.continuation_with([]);
+    store_pool_continuation(ctx, module, &continuation, true);
+    drive_module_dep(ctx, module, &member, head)?;
+    Ok(Finalized::unpublished(ClusterOnce::Gap {
+        dep: member,
+        continuation,
+        generation_started: true,
+    }))
+}
+
 /// Finalize a fully expanded cluster: single `check_program_compat` dispatch,
 /// then build the `Done` outcome (S78 — replaces the legacy `finalize_module`).
 ///
@@ -756,7 +780,14 @@ fn finalize_cluster(
             shared,
         ) {
             Ok(None) => (None, Vec::new(), Vec::new()),
-            Ok(Some(Err(gap))) => (Some(gap), Vec::new(), Vec::new()),
+            Ok(Some(Err(crate::worker::PlanningGap::Resolution(gap)))) => {
+                (Some(gap), Vec::new(), Vec::new())
+            }
+            Ok(Some(Err(crate::worker::PlanningGap::Member(
+                crate::worker::UnpublishedMember(member),
+            )))) => {
+                return await_unpublished_member(ctx, module, origin_sexps, prefix, member);
+            }
             Ok(Some(Ok((mut turn, check)))) => {
                 turn.unresolved_dispatch = check.unresolved_dispatch.clone();
                 prepared = Some(turn);
@@ -1274,10 +1305,9 @@ fn pass2_check_bodies_with_expansion(
             }
             FormKind::Defmacro => {
                 let info = cranelisp_frontend::parse_defmacro(sexp)?;
-                if let Some(gap) =
+                if let Some(dep_module) =
                     compile_macro_if_needed(ctx, module, &info, sexp, &prefix.attempt)?
                 {
-                    let dep_module = macro_checkpoint_gap_target(ctx, &gap, sexp.span())?;
                     return Ok(Pass2Result::BlockedOnFqModule {
                         dep_module,
                         continuation: prefix.continuation_with(continuation.originated_from(idx)),
@@ -1356,7 +1386,7 @@ fn pass2_check_bodies_with_expansion(
     Ok(Pass2Result::Complete)
 }
 
-fn macro_checkpoint_gap_target(
+pub(super) fn macro_checkpoint_gap_target(
     ctx: &ModuleCompiler,
     gap: &cranelisp_types::ResolutionGap,
     span: Span,
@@ -1551,11 +1581,13 @@ fn process_regular_form(
         for (index, form) in forms.iter().enumerate() {
             if cranelisp_frontend::is_defmacro(form) {
                 let info = cranelisp_frontend::parse_defmacro(form)?;
-                if let Some(gap) = compile_macro_if_needed(ctx, module, &info, form, attempt)? {
+                if let Some(dep_module) =
+                    compile_macro_if_needed(ctx, module, &info, form, attempt)?
+                {
                     let mut continuation = ordinary;
                     continuation.extend_from_slice(&forms[index..]);
                     return Ok(RegularFormResult::Blocked {
-                        dep_module: macro_checkpoint_gap_target(ctx, &gap, form.span())?,
+                        dep_module,
                         continuation,
                         ref_span: form.span(),
                     });
@@ -1672,7 +1704,7 @@ fn process_regular_form(
             // the ORIGINAL outer form `sexp`, exactly what the sibling defn
             // records below — one turn, one authored form, one emission.
             let authored_source = verbatim_source_slice(ctx, module, authored_origin);
-            if let Some(gap) = compile_macro_if_needed(ctx, module, &info, form, attempt)? {
+            if let Some(dep_module) = compile_macro_if_needed(ctx, module, &info, form, attempt)? {
                 let built_prefix = if emission_markers
                     .iter()
                     .any(|marker| matches!(marker, DefinitionEmissionMarker::Ordinary))
@@ -1689,7 +1721,6 @@ fn process_regular_form(
                 )?;
                 let mut continuation = regular_sexps.clone();
                 continuation.extend_from_slice(&flattened[form_index..]);
-                let dep_module = macro_checkpoint_gap_target(ctx, &gap, form.span())?;
                 return Ok(RegularFormResult::Blocked {
                     dep_module,
                     continuation,

@@ -11,7 +11,7 @@ use cranelisp_types::{
     TemplateKind, Type, Visibility,
 };
 use dashmap::DashMap;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 // ── Descriptor-bake round-trip against the intrinsics walker ──────────────
 //
@@ -249,22 +249,53 @@ fn insert_fn(table: &mut SymbolTable<(), ()>, name: &str, scheme: Scheme, fake_p
     }
 }
 
-#[test]
-fn discovery_includes_all_modules_and_primitives() {
-    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+fn modules(names: &[&str]) -> BTreeSet<ModuleFullPath> {
+    names
+        .iter()
+        .map(|name| ModuleFullPath::from(*name))
+        .collect()
+}
 
-    let mut user = SymbolTable::<(), ()>::new(ModuleFullPath::from("user"));
+fn traced_names(traced: &[TracedFnInfo]) -> Vec<&str> {
+    traced.iter().map(|t| t.name.as_str()).collect()
+}
+
+/// A table holding one function whose slot is published.
+fn table_with_fn(module: &str, name: &str, fake_ptr: usize) -> SymbolTable<(), ()> {
+    let mut table = SymbolTable::<(), ()>::new(ModuleFullPath::from(module));
     insert_fn(
-        &mut user,
-        "fact",
+        &mut table,
+        name,
         fn_scheme(vec![Type::Int], Type::Int),
-        Some(0x1000),
+        Some(fake_ptr),
     );
-    tables.insert(ModuleFullPath::from("user"), user);
+    table
+}
 
-    // The synthetic `primitives` module: entries carry code: None but the
-    // GOT slot holds the fn ptr. Discovery must pick it up (no project-root
-    // filter, primitives included).
+// spec: design/backend/trace-codegen.md §1.3 — a form covers its own module
+// and the listed modules, no other, and groups follow the set's order.
+#[test]
+fn discovery_covers_module_path_and_listed_modules_only() {
+    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+    tables.insert(
+        ModuleFullPath::from("user"),
+        table_with_fn("user", "fact", 0x1000),
+    );
+    tables.insert(
+        ModuleFullPath::from("lib"),
+        table_with_fn("lib", "step", 0x1100),
+    );
+    tables.insert(
+        ModuleFullPath::from("other"),
+        table_with_fn("other", "unrelated", 0x1200),
+    );
+    tables.insert(
+        ModuleFullPath::from("macros"),
+        table_with_fn("macros", "Ctor", 0x1300),
+    );
+
+    // The synthetic `primitives` module: entries carry code: None but claim a
+    // GOT slot. It is covered because it is listed, not by name.
     let mut prims = SymbolTable::<(), ()>::new(ModuleFullPath::from("primitives"));
     let primitive_slot = prims
         .install_extern(
@@ -281,17 +312,20 @@ fn discovery_includes_all_modules_and_primitives() {
     prims.got.store_slot(primitive_slot, 0x2000 as *const u8);
     tables.insert(ModuleFullPath::from("primitives"), prims);
 
-    let traced = discover_traced_fns_from_tables(&tables);
-    let names: Vec<&str> = traced.iter().map(|t| t.name.as_str()).collect();
-    assert!(
-        names.contains(&"user/fact"),
-        "user fn must be discovered: {names:?}"
+    let user = ModuleFullPath::from("user");
+    let traced = discover_traced_fns_from_tables(
+        &tables,
+        &user,
+        &modules(&["lib", "primitives"]),
+        Span::SYNTHETIC,
+    )
+    .expect("every covered module has a table");
+    let names = traced_names(&traced);
+    assert_eq!(
+        names,
+        vec!["lib/step", "primitives/str-concat", "user/fact"],
+        "the form's module and the listed modules, in the set's order"
     );
-    assert!(
-        names.contains(&"primitives/str-concat"),
-        "primitive must be discovered (all symbol tables, primitives included): {names:?}"
-    );
-    // Arity + types come from the scheme.
     let prim = traced
         .iter()
         .find(|t| t.name == "primitives/str-concat")
@@ -301,6 +335,61 @@ fn discovery_includes_all_modules_and_primitives() {
     assert_eq!(prim.result_type, Type::String);
     assert_eq!(prim.module_path, ModuleFullPath::from("primitives"));
     assert_eq!(prim.got_slot, prims_slot_of_str_concat(&tables));
+
+    let listing_own_module = discover_traced_fns_from_tables(
+        &tables,
+        &user,
+        &modules(&["lib", "primitives", "user"]),
+        Span::SYNTHETIC,
+    )
+    .expect("every covered module has a table");
+    assert_eq!(
+        traced_names(&listing_own_module),
+        names,
+        "listing the form's own module changes nothing"
+    );
+
+    let own_module_only =
+        discover_traced_fns_from_tables(&tables, &user, &BTreeSet::new(), Span::SYNTHETIC)
+            .expect("the form's module has a table");
+    assert_eq!(traced_names(&own_module_only), vec!["user/fact"]);
+}
+
+// spec: design/backend/trace-codegen.md §1.3 — a covered module with no table
+// is a located codegen error, not a skip.
+#[test]
+fn discovery_refuses_a_covered_module_with_no_table() {
+    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+    tables.insert(
+        ModuleFullPath::from("user"),
+        table_with_fn("user", "fact", 0x1000),
+    );
+    let form = Span::new(40, 52);
+
+    let refused = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("user"),
+        &modules(&["absent"]),
+        form,
+    );
+    match refused {
+        Err(CranelispError::CodegenError { message, location }) => {
+            assert!(message.contains("absent"), "names the module: {message}");
+            assert_eq!(location.span, form, "located at the trace form");
+        }
+        other => panic!("a listed module with no table is refused, got {other:?}"),
+    }
+
+    let own_missing = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("gone"),
+        &BTreeSet::new(),
+        form,
+    );
+    assert!(
+        matches!(own_missing, Err(CranelispError::CodegenError { .. })),
+        "the form's own module is covered too: {own_missing:?}"
+    );
 }
 
 /// Read back the GOT slot the discovery should have recorded for the
@@ -366,8 +455,14 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
     );
     tables.insert(ModuleFullPath::from("user"), m);
 
-    let traced = discover_traced_fns_from_tables(&tables);
-    let names: Vec<&str> = traced.iter().map(|t| t.name.as_str()).collect();
+    let traced = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("user"),
+        &BTreeSet::new(),
+        Span::SYNTHETIC,
+    )
+    .expect("the form's module has a table");
+    let names = traced_names(&traced);
     assert!(names.contains(&"user/double"), "mono fn kept: {names:?}");
     assert!(
         !names.contains(&"user/add"),
@@ -379,22 +474,25 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
     );
 }
 
+// spec: design/backend/trace-codegen.md §1.1 — selection reads slot claims,
+// not slot contents: a claimed slot still empty at codegen is selected; a
+// non-function scheme is not. (Slotless entries: the row above.)
 #[test]
-fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
+fn discovery_selects_claimed_slots_whatever_they_hold() {
     let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
     let mut m = SymbolTable::<(), ()>::new(ModuleFullPath::from("user"));
-
-    // Def with a got_slot but the GOT slot is 0 (unpopulated) — skipped.
     insert_fn(
         &mut m,
         "uncompiled",
         fn_scheme(vec![Type::Int], Type::Int),
         None,
     );
-    // (no got.store_slot — slot stays null)
-
-    // Non-Fn scheme (e.g. a zero-arg value) with a populated slot — skipped
-    // (arity/types require Type::Fn).
+    insert_fn(
+        &mut m,
+        "published",
+        fn_scheme(vec![Type::Int], Type::Int),
+        Some(0x4100),
+    );
     insert_fn(
         &mut m,
         "konst",
@@ -407,11 +505,21 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
     );
     tables.insert(ModuleFullPath::from("user"), m);
 
-    let traced = discover_traced_fns_from_tables(&tables);
-    let names: Vec<&str> = traced.iter().map(|t| t.name.as_str()).collect();
+    let traced = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("user"),
+        &BTreeSet::new(),
+        Span::SYNTHETIC,
+    )
+    .expect("the form's module has a table");
+    let names = traced_names(&traced);
     assert!(
-        !names.contains(&"user/uncompiled"),
-        "empty GOT slot skipped: {names:?}"
+        names.contains(&"user/uncompiled"),
+        "a claimed but empty slot is selected: {names:?}"
+    );
+    assert!(
+        names.contains(&"user/published"),
+        "a claimed, published slot is selected: {names:?}"
     );
     assert!(
         !names.contains(&"user/konst"),
@@ -529,6 +637,7 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
+        trace_modules: &std::collections::BTreeSet::new(),
         current_module: module.clone(),
         alloc_func_id: iid.alloc,
         dealloc_func_id: iid.dealloc.unwrap(),
@@ -584,6 +693,7 @@ fn with_bake_compiler<R>(
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: tables,
+        trace_modules: &std::collections::BTreeSet::new(),
         current_module: ModuleFullPath::from("user"),
         alloc_func_id: intrinsic_ids.alloc,
         dealloc_func_id: intrinsic_ids.dealloc.unwrap(),

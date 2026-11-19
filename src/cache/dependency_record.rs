@@ -7,7 +7,7 @@
 //! from fully settled session state, and never as an empty or partial
 //! stand-in.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
@@ -21,6 +21,8 @@ use crate::imports::{DeclaredChildren, declared_child_path, names_load};
 use crate::session_v4::SharedState;
 
 const PRELUDE: &str = "prelude";
+const PRIMITIVES: &str = "primitives";
+const MACROS: &str = "macros";
 
 /// The derivation key of every module in one module's transitive dependency
 /// closure, keyed by module path (`design/int/int.md` §7.6.3). The module
@@ -250,6 +252,71 @@ pub(crate) fn reference_edges<C: CodeStore, L: LinkerStore>(
     edges
 }
 
+/// The modules a trace form in a root module covers besides the root
+/// (`design/int/int.md` §7.6.4), or the member that keeps the set from being
+/// settled.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CoveredSet {
+    Covered(BTreeSet<ModuleFullPath>),
+    /// The first member, in walk order, that has not yet published a
+    /// generation. A set read through it would depend on scheduling.
+    Unpublished(ModuleFullPath),
+}
+
+/// The covered set of `root` in `tables`: the transitive closure of reference
+/// edges from `root`, each member's edges read from its own table, plus
+/// `primitives`, less `root` and `macros` (`design/int/int.md` §7.6.4).
+///
+/// A member is unpublished when it has no table or `published` denies it; the
+/// walk answers the first such member. Two kinds of member are never answered:
+/// a compiler-owned module, which no load publishes, and the prelude, which is
+/// read as it stands. An unpublished prelude is covered, but its edges are not
+/// followed: a module compiled before the prelude publishes reaches nothing
+/// through it.
+pub(crate) fn covered_set(
+    root: &ModuleFullPath,
+    tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    published: impl Fn(&ModuleFullPath) -> bool,
+) -> CoveredSet {
+    let prelude = ModuleFullPath::from(PRELUDE);
+    let prelude_table = tables.contains_key(&prelude);
+    let mut covered = BTreeSet::new();
+    let mut seen = BTreeSet::from([root.clone(), ModuleFullPath::from(MACROS)]);
+    let mut walk = VecDeque::from([root.clone()]);
+    while let Some(member) = walk.pop_front() {
+        if member != *root {
+            let settled = tables.contains_key(&member) && published(&member);
+            if !settled && member != prelude && !is_compiler_owned(&member) {
+                return CoveredSet::Unpublished(member);
+            }
+            covered.insert(member.clone());
+            if !settled && member == prelude {
+                continue;
+            }
+        }
+        let fallback = prelude_fallback.get(&member).is_some_and(|bit| *bit);
+        let prelude_edge = if fallback && prelude_table {
+            PreludeEdge::Present
+        } else {
+            PreludeEdge::Absent
+        };
+        let Some(edges) = tables
+            .get(&member)
+            .map(|table| reference_edges(&member, &table, prelude_edge))
+        else {
+            continue;
+        };
+        for edge in edges {
+            if seen.insert(edge.clone()) {
+                walk.push_back(edge);
+            }
+        }
+    }
+    covered.insert(ModuleFullPath::from(PRIMITIVES));
+    CoveredSet::Covered(covered)
+}
+
 /// A module's reload edges as `table` records them: each `import` and `export`
 /// that loads, resolved through its declared children; `prelude` when
 /// `prelude_fallback` holds; and its callee modules and lookup dependencies. A
@@ -302,7 +369,7 @@ fn is_edge(module: &ModuleFullPath, target: &ModuleFullPath) -> bool {
 
 pub(crate) fn is_compiler_owned(module: &ModuleFullPath) -> bool {
     let path: &str = module.as_ref();
-    path == "primitives" || path == "macros" || path.starts_with("platform.")
+    path == PRIMITIVES || path == MACROS || path.starts_with("platform.")
 }
 
 /// Whether a record could be built from settled session state.

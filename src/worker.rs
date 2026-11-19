@@ -18,12 +18,17 @@ use cranelisp_types::{
 
 use cranelisp_typecheck::CheckState;
 
+use crate::cache::dependency_record::CoveredSet;
+
 pub(crate) struct PreparedCommit {
     module: ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
     decisions: Vec<StagedPublicationDecision>,
     tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     targets: Vec<CallableTarget>,
+    /// The modules a trace form in this batch covers besides `module`,
+    /// derived from `tables` (`design/int/int.md` §7.6.4).
+    trace_modules: std::collections::BTreeSet<ModuleFullPath>,
     pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
 }
 
@@ -45,6 +50,21 @@ impl PreparedCommit {
             self.staging.record_lookup_dependency(module.clone());
         }
     }
+}
+
+/// A member of a prepared turn's covered set that has not yet published a
+/// generation (`design/int/int.md` §7.6.4). Planning waits on it through the
+/// one dependency seam, `drive_module_dep`, and retries when it publishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnpublishedMember(pub(crate) ModuleFullPath);
+
+/// Why a cluster attempt cannot yet be prepared: a name or type it resolves
+/// is not yet available, or a module its covered set reaches has not yet
+/// published.
+#[derive(Debug)]
+pub(crate) enum PlanningGap {
+    Resolution(cranelisp_types::ResolutionGap),
+    Member(UnpublishedMember),
 }
 
 /// What a cluster attempt owes the live table beyond its checkable entries
@@ -428,9 +448,7 @@ pub(crate) fn prepare_cluster_commit(
     working_program: &[TopLevel],
     shared: &crate::session_v4::SharedState,
 ) -> Result<
-    Option<
-        Result<(PreparedCommit, cranelisp_typecheck::CheckResult), cranelisp_types::ResolutionGap>,
-    >,
+    Option<Result<(PreparedCommit, cranelisp_typecheck::CheckResult), PlanningGap>>,
     CranelispError,
 > {
     prepare_cluster_commit_with_demands(
@@ -465,9 +483,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     provenance: &crate::scheduler::SourceProvenance,
     shared: &crate::session_v4::SharedState,
 ) -> Result<
-    Option<
-        Result<(PreparedCommit, cranelisp_typecheck::CheckResult), cranelisp_types::ResolutionGap>,
-    >,
+    Option<Result<(PreparedCommit, cranelisp_typecheck::CheckResult), PlanningGap>>,
     CranelispError,
 > {
     let checked = check_cluster_to_staging(
@@ -493,7 +509,7 @@ pub(crate) fn prepare_cluster_commit_with_demands(
     };
     let checked = match checked {
         Ok(checked) => checked,
-        Err(gap) => return Ok(Some(Err(gap))),
+        Err(gap) => return Ok(Some(Err(PlanningGap::Resolution(gap)))),
     };
     let (established_reference, later_members) = match provenance {
         crate::scheduler::SourceProvenance::WholeSource {
@@ -726,9 +742,7 @@ fn finish_prepared_commit(
     cycle_check: PublicationCheck<'_>,
     shared: &crate::session_v4::SharedState,
 ) -> Result<
-    Option<
-        Result<(PreparedCommit, cranelisp_typecheck::CheckResult), cranelisp_types::ResolutionGap>,
-    >,
+    Option<Result<(PreparedCommit, cranelisp_typecheck::CheckResult), PlanningGap>>,
     CranelispError,
 > {
     let demands = capture_affected_mono_demands(symbol_tables, module, &checked.staging)?;
@@ -741,7 +755,7 @@ fn finish_prepared_commit(
         &mut checked,
         demands,
     )? {
-        return Ok(Some(Err(gap)));
+        return Ok(Some(Err(PlanningGap::Resolution(gap))));
     }
     let DemandPublicationPlan {
         decisions,
@@ -756,7 +770,10 @@ fn finish_prepared_commit(
         &guard_exempt_symbols,
         &cycle_check,
     )?;
-    Ok(Some(Ok((prepared, checked.result))))
+    Ok(Some(match prepared {
+        Ok(prepared) => Ok((prepared, checked.result)),
+        Err(member) => Err(PlanningGap::Member(member)),
+    }))
 }
 
 fn instantiate_captured_demands(
@@ -1300,7 +1317,7 @@ pub(crate) fn plan_staging_commit(
     staging: crate::code::SessionSymbolTable,
     shared: &crate::session_v4::SharedState,
     cycle_check: &PublicationCheck<'_>,
-) -> Result<PreparedCommit, CranelispError> {
+) -> Result<Result<PreparedCommit, UnpublishedMember>, CranelispError> {
     plan_staging_commit_inner(
         symbol_tables,
         module,
@@ -1321,7 +1338,7 @@ fn plan_staging_commit_inner(
     additional_decisions: &[StagedPublicationDecision],
     rematerialized_instances: &[Symbol],
     cycle_check: &PublicationCheck<'_>,
-) -> Result<PreparedCommit, CranelispError> {
+) -> Result<Result<PreparedCommit, UnpublishedMember>, CranelispError> {
     use crate::redefine::{RedefKind, classify_redefinition};
 
     validate_guarded_staging_except(
@@ -1388,14 +1405,33 @@ fn plan_staging_commit_inner(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     drop(candidate);
+    let trace_modules = match covered_set(&tables, module, shared) {
+        CoveredSet::Covered(trace_modules) => trace_modules,
+        CoveredSet::Unpublished(member) => return Ok(Err(UnpublishedMember(member))),
+    };
     let targets = derive_codegen_batch(&staging);
-    Ok(PreparedCommit {
+    Ok(Ok(PreparedCommit {
         module: module.clone(),
         staging,
         decisions,
         tables,
         targets,
+        trace_modules,
         unresolved_dispatch: Vec::new(),
+    }))
+}
+
+/// The covered set of `module` in a prepared view (`design/int/int.md`
+/// §7.6.4). A member has published once the scheduler holds it ready for
+/// declaration; a failed member has published all it will, and is read as it
+/// stands.
+fn covered_set(
+    view: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    shared: &crate::session_v4::SharedState,
+) -> CoveredSet {
+    crate::cache::dependency_record::covered_set(module, view, &shared.prelude_fallback, |member| {
+        shared.scheduler.is_ready_for_declaration(member) || shared.scheduler.is_failed(member)
     })
 }
 
@@ -1949,6 +1985,7 @@ pub fn inline_jit_codegen_for_names(
         module.clone(),
         targets,
         tc_modules,
+        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         capture_clif,
     )?;
@@ -2038,6 +2075,7 @@ fn compile_and_publish_prepared(
                 prepared.module.clone(),
                 &prepared.targets,
                 &prepared.tables,
+                &prepared.trace_modules,
                 jit.jit_module(),
                 capture_clif,
             )

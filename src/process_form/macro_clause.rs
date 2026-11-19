@@ -18,6 +18,9 @@ pub(super) struct MacroClauseEnv<'a> {
 pub(super) enum MacroCheckpoint {
     Published,
     Gap(cranelisp_types::ResolutionGap),
+    /// A member of the checkpoint's covered set has not yet published
+    /// (`design/int/int.md` §7.6.4).
+    AwaitMember(ModuleFullPath),
 }
 
 /// Compile and immediately publish one complete parent-plus-clause generation.
@@ -125,7 +128,7 @@ pub(super) fn compile_macro_checkpoint(
         .chain(&attempt.macro_lookup_dependencies)
         .cloned()
         .collect();
-    let mut prepared = crate::worker::plan_staging_commit(
+    let planned = crate::worker::plan_staging_commit(
         env.symbol_tables,
         module,
         staging,
@@ -136,6 +139,12 @@ pub(super) fn compile_macro_checkpoint(
             working: &program,
         },
     )?;
+    let mut prepared = match planned {
+        Ok(prepared) => prepared,
+        Err(crate::worker::UnpublishedMember(member)) => {
+            return Ok(MacroCheckpoint::AwaitMember(member));
+        }
+    };
     prepared.unresolved_dispatch = checked.unresolved_dispatch;
     prepared.record_lookup_dependencies(&lookup_dependencies);
     let mut processed =

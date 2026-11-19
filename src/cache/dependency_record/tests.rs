@@ -1263,3 +1263,89 @@ mod reference_edges {
         assert_eq!(edges(&table, PreludeEdge::Absent), ["platform.stdio"]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The covered set (`design/int/int.md` §7.6.4, row B10 step 2)
+// ---------------------------------------------------------------------------
+
+mod covered_set {
+    use super::callee_modules::concrete;
+    use super::*;
+
+    fn table(module: &str) -> SessionSymbolTable {
+        SessionSymbolTable::new_with_params(m(module))
+    }
+
+    /// `e` imports `u` and calls into `macros`; `u` calls `x`; `e` declares a
+    /// child `c` it never imports, which has a table of its own.
+    fn chain() -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+        let tables = dashmap::DashMap::new();
+        let mut e = table("e");
+        e.imports = vec![named_import("u")];
+        e.submodules = vec![child("c")];
+        concrete(&mut e, "run", &["macros"]);
+        let mut u = table("u");
+        concrete(&mut u, "f", &["x"]);
+        for (module, table) in [
+            ("e", e),
+            ("u", u),
+            ("x", table("x")),
+            ("e.c", table("e.c")),
+            ("primitives", table("primitives")),
+            ("macros", table("macros")),
+        ] {
+            tables.insert(m(module), table);
+        }
+        tables
+    }
+
+    fn covered(modules: &[&str]) -> CoveredSet {
+        CoveredSet::Covered(modules.iter().map(|module| m(module)).collect())
+    }
+
+    // spec: design/arch/tracing.md §5.1 — the closure from the form's module,
+    // plus `primitives`, less the module itself, `macros` and a declared child
+    // the module does not import.
+    #[test]
+    fn the_covered_set_is_the_closure_plus_primitives() {
+        let set = covered_set(&m("e"), &chain(), &Default::default(), |_| true);
+        assert_eq!(set, covered(&["primitives", "u", "x"]));
+    }
+
+    // spec: design/int/int.md §7.6.4 *Settled members* — the first member that
+    // has not published is answered, and one with no table is unpublished.
+    #[test]
+    fn an_unpublished_or_absent_member_is_answered() {
+        let tables = chain();
+        let unpublished = covered_set(&m("e"), &tables, &Default::default(), |module| {
+            module.as_ref() != "x"
+        });
+        assert_eq!(unpublished, CoveredSet::Unpublished(m("x")));
+        tables.remove(&m("x"));
+        let absent = covered_set(&m("e"), &tables, &Default::default(), |_| true);
+        assert_eq!(absent, CoveredSet::Unpublished(m("x")));
+    }
+
+    // spec: design/int/int.md §7.6.4 *Settled members* item 2 — an unpublished
+    // prelude is covered as it stands and its edges are not followed; a
+    // published one is walked like any member.
+    #[test]
+    fn an_unpublished_prelude_is_read_as_it_stands() {
+        let tables = chain();
+        let mut prelude = table("prelude");
+        prelude.imports = vec![named_import("p")];
+        tables.insert(m("prelude"), prelude);
+        tables.insert(m("p"), table("p"));
+        let fallback = cranelisp_typecheck::PreludeFallback::default();
+        fallback.insert(m("e"), true);
+        let unpublished = covered_set(&m("e"), &tables, &fallback, |module| {
+            !matches!(module.as_ref(), "prelude" | "p")
+        });
+        assert_eq!(unpublished, covered(&["prelude", "primitives", "u", "x"]));
+        let published = covered_set(&m("e"), &tables, &fallback, |_| true);
+        assert_eq!(
+            published,
+            covered(&["p", "prelude", "primitives", "u", "x"])
+        );
+    }
+}

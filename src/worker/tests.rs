@@ -1505,6 +1505,7 @@ fn production_diagnostic_for_exact_target(prepared: &PreparedCommit) -> Cranelis
         prepared.module.clone(),
         std::slice::from_ref(&target),
         &tables,
+        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     ) {
@@ -1652,6 +1653,7 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
                 prepared.module.clone(),
                 &prepared.targets,
                 &prepared.tables,
+                &prepared.trace_modules,
                 jit.jit_module(),
                 capture_clif,
             )
@@ -2283,7 +2285,8 @@ fn parametric_impl_turn_does_not_compile_live_sibling_impl() {
         &shared,
         &no_cycle_check(),
     )
-    .expect("a template-only turn prepares");
+    .expect("a template-only turn prepares")
+    .expect("every covered member has published");
     assert!(
         prepared.targets.is_empty(),
         "a turn that stages no concrete body compiles nothing; got {:?}",
@@ -3451,7 +3454,8 @@ fn prepared_failure_fixture(
         &shared,
         &no_cycle_check(),
     )
-    .expect("transaction fixture prepares");
+    .expect("transaction fixture prepares")
+    .expect("every covered member has published");
     (shared, module, prepared)
 }
 
@@ -3532,7 +3536,8 @@ fn prepared_multi_member_codegen_failure_is_all_or_nothing() {
         &shared,
         &no_cycle_check(),
     )
-    .expect("multi-member turn prepares");
+    .expect("multi-member turn prepares")
+    .expect("every covered member has published");
 
     let mut processed = crate::cluster::ProcessedCluster::empty();
     processed.set_prepared(prepared);
@@ -3584,7 +3589,8 @@ fn prepared_publish_installs_entry_drop_glue_and_planned_retention_only() {
         &shared,
         &no_cycle_check(),
     )
-    .expect("publish fixture prepares");
+    .expect("publish fixture prepares")
+    .expect("every covered member has published");
     let mut processed = crate::cluster::ProcessedCluster::empty();
     processed.set_prepared(prepared);
     compile_and_publish_processed_without_notify(&mut processed, &shared)
@@ -4640,5 +4646,206 @@ mod failed_dependency_refusal {
             )
             .is_ok()
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The covered set at commit planning (`design/int/int.md` §7.6.4, row B10)
+// ---------------------------------------------------------------------------
+
+mod covered_set_at_planning {
+    use super::*;
+    use cranelisp_types::ExportSpec;
+
+    fn m(path: &str) -> ModuleFullPath {
+        ModuleFullPath::from(path)
+    }
+
+    fn named_import(target: &str) -> ImportSpec {
+        ImportSpec {
+            module_path: m(target),
+            alias: None,
+            names: ImportNames::Specific(vec![crate::imports::plain_entry("f")]),
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    fn insert_table(shared: &crate::session_v4::SharedState, module: &str) {
+        shared.symbol_tables.insert(
+            m(module),
+            crate::code::SessionSymbolTable::new_with_params(m(module)),
+        );
+    }
+
+    fn register_unpublished(shared: &crate::session_v4::SharedState, module: &str) {
+        shared
+            .scheduler
+            .register_module(m(module), Vec::<Sexp>::new().into(), false);
+    }
+
+    fn plan(
+        shared: &crate::session_v4::SharedState,
+        module: &str,
+    ) -> Result<PreparedCommit, UnpublishedMember> {
+        plan_staging_commit(
+            &shared.symbol_tables,
+            &m(module),
+            crate::code::SessionSymbolTable::new_with_params(m(module)),
+            shared,
+            &no_cycle_check(),
+        )
+        .expect("the planning fixture is valid")
+    }
+
+    fn stored(prepared: &PreparedCommit) -> Vec<&str> {
+        prepared.trace_modules.iter().map(AsRef::as_ref).collect()
+    }
+
+    fn checked_session(
+        root: &std::path::Path,
+    ) -> (crate::session_v4::CompilerSession, PreparedCommit) {
+        use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+        use cranelisp_types::CodegenBehaviour;
+        let mut session = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode: RunMode::Run,
+            },
+            root.to_path_buf(),
+            "main",
+        )
+        .unwrap();
+        session.set_lib_dirs(Vec::new());
+        session
+            .register_module_with_source(
+                "x",
+                "(import [primitives [Int add-i64]])\n(defn f [:Int n] (add-i64 n 1))\n",
+                &root.join("x.cl"),
+            )
+            .unwrap();
+        session
+            .register_module_with_source("main", "(defn seed [] 0)\n", &root.join("main.cl"))
+            .unwrap();
+        let program = build_program_compat(
+            &cranelisp_frontend::parse("(defn g [] (trace (k)))\n(defn k [] (x/f 1))\n").unwrap(),
+        )
+        .unwrap();
+        let (prepared, _check) = prepare_cluster_commit(
+            &session.shared.symbol_tables,
+            &session.shared.module_aliases,
+            &session.shared.prelude_fallback,
+            &m("main"),
+            &program,
+            &session.shared,
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        (session, prepared)
+    }
+
+    // spec: design/int/int.md §7.6.4 *The finished module at a JIT batch* — a
+    // binding later in the cluster than the trace form contributes its callee
+    // module to the stored set.
+    #[test]
+    fn a_later_binding_calling_x_puts_x_in_the_stored_set() {
+        let root = tempfile::tempdir().unwrap();
+        let (_session, prepared) = checked_session(root.path());
+        assert_eq!(stored(&prepared), ["primitives", "x"]);
+    }
+
+    // spec: design/int/int.md §7.6.4 *Derived once, at commit planning* — the
+    // codegen call compiles the trace form against the stored set: a stored
+    // member with no table is the backend's located refusal.
+    #[test]
+    fn the_codegen_call_receives_the_stored_set() {
+        let root = tempfile::tempdir().unwrap();
+        let (session, mut prepared) = checked_session(root.path());
+        prepared.trace_modules.insert(m("ghost"));
+        let mut processed = crate::cluster::ProcessedCluster::empty();
+        processed.set_prepared(prepared);
+        let error = compile_and_publish_prepared(&mut processed, &session.shared, false)
+            .expect_err("a stored member with no table refuses the trace form");
+        assert!(
+            error.to_string().contains("'ghost'"),
+            "the refusal names the stored member: {error}"
+        );
+    }
+
+    // spec: design/int/int.md §7.6.4 *Settled members* item 1 — a member
+    // reached only through a restored member's re-export edge, not yet
+    // published, is answered; once it publishes, planning covers it.
+    #[test]
+    fn an_unpublished_member_behind_a_restored_member_is_a_gap_until_it_publishes() {
+        let shared = test_shared_state();
+        let mut user = crate::code::SessionSymbolTable::new_with_params(m("user"));
+        user.imports = vec![named_import("r")];
+        shared.symbol_tables.insert(m("user"), user);
+        let mut restored = crate::code::SessionSymbolTable::new_with_params(m("r"));
+        restored.exports = vec![ExportSpec {
+            module_path: m("x"),
+            alias: None,
+            names: ImportNames::Glob,
+            span: Span::SYNTHETIC,
+        }];
+        shared.symbol_tables.insert(m("r"), restored);
+        register_unpublished(&shared, "x");
+
+        assert_eq!(
+            plan(&shared, "user").err(),
+            Some(UnpublishedMember(m("x"))),
+            "no table yet"
+        );
+        insert_table(&shared, "x");
+        assert_eq!(
+            plan(&shared, "user").err(),
+            Some(UnpublishedMember(m("x"))),
+            "a table, not yet published"
+        );
+        shared.scheduler.mark_generation_published(&m("x"));
+        let prepared = plan(&shared, "user").expect("x has published");
+        assert_eq!(stored(&prepared), ["primitives", "r", "x"]);
+    }
+
+    // spec: design/int/int.md §7.6.4 *Settled members*, No deadlock — a parent
+    // awaiting its declared children has published, so a child importing it
+    // plans without a gap.
+    #[test]
+    fn a_child_importing_its_awaiting_parent_plans_without_a_gap() {
+        let shared = test_shared_state();
+        let mut parent = crate::code::SessionSymbolTable::new_with_params(m("p"));
+        parent.submodules = vec![cranelisp_types::ModDecl {
+            name: cranelisp_types::ModuleName::from("c"),
+            visibility: Visibility::Public,
+            inline_body: None,
+            span: Span::SYNTHETIC,
+        }];
+        shared.symbol_tables.insert(m("p"), parent);
+        register_unpublished(&shared, "p");
+        shared.scheduler.mark_generation_published(&m("p"));
+        let mut child = crate::code::SessionSymbolTable::new_with_params(m("p.c"));
+        child.imports = vec![named_import("p")];
+        shared.symbol_tables.insert(m("p.c"), child);
+
+        let prepared = plan(&shared, "p.c").expect("the awaiting parent has published");
+        assert_eq!(stored(&prepared), ["p", "primitives"]);
+    }
+
+    // spec: design/int/int.md §7.6.4 *Settled members* item 2 — the prelude is
+    // read as it stands at the batch and never waited on.
+    #[test]
+    fn an_unpublished_prelude_is_never_a_gap() {
+        let shared = test_shared_state();
+        insert_table(&shared, "user");
+        insert_table(&shared, "prelude");
+        register_unpublished(&shared, "prelude");
+        shared.prelude_fallback.insert(m("user"), true);
+
+        let prepared = plan(&shared, "user").expect("the prelude is never awaited");
+        assert_eq!(stored(&prepared), ["prelude", "primitives"]);
     }
 }

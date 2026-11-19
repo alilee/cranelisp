@@ -1226,6 +1226,7 @@ fn sprint56_compile_to_module_owned_arm_compiles_without_expansion() {
         module.clone(),
         std::slice::from_ref(&target),
         &tables,
+        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )

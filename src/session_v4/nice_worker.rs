@@ -14,7 +14,9 @@ use std::sync::Arc;
 use cranelisp_types::ModuleFullPath;
 
 use super::SharedState;
-use crate::cache::dependency_record::{ModuleEdges, record_manifest_entry};
+use crate::cache::dependency_record::{
+    CoveredSet, ModuleEdges, covered_set, record_manifest_entry,
+};
 use crate::cache::{PassStage, StoppedPass};
 
 // ---------------------------------------------------------------------------
@@ -310,11 +312,29 @@ fn emit_object(
     )
     .map_err(|e| codegen_stop(module, format!("ObjectBuilder failed: {e}")))?;
     let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
+    // The object pass follows the module's last publication, whose batches
+    // each waited for their members, so every member is taken as published
+    // (`design/int/int.md` §7.6.4). Asserted; a stop here falsifies it.
+    let trace_modules = match covered_set(
+        module,
+        &shared.symbol_tables,
+        &shared.prelude_fallback,
+        |_| true,
+    ) {
+        CoveredSet::Covered(trace_modules) => trace_modules,
+        CoveredSet::Unpublished(member) => {
+            return Err(codegen_stop(
+                module,
+                format!("covered module '{member}' has no symbol table"),
+            ));
+        }
+    };
 
     cranelisp_backend::compile_to_module(
         module.clone(),
         targets,
         &shared.symbol_tables,
+        &trace_modules,
         &mut obj_module,
         // FIXME 0325: nice-worker `.o` codegen is always batch (cache-write
         // side) — never consumed by introspection, so skip CLIF rendering.

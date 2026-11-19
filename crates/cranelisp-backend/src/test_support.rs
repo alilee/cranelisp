@@ -75,7 +75,14 @@ where
     L: cranelisp_types::LinkerStore,
 {
     let targets = binding_targets(&module_path, names);
-    compile_to_module(module_path, &targets, symbol_tables, module, capture_clif)
+    compile_to_module(
+        module_path,
+        &targets,
+        symbol_tables,
+        &std::collections::BTreeSet::new(),
+        module,
+        capture_clif,
+    )
 }
 
 /// Test-only aggregate bridging hand-built `Defn`s through side-map
@@ -354,6 +361,7 @@ where
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables,
+            trace_modules: &std::collections::BTreeSet::new(),
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids
@@ -1357,7 +1365,14 @@ pub(crate) fn test_compile_program_and_run(
     }
 
     let mut jit = Jit::new(tables)?;
-    let _artifacts = compile_to_module(module.clone(), &targets, tables, jit.jit_module(), true)?;
+    let _artifacts = compile_to_module(
+        module.clone(),
+        &targets,
+        tables,
+        &std::collections::BTreeSet::new(),
+        jit.jit_module(),
+        true,
+    )?;
     // `compile_to_module` finalizes the JIT internally. Each concrete fixture
     // owns a lifecycle-minted slot; the executed entry is the last zero-arg
     // defn and is invoked directly by its finalized JIT symbol.

@@ -684,6 +684,7 @@ fn a_field_read_at_a_residual_instantiation_records_the_residual_class() {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
+        trace_modules: &std::collections::BTreeSet::new(),
         current_module: user(),
         alloc_func_id: None,
         dealloc_func_id: cranelift_module::FuncId::from_u32(0),
@@ -819,6 +820,7 @@ fn compile_to_module_attributes_records_to_the_targets_partition() {
         user(),
         &[binding_target(&user(), &name)],
         &tables,
+        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         false,
     )
@@ -915,6 +917,7 @@ fn compiling_n_targets_records_n_frames_each_in_its_partition() {
         user(),
         &binding_targets(&user(), &names),
         &tables,
+        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         false,
     )
@@ -991,6 +994,7 @@ fn census_file_child() {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
+        trace_modules: &std::collections::BTreeSet::new(),
         current_module: user(),
         alloc_func_id: None,
         dealloc_func_id: cranelift_module::FuncId::from_u32(0),

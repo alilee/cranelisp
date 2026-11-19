@@ -151,6 +151,7 @@ fn accessor_clif(tables: &DashMap<ModuleFullPath, SymbolTable>, target: &Callabl
         user(),
         std::slice::from_ref(target),
         tables,
+        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )

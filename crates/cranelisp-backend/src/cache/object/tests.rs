@@ -156,6 +156,7 @@ fn test_compile_module_to_object_simple() {
         module.clone(),
         std::slice::from_ref(&target(&module, &defn.name)),
         &tables,
+        &std::collections::BTreeSet::new(),
         &mut obj_module,
         false,
     )
@@ -222,6 +223,7 @@ fn test_compile_module_to_object_with_params() {
         module.clone(),
         std::slice::from_ref(&target(&module, &defn.name)),
         &tables,
+        &std::collections::BTreeSet::new(),
         &mut obj_module,
         false,
     )

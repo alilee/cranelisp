@@ -72,6 +72,7 @@ fn render(combinator: IoCombinator, path: Path) -> String {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
+        trace_modules: &std::collections::BTreeSet::new(),
         current_module: user.clone(),
         alloc_func_id: ids.alloc,
         dealloc_func_id: ids.dealloc.expect("dealloc"),

@@ -5,7 +5,7 @@
 //! `CompileContext` is the one `pub`-to-boundary item under `compiler::`; it is
 //! re-exported `pub` from the `compiler` hub so its public path is preserved.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use cranelift_module::FuncId;
 
@@ -137,6 +137,9 @@ where
     /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
     /// reads GOT slots/bases directly from this map — no env abstraction.
     pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    /// The modules a trace form in `current_module` covers besides
+    /// `current_module` (`compile_to_module`'s `trace_modules`).
+    pub trace_modules: &'a BTreeSet<ModuleFullPath>,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,
 
@@ -171,6 +174,7 @@ where
             func_ids: self.func_ids,
             func_arities: self.func_arities,
             symbol_tables: self.symbol_tables,
+            trace_modules: self.trace_modules,
             current_module: self.current_module.clone(),
             alloc_func_id: self.alloc_func_id,
             dealloc_func_id: self.dealloc_func_id,

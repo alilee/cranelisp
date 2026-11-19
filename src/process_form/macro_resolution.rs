@@ -751,7 +751,7 @@ pub(super) fn compile_macro_if_needed(
     info: &cranelisp_frontend::DefmacroInfo,
     macro_sexp: &Sexp,
     attempt: &super::AttemptFacts,
-) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
+) -> Result<Option<ModuleFullPath>, CranelispError> {
     // S76 W-Macro (fire B): the dead `block_for_macro_codegen` dep-walk
     // (`collect_transitive_uncompiled_deps` + the notify-loop) is DELETED, not
     // wired (`macro-availability-model.md` §5). The locked decision FORBIDS a
@@ -769,7 +769,10 @@ pub(super) fn compile_macro_if_needed(
     };
     match compile_macro_checkpoint(&env, module, info, macro_sexp, attempt)? {
         MacroCheckpoint::Published => Ok(None),
-        MacroCheckpoint::Gap(gap) => Ok(Some(gap)),
+        MacroCheckpoint::Gap(gap) => {
+            super::macro_checkpoint_gap_target(ctx, &gap, macro_sexp.span()).map(Some)
+        }
+        MacroCheckpoint::AwaitMember(member) => Ok(Some(member)),
     }
 }
 

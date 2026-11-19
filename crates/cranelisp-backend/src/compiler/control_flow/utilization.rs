@@ -632,6 +632,7 @@ mod tests {
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables: &tables,
+            trace_modules: &std::collections::BTreeSet::new(),
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap(),

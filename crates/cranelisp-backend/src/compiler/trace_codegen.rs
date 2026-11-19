@@ -7,14 +7,11 @@
 //!
 //! Three responsibilities landed here in S76:
 //!
-//! 1. **Discovery-in-codegen, swap ALL symbol tables** (`discover_traced_fns`).
-//!    Backend computes the traced set itself by iterating every module's GOT in
-//!    `symbol_tables` — no int-supplied `traced_fns`, no project-root filter,
-//!    primitives included. The callable address is read from the **GOT slot**
-//!    (BC §3 invariant 3 — the single source of truth), not from `entry.code`,
-//!    so primitives (whose entries carry `code: None` but whose fn ptrs live in
-//!    their module's GOT) are naturally included without a code-marker special
-//!    case. Constrained-poly base names are skipped (dispatch placeholders).
+//! 1. **Discovery-in-codegen over the covered modules** (`discover_traced_fns`).
+//!    The form's module and the modules int lists in `trace_modules` are the
+//!    covered set (`trace-codegen.md` §1.3); every entry there that claims a
+//!    callable GOT slot and has a function scheme is traced (§1.1). Primitives
+//!    are covered when listed, like any other module.
 //!
 //! 2. **Display-descriptor baking** (`bake_descriptor_blob`). Each traced
 //!    param/result type is baked into a self-contained position-independent
@@ -125,7 +122,10 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_intrinsics::trace::DescriptorKind;
-use cranelisp_types::{CranelispError, ErrorLocation, FQTypeName, MonoExpr, Span, Type};
+use cranelisp_types::{
+    CranelispError, ErrorLocation, FQTypeName, ModuleFullPath, MonoExpr, Span, Type,
+};
+use std::collections::BTreeSet;
 
 use super::{FnCompiler, TracedFnInfo};
 
@@ -268,63 +268,55 @@ impl DescriptorBlob {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Discovery — swap ALL symbol tables (S76 §5).
+// Discovery — the covered modules' slot claims (trace-codegen.md §1).
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Compute the traced set by iterating ALL module symbol tables.
+/// Compute the traced set over the modules a trace form covers: the form's
+/// own `module_path` and the `trace_modules` int listed (`trace-codegen.md`
+/// §1.3), visited in the covered set's order so the group order does not
+/// depend on table iteration. A covered module with no table is refused at the
+/// form's `span`.
 ///
-/// Per module: take its GOT base; select `Def { got_slot: Some(slot), .. }`
-/// entries whose GOT slot holds a non-zero callable address (the single source
-/// of truth, BC §3 invariant 3 — NOT `entry.code`). Skip constrained-poly base
-/// names + overloaded base names (dispatch placeholders). Arity/param/result
-/// types come from `entry.scheme.ty` (must be `Type::Fn`, else skip).
+/// An entry is selected when it claims a callable GOT slot and its scheme is a
+/// function (§1.1). The slot's contents are not read: slot layout is fixed
+/// before codegen, while publication depends on compilation and load order.
+/// The emitted swap installs a wrapper only over a non-zero original, so that
+/// check happens at run time. Constrained-poly and overloaded base names claim
+/// no slot. Arity and param/result types come from the scheme.
 ///
-/// No project-root filter, primitives included — completeness by construction
-/// (`tracing.md` §3.5). Free function so it is unit-testable against a
-/// hand-built `DashMap` without a full `FnCompiler`.
+/// Free function so it is unit-testable against a hand-built `DashMap`
+/// without a full `FnCompiler`.
 fn discover_traced_fns_from_tables<C, L>(
-    symbol_tables: &dashmap::DashMap<
-        cranelisp_types::ModuleFullPath,
-        cranelisp_types::SymbolTable<C, L>,
-    >,
-) -> Vec<TracedFnInfo>
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
+    module_path: &ModuleFullPath,
+    trace_modules: &BTreeSet<ModuleFullPath>,
+    span: Span,
+) -> Result<Vec<TracedFnInfo>, CranelispError>
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    let covered: BTreeSet<&ModuleFullPath> = trace_modules.iter().chain([module_path]).collect();
     let mut traced = Vec::new();
-    for module_guard in symbol_tables.iter() {
-        let module_path = module_guard.key();
-        let table = module_guard.value();
+    for covered_module in covered {
+        let Some(table) = symbol_tables.get(covered_module) else {
+            return Err(CranelispError::CodegenError {
+                message: format!(
+                    "trace form in '{module_path}' covers module '{covered_module}', which has no symbol table"
+                ),
+                location: ErrorLocation::from_span(span),
+            });
+        };
         for (name, entry) in table.all_symbols() {
-            let Some(callable) = entry.callable() else {
+            let (Some(callable), Some(slot)) = (entry.callable(), entry.callable_got_slot()) else {
                 continue;
             };
-            // The GOT slot rides on the callable `DefKind` variant (S83
-            // Option-A reshape); `callable_got_slot()` answers `Some` ONLY for
-            // directly-callable kinds (concrete user fns, primitives,
-            // constructors, platform effects) and `None` for the constrained-poly
-            // base names + overloaded base names (dispatch placeholders, not
-            // directly callable — their mono specialisations / variants are
-            // slotted separately and traced on their own). The former explicit
-            // constrained/overloaded skip is now structural in the accessor.
-            let Some(slot) = entry.callable_got_slot() else {
-                continue;
-            };
-            // Read the callable address from the GOT slot (the single source of
-            // truth). 0 = not yet populated / no real code → skip. This includes
-            // primitives (code: None) whose ptrs live in the GOT.
-            let code_ptr = table.got.load_slot(slot) as i64;
-            if code_ptr == 0 {
-                continue;
-            }
-            // Arity + param/result types from the scheme.
             let Type::Fn(params, ret) = &callable.arm.scheme.ty else {
                 continue;
             };
             traced.push(TracedFnInfo {
-                name: format!("{module_path}/{name}"),
-                module_path: module_path.clone(),
+                name: format!("{covered_module}/{name}"),
+                module_path: covered_module.clone(),
                 got_slot: slot,
                 arity: params.len(),
                 param_types: params.clone(),
@@ -332,7 +324,7 @@ where
             });
         }
     }
-    traced
+    Ok(traced)
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -621,18 +613,15 @@ where
         })
     }
 
-    /// Discover the traced set by iterating ALL module symbol tables (S76 §5).
-    ///
-    /// Per module: take its GOT base; select `Def { got_slot: Some(slot), .. }`
-    /// entries whose GOT slot holds a non-zero callable address (the single
-    /// source of truth, BC §3 invariant 3 — NOT `entry.code`). Skip
-    /// constrained-poly base names (dispatch placeholders). Arity/param/result
-    /// types come from `entry.scheme.ty` (must be `Type::Fn`, else skip).
-    ///
-    /// No project-root filter, primitives included — completeness by
-    /// construction (`tracing.md` §3.5).
-    fn discover_traced_fns(&self) -> Vec<TracedFnInfo> {
-        discover_traced_fns_from_tables(self.ctx.symbol_tables)
+    /// The traced set of a form in the module being compiled; see
+    /// [`discover_traced_fns_from_tables`].
+    fn discover_traced_fns(&self, span: Span) -> Result<Vec<TracedFnInfo>, CranelispError> {
+        discover_traced_fns_from_tables(
+            self.ctx.symbol_tables,
+            &self.ctx.current_module,
+            self.ctx.trace_modules,
+            span,
+        )
     }
 
     /// Discard a body result by decrementing its RC if it is heap-allocated.
@@ -679,8 +668,7 @@ where
         body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
-        // Discovery is internal now (S76 §5): iterate all symbol tables.
-        let traced = self.discover_traced_fns();
+        let traced = self.discover_traced_fns(span)?;
         if traced.is_empty() {
             // Degenerate program with no GOT-slotted callable — fall back to the
             // empty-trace path (still emits collect_trace, last).
@@ -789,7 +777,9 @@ where
             //   (a) capture the ORIGINAL code ptr from the live GOT slot into
             //       the originals buffer (BEFORE the swap),
             //   (b) compile its wrapper and store the wrapper's func_addr into
-            //       the wrappers buffer.
+            //       the wrappers buffer, or zero when the original is empty, so
+            //       a slot still unpublished at swap time stays empty and no
+            //       wrapper calls through a null original (trace-codegen.md §1.1).
             for (i, tf) in group.iter().enumerate() {
                 let buf_off = (i * 8) as i32;
 
@@ -812,12 +802,11 @@ where
                     .module
                     .declare_func_in_func(wrapper_id, self.builder.func);
                 let wrapper_ptr_val = self.builder.ins().func_addr(types::I64, func_ref);
-                self.builder.ins().store(
-                    MemFlags::trusted(),
-                    wrapper_ptr_val,
-                    wrappers_base,
-                    buf_off,
-                );
+                let empty = self.builder.ins().iconst(types::I64, 0);
+                let installed = self.builder.ins().select(orig_ptr, wrapper_ptr_val, empty);
+                self.builder
+                    .ins()
+                    .store(MemFlags::trusted(), installed, wrappers_base, buf_off);
             }
 
             // Emit cranelisp_trace_swap_got(got_base, n_slots, slots_ptr, wrappers_ptr).

@@ -179,7 +179,7 @@ pub use code::Code;
 pub mod error;
 pub use error::{CompilationError, LinkerError};
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use cranelift_module::FuncId;
 
@@ -553,6 +553,17 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// renders the CLIF for matching symbols regardless of `capture_clif`. The
 /// `code_size` byproduct flows back unconditionally.
 ///
+/// `trace_modules` names the modules a `(trace …)` form in `module_path`
+/// covers besides `module_path` itself (spec §4.12.3). The caller passes it at
+/// every call, whether or not a target holds a trace form; it is read only
+/// when one does. A trace form covers `module_path` and exactly the listed
+/// modules, and the backend adds no other: listing `module_path` changes
+/// nothing, and an empty set covers `module_path` alone. Every covered module
+/// must have a table in `symbol_tables`; a missing one is a located
+/// [`CranelispError::CodegenError`] at the trace form. The set's contents are
+/// not checked: a module that no image holding this module's object defines a
+/// GOT for fails at load as an unresolved `__cranelisp_got_{M}`.
+///
 /// Parameters derived internally:
 /// - Intrinsics: declared on the module internally
 /// - Bodies: each target's `Life::Concrete` arm with a `Realization::Body`;
@@ -609,6 +620,7 @@ pub fn compile_to_module<M, C, L>(
     module_path: ModuleFullPath,
     targets: &[CallableTarget],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    trace_modules: &BTreeSet<ModuleFullPath>,
     module: &mut M,
     capture_clif: bool,
 ) -> Result<CompilationArtifacts, CompilationError>
@@ -617,13 +629,21 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    compile_to_module_impl::<M, C, L>(module_path, targets, symbol_tables, module, capture_clif)
+    compile_to_module_impl::<M, C, L>(
+        module_path,
+        targets,
+        symbol_tables,
+        trace_modules,
+        module,
+        capture_clif,
+    )
 }
 
 fn compile_to_module_impl<M, C, L>(
     module_path: ModuleFullPath,
     targets: &[CallableTarget],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    trace_modules: &BTreeSet<ModuleFullPath>,
     module: &mut M,
     capture_clif: bool,
 ) -> Result<CompilationArtifacts, CompilationError>
@@ -704,6 +724,7 @@ where
         module,
         &module_path,
         symbol_tables,
+        trace_modules,
         &defns,
         &bodies,
         &param_types,
@@ -965,6 +986,7 @@ fn compile_module_bodies<M, C, L>(
     module: &mut M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    trace_modules: &BTreeSet<ModuleFullPath>,
     defns: &[Defn],
     bodies: &[cranelisp_types::MonoExpr],
     param_types: &[Vec<cranelisp_types::ConcreteType>],
@@ -1002,6 +1024,7 @@ where
             func_ids,
             func_arities,
             symbol_tables,
+            trace_modules,
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap_or_else(|| {

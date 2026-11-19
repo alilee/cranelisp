@@ -18,6 +18,7 @@ fn with_context<R>(read: impl FnOnce(&CompileContext<'_>) -> R) -> R {
         func_ids: &func_ids,
         func_arities: &func_arities,
         symbol_tables: &tables,
+        trace_modules: &std::collections::BTreeSet::new(),
         current_module: ModuleFullPath::from("main"),
         alloc_func_id: None,
         dealloc_func_id: FuncId::from_u32(0),
