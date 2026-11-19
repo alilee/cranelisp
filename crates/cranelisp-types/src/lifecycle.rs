@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CallableSlot, ConcreteType, DefnVariant, FQSymbol, FQTraitName, FQTypeName, LinkerSymbol,
-    MacroParam, ModeSummary, MonoDefnVariant, SchedulingClass, Scheme, Sexp, Span, Symbol,
-    TraitDeclInfo, Type, TypeDefInfo,
+    MacroParam, ModeSummary, ModuleFullPath, MonoDefnVariant, SchedulingClass, Scheme, Sexp, Span,
+    Symbol, TraitDeclInfo, Type, TypeDefInfo,
 };
 
 /// One name in a module's symbol table.
@@ -400,6 +400,26 @@ impl<C: crate::CodeStore> CallableArm<C> {
             param_names,
             life,
         }
+    }
+
+    /// The module that defines the template this arm was minted from.
+    ///
+    /// `Some` only for a monomorphised instance, which is stored in the table
+    /// of the module that demanded it and whose body is the template's source;
+    /// `None` for every authored arm, whose body belongs to the table holding
+    /// it. This reads the recorded [`InstanceLink`] and derives nothing.
+    pub fn template_module(&self) -> Option<&ModuleFullPath> {
+        let Life::Concrete {
+            minted_from: Some(link),
+            ..
+        } = &self.life
+        else {
+            return None;
+        };
+        let (CallableTarget::Binding(owner)
+        | CallableTarget::OverloadArm { owner, .. }
+        | CallableTarget::MacroClause { owner, .. }) = &link.template;
+        Some(&owner.module)
     }
 }
 

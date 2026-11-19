@@ -3247,6 +3247,88 @@ fn install_instance_derives_key_preserves_backlink_and_mints_slot() {
 }
 
 #[test]
+fn template_module_is_the_templates_module_for_an_instance_only() {
+    let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
+    table
+        .install_template(
+            Symbol::from("generic"),
+            template_scheme(),
+            Vec::new(),
+            None,
+            0,
+            CallableOrigin::Plain,
+            TemplateBody::Ast(ast()),
+            TemplateKind::Parametric,
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    table
+        .install_concrete(
+            Symbol::from("authored"),
+            concrete_scheme(),
+            Vec::new(),
+            None,
+            1,
+            CallableOrigin::Plain,
+            body(),
+            Some(ast()),
+            Vec::new(),
+            Visibility::Public,
+        )
+        .unwrap();
+    let mut instance_key = |template: CallableTarget, param: Type, concrete: ConcreteType| {
+        table
+            .install_instance(
+                InstanceLink::from_type_args(template, vec![concrete]),
+                scheme(Type::Fn(vec![param.clone()], Box::new(param))),
+                Vec::new(),
+                None,
+                2,
+                CallableOrigin::Plain,
+                body(),
+                Some(ast()),
+                Vec::new(),
+                Visibility::Private,
+            )
+            .unwrap()
+            .0
+    };
+    let from_binding = instance_key(
+        binding_target("producer", "generic"),
+        Type::Int,
+        ConcreteType::Int,
+    );
+    let from_arm = instance_key(
+        overload_target("library", "family", 1),
+        Type::Bool,
+        ConcreteType::Bool,
+    );
+
+    let template_module = |name: &str| {
+        table
+            .get(name)
+            .unwrap()
+            .callable()
+            .unwrap()
+            .arm
+            .template_module()
+            .cloned()
+    };
+    // The instances live in `consumer`; each answers its template's module.
+    assert_eq!(
+        template_module(from_binding.as_ref()),
+        Some(ModuleFullPath::from("producer"))
+    );
+    assert_eq!(
+        template_module(from_arm.as_ref()),
+        Some(ModuleFullPath::from("library"))
+    );
+    assert_eq!(template_module("authored"), None);
+    assert_eq!(template_module("generic"), None);
+}
+
+#[test]
 fn mismatched_instance_candidate_is_rejected_before_mutation() {
     let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
     let link = InstanceLink::from_type_args(
