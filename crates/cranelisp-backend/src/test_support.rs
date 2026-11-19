@@ -62,6 +62,17 @@ pub(crate) fn sig_binding(module: &str, name: &str) -> cranelisp_types::Resolved
     }
 }
 
+/// Pair every target with one covered set.
+pub(crate) fn targets_covering<'a>(
+    targets: &'a [cranelisp_types::CallableTarget],
+    trace_modules: &'a std::collections::BTreeSet<ModuleFullPath>,
+) -> Vec<crate::CodegenTarget<'a>> {
+    targets
+        .iter()
+        .map(|target| crate::CodegenTarget::new(target, trace_modules))
+        .collect()
+}
+
 pub(crate) fn compile_names_to_module<M, C, L>(
     module_path: ModuleFullPath,
     names: &[Symbol],
@@ -75,11 +86,12 @@ where
     L: cranelisp_types::LinkerStore,
 {
     let targets = binding_targets(&module_path, names);
+    // A trace form in a fixture covers the fixture's own module.
+    let covered = std::collections::BTreeSet::from([module_path.clone()]);
     compile_to_module(
         module_path,
-        &targets,
+        &targets_covering(&targets, &covered),
         symbol_tables,
-        &std::collections::BTreeSet::new(),
         module,
         capture_clif,
     )
@@ -336,6 +348,8 @@ where
         intrinsic_ids.vec_drop,
     );
 
+    // A trace form in a probed body covers the fixture's own module.
+    let covered = std::collections::BTreeSet::from([module_path.clone()]);
     let mut func_ctx = FunctionBuilderContext::new();
     let mut clifs = Vec::with_capacity(compile.len());
     for d in compile.iter() {
@@ -361,7 +375,7 @@ where
             func_ids: &func_ids,
             func_arities: &func_arities,
             symbol_tables,
-            trace_modules: &std::collections::BTreeSet::new(),
+            trace_modules: &covered,
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids
@@ -1366,11 +1380,12 @@ pub(crate) fn test_compile_program_and_run(
     }
 
     let mut jit = Jit::new(tables)?;
+    // A trace form in a fixture covers the fixture's own module.
+    let covered = std::collections::BTreeSet::from([module.clone()]);
     let _artifacts = compile_to_module(
         module.clone(),
-        &targets,
+        &targets_covering(&targets, &covered),
         tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )?;

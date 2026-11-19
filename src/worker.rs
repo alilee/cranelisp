@@ -18,17 +18,16 @@ use cranelisp_types::{
 
 use cranelisp_typecheck::CheckState;
 
-use crate::cache::dependency_record::{CoveredSet, UnpublishedPrelude};
+use crate::cache::dependency_record::{Covered, CoveredBatch, UnpublishedPrelude};
 
 pub(crate) struct PreparedCommit {
     module: ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
     decisions: Vec<StagedPublicationDecision>,
     tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    targets: Vec<CallableTarget>,
-    /// The modules a trace form in this batch covers besides `module`,
-    /// derived from `tables` (`design/int/int.md` §7.6.4).
-    trace_modules: std::collections::BTreeSet<ModuleFullPath>,
+    /// The batch's targets and the covered set of each one's module of
+    /// origin, derived from `tables` (`design/int/int.md` §7.6.4).
+    batch: CoveredBatch,
     pub(crate) unresolved_dispatch: Vec<cranelisp_typecheck::UnresolvedDispatchSite>,
 }
 
@@ -1405,32 +1404,32 @@ fn plan_staging_commit_inner(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     drop(candidate);
-    let trace_modules = match covered_set(&tables, module, shared) {
-        CoveredSet::Covered(trace_modules) => trace_modules,
-        CoveredSet::Unpublished(member) => return Ok(Err(UnpublishedMember(member))),
+    let batch = match covered_batch(&tables, module, derive_codegen_batch(&staging), shared) {
+        Covered::Covered(batch) => batch,
+        Covered::Unpublished(member) => return Ok(Err(UnpublishedMember(member))),
     };
-    let targets = derive_codegen_batch(&staging);
     Ok(Ok(PreparedCommit {
         module: module.clone(),
         staging,
         decisions,
         tables,
-        targets,
-        trace_modules,
+        batch,
         unresolved_dispatch: Vec::new(),
     }))
 }
 
-/// The covered set of `module` in a prepared view (`design/int/int.md`
-/// §7.6.4). An unpublished prelude is read as it stands: waiting on it here
-/// could deadlock.
-fn covered_set(
+/// The covered sets of `module`'s batch in a prepared view
+/// (`design/int/int.md` §7.6.4). An unpublished prelude is read as it stands:
+/// waiting on it here could deadlock.
+fn covered_batch(
     view: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
+    targets: Vec<CallableTarget>,
     shared: &crate::session_v4::SharedState,
-) -> CoveredSet {
-    crate::cache::dependency_record::covered_set(
+) -> Covered<CoveredBatch> {
+    CoveredBatch::derive(
         module,
+        targets,
         view,
         &shared.prelude_fallback,
         UnpublishedPrelude::ReadAsItStands,
@@ -1984,11 +1983,16 @@ pub fn inline_jit_codegen_for_names(
     // 38). In batch the rendered CLIF would be dropped unread, so backend skips
     // the `func.display()` allocation entirely.
     let capture_clif = introspection.is_some();
+    // A trace form in a fixture covers the fixture's own module.
+    let covered = std::collections::BTreeSet::from([module.clone()]);
+    let codegen_targets: Vec<_> = targets
+        .iter()
+        .map(|target| cranelisp_backend::CodegenTarget::new(target, &covered))
+        .collect();
     let result = cranelisp_backend::compile_to_module(
         module.clone(),
-        targets,
+        &codegen_targets,
         tc_modules,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         capture_clif,
     )?;
@@ -2076,9 +2080,8 @@ fn compile_and_publish_prepared(
         |prepared, jit, capture_clif| {
             cranelisp_backend::compile_to_module(
                 prepared.module.clone(),
-                &prepared.targets,
+                &prepared.batch.codegen_targets(),
                 &prepared.tables,
-                &prepared.trace_modules,
                 jit.jit_module(),
                 capture_clif,
             )
@@ -2126,13 +2129,13 @@ where
         return Ok(());
     };
     let prepared = *prepared;
-    refuse_unstaged_codegen_targets(&prepared.staging, &prepared.targets)?;
+    refuse_unstaged_codegen_targets(&prepared.staging, prepared.batch.targets())?;
 
     // Construct the JIT from the live tables before taking the target write
     // guard. Its GOT data symbols therefore name the canonical session slabs,
     // including dependency-module slabs. The target slab itself is moved into
     // the prepared target table below without changing its base address.
-    let mut jit = if prepared.targets.is_empty() {
+    let mut jit = if prepared.batch.targets().is_empty() {
         None
     } else {
         Some(build_session_jit(&shared.symbol_tables)?)
@@ -2162,7 +2165,7 @@ where
                     message: format!("prepared module '{}' disappeared", prepared.module),
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 })?;
-        for target in &prepared.targets {
+        for target in prepared.batch.targets() {
             let Some(arm) = table.callable_target(target) else {
                 return Err(CranelispError::ModuleError {
                     message: format!("prepared target '{target:?}' is missing or not executable"),
@@ -2364,7 +2367,8 @@ where
         }
         if let Some(introspection) = shared.introspection.as_ref() {
             let names: std::collections::BTreeSet<_> = prepared
-                .targets
+                .batch
+                .targets()
                 .iter()
                 .filter_map(callable_target_owner)
                 .map(|owner| owner.symbol.clone())
@@ -2390,7 +2394,8 @@ where
         })
         .unresolved_dispatch = prepared.unresolved_dispatch;
     let notification_names = prepared
-        .targets
+        .batch
+        .targets()
         .iter()
         .filter_map(callable_target_owner)
         .map(|owner| owner.symbol.clone())

@@ -818,9 +818,11 @@ fn compile_to_module_attributes_records_to_the_targets_partition() {
     let mut jit = Jit::new(&tables).unwrap();
     compile_to_module(
         user(),
-        &[binding_target(&user(), &name)],
+        &crate::test_support::targets_covering(
+            &[binding_target(&user(), &name)],
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         false,
     )
@@ -915,9 +917,11 @@ fn compiling_n_targets_records_n_frames_each_in_its_partition() {
     let mut jit = Jit::new(&tables).unwrap();
     compile_to_module(
         user(),
-        &binding_targets(&user(), &names),
+        &crate::test_support::targets_covering(
+            &binding_targets(&user(), &names),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         false,
     )

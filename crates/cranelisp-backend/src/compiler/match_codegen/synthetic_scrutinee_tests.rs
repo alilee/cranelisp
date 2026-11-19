@@ -149,9 +149,11 @@ fn accessor_clif(tables: &DashMap<ModuleFullPath, SymbolTable>, target: &Callabl
     let mut jit = Jit::new(tables).unwrap();
     compile_to_module(
         user(),
-        std::slice::from_ref(target),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(target),
+            &std::collections::BTreeSet::new(),
+        ),
         tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )

@@ -252,15 +252,133 @@ pub(crate) fn reference_edges<C: CodeStore, L: LinkerStore>(
     edges
 }
 
-/// The modules a trace form in a root module covers besides the root
-/// (`design/int/int.md` §7.6.4), or the member that keeps the set from being
-/// settled.
+/// A covered-set derivation's result (`design/int/int.md` §7.6.4), or the
+/// member that keeps it from being settled.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CoveredSet {
-    Covered(BTreeSet<ModuleFullPath>),
+pub(crate) enum Covered<T> {
+    Covered(T),
     /// The first member, in walk order, that has not yet published a
     /// generation. A set read through it would depend on scheduling.
     Unpublished(ModuleFullPath),
+}
+
+/// The modules a trace form in a root module covers besides the root.
+pub(crate) type CoveredSet = Covered<BTreeSet<ModuleFullPath>>;
+
+/// A codegen batch's targets, each paired with the covered set of its module
+/// of origin (`design/int/int.md` §7.6.4, *The form's home*).
+///
+/// A target's module of origin is its arm's template module, and the batch's
+/// module for an authored arm. One set is held per module of origin, the
+/// batch's module always among them, and each set lists its own module of
+/// origin, because the backend adds none (row B10-C2).
+#[derive(Debug)]
+pub(crate) struct CoveredBatch {
+    targets: Vec<CallableTarget>,
+    /// Parallel to `targets`; every entry is a key of `sets`.
+    origins: Vec<ModuleFullPath>,
+    sets: BTreeMap<ModuleFullPath, BTreeSet<ModuleFullPath>>,
+}
+
+impl CoveredBatch {
+    /// Derive one covered set per module of origin among `targets` from
+    /// `tables`, each by [`covered_set`] with the same prelude rule and
+    /// published predicate. `root`'s table answers each target's origin.
+    pub(crate) fn derive(
+        root: &ModuleFullPath,
+        targets: Vec<CallableTarget>,
+        tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+        prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+        unpublished_prelude: UnpublishedPrelude,
+        published: impl Fn(&ModuleFullPath) -> bool,
+    ) -> Covered<Self> {
+        let origins: Vec<ModuleFullPath> = {
+            let table = tables.get(root);
+            targets
+                .iter()
+                .map(|target| {
+                    table
+                        .as_deref()
+                        .and_then(|table| table.callable_target(target))
+                        .and_then(|arm| arm.template_module())
+                        .unwrap_or(root)
+                        .clone()
+                })
+                .collect()
+        };
+        let mut sets = BTreeMap::new();
+        for origin in std::iter::once(root).chain(&origins) {
+            if sets.contains_key(origin) {
+                continue;
+            }
+            let mut set = match covered_set(
+                origin,
+                tables,
+                prelude_fallback,
+                unpublished_prelude,
+                &published,
+            ) {
+                Covered::Covered(set) => set,
+                Covered::Unpublished(member) => return Covered::Unpublished(member),
+            };
+            set.insert(origin.clone());
+            sets.insert(origin.clone(), set);
+        }
+        Covered::Covered(CoveredBatch {
+            targets,
+            origins,
+            sets,
+        })
+    }
+
+    pub(crate) fn targets(&self) -> &[CallableTarget] {
+        &self.targets
+    }
+
+    /// Each target paired with the covered set of its module of origin.
+    pub(crate) fn codegen_targets(&self) -> Vec<cranelisp_backend::CodegenTarget<'_>> {
+        self.pairs()
+            .map(|(target, set)| cranelisp_backend::CodegenTarget::new(target, set))
+            .collect()
+    }
+
+    fn pairs(&self) -> impl Iterator<Item = (&CallableTarget, &BTreeSet<ModuleFullPath>)> {
+        self.targets
+            .iter()
+            .zip(&self.origins)
+            .map(|(target, origin)| {
+                let Some(set) = self.sets.get(origin) else {
+                    unreachable!("invariant: every module of origin has a derived covered set")
+                };
+                (target, set)
+            })
+    }
+
+    /// The pairs [`Self::codegen_targets`] builds.
+    #[cfg(test)]
+    pub(crate) fn paired(&self) -> Vec<(&CallableTarget, &BTreeSet<ModuleFullPath>)> {
+        self.pairs().collect()
+    }
+
+    /// The covered set derived for `origin`, if it is a module of origin.
+    #[cfg(test)]
+    pub(crate) fn set_of(&self, origin: &ModuleFullPath) -> Option<&BTreeSet<ModuleFullPath>> {
+        self.sets.get(origin)
+    }
+
+    /// The modules of origin with a derived set.
+    #[cfg(test)]
+    pub(crate) fn origins(&self) -> impl Iterator<Item = &ModuleFullPath> {
+        self.sets.keys()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_of_mut(
+        &mut self,
+        origin: &ModuleFullPath,
+    ) -> Option<&mut BTreeSet<ModuleFullPath>> {
+        self.sets.get_mut(origin)
+    }
 }
 
 /// How a covered-set walk treats a prelude that has not published

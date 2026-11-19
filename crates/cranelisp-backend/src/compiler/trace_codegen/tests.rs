@@ -272,10 +272,10 @@ fn table_with_fn(module: &str, name: &str, fake_ptr: usize) -> SymbolTable<(), (
     table
 }
 
-// spec: design/backend/trace-codegen.md §1.3 — a form covers its own module
-// and the listed modules, no other, and groups follow the set's order.
+// spec: design/backend/trace-codegen.md §1.3 — a form covers the listed
+// modules, no other, and groups follow the set's order.
 #[test]
-fn discovery_covers_module_path_and_listed_modules_only() {
+fn discovery_covers_the_listed_modules_only() {
     let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
     tables.insert(
         ModuleFullPath::from("user"),
@@ -316,15 +316,14 @@ fn discovery_covers_module_path_and_listed_modules_only() {
     let traced = discover_traced_fns_from_tables(
         &tables,
         &user,
-        &modules(&["lib", "primitives"]),
+        &modules(&["lib", "primitives", "user"]),
         Span::SYNTHETIC,
     )
     .expect("every covered module has a table");
-    let names = traced_names(&traced);
     assert_eq!(
-        names,
+        traced_names(&traced),
         vec!["lib/step", "primitives/str-concat", "user/fact"],
-        "the form's module and the listed modules, in the set's order"
+        "the listed modules, in the set's order"
     );
     let prim = traced
         .iter()
@@ -335,24 +334,120 @@ fn discovery_covers_module_path_and_listed_modules_only() {
     assert_eq!(prim.result_type, Type::String);
     assert_eq!(prim.module_path, ModuleFullPath::from("primitives"));
     assert_eq!(prim.got_slot, prims_slot_of_str_concat(&tables));
+}
 
-    let listing_own_module = discover_traced_fns_from_tables(
+/// Install an instance of `template_module/g` at `Int`; returns its key.
+fn insert_instance_of(table: &mut SymbolTable<(), ()>, template_module: &str) -> Symbol {
+    use cranelisp_types::{CallableTarget, FQSymbol, InstanceLink};
+    let link = InstanceLink::from_type_args(
+        CallableTarget::Binding(FQSymbol {
+            module: ModuleFullPath::from(template_module),
+            symbol: Symbol::from("g"),
+        }),
+        vec![ConcreteType::Int],
+    );
+    let template_scheme = Scheme {
+        type_vars: vec![0],
+        constraints: HashMap::new(),
+        ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+    };
+    let key = link
+        .instance_key(&template_scheme)
+        .expect("instance key of the fixture template");
+    let (installed, _) = table
+        .install_instance(
+            link,
+            fn_scheme(vec![Type::Int], Type::Int),
+            vec![Symbol::from("x")],
+            None,
+            0,
+            CallableOrigin::Plain,
+            Realization::Body {
+                view: MonoDefnVariant {
+                    name: key,
+                    params: vec![Symbol::from("x")],
+                    body: MonoExpr::IntLit {
+                        value: 0,
+                        span: Span::SYNTHETIC,
+                        ty: ConcreteType::Int,
+                    },
+                    span: Span::SYNTHETIC,
+                    mode_summary: None,
+                },
+                code: None,
+            },
+            None,
+            vec![],
+            Visibility::Private,
+        )
+        .expect("install instance fixture");
+    installed
+}
+
+// spec: design/backend/trace-codegen.md §1.3 — the set is the whole covered
+// set: a listed `module_path` is read whole, and an unlisted one contributes
+// none of its ordinary claims; the backend adds no module.
+#[test]
+fn discovery_reads_module_path_whole_only_when_listed() {
+    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+    tables.insert(
+        ModuleFullPath::from("user"),
+        table_with_fn("user", "fact", 0x1000),
+    );
+    tables.insert(
+        ModuleFullPath::from("lib"),
+        table_with_fn("lib", "step", 0x1100),
+    );
+    let user = ModuleFullPath::from("user");
+
+    let unlisted =
+        discover_traced_fns_from_tables(&tables, &user, &modules(&["lib"]), Span::SYNTHETIC)
+            .expect("every covered module has a table");
+    assert_eq!(
+        traced_names(&unlisted),
+        vec!["lib/step"],
+        "an unlisted module_path's ordinary claim is not selected"
+    );
+
+    let listed = discover_traced_fns_from_tables(
         &tables,
         &user,
-        &modules(&["lib", "primitives", "user"]),
+        &modules(&["lib", "user"]),
         Span::SYNTHETIC,
     )
     .expect("every covered module has a table");
-    assert_eq!(
-        traced_names(&listing_own_module),
-        names,
-        "listing the form's own module changes nothing"
-    );
+    assert_eq!(traced_names(&listed), vec!["lib/step", "user/fact"]);
+}
 
-    let own_module_only =
-        discover_traced_fns_from_tables(&tables, &user, &BTreeSet::new(), Span::SYNTHETIC)
-            .expect("the form's module has a table");
-    assert_eq!(traced_names(&own_module_only), vec!["user/fact"]);
+// spec: design/backend/trace-codegen.md §1.3; design/arch/tracing.md §5.1 —
+// with `module_path` unlisted, its group holds only the instances whose
+// template module is listed.
+#[test]
+fn discovery_selects_instances_of_covered_templates_from_module_path() {
+    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+    tables.insert(
+        ModuleFullPath::from("lib"),
+        table_with_fn("lib", "step", 0x1100),
+    );
+    let mut user = table_with_fn("user", "fact", 0x1000);
+    let covered_instance = insert_instance_of(&mut user, "lib");
+    let uncovered_instance = insert_instance_of(&mut user, "other");
+    tables.insert(ModuleFullPath::from("user"), user);
+
+    let traced = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("user"),
+        &modules(&["lib"]),
+        Span::SYNTHETIC,
+    )
+    .expect("every covered module has a table");
+    let covered = format!("user/{covered_instance}");
+    assert_eq!(
+        traced_names(&traced),
+        vec!["lib/step", covered.as_str()],
+        "only the instance of a listed template module is selected from module_path \
+         (not user/fact, not user/{uncovered_instance})"
+    );
 }
 
 // spec: design/backend/trace-codegen.md §1.3 — within a group, entries are
@@ -376,7 +471,7 @@ fn discovery_orders_each_group_by_name() {
     let traced = discover_traced_fns_from_tables(
         &tables,
         &ModuleFullPath::from("user"),
-        &modules(&["lib"]),
+        &modules(&["lib", "user"]),
         Span::SYNTHETIC,
     )
     .expect("every covered module has a table");
@@ -424,7 +519,7 @@ fn discovery_refuses_a_covered_module_with_no_table() {
     );
     assert!(
         matches!(own_missing, Err(CranelispError::CodegenError { .. })),
-        "the form's own module is covered too: {own_missing:?}"
+        "module_path's group needs its table even when unlisted: {own_missing:?}"
     );
 }
 
@@ -494,7 +589,7 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
     let traced = discover_traced_fns_from_tables(
         &tables,
         &ModuleFullPath::from("user"),
-        &BTreeSet::new(),
+        &modules(&["user"]),
         Span::SYNTHETIC,
     )
     .expect("the form's module has a table");
@@ -544,7 +639,7 @@ fn discovery_selects_claimed_slots_whatever_they_hold() {
     let traced = discover_traced_fns_from_tables(
         &tables,
         &ModuleFullPath::from("user"),
-        &BTreeSet::new(),
+        &modules(&["user"]),
         Span::SYNTHETIC,
     )
     .expect("the form's module has a table");
@@ -954,5 +1049,106 @@ fn trace_form_spark_site_emits_the_create_gate() {
     assert!(
         clif.contains(&format!("call {swap_ref}(")),
         "the trace takes its swap path\n{clif}"
+    );
+}
+
+/// The rendered CLIF of each function in an aggregated `clif_ir`, in order.
+fn split_functions(clif_ir: &str) -> Vec<String> {
+    let mut functions: Vec<String> = Vec::new();
+    for line in clif_ir.lines() {
+        if line.starts_with("function ") {
+            functions.push(String::new());
+        }
+        if let Some(current) = functions.last_mut() {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    functions
+}
+
+// spec: design/backend/trace-codegen.md §1.3; design/arch/tracing.md §5.1.1 —
+// the covered set travels with each target: two targets of one batch whose
+// bodies each hold a form, with different sets, swap different GOTs.
+#[test]
+fn two_targets_with_two_sets_in_one_batch_swap_different_modules() {
+    use cranelisp_types::Defn;
+    let traced = |name: &str| Defn {
+        name: Symbol::from(name),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            body: Expr::Trace {
+                modules: vec![],
+                body: Box::new(Expr::IntLit {
+                    value: 0,
+                    span: Span::SYNTHETIC,
+                    inferred_type: Some(Box::new(Type::Int)),
+                }),
+                span: Span::SYNTHETIC,
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            span: Span::SYNTHETIC,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    };
+    let user = ModuleFullPath::from("user");
+    let mut table = SymbolTable::new(user.clone());
+    for name in ["first", "second"] {
+        crate::test_support::install_def_entry_with_targets(
+            &mut table,
+            traced(name),
+            &HashMap::new(),
+        );
+    }
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    tables.insert(user.clone(), table);
+    // lib traces one function and other three, so each target's traced set is
+    // visible as its count of wrapper addresses.
+    for (module, names) in [("lib", &["step"][..]), ("other", &["u0", "u1", "u2"][..])] {
+        let mut table = SymbolTable::new(ModuleFullPath::from(module));
+        for name in names {
+            insert_fn(
+                &mut table,
+                name,
+                fn_scheme(vec![Type::Int], Type::Int),
+                Some(0x1100),
+            );
+        }
+        tables.insert(ModuleFullPath::from(module), table);
+    }
+
+    let first = crate::test_support::binding_target(&user, &Symbol::from("first"));
+    let second = crate::test_support::binding_target(&user, &Symbol::from("second"));
+    let covers_lib = modules(&["lib"]);
+    let covers_other = modules(&["other"]);
+    let mut jit = crate::jit::Jit::new(&tables).expect("JIT construction");
+    let artifacts = crate::compile_to_module(
+        user,
+        &[
+            crate::CodegenTarget::new(&first, &covers_lib),
+            crate::CodegenTarget::new(&second, &covers_other),
+        ],
+        &tables,
+        jit.jit_module(),
+        true,
+    )
+    .expect("both targets compile");
+
+    let wrappers = |clif: &str| clif.matches(" = func_addr.i64 ").count();
+    let functions = split_functions(&artifacts.clif_ir);
+    assert_eq!(functions.len(), 2, "{}", artifacts.clif_ir);
+    assert_eq!(
+        wrappers(&functions[0]),
+        1,
+        "the first target traces lib's one function\n{}",
+        functions[0]
+    );
+    assert_eq!(
+        wrappers(&functions[1]),
+        3,
+        "the second target traces other's three functions\n{}",
+        functions[1]
     );
 }

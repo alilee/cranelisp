@@ -196,6 +196,47 @@ use cranelift_module::Module;
 use crate::compiler::{CompileContext, FnCompiler};
 use crate::jit::declare_intrinsics_generic;
 
+/// One callable to compile and the modules a trace form in its body covers.
+///
+/// `trace_modules` is the whole covered set of a form in the target's body
+/// (spec §4.12.3; `design/arch/tracing.md` §5.1.1): the module whose source
+/// holds the body, the transitive closure of that module's finished reference
+/// edges, and `primitives`. The backend adds no module to it, and does not ask
+/// which module holds a body: listing that module is the caller's obligation.
+/// A set is passed for every target, whether or not its body holds a form; an
+/// empty set means a form that swaps nothing.
+///
+/// A form reads each listed module's table whole. When the compiled module is
+/// not listed, it reads from that module's table only the instances whose
+/// template module is listed. Every listed module must have a table in
+/// `symbol_tables`; a missing one is a located codegen error at the form. The
+/// set's contents are not otherwise checked: a module for which an image
+/// holding the object defines no GOT fails at load as an unresolved
+/// `__cranelisp_got_{M}`.
+#[derive(Clone, Copy, Debug)]
+pub struct CodegenTarget<'a> {
+    target: &'a CallableTarget,
+    trace_modules: &'a BTreeSet<ModuleFullPath>,
+}
+
+impl<'a> CodegenTarget<'a> {
+    /// Pair `target` with the modules a trace form in its body covers.
+    pub fn new(target: &'a CallableTarget, trace_modules: &'a BTreeSet<ModuleFullPath>) -> Self {
+        Self {
+            target,
+            trace_modules,
+        }
+    }
+
+    pub(crate) fn target(&self) -> &'a CallableTarget {
+        self.target
+    }
+
+    pub(crate) fn trace_modules(&self) -> &'a BTreeSet<ModuleFullPath> {
+        self.trace_modules
+    }
+}
+
 pub(crate) fn callable_target_owner(target: &CallableTarget) -> Option<&FQSymbol> {
     match target {
         CallableTarget::Binding(owner)
@@ -553,16 +594,8 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 /// renders the CLIF for matching symbols regardless of `capture_clif`. The
 /// `code_size` byproduct flows back unconditionally.
 ///
-/// `trace_modules` names the modules a `(trace …)` form in `module_path`
-/// covers besides `module_path` itself (spec §4.12.3). The caller passes it at
-/// every call, whether or not a target holds a trace form; it is read only
-/// when one does. A trace form covers `module_path` and exactly the listed
-/// modules, and the backend adds no other: listing `module_path` changes
-/// nothing, and an empty set covers `module_path` alone. Every covered module
-/// must have a table in `symbol_tables`; a missing one is a located
-/// [`CranelispError::CodegenError`] at the trace form. The set's contents are
-/// not checked: a module that no image holding this module's object defines a
-/// GOT for fails at load as an unresolved `__cranelisp_got_{M}`.
+/// Each [`CodegenTarget`] carries the covered set of a `(trace …)` form in
+/// its body; a form reads that set and no other.
 ///
 /// Parameters derived internally:
 /// - Intrinsics: declared on the module internally
@@ -618,9 +651,8 @@ impl CodeFinalizer for cranelift_object::ObjectModule {
 ///   after cache-hit) resolve the relocations at load time.
 pub fn compile_to_module<M, C, L>(
     module_path: ModuleFullPath,
-    targets: &[CallableTarget],
+    targets: &[CodegenTarget<'_>],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    trace_modules: &BTreeSet<ModuleFullPath>,
     module: &mut M,
     capture_clif: bool,
 ) -> Result<CompilationArtifacts, CompilationError>
@@ -633,7 +665,6 @@ where
         module_path.clone(),
         targets,
         symbol_tables,
-        trace_modules,
         module,
         capture_clif,
     )
@@ -672,9 +703,8 @@ impl From<CranelispError> for EntryFailure {
 
 fn compile_to_module_impl<M, C, L>(
     module_path: ModuleFullPath,
-    targets: &[CallableTarget],
+    targets: &[CodegenTarget<'_>],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    trace_modules: &BTreeSet<ModuleFullPath>,
     module: &mut M,
     capture_clif: bool,
 ) -> Result<CompilationArtifacts, EntryFailure>
@@ -758,7 +788,7 @@ where
         module,
         &module_path,
         symbol_tables,
-        trace_modules,
+        targets,
         &defns,
         &bodies,
         &param_types,
@@ -839,7 +869,7 @@ fn project_drop_glues<M: CodeFinalizer>(
 #[allow(clippy::type_complexity)]
 fn collect_compile_targets<C, L>(
     module_path: &ModuleFullPath,
-    targets: &[CallableTarget],
+    targets: &[CodegenTarget<'_>],
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
 ) -> Result<
     (
@@ -876,7 +906,7 @@ where
                 message: format!("compile_to_module: no symbol table for module '{module_path}'"),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             })?;
-        for target in targets {
+        for target in targets.iter().map(CodegenTarget::target) {
             let Some(owner) = callable_target_owner(target) else {
                 return Err(CranelispError::CodegenError {
                     message: format!("compile_to_module: unsupported target '{target:?}'"),
@@ -1020,7 +1050,7 @@ fn compile_module_bodies<M, C, L>(
     module: &mut M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    trace_modules: &BTreeSet<ModuleFullPath>,
+    targets: &[CodegenTarget<'_>],
     defns: &[Defn],
     bodies: &[cranelisp_types::MonoExpr],
     param_types: &[Vec<cranelisp_types::ConcreteType>],
@@ -1058,7 +1088,7 @@ where
             func_ids,
             func_arities,
             symbol_tables,
-            trace_modules,
+            trace_modules: targets[index].trace_modules(),
             current_module: module_path.clone(),
             alloc_func_id: intrinsic_ids.alloc,
             dealloc_func_id: intrinsic_ids.dealloc.unwrap_or_else(|| {
@@ -1139,7 +1169,7 @@ fn emit_module_got_data<M, C, L>(
     module: &mut M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    targets: &[CallableTarget],
+    targets: &[CodegenTarget<'_>],
     defns: &[Defn],
     func_ids: &HashMap<Symbol, FuncId>,
 ) -> Result<(), CranelispError>
@@ -1157,7 +1187,7 @@ where
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
     let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
-    for (target, defn) in targets.iter().zip(defns) {
+    for (target, defn) in targets.iter().map(CodegenTarget::target).zip(defns) {
         let Some(slot) = table.callable_target(target).and_then(callable_arm_slot) else {
             continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
         };
@@ -1207,7 +1237,7 @@ fn write_finalized_got_slots<M, C, L>(
     module: &M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    targets: &[CallableTarget],
+    targets: &[CodegenTarget<'_>],
     defns: &[Defn],
     func_ids: &HashMap<Symbol, FuncId>,
 ) where
@@ -1215,7 +1245,7 @@ fn write_finalized_got_slots<M, C, L>(
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    for (target, defn) in targets.iter().zip(defns) {
+    for (target, defn) in targets.iter().map(CodegenTarget::target).zip(defns) {
         let Some(&func_id) = func_ids.get(&defn.name) else {
             continue;
         };

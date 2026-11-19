@@ -305,9 +305,11 @@ fn test_compile_load_and_execute_cached_module() {
 
     crate::compile_to_module(
         module.clone(),
-        std::slice::from_ref(&crate::test_support::binding_target(&module, &defn.name)),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(&crate::test_support::binding_target(&module, &defn.name)),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         &mut obj_module,
         false,
     )

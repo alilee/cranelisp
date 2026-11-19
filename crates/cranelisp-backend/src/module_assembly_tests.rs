@@ -1263,9 +1263,11 @@ fn sprint56_compile_to_module_owned_arm_compiles_without_expansion() {
     let target = overload_target(&module, "add", 0);
     let artifacts = compile_to_module(
         module.clone(),
-        std::slice::from_ref(&target),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(&target),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )

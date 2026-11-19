@@ -341,9 +341,11 @@ fn macro_clause_projection_carries_parameter_authority_and_one_result_owner() {
     let mut jit = Jit::new(&tables).unwrap();
     let artifacts = compile_to_module(
         module,
-        std::slice::from_ref(&target),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(&target),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )
@@ -372,9 +374,11 @@ fn macro_clause_constructor_result_adds_no_retain_and_consumes_its_parameter() {
     let mut jit = Jit::new(&tables).unwrap();
     let artifacts = compile_to_module(
         module,
-        std::slice::from_ref(&target),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(&target),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     )

@@ -433,7 +433,7 @@ fn ordinary_replacement_preparation_rematerializes_prior_instance() {
             .any(|retired| retired.slot.index() == prior_slot)
     );
     assert!(
-        prepared.targets.contains(&instance_target),
+        prepared.batch.targets().contains(&instance_target),
         "the successful demand target must join the ordinary compile batch"
     );
 
@@ -495,7 +495,7 @@ fn lookup_dependencies_alone_prepare_a_publication_holding_them() {
         [&ModuleFullPath::from("b")]
     );
     assert!(
-        prepared.targets.is_empty(),
+        prepared.batch.targets().is_empty(),
         "an empty publication has no JIT"
     );
     session.shutdown();
@@ -602,7 +602,7 @@ fn ordinary_same_type_replacement_preparation_rematerializes_prior_instance() {
                 symbol: instance_key,
             })
     );
-    assert!(prepared.targets.contains(&instance_target));
+    assert!(prepared.batch.targets().contains(&instance_target));
     session.shutdown();
 }
 
@@ -840,7 +840,7 @@ fn same_type_backflow_concrete_arm_replacement_uses_staged_arm() {
     .unwrap()
     .unwrap();
     assert!(check.warnings.is_empty());
-    assert!(prepared.targets.contains(&staged_target));
+    assert!(prepared.batch.targets().contains(&staged_target));
 
     let mut processed =
         crate::cluster::ProcessedCluster::from_parts(check.warnings, Vec::new(), Vec::new());
@@ -1037,7 +1037,7 @@ fn ordinary_overload_reorder_remaps_instances_before_atomic_publication() {
                     symbol: instance.key.clone(),
                 })
         );
-        assert!(prepared.targets.contains(&target));
+        assert!(prepared.batch.targets().contains(&target));
         assert_eq!(
             concrete_callees(table.get(instance.caller).unwrap()),
             instance.caller_callees
@@ -1487,11 +1487,11 @@ fn rollback_introspection(
 
 fn production_diagnostic_for_exact_target(prepared: &PreparedCommit) -> CranelispError {
     assert_eq!(
-        prepared.targets.len(),
+        prepared.batch.targets().len(),
         1,
         "this diagnostic control deliberately identifies one exact batch member"
     );
-    let target = prepared.targets[0].clone();
+    let target = prepared.batch.targets()[0].clone();
     let owner = callable_target_owner(&target).unwrap();
     let tables = dashmap::DashMap::new();
     for row in prepared.tables.iter() {
@@ -1503,9 +1503,11 @@ fn production_diagnostic_for_exact_target(prepared: &PreparedCommit) -> Cranelis
     let mut jit = build_session_jit(&tables).unwrap();
     let error = match cranelisp_backend::compile_to_module(
         prepared.module.clone(),
-        std::slice::from_ref(&target),
+        &[cranelisp_backend::CodegenTarget::new(
+            &target,
+            &std::collections::BTreeSet::new(),
+        )],
         &tables,
-        &std::collections::BTreeSet::new(),
         jit.jit_module(),
         true,
     ) {
@@ -1598,7 +1600,7 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
     .unwrap()
     .unwrap()
     .unwrap();
-    let expected_targets = prepared.targets.clone();
+    let expected_targets = prepared.batch.targets().to_vec();
     let observed_mutations = RefCell::new(Vec::new());
     let observed_targets = RefCell::new(Vec::new());
     // The candidate's authored-form record rides the cluster; the failed
@@ -1638,7 +1640,8 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
         |prepared, jit, capture_clif| {
             let table = prepared.tables.get(&prepared.module).unwrap();
             let before_cells = prepared
-                .targets
+                .batch
+                .targets()
                 .iter()
                 .filter_map(|target| {
                     let arm = table.callable_target(target)?;
@@ -1651,14 +1654,13 @@ fn ordinary_replacement_compile_failure_restores_prior_instance_and_session_stat
             drop(table);
             let _artifacts = cranelisp_backend::compile_to_module(
                 prepared.module.clone(),
-                &prepared.targets,
+                &prepared.batch.codegen_targets(),
                 &prepared.tables,
-                &prepared.trace_modules,
                 jit.jit_module(),
                 capture_clif,
             )
             .map_err(CranelispError::from)?;
-            observed_targets.replace(prepared.targets.clone());
+            observed_targets.replace(prepared.batch.targets().to_vec());
             let table = prepared.tables.get(&prepared.module).unwrap();
             observed_mutations.replace(
                 before_cells
@@ -2288,9 +2290,9 @@ fn parametric_impl_turn_does_not_compile_live_sibling_impl() {
     .expect("a template-only turn prepares")
     .expect("every covered member has published");
     assert!(
-        prepared.targets.is_empty(),
+        prepared.batch.targets().is_empty(),
         "a turn that stages no concrete body compiles nothing; got {:?}",
-        prepared.targets
+        prepared.batch.targets()
     );
 }
 
@@ -4697,8 +4699,20 @@ mod covered_set_at_planning {
         .expect("the planning fixture is valid")
     }
 
+    /// The set stored for bodies whose module of origin is `origin`.
+    fn set_for<'a>(prepared: &'a PreparedCommit, origin: &str) -> Vec<&'a str> {
+        prepared
+            .batch
+            .set_of(&m(origin))
+            .unwrap_or_else(|| panic!("no set stored for '{origin}'"))
+            .iter()
+            .map(AsRef::as_ref)
+            .collect()
+    }
+
+    /// The set stored for the batch module's own bodies.
     fn stored(prepared: &PreparedCommit) -> Vec<&str> {
-        prepared.trace_modules.iter().map(AsRef::as_ref).collect()
+        set_for(prepared, prepared.module.as_ref())
     }
 
     fn checked_session(
@@ -4755,7 +4769,7 @@ mod covered_set_at_planning {
     fn a_later_binding_calling_x_puts_x_in_the_stored_set() {
         let root = tempfile::tempdir().unwrap();
         let (_session, prepared) = checked_session(root.path());
-        assert_eq!(stored(&prepared), ["primitives", "x"]);
+        assert_eq!(stored(&prepared), ["main", "primitives", "x"]);
     }
 
     // spec: design/int/int.md §7.6.4 *Derived once, at commit planning* — the
@@ -4765,7 +4779,11 @@ mod covered_set_at_planning {
     fn the_codegen_call_receives_the_stored_set() {
         let root = tempfile::tempdir().unwrap();
         let (session, mut prepared) = checked_session(root.path());
-        prepared.trace_modules.insert(m("ghost"));
+        prepared
+            .batch
+            .set_of_mut(&m("main"))
+            .unwrap()
+            .insert(m("ghost"));
         let mut processed = crate::cluster::ProcessedCluster::empty();
         processed.set_prepared(prepared);
         let error = compile_and_publish_prepared(&mut processed, &session.shared, false)
@@ -4808,7 +4826,7 @@ mod covered_set_at_planning {
         );
         shared.scheduler.mark_generation_published(&m("x"));
         let prepared = plan(&shared, "user").expect("x has published");
-        assert_eq!(stored(&prepared), ["primitives", "r", "x"]);
+        assert_eq!(stored(&prepared), ["primitives", "r", "user", "x"]);
     }
 
     // spec: design/int/int.md §7.6.4 *Settled members*, No deadlock — a parent
@@ -4832,7 +4850,7 @@ mod covered_set_at_planning {
         shared.symbol_tables.insert(m("p.c"), child);
 
         let prepared = plan(&shared, "p.c").expect("the awaiting parent has published");
-        assert_eq!(stored(&prepared), ["p", "primitives"]);
+        assert_eq!(stored(&prepared), ["p", "p.c", "primitives"]);
     }
 
     // spec: design/int/int.md §7.6.4 *Settled members* item 2 — the prelude is
@@ -4846,6 +4864,125 @@ mod covered_set_at_planning {
         shared.prelude_fallback.insert(m("user"), true);
 
         let prepared = plan(&shared, "user").expect("the prelude is never awaited");
-        assert_eq!(stored(&prepared), ["prelude", "primitives"]);
+        assert_eq!(stored(&prepared), ["prelude", "primitives", "user"]);
+    }
+
+    /// `main` compiles `(m/run x/f)`, so the batch holds an instance of the
+    /// generic `m/run`, whose body holds a trace form (ACT-1086's subject).
+    fn instance_session(
+        root: &std::path::Path,
+    ) -> (crate::session_v4::CompilerSession, PreparedCommit) {
+        use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+        use cranelisp_types::CodegenBehaviour;
+        let mut session = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode: RunMode::Run,
+            },
+            root.to_path_buf(),
+            "main",
+        )
+        .unwrap();
+        session.set_lib_dirs(Vec::new());
+        session
+            .register_module_with_source(
+                "x",
+                "(import [primitives [Int add-i64]])\n(defn f [:Int n] (add-i64 n 1))\n",
+                &root.join("x.cl"),
+            )
+            .unwrap();
+        session
+            .register_module_with_source(
+                "m",
+                "(import [primitives [Int]])\n(defn run [h] (trace (h 1)))\n",
+                &root.join("m.cl"),
+            )
+            .unwrap();
+        session
+            .register_module_with_source("main", "(defn seed [] 0)\n", &root.join("main.cl"))
+            .unwrap();
+        let program =
+            build_program_compat(&cranelisp_frontend::parse("(defn g [] (m/run x/f))\n").unwrap())
+                .unwrap();
+        let (prepared, _check) = prepare_cluster_commit(
+            &session.shared.symbol_tables,
+            &session.shared.module_aliases,
+            &session.shared.prelude_fallback,
+            &m("main"),
+            &program,
+            &session.shared,
+        )
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        (session, prepared)
+    }
+
+    // spec: design/int/int.md §7.6.4 *The form's home* — an instance whose
+    // template lives in `m` gets `m`'s set: `m` and its closure, not the
+    // batch's module or its other callees.
+    #[test]
+    fn an_instance_of_ms_template_stores_ms_set() {
+        let root = tempfile::tempdir().unwrap();
+        let (_session, prepared) = instance_session(root.path());
+        assert_eq!(set_for(&prepared, "m"), ["m", "primitives"]);
+        assert_eq!(set_for(&prepared, "main"), ["m", "main", "primitives", "x"]);
+    }
+
+    // spec: design/int/int.md §7.6.4 *One set per module of origin* — a batch
+    // of only its own definitions stores one set, holding its own module.
+    #[test]
+    fn own_definitions_store_one_set_holding_the_module() {
+        let root = tempfile::tempdir().unwrap();
+        let (_session, prepared) = checked_session(root.path());
+        assert_eq!(prepared.batch.origins().collect::<Vec<_>>(), [&m("main")]);
+        assert_eq!(set_for(&prepared, "main"), ["main", "primitives", "x"]);
+    }
+
+    // spec: design/int/int.md §7.6.4 *Pairing* — every target the codegen call
+    // receives carries its module of origin's set.
+    #[test]
+    fn every_target_is_paired_with_its_origins_set() {
+        let root = tempfile::tempdir().unwrap();
+        let (_session, prepared) = instance_session(root.path());
+        let paired = prepared.batch.paired();
+        assert_eq!(paired.len(), prepared.batch.targets().len());
+        let table = prepared.tables.get(&m("main")).unwrap();
+        let mut instances = 0;
+        for (target, set) in paired {
+            let arm = table.callable_target(target).unwrap();
+            let origin = arm.template_module().unwrap_or(&prepared.module);
+            instances += usize::from(origin == &m("m"));
+            assert_eq!(Some(set), prepared.batch.set_of(origin), "{target:?}");
+        }
+        assert_eq!(instances, 1, "the batch holds `m/run`'s instance");
+    }
+
+    // spec: design/int/int.md §7.6.4 *Pairing* — the production codegen call
+    // compiles the instance's trace form against `m`'s set, and against no
+    // other: a member with no table is the backend's located refusal.
+    #[test]
+    fn the_instance_is_compiled_against_ms_set_not_the_batchs() {
+        let root = tempfile::tempdir().unwrap();
+        for (poisoned, refused) in [("main", false), ("m", true)] {
+            let (session, mut prepared) = instance_session(root.path());
+            prepared
+                .batch
+                .set_of_mut(&m(poisoned))
+                .unwrap()
+                .insert(m("ghost"));
+            let mut processed = crate::cluster::ProcessedCluster::empty();
+            processed.set_prepared(prepared);
+            let outcome = compile_and_publish_prepared(&mut processed, &session.shared, false);
+            assert_eq!(
+                outcome.is_err(),
+                refused,
+                "a ghost in {poisoned}'s set: {outcome:?}"
+            );
+        }
     }
 }

@@ -7,7 +7,6 @@
 // `return` and the load-bearing ordering. Moved verbatim from `session_v4.rs`
 // (S87 §2.1 / §3.3).
 
-use std::collections::BTreeSet;
 use std::path::Path;
 #[cfg(test)]
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use cranelisp_types::ModuleFullPath;
 
 use super::SharedState;
 use crate::cache::dependency_record::{
-    CoveredSet, ModuleEdges, UnpublishedPrelude, covered_set, record_manifest_entry,
+    Covered, CoveredBatch, ModuleEdges, UnpublishedPrelude, record_manifest_entry,
 };
 use crate::cache::{PassStage, StoppedPass};
 use crate::scheduler::ObjectHold;
@@ -237,7 +236,7 @@ fn object_pass(
     }
 
     // Phase 3: build + emit the `.o` bytes.
-    let obj_bytes = emit_object(shared, module, &targets)?;
+    let obj_bytes = emit_object(shared, module, targets)?;
 
     // Phase 4: write the `.o` + record in manifest + append for the linker.
     Ok(write_object_and_record(
@@ -347,7 +346,7 @@ fn codegen_stop(module: &ModuleFullPath, cause: String) -> StoppedPass {
 fn emit_object(
     shared: &SharedState,
     module: &ModuleFullPath,
-    targets: &[cranelisp_types::CallableTarget],
+    targets: Vec<cranelisp_types::CallableTarget>,
 ) -> Result<Vec<u8>, PassEnd> {
     let isa = cranelisp_backend::build_isa(true)
         .map_err(|e| codegen_stop(module, format!("ISA build failed: {}", e.message())))?;
@@ -358,8 +357,9 @@ fn emit_object(
     )
     .map_err(|e| codegen_stop(module, format!("ObjectBuilder failed: {e}")))?;
     let mut obj_module = cranelisp_backend::cranelift_object::ObjectModule::new(obj_builder);
-    let trace_modules = object_trace_modules(
+    let batch = object_batch(
         module,
+        targets,
         &shared.symbol_tables,
         &shared.prelude_fallback,
         &shared.scheduler,
@@ -367,9 +367,8 @@ fn emit_object(
 
     cranelisp_backend::compile_to_module(
         module.clone(),
-        targets,
+        &batch.codegen_targets(),
         &shared.symbol_tables,
-        &trace_modules,
         &mut obj_module,
         // FIXME 0325: nice-worker `.o` codegen is always batch (cache-write
         // side) — never consumed by introspection, so skip CLIF rendering.
@@ -382,25 +381,28 @@ fn emit_object(
         .map_err(|e| codegen_stop(module, format!(".o emit failed: {e}")))?)
 }
 
-/// The modules a trace form in `module`'s object covers
-/// (`design/int/int.md` §7.6.4, *The object pass waits*). Every member, the
-/// prelude included, is read through the published predicate commit planning
-/// uses; an unpublished member holds the pass on it.
-fn object_trace_modules(
+/// `module`'s object targets, each paired with the covered set of its module
+/// of origin (`design/int/int.md` §7.6.4, *The object pass waits* and *The
+/// form's home*). Every member, the prelude included, is read through the
+/// published predicate commit planning uses; an unpublished member holds the
+/// pass on it.
+fn object_batch(
     module: &ModuleFullPath,
+    targets: Vec<cranelisp_types::CallableTarget>,
     tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     scheduler: &crate::scheduler::CompileScheduler,
-) -> Result<BTreeSet<ModuleFullPath>, PassEnd> {
-    let member = match covered_set(
+) -> Result<CoveredBatch, PassEnd> {
+    let member = match CoveredBatch::derive(
         module,
+        targets,
         tables,
         prelude_fallback,
         UnpublishedPrelude::Answer,
         |member| scheduler.has_published(member),
     ) {
-        CoveredSet::Covered(trace_modules) => return Ok(trace_modules),
-        CoveredSet::Unpublished(member) => member,
+        Covered::Covered(batch) => return Ok(batch),
+        Covered::Unpublished(member) => member,
     };
     // A published member the walk answered has no table, and will not get one.
     if !tables.contains_key(&member) && scheduler.has_published(&member) {
@@ -616,6 +618,75 @@ mod tests {
         );
     }
 
+    // spec: design/int/int.md §7.6.4 *Pairing* — the object pass derives the
+    // sets commit planning derives and pairs each target with its module of
+    // origin's set: `m/run`'s instance in `main` with `m`'s.
+    #[test]
+    fn the_object_pass_pairs_an_instance_with_its_templates_set() {
+        let root = tempfile::tempdir().unwrap();
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: true,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 0,
+                run_mode: RunMode::Run,
+            },
+            root.path().to_path_buf(),
+            "main",
+        )
+        .unwrap();
+        s.set_lib_dirs(Vec::new());
+        let sources = [
+            (
+                "x",
+                "(import [primitives [Int add-i64]])\n(defn f [:Int n] (add-i64 n 1))\n",
+            ),
+            (
+                "m",
+                "(import [primitives [Int]])\n(defn run [h] (trace (h 1)))\n",
+            ),
+            ("main", "(defn g [] (m/run x/f))\n"),
+        ];
+        for (module, source) in sources {
+            let path = root.path().join(format!("{module}.cl"));
+            s.register_module_with_source(module, source, &path)
+                .unwrap();
+        }
+        let main = ModuleFullPath::from("main");
+        let shared = &s.shared;
+        let batch = super::object_batch(
+            &main,
+            super::enumerate_codegen_targets(shared, &main),
+            &shared.symbol_tables,
+            &shared.prelude_fallback,
+            &shared.scheduler,
+        )
+        .unwrap();
+        let set = |modules: &[&str]| -> std::collections::BTreeSet<ModuleFullPath> {
+            modules.iter().copied().map(ModuleFullPath::from).collect()
+        };
+        let m_set = set(&["m", "primitives"]);
+        let main_set = set(&["m", "main", "primitives", "x"]);
+        assert_eq!(batch.set_of(&ModuleFullPath::from("m")), Some(&m_set));
+        assert_eq!(batch.set_of(&main), Some(&main_set));
+        let table = shared.symbol_tables.get(&main).unwrap();
+        let mut instances = 0;
+        for (target, paired) in batch.paired() {
+            let is_instance = table
+                .callable_target(target)
+                .and_then(|arm| arm.template_module())
+                .is_some();
+            instances += usize::from(is_instance);
+            let expected = if is_instance { &m_set } else { &main_set };
+            assert_eq!(paired, expected, "{target:?}");
+        }
+        assert_eq!(instances, 1, "main holds `m/run`'s instance");
+        drop(table);
+        s.shutdown();
+    }
+
     /// The modules of ACT-1087's fixture: `prelude` re-exports `m`, whose
     /// declared child `m.c` takes the implicit prelude import; `p` is the
     /// module the prelude re-exports once its Pass 0 finishes.
@@ -627,7 +698,7 @@ mod tests {
         use crate::code::SessionSymbolTable;
         use crate::scheduler::{CompileScheduler, HeldObjectPass, ObjectHold};
 
-        use super::super::{PassEnd, object_trace_modules};
+        use super::super::{PassEnd, object_batch};
 
         fn m(path: &str) -> ModuleFullPath {
             ModuleFullPath::from(path)
@@ -657,6 +728,17 @@ mod tests {
 
         /// `m.c` typechecked, its object pass claimed, the prelude still in
         /// flight.
+        /// The covered set `m.c`'s object pass derives for `m.c`'s own
+        /// bodies, or how the pass ended.
+        fn object_set(
+            tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+            fallback: &cranelisp_typecheck::PreludeFallback,
+            sched: &CompileScheduler,
+        ) -> Result<BTreeSet<ModuleFullPath>, PassEnd> {
+            object_batch(&m("m.c"), Vec::new(), tables, fallback, sched)
+                .map(|batch| batch.set_of(&m("m.c")).cloned().unwrap())
+        }
+
         fn scheduler() -> CompileScheduler {
             let sched = CompileScheduler::new();
             sched.register_module(m("prelude"), std::sync::Arc::from(Vec::new()), true);
@@ -676,10 +758,7 @@ mod tests {
             let fallback = cranelisp_typecheck::PreludeFallback::default();
             fallback.insert(m("m.c"), true);
             let sched = scheduler();
-            assert_eq!(
-                object_trace_modules(&m("m.c"), &tables, &fallback, &sched),
-                Err(PassEnd::Held)
-            );
+            assert_eq!(object_set(&tables, &fallback, &sched), Err(PassEnd::Held));
 
             tables
                 .get_mut(&m("prelude"))
@@ -691,8 +770,8 @@ mod tests {
                 std::iter::from_fn(|| sched.try_take_object_codegen()).collect();
             assert!(claimed.contains(&m("m.c")), "{claimed:?}");
             assert_eq!(
-                object_trace_modules(&m("m.c"), &tables, &fallback, &sched),
-                Ok(["m", "p", "prelude", "primitives"].map(m).into())
+                object_set(&tables, &fallback, &sched),
+                Ok(["m", "m.c", "p", "prelude", "primitives"].map(m).into())
             );
         }
 
@@ -705,9 +784,7 @@ mod tests {
             fallback.insert(m("m.c"), true);
             let sched = scheduler();
             assert_eq!(sched.begin_object_wait(), Vec::<HeldObjectPass>::new());
-            let Err(PassEnd::Stopped(stop)) =
-                object_trace_modules(&m("m.c"), &tables, &fallback, &sched)
-            else {
+            let Err(PassEnd::Stopped(stop)) = object_set(&tables, &fallback, &sched) else {
                 panic!("the pass must stop while objects are awaited");
             };
             assert!(stop.cause.contains("'prelude'"), "{stop}");

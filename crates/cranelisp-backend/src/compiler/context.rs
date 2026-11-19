@@ -137,8 +137,8 @@ where
     /// constructors, GOT slots, and post-G7 GOT base pointers). The backend
     /// reads GOT slots/bases directly from this map — no env abstraction.
     pub symbol_tables: &'a DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    /// The modules a trace form in `current_module` covers besides
-    /// `current_module` (`compile_to_module`'s `trace_modules`).
+    /// The modules a trace form in the compiled target's body covers, from its
+    /// `CodegenTarget`. Inner compilers inherit it.
     pub trace_modules: &'a BTreeSet<ModuleFullPath>,
     /// Current module being compiled (for constructor/type lookups).
     pub current_module: ModuleFullPath,

@@ -227,9 +227,11 @@ mod tests {
         let target = crate::test_support::binding_target(&user_module, &name);
         let result = compile_to_module(
             user_module,
-            &[target],
+            &crate::test_support::targets_covering(
+                std::slice::from_ref(&target),
+                &std::collections::BTreeSet::new(),
+            ),
             &tables,
-            &std::collections::BTreeSet::new(),
             jit.jit_module(),
             true,
         );

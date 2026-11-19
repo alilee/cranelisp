@@ -154,9 +154,11 @@ fn test_compile_module_to_object_simple() {
     let mut obj_module = test_object_module();
     let _result = crate::compile_to_module(
         module.clone(),
-        std::slice::from_ref(&target(&module, &defn.name)),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(&target(&module, &defn.name)),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         &mut obj_module,
         false,
     )
@@ -221,9 +223,11 @@ fn test_compile_module_to_object_with_params() {
     let mut obj_module = test_object_module();
     let _result = crate::compile_to_module(
         module.clone(),
-        std::slice::from_ref(&target(&module, &defn.name)),
+        &crate::test_support::targets_covering(
+            std::slice::from_ref(&target(&module, &defn.name)),
+            &std::collections::BTreeSet::new(),
+        ),
         &tables,
-        &std::collections::BTreeSet::new(),
         &mut obj_module,
         false,
     )

@@ -8,9 +8,10 @@
 //! Three responsibilities landed here in S76:
 //!
 //! 1. **Discovery-in-codegen over the covered modules** (`discover_traced_fns`).
-//!    The form's module and the modules int lists in `trace_modules` are the
-//!    covered set (`trace-codegen.md` §1.3); every entry there that claims a
-//!    callable GOT slot and has a function scheme is traced (§1.1). Primitives
+//!    The modules int lists in the target's `trace_modules` are the covered
+//!    set (`trace-codegen.md` §1.3); every entry there that claims a callable
+//!    GOT slot and has a function scheme is traced (§1.1), as is an instance in
+//!    the compiled module's table whose template module is covered. Primitives
 //!    are covered when listed, like any other module.
 //!
 //! 2. **Display-descriptor baking** (`bake_descriptor_blob`). Each traced
@@ -271,11 +272,13 @@ impl DescriptorBlob {
 // Discovery — the covered modules' slot claims (trace-codegen.md §1).
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Compute the traced set over the modules a trace form covers: the form's
-/// own `module_path` and the `trace_modules` int listed (`trace-codegen.md`
-/// §1.3), visited in the covered set's order and each group ordered by name,
-/// so the result does not depend on table iteration. A covered module with no table is refused at the
-/// form's `span`.
+/// Compute the traced set of a trace form whose target covers `trace_modules`
+/// (`trace-codegen.md` §1.3). Groups are the listed modules together with
+/// `module_path`, visited in `BTreeSet` order, each ordered by name, so the
+/// result does not depend on table iteration. A listed module's table is read
+/// whole. When `module_path` is not listed, its group holds only the instances
+/// whose template module is listed. A group's module with no table is refused
+/// at the form's `span`.
 ///
 /// An entry is selected when it claims a callable GOT slot and its scheme is a
 /// function (§1.1). The slot's contents are not read: slot layout is fixed
@@ -296,9 +299,10 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    let covered: BTreeSet<&ModuleFullPath> = trace_modules.iter().chain([module_path]).collect();
+    let groups: BTreeSet<&ModuleFullPath> = trace_modules.iter().chain([module_path]).collect();
     let mut traced = Vec::new();
-    for covered_module in covered {
+    for covered_module in groups {
+        let read_whole = trace_modules.contains(covered_module);
         let Some(table) = symbol_tables.get(covered_module) else {
             return Err(CranelispError::CodegenError {
                 message: format!(
@@ -315,6 +319,14 @@ where
             let Type::Fn(params, ret) = &callable.arm.scheme.ty else {
                 continue;
             };
+            if !read_whole
+                && !callable
+                    .arm
+                    .template_module()
+                    .is_some_and(|template| trace_modules.contains(template))
+            {
+                continue;
+            }
             traced.push(TracedFnInfo {
                 name: format!("{covered_module}/{name}"),
                 module_path: covered_module.clone(),
@@ -617,8 +629,8 @@ where
         })
     }
 
-    /// The traced set of a form in the module being compiled; see
-    /// [`discover_traced_fns_from_tables`].
+    /// The traced set of a form in the compiled target's body, over that
+    /// target's covered set; see [`discover_traced_fns_from_tables`].
     fn discover_traced_fns(&self, span: Span) -> Result<Vec<TracedFnInfo>, CranelispError> {
         discover_traced_fns_from_tables(
             self.ctx.symbol_tables,
