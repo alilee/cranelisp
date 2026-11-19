@@ -1322,3 +1322,50 @@ fn s124_d7_impl_moves_on() {
 fn s124_d7_impl_moves_off() {
     s124_mode_redefinition("impl", true);
 }
+
+fn s124_slot_redefinition(loaded: bool) {
+    let definitions = "(import [primitives [Int add-i64]])\n\
+        (defn af [:Int n] n)\n\
+        (defn hof [:(Fn [Int] Int) h] (h 1))\n\
+        (defn usev [] (hof af))\n\
+        (defn used [] (af 1))\n";
+    let calls = "(usev)\n(used)\n(defn af [:Int n] (add-i64 n 100))\n(usev)\n(used)\n";
+    let cr = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .env("CRANELISP_NO_LENIENT", "1");
+    let cr = if loaded {
+        cr.file("app.cl", definitions)
+            .cli_flag("app.cl")
+            .stdin(calls)
+    } else {
+        cr.stdin(&format!("{definitions}{calls}"))
+    };
+    let out = cr.output().assert_ok();
+    let values: Vec<_> = helpers::e2e::repl_output_lines(&out.stdout)
+        .into_iter()
+        .filter_map(|line| {
+            line.strip_prefix(":primitives/Int ")
+                .and_then(|s| s.parse::<i64>().ok())
+        })
+        .collect();
+    assert_eq!(
+        values,
+        [1, 1, 101, 101],
+        "direct and value routes after replacement: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §18
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_loaded_value_redefinition_subject() {
+    s124_slot_redefinition(true);
+}
+
+// spec: repl/spec.md §18
+#[test]
+fn s124_1088_prompt_value_redefinition_control() {
+    s124_slot_redefinition(false);
+}

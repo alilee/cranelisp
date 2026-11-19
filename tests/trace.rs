@@ -1466,3 +1466,106 @@ fn s124_1087_prelude_control_run() {
 fn s124_1087_prelude_control_link() {
     s124_prelude_child_trace("link", true);
 }
+
+fn s124_slot_trace(mode: &str, partial: bool, imported: bool) {
+    let definition = if partial {
+        "(defn add2 [:Int a :Int b] (add-i64 a b))"
+    } else {
+        "(defn af [:Int n] n)"
+    };
+    let name = if partial { "add2" } else { "af" };
+    let value = if partial { "(add2 5)" } else { "af" };
+    let binding = if imported {
+        format!("(import [x [{name}]])")
+    } else {
+        definition.to_owned()
+    };
+    let module = if imported { "x" } else { "app" };
+    let app = format!(
+        r#"{S124_COUNT_NAMED}
+{binding}
+(defn hof [:(Fn [Int] Int) h] (h 1))
+(defn main [] (Pure (match (trace (hof {value})) [(TraceCall n p r c ns)
+  (add-i64 40 (add-i64 (mul-i64 10 (count-named "app/hof" c)) (count-named "{module}/{name}" c)))])))
+"#
+    );
+    let mut cr = Cranelisp::new().file("app.cl", &app);
+    if imported {
+        cr = cr.file(
+            "x.cl",
+            &format!("(import [primitives [Int add-i64]])\n{definition}\n"),
+        );
+    }
+    let out = s124_trace_invoke(cr, mode);
+    assert_eq!(
+        s124_trace_score(&out, mode),
+        51,
+        "{mode}: exactly one hof and one {module}/{name} frame"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_value_subject_run() {
+    s124_slot_trace("run", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_value_subject_link() {
+    s124_slot_trace("link", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_value_subject_repl() {
+    s124_slot_trace("repl", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+#[test]
+fn s124_1088_value_control_run() {
+    s124_slot_trace("run", false, true);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+#[test]
+fn s124_1088_value_control_link() {
+    s124_slot_trace("link", false, true);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+#[test]
+fn s124_1088_value_control_repl() {
+    s124_slot_trace("repl", false, true);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_partial_subject_run() {
+    s124_slot_trace("run", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_partial_subject_link() {
+    s124_slot_trace("link", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+#[test]
+fn s124_1088_partial_subject_repl() {
+    s124_slot_trace("repl", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+#[test]
+fn s124_1088_partial_control_run() {
+    s124_slot_trace("run", true, true);
+}
