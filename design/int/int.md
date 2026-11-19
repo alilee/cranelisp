@@ -3239,23 +3239,24 @@ graph changes, even though the direct dependency's own source does not.
   - every lookup dependency: each module whose table answered a qualified
     reference while M compiled ([lookup dependencies](#762-lookup-dependencies)).
 
-  The restore walk loads a subset of these edges, the **load edges**
-  ([cache-hit flow](#71-cache-hit-flow-inside-register_module)):
-  - each import and each export whose names list loads, resolved through the
-    module's declared children. The null-import rule is `names_load` in
+  A module's **reference edges** are the modules it makes an image load
+  ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers)). One
+  enumerator returns them ([§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10)):
+  - each import and each re-export whose names list loads, resolved through
+    the module's declared children. The null-import rule is `names_load` in
     `src/imports.rs`, which every int reader of "does this spec load" calls:
     the Pass-0 handlers, the reload edges, the static closure, test
-    selection and the restore walk. A name-less import or export is no load
-    edge;
-  - every callee module;
-  - every declared child, which the walk enrols.
+    selection and the restore walk. A name-less import or export is no
+    reference edge; a use through it makes its target a callee module;
+  - every callee module, including one named only by a qualified reference,
+    and a platform module the module imports or calls;
+  - the prelude, when the module's fallback bit is on.
 
-  The load edges exclude lookup dependencies. The first two kinds, the
-  **reference edges**, are what one enumerator returns ([§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10)); the walk
-  registers each and then enrols the declared children. The reference edges
-  also name the session-installed modules a module imports or calls — the
-  prelude under the fallback bit, `primitives` and platform modules — which
-  the walk finds already present (§7.1) and the covered trace set reads.
+  A declared child is not a reference edge, and no lookup dependency is one.
+  The restore walk ([cache-hit flow](#71-cache-hit-flow-inside-register_module))
+  registers each reference edge and then enrols the declared children; it
+  finds the session-installed edges (`primitives`, platform modules and the
+  prelude) already present. The covered trace set reads the same edges.
   The reload edges (`dependency_record::reload_edges`)
   are a different set, with lookup dependencies and without
   declared children. No other int reader composes a copy of the reference
@@ -3912,27 +3913,31 @@ record is a miss.
 #### 7.6.4 Reference edges and the covered trace set (row B10)
 
 **Status.** Designed 2026-11-19 to the user's ruling on trace coverage
-(Reading A, `sprints/SPRINT.md`, Notes) and `arch`'s row B10
-([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend));
-not in source at `e6ad49f1`. Private to `src/`; the only inter-crate change
-is row B10's parameter, which `arch` approved.
+(Reading A, `sprints/SPRINT.md`, Notes) and to `arch`'s contract that the
+set is rooted at the finished module in every mode
+([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers), row B10
+in [§5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
+Checked against source at `07bb8e84`, where none of it is built. Private to
+`src/`; the only inter-crate change is row B10's parameter, which `arch`
+approved. Four points return to `arch` (*Routed*, below). None blocks
+either build step: the design builds as stated, and the structural
+alternative in point 4 would be an addition to it.
 
 **The enumerator.** One crate-private function in
-`src/cache/dependency_record.rs` returns a module's reference edges, read
-from its table. It is generic over the table's store parameters, so a
+`src/cache/dependency_record.rs` returns a module's reference edges (§7.6),
+read from its table. It is generic over the table's store parameters, so a
 decoded `.meta` table and a session table answer alike.
 
-- Each import and each export whose names list loads, resolved through the
-  table's declared children (§6.9). Whether a spec loads is `names_load` in
-  `src/imports.rs`, the null-import rule's one source; the enumerator calls
-  it and states no rule of its own. A null import is therefore an edge only
-  through a use, which records its target as a callee module.
+- Each import and each re-export whose names list loads, resolved through
+  the table's declared children (§6.9). Whether a spec loads is `names_load`
+  in `src/imports.rs`, the null-import rule's one source; the enumerator
+  calls it and states no rule of its own.
 - Every callee module (§7.6.1), before the record's compiler-owned
-  exclusion: a platform function's module is an edge here.
+  exclusion, so a platform module the module calls is an edge here.
 - The prelude, when the module's fallback bit is on and the session holds a
   prelude table: the record's prelude rule (§7.6, *Prelude edge*), read from
   the same place.
-- Never the module itself.
+- Never the module itself, and never a declared child.
 
 **Consumers.**
 
@@ -3945,88 +3950,270 @@ decoded `.meta` table and a session table answer alike.
    changes no result. That is asserted; the restore rows and REPRO-1081's
    routes are its falsifiers.
 2. **The covered set.** A second crate-private function beside it returns
-   the value of B10's `trace_modules` for a call: the transitive closure of
-   reference edges from the call's `module_path`, each member's edges read
-   from its own table in the tables that call passes as `symbol_tables`;
-   plus `primitives`; less `module_path` itself and `macros`, whose GOT no
-   image defines.
+   the value of B10's `trace_modules` for a root module and a set of
+   tables: the transitive closure of reference edges from the root, each
+   member's edges read from its own table; plus `primitives`; less the root
+   and `macros`, whose GOT no image defines.
 
-**What each caller passes.** All three production callers compute the
-covered set at the call, rooted at the call's `module_path` and read from
-the tables passed beside it, whether or not a target holds a trace form
-(B10's meaning). The two `src/worker.rs` callers read the tables they
-compile against, which for a prepared turn are its prepared view
-([prepared turn](s117-conformance-recovery.md)); the nice worker's object
-(`src/session_v4/nice_worker.rs`) reads the session tables. No caller
-branches on mode or on which module is the entry
+**The finished module at a JIT batch.** No pre-pass and no recompilation is
+needed for an ordinary form. No JIT batch compiles an ordinary form of a
+module file before the file's last reference edge exists. What the session
+holds at that batch:
+
+- **Imports.** A module file is one cluster (§6.2). Its Pass-0 peel records
+  every `import`, `export`, `mod` and `platform` form of the whole file
+  before any body is expanded or checked (§6.1; `attempt_cluster` runs the
+  prologue before Pass 2). An import that a macro expansion produces is
+  recorded during Pass 2, which still precedes the ordinary batch. Every
+  import and re-export edge is present at that batch wherever the form
+  stands, so an import written below the form is not a live case.
+- **Callee modules.** Every ordinary form of the file joins one HM cluster,
+  which is typechecked whole into one staging table
+  ([conformance recovery §1](s117-conformance-recovery.md#1-one-ordinary-hm-cluster-with-source-ordered-macro-checkpoints)).
+  Typecheck records each binding's callees there, including a function used
+  as a value through a qualified name. A dependency gap retries from the
+  top, and codegen runs only for the attempt that reaches `Done` (§6.3).
+- **The view.** The one ordinary codegen batch compiles against the
+  prepared view: a copy of the live tables with the whole staging published
+  into the root's table
+  ([§1.1.1 there](s117-conformance-recovery.md#111-prepared-module-view-and-got-isolation);
+  `worker::plan_staging_commit_inner`). The root's callee modules in that
+  view are those of every ordinary form in the file.
+
+So the set derived from that view is the finished module's. In `arch`'s
+falsifier, the binding that calls `(g x/f)` records `x` as a callee in the
+same staging `g` is compiled from. A cold `--run` therefore covers `x`, as
+the cached object and `--link` do. A whole-file rebuild is one `Replace`
+cluster, so it holds too.
+
+**The one earlier batch: a macro checkpoint.** A `defmacro` publishes its
+clauses at its source position, before the ordinary batch
+([§1.1.2 there](s117-conformance-recovery.md#112-a-complete-defmacro-is-its-own-publication-checkpoint)).
+A trace form in a clause body is compiled from the checkpoint's view, which
+lacks the callee modules of the file's ordinary forms. The set passed is
+that view's closure, a subset of the finished module's.
+
+- **Why the difference is not observable.** A trace records calls made
+  inside its extent.
+  - A clause may call only already-committed macros of its module and
+    already-available dependency modules, whose tables are final.
+  - Its arguments are syntax, so no function value from another module
+    reaches it.
+
+  Every module the extent can enter is therefore in the checkpoint's set.
+  The nice worker's object covers the finished set; its extra members
+  receive no call from the clause.
+- **Grade: asserted, with a named falsifier.** A trace form in a macro
+  clause records fewer frames when the clause is compiled cold than when it
+  runs from a restored object.
+- **Not chosen.**
+  - *A pre-pass for the file's callee modules.* Callees are typecheck's
+    resolution product. A scan of written qualifiers is a search for
+    identity (Principle 24). It misses macro-produced references and
+    trait-implementation homes, and can name a module that never gets a
+    table, which B10 makes a codegen error.
+  - *Recompiling clause bodies at the module's end.* A second compile of
+    published code, for no observable difference.
+
+**Derived once, at commit planning.** The covered set is derived where the
+exact batch is: at the commit-planning step that every prepared publication
+shares, ordinary cluster and macro checkpoint alike, from the prepared view.
+It is stored on the prepared turn beside the batch. The codegen call passes
+the stored set and does not derive it again (Principle 7, Principle 26). The
+nice worker derives the set from the session tables at its object pass,
+with the same function.
+
+**Settled members.** The set is read from members' slot claims. A member
+fixes its claims when it publishes a generation: a fresh cluster's commit,
+or a restore. A member read before then makes the set depend on scheduling.
+A listed member with no table is a codegen error under B10.
+
+The root's own edges are published at its batch. Its imports are behind
+the signature barrier, and its callee modules behind the gap that loaded
+them. Two kinds of member can still be unpublished.
+
+1. **A module reached through a restored member's callee or re-export
+   edge.** The restore walk registers such an edge without waiting, and the
+   root's barrier waits on written imports only. The case needs the
+   restored member to hit while the edge misses. The member's record keys
+   the edge's whole closure, so that happens only when the edge's own entry
+   is absent, stopped or dropped (§7.6, *Defer, retry once, then drop*;
+   §7.7).
+   - **Rule.** Commit planning answers a dependency gap on the first
+     unpublished member, through the one dependency seam
+     (`drive_module_dep`, §6.2). The cluster retries when that member
+     publishes. A macro checkpoint takes the gap path its clause check
+     already has. The gap names a module, like the prologue's; it is
+     int-private and is not a `ResolutionGap`, which names a symbol or a
+     type.
+   - **No deadlock.** A wait closes a cycle only when the member's
+     publication waits on the root through reference edges. The publication
+     check refuses that program in every mode (§6.11), and the acyclicity
+     check before every recorded wait reports it rather than hanging. A
+     parent that awaits its declared children has already published, so a
+     child that imports `super` does not wait.
+   - **The nice worker** meets no such member: a module's object pass
+     follows its last publication, whose batches each waited for their
+     members. Asserted; falsifier: an object pass stopped by B10's located
+     error for a listed module with no table.
+2. **The prelude, for a module compiled before it publishes.** In practice
+   these are the modules the prelude depends on. The prelude's commit waits
+   on its imports and exports, and on their declared children through their
+   parents, so those modules compile first. Waiting would deadlock, which is
+   why the signature barrier excludes the edge (§6.12). The covered set
+   reads the prelude as it stands at the batch, and never waits on it.
+   - **Residual: asserted, with a named falsifier.** For such a module the
+     prelude member depends on scheduling: absent or unpublished cold,
+     complete when the prelude is restored. In a program that builds cold,
+     the module resolves no name through the prelude, because that would
+     close the cycle. The difference is observable only when a function
+     value that the module reaches only through the prelude is passed into a
+     trace form in that module. The shipped stdlib prelude defines no
+     callable.
+   - **Falsifier.** A project prelude defines `f` and exports from a module
+     `m` that holds `(defn run [h] (trace (h 1)))`. The entry calls
+     `(m/run f)`. A cold `--run` records no `f` frame where a warm one does.
+   - **The alternative** is a structural rule: the prelude is not an edge of
+     a module it reaches through reference edges or declared children. It
+     must be decided before the prelude publishes, so it needs a source walk
+     from the prelude, like the cycle rule's (§6.12), extended to declared
+     children and memoised per prelude generation. It changes `arch`'s
+     membership wording, and it costs that walk for every module with the
+     fallback bit. This design recommends the residual until a project
+     needs the frame. `arch` decides (*Routed*).
+
+**A REPL turn and a later turn.** Spec §4.12.3 does not say whether a
+prompt form covers the program when it was entered or when it runs.
+[Tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers) records
+the question as open with the user, and current behaviour stands. What the
+rule above does there:
+
+- Each turn is its own cluster (§6.2). Its batch derives the set from the
+  prepared view of the prompt's current module at that turn. A function the
+  turn defines covers that module's closure as it stands then, including
+  modules the turn itself loads.
+- A later turn that loads a module, by `/import`, an `import` form or a
+  qualified reference, adds the edge only for the forms it compiles. The
+  earlier function is not recompiled, because no redefinition recompiles a
+  dependent
+  ([session transaction §5.2](session-transaction.md#52-no-symbol-is-left-broken)).
+  A third turn that calls it records no frame inside the new module, unless
+  the function was redefined after the load. A function that the module's
+  file defined behaves the same when a turn extends the module.
+- In the next session the entry module is compiled again from its saved
+  source as one cluster (§7.6.2, *Table lifecycle*), so the same function
+  then covers every module the saved file reaches. A non-entry module
+  extended at the prompt and restored from the cache covers its table as
+  its last object pass found it.
+
+**What each caller passes.** At `07bb8e84` the production callers of
+`compile_to_module` are two:
+
+- `worker::compile_and_publish_prepared` is the one JIT caller. It serves
+  pool-worker clusters, eval-thread clusters (each `--run` and `--link`
+  entry and each REPL turn) and macro checkpoints, and passes the set stored
+  on the prepared turn.
+- The nice worker's `emit_object` derives the set from the session tables.
+- `worker::inline_jit_codegen_for_names` is `#[cfg(test)]`. It and the
+  backend's test callers pass the set their fixture means, usually empty.
+
+No caller branches on mode or on which module is the entry
 ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
 
-- **The entry module** passes its own closure. It covers the whole program
-  because every module the program loads is reached from the entry by an
-  import or a call. A declared child the entry never imports is not an
-  import (Reading A) and is not covered; nothing calls into it except
-  through a trait implementation it writes. That that call records the
-  child as a callee module is asserted; the falsifier is an entry form that
-  calls a trait method whose implementation lives in such a child.
+- **The entry module** covers the whole program, because every module the
+  program loads is reached from the entry by an import or a call. A
+  declared child the entry never imports is not covered; nothing calls into
+  it except through a trait implementation it writes. That such a call
+  records the child as a callee module is asserted; the falsifier is an
+  entry form that calls a trait method whose implementation lives in such a
+  child.
 - **A REPL turn** compiles in the prompt's current module through the same
   prepared turn. Its view holds the turn's own callee modules, so a call at
   the prompt through a null import is covered.
-- **Test callers** pass the set their fixture means, usually empty.
 
-**Why reference edges, not all load edges.** Declared children are not
-imports, and a fresh parent enrols its children only after its own
-cluster commits (`process_form/dependency.rs::enrol_declared_submodule`),
-so a child can have no table at the parent's batch. B10 makes a listed
-module with no table a codegen error.
+**Why declared children are not covered.** A declared child is not an
+import. A fresh parent enrols its children only after its own cluster
+commits (`process_form/dependency.rs::enrol_declared_submodule`), so a child
+can have no table at the parent's batch, and B10 makes a listed module with
+no table a codegen error.
 
-**Known residual: a root edge added after the form's batch.** A worker
-batch reads its module's table as of that batch, and a later cluster of the
-same module can add an import or a callee module. The nice worker's object
-reads the finished table. A trace form whose batch precedes its module's
-last new edge can therefore cover less cold under `--run` and the REPL
-than warm or under `--link`. The modules that differ are those reached only
-through those later edges, and a call into one during the trace needs a
-function value or trait implementation to reach it.
-- **Grade: asserted with a named falsifier.** Module `u` holds
-  `(defn g [h] (trace (h 1)))`, then `(import [x [f]])`, then a `main`
-  calling `(g f)`. A cold `--run` records no `x/f` frame and a warm `--run`
-  or `--link` records one.
-- **Routed:** to `arch`, whose tracing §5.1 states the set is a function of
-  the validity record for every mode; and to `qa`, which decides whether
-  the falsifier becomes a cell. Int builds nothing for it in S124.
+**Routed to `arch`** (its contract text; none changes this design):
 
-**For `arch`'s §5.1 wording** (`arch` owns it): the covered compiler-owned
-modules are the platform modules a covered module imports or calls, since
-platform declarations are entry-only (ACT-0973); and the prelude is covered
-through the fallback bit, which int's earlier "load edges" excluded.
+1. Tracing §5.1.1, *Producer*, names three production callers, two in
+   `src/worker.rs`. At `07bb8e84` there are two, one in each file (above).
+2. Tracing §5.1 says a batch that compiles a form before a later cluster of
+   the same file lacks the set. No ordinary form of a file is compiled
+   before a later cluster; the only earlier batch is a macro checkpoint.
+   Its subset differs only in modules its extent cannot enter. `arch`
+   confirms that B10's *Meaning* admits it.
+3. The falsifier holds by this design's construction. Its "form that ends
+   that cluster" has no counterpart inside a file. It stays a valid cell
+   for `qa`.
+4. The prelude residual for modules compiled before the prelude publishes,
+   with its structural alternative.
 
-**Build order** (B10's): `dev`(`src/`) lands the enumerator with the walk
-as its consumer, with its module rows; that builds alone and changes no
-public item. Then, in the one callee-first commit with `dev`(backend), the
-covered-set function and the three callers.
+**Build order** (B10's).
 
-**Module rows** (`src/cache/dependency_record/` tests):
+- **Step 1** builds alone and changes no public item. `dev`(`src/`) lands
+  the enumerator, and the restore walk becomes its consumer. It turns no
+  cell green. The restore rows, the `cache` cells and FN-1 stay green.
+- **Step 2** is one callee-first commit with `dev`(backend). `dev`(`src/`)
+  lands:
+  - the covered-set function;
+  - its derivation at commit planning, stored on the prepared turn, with
+    the unpublished-member gap;
+  - the JIT caller passing the stored set;
+  - the nice worker deriving and passing the set;
+  - the test caller passing an empty set.
 
-- a null import without a use is no edge, and with a qualified use its
-  target is an edge;
+**Module rows.** Step 1, in the `src/cache/dependency_record/` tests:
+
+- a null import without a use is no edge; with a qualified use, its target
+  is an edge;
 - an import named through a declared child resolves to the child's path;
 - the prelude is an edge with the fallback bit and a prelude table, and not
   without either;
-- a platform callee module is an edge, and the module itself is not;
-- the covered set of `e → u → x` holds `u`, `x` and `primitives`, and not
-  `e`, `macros` or a declared child of `e` that `e` does not import.
+- a platform callee module is an edge, and the module itself is not.
 
-**Cells.** The cells B10 turns green, `trace::s124_1039_*` and
-`trace::s124_1078_subject_run` and `_link`, are the backend's
-([evidence delta](../../tests/plan/s124-evidence-delta.md)); int's half
-alone turns none. The restore walk's existing rows stay green.
+Step 2:
+
+- `cache/dependency_record`: the covered set of `e → u → x` holds `u`, `x`
+  and `primitives`, and not `e`, `macros`, or a declared child of `e` that
+  `e` does not import;
+- `worker`, at commit planning:
+  - a binding that is later in the cluster than a trace-holding binding,
+    and that calls `x/f`, puts `x` in the stored set;
+  - a member reached only through a restored member's callee edge, and not
+    yet published, makes planning answer a gap on that member. After it
+    publishes, planning succeeds with the member in the set;
+  - a child that imports `super` while its parent awaits it plans without a
+    gap;
+  - an unpublished prelude is read as it stands and is never a gap;
+  - the set the codegen call receives is the stored set.
+
+**Cells.**
+
+- **Turned green by step 2** with the backend's half (selection by claim
+  and the covered-table read, its rows in
+  [trace codegen](../backend/trace-codegen.md)):
+  - `trace::trace_records_user_function_calls_in_every_mode`;
+  - `trace::s124_1039_w_subject_run`, `_link` and `_repl`;
+  - `trace::s124_1078_subject_run` and `_link`.
+
+  Int's half alone turns none of them.
+- **For `test` to write**, on `qa`'s allocation:
+  - T-1039-lib: a library-held form records no frame inside its caller's
+    functions, in three modes;
+  - `arch`'s falsifier, in a cold `--run`, a warm `--run` and `--link`.
+- **For `qa`:** whether the macro-checkpoint falsifier, the settled-member
+  case and the prelude residual become cells.
 
 **Clean house.** These files are `src/cache/dependency_record.rs`,
-`src/process_form/cache_restore.rs`, `src/worker.rs` and
-`src/session_v4/nice_worker.rs`. The change does not reach
-`src/process_form/dependency.rs`, so ACT-1079 is not drawn in and stays
-carried.
-
+`src/process_form/cache_restore.rs`, `src/worker.rs`,
+`src/process_form.rs` and `src/process_form/macro_clause.rs` for the gap's
+two paths, and `src/session_v4/nice_worker.rs`. The change calls
+`drive_module_dep` and does not change `src/process_form/dependency.rs`, so
+ACT-1079 is not drawn in and stays carried.
 
 ### 7.7 One generation beside an entry (ACT-1083)
 
@@ -4834,7 +5021,15 @@ in source. Each owning filing stays the tracker; this list is the design intent.
       ACT-0981 taken under *clean house* in the same change-set:
       [bind-chain analysis §3.8, §5.3 and §7](bind-chain-analysis.md#7-open-obligations).
     - Int's half of row B10, the covered trace set:
-      [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10).
+      [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10),
+      rooted at the finished module to `arch`'s contract at `e11217ce`;
+      re-checked against source at `07bb8e84`.
+  - Row B8's binary followers landed at `07bb8e84`: three test fixtures that
+    install an extern (`src/agent/mod.rs`, `src/imports/tests.rs`,
+    `src/session_v4/bare_primitive_value_path_tests.rs`) lost the removed
+    sibling-slot argument. No production site in `src/` changed. The same
+    commit moved the backend's `CACHE_SCHEMA_VERSION` from 34 to 35, so
+    every older sidecar is a miss.
     - *Carried past S124, not scheduled:* ACT-1079, ACT-1068, ACT-1005,
       ACT-1062's display reader, ACT-1081's outcome clause, ACT-1082, the
       cache owner (ACT-1085) and the location of the `--link` refusal. Each
