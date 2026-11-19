@@ -46,6 +46,11 @@ rendered as the module-doubled, `$`-mangled instance of a user function
 
 ## Remaining obligation
 
+Backend half designed 2026-11-20 at
+`design/backend/non-concrete-release-contract.md` §7.2.1: the rules, three
+RED rows and the correction. Its unattributed case (no failing member) is
+returned to `arch` there.
+
 - **Backend** (contract §7.2): one prefix fixed structurally at the wrapping
   construction, never by re-parsing text; a real span on every registry error;
   no module re-composition over an already-qualified symbol.

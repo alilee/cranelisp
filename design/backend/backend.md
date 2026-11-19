@@ -410,9 +410,10 @@ display reader (`src/display.rs::build_adt_subst`), carried with
 its four candidate stages (§14.1). ACT-1086's provisional attribution is the
 binary's: the backend traces the set it is passed.
 
-**FIXME 0915's backend half** is not a row. Whether it is on the exit list is
-`sprint`'s reading; what `dev` can act on is
-[release contract](non-concrete-release-contract.md) §7.2.
+**FIXME 0915's backend half** is on the exit list (`sprint`, 2026-11-20). Its
+design, three RED rows and the correction are
+[release contract](non-concrete-release-contract.md) §7.2.1. It waits on
+nothing; its one case without a failing member is returned to `arch` there.
 
 - **Landed in S124.** Each emission-affecting change-set carried its own
   scoped re-baseline.

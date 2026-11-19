@@ -467,26 +467,103 @@ The audience is the program author, so the permitted nouns are source-level.
 Mangles, `__expr`, doubled modules and `0..0` are the wrong nouns for that
 reader, not redaction candidates; nothing is suppressed for confidentiality.
 
-**Readiness for `dev`** (read at `81d186c6`, 2026-11-20):
+#### 7.2.1 The frame as designed (read at `81d186c6`, 2026-11-20)
 
-- *Prefix: ready.* The wrapping construction is
-  `From<CranelispError> for CompilationError` (`error.rs`). It stores the
-  inner error's whole rendering as `cause`, so the inner
-  `codegen error at …:` prefix travels inside it. For an inner
-  `CodegenError` or `ModuleError`, `cause` takes the message alone, as its
-  rustdoc already states; the location travels in
-  `location`, and the outer `CranelispError` renders the one prefix. No
-  signature changes.
-- *Span: ready, and the larger half.* Each requester above passes its span
-  to the registry; the result-root pre-request, which has none, passes its
-  frame's.
-- *Subject: not designed.* The frame names `{module}/{symbol}` with `symbol`
-  taken from the compiled target's `Defn` name, and that name can already
-  carry another module and a signature, for example
-  `lib/(h/helper [(base/Opt Int) Int] Int)` (ACT-1071). Before `dev` acts,
-  `design`(backend) owes one rule for which identity the frame carries,
-  read from what each target kind's name holds. If the rule changes the
-  `symbol` field's type, it is a public change for `arch`.
+All three parts are private to the backend except the case under
+*Unattributed*. No variant, field or signature changes, and no persisted shape
+changes.
+
+**What the carrier holds stays as it is.** `CodegenFailed.module` is the
+module being compiled. `symbol` is the failing target's executable label, from
+`callable_target_label` (`lib.rs`): a binding's table key, an overload arm's
+or macro clause's generated label. For a monomorphised instance the table key
+is its canonical instance key (`concrete_callable_key`, `cranelisp-types`),
+which names the template's module itself, for example
+`(h/helper [(base/Opt Int) Int] Int)`. [Compile-to-module](compile-to-module.md)
+§15 attributes by this pair, `src/worker/tests.rs` asserts it, and
+[int §9.1](../int/int.md) rules that it is correct data and is presented, not
+changed. Swapping in a source-level subject would change a public field's
+meaning and break both readers, so the frame changes its rendering instead.
+
+**Rule 1: one prefix.** The wrapping construction is
+`From<CranelispError> for CompilationError` (`error.rs`). Today it stores the
+inner error's whole rendering as `cause`, so the inner
+`codegen error at …:` prefix renders inside the outer one.
+
+- `cause` takes `CranelispError::message()` and `location` takes
+  `CranelispError::location()`, for every variant that has both. `Platform`
+  keeps its rendering as `cause`, because its message alone drops detail, and
+  contributes its location.
+- `From<CompilationError> for CranelispError` already carries `location`
+  outward, so the outer `codegen error at {span}:` is then the only
+  prefix.
+- `cause` then matches what its rustdoc already says.
+
+**Rule 2: a real span.** A registry error is located where its glue was
+requested. The registry never invents a location.
+
+- Each request entry (`request_if_owning`, `request_vec_elem_adapter`)
+  takes the requester's `Span`. The registry's private error helper takes a
+  span argument and has no default, so a requester that forgets one does not
+  compile.
+- The registry records, with each entry, the span of its first request. An
+  error raised later for that entry, for example in `finish()`'s declare and
+  define, is located there.
+- Requesters pass the reference's span where they hold one: the IO payload
+  node, the Vec element site and the capture at its lambda. Otherwise they
+  pass their frame's span, the compiled `Defn`'s, which
+  `compile_defn_in_module` holds. The typed release emitter takes the frame's
+  span.
+- The result-root pre-request (`lib.rs`) requests per body. It passes that
+  body's `Defn` span.
+- A nested field's glue, built inside its parent's, is located at the
+  parent request's span.
+- `CompileContext::constructor_metas` takes its caller's span for its
+  keying-drift and short-declaration refusals. Its one production reader, the
+  trace descriptor baker, passes the trace form's span.
+
+**Rule 3: the subject is named once.** `CodegenFailed`'s `Display` never
+joins `module` and `symbol` into one path. It names the symbol as carried and
+the module as a separate noun: `codegen failed for {symbol} in {module}: {cause}`.
+A doubled module cannot be built for any kind of label, and nothing reads the
+symbol's text. The `module` field is never empty for an error that
+`compile_to_module` returns: its boundary converts with `module_path`, which
+every site inside the entry holds, instead of the generic `From`.
+`SymbolNotCompilable` and `ModuleError` render under the same rule.
+
+- *Not the backend's.* An overload arm's or macro clause's `$` label and
+  `__expr` reach the reader as carried. Int's projection to the name the user
+  wrote is [int §9.1](../int/int.md).
+
+**Unattributed: returned to `arch`.** An error with no failing member, such
+as a missing module table, the dealloc intrinsic, the glue fence or GOT
+emission, has a module and no symbol. `CodegenFailed.symbol` is a `Symbol`, so
+the generic conversion fills it, and `module`, with an empty string: a
+fictitious value that renders `codegen failed for /` (the shape
+`tests/spec_08_modules.rs` guards against). Representing the absence needs an
+optional subject or a module-level variant on the public
+`CompilationError`. That is `arch`'s change to decide. Until then, `dev`
+fills `module` (Rule 3), leaves the empty symbol, and adds no row for this
+case.
+
+**Rows for `dev`(backend), each RED at `81d186c6`.** They go beside
+`module_assembly_tests.rs`'s attribution cells, through production
+`compile_to_module`:
+
+1. *Prefix.* A body failing with a located `CodegenError` converts to a
+   `CranelispError` whose rendering holds exactly one `codegen error at`, at
+   the inner span. Today it holds two.
+2. *Subject.* A failing instance target whose key names its template's
+   module renders with no `{module}/` before that key. A failing plain
+   binding is the control, named with its module once.
+3. *Span.* A registry error reached through a body, for example glue
+   requested for an ADT whose type definition is missing from the tables,
+   is located at that body's span or the reference's, not `0..0`. If no
+   fixture reaches a registry error through the entry, `dev` reports which
+   seam refused first, and `qa` re-reads the allocation.
+
+The correction is Rules 1–3 in one change-set, with the rows going green and
+the attribution cells unchanged.
 
 ### 7.3 The category census, armed (open)
 
