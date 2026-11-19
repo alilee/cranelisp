@@ -5330,3 +5330,124 @@ fn nullary_ctor_and_function_candidates_both_list_at_bare_lookup() {
         &bare,
     );
 }
+
+fn s124_type_session(turns: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .env("CRANELISP_NO_LENIENT", "1")
+        .timeout(std::time::Duration::from_secs(10))
+        .stdin(&format!("(import [primitives [Int add-i64]])\n{turns}"))
+        .output()
+}
+
+// spec: repl/spec.md §3; repl/spec.md §14.5; repl/spec.md §18 — REPRO-1089 safety fence
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_1089_existing_definition_subject() {
+    let out = s124_type_session(
+        "(defn q [:Int n] n)\n(q 3)\n/type (defn q [:Int n] (add-i64 n 100))\n(q 3)\n(add-i64 5 5)\n",
+    );
+    let lines = repl_output_lines(&out.stdout);
+    assert_eq!(
+        (
+            out.status.code(),
+            lines.iter().filter(|s| *s == ":primitives/Int 3").count(),
+            lines.iter().any(|s| s == ":primitives/Int 10")
+        ),
+        (Some(0), 2, true),
+        "exit, unchanged calls, continued session; status={:?}\n{}{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §3; repl/spec.md §14.5; repl/spec.md §18 — REPRO-1089 safety fence
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_1089_new_name_subject() {
+    let out = s124_type_session("/type (defn q [:Int n] n)\n/list\n(q 3)\n(add-i64 5 5)\n");
+    let lines = repl_output_lines(&out.stdout);
+    assert_eq!(
+        (
+            out.status.code(),
+            lines.iter().any(|s| s == "(no definitions)"),
+            lines.iter().any(|s| s.to_lowercase().contains("error:")
+                && regex::Regex::new(r"\bq\b").unwrap().is_match(s)),
+            lines.iter().any(|s| s == ":primitives/Int 10")
+        ),
+        (Some(0), true, true, true),
+        "exit, q absent from list, q call rejected, continued session; status={:?}\n{}{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §3 — REPRO-1089 acceptance evidence
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_1089_stale_type_subject() {
+    let out = s124_type_session("\"abc\"\n/type (defn q [:Int n] n)\n").assert_ok();
+    assert!(
+        !repl_output_lines(&out.stdout)
+            .iter()
+            .any(|s| s == ":primitives/String"),
+        "the definition query must not report the preceding expression's type: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §3; repl/spec.md §18 — REPRO-1089 acceptance evidence
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_1089_changed_signature_subject() {
+    let out = s124_type_session(
+        "(defn q [:Int n] n)\n/type (defn q [:Int n :Int m] (add-i64 n m))\n/sig q\n(q 3)\n",
+    )
+    .assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    let signatures: Vec<_> = lines
+        .iter()
+        .filter(|s| s.ends_with(" user/q ; defn"))
+        .collect();
+    assert_eq!(
+        (
+            signatures.len() >= 2
+                && signatures.last().is_some_and(
+                    |s| s.as_str() == ":(Fn [primitives/Int] primitives/Int) user/q ; defn"
+                ),
+            lines.iter().any(|s| s == ":primitives/Int 3")
+        ),
+        (true, true),
+        "signature and callable must stay unchanged: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §3 — REPRO-1089 expression control
+#[test]
+fn s124_1089_expression_control() {
+    let out = s124_type_session("(defn q [:Int n] n)\n(q 3)\n/type (q 3)\n(q 3)\n(add-i64 5 5)\n")
+        .assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    let responses: Vec<_> = lines
+        .iter()
+        .filter(|s| s.starts_with(":primitives/Int"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        responses,
+        [
+            ":primitives/Int 3",
+            ":primitives/Int",
+            ":primitives/Int 3",
+            ":primitives/Int 10"
+        ],
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
