@@ -3917,11 +3917,15 @@ record is a miss.
 set is rooted at the finished module in every mode
 ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers), row B10
 in [§5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
-Checked against source at `07bb8e84`, where none of it is built. Private to
-`src/`; the only inter-crate change is row B10's parameter, which `arch`
-approved. Four points return to `arch` (*Routed*, below). None blocks
-either build step: the design builds as stated, and the structural
-alternative in point 4 would be an addition to it.
+The enumerator and the restore walk landed at `69cd9c18`, the covered set
+and both callers at `f8c55626`. Re-read against source at `ed6f4d87` for
+two corrections:
+
+- **C1, ACT-1087:** the object pass waits for the prelude (*Settled
+  members*, below). Private to `src/`; no public change.
+- **C2, ACT-1086:** a form in a generic library function is covered from
+  the library (*The form's home*, below). It needs a public change to row
+  B10's parameter, which `arch` decides (*Routed*).
 
 **The enumerator.** One crate-private function in
 `src/cache/dependency_record.rs` returns a module's reference edges (§7.6),
@@ -4052,35 +4056,145 @@ them. Two kinds of member can still be unpublished.
      check before every recorded wait reports it rather than hanging. A
      parent that awaits its declared children has already published, so a
      child that imports `super` does not wait.
-   - **The nice worker** meets no such member: a module's object pass
-     follows its last publication, whose batches each waited for their
-     members. Asserted; falsifier: an object pass stopped by B10's located
-     error for a listed module with no table.
-2. **The prelude, for a module compiled before it publishes.** In practice
-   these are the modules the prelude depends on. The prelude's commit waits
-   on its imports and exports, and on their declared children through their
-   parents, so those modules compile first. Waiting would deadlock, which is
-   why the signature barrier excludes the edge (§6.12). The covered set
-   reads the prelude as it stands at the batch, and never waits on it.
-   - **Residual: asserted, with a named falsifier.** For such a module the
-     prelude member depends on scheduling: absent or unpublished cold,
-     complete when the prelude is restored. In a program that builds cold,
-     the module resolves no name through the prelude, because that would
-     close the cycle. The difference is observable only when a function
-     value that the module reaches only through the prelude is passed into a
-     trace form in that module. The shipped stdlib prelude defines no
-     callable.
-   - **Falsifier.** A project prelude defines `f` and exports from a module
-     `m` that holds `(defn run [h] (trace (h 1)))`. The entry calls
-     `(m/run f)`. A cold `--run` records no `f` frame where a warm one does.
-   - **The alternative** is a structural rule: the prelude is not an edge of
-     a module it reaches through reference edges or declared children. It
-     must be decided before the prelude publishes, so it needs a source walk
-     from the prelude, like the cycle rule's (§6.12), extended to declared
-     children and memoised per prelude generation. It changes `arch`'s
-     membership wording, and it costs that walk for every module with the
-     fallback bit. This design recommends the residual until a project
-     needs the frame. `arch` decides (*Routed*).
+2. **The prelude, for a module compiled before it publishes.** The
+   population and the accepted residual are `arch`'s
+   ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers),
+   *Not met in source*): the declared children of the modules the prelude
+   depends on, and the modules those children load. Waiting at the batch
+   would deadlock `prelude → parent → child → prelude`, which is why the
+   signature barrier excludes the edge (§6.12). The JIT batch's walk covers
+   the prelude as it stands and does not follow its edges.
+
+**The object pass waits (C1, ACT-1087).** The object pass is off every
+publication path, so it can wait for any member, the prelude included.
+It reads members through the same published predicate as commit planning.
+An unpublished member defers the pass until that member publishes or
+fails.
+
+- **Why it is needed.** At `ed6f4d87` the nice worker reads every member
+  as published (`|_| true` in `emit_object`). A child of a prelude
+  dependency reaches its terminal pool, and its object pass becomes
+  claimable, before its parent is terminal (FIXME 0342's deferral). The
+  prelude is still blocked in Pass 0 on that parent's re-export
+  (`handle_export` waits on an in-flight target), so its live table
+  records no later `export`. The object therefore covers the prelude with
+  only the edges recorded so far. The cache keeps that object valid, and
+  restores and `--link` use it. This is why `qa` sees the frame missing in
+  every launch, not only the first (ACT-1087).
+- **The rule.** The walk takes one choice, made by its caller, for an
+  unpublished prelude:
+  - commit planning reads it as it stands;
+  - the object pass answers it as unpublished, like any other member.
+  The settled-member predicate itself is the one commit planning uses
+  (ready for declaration, or failed).
+- **Deferral.** An object pass answered with an unpublished member goes
+  back to the object queue, held on that member. It becomes claimable
+  again when the member reaches its terminal pool or fails. It reports no
+  object completion while held, so `--run`'s object wait and the `--link`
+  flush wait for it.
+- **No deadlock.** No publication, and no wait a publication makes, waits
+  on object completion. The prelude has published or failed before an
+  entry's batch runs, so it has before any object wait or flush. When the
+  session begins to wait for objects, a pass still held on an unpublished
+  member stops through the object pass's existing stop record, naming the
+  member. The stop refuses `--link` (T-LINK-STOP) and leaves `--run`
+  to compile the module next launch. Asserted; falsifier: that stop
+  observed in any program that builds.
+- **What it changes.** A module's object and its record are a function of
+  the program, as B10 states. The settled-member case 1, which was asserted
+  for the nice worker, becomes structural: the pass cannot read an
+  unpublished member.
+- **What remains** is `arch`'s accepted residual, the cold JIT batch: a
+  first `--run`, a `--no-cache --run` and a REPL start omit the frame, and a
+  later `--run` and `--link` record it.
+
+**Which modules compile while the prelude is unpublished.** `arch` asked
+whether a module outside its population can reach a JIT batch while the
+prelude holds a table and has not published. On the paths read at
+`ed6f4d87`, none can.
+
+- **A fresh load.** The `Replace` arm of `process_cluster_once` injects the
+  prelude before its Pass-0 peel. The first module to find no prelude table
+  registers the prelude and blocks on it before it registers any dependency
+  of its own. While the prelude is in flight, the only modules registered
+  are those the prelude's own load activity registers, transitively:
+  - its imports and re-exports, which must have the implicit import off,
+    or the cycle is refused (§6.12);
+  - the declared children those modules enrol;
+  - every module any of these loads, by an import, a re-export or a
+    qualified reference.
+
+  This is `arch`'s population, read transitively and including loads by
+  qualified reference.
+- **A REPL turn** takes the `Additive` arm, which does not inject. It runs
+  only after startup, and startup's entry batch waited on the prelude.
+- **A prelude rebuild** is eval-synchronous. The reload order puts each
+  module whose implicit import is on after the prelude (§6.12), apart
+  from this same population.
+- **A module the prelude reaches only through `export` or a qualified
+  reference** while its implicit import is on can compile against the
+  in-flight prelude (§6.12, *Reach the static gate does not see*). The
+  publication check then refuses the program, so no trace runs.
+- **Grade: asserted, with a named falsifier.** The falsifier is a JIT
+  batch outside the population whose commit planning reads the prelude
+  while the scheduler does not hold it ready for declaration. The
+  scheduler trace shows it.
+
+**The form's home (C2, ACT-1086).** Spec §4.12.3 roots a form's coverage
+at the module whose source holds the form. A batch's targets do not all
+have that module. A generic or constrained function from another module is
+instantiated in the demanding module, with its own slot, and compiled in
+that module's batch
+([monomorphisation §3.7](../typecheck/monomorphisation.md#37-cross-module-body-recheck-scoping)).
+A form in its body was written in the template's module.
+
+- **Mechanism, read from source at `ed6f4d87` and not executed.**
+  - Commit planning derives one set per batch, rooted at the batch's
+    module (`worker::covered_set`).
+  - The backend covers that set and the batch's `module_path`
+    (`trace_codegen::discover_traced_fns_from_tables`, reached with the
+    compile context's current module).
+  - In ACT-1086's subject, `m/run` is generic, so its instance is compiled
+    in `app`'s batch, and its form covers `app`'s closure. That closure
+    holds `z`, so `z/zf` and `z/zg` are recorded.
+  - The control's `run` is monomorphic. It is compiled in `m`'s own batch,
+    under `m`'s set.
+- **The prompt observation.** At the REPL, `(run af)` records `app/af`
+  because the prompt's module is the batch's, so it is covered. In the batch
+  modes the same call records no `app/af` frame. Int's source does not
+  explain that. It turns on whether the swap intercepts a function value
+  taken in the same batch, which is the backend's lowering (*Routed*).
+  After C2 neither mode covers `app`, so both give 40.
+- **The home of a target** is its template's module when the target is a
+  minted instance, and the batch's module otherwise. The instance carries
+  it: `Life::Concrete`'s `minted_from` holds the `InstanceLink`, whose
+  `template` names the defining module. It is read, never re-derived
+  ([Principle 24](../arch/principles/24-resolve-once.md)).
+- **Int's half.** Commit planning derives one covered set for each
+  distinct home among the batch's targets, by the same walk over the same
+  prepared view, and stores them on the prepared turn. The object pass does
+  the same. A home other than the batch's module is a dependency of that
+  module, behind its barrier or its gap, so it adds no unpublished-member
+  case. Its closure is inside the batch module's, so the object still
+  references only GOTs that every image holding it defines.
+- **The backend's half.** A form covers its body's home and that home's
+  set, not `module_path` and one set. This is `design`(backend)'s and
+  `dev`(backend)'s.
+- **The crossing.** Row B10's parameter is one set per `compile_to_module`
+  call. Its meaning states that the backend always covers `module_path`.
+  Neither can state a batch whose targets have different homes, so C2
+  changes the parameter's type and meaning. `arch` decides the shape
+  (*Routed*). Whatever the shape, the home is the instance's recorded
+  template and is derived once, and a home the backend finds with no set
+  is a located codegen error.
+- **Persistence.** No persisted shape changes. An object holding such a
+  form changes content, and the build identity separates it.
+- **Not chosen.**
+  - *Splitting the batch by home.* The instance's slot is in the
+    demanding module, so its call still passes that `module_path`, which
+    the backend covers.
+  - *Instantiating in the template's module.* That is typecheck's slot
+    ownership (§3.7 there) and a far larger change.
 
 **A REPL turn and a later turn.** Spec §4.12.3 does not say whether a
 prompt form covers the program when it was entered or when it runs.
@@ -4106,7 +4220,7 @@ rule above does there:
   extended at the prompt and restored from the cache covers its table as
   its last object pass found it.
 
-**What each caller passes.** At `07bb8e84` the production callers of
+**What each caller passes.** At `ed6f4d87` the production callers of
 `compile_to_module` are two:
 
 - `worker::compile_and_publish_prepared` is the one JIT caller. It serves
@@ -4114,6 +4228,7 @@ rule above does there:
   entry and each REPL turn) and macro checkpoints, and passes the set stored
   on the prepared turn.
 - The nice worker's `emit_object` derives the set from the session tables.
+  Until C1 it reads every member as published.
 - `worker::inline_jit_codegen_for_names` is `#[cfg(test)]`. It and the
   backend's test callers pass the set their fixture means, usually empty.
 
@@ -4137,83 +4252,82 @@ commits (`process_form/dependency.rs::enrol_declared_submodule`), so a child
 can have no table at the parent's batch, and B10 makes a listed module with
 no table a codegen error.
 
-**Routed to `arch`** (its contract text; none changes this design):
+**Routed to `arch`.**
 
-1. Tracing §5.1.1, *Producer*, names three production callers, two in
-   `src/worker.rs`. At `07bb8e84` there are two, one in each file (above).
-2. Tracing §5.1 says a batch that compiles a form before a later cluster of
-   the same file lacks the set. No ordinary form of a file is compiled
-   before a later cluster; the only earlier batch is a macro checkpoint.
-   Its subset differs only in modules its extent cannot enter. `arch`
-   confirms that B10's *Meaning* admits it.
-3. The falsifier holds by this design's construction. Its "form that ends
-   that cluster" has no counterpart inside a file. It stays a valid cell
-   for `qa`.
-4. The prelude residual for modules compiled before the prelude publishes,
-   with its structural alternative.
+1. **C2 needs a public change** to row B10's parameter: one covered set per
+   home of the batch's targets, and the backend covering a form's home in
+   place of `module_path` (*The form's home*). The shape is `arch`'s. Int's
+   half and its rows wait on it.
+2. **Tracing §5.1, *What differs*, is contradicted by source at
+   `ed6f4d87`.** It says a restored object and `--link` cover the prelude's
+   whole closure. The object pass reads the in-flight prelude's partial
+   table, so they do not (C1, *Why it is needed*). C1 makes the statement
+   true and needs no contract change. Until C1 lands, every launch omits the
+   frame.
+3. **The population question** (tracing §5.1, *Reopened by*) is answered
+   above: no module outside the population, read transitively and
+   including loads by qualified reference.
 
-**Build order** (B10's).
+**Routed to the backend** (`design`(backend)): whether a trace swap
+intercepts a call through a function value taken in the same batch. The
+batch modes record no `app/af` frame where the prompt records one
+(*The form's home*). It does not change C2. It decides whether an entry form
+passed an entry function records that function in `--run`.
 
-- **Step 1** builds alone and changes no public item. `dev`(`src/`) lands
-  the enumerator, and the restore walk becomes its consumer. It turns no
-  cell green. The restore rows, the `cache` cells and FN-1 stay green.
-- **Step 2** is one callee-first commit with `dev`(backend). `dev`(`src/`)
-  lands:
-  - the covered-set function;
-  - its derivation at commit planning, stored on the prepared turn, with
-    the unpublished-member gap;
-  - the JIT caller passing the stored set;
-  - the nice worker deriving and passing the set;
-  - the test caller passing an empty set.
+**Build order.** Steps 1 and 2 of B10 landed at `69cd9c18` and
+`f8c55626`.
 
-**Module rows.** Step 1, in the `src/cache/dependency_record/` tests:
+- **C1** builds alone in `src/` and changes no public item. It lands:
+  - the walk's caller-chosen treatment of an unpublished prelude;
+  - the object pass reading the published predicate;
+  - the deferral and re-arm on the object queue, and the stop when objects
+    are awaited.
 
-- a null import without a use is no edge; with a qualified use, its target
-  is an edge;
-- an import named through a declared child resolves to the child's path;
-- the prelude is an edge with the fallback bit and a prelude table, and not
-  without either;
-- a platform callee module is an edge, and the module itself is not.
+  It turns REPRO-1087's warm `--run` and `--link` legs green, with the
+  control unchanged. The cold legs stay RED, carried as `arch`'s accepted
+  residual.
+- **C2** waits for `arch`'s decision. It is then one callee-first commit
+  with `dev`(backend). `dev`(`src/`) lands the per-home derivation at commit
+  planning and at the object pass, stored on the prepared turn. It turns
+  REPRO-1086's subject legs green, with the control and the entry-function
+  subject unchanged.
 
-Step 2:
+**Module rows.** Steps 1 and 2 landed with theirs, in the
+`src/cache/dependency_record/` and `worker` tests.
 
-- `cache/dependency_record`: the covered set of `e → u → x` holds `u`, `x`
-  and `primitives`, and not `e`, `macros`, or a declared child of `e` that
-  `e` does not import;
-- `worker`, at commit planning:
-  - a binding that is later in the cluster than a trace-holding binding,
-    and that calls `x/f`, puts `x` in the stored set;
-  - a member reached only through a restored member's callee edge, and not
-    yet published, makes planning answer a gap on that member. After it
-    publishes, planning succeeds with the member in the set;
-  - a child that imports `super` while its parent awaits it plans without a
-    gap;
-  - an unpublished prelude is read as it stands and is never a gap;
-  - the set the codegen call receives is the stored set.
+C1:
+
+- `cache/dependency_record`: with the prelude unpublished, the walk the
+  object pass asks for answers the prelude as unpublished; the walk commit
+  planning asks for covers it and follows none of its edges;
+- the object queue: a deferred pass reports no completion; it runs when
+  its member publishes, and when its member fails; a member still
+  unpublished when objects are awaited stops the pass with the located
+  cause;
+- `nice_worker`: a child of a prelude dependency, built before the prelude
+  publishes, gets an object whose set holds a module the prelude re-exports.
+
+C2:
+
+- `worker`, at commit planning: a batch holding an instance whose template
+  lives in `m` stores a set for `m`, rooted at `m`, which excludes the batch
+  module and its other callees; a batch of only its own definitions stores
+  one set, for the batch module, unchanged;
+- `nice_worker`: the object pass stores the same sets for the same batch.
 
 **Cells.**
 
-- **Turned green by step 2** with the backend's half (selection by claim
-  and the covered-table read, its rows in
-  [trace codegen](../backend/trace-codegen.md)):
-  - `trace::trace_records_user_function_calls_in_every_mode`;
-  - `trace::s124_1039_w_subject_run`, `_link` and `_repl`;
-  - `trace::s124_1078_subject_run` and `_link`.
+- **REPRO-1086 and REPRO-1087** are `test`'s, as the filings allocate
+  them. C1 and C2 turn the legs named above.
+- **For `qa`:** whether the macro-checkpoint falsifier, the population
+  falsifier above and the deferral stop become cells.
 
-  Int's half alone turns none of them.
-- **For `test` to write**, on `qa`'s allocation:
-  - T-1039-lib: a library-held form records no frame inside its caller's
-    functions, in three modes;
-  - `arch`'s falsifier, in a cold `--run`, a warm `--run` and `--link`.
-- **For `qa`:** whether the macro-checkpoint falsifier, the settled-member
-  case and the prelude residual become cells.
-
-**Clean house.** These files are `src/cache/dependency_record.rs`,
-`src/process_form/cache_restore.rs`, `src/worker.rs`,
-`src/process_form.rs` and `src/process_form/macro_clause.rs` for the gap's
-two paths, and `src/session_v4/nice_worker.rs`. The change calls
-`drive_module_dep` and does not change `src/process_form/dependency.rs`, so
-ACT-1079 is not drawn in and stays carried.
+**Clean house.** C1 touches `src/cache/dependency_record.rs`,
+`src/session_v4/nice_worker.rs` and `src/scheduler.rs`. C2 touches
+`src/worker.rs`, `src/session_v4/nice_worker.rs` and
+`src/cache/dependency_record.rs`. Neither changes
+`src/process_form/dependency.rs`, so ACT-1079 is not drawn in and stays
+carried.
 
 ### 7.7 One generation beside an entry (ACT-1083)
 
@@ -5022,8 +5136,17 @@ in source. Each owning filing stays the tracker; this list is the design intent.
       [bind-chain analysis §3.8, §5.3 and §7](bind-chain-analysis.md#7-open-obligations).
     - Int's half of row B10, the covered trace set:
       [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10),
-      rooted at the finished module to `arch`'s contract at `e11217ce`;
-      re-checked against source at `07bb8e84`.
+      landed at `69cd9c18` and `f8c55626`.
+  - *Corrections designed 2026-11-20, read at `ed6f4d87`, not in source:*
+    - C1, the object pass waits for the prelude (ACT-1087), in
+      [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10);
+      `dev`(`src/`) alone.
+    - C2, a form's coverage rooted at its home (ACT-1086), in the same
+      section; it waits on `arch`'s decision on row B10's parameter.
+    - The observed type of an executed expression has no default
+      (FIXME 0929's binary site):
+      [result owner §4.3.1](result-owner.md#431-the-observed-type-has-no-default);
+      `dev`(`src/`) alone.
   - Row B8's binary followers landed at `07bb8e84`: three test fixtures that
     install an extern (`src/agent/mod.rs`, `src/imports/tests.rs`,
     `src/session_v4/bare_primitive_value_path_tests.rs`) lost the removed

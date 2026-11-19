@@ -324,9 +324,32 @@ close the counter window
   ([test runner §6](test-runner.md#6-prepare-execute-and-report)).
 - `--run` reads `main`'s code pointer, result type and code owner in one entry
   read (`read_main_entry`); no separate return-type lookup can fall back. The
-  REPL's observed-type default (`Type::Int` when neither a display nor an
-  inferred type exists) never decides release, because an executed `__expr` is
-  a concrete body whose codegen view supplies the key.
+  REPL reads `__expr`'s observed type in its same read (§4.3.1).
+
+#### 4.3.1 The observed type has no default
+
+An executed `__expr` is a concrete callable body, so its scheme always
+carries a type. The REPL's observed type is the check's display type, else
+the body's inferred type, else the result of the arm's scheme. That chain
+is total, and no type is supplied by default.
+
+- **Why it matters.** The observed type decides more than display. It
+  decides whether the driver forces an `IO` tree, and it decides the exit
+  code. At `ed6f4d87` the chain ends in `Type::Int` (`execute_compiled_expr`,
+  `src/pipeline.rs`). Suppose an `IO` result reached that arm. The driver
+  would not force it, and the release key from the codegen view would
+  apply `a`'s glue to an unforced `IO` node. Source does not show whether
+  both earlier sources can be absent at once, so that arm has no grade.
+  Removing it decides the question structurally (safety register row R18).
+- **`/type`** reads the same scheme result (`lift_expr_type`). After a
+  successful check, `__expr` is absent only through an invariant
+  violation. That is a located error, never a printed `:Int`
+  (`typecheck_only`, `src/repl/commands.rs`). No value or release is
+  involved, so the only face is a wrong display.
+- **Module rows** (`dev`(`src/`)): an `__expr` with no display type and no
+  inferred body type takes its scheme's result, and an `IO` scheme selects
+  forcing; `/type` with no `__expr` after a clean check returns the located
+  error.
 
 ### 4.4 `Pure` and non-IO results
 
@@ -427,5 +450,7 @@ code-lifetime guard for invocation, not another glue-registry writer
 
 ## Open obligations
 
+- **The observed type's default (FIXME 0929).** §4.3.1 is designed and not
+  in source at `ed6f4d87`; `dev`(`src/`) owes it with its module rows.
 - **Cache-hit result e2e (conditional).** Owed by the change-set that widens
   cache restoration to the CLI target (§3.2.1). `qa` allocates it then.
