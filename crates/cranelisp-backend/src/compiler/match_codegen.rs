@@ -467,9 +467,9 @@ mod tests {
         cranelisp_intrinsics::alloc::heap_dealloc(ptr);
     }
 
-    // spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
-    #[test]
-    fn test_compile_match_with_fields() {
+    /// `(match (Some 99) [(Some x) x (None) 0])` with every carrier typecheck
+    /// records: the scrutinee's constructor call and both pattern constructors.
+    fn some_none_match() -> (Expr, TestCheckResult) {
         use cranelisp_types::{MatchArm, Pattern};
 
         // (match (Some 99) [(Some x) x (None) 0])
@@ -555,6 +555,13 @@ mod tests {
                 symbol: Symbol::from("None"),
             },
         );
+        (expr, check)
+    }
+
+    // spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
+    #[test]
+    fn test_compile_match_with_fields() {
+        let (expr, check) = some_none_match();
         let tables = option_type_tables();
 
         let result = test_compile_and_run(&expr, &check, &tables);
@@ -563,5 +570,28 @@ mod tests {
             "match with fields should compile: {result:?}"
         );
         assert_eq!(result.unwrap(), 99, "match should extract field value");
+    }
+
+    // spec: design/backend/backend.md §2 — a constructor pattern that reaches
+    // codegen with no resolved_ctor carrier is a located codegen error, never a
+    // name-resolved fallback. `test_compile_match_with_fields` is the control.
+    #[test]
+    fn a_constructor_pattern_with_no_carrier_is_a_codegen_error() {
+        let (expr, mut check) = some_none_match();
+        let some_pattern = Span::new(22, 30);
+        check.pattern_ctors.remove(&some_pattern);
+        let tables = option_type_tables();
+
+        match test_compile_and_run(&expr, &check, &tables) {
+            Err(CranelispError::CodegenError { message, location }) => {
+                assert!(
+                    message.contains("pattern constructor 'Some'")
+                        && message.contains("no resolved_ctor carrier"),
+                    "names the constructor and the missing carrier: {message}"
+                );
+                assert_eq!(location.span, some_pattern, "located at the pattern");
+            }
+            other => panic!("a carrier-less constructor pattern must be refused, got {other:?}"),
+        }
     }
 }
