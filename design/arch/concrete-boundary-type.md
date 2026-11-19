@@ -196,8 +196,6 @@ them was the original leak; treat any new one as a defect.
   field carries a written type. Missing field types and undeclared variables are located
   frontend errors, so no legal monomorphic declaration has a free field variable.
 - Open residuals outside §3.1.2:
-  - FIXME 0931 — constructors joining monomorphisation, which removes the largest
-    signature-path population.
   - `MonoExpr::lenient_from_expr` and `synthetic_local_from_expr` fill a non-concrete node type
     with a placeholder that only the signature path may read. This is the fabrication site
     tracked by safety-register row R18. Ruled end state: both builders are deleted and

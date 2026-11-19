@@ -650,8 +650,9 @@ state of `Realization::Body`, and heap classification is total over `ConcreteTyp
 - `compile_to_module` in `cranelisp-backend` is the sole compilation function
   ([Principle 11](principles/11-single-pipeline-mode-parameters.md)). It takes the module, the
   `CallableTarget`s to compile, the session tables, the modules a trace form in that module
-  covers ([tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend)) and a Cranelift
-  module, and returns `CompilationArtifacts`. It is module-type-agnostic: the caller extracts an entry point for
+  covers and a Cranelift module, and returns `CompilationArtifacts`. Row B10-C2 moves the
+  covered set onto each target; it is decided and not built
+  ([tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend)). It is module-type-agnostic: the caller extracts an entry point for
   the JIT or the full map for object emission.
 - Backend-owned runtime carriers such as `Jit` and `Code` stay in the backend because they
   hold runtime state. `Realization::Body.code` is the serde-skipped lifecycle owner of
@@ -751,9 +752,11 @@ single-constructor value classifies as a heap value. The binary's display walk
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
 decided change that no phase checkpoint has reported yet; a row that names a commit is in
-source and stays until the Phase 5 checkpoint reports it. Source was read at `f8c55626`. The user approved the rows marked
-*user*; `arch` approved the rows dated 2026-11-19 against the three questions (bounded
-context, simple API, strongly typed) and re-read each against them on that date. The exact delta of a
+source and stays until the Phase 5 checkpoint reports it. Source was read at `f8c55626`, and
+at `518489c2` for the rows dated 2026-11-20. The user approved the rows marked
+*user*; `arch` approved the rows dated 2026-11-19 and 2026-11-20 against the three questions
+(bounded context, simple API, strongly typed), with a yes to each for every module the row
+touches. The exact delta of a
 *user* row is in the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and
 R10-10) or the [S123 packet](../../sprints/s123-api-packet.md) Part B (K11 and R10-1 to
 R10-8), and is not restated. S123 row R10-6 is superseded by R10-9 and does not land. A
@@ -772,19 +775,54 @@ design that needs a public change outside these rows stops and returns to `arch`
 | Trace reader | `cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos` removed with its catalog entry. It has no caller | intrinsics | backend drops the name from `is_extern_primitive`; [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) conventions table and [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) | intrinsics −1 | `arch`, 2026-11-19 | [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) |
 | B13 (ACT-1070) | `Jit::jit_module` returns `&mut (impl cranelift_module::Module + CodeFinalizer)`, not `&mut JITModule`. `impl CodeFinalizer for cranelift_jit::JITModule` is removed. The returned module is a crate-private wrapper that compiles every call far. No public type is added. The method's rustdoc states the promise: no call in a function defined through this module depends on where the JIT places code. In source at `790f4c9a` as `jit::FarCallModule` | backend | none; the binary's four callers pass the value straight to `compile_to_module` and do not name its type | backend −4, 1 changed, +0; measured at the build | `arch`, 2026-11-19 | [JIT/object convergence §3](../backend/jit-object-convergence.md#3-call-reach-in-the-jit-act-1070) |
 | B10 (ACT-1039, ACT-1078) | `compile_to_module` gains `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules a trace form in `module_path` covers besides `module_path`. Passed at every call | backend | the binary's two production callers, from int's one reference-edge enumerator; test callers in backend and the binary | backend 1 changed; no persisted shape. In source at `69cd9c18` and `f8c55626` | `arch`, 2026-11-19, after the user's ruling on the covered set the same day | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
+| B10-C2 (ACT-1086) | The covered set travels with each target. New `cranelisp_backend::CodegenTarget<'a>`, with private fields and `new(&'a CallableTarget, &'a BTreeSet<ModuleFullPath>)`. `compile_to_module` takes `targets: &[CodegenTarget<'_>]` and loses `trace_modules`. A target's set is every module a form in its body covers, including the module whose source holds the body; the backend adds none, and reads from `module_path`'s table only the instances whose template module is listed when `module_path` is not | backend | the binary's two production callers derive one set per module of origin and pair each target with its set; test callers in backend and the binary | backend +9 in the present format (the type, `new`, seven generated auto-trait rows); `compile_to_module` changed again. No persisted shape, schema or ABI; an object holding a form in an instance changes content and the build identity separates it | `arch`, 2026-11-20, under the user's ruling of 2026-11-19 (spec §4.12.3) | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
+| Template module (ACT-1086) | `CallableArm::<C>::template_module(&self) -> Option<&ModuleFullPath>`: the module defining the template of a minted instance, read from `Life::Concrete::minted_from`; `None` otherwise. One reading of the fact for the two crates that need it | types | the binary (which module holds a target's body) and the backend (which instances in `module_path`'s table a form covers) | types +1; no persisted shape | `arch`, 2026-11-20 | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
+| B15 (FIXME 0915) | A codegen failure with no failing member is its own variant. `CompilationError` gains `ModuleFailed { module: ModuleFullPath, cause: String, location: ErrorLocation }`. `impl From<CranelispError> for CompilationError` is removed: it is the conversion that fills `module` and `symbol` with empty strings, and the backend converts through a crate-private function that takes the module. `CompilationError::ModuleError` is removed; it has no producer. `CodegenFailed` keeps its fields and always names a failing target | backend | none in production: the binary reaches the type only through `From<CompilationError> for CranelispError`, which stays and gains the new arm. `src/worker/tests.rs` matches `CodegenFailed` and is unchanged | backend +8, −12: the enum is listed at two paths (the new variant and its three fields; `ModuleError` and its three fields) and the conversion at two (the impl and its function). No persisted shape | `arch`, 2026-11-20 | [the unattributed failure](#the-unattributed-codegen-failure-row-b15) |
 | K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
 In source and awaiting the checkpoint report: D6, D13 and D9 (`07bb8e84`), R10-2
 (`06210347`), B13 (`790f4c9a`) and B10 (`69cd9c18`, `f8c55626`). The gap-module row is not
 scheduled.
 
+### The unattributed codegen failure (row B15)
+
+- **The state it removes.** A failure outside any one target, such as a missing module
+  table, a missing intrinsic, the glue fence or GOT emission, has a module and no symbol.
+  `CodegenFailed::symbol` is a `Symbol`, so the generic conversion fills it, and `module`,
+  with an empty string, and the failure renders `codegen failed for /`
+  ([release contract](../backend/non-concrete-release-contract.md) §7.2.1,
+  *Unattributed*).
+- **Contract.** `CodegenFailed` is a failing target: `module` and `symbol` name it and
+  neither is empty. `ModuleFailed` is a failure of the module's compilation with no failing
+  target, and renders the module as its only subject. The backend has no conversion that
+  produces either without a module, so a site that forgets the module does not compile.
+- **The three questions.**
+  - *Bounded context:* yes. The error type stays with the crate that raises it
+    ([Principle 15](principles/15-facade-types-live-with-behavior.md)); both removed items
+    have no consumer in another crate
+    ([Principle 02](principles/02-narrow-interfaces.md)).
+  - *Simple API:* yes. One variant per subject; the binary still renders through the one
+    outward conversion and tests no field for emptiness.
+  - *Strongly typed:* yes. The absent subject is a variant, not an empty string
+    ([Principle 20](principles/20-model-invariants-by-representation.md)).
+- **Not chosen.** `symbol: Option<Symbol>` on `CodegenFailed` leaves every reader of a
+  failing target handling an absence that target never has.
+- **Rendering.** The message text of both variants is `design`(backend)'s, under Rule 3
+  of the same section. No specification text names it.
+
 **Remaining build order.** The rows land one after another, in this order, when the build is
 free. `arch` builds the types changes; `dev` builds each other surface, one surface per
 invocation; `test` owns files under `tests/`. No row changes a persisted shape or a schema
-version.
+version. Steps A1 to A3 precede step 1: A1 completes the backend change-set in progress, and
+A3 turns failing cells green. They share no line with steps 1 to 4.
 
 | # | Row and step | Role | Builds alone | Commit |
 |---|---|---|---|---|
+| A1 | **B15.** `design`(backend) restates release contract §7.2.1, *Unattributed*, to the row. The variant, the two removals and the crate-private conversion land with that section's Rules 1 to 3 and a module row for a failure with no failing target | `design`(backend), then `dev`(backend) | yes | one, with Rules 1 to 3 |
+| A2 | **The object pass waits** ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10), C1). No public item; listed because A3 edits the same files | `dev`(`src/`) | yes | one |
+| A3a | **Template module.** Types adds `CallableArm::template_module` with a module test: an installed instance answers its template's module, an authored callable answers `None` | `arch` | yes | one |
+| A3b | **B10-C2.** `design`(backend) and `design`(int) restate their halves to [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend). The backend adds `CodegenTarget`, changes `compile_to_module` and discovery, and moves its test callers | `design`(backend), `design`(int), then `dev`(backend) | no | one commit with A3c, from one uncommitted tree |
+| A3c | The binary derives one set per module of origin at commit planning and at the object pass, includes that module in its set, and pairs each target with its set | `dev`(`src/`) | yes, on A3b | with A3b |
 | 1 | **K11-c.** Both methods become `#[cfg(test)] pub(crate)`; the [lifecycle authoring facade](#lifecycle-authoring-facade) text follows | `arch` | yes | one |
 | 2a | **K11-d.** Types adds `test_support::lenient_from_expr` | `arch` | yes | one |
 | 2b | The backend's dev-dependency enables `test-support`; its two test calls and the rustdoc link beside them move | `dev`(backend) | yes | one |
@@ -796,10 +834,17 @@ version.
 | 4a | **ACT-1084.** Types removes the variant; [resolution gaps](#resolution-gaps) follows | `arch` | no | one commit with 4b, from one uncommitted tree |
 | 4b | The binary removes the two arms, the comment above them and the module test | `dev`(`src/`) | yes, on 4a | with 4a |
 | 4c | The comment in `tests/process_form_dispatch.rs` | `test` | comment only | with 4a or after it |
-| 5 | **Checkpoint, present format.** The seven baselines are regenerated on the final tree and compared with the table below | `arch` | — | one |
+| 5 | **Checkpoint, present format.** The seven baselines are regenerated on the final tree and compared with the table below. `arch` deletes ACT-1033 here: row D11 is in source and its last completion condition is this baseline. `qa` drops its two links to the file in the same wave | `arch` | — | one |
 | 6 | **K11-a.** The guard, `tests/AGENTS.md` and the [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) take `--omit auto-trait-impls`; the seven baselines are regenerated again; the guard's detection proof is repeated | `test` (guard and `tests/AGENTS.md`), then `arch` | the guard fails between the halves | one commit, from one uncommitted tree |
 
+- A3b and A3c are callee-first: the binary's callers pass the removed parameter, so the tree
+  does not build between them. The cascade closes on `tests/trace.rs::s124_1086_subject_run`
+  and its two siblings passing with the six controls unchanged, and on the full suite.
+- A2 before A3c keeps the object pass's wait and its per-module sets in separate commits.
+  Either order is correct.
 - Steps 1 to 3 build at every commit, so each is dispatched and committed alone.
+- Steps 1 and 2d each drop one source comment that cites the deleted FIXME 0931
+  (`module.rs` beside `mint_callable_slot`; the lenient builder's rustdoc in `mono_expr.rs`).
 - Step 1 must leave the types crate without a dead-code warning in a non-test build. A
   private helper that only the two methods call takes the same `#[cfg(test)]`.
 - Step 3a precedes 3b so that no commit names an absent symbol. Nothing emits a call to the
@@ -819,13 +864,13 @@ to the user.
 
 | Crate | In source at `f8c55626` | Remaining rows | At the checkpoint |
 |---|---|---|---|
-| types | +16, −5, 3 changed. D3: +13, −1, `ImportNames::Specific` changed. D10: +3, `WrittenTraitImpl::new` changed. D7: −3. D6: −1. D13: `install_extern` changed | K11-c −2; K11-d −1; ACT-1084 −1 | **+16, −9, 3 changed** |
-| backend | −170, 2 changed. R10-1 −1; R10-2 −42; R10-3 −41; D2 −23; R10-5 −1; R10-7 −6; R10-9 −49; D4 −1; D9 −3; B13 −4 and `Jit::jit_module` changed; B10 `compile_to_module` changed. The row figures sum to 171 and share one line | none | **+0, −170, 2 changed** |
+| types | +16, −5, 3 changed. D3: +13, −1, `ImportNames::Specific` changed. D10: +3, `WrittenTraitImpl::new` changed. D7: −3. D6: −1. D13: `install_extern` changed | K11-c −2; K11-d −1; ACT-1084 −1; template module +1 | **+17, −9, 3 changed** |
+| backend | −170, 2 changed. R10-1 −1; R10-2 −42; R10-3 −41; D2 −23; R10-5 −1; R10-7 −6; R10-9 −49; D4 −1; D9 −3; B13 −4 and `Jit::jit_module` changed; B10 `compile_to_module` changed. The row figures sum to 171 and share one line | B10-C2 +9, and `compile_to_module` changed again (the same line); B15 +8, −12 | **+17, −182, 2 changed** |
 | intrinsics | +33, −5, 1 changed. R10-9: +33. D5 −2; K11-b −2; D11 −1 and `string_read` changed | Trace reader −1 | **+33, −6, 1 changed** |
 | typecheck, frontend, primitives, platform | +0 | none | **+0** |
 
 K11-a's contraction (step 6) is every generated auto-trait row left after step 5. Counted by
-pattern, with the rows this table adds and removes: types about −973, backend about −140,
+pattern, with the rows this table adds and removes: types about −973, backend about −147,
 intrinsics about −91, typecheck about −70, frontend −14, platform about −196, primitives 0.
 
 Declined, `arch`, 2026-11-19:
@@ -855,8 +900,33 @@ Declined, `arch`, 2026-11-19:
   version was assessed. Reopened by a second fault that follows from allocator-placed JIT
   code, or by an upgrade selected for another reason.
 
-Better-typed realisations that are larger changes, `arch`, 2026-11-19. Each row stands as
-approved; none is widened.
+- **A constructor pattern that carries its resolved constructor** (2026-11-20; from
+  `design`(backend), ACT-0968 item 1). `MonoMatchArm` holds `pattern: Pattern` beside
+  `resolved_ctor: Option<FQSymbol>`, so a constructor pattern with no carrier is
+  expressible and consumers treat it as invalid. The answer to *strongly typed* is no for
+  the type as it stands. Two repairs were weighed and neither is taken now.
+  - *The structural form* is a mono-view pattern type whose constructor variant holds the
+    key. It changes a persisted type and the schema version, the two view builders in
+    types, the backend's reader and typecheck's ownership readers.
+  - *A gate at the view builder*, refusing a constructor pattern with no `pattern_ctors`
+    entry as `ViewBuildError::Unresolved`, changes no item. It repeats a control that
+    exists: typecheck is the sole producer, and the backend's one reader refuses a
+    carrier-less arm with a located error
+    (`match_codegen::a_constructor_pattern_with_no_carrier_is_a_codegen_error`, `9bb1f0aa`).
+  - Residual: the refusal is raised by the reader, not at the producer's seam. Grade:
+    measured at the one reader. Reopened by a second reader of an arm's constructor
+    identity, which would have to repeat the refusal, or by a carrier-less arm from a
+    production producer. The structural form is then the repair, taken with the next
+    schema change to the mono view.
+
+Better-typed realisations that are larger changes, `arch`, 2026-11-19 and 2026-11-20. Each
+row stands as approved; none is widened.
+
+- **B10-C2.** That a target's set lists the module holding its body is the producer's
+  obligation. The structural form is a set type that only the binary's enumerator can
+  build, which moves the enumeration's result type into a crate both sides see.
+- **B15.** `Symbol` admits an empty string, so an empty subject stays constructible by
+  hand. The structural form is a non-empty symbol type across the workspace.
 
 - **Gap module.** A written qualifier and a resolved module share `ModuleFullPath`, so a gap
   naming an alias stays expressible and the rule is measured. The structural form is a

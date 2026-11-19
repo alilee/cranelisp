@@ -8,7 +8,16 @@ build mode including `--link`); S76–S82 delivered it. Owner `arch`. Decision
 document is the sole architecture authority for tracing. Strict evaluation
 within the trace extent (§7) is built. The mode-independent traced set (§5) and
 the covered-module rule the user ruled on 2026-11-19 (§5.1) are in source at
-`f8c55626`. §5.1 states the one case where source does not meet the rule.
+`f8c55626`. Source does not meet the contract in four places, each stated
+where its rule is:
+
+- a form in a function instantiated in another module (§5.1, *The form's
+  module*; decided 2026-11-20, not built);
+- the object of a module compiled before the prelude publishes (§5.1, *Not met
+  in source*; correction decided, not built);
+- the first batch of such a module (same place; accepted residual);
+- a call through a function value taken in the callee's own batch (§3.5;
+  read from source, not reproduced).
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -130,9 +139,8 @@ covers both shapes.
 for one `(trace body)`:
 
 1. `discover_traced_fns_from_tables` over the modules the form covers
-   (§5.1), grouped by defining
-   module — each module owns one GOT and one GOT
-   data symbol. An empty result takes `compile_trace_no_swap` (body, discard,
+   (§5.1), grouped by the module whose table holds the slot — each module
+   owns one GOT and one GOT data symbol. An empty result takes `compile_trace_no_swap` (body, discard,
    `cranelisp_collect_trace`), which returns the minimal `::trace::` node.
 2. Per group: the GOT base as a `global_value` against the module's GOT data
    symbol; a read-only `slots` buffer; writable `wrappers` and `originals`
@@ -166,7 +174,8 @@ other module. The externs are declared `(param_count, has_return)`-shaped
 through `declare_trace_extern`; every parameter and return is `i64`.
 
 `crates/cranelisp-backend/src/compiler/mod.rs::TracedFnInfo` is
-backend-internal; nothing about tracing crosses the backend boundary as input.
+backend-internal. The one trace input that crosses the backend boundary is the
+covered set (§5.1.1).
 
 ### 3.4 Display descriptor
 
@@ -233,6 +242,29 @@ the covered modules (§5.1) — any call through any swapped slot is recorded
 however the callee was reached. The user accepted the
 consequence that stdlib and extern primitives appear in trace trees. This
 rationale governs §5 and must survive any future filtering proposal.
+
+**Every call to a slotted function goes through its slot.** Completeness
+rests on it, so it is a backend obligation: no emitted call reaches a named
+function that claims a callable slot by any route other than a load of that
+slot. This includes the wrapper the backend generates when a named function
+is used as a value. A direct call saves one load, a constant factor the dev
+tier does not keep
+([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)).
+
+- **Not met in source, read at `518489c2` and not reproduced.**
+  `crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call`
+  emits a direct call when the target is declared in the unit being compiled.
+  A function taken as a value in the batch that defines it is then called
+  past its slot, and a trace that covers it records no frame for that call.
+  The same value taken in a later batch, such as a later REPL turn, loads the
+  slot and is recorded, so the tree depends on how the program was batched
+  ([Principle 11](principles/11-single-pipeline-mode-parameters.md)).
+- **Falsifier of this reading.** The entry file holds
+  `(defn af [:Int n] n)`, `(defn hof [:(Fn [Int] Int) h] (h 1))` and a `main`
+  that evaluates `(trace (hof af))`. Spec §4.12.3 requires an `af` frame
+  inside `hof`'s in every mode. The reading predicts none under `--run` and
+  `--link`. Intake and the cell are `qa`'s; the correction is the backend's
+  and changes no public item.
 
 ## 4. Intrinsics runtime
 
@@ -333,6 +365,37 @@ transitively, and `primitives`, whose GOT every image defines.
 [Spec §4.12.3](../../spec/04-expressions.md#4123-what-is-traced) states the
 rule.
 
+**The form's module is the module whose source holds the form** (decided
+2026-11-20; not built). It is not always the module whose batch compiles it.
+
+- A generic or constrained function is instantiated in the module that
+  demands it, with a slot in that module's table, and compiled in that
+  module's batch
+  ([monomorphisation §3.7](../typecheck/monomorphisation.md#37-cross-module-body-recheck-scoping)).
+  A form in its body was written in the template's module, so it covers that
+  module's set. Spec §4.12.3 states the library rule with exactly this
+  spelling, `(defn profile [f] (trace (f)))`.
+- An instance belongs to its template's module for coverage as well. A form
+  records a call to an instance whose template is defined in a covered
+  module, when the instance's slot is in a covered table or in the table of
+  the module being compiled. A generic library function that calls its own
+  generic helper therefore records the helper, although both instances live
+  in the caller's table. An instance held in any other module's table is
+  reached only from inside a function the caller passed, and is not recorded.
+- Source at `518489c2` roots every form at the module being compiled. A form
+  in a generic library function therefore covers its caller's closure and
+  records calls inside the caller's function (ACT-1086;
+  `tests/trace.rs::s124_1086_subject_run` and its two siblings fail on it).
+  §5.1.1 states the corrected input.
+- Grade of the second bullet: asserted. That a nested instance is minted in
+  the demanding module is read from the typecheck design, not run.
+  Falsifier: `m` holds `(defn helper [x] x)` and
+  `(defn run [h] (trace (helper (h 1))))`, and the entry calls `(run zf)`
+  with `zf` from a module `m` does not reach. The trace holds a `helper`
+  frame and no `zf` frame, in every mode. Whether it becomes a cell is
+  `qa`'s; without one, the correction of ACT-1086 can drop the `helper`
+  frame unobserved.
+
 A module's **reference edges** are the modules it makes an image load:
 
 - each module it imports or re-exports names from;
@@ -432,9 +495,31 @@ Two members are read as they stand, and a wait is correct for every other.
   ([int §6.12](../int/int.md#612-the-implicit-prelude-dependency)). The batch
   covers the prelude as it stands and does not follow its edges.
 
+Both exceptions belong to a batch on a publication path. **The object pass
+reads only published members.** It is on no publication path, so it can wait
+for any member, the prelude included, and a failed member is the only one it
+reads as it stands. A module's object, and every restore and linked image
+that uses it, is therefore a function of the program.
+
 **Not met in source: a form compiled before the prelude publishes.** The
 promise "the same cold, warm and in every mode" does not hold for the second
-case.
+case. Two faults share the population below. The first is a defect with a
+decided correction; the second is the accepted residual.
+
+- **The object pass does not wait** (read at `518489c2`:
+  `src/session_v4/nice_worker.rs::emit_object` takes every member as
+  published). A child's object pass can run while the prelude is still
+  blocked on the child's parent, and then covers the prelude with only the
+  edges recorded so far. The cache keeps that object, so restores and
+  `--link` inherit it. Which launches omit the frame depends on scheduling:
+  `qa` observed every launch omit it (ACT-1087), and `test` observed the
+  restored and linked legs omit it in one reading of eleven.
+  - Correction: [int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10),
+    *The object pass waits* (C1). It is private to the binary and changes no
+    public item. This contract needs no other change for it.
+  - After it, `tests/trace.rs::s124_1087_subject_link` and the restored leg
+    of `s124_1087_subject_run` pass in every reading.
+- **The first batch covers less.** The remaining bullets state it.
 
 - **Which modules.** A module whose implicit prelude import is active and
   whose batch runs while the prelude is unpublished. These are the declared
@@ -446,9 +531,11 @@ case.
   the prelude is no edge of it in any mode.
 - **What differs.** The batch that first compiles such a module covers the
   prelude's claims as they stand and no module reached only through the
-  prelude. The module's object, a restore of it and `--link` cover the
-  prelude's whole closure. A first `--run` or REPL start therefore omits
-  frames that a second `--run` and `--link` record.
+  prelude. Under the contract the module's object, a restore of it and
+  `--link` cover the prelude's whole closure. A first `--run`, a
+  `--no-cache --run` or a REPL start therefore omits frames that a second
+  `--run` and `--link` record. Until the object pass waits, the second
+  `--run` and `--link` can omit them as well.
 - **When it is visible.** Only for a call, inside the form's extent, into the
   prelude or a module the form's module reaches only through the prelude. A
   call the module writes makes the callee's module its own edge, so the call
@@ -475,14 +562,17 @@ case.
   import; `m` declares a child `c` that does not, and `c` holds
   `(defn run [h] (trace (h 1)))`. The entry calls `(m.c/run f)`. A first
   `--run` records no `p/f` frame; a second `--run` and `--link` record one.
-  Whether it becomes a cell is `qa`'s. A cell that fails is a defect of the
+  The cells are `tests/trace.rs::s124_1087_subject_run` and
+  `s124_1087_subject_link` (ACT-1087). The first-launch leg of the `--run`
+  cell fails for as long as this residual stands; it is a defect of the
   binary, carried on that test.
 - **Reopened by** a project that needs the frame, or by a module outside
-  this population whose batch can run while the prelude is unpublished. The
-  prelude injection waits only when the prelude has no table
-  (`src/process_form/dependency.rs::inject_prelude_if_needed`), so
-  `design`(int) states whether such a module exists. If one does, its cold
-  set depends on scheduling and int waits on the prelude for it.
+  this population whose batch can run while the prelude is unpublished.
+  `design`(int) read the load paths and found none
+  ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10),
+  *Which modules compile while the prelude is unpublished*; asserted, with
+  its falsifier there). If one appears, its cold set depends on scheduling
+  and int waits on the prelude for it.
 
 **Open, with the user.** Current behaviour stands for each until ruled.
 
@@ -510,42 +600,107 @@ case.
 
 #### 5.1.1 How the set reaches the backend
 
-Int owns the reference-edge enumeration and the backend receives its result. The
-backend composes no copy
+Int owns the reference-edge enumeration and decides which module holds each
+form; the backend receives the result. The backend composes no copy of either
 ([Principle 7](principles/07-single-source-of-truth.md)): a drift between two
-enumerations is an unresolved symbol on a warm start only.
+enumerations is an unresolved symbol on a warm start only, and a drift
+between two readings of a form's module is ACT-1086 again.
 
-- **Delta.** `cranelisp_backend::compile_to_module` gains one parameter after
-  `symbol_tables`: `trace_modules: &BTreeSet<ModuleFullPath>`.
-- **Meaning.** The modules a trace form in `module_path` covers besides
-  `module_path`: the transitive closure of the finished module's reference
-  edges, and `primitives`. A batch may pass a subset only where §5.1 admits
-  one: a macro checkpoint's view, and the prelude read as it stands. The
-  backend always covers `module_path` and adds no
-  other module, so it privileges none by name
-  ([Principle 19](principles/19-no-module-privileged-by-name.md)). It is
-  passed at every call, whether or not a target holds a trace form; there is
-  no "not computed" value. A set carries no order or repetition, and the
-  backend emits groups in its iteration order.
-- **Producer.** The binary, at its two production callers: the one JIT
-  caller in `src/worker.rs`, which passes the set commit planning stored on
-  the prepared turn, and the object pass in `src/session_v4/nice_worker.rs`.
-  Both derive it with one crate-private function over the enumerator that the
-  restore walk also reads
-  ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)).
-  Test callers pass the set their fixture means, usually empty.
-- **Consumer.** The backend's discovery reads the tables of `module_path` and
-  the listed modules only. A listed module with no table is a located codegen
-  error, not a skip.
-- **Persistence.** No persisted shape changes. An object holding a form
-  differs in content from one built under the old rule, and the cache's build
-  identity separates the two
+**In source (row B10, `69cd9c18` and `f8c55626`).**
+`cranelisp_backend::compile_to_module` takes
+`trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules
+a trace form in `module_path` covers besides `module_path`. It is one set for
+the call, and the backend always adds `module_path`. Neither can state a
+batch whose targets were written in different modules (§5.1, *The form's
+module*).
+
+**Decided, `arch`, 2026-11-20 (row B10-C2); not built.** The set travels with
+each target.
+
+- **Delta, backend.** A new public type and a changed entry point.
+
+  ```rust
+  /// One callable to compile and the modules a trace form in its body covers.
+  #[derive(Clone, Copy, Debug)]
+  pub struct CodegenTarget<'a> { /* private fields */ }
+
+  impl<'a> CodegenTarget<'a> {
+      pub fn new(
+          target: &'a CallableTarget,
+          trace_modules: &'a BTreeSet<ModuleFullPath>,
+      ) -> Self;
+  }
+
+  pub fn compile_to_module<M, C, L>(
+      module_path: ModuleFullPath,
+      targets: &[CodegenTarget<'_>],
+      symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+      module: &mut M,
+      capture_clif: bool,
+  ) -> Result<CompilationArtifacts, CompilationError>
+  ```
+
+  `targets` changes its element type and the `trace_modules` parameter is
+  removed. The bounds are unchanged.
+- **Delta, types.**
+  `CallableArm::<C>::template_module(&self) -> Option<&ModuleFullPath>`: the
+  module that defines the template a minted instance was made from, and
+  `None` for any other arm. It reads `Life::Concrete::minted_from` and
+  derives nothing. Int and the backend both need this one fact, and the
+  method keeps it in one place.
+- **Meaning of a target's `trace_modules`.** Every module a trace form in
+  that target's body covers: the module whose source holds the body, the
+  transitive closure of that module's finished reference edges, and
+  `primitives`. It is the whole set; the backend adds no module to it and
+  privileges none by name
+  ([Principle 19](principles/19-no-module-privileged-by-name.md)).
+  - A batch may pass a subset only where §5.1 admits one: a macro
+    checkpoint's view, and the prelude read as it stands.
+  - It is passed for every target, whether or not the body holds a form;
+    there is no "not computed" value. An empty set means a form that swaps
+    nothing, which only a test fixture passes.
+  - A set carries no order or repetition, and the backend emits groups in its
+    iteration order.
+- **Producer.** The binary, at its two production callers: the one JIT caller
+  in `src/worker.rs`, from the sets commit planning stored on the prepared
+  turn, and the object pass in `src/session_v4/nice_worker.rs`.
+  - The module that holds a target's body is the arm's `template_module()`,
+    and the batch's module where that is `None`.
+  - Both callers derive one set per distinct such module among the batch's
+    targets, with the one crate-private function over the enumerator that
+    the restore walk also reads, and pair each target with its set
+    ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)).
+  - Test callers pass the set their fixture means.
+- **Consumer.** The backend's discovery, for a form in a target's body:
+  - reads the table of each listed module whole;
+  - where `module_path` is not listed, reads from `module_path`'s table only
+    the entries whose `template_module()` is listed. These are the instances
+    §5.1 assigns to a covered module;
+  - refuses a listed module that has no table with a located codegen error,
+    not a skip.
+
+  The backend does not ask which module holds the target's own body.
+- **What an object may reference.** A target's set is inside the closure of
+  the module being compiled, because that module demanded the instance and
+  so reaches the template's module by a reference edge. The object still
+  imports only GOTs that every image holding it defines (§5.1).
+- **Persistence.** No persisted shape, schema version or ABI changes. An
+  object holding a form in an instance changes content, and the cache's build
+  identity separates it from one built under the old rule
   ([trace codegen §1.3](../backend/trace-codegen.md#13-which-modules-a-form-covers)).
-- **In source.** The enumerator with the restore walk as its consumer at
-  `69cd9c18`; the parameter, selection by claim (§5), the covered-table read
-  and every caller at `f8c55626`. The
-  [batch record](interfaces.md#approved-changes-not-yet-in-source-s124) row
-  B10 carries the decision until the checkpoint reports it.
+- **The three questions.**
+  - *Bounded context:* yes. Which module holds a form stays the binary's
+    reading of typecheck's recorded link; the backend gains no instance
+    concept beyond the one accessor; no dependency is added.
+  - *Simple API:* yes. One path: each target arrives with its set, and the
+    backend looks nothing up.
+  - *Strongly typed:* yes. A target without a set cannot be passed, which a
+    map keyed by module would allow. That a set lists the body's own module
+    is the producer's obligation, like the rest of its contents; every trace
+    cell that records a call in the form's own module fails if it does not.
+- **Record.** The
+  [batch record](interfaces.md#approved-changes-not-yet-in-source-s124) rows
+  B10 and B10-C2 carry the decisions until the checkpoint reports them.
 
 **Not chosen.**
 
@@ -558,6 +713,15 @@ enumerations is an unresolved symbol on a warm start only.
   change that separates the null-import rule from the walk that owns it.
 - *A slice, `&[ModuleFullPath]`.* It can repeat a module and it carries the
   enumerator's traversal order into the emitted object.
+- *A map from module to set, with the backend finding each target's module.*
+  A missing key is expressible and is found only when a form compiles. Two
+  crates would each decide which module holds a body, and a disagreement
+  that still finds a key is a wrong trace with no error.
+- *One `compile_to_module` call per module of origin.* A batch is one unit:
+  its bodies call one another by function identifier, and each call defines
+  the module's GOT data symbol once.
+- *Instantiating a generic in its template's module.* That moves slot
+  ownership in typecheck (monomorphisation §3.7) and is a far larger change.
 
 ## 6. Nested-trace guard
 

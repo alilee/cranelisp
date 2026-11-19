@@ -147,8 +147,15 @@ types at a concrete instantiation for category and glue purposes.
   and no concrete instance can be demanded as a value. Its teardown is §3.4.
 - A constructor instance body owes zero RC operations: fields transfer into the box at
   concrete types as they did in the template.
-- Open: FIXME 0931 holds one evidence tail — a current witness, or a recorded supersession,
-  for the whole bootstrap constructor population and the R17 constructor partition.
+- Evidence, as `qa` read it at `f8c55626`
+  ([S124 evidence delta](../../tests/plan/s124-evidence-delta.md) §14.9):
+  - The R17 constructor partition is measured: the category census's `Ctor` partition holds
+    no non-concrete frame.
+  - The bootstrap constructor population needs no sweep. A non-concrete constructor is a
+    `Life::Template`, which has no slot, and `SymbolTable` mints a slot only for a scheme
+    that converts to a `ConcreteType`
+    ([safety invariants](safety-invariants.md) row R11). The violating state is not
+    constructible.
 
 ### 3.2 The Vec family
 

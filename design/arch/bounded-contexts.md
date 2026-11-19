@@ -309,7 +309,6 @@ retention (binary); runtime helpers (intrinsics) and primitive bodies
    constructor field types are read at the reference's instantiation, and a
    residual is a located error owed by its producer
    ([the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category)).
-   Open residual: FIXME 0931 under `design/arch/fixmes/`.
    Representation freedom beyond the one-word value model is a user-arbitrated
    language question raised in the
    [release-backend proposal](release-llvm-backend.md).

@@ -303,7 +303,7 @@ producer never recording a self-`SigDispatch` for a shadowed call (Principle
   (`record_reference_target` in `crates/cranelisp-typecheck/src/checker.rs`,
   `record_dispatch_target` in `crates/cranelisp-typecheck/src/program/callees.rs`)
   at review of a change to either; no test executes it.
-- **Open: staged retirement of the lenient builder** (S119 ruling; FIXME 0931;
+- **Open: staged retirement of the lenient builder** (S119 ruling;
   [concrete boundary type](concrete-boundary-type.md)). Its
   `unwrap_or(ConcreteType::Int)` placeholder is a fabrication site the
   concreteness programme closes; the end state is `from_expr` as the sole
