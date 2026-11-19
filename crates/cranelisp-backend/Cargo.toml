@@ -35,4 +35,7 @@ libc = "0.2"
 dashmap = "6"
 
 [dev-dependencies]
+# The test build enables `test-support` for
+# `cranelisp_types::test_support::lenient_from_expr`.
+cranelisp-types = { path = "../cranelisp-types", features = ["test-support"] }
 tempfile = "3"

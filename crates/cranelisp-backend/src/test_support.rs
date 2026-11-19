@@ -349,7 +349,7 @@ where
         let mut body =
             cranelisp_types::MonoExpr::from_expr(d.body(), pattern_ctors, &var_refs, &apply_refs)
                 .unwrap_or_else(|_| {
-                    cranelisp_types::MonoExpr::lenient_from_expr(
+                    cranelisp_types::test_support::lenient_from_expr(
                         d.body(),
                         pattern_ctors,
                         &var_refs,
@@ -989,7 +989,8 @@ pub(crate) fn install_type_fixture(
 /// the same obligation the typecheck producer satisfies for real programs.
 ///
 /// TOTAL, mirroring `program::support::build_concrete_codegen_view`: strict
-/// `MonoExpr::from_expr` first, [`MonoExpr::lenient_from_expr`] fallback — so a
+/// `MonoExpr::from_expr` first,
+/// [`cranelisp_types::test_support::lenient_from_expr`] fallback — so a
 /// synthetic ctor/accessor-style body (un-annotated `inferred_type: None` nodes)
 /// still yields a view. `resolved_targets` threads the W1 dispatch carriers a
 /// fixture computes directly from the tables it also builds (empty for
@@ -1004,7 +1005,7 @@ pub(crate) fn test_codegen_view(
     let body =
         cranelisp_types::MonoExpr::from_expr(&variant.body, &empty_ctors, &var_refs, &apply_refs)
             .unwrap_or_else(|_| {
-                cranelisp_types::MonoExpr::lenient_from_expr(
+                cranelisp_types::test_support::lenient_from_expr(
                     &variant.body,
                     &empty_ctors,
                     &var_refs,
