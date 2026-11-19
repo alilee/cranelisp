@@ -2749,7 +2749,7 @@ fn s124_scheduling_sample_with_bind(
 }
 
 // spec: spec/10-io.md §10.12.1 — REPRO-0981, independent versus dependent twins
-// defect: class=enumeration-miss locus=src/bind_chain_analysis.rs::auto_schedule_defn found=S124 owner=/dev
+// defect: class=enumeration-miss locus=src/bind_chain_analysis.rs::auto_schedule_defn found=S124 owner=/dev fixed=S124/6c51559d
 #[test]
 fn s124_0981_multi_signature_overlap() {
     let single = s124_scheduling_sample(false, false, false, None);
@@ -2768,7 +2768,7 @@ fn s124_0981_multi_signature_overlap() {
 }
 
 // spec: spec/10-io.md §10.12.1 — ACT-1077, a local in another arm cannot shadow the independent chain
-// defect: class=wrong-scope-lookup locus=src/bind_chain_analysis.rs::collect_binders found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/bind_chain_analysis.rs::collect_binders found=S124 owner=/dev fixed=S124/80580252
 #[test]
 fn s124_1077_unrelated_bind_local_keeps_overlap() {
     let overlap = s124_scheduling_sample(false, false, false, None);

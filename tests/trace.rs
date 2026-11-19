@@ -712,7 +712,7 @@ fn traced_fib_12_repl(no_lenient: bool) -> helpers::e2e::CrOutput {
 
 // spec: spec/04-expressions.md §4.12.2 — item 3: every instrumented call in
 // the trace's extent is recorded, including calls a spark-admitted callee
-// makes. REPL only until ACT-1039 lets `--run` record user functions.
+// makes. ACT-1039 formerly omitted user functions under `--run`.
 // defect: class=shared-state-write-race locus=design/backend/lenient-eval.md §2.3 trace-body exclusion was lexical, so a callee sparked during the trace's dynamic extent found=S122 owner=/dev (ACT-1038) fixed=S124/3cdca9dc
 #[test]
 fn trace_records_every_call_of_spark_admitted_callee() {
@@ -839,7 +839,7 @@ fn traced_callee_releases_every_formatted_string_with_sparks_disabled_control() 
 // mode: `(trace (fib 3))` records its 5 `fib` calls in the REPL, under `--run`
 // and in a linked binary. Sparks are disabled to isolate the mode comparison;
 // the REPL leg is the control.
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S122 owner=/dev — provisional: mechanism unobserved (ACT-1039)
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S122 owner=/dev fixed=S124/f8c55626
 #[test]
 fn trace_records_user_function_calls_in_every_mode() {
     let program = format!(
@@ -994,21 +994,21 @@ fn s124_cached_import_trace(mode: &str, no_cache_control: bool) {
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w subject
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1039_w_subject_run() {
     s124_cached_import_trace("run", false);
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w subject
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1039_w_subject_link() {
     s124_cached_import_trace("link", false);
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-w subject
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1039_w_subject_repl() {
     s124_cached_import_trace("repl", false);
@@ -1079,14 +1079,14 @@ fn s124_cached_trace_fewer_modules(mode: &str, trace: bool, no_cache: bool) {
 }
 
 // spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
-// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::discover_traced_fns_from_tables found=S124 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::discover_traced_fns_from_tables found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1078_subject_run() {
     s124_cached_trace_fewer_modules("run", true, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3 — REPRO-1078: cached trace with fewer entry dependencies
-// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::discover_traced_fns_from_tables found=S124 owner=/dev
+// defect: class=artifact-underkey locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::discover_traced_fns_from_tables found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1078_subject_link() {
     s124_cached_trace_fewer_modules("link", true, false);
@@ -1204,21 +1204,21 @@ fn s124_library_trace_scope(mode: &str) {
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-lib: library calls recorded, caller's function excluded, cold/warm
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1039_lib_neg_caller_frames_run() {
     s124_library_trace_scope("run");
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-lib: library calls recorded, caller's function excluded, cold/warm
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1039_lib_neg_caller_frames_link() {
     s124_library_trace_scope("link");
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — T-1039-lib: library calls recorded, caller's function excluded, cold/warm
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_1039_lib_neg_caller_frames_repl() {
     s124_library_trace_scope("repl");
@@ -1261,60 +1261,63 @@ fn s124_finished_module_trace(mode: &str, import_position: &str) {
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — entry-file trace covers the whole program, including a later qualified-only reference
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_qualified_run() {
     s124_finished_module_trace("run", "absent");
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — entry-file trace covers the whole program, including a later qualified-only reference
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_qualified_link() {
     s124_finished_module_trace("link", "absent");
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — entry-file trace covers the whole program, including a later qualified-only reference
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_qualified_repl() {
     s124_finished_module_trace("repl", "absent");
 }
 
 // spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — imports below a trace form take effect before definitions
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_import_below_run() {
     s124_finished_module_trace("run", "below");
 }
 
 // spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — imports below a trace form take effect before definitions
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_import_below_link() {
     s124_finished_module_trace("link", "below");
 }
 
 // spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9 — imports below a trace form take effect before definitions
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_import_below_repl() {
     s124_finished_module_trace("repl", "below");
 }
 
 // spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.9 — import-above twin of the import-below fixture, cold/warm
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_import_above_run() {
     s124_finished_module_trace("run", "above");
 }
 
 // spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.9 — import-above twin of the import-below fixture, cold/warm
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_import_above_link() {
     s124_finished_module_trace("link", "above");
 }
 
 // spec: spec/08-modules.md §8.3.10; spec/04-expressions.md §4.12.9 — import-above twin of the import-below fixture, cold/warm
-// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/f8c55626
 #[test]
 fn s124_finished_module_import_above_repl() {
     s124_finished_module_trace("repl", "above");

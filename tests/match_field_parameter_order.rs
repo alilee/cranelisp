@@ -403,21 +403,21 @@ fn s124_1062_e_scalar_control_repl() {
 }
 
 // spec: spec/04-expressions.md §4.12.2 — REPRO-1062-f subject
-// defect: class=projection-mirror locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=projection-mirror locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/4d2bd8a4
 #[test]
 fn s124_1062_f_subject_run() {
     s124_1062_trace("subject", "run");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — REPRO-1062-f subject
-// defect: class=projection-mirror locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=projection-mirror locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/4d2bd8a4
 #[test]
 fn s124_1062_f_subject_link() {
     s124_1062_trace("subject", "link");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — REPRO-1062-f subject
-// defect: class=projection-mirror locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev
+// defect: class=projection-mirror locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs found=S124 owner=/dev fixed=S124/4d2bd8a4
 #[test]
 fn s124_1062_f_subject_repl() {
     s124_1062_trace("subject", "repl");

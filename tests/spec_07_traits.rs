@@ -4797,7 +4797,7 @@ fn s124_jit_call_range(arena_control: bool) {
 }
 
 // spec: spec/03-types.md §3.10 — ACT-1070, every run of the 16-run cell exits 64
-// defect: class=jit-call-out-of-range locus=crates/cranelisp-backend/src/jit.rs::finish_builder found=S124 owner=/dev
+// defect: class=jit-call-out-of-range locus=crates/cranelisp-backend/src/jit.rs::finish_builder found=S124 owner=/dev fixed=S124/790f4c9a
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[test]
 fn s124_1070_jit_call_range_subject() {
