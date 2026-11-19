@@ -1414,7 +1414,7 @@ fn s124_1086_entry_function_control_repl() {
     s124_generic_library_trace("repl", false, true);
 }
 
-fn s124_prelude_child_trace(mode: &str, prelude_function: bool) {
+fn s124_prelude_child_fixture(prelude_function: bool) -> Cranelisp {
     let prelude = if prelude_function {
         "(export [primitives [*]])\n(export [m [k]])\n(defn f [:Int n] (add-i64 n 1))\n"
     } else {
@@ -1426,12 +1426,17 @@ fn s124_prelude_child_trace(mode: &str, prelude_function: bool) {
 (defn main [] (Pure (match (m.c/run f) [(TraceCall n p r c ns) (add-i64 40 (count-named "{name}" c))])))
 "#
     );
-    let cr = Cranelisp::new()
+    Cranelisp::new()
         .prelude(prelude)
         .file("m.cl", "(import [prelude []])\n(import [primitives [Int]])\n(mod c)\n(defn k [:Int n] n)\n")
         .file("m/c.cl", "(import [primitives [Int]])\n(defn run [:(Fn [Int] Int) h] (trace (h 1)))\n")
         .file("p.cl", "(import [prelude []])\n(import [primitives [Int add-i64]])\n(defn f [:Int n] (add-i64 n 1))\n")
-        .file("app.cl", &app);
+        .file("app.cl", &app)
+}
+
+fn s124_prelude_child_trace(mode: &str, prelude_function: bool) {
+    let cr = s124_prelude_child_fixture(prelude_function);
+    let name = if prelude_function { "prelude/f" } else { "p/f" };
     if mode == "run" {
         let scores = s124_trace_cold_warm(cr, mode, "m.c");
         assert_eq!(scores, [41, 41], "{mode} [cold, warm]: one {name} frame");
@@ -1444,8 +1449,33 @@ fn s124_prelude_child_trace(mode: &str, prelude_function: bool) {
 // spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 subject
 // defect: class=enumeration-miss locus=src/cache/dependency_record.rs::covered_set found=S124 owner=/dev
 #[test]
-fn s124_1087_subject_run() {
-    s124_prelude_child_trace("run", false);
+fn s124_1087_subject_run_first_launch() {
+    let cold = s124_trace_invoke(s124_prelude_child_fixture(false), "run");
+    assert_eq!(
+        s124_trace_score(&cold, "run"),
+        41,
+        "first launch: one p/f frame"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 restored launch
+// defect: class=enumeration-miss locus=src/cache/dependency_record.rs::covered_set found=S124 owner=/dev fixed=S124/fe385164
+#[test]
+fn s124_1087_subject_run_restored() {
+    let cold = s124_trace_invoke(s124_prelude_child_fixture(false), "run");
+    s124_trace_score(&cold, "run");
+    let warm = s124_trace_invoke(cold.run_again(), "run");
+    assert!(
+        warm.stderr.contains("cache hit (.meta valid) for m.c"),
+        "restored launch must restore m.c: {}{}",
+        warm.stdout,
+        warm.stderr
+    );
+    assert_eq!(
+        s124_trace_score(&warm, "run"),
+        41,
+        "restored launch: one p/f frame"
+    );
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 subject
