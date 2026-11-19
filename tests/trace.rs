@@ -1037,6 +1037,19 @@ fn s124_cached_trace_fewer_modules(mode: &str, trace: bool, no_cache: bool) {
         .file("x.cl", "(import [primitives [add-i64 Int]])\n(defn xf [:Int n] (add-i64 n 2))")
         .file("e1.cl", "(import [primitives [Pure Int add-i64]]) (import [u [traced]]) (import [x [xf]])\n(defn main [] (Pure (add-i64 (traced) (xf 0))))")
         .file("e2.cl", "(import [primitives [Pure]]) (import [u [traced]])\n(defn main [] (Pure (traced)))");
+    // Separate prompt turns finish x before u is requested, without adding
+    // an x dependency to u. The batch imports alone leave that order free.
+    let seeded = cr
+        .cli_flag("x.cl")
+        .staged_output(&[
+            helpers::e2e::Stage::Line("(xf 0)"),
+            helpers::e2e::Stage::Line("(import [u [traced]])"),
+            helpers::e2e::Stage::Line("(traced)"),
+        ])
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_contains(":primitives/Int 7");
+    let cr = seeded.run_again();
     let first = if mode == "run" {
         cr.run("e1.cl")
     } else {
