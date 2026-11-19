@@ -1893,6 +1893,26 @@ fn s117_single_name_body_failure_is_attributed_to_member() {
     s117_assert_attributed_body_failure(&[Symbol::from("later")], &Symbol::from("later"), span);
 }
 
+// spec: design/backend/non-concrete-release-contract.md §7.2 "One category
+// prefix" — an attributed body failure renders one located prefix, the
+// boundary's, over the inner message.
+#[test]
+fn an_attributed_codegen_failure_renders_one_category_prefix() {
+    let module = ModuleFullPath::from("diagnostics.helper");
+    let defn = make_int_defn("member", 1);
+    let error = CranelispError::CodegenError {
+        message: "sentinel body cause".into(),
+        location: ErrorLocation::from_span(Span::new(701, 709)),
+    };
+
+    let rendered = CranelispError::from(crate::attribute_body_codegen_error(&module, &defn, error))
+        .to_string();
+    assert_eq!(
+        rendered,
+        "codegen error at 701..709: codegen failed for diagnostics.helper/member: sentinel body cause"
+    );
+}
+
 #[test]
 fn s117_attribution_helper_preserves_cause_and_full_location() {
     let module = ModuleFullPath::from("diagnostics.helper");
@@ -1918,7 +1938,10 @@ fn s117_attribution_helper_preserves_cause_and_full_location() {
         } => {
             assert_eq!(actual_module, module);
             assert_eq!(symbol, defn.name);
-            assert_eq!(cause, "codegen error at 701..709: sentinel body cause");
+            assert_eq!(
+                cause, "sentinel body cause",
+                "the location travels in `location`"
+            );
             assert_eq!(actual_location.span, location.span);
             assert_eq!(actual_location.file, location.file);
             assert_eq!(actual_location.fq, location.fq);

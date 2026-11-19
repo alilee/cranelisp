@@ -122,16 +122,6 @@ impl std::fmt::Display for CompilationError {
 
 impl std::error::Error for CompilationError {}
 
-/// Bridge `CranelispError` produced inside backend codegen to the typed
-/// `CompilationError` at the boundary. Per Decision 37: callers match on `CompilationError` variants rather than parsing message
-/// strings. Backend's internal flow still produces `CranelispError`
-/// (workspace-wide error type); this `From` impl converts at the boundary.
-///
-/// Generic `CodegenError`/`ModuleError` shapes collapse into
-/// `CompilationError::CodegenFailed` with the original message preserved
-/// as `cause`. The `module` + `symbol` slots are best-effort; a follow-up
-/// FIXME may file finer-grained conversions when the caller's match-arm
-/// needs more precision than "something failed during codegen".
 /// Reverse bridge: `CompilationError` flowing through internal call sites
 /// that still produce `CranelispError`. Used at the few internal sites
 /// (cache writer, exe link) that propagate codegen results upward through
@@ -151,14 +141,26 @@ impl From<CompilationError> for cranelisp_types::CranelispError {
     }
 }
 
+/// Bridge `CranelispError` produced inside backend codegen to the typed
+/// `CompilationError` at the boundary (Decision 37). Every shape becomes
+/// `CompilationError::CodegenFailed` with empty `module` and `symbol`, which
+/// the attributing caller fills.
+///
+/// An inner `CodegenError` or `ModuleError` gives `cause` its message alone
+/// and moves its location into `location`, so the one located prefix is the
+/// one rendered at the boundary
+/// (`design/backend/non-concrete-release-contract.md` §7.2). Any other shape
+/// keeps its whole rendering as `cause` at a synthetic location.
 impl From<cranelisp_types::CranelispError> for CompilationError {
     fn from(err: cranelisp_types::CranelispError) -> Self {
         use cranelisp_types::CranelispError;
-        let cause = err.to_string();
-        let location = match &err {
-            CranelispError::CodegenError { location, .. }
-            | CranelispError::ModuleError { location, .. } => location.clone(),
-            _ => cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
+        let (cause, location) = match err {
+            CranelispError::CodegenError { message, location }
+            | CranelispError::ModuleError { message, location } => (message, location),
+            other => (
+                other.to_string(),
+                cranelisp_types::ErrorLocation::from_span(cranelisp_types::Span::SYNTHETIC),
+            ),
         };
         CompilationError::CodegenFailed {
             module: ModuleFullPath::from(""),
