@@ -2049,9 +2049,7 @@ where
     /// Returns `Some("cranelisp_trace_<field>")` only when (a) the name is one of
     /// the five accessors AND (b) the call has exactly one argument whose inferred
     /// type is the synthetic `primitives/Trace` ADT — so a user `nanos`/`name`
-    /// field on an unrelated ADT is not hijacked. `first_child_nanos` is NOT in
-    /// this set: it is not a seeded field accessor (it is the `/run-tests`
-    /// internal reader) and never reaches a `BuiltinFn` call site.
+    /// field on an unrelated ADT is not hijacked.
     fn trace_accessor_intrinsic(&self, name: &str, args: &[MonoExpr]) -> Option<&'static str> {
         let intrinsic = trace_accessor_abi_name(name)?;
         // Scope to a Trace-typed receiver: exactly one arg whose concrete type is
@@ -2173,12 +2171,11 @@ where
 ///
 /// - The string and conversion names are extern shims, which take ownership of
 ///   every heap argument (bounded-contexts §4a invariant 8).
-/// - The six `cranelisp_trace_*` names are named intrinsics, outside that rule
-///   (§4b invariant 6). Five are bodies of host-promised entries and follow §3
-///   invariant 2; `cranelisp_trace_first_child_nanos` consumes its Trace per the
-///   §4b conventions table. A Trace accessor call normally takes the Trace-typed
+/// - The five `cranelisp_trace_*` names are named intrinsics, outside that rule
+///   (§4b invariant 6). They are bodies of host-promised entries and follow §3
+///   invariant 2. A Trace accessor call normally takes the Trace-typed
 ///   intercept in `compile_builtin_fn_call` first; one that reaches this arm by
-///   its intrinsic name is consumed, which matches each of the six.
+///   its intrinsic name is consumed, which matches each of the five.
 pub(crate) fn is_extern_primitive(name: &str) -> bool {
     matches!(
         name,
@@ -2212,7 +2209,6 @@ pub(crate) fn is_extern_primitive(name: &str) -> bool {
             | "cranelisp_trace_result"
             | "cranelisp_trace_children"
             | "cranelisp_trace_nanos"
-            | "cranelisp_trace_first_child_nanos"
     )
 }
 
@@ -2431,9 +2427,7 @@ fn platform_fn_name_bytes(fq_name: &str) -> Vec<u8> {
 /// int's bootstrap; their bodies are the intrinsics in
 /// `cranelisp-intrinsics::trace` (published via `intrinsics_table()`). The
 /// bare-name → ABI-name mapping is restored here (lost in the W1.5 trace
-/// relocation — FIXME 0292 / 0285 defect 1). `first_child_nanos` is excluded
-/// deliberately: it is the `/run-tests` internal reader, not a field accessor,
-/// and never appears as a `BuiltinFn` call head.
+/// relocation — FIXME 0292 / 0285 defect 1).
 fn trace_accessor_abi_name(name: &str) -> Option<&'static str> {
     Some(match name {
         "name" => "cranelisp_trace_name",

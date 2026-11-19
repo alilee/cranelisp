@@ -27,9 +27,6 @@ fn accessor_names_map_to_intrinsics() {
 
 #[test]
 fn non_accessor_names_do_not_map() {
-    // first_child_nanos is the /run-tests internal reader, not a field
-    // accessor — it must NOT be rewritten via this path.
-    assert_eq!(trace_accessor_abi_name("first_child_nanos"), None);
     assert_eq!(trace_accessor_abi_name("nano"), None);
     assert_eq!(trace_accessor_abi_name("foo"), None);
     assert_eq!(trace_accessor_abi_name(""), None);
