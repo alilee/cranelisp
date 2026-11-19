@@ -226,7 +226,7 @@ follow the rule above: "unknown" means no count was recorded.
 source at `88bbbd12` and ran no probe.
 
 - **`runtime/rc_underflow_check` — latent hazard, filed as
-  [ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md)
+  ACT-1033 (resolved by S124 row D11)
   to `arch`.**
   - Confirmed: the catalog declares one parameter, but the function takes
     two. No backend site emits a call to it.
@@ -358,7 +358,7 @@ the regression control; all three defects below are present in it.
   - The attribution is provisional.
 - **Review "outside this diff", catalog signatures: latent, no defect.**
   Recorded by widening
-  [ACT-1033](../../sprints/actions/ACT-1033-rc-underflow-check-dead-catalog-entry.md).
+  ACT-1033 (resolved by S124 row D11).
   - No backend site emits `runtime/string_read`.
   - All four `runtime/panic` sites discard the declared result.
   - The common cause is hand-copied signatures. A derived signature is the
@@ -4925,23 +4925,15 @@ reports.
   non-type-bound-form rejects, and the bare-`/` division fence.
   `consume_dotted_module_path` exists once in `reader.rs` with the symbol and
   annotation paths as its two callers.
-- **Backend R2 — two of three seam classes discharged; the pattern seam is
-  not.** KC-N1/N2 (call) and KC-N3–N5 with the KC-N6 fence (value) assert their
-  message families. No test in the backend unit tier or `tests/` asserts either
-  `compile_constructor_pattern` miss arm (`match_codegen.rs`: carrier-`None`
-  "no resolved_ctor carrier"; entry-miss "has no Def"). The KC-N family never
-  enumerated this seam, so the arms have not been observed to fire.
-  - *Surviving wrong outcome:* with the resolver family deleted a fallback
-    cannot re-resolve, but a lenient arm (skip the pattern, default the tag)
-    would still compile and mis-match silently; positive pattern suites stay
-    green under it.
-  - *Allocation (safety fence, `dev` backend module tier):* two cells beside
-    the existing `match_codegen.rs` fixture that populates `pattern_ctors` —
-    one omitting the carrier, one keying it to an FQ absent from the tables —
-    each asserting a `CodegenError` naming the constructor and its family. No
-    e2e: a well-formed program cannot reach either arm. Fixture reachability is
-    unexecuted; if the harness refuses earlier, `dev` reports the seam that
-    fired. Carried by ACT-0968.
+- **Backend R2 — discharged.** KC-N1/N2 (call) and KC-N3–N5 with the KC-N6
+  fence (value) assert their message families. The pattern seam's two miss
+  arms are asserted since S124:
+  `match_codegen.rs::a_constructor_pattern_with_no_carrier_is_a_codegen_error`
+  (carrier absent) and
+  `context/keyed_read_hardening_tests.rs::a_missed_pattern_constructor_key_is_an_error_not_no_fields`
+  (key absent from the tables). Each asserts a located codegen error naming
+  the constructor, beside a compiling control. No e2e: a well-formed program
+  cannot reach either arm.
 
 ## Startup recovery and failed-source retention — evidence delta (2026-09-22)
 

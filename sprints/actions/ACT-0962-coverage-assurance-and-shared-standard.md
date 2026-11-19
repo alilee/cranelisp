@@ -18,7 +18,7 @@ refers_to:
 
 Under the [approved S122 disposition](../../tests/plan/s122-evidence-delta.md#final-disposition-proposal-2026-09-30):
 
-- **Carried to S123 (K11).** This action receives the evidence tails 0761, 0785, 0811, 0848, 0857, 0863, 0891, 0900, 0903, 0929, 0931 and 0747, and QA's L-B1 corpus decision. It was already a user deferral in S122, so this is a repeat carry, approved with the package; no count is otherwise recorded.
+- **Carried to S123 (K11).** This action receives the evidence tails of FIXMEs 0761, 0785, 0811, 0848, 0857, 0863, 0900 and 0929, and QA's L-B1 corpus decision. The package also named 0747, 0891, 0903 and 0931; those filings are closed and deleted (`design/arch/fixmes/` read 2026-11-20). It was already a user deferral in S122, so this is a repeat carry, approved with the package; no count is otherwise recorded.
 
 ## Request
 
