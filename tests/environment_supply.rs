@@ -432,11 +432,12 @@ fn credential_without_nul_starts_normally() {
 }
 
 // spec: repl/spec/00-cli-invocation.md §0.8 — located startup refusal.
-// R1: src/env_files.rs setter panics with the credential; fix owner=/dev.
-// QA handoff: assign a defect class for external-value validation/disclosure.
+// defect: class=silent-accept locus=src/env_files.rs found=S123 owner=/dev fixed=S123/efd09d29
+// A NUL credential formerly reached the setter and panicked with the value.
 #[test]
 fn credential_with_nul_neg_refuses_without_disclosure_or_panic() {
     let out = review_startup()
+        .expects_exit_without_reading_stdin()
         .cli_flag("--no-agent")
         .file(
             ".env",

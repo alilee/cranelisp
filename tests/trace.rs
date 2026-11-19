@@ -1358,21 +1358,24 @@ fn s124_generic_library_trace(mode: &str, typed: bool, entry_function: bool) {
 }
 
 // spec: spec/04-expressions.md §4.12.3 — REPRO-1086 subject
-// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev fixed=S124/94749709
+// That function is gone; read src/worker.rs::covered_batch today.
 #[test]
 fn s124_1086_subject_run() {
     s124_generic_library_trace("run", false, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3 — REPRO-1086 subject
-// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev fixed=S124/94749709
+// That function is gone; read src/worker.rs::covered_batch today.
 #[test]
 fn s124_1086_subject_link() {
     s124_generic_library_trace("link", false, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3 — REPRO-1086 subject
-// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev fixed=S124/94749709
+// That function is gone; read src/worker.rs::covered_batch today.
 #[test]
 fn s124_1086_subject_repl() {
     s124_generic_library_trace("repl", false, false);
@@ -1479,7 +1482,7 @@ fn s124_1087_subject_run_restored() {
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 subject
-// defect: class=enumeration-miss locus=src/cache/dependency_record.rs::covered_set found=S124 owner=/dev
+// defect: class=enumeration-miss locus=src/cache/dependency_record.rs::covered_set found=S124 owner=/dev fixed=S124/fe385164
 #[test]
 fn s124_1087_subject_link() {
     s124_prelude_child_trace("link", false);
@@ -1598,4 +1601,43 @@ fn s124_1088_partial_subject_repl() {
 #[test]
 fn s124_1088_partial_control_run() {
     s124_slot_trace("run", true, true);
+}
+
+fn s124_generic_helper_trace(mode: &str) {
+    let app = format!(
+        r#"{S124_COUNT_NAMED}
+(import [m [run]])
+(import [z [zf]])
+(defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))
+(defn main [] (Pure (match (run zf) [(TraceCall n p r c ns)
+  (add-i64 40 (add-i64 (frames c) (mul-i64 10 (add-i64 (count-named "z/zf" c) (count-named "z/zg" c)))))])))
+"#
+    );
+    let cr = Cranelisp::new()
+        .file("m.cl", "(import [primitives [Int]])\n(defn helper [x] x)\n(defn run [h] (trace (helper (h 1))))\n")
+        .file("z.cl", "(import [primitives [Int add-i64]])\n(defn zg [:Int n] (add-i64 n 1))\n(defn zf [:Int n] (zg n))\n")
+        .file("app.cl", &app);
+    assert_eq!(
+        s124_trace_cold_warm(cr, mode, "m"),
+        [41, 41],
+        "{mode} [cold, warm]: one library helper frame and no z/zf or z/zg frames"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.3 — T-1086-helper
+#[test]
+fn s124_1086_helper_run() {
+    s124_generic_helper_trace("run");
+}
+
+// spec: spec/04-expressions.md §4.12.3 — T-1086-helper
+#[test]
+fn s124_1086_helper_link() {
+    s124_generic_helper_trace("link");
+}
+
+// spec: spec/04-expressions.md §4.12.3 — T-1086-helper
+#[test]
+fn s124_1086_helper_repl() {
+    s124_generic_helper_trace("repl");
 }
