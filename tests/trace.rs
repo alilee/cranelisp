@@ -1319,3 +1319,147 @@ fn s124_finished_module_import_above_link() {
 fn s124_finished_module_import_above_repl() {
     s124_finished_module_trace("repl", "above");
 }
+
+fn s124_generic_library_trace(mode: &str, typed: bool, entry_function: bool) {
+    let parameter = if typed { ":(Fn [Int] Int) h" } else { "h" };
+    let app = format!(
+        r#"(import [primitives [Int Pure TraceCall add-i64]])
+(import [macros [SCons SNil]])
+(import [m [run]])
+(import [z [zf]])
+(defn af [:Int n] (add-i64 n 1))
+(defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))
+(defn main [] (Pure (match (run {}) [(TraceCall n p r c ns) (add-i64 40 (frames c))])))
+"#,
+        if entry_function { "af" } else { "zf" }
+    );
+    let cr = Cranelisp::new()
+        .file("m.cl", &format!("(import [primitives [Int]])\n(defn run [{parameter}] (trace (h 1)))\n"))
+        .file("z.cl", "(import [primitives [Int add-i64]])\n(defn zg [:Int n] (add-i64 n 1))\n(defn zf [:Int n] (zg n))\n")
+        .file("app.cl", &app);
+    if entry_function {
+        let out = s124_trace_invoke(cr, mode);
+        assert_eq!(
+            s124_trace_score(&out, mode),
+            40,
+            "{mode}: no entry-function frame"
+        );
+    } else {
+        let scores = s124_trace_cold_warm(cr, mode, "m");
+        assert_eq!(
+            scores,
+            [40, 40],
+            "{mode} [cold, warm]: no caller z/zf or nested z/zg frames; typed={typed}"
+        );
+    }
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 subject
+// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev
+#[test]
+fn s124_1086_subject_run() {
+    s124_generic_library_trace("run", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 subject
+// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev
+#[test]
+fn s124_1086_subject_link() {
+    s124_generic_library_trace("link", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 subject
+// defect: class=wrong-scope-lookup locus=src/worker.rs::covered_set found=S124 owner=/dev
+#[test]
+fn s124_1086_subject_repl() {
+    s124_generic_library_trace("repl", false, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 typed_control
+#[test]
+fn s124_1086_typed_control_run() {
+    s124_generic_library_trace("run", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 typed_control
+#[test]
+fn s124_1086_typed_control_link() {
+    s124_generic_library_trace("link", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 typed_control
+#[test]
+fn s124_1086_typed_control_repl() {
+    s124_generic_library_trace("repl", true, false);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 entry_function_control
+#[test]
+fn s124_1086_entry_function_control_run() {
+    s124_generic_library_trace("run", false, true);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 entry_function_control
+#[test]
+fn s124_1086_entry_function_control_link() {
+    s124_generic_library_trace("link", false, true);
+}
+
+// spec: spec/04-expressions.md §4.12.3 — REPRO-1086 entry_function_control
+#[test]
+fn s124_1086_entry_function_control_repl() {
+    s124_generic_library_trace("repl", false, true);
+}
+
+fn s124_prelude_child_trace(mode: &str, prelude_function: bool) {
+    let prelude = if prelude_function {
+        "(export [primitives [*]])\n(export [m [k]])\n(defn f [:Int n] (add-i64 n 1))\n"
+    } else {
+        "(export [primitives [*]])\n(export [m [k]])\n(export [p [f]])\n"
+    };
+    let name = if prelude_function { "prelude/f" } else { "p/f" };
+    let app = format!(
+        r#"{S124_COUNT_NAMED}
+(defn main [] (Pure (match (m.c/run f) [(TraceCall n p r c ns) (add-i64 40 (count-named "{name}" c))])))
+"#
+    );
+    let cr = Cranelisp::new()
+        .prelude(prelude)
+        .file("m.cl", "(import [prelude []])\n(import [primitives [Int]])\n(mod c)\n(defn k [:Int n] n)\n")
+        .file("m/c.cl", "(import [primitives [Int]])\n(defn run [:(Fn [Int] Int) h] (trace (h 1)))\n")
+        .file("p.cl", "(import [prelude []])\n(import [primitives [Int add-i64]])\n(defn f [:Int n] (add-i64 n 1))\n")
+        .file("app.cl", &app);
+    if mode == "run" {
+        let scores = s124_trace_cold_warm(cr, mode, "m.c");
+        assert_eq!(scores, [41, 41], "{mode} [cold, warm]: one {name} frame");
+    } else {
+        let out = s124_trace_invoke(cr, mode);
+        assert_eq!(s124_trace_score(&out, mode), 41, "{mode}: one {name} frame");
+    }
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 subject
+// defect: class=enumeration-miss locus=src/cache/dependency_record.rs::covered_set found=S124 owner=/dev
+#[test]
+fn s124_1087_subject_run() {
+    s124_prelude_child_trace("run", false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 subject
+// defect: class=enumeration-miss locus=src/cache/dependency_record.rs::covered_set found=S124 owner=/dev
+#[test]
+fn s124_1087_subject_link() {
+    s124_prelude_child_trace("link", false);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 prelude_control
+#[test]
+fn s124_1087_prelude_control_run() {
+    s124_prelude_child_trace("run", true);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/08-modules.md §8.8.1 — REPRO-1087 prelude_control
+#[test]
+fn s124_1087_prelude_control_link() {
+    s124_prelude_child_trace("link", true);
+}
