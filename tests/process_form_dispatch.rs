@@ -13,10 +13,8 @@
 // FIXME 0098 — process_form gap-orchestration):
 //
 //   - REPL `(import [m])` immediately followed by `(macro-from-m ...)` —
-//     the typed `ExpansionError::Gap(ResolutionGap::MacroInMem(fq))` retry
-//     completes in a single REPL eval. Today the orchestrator's retry
-//     dispatch is ad-hoc string parsing on stringly-typed errors. (Macro
-//     resolution is a per-form concern; no `(begin ...)` cluster needed.)
+//     the imported macro is available in the next REPL eval without a
+//     `(begin ...)` cluster.
 //   - `(begin ...)` cluster forward-reference (POSITIVE) —
 //     `(begin (defn f [] (g 1)) (defn g [x] x))` typechecks atomically:
 //     Pass 1 registers signatures of both into staging, Pass 2 body-checks
@@ -48,11 +46,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // (correct) orchestration.
 #[test]
 fn process_form_dispatch_macro_after_import_succeeds_in_one_eval() {
-    // Two-module setup: helper module exports a macro; user imports it
-    // and immediately uses it. Pre-fix, the orchestrator's stringly-typed
-    // retry path may double-evaluate or fail to discover the macro on
-    // the first eval; post-fix the typed Gap returns from frontend's
-    // expand and the retry completes inside the same REPL eval.
+    // The imported macro must be available on its first invocation.
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::None)
