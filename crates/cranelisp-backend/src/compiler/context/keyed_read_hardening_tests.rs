@@ -16,6 +16,7 @@ fn with_context<R>(read: impl FnOnce(&CompileContext<'_>) -> R) -> R {
     let func_arities = HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),

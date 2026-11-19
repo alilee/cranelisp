@@ -16,6 +16,7 @@ fn with_compiler(probe: impl FnOnce(&mut FnCompiler<'_, FarCallModule>)) {
     let module_path = ModuleFullPath::from("user");
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),

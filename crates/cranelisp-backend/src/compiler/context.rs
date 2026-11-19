@@ -131,6 +131,9 @@ where
 {
     /// Function IDs for direct calls (Batch mode).
     pub func_ids: &'a HashMap<Symbol, FuncId>,
+    /// The GOT slot each target of this unit claims, keyed by name. A function
+    /// value over one of them calls through this slot (compile-to-module §12.2).
+    pub unit_slots: &'a HashMap<Symbol, usize>,
     /// Function parameter counts, for generating closure wrappers.
     pub func_arities: &'a HashMap<Symbol, usize>,
     /// Per-module symbol tables (shared, authoritative source for type defs,
@@ -172,6 +175,7 @@ where
     fn clone(&self) -> Self {
         CompileContext {
             func_ids: self.func_ids,
+            unit_slots: self.unit_slots,
             func_arities: self.func_arities,
             symbol_tables: self.symbol_tables,
             trace_modules: self.trace_modules,

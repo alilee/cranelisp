@@ -200,6 +200,7 @@ fn read(
     let func_arities = HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: tables,
         trace_modules: &std::collections::BTreeSet::new(),
@@ -513,6 +514,7 @@ fn a_type_with_a_short_constructor_has_no_constructor_metadata_neg() {
     let func_arities = HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),
@@ -549,6 +551,7 @@ fn a_short_declaration_builds_no_constructor_record_neg() {
     let func_arities = HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),

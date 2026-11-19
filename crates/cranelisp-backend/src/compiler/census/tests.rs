@@ -682,6 +682,7 @@ fn a_field_read_at_a_residual_instantiation_records_the_residual_class() {
     let func_arities = HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),
@@ -996,6 +997,7 @@ fn census_file_child() {
     let func_arities = HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),

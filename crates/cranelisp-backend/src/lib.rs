@@ -742,6 +742,7 @@ where
     // intrinsic FuncIds, then the bare-name `Linkage::Local` module fns.
     let mut func_ids: HashMap<Symbol, FuncId> = intrinsic_ids.by_name.clone();
     declare_module_functions(module, &defns, &mut func_ids)?;
+    let unit_slots = unit_got_slots(&module_path, symbol_tables, targets, &defns)?;
 
     // Declare and define result-root glue before ordinary bodies. The registry
     // inserts `Defining` entries before walking fields, so recursive and
@@ -794,6 +795,7 @@ where
         &param_types,
         &census_frames,
         &func_ids,
+        &unit_slots,
         &func_arities,
         &intrinsic_ids,
         capture_clif,
@@ -810,9 +812,9 @@ where
         module,
         &module_path,
         symbol_tables,
-        targets,
         &defns,
         &func_ids,
+        &unit_slots,
     )?;
 
     // Step 4: Finalize definitions.
@@ -827,9 +829,9 @@ where
         module,
         &module_path,
         symbol_tables,
-        targets,
         &defns,
         &func_ids,
+        &unit_slots,
     );
 
     Ok(CompilationArtifacts {
@@ -1056,6 +1058,7 @@ fn compile_module_bodies<M, C, L>(
     param_types: &[Vec<cranelisp_types::ConcreteType>],
     census_frames: &[compiler::census::Frame],
     func_ids: &HashMap<Symbol, FuncId>,
+    unit_slots: &HashMap<Symbol, usize>,
     func_arities: &HashMap<Symbol, usize>,
     intrinsic_ids: &crate::jit::IntrinsicFuncIds,
     capture_clif: bool,
@@ -1086,6 +1089,7 @@ where
     for (index, (defn, body)) in defns.iter().zip(bodies.iter()).enumerate() {
         let compile_ctx = CompileContext {
             func_ids,
+            unit_slots,
             func_arities,
             symbol_tables,
             trace_modules: targets[index].trace_modules(),
@@ -1158,6 +1162,42 @@ fn attribute_body_codegen_error(
     error::codegen_failed(module_path.clone(), defn.name.clone(), error)
 }
 
+fn missing_module_table(module_path: &ModuleFullPath, step: &str) -> CranelispError {
+    CranelispError::CodegenError {
+        message: format!("compile_to_module: no symbol table for module '{module_path}' at {step}"),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
+
+/// The GOT slot each target of this unit claims, keyed by its defn name; a
+/// slot-less target has none. The unit's one read of its slots: GOT data
+/// emission, the finalised-pointer writes and a function value's wrapper
+/// (compile-to-module §12.2) consume it, so a wrapper loads the slot that
+/// receives its target's code.
+fn unit_got_slots<C, L>(
+    module_path: &ModuleFullPath,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    targets: &[CodegenTarget<'_>],
+    defns: &[Defn],
+) -> Result<HashMap<Symbol, usize>, CranelispError>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let table = symbol_tables
+        .get(module_path)
+        .ok_or_else(|| missing_module_table(module_path, "slot collection"))?;
+    Ok(targets
+        .iter()
+        .map(CodegenTarget::target)
+        .zip(defns)
+        .filter_map(|(target, defn)| {
+            let slot = table.callable_target(target).and_then(callable_arm_slot)?;
+            Some((defn.name.clone(), slot))
+        })
+        .collect())
+}
+
 /// Step 4a (S111 R5 §3.1 / `/arch` Decision 23 Bug B fix): emit the per-module
 /// GOT data symbol `__cranelisp_got_{M}`. For ObjectModule this defines a
 /// `Linkage::Export` data symbol with relocation initializers against
@@ -1169,9 +1209,9 @@ fn emit_module_got_data<M, C, L>(
     module: &mut M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    targets: &[CodegenTarget<'_>],
     defns: &[Defn],
     func_ids: &HashMap<Symbol, FuncId>,
+    unit_slots: &HashMap<Symbol, usize>,
 ) -> Result<(), CranelispError>
 where
     M: Module + CodeFinalizer,
@@ -1180,22 +1220,11 @@ where
 {
     let table = symbol_tables
         .get(module_path)
-        .ok_or_else(|| CranelispError::CodegenError {
-            message: format!(
-                "compile_to_module: no symbol table for module '{module_path}' at GOT-data emission"
-            ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        })?;
-    let mut slot_funcs: Vec<(usize, FuncId)> = Vec::with_capacity(defns.len());
-    for (target, defn) in targets.iter().map(CodegenTarget::target).zip(defns) {
-        let Some(slot) = table.callable_target(target).and_then(callable_arm_slot) else {
-            continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
-        };
-        let Some(&func_id) = func_ids.get(&defn.name) else {
-            continue; // Defensive: can't happen — we declared it above
-        };
-        slot_funcs.push((slot, func_id));
-    }
+        .ok_or_else(|| missing_module_table(module_path, "GOT-data emission"))?;
+    let slot_funcs: Vec<(usize, FuncId)> = defns
+        .iter()
+        .filter_map(|defn| Some((*unit_slots.get(&defn.name)?, *func_ids.get(&defn.name)?)))
+        .collect();
     let slot_count = table
         .all_symbols()
         .filter_map(|(_, binding)| binding.callable_got_slot())
@@ -1237,15 +1266,15 @@ fn write_finalized_got_slots<M, C, L>(
     module: &M,
     module_path: &ModuleFullPath,
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-    targets: &[CodegenTarget<'_>],
     defns: &[Defn],
     func_ids: &HashMap<Symbol, FuncId>,
+    unit_slots: &HashMap<Symbol, usize>,
 ) where
     M: Module + CodeFinalizer,
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    for (target, defn) in targets.iter().map(CodegenTarget::target).zip(defns) {
+    for defn in defns {
         let Some(&func_id) = func_ids.get(&defn.name) else {
             continue;
         };
@@ -1255,11 +1284,8 @@ fn write_finalized_got_slots<M, C, L>(
             break;
         };
 
-        // Resolve the entry's GOT slot and write the finalised ptr.
-        let slot_opt = symbol_tables
-            .get(module_path)
-            .and_then(|table| table.callable_target(target).and_then(callable_arm_slot));
-        if let Some(slot) = slot_opt {
+        // Write the finalised ptr into the entry's GOT slot.
+        if let Some(&slot) = unit_slots.get(&defn.name) {
             if let Some(table) = symbol_tables.get(module_path) {
                 table.got.store_slot(slot, ptr);
             }

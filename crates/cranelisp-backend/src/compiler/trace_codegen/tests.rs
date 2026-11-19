@@ -766,6 +766,7 @@ fn ctor_meta_at_keyed_read_hits_real_def_and_misses_are_loud() {
     let func_arities: std::collections::HashMap<Symbol, usize> = std::collections::HashMap::new();
     let ctx = crate::compiler::CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),
@@ -822,6 +823,7 @@ fn with_bake_compiler<R>(
 
     let ctx = crate::compiler::CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: tables,
         trace_modules: &std::collections::BTreeSet::new(),

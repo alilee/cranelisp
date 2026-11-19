@@ -70,6 +70,7 @@ fn render(combinator: IoCombinator, path: Path) -> String {
     let func_arities = std::collections::HashMap::new();
     let ctx = CompileContext {
         func_ids: &func_ids,
+        unit_slots: &std::collections::HashMap::new(),
         func_arities: &func_arities,
         symbol_tables: &tables,
         trace_modules: &std::collections::BTreeSet::new(),

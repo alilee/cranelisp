@@ -337,6 +337,21 @@ where
         func_arities.insert(d.name.clone(), d.params().len());
     }
 
+    // The unit's slots, as `compile_to_module` collects them: every probed or
+    // declared fn whose binding claims one.
+    let unit_slots: HashMap<Symbol, usize> = symbol_tables
+        .get(&module_path)
+        .map(|table| {
+            func_ids
+                .keys()
+                .filter_map(|name| {
+                    let slot = table.get(name.as_ref())?.callable_got_slot()?;
+                    Some((name.clone(), slot))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     // S0: the probe seam owns a registry for the duration of the probe, exactly
     // as `compile_to_module_impl` owns one across Step 3. Its `finish()` fence is
     // not run here — the probe does not project artifacts.
@@ -373,6 +388,7 @@ where
         supply_site_facts(&mut body);
         let compile_ctx = crate::compiler::CompileContext {
             func_ids: &func_ids,
+            unit_slots: &unit_slots,
             func_arities: &func_arities,
             symbol_tables,
             trace_modules: &covered,

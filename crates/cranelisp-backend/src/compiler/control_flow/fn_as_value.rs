@@ -65,6 +65,9 @@ mod keyed_miss_tests;
 #[cfg(test)]
 mod unclaimed_builtin_tests;
 
+#[cfg(test)]
+mod slot_call_tests;
+
 /// The forwarding template (`uniform-counting.md` §3.3): the argument vector
 /// of a generated wrapper's one saturated call of its target, and the only RC
 /// emission in a wrapper body. Every function-as-value, trait-method-as-value
@@ -511,10 +514,10 @@ where
 
     /// Emit the call instruction inside a wrapper function body.
     ///
-    /// Prefers a direct `call` via FuncId when the target is in the current
-    /// unit's `func_ids` map. Otherwise emits a GOT-indirect `call_indirect`
-    /// using the uniform `__cranelisp_got_{module}` data-symbol strategy
-    /// (design/backend/compile-to-module.md §12).
+    /// A slotted target is called GOT-indirect through its own slot, so the
+    /// call reaches whatever the slot holds when it runs, as a trace or a
+    /// redefinition requires (compile-to-module §12.2). A target in this unit
+    /// takes its slot from the unit's targets; any other from its carrier.
     ///
     /// Every target consumes its arguments, as the wrapper's own closure
     /// protocol does, so the owned params are forwarded with no adaptation.
@@ -529,19 +532,16 @@ where
         ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives the S15 summary, S16
         // ctor-as-value, S17 vec-query, and S10 GOT-entry keyed reads. `None` for
-        // a target with no carrier (the current-unit `func_ids` fast-path below
-        // covers same-unit fns; a `None` reaching the S10 GOT fallback hard-errors
-        // — Rev-2, no name-resolver fallback).
+        // a target with no carrier (a target in this unit still finds its slot in
+        // `unit_slots`; a `None` reaching the S10 GOT fallback hard-errors —
+        // Rev-2, no name-resolver fallback).
         target_fq: Option<&FQSymbol>,
     ) -> Result<Value, CranelispError> {
-        // If the function is declared in the current compilation unit, emit a
-        // direct call — cheaper and avoids an unnecessary GOT dereference. User
-        // ADT constructors have a compiled constructor function here, so this
-        // arm covers `(let [f Box] (f 7))` for user types.
-        if let Some(target_id) = self.ctx.func_ids.get(target_name) {
-            let target_ref = self.module.declare_func_in_func(*target_id, builder.func);
-            let call = builder.ins().call(target_ref, user_params);
-            return Ok(builder.inst_results(call)[0]);
+        // A target in this unit, including a user ADT constructor's compiled
+        // body (`(let [f Box] (f 7))`), is called through its own slot.
+        if let Some(&slot) = self.ctx.unit_slots.get(target_name) {
+            let module_path = self.ctx.current_module.clone();
+            return self.emit_got_slot_call(builder, &module_path, slot, user_params, span);
         }
 
         // Data constructor as a first-class value with NO callable function in
@@ -619,7 +619,19 @@ where
                 ),
                 location: ErrorLocation::from_span(span),
             })?;
-        let got_sym = crate::compiler::got_data_symbol_name(&module_path);
+        self.emit_got_slot_call(builder, &module_path, slot, user_params, span)
+    }
+
+    /// Call through `slot` of `module_path`'s GOT from a wrapper body.
+    fn emit_got_slot_call(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        module_path: &ModuleFullPath,
+        slot: usize,
+        user_params: &[Value],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let got_sym = crate::compiler::got_data_symbol_name(module_path);
         let data_id = self
             .module
             .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
