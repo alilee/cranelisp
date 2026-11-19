@@ -1,6 +1,6 @@
 ---
 number: 0929
-target: /design (backend)
+target: /design (int)
 filed_by: /qa
 filed_at: 2026-07-27
 sprint_filed: 119
@@ -28,19 +28,21 @@ allow-list, every entry citing an open filing, a new site RED in its own
 change-set), with R18's residual graded asserted-with-a-named-falsifier once
 the census lands with its detection proof (arch ruling, S119).
 
-## Site state (verified 2026-09-24)
+## Site state (verified 2026-09-24; backend rows re-read by `qa` 2026-11-19)
 
 | Site | Current source | Disposition and owner |
 |---|---|---|
 | `crates/cranelisp-typecheck/src/ownership/fixpoint.rs` parameter seed | residual parameter frames publish no summary; pinned by `a_residual_parameter_frame_publishes_nothing_and_stays_in_the_keyed_set` | **done** (S122) |
 | `crates/cranelisp-backend/src/compiler/fn_compiler.rs` dead `variable_types` arm | absent | **done** |
-| `crates/cranelisp-backend/src/drop_glue.rs` Vec arm, `unwrap_or(ConcreteType::Int)` | live | located refusal — contract §7.4, `dev` (backend) |
-| `crates/cranelisp-backend/src/compiler/context.rs` constructor field read, `unwrap_or(Type::Int)` | live | deleted by the ruled constructor-declaration channel (`CtorField` carries `ConcreteType`) — contract §7.4 |
+| `crates/cranelisp-backend/src/drop_glue.rs` Vec arm, `unwrap_or(ConcreteType::Int)` | absent at `f8c55626`; a refusal since `1d965ed5` | **done** (S124) |
+| `crates/cranelisp-backend/src/compiler/context.rs` constructor field read, `unwrap_or(Type::Int)` | absent at `f8c55626`; a refusal since `24c42430` (packet row D1) | **done** (S124) |
 | Binary/int display-type defaults, `src/pipeline.rs` and `src/repl/commands.rs` `unwrap_or(Type::Int)` | live | grading owed: can a heap-typed result reach these arms with no display type? `design` (int) |
 
 ## Remaining obligation
 
-- Dispose the three live sites above.
+- Dispose the one live site above, the binary's display-type defaults
+  (`design`(int)). No backend production site remains: the only
+  `unwrap_or(Type::Int)` in the crate is in `test_support.rs`.
 - Land the NC-2 census with both detection legs; no census test cites this
   filing today.
 

@@ -106,6 +106,19 @@ owed.
   §9.1, in `tests/match_field_parameter_order.rs`, with this filing's
   `// defect:` class and the locus of each reader.
 
+## The backend reader is corrected; the display reader remains (qa, 2026-11-19, `f8c55626`)
+
+- **Backend, closed at `4d2bd8a4` (row B14).** The three REPRO-1062-f
+  subjects pass: in `qa`'s full run, 10 of 10 alone and 10 of 10 with
+  fourteen cells running at once. The helper pairs by declared parameter
+  for the descriptor baker and the schema walk; its module rows are in
+  `crates/cranelisp-backend/src/schema/tests.rs`, and
+  `schema_walk_pairs_an_out_of_order_product_by_declared_parameter` closes
+  the schema-generator lead above.
+- **`src/`, open.** `match_field_parameter_order::s124_1062_e_subject_repl`
+  still ends on signal 11 in `src/display.rs::build_adt_subst`. It is
+  carried on that cell with `dev`(`src/`).
+
 ## Request
 
 1. `test` commits REPRO-1062-a to REPRO-1062-d of the

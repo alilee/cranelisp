@@ -1596,7 +1596,7 @@ The user decides each of the three rows Phase 5 added to §5:
 | ACT-1049 (closed at S124) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
 | [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
 | [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
-| ACT-1038 (closed at S124; Git history), [ACT-1039](../../sprints/actions/ACT-1039-run-mode-trace-omits-user-functions-intake.md) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
+| ACT-1038 (closed at S124; Git history), ACT-1039 (closed at S124; Git history) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
 | ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
 | §8.4 maintenance items | The projection-guard re-citation if S123 does not close it; the §17.4 combination cell |
 

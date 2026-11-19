@@ -707,7 +707,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 
 The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`bind!`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. Concurrent panic reporting follows [§12.4.3](12-runtime.md#1243-lenient-evaluation) (user ruling, 2026-11-15). [S92]
 
-## 4.12 Trace Expression [Uncovered S124 — was S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.2, §4.12.3 and §4.12.9 are partial (ACT-1038, ACT-1039) and §4.12.6 is untested]
+## 4.12 Trace Expression [Uncovered S124 — was S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.3 is partial (a generic library function, ACT-1086, and two unevidenced rows) and §4.12.6 is untested]
 
 ```clojure
 (trace expr)
@@ -727,11 +727,11 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [Uncovered S124 — was S122 — partial. Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int — canonical Int formatting of recorded values only; item 2 and the spark face of item 3 are evidenced by tests/trace::trace_records_every_call_of_spark_admitted_callee and tests/trace::traced_spark_admitted_callee_releases_every_formatted_string, and item 3's argument format for a one-word ADT by tests/ownership_reuse::s124_d4_trace_run; restored when ACT-1039's cells pass, since item 3 is not delivered under `--run` or from a cached callee]
+### 4.12.2 Semantics [Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string, tests/ownership_reuse::s124_d4_trace_run, tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_w_subject_run — canonical Int formatting of recorded values; item 2 and the spark face of item 3; item 3's argument format for a one-word ADT; item 3 in every mode and from a cached callee]
 
 Evaluation proceeds as follows:
 
-1. The implementation activates instrumentation for function calls reachable from `expr` within the coverage defined by [§4.12.3](#4123-what-is-traced). [Uncovered S124]
+1. The implementation activates instrumentation for function calls reachable from `expr` within the coverage defined by [§4.12.3](#4123-what-is-traced). [Tested tests/trace::trace_records_user_function_calls_in_every_mode]
 2. `expr` MUST be evaluated strictly and sequentially for the whole dynamic
    extent of the trace, including evaluation inside functions called from
    `expr`. The lenient parallel-evaluation permission in
@@ -749,13 +749,13 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [Uncovered S124 — was S122 — partial. Tested tests/trace::trace_extern_primitive_appears_as_child (REPL); under `--run` user functions are not recorded (ACT-1039; RED tests/trace::trace_records_user_function_calls_in_every_mode)]
+### 4.12.3 What Is Traced [Uncovered S124 — was S122 — partial. Tested tests/trace::trace_extern_primitive_appears_as_child (REPL) and the rows below; a generic library function records calls inside the function its caller passed (ACT-1086, no cell yet), a declared child of a prelude dependency records no call into a module reached only through the prelude (ACT-1087, no cell yet), and the code-pointer and library-search-path rows have no cell]
 
-A trace form MUST record calls into the module containing that form and every module it imports, directly or indirectly, plus the built-in primitives, subject to the function categories and exclusions below. [Uncovered S124]
+A trace form MUST record calls into the module containing that form and every module it imports, directly or indirectly, plus the built-in primitives, subject to the function categories and exclusions below. [Tested tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_w_subject_run, tests/trace::s124_1039_w_subject_link, tests/trace::s124_1039_w_subject_repl, tests/trace::s124_1078_subject_run, tests/trace::s124_1078_subject_link — the form's own module and an imported module, cold and from a cached callee, in every mode; a cached object loads under an entry that imports fewer modules]
 
-A trace form in the entry file or at the REPL prompt MUST cover the whole program, subject to the same function categories and exclusions. [Uncovered S124]
+A trace form in the entry file or at the REPL prompt MUST cover the whole program, subject to the same function categories and exclusions. [Tested tests/trace::s124_finished_module_qualified_run, tests/trace::s124_finished_module_qualified_link, tests/trace::s124_finished_module_qualified_repl, tests/trace::s124_finished_module_import_below_run, tests/trace::s124_finished_module_import_above_run — an entry-file form, a module reached only by a qualified name or by an import written below the form, cold and warm; a form at the REPL prompt and a later turn has no cell]
 
-A trace form in a library module MUST NOT record calls inside a function passed in by a caller: `(defn profile [f] (trace (f)))` in a library records the library's own calls but not the calls inside the caller's `f`. [Uncovered S124]
+A trace form in a library module MUST NOT record calls inside a function passed in by a caller: `(defn profile [f] (trace (f)))` in a library records the library's own calls but not the calls inside the caller's `f`. [S124 — partial. Tested+Neg tests/trace::s124_1039_lib_neg_caller_frames_run, tests/trace::s124_1039_lib_neg_caller_frames_link, tests/trace::s124_1039_lib_neg_caller_frames_repl — a library function whose parameter type is fixed; the generic spelling written here records the calls inside the caller's function when that function lives in a module the library does not import (ACT-1086, no cell yet)]
 
 Within this coverage, instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. [Uncovered S124] This includes:
 
@@ -887,7 +887,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => the Trace value -- no side effects occurred
 ```
 
-### 4.12.9 Build-Mode Availability [S122 — partial. Tested tests/link::link_traced_extern_primitives_appear_as_children_exit_42; `--run` diverges from the REPL and `--link` on user-function frames (ACT-1039; RED tests/trace::trace_records_user_function_calls_in_every_mode)]
+### 4.12.9 Build-Mode Availability [Tested tests/link::link_traced_extern_primitives_appear_as_children_exit_42, tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_lib_neg_caller_frames_link, tests/trace::s124_finished_module_qualified_link]
 
 `(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [S76]
 
