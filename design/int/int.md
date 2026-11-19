@@ -3924,8 +3924,8 @@ two corrections:
 - **C1, ACT-1087:** the object pass waits for the prelude (*Settled
   members*, below). Private to `src/`; no public change.
 - **C2, ACT-1086:** a form in a generic library function is covered from
-  the library (*The form's home*, below). It needs a public change to row
-  B10's parameter, which `arch` decides (*Routed*).
+  the library (*The form's home*, below), to `arch`'s row B10-C2 and its
+  template-module read, decided at `26fbee2f`.
 
 **The enumerator.** One crate-private function in
 `src/cache/dependency_record.rs` returns a module's reference edges (§7.6),
@@ -4140,61 +4140,48 @@ prelude holds a table and has not published. On the paths read at
   while the scheduler does not hold it ready for declaration. The
   scheduler trace shows it.
 
-**The form's home (C2, ACT-1086).** Spec §4.12.3 roots a form's coverage
-at the module whose source holds the form. A batch's targets do not all
-have that module. A generic or constrained function from another module is
-instantiated in the demanding module, with its own slot, and compiled in
-that module's batch
-([monomorphisation §3.7](../typecheck/monomorphisation.md#37-cross-module-body-recheck-scoping)).
-A form in its body was written in the template's module.
+**The form's home (C2, ACT-1086).** A form covers from the module whose
+source holds it; an instance belongs to its template's module
+([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers)). The
+crossing is `arch`'s row B10-C2: each target travels with its own covered
+set (`cranelisp_backend::CodegenTarget`), and `CallableArm::template_module`
+names an instance's template module
+([§5.1.1 there](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
+This section is int's half.
 
-- **Mechanism, read from source at `ed6f4d87` and not executed.**
-  - Commit planning derives one set per batch, rooted at the batch's
-    module (`worker::covered_set`).
-  - The backend covers that set and the batch's `module_path`
-    (`trace_codegen::discover_traced_fns_from_tables`, reached with the
-    compile context's current module).
-  - In ACT-1086's subject, `m/run` is generic, so its instance is compiled
-    in `app`'s batch, and its form covers `app`'s closure. That closure
-    holds `z`, so `z/zf` and `z/zg` are recorded.
-  - The control's `run` is monomorphic. It is compiled in `m`'s own batch,
-    under `m`'s set.
-- **The prompt observation.** At the REPL, `(run af)` records `app/af`
-  because the prompt's module is the batch's, so it is covered. In the batch
-  modes the same call records no `app/af` frame. Int's source does not
-  explain that. It turns on whether the swap intercepts a function value
-  taken in the same batch, which is the backend's lowering (*Routed*).
-  After C2 neither mode covers `app`, so both give 40.
-- **The home of a target** is its template's module when the target is a
-  minted instance, and the batch's module otherwise. The instance carries
-  it: `Life::Concrete`'s `minted_from` holds the `InstanceLink`, whose
-  `template` names the defining module. It is read, never re-derived
+- **Why it is needed.** A generic or constrained function from another
+  module is instantiated in the demanding module and compiled in that
+  module's batch
+  ([monomorphisation §3.7](../typecheck/monomorphisation.md#37-cross-module-body-recheck-scoping)).
+  At `ed6f4d87` commit planning roots one set at the batch's module
+  (`worker::covered_set`), and the backend covers that set and
+  `module_path`. In ACT-1086's subject the form in `m/run`'s instance,
+  compiled in `app`'s batch, therefore covers `app`'s closure, which holds
+  `z`. The control's monomorphic `run` compiles in `m`'s own batch.
+  Read from source, not executed.
+- **The module of origin.** A target's module of origin is its arm's
+  `template_module()`, and the batch's module where that is `None`. Int
+  reads it there and nowhere else
   ([Principle 24](../arch/principles/24-resolve-once.md)).
-- **Int's half.** Commit planning derives one covered set for each
-  distinct home among the batch's targets, by the same walk over the same
-  prepared view, and stores them on the prepared turn. The object pass does
-  the same. A home other than the batch's module is a dependency of that
-  module, behind its barrier or its gap, so it adds no unpublished-member
-  case. Its closure is inside the batch module's, so the object still
-  references only GOTs that every image holding it defines.
-- **The backend's half.** A form covers its body's home and that home's
-  set, not `module_path` and one set. This is `design`(backend)'s and
-  `dev`(backend)'s.
-- **The crossing.** Row B10's parameter is one set per `compile_to_module`
-  call. Its meaning states that the backend always covers `module_path`.
-  Neither can state a batch whose targets have different homes, so C2
-  changes the parameter's type and meaning. `arch` decides the shape
-  (*Routed*). Whatever the shape, the home is the instance's recorded
-  template and is derived once, and a home the backend finds with no set
-  is a located codegen error.
-- **Persistence.** No persisted shape changes. An object holding such a
-  form changes content, and the build identity separates it.
-- **Not chosen.**
-  - *Splitting the batch by home.* The instance's slot is in the
-    demanding module, so its call still passes that `module_path`, which
-    the backend covers.
-  - *Instantiating in the template's module.* That is typecheck's slot
-    ownership (§3.7 there) and a far larger change.
+- **One set per module of origin.** Commit planning collects the distinct
+  modules of origin among the batch's targets. For each one, it derives
+  that module's covered set over the same prepared view, by the same walk
+  with the same settled-member and prelude rules. It then adds the module
+  of origin itself, because row B10-C2's set is whole and the backend adds
+  nothing. A module of origin other than the batch's is a dependency of the
+  batch's module, already published, so it adds no unpublished-member case.
+- **Pairing.** The prepared turn stores the batch's targets and one set per
+  module of origin. The JIT caller pairs each target with its set as
+  `CodegenTarget`s and passes them; it derives nothing. The object pass
+  derives the sets the same way from the session tables, under C1's
+  predicate, and pairs them the same way. Every target gets a set,
+  including a body that holds no form.
+- **The prompt observation.** The REPL records `app/af` for `(run af)`
+  because the prompt's module is the batch's. The batch modes record no
+  frame because a function value taken in its own unit is called past its
+  slot, which is the backend's (tracing §3.5, *Every call to a slotted
+  function goes through its slot*). After C2 no mode covers `app` for this
+  form, so all give 40.
 
 **A REPL turn and a later turn.** Spec §4.12.3 does not say whether a
 prompt form covers the program when it was entered or when it runs.
@@ -4221,16 +4208,18 @@ rule above does there:
   its last object pass found it.
 
 **What each caller passes.** At `ed6f4d87` the production callers of
-`compile_to_module` are two:
+`compile_to_module` are two. Each passes, after C2, one `CodegenTarget`
+per batch target, paired with the set of that target's module of origin
+(*The form's home*):
 
 - `worker::compile_and_publish_prepared` is the one JIT caller. It serves
   pool-worker clusters, eval-thread clusters (each `--run` and `--link`
-  entry and each REPL turn) and macro checkpoints, and passes the set stored
-  on the prepared turn.
-- The nice worker's `emit_object` derives the set from the session tables.
+  entry and each REPL turn) and macro checkpoints, and pairs the targets
+  with the sets stored on the prepared turn.
+- The nice worker's `emit_object` derives the sets from the session tables.
   Until C1 it reads every member as published.
 - `worker::inline_jit_codegen_for_names` is `#[cfg(test)]`. It and the
-  backend's test callers pass the set their fixture means, usually empty.
+  backend's test callers pass the set their fixture means.
 
 No caller branches on mode or on which module is the entry
 ([Principle 11](../arch/principles/11-single-pipeline-mode-parameters.md)).
@@ -4252,45 +4241,37 @@ commits (`process_form/dependency.rs::enrol_declared_submodule`), so a child
 can have no table at the parent's batch, and B10 makes a listed module with
 no table a codegen error.
 
-**Routed to `arch`.**
-
-1. **C2 needs a public change** to row B10's parameter: one covered set per
-   home of the batch's targets, and the backend covering a form's home in
-   place of `module_path` (*The form's home*). The shape is `arch`'s. Int's
-   half and its rows wait on it.
-2. **Tracing §5.1, *What differs*, is contradicted by source at
-   `ed6f4d87`.** It says a restored object and `--link` cover the prelude's
-   whole closure. The object pass reads the in-flight prelude's partial
-   table, so they do not (C1, *Why it is needed*). C1 makes the statement
-   true and needs no contract change. Until C1 lands, every launch omits the
-   frame.
-3. **The population question** (tracing §5.1, *Reopened by*) is answered
-   above: no module outside the population, read transitively and
-   including loads by qualified reference.
-
-**Routed to the backend** (`design`(backend)): whether a trace swap
-intercepts a call through a function value taken in the same batch. The
-batch modes record no `app/af` frame where the prompt records one
-(*The form's home*). It does not change C2. It decides whether an entry form
-passed an entry function records that function in `--run`.
+**Routed to `arch`.** Nothing open. Row B10-C2 and the template-module
+read decided C2's crossing, tracing §5.1 now names C1, and the population
+question is answered above.
 
 **Build order.** Steps 1 and 2 of B10 landed at `69cd9c18` and
-`f8c55626`.
+`f8c55626`. The remaining steps are `arch`'s A2 and A3
+([interfaces, remaining build order](../arch/interfaces.md#the-unattributed-codegen-failure-row-b15)).
 
-- **C1** builds alone in `src/` and changes no public item. It lands:
+- **C1 (A2)** builds alone in `src/` and changes no public item. It lands:
   - the walk's caller-chosen treatment of an unpublished prelude;
   - the object pass reading the published predicate;
-  - the deferral and re-arm on the object queue, and the stop when objects
+  - the hold and release on the object queue, and the stop when objects
     are awaited.
 
-  It turns REPRO-1087's warm `--run` and `--link` legs green, with the
-  control unchanged. The cold legs stay RED, carried as `arch`'s accepted
+  It turns REPRO-1087's restored and linked legs green, with the control
+  unchanged. The cold legs stay RED, carried as `arch`'s accepted
   residual.
-- **C2** waits for `arch`'s decision. It is then one callee-first commit
-  with `dev`(backend). `dev`(`src/`) lands the per-home derivation at commit
-  planning and at the object pass, stored on the prepared turn. It turns
-  REPRO-1086's subject legs green, with the control and the entry-function
-  subject unchanged.
+- **C2 (A3c)** follows the types read (A3a) and is one commit with the
+  backend's `CodegenTarget` and discovery change (A3b), from one tree.
+  `dev`(`src/`) lands:
+  - the module-of-origin read and one covered set per module of origin,
+    the module itself included, at commit planning, stored on the prepared
+    turn;
+  - the JIT caller pairing each target with its stored set;
+  - the object pass deriving and pairing the same sets;
+  - the test caller passing its fixture's set per target.
+
+  It turns REPRO-1086's subject legs green, with the control and the
+  entry-function subject unchanged. Every existing trace cell that records
+  a call in the form's own module is the falsifier of the set listing that
+  module.
 
 **Module rows.** Steps 1 and 2 landed with theirs, in the
 `src/cache/dependency_record/` and `worker` tests.
@@ -4300,27 +4281,30 @@ C1:
 - `cache/dependency_record`: with the prelude unpublished, the walk the
   object pass asks for answers the prelude as unpublished; the walk commit
   planning asks for covers it and follows none of its edges;
-- the object queue: a deferred pass reports no completion; it runs when
-  its member publishes, and when its member fails; a member still
-  unpublished when objects are awaited stops the pass with the located
-  cause;
+- the object queue: a held pass reports no completion; it runs when its
+  member publishes, and when its member fails; a pass still held when
+  objects are awaited stops with the located cause;
 - `nice_worker`: a child of a prelude dependency, built before the prelude
   publishes, gets an object whose set holds a module the prelude re-exports.
 
 C2:
 
-- `worker`, at commit planning: a batch holding an instance whose template
-  lives in `m` stores a set for `m`, rooted at `m`, which excludes the batch
-  module and its other callees; a batch of only its own definitions stores
-  one set, for the batch module, unchanged;
-- `nice_worker`: the object pass stores the same sets for the same batch.
+- `worker`, at commit planning:
+  - a batch holding an instance whose template lives in `m` stores a set
+    for `m` that holds `m` and excludes the batch's module and its other
+    callees;
+  - a batch of only its own definitions stores one set, for the batch's
+    module, which holds that module;
+  - every target the codegen call receives carries the set of its module
+    of origin;
+- `nice_worker`: the object pass pairs the same targets with the same sets.
 
 **Cells.**
 
 - **REPRO-1086 and REPRO-1087** are `test`'s, as the filings allocate
   them. C1 and C2 turn the legs named above.
 - **For `qa`:** whether the macro-checkpoint falsifier, the population
-  falsifier above and the deferral stop become cells.
+  falsifier above and C1's stop become cells.
 
 **Clean house.** C1 touches `src/cache/dependency_record.rs`,
 `src/session_v4/nice_worker.rs` and `src/scheduler.rs`. C2 touches
@@ -4912,6 +4896,42 @@ Three normative statements:
    headline noun. The self-documenting-REPL principle is that the diagnostic's
    central noun must be actionable at the prompt; `then` is, `user/then$…` is not.
 
+**As built, read at `26fbee2f`: statement 2 has no carrier at the seam it
+names.** No subject projection is in source.
+
+- **The seams.** There is no `Sess::format_error`. Batch modes render
+  through `main.rs::format_error`, and the REPL through `style::error_line`
+  over the error's text. Both take a `CranelispError`.
+- **The subject arrives as text.** The JIT caller converts the backend's
+  `CompilationError` through the backend's outward conversion
+  (`.map_err(Into::into)` in `worker::compile_and_publish_prepared`). That
+  yields `CranelispError::CodegenError`, whose message is the backend's
+  rendering. The object pass formats the error into its stop cause. No
+  production site in `src/` names `CompilationError`.
+- **So a projection at `format_error` could only re-parse the backend's
+  text.** Statement 1 forbids that: it would make int a second home for the
+  `$` mangle and for the message the backend owns
+  ([release contract](../backend/non-concrete-release-contract.md) §7.2.1,
+  Rule 3).
+- **Row B15 changes nothing here.** The binary still reaches the type only
+  through that outward conversion, which gains `ModuleFailed`'s arm. That
+  variant's only subject is a module, which the user can already act on,
+  so it needs no projection. The two removed items have no consumer in
+  `src/`. B15 supplies no carrier for statement 2 either.
+- **What remains of the ruling.** The backend's Rule 3 now names the
+  subject once, which closed items 1 to 3's doubling. Item 4 is open: an
+  `__expr` or an instance key is still the rendered noun.
+- **Where statement 2 can be realised.** Decision 39 says the subject
+  travels as data and int formats it. That needs the codegen subject to
+  reach `format_error` as data, for example as a typed subject on the
+  `CranelispError` that the outward conversion produces. That is a public
+  change in types and the backend, so it is `arch`'s. Re-composing the
+  message in int from the `CompilationError` fields is not chosen, because
+  it would be a second renderer of the backend's text.
+- **State.** Carried, with no failing test. `qa` deferred the §5.5 frame
+  guard (*Sequencing*, below). The ruling stands as intent until `arch`
+  decides the carrier.
+
 **Sequencing.** Items 1–3 change the string int receives; item 4 changes how int
 renders the subject inside it. They are independent in mechanism but **the guard
 is shared**: every currently-reachable e2e trigger for this frame is FIXME 0907's
@@ -5141,8 +5161,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     - C1, the object pass waits for the prelude (ACT-1087), in
       [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10);
       `dev`(`src/`) alone.
-    - C2, a form's coverage rooted at its home (ACT-1086), in the same
-      section; it waits on `arch`'s decision on row B10's parameter.
+    - C2, a form's coverage from its module of origin (ACT-1086), in the
+      same section, to `arch`'s row B10-C2; `dev`(`src/`) after the
+      backend's half.
     - The observed type of an executed expression has no default
       (FIXME 0929's binary site):
       [result owner §4.3.1](result-owner.md#431-the-observed-type-has-no-default);
