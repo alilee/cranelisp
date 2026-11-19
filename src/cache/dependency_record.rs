@@ -184,6 +184,72 @@ pub(crate) fn recorded_edges<C: CodeStore, L: LinkerStore>(
     edges
 }
 
+/// The module each `import` and `export` of `table` loads, resolved through its
+/// declared children (`design/int/int.md` §6.9). A name-less spec loads nothing
+/// (spec §8.3.7, §8.4.0); `names_load` is that rule's one source.
+fn loading_spec_targets<C: CodeStore, L: LinkerStore>(
+    module: &ModuleFullPath,
+    table: &SymbolTable<C, L>,
+) -> impl Iterator<Item = ModuleFullPath> {
+    let declared = DeclaredChildren::of(module, &table.submodules);
+    let imports = table
+        .imports
+        .iter()
+        .filter(|spec| names_load(&spec.names))
+        .map(|spec| &spec.module_path);
+    let exports = table
+        .exports
+        .iter()
+        .filter(|spec| names_load(&spec.names))
+        .map(|spec| &spec.module_path);
+    imports
+        .chain(exports)
+        .map(move |spelling| declared.resolve(spelling))
+}
+
+/// Whether a module's prelude edge exists: its fallback bit is on and the
+/// session holds a prelude table, the record's prelude rule (§7.6, *Prelude
+/// edge*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreludeEdge {
+    Present,
+    Absent,
+}
+
+impl PreludeEdge {
+    pub(crate) fn of(
+        prelude_fallback: bool,
+        tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    ) -> Self {
+        if prelude_fallback && tables.contains_key(&ModuleFullPath::from(PRELUDE)) {
+            PreludeEdge::Present
+        } else {
+            PreludeEdge::Absent
+        }
+    }
+}
+
+/// A module's reference edges: the modules its image makes a load
+/// (`design/int/int.md` §7.6.4). They are each `import` and `export` that
+/// loads, resolved through its declared children; every callee module,
+/// compiler-owned and platform modules included; and the prelude when
+/// `prelude` is present. Never the module itself; a `mod` declaration alone
+/// adds no edge. Generic over the code store so a decoded table and a session
+/// table answer alike.
+pub(crate) fn reference_edges<C: CodeStore, L: LinkerStore>(
+    module: &ModuleFullPath,
+    table: &SymbolTable<C, L>,
+    prelude: PreludeEdge,
+) -> BTreeSet<ModuleFullPath> {
+    let mut edges: BTreeSet<ModuleFullPath> = loading_spec_targets(module, table).collect();
+    edges.extend(every_callee_module(table).cloned());
+    if prelude == PreludeEdge::Present {
+        edges.insert(ModuleFullPath::from(PRELUDE));
+    }
+    edges.remove(module);
+    edges
+}
+
 /// A module's reload edges as `table` records them: each `import` and `export`
 /// that loads, resolved through its declared children; `prelude` when
 /// `prelude_fallback` holds; and its callee modules and lookup dependencies. A
@@ -198,21 +264,7 @@ pub(crate) fn reload_edges(
     table: &SessionSymbolTable,
     prelude_fallback: bool,
 ) -> BTreeSet<ModuleFullPath> {
-    let declared = DeclaredChildren::of(module, &table.submodules);
-    let imports = table
-        .imports
-        .iter()
-        .filter(|spec| names_load(&spec.names))
-        .map(|spec| &spec.module_path);
-    let exports = table
-        .exports
-        .iter()
-        .filter(|spec| names_load(&spec.names))
-        .map(|spec| &spec.module_path);
-    let mut edges: BTreeSet<ModuleFullPath> = imports
-        .chain(exports)
-        .map(|spelling| declared.resolve(spelling))
-        .collect();
+    let mut edges: BTreeSet<ModuleFullPath> = loading_spec_targets(module, table).collect();
     if prelude_fallback {
         edges.insert(ModuleFullPath::from(PRELUDE));
     }
@@ -229,13 +281,19 @@ pub(crate) fn callee_modules<C: CodeStore, L: LinkerStore>(
     module: &ModuleFullPath,
     table: &SymbolTable<C, L>,
 ) -> BTreeSet<ModuleFullPath> {
+    every_callee_module(table)
+        .filter(|target| is_edge(module, target))
+        .cloned()
+        .collect()
+}
+
+fn every_callee_module<C: CodeStore, L: LinkerStore>(
+    table: &SymbolTable<C, L>,
+) -> impl Iterator<Item = &ModuleFullPath> {
     table
         .all_symbols()
         .flat_map(|(_, binding)| binding_callees(binding))
         .map(|callee| &callee.module)
-        .filter(|target| is_edge(module, target))
-        .cloned()
-        .collect()
 }
 
 fn is_edge(module: &ModuleFullPath, target: &ModuleFullPath) -> bool {

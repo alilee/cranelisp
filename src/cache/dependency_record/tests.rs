@@ -1171,3 +1171,95 @@ mod one_generation {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reference edges (`design/int/int.md` §7.6.4, row B10 step 1)
+// ---------------------------------------------------------------------------
+
+mod reference_edges {
+    use super::callee_modules::concrete;
+    use super::*;
+
+    fn edges(table: &SessionSymbolTable, prelude: PreludeEdge) -> Vec<String> {
+        reference_edges(&m("m"), table, prelude)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    fn tables_with(modules: &[&str]) -> dashmap::DashMap<ModuleFullPath, SessionSymbolTable> {
+        let tables = dashmap::DashMap::new();
+        for module in modules {
+            tables.insert(m(module), SessionSymbolTable::new_with_params(m(module)));
+        }
+        tables
+    }
+
+    // spec: spec/08-modules.md §8.3.7 — a null import loads nothing; a use
+    // through it makes its target a callee module.
+    #[test]
+    fn a_null_import_is_an_edge_only_through_a_use() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        table.imports = vec![
+            import("n", None, ImportNames::None),
+            import("a", Some("aa"), ImportNames::None),
+        ];
+        assert!(
+            edges(&table, PreludeEdge::Absent).is_empty(),
+            "no use: {:?}",
+            edges(&table, PreludeEdge::Absent)
+        );
+        concrete(&mut table, "g", &["n"]);
+        assert_eq!(edges(&table, PreludeEdge::Absent), ["n"], "qualified use");
+    }
+
+    // spec: spec/08-modules.md §8.11.2 item 1 — an import named through a
+    // declared child is an edge to the child; the declaration alone is none.
+    #[test]
+    fn an_import_named_through_a_declared_child_is_an_edge_to_the_child() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        table.submodules = vec![child("q"), child("unused")];
+        table.imports = vec![named_import("q")];
+        table.exports = vec![reexport("r")];
+        assert_eq!(edges(&table, PreludeEdge::Absent), ["m.q", "r"]);
+    }
+
+    // spec: design/int/int.md §7.6 *Prelude edge* — the fallback bit and a
+    // session prelude table together, and neither alone.
+    #[test]
+    fn the_prelude_is_an_edge_with_the_fallback_bit_and_a_prelude_table() {
+        let table = SessionSymbolTable::new_with_params(m("m"));
+        let with_prelude = tables_with(&["prelude"]);
+        let without_prelude = tables_with(&["m"]);
+        let cases = [
+            (
+                "bit and table",
+                PreludeEdge::of(true, &with_prelude),
+                vec!["prelude"],
+            ),
+            (
+                "table, no bit",
+                PreludeEdge::of(false, &with_prelude),
+                vec![],
+            ),
+            (
+                "bit, no table",
+                PreludeEdge::of(true, &without_prelude),
+                vec![],
+            ),
+        ];
+        for (case, prelude, expected) in cases {
+            assert_eq!(edges(&table, prelude), expected, "{case}");
+        }
+    }
+
+    // spec: design/arch/tracing.md §5.1 — a platform module the module calls
+    // is a reference edge, though the record excludes it; the module is not.
+    #[test]
+    fn a_platform_callee_module_is_an_edge_and_the_module_itself_is_not() {
+        let mut table = SessionSymbolTable::new_with_params(m("m"));
+        concrete(&mut table, "g", &["platform.stdio", "m"]);
+        table.imports = vec![named_import("m")];
+        assert_eq!(edges(&table, PreludeEdge::Absent), ["platform.stdio"]);
+    }
+}

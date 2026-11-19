@@ -15,15 +15,14 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use cranelisp_types::{
-    CranelispError, Decl, ErrorLocation, ImportSpec, Life, ModDecl, ModuleFullPath, PlatformSpec,
-    Realization, Span, Symbol, WrittenTraitImpl,
+    CranelispError, Decl, ErrorLocation, Life, ModDecl, ModuleFullPath, PlatformSpec, Realization,
+    Span, Symbol, WrittenTraitImpl,
 };
 
 use crate::cache::StoredObject;
 use crate::cache::dependency_record::{
-    DependencyRecord, ModuleSources, callee_modules, is_compiler_owned,
+    DependencyRecord, ModuleSources, PreludeEdge, is_compiler_owned, reference_edges,
 };
-use crate::imports::DeclaredChildren;
 use crate::scheduler::{CachedLoadHold, CompileScheduler};
 use crate::session_setup::CacheValidity;
 use crate::worker::{ModuleCompiler, ensure_typecheck_product};
@@ -42,7 +41,7 @@ use super::register_dep;
 ///
 /// **Decision 37 / Sprint 58 Wave 2c**: cache-hit decision lives inside
 /// the recursive `register_module(M)` flow. After installing M's symbol
-/// table, we walk `M.imports`, re-export targets and callee modules and
+/// table, we walk M's reference edges (`design/int/int.md` §7.6.4) and
 /// recursively attempt cache-load for each transitive dep — failing over
 /// to fresh-build registration when
 /// any dep is not cached. This ensures cache-hit modules' transitive
@@ -74,7 +73,7 @@ pub(super) fn try_cache_hit_load<'a>(
 
     // Phase 4: extract all data BEFORE moving the symbol table (avoids clone /
     // honours the extract-before-move ordering invariant).
-    let mut specs = extract_cached_specs(dep, &cached);
+    let mut specs = extract_cached_specs(dep, &cached, ctx.symbol_tables);
 
     // A table that records a platform declaration restores only for the
     // entry; for any other module the fresh build refuses the form, so the
@@ -144,17 +143,10 @@ fn walk_restored_module(
     specs: &CachedSpecs,
     _load_hold: Option<&CachedLoadHold<'_>>,
 ) -> Result<(), CranelispError> {
-    // Import and re-export targets resolve against the restored table's own
-    // declared children, as on the fresh path (`design/int/int.md` §6.9).
-    let declared = DeclaredChildren::of(dep, &specs.submodules);
-    register_transitive_cached_imports(ctx, &specs.imports, &declared)?;
-    // Re-export targets are transitive deps too (FIXME 0387 — prelude's
-    // `(export [text.string [str]])` etc.). Walk them through the same path.
-    register_transitive_cached_imports(ctx, &specs.reexport_deps, &declared)?;
-    // Callee modules: the restored object binds their GOTs even when no
-    // import names them (§7.6.1). The walk installs no names in `dep`.
-    for callee_module in &specs.callee_modules {
-        register_cached_dependency(ctx, callee_module)?;
+    // The walk installs no names in `dep`; the session-installed edges are
+    // already present (`design/int/int.md` §7.6.4).
+    for edge in &specs.reference_edges {
+        register_cached_dependency(ctx, edge)?;
     }
     enrol_cached_written_impls(ctx, dep, &specs.written_trait_impls)?;
     // Declared submodules are part of the parent's load graph even when they
@@ -295,18 +287,15 @@ struct CachedSpecs {
     symbols: std::collections::HashSet<Symbol>,
     /// Platform decls — re-resolved after install.
     platforms: Vec<PlatformSpec>,
-    /// User-authored imports — recursed as transitive deps.
-    imports: Vec<ImportSpec>,
-    /// Re-export edges (as `ImportSpec`-shaped specs) — also transitive deps.
-    reexport_deps: Vec<ImportSpec>,
     /// `(mod ...)` / `(mod- ...)` declarations — enrolled recursively just as
     /// they are after a fresh parent compile.
     submodules: Vec<ModDecl>,
     /// Canonical writer-side trait implementation records. Cache restore
     /// re-enrols each one into its trait-home table.
     written_trait_impls: Vec<WrittenTraitImpl>,
-    /// Modules the table's callables call — also transitive deps.
-    callee_modules: BTreeSet<ModuleFullPath>,
+    /// The modules the restored object makes an image load — recursed as
+    /// transitive deps.
+    reference_edges: BTreeSet<ModuleFullPath>,
 }
 
 /// Phase 4: extract every spec the install + register + recurse phases need out
@@ -314,6 +303,7 @@ struct CachedSpecs {
 fn extract_cached_specs(
     dep: &ModuleFullPath,
     cached: &cranelisp_backend::cache::CachedModule,
+    tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> CachedSpecs {
     use std::collections::HashSet as StdHashSet;
 
@@ -347,45 +337,22 @@ fn extract_cached_specs(
     // `load_and_register_platform` path used by fresh build).
     let platforms: Vec<PlatformSpec> = cached.symbol_table.platforms.clone();
 
-    // Sprint 58 Wave 2c / Decision 37 — capture user-authored imports BEFORE
-    // moving the symbol table, so we can recurse and ensure every
+    // Capture the reference edges BEFORE moving the symbol table, so every
     // transitive dep's symbol table (and `__cranelisp_got_{M}` data symbol)
-    // is installed before this dep's codegen worker tries to load its `.o`.
-    let imports: Vec<ImportSpec> = cached.symbol_table.imports.clone();
-
-    // S84 Phase 4B / FIXME 0387 — a re-export edge (`(export [mod [names]])`) is
-    // ALSO a transitive dependency: the re-exported target module must be
-    // installed on cache-restore so a downstream consumer can chain-follow the
-    // re-export to the canonical entry. The prelude is the motivating case — it
-    // re-exports `text.string`'s `str` macro etc. via `exports` (NOT `imports`),
-    // and once the prelude's own `.meta.json` caches (0387) its cache-restore
-    // must load those targets or a bare `str` resolves to nothing
-    // (`undefined variable: str`). Capture the exports as `ImportSpec`-shaped
-    // specs so the same transitive walk handles them; the mount alias is not
-    // carried, because the declared-alias installer mounts it from `exports`.
-    let reexport_deps: Vec<ImportSpec> = cached
-        .symbol_table
-        .exports
-        .iter()
-        .map(|e| ImportSpec {
-            module_path: e.module_path.clone(),
-            alias: None,
-            names: e.names.clone(),
-            span: e.span,
-        })
-        .collect();
+    // is installed before this dep's codegen worker loads its `.o`. The
+    // fallback bit is the one `install_module_session_env` gives the table.
+    let table = &cached.symbol_table;
+    let fallback = crate::imports::gets_prelude_fallback(dep, &table.imports, &table.exports);
+    let reference_edges = reference_edges(dep, table, PreludeEdge::of(fallback, tables));
     let submodules = cached.symbol_table.submodules.clone();
     let written_trait_impls = cached.symbol_table.written_trait_impls.clone();
-    let callee_modules = callee_modules(dep, &cached.symbol_table);
 
     CachedSpecs {
         symbols,
         platforms,
-        imports,
-        reexport_deps,
         submodules,
         written_trait_impls,
-        callee_modules,
+        reference_edges,
     }
 }
 
@@ -604,27 +571,9 @@ fn register_cached_with_scheduler<'a>(
     Ok(load_hold)
 }
 
-/// Walk a cached module's `imports`, resolved against its `declared`
-/// children, and ensure each transitive dep is installed. A null import
-/// (§8.3.6) loads nothing and is skipped here only; the same module reached as
-/// a callee still loads.
-fn register_transitive_cached_imports(
-    ctx: &mut ModuleCompiler,
-    imports: &[ImportSpec],
-    declared: &DeclaredChildren,
-) -> Result<(), CranelispError> {
-    for spec in imports {
-        if !crate::imports::names_load(&spec.names) {
-            continue;
-        }
-        register_cached_dependency(ctx, &declared.resolve(&spec.module_path))?;
-    }
-    Ok(())
-}
-
 /// Ensure one dependency of a cache-restored module is installed, by cache
-/// hit or fresh-build registration (Decision 37 §3.2). Imports, re-export
-/// targets and callee modules share this step.
+/// hit or fresh-build registration (Decision 37 §3.2). Every reference edge
+/// takes this step.
 ///
 /// - Session-installed modules (`primitives`, `macros`, `platform.*`,
 ///   `prelude`) and already-installed modules are satisfied.
