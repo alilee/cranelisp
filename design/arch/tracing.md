@@ -114,7 +114,7 @@ staticlib. Nothing in the frontend or the binary rejects `trace` by mode.
 
 Frontend (`Expr::Trace`) → typecheck (`infer_trace`) → backend
 (`compile_trace`: discovery, wrapper emission, descriptor baking) → intrinsics
-(the twelve runtime bodies, the descriptor formatter, the nesting guard) →
+(the runtime bodies of §4.1, the descriptor formatter, the nesting guard) →
 stdlib display helpers. The binary contributes nothing (§4.3).
 
 ### 3.1 Frontend
@@ -268,22 +268,22 @@ tier does not keep
 
 ## 4. Intrinsics runtime
 
-### 4.1 The twelve bodies and the catalog
+### 4.1 The trace bodies and the catalog
 
 `crates/cranelisp-intrinsics/src/trace.rs` hosts `cranelisp_trace_enter`,
 `cranelisp_trace_exit`, `cranelisp_trace_swap_got`, `cranelisp_trace_restore_got`,
-`cranelisp_collect_trace`, `cranelisp_trace_first_child_nanos`, the five field
+`cranelisp_collect_trace`, the five field
 readers `cranelisp_trace_{name,params,result,children,nanos}`, and re-exports
 `cranelisp_trace_format` from `trace_format.rs`. They are intrinsics by the BC
 §4b definition — string-named targets of backend-emitted calls — and publish
 through `crates/cranelisp-intrinsics/src/catalog.rs::intrinsics_table` like
 every other intrinsic.
 
-`cranelisp_trace_first_child_nanos` has no caller at `1790531f`: the backend
-declares no call to it and no host code reads it. It was the reader of a
-`/run-tests` re-run under `trace` that the runner no longer performs. Removing
-it is an intrinsics public-API change, approved by `arch` on 2026-11-19 and not
-in source ([batch record](interfaces.md#approved-changes-not-yet-in-source-s124)).
+`cranelisp_trace_first_child_nanos` is not one of them. It read a `/run-tests`
+re-run under `trace` that the runner no longer performs, and nothing calls it.
+The backend names it nowhere (`717dd3a1`); the
+[batch record](interfaces.md#approved-changes-not-yet-in-source-s124), row
+*Trace reader*, states whether intrinsics still exports it.
 
 **Name agreement has one owner.** The catalog and its tests own the trace
 name set: a renamed or dropped symbol is a catalog test failure, not a runtime
@@ -366,7 +366,8 @@ transitively, and `primitives`, whose GOT every image defines.
 rule.
 
 **The form's module is the module whose source holds the form** (decided
-2026-11-20; not built). It is not always the module whose batch compiles it.
+2026-11-20; in source at `94749709`). It is not always the module whose batch
+compiles it.
 
 - A generic or constrained function is instantiated in the module that
   demands it, with a slot in that module's table, and compiled in that
@@ -382,11 +383,11 @@ rule.
   generic helper therefore records the helper, although both instances live
   in the caller's table. An instance held in any other module's table is
   reached only from inside a function the caller passed, and is not recorded.
-- Source at `518489c2` roots every form at the module being compiled. A form
-  in a generic library function therefore covers its caller's closure and
-  records calls inside the caller's function (ACT-1086;
-  `tests/trace.rs::s124_1086_subject_run` and its two siblings fail on it).
-  §5.1.1 states the corrected input.
+- Source before `94749709` rooted every form at the module being compiled, so
+  a form in a generic library function covered its caller's closure and
+  recorded calls inside the caller's function (ACT-1086). The cells are
+  `tests/trace.rs::s124_1086_subject_run` and its two siblings; §5.1.1 states
+  the input that corrects it.
 - Grade of the second bullet: asserted. That a nested instance is minted in
   the demanding module is read from the typecheck design, not run.
   Falsifier: `m` holds `(defn helper [x] x)` and
@@ -606,16 +607,11 @@ form; the backend receives the result. The backend composes no copy of either
 enumerations is an unresolved symbol on a warm start only, and a drift
 between two readings of a form's module is ACT-1086 again.
 
-**In source (row B10, `69cd9c18` and `f8c55626`).**
-`cranelisp_backend::compile_to_module` takes
-`trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules
-a trace form in `module_path` covers besides `module_path`. It is one set for
-the call, and the backend always adds `module_path`. Neither can state a
+**Decided, `arch`, 2026-11-20 (row B10-C2); in source at `94749709`.** The
+set travels with each target. Row B10 (`69cd9c18`, `f8c55626`) passed one set
+for the call, to which the backend added `module_path`; that could not state a
 batch whose targets were written in different modules (§5.1, *The form's
 module*).
-
-**Decided, `arch`, 2026-11-20 (row B10-C2); not built.** The set travels with
-each target.
 
 - **Delta, backend.** A new public type and a changed entry point.
 
@@ -670,6 +666,11 @@ each target.
     targets, with the one crate-private function over the enumerator that
     the restore walk also reads, and pair each target with its set
     ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)).
+  - Both callers also derive the batch's own module's set when no target was
+    written there, and for a batch with no targets. No target carries that
+    set. It keeps §5.1's wait a property of the batch: a batch waits for the
+    unpublished members of its module's closure whatever its targets are, as
+    it did under row B10.
   - Test callers pass the set their fixture means.
 - **Consumer.** The backend's discovery, for a form in a target's body:
   - reads the table of each listed module whole;
@@ -677,7 +678,9 @@ each target.
     the entries whose `template_module()` is listed. These are the instances
     §5.1 assigns to a covered module;
   - refuses a listed module that has no table with a located codegen error,
-    not a skip.
+    not a skip. `module_path` with no table is refused the same way when it
+    is not listed: its table is where the covered instances are read, so a
+    skip would drop their frames without an error.
 
   The backend does not ask which module holds the target's own body.
 - **What an object may reference.** A target's set is inside the closure of
