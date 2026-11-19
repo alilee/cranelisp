@@ -1,5 +1,5 @@
-//! C7 node identity and C8 callee identity
-//! (`design/int/bind-chain-analysis.md` §3.1, §3.6, §6, §7).
+//! C7 node identity, C8 callee identity and C9 binder scope
+//! (`design/int/bind-chain-analysis.md` §3.1, §3.6, §3.8, §6, §7).
 //!
 //! Every fixture node carries its own span, so a rewrite that reuses one
 //! written span on two output nodes is observable.
@@ -755,4 +755,139 @@ fn aliased_primitive_bind_is_recognised() {
         ),
     );
     assert!(groups(&fx, "p/bind"));
+}
+
+// ---------------------------------------------------------------------------
+// C9 — binder scope: a local declines a callee only inside its region (§3.8)
+// ---------------------------------------------------------------------------
+
+fn if_(n: &Nodes, cond: Expr, then_branch: Expr, else_branch: Expr) -> Expr {
+    Expr::If {
+        cond: Box::new(cond),
+        then_branch: Box::new(then_branch),
+        else_branch: Box::new(else_branch),
+        span: n.span(),
+        inferred_type: None,
+    }
+}
+
+fn arm(n: &Nodes, pattern: Pattern, body: Expr) -> MatchArm {
+    MatchArm {
+        pattern,
+        body,
+        span: n.span(),
+    }
+}
+
+// spec: spec/10-io.md §10.12.1 — C9, a `let` local in one `if` arm does not
+// reach the pair in the other (ACT-1077)
+#[test]
+fn bind_local_in_one_if_arm_leaves_the_other_arms_pair_grouped() {
+    let fx = Fixture::new(BindExposure::Import);
+    let n = Nodes::new();
+    let local = n.let_("bind", n.int(1), n.var("bind"));
+    let body = if_(&n, n.var("k"), local, n.independent_pair("bind"));
+    let (_, after) = schedule(&fx, vec![defn("main", &["k"], body)]);
+    let Expr::If { else_branch, .. } = after else {
+        unreachable!("the `if` is kept")
+    };
+    assert!(
+        matches!(*else_branch, Expr::ParBind { .. }),
+        "the other arm's pair groups: {else_branch:?}"
+    );
+}
+
+// spec: spec/04-expressions.md §4.3 — C9, a `let` binding is in scope for the
+// later bindings and the body, not for the earlier bindings' values
+#[test]
+fn let_bound_bind_reaches_the_body_not_an_earlier_binding() {
+    let fx = Fixture::new(BindExposure::Import);
+    let n = Nodes::new();
+    let in_body = n.independent_pair("bind");
+    let body = Expr::Let {
+        bindings: vec![
+            (Symbol::from("x"), n.independent_pair("bind")),
+            (Symbol::from("bind"), n.int(1)),
+        ],
+        body: Box::new(in_body.clone()),
+        span: n.span(),
+        inferred_type: None,
+    };
+    let (_, after) = schedule(&fx, vec![defn("main", &[], body)]);
+    let Expr::Let { bindings, body, .. } = after else {
+        unreachable!("the `let` is kept")
+    };
+    assert!(
+        matches!(bindings[0].1, Expr::ParBind { .. }),
+        "the earlier binding's pair groups: {:?}",
+        bindings[0].1
+    );
+    assert!(
+        unchanged(&in_body, &body),
+        "the body's `bind` is the local: {body:?}"
+    );
+}
+
+// spec: spec/04-expressions.md §4.5.2 — C9, a match arm's binder reaches that
+// arm's body only
+#[test]
+fn match_arm_binder_reaches_its_own_arm_only() {
+    let fx = Fixture::new(BindExposure::Import);
+    let n = Nodes::new();
+    let binding_arm_body = n.independent_pair("bind");
+    let binding_arm = arm(
+        &n,
+        Pattern::Var {
+            name: Symbol::from("bind"),
+            span: n.span(),
+        },
+        binding_arm_body.clone(),
+    );
+    let other_arm = arm(
+        &n,
+        Pattern::Wildcard { span: n.span() },
+        n.independent_pair("bind"),
+    );
+    let body = Expr::Match {
+        scrutinee: Box::new(n.var("k")),
+        arms: vec![binding_arm, other_arm],
+        span: n.span(),
+        compiler_generated: false,
+        inferred_type: None,
+    };
+    let (_, after) = schedule(&fx, vec![defn("main", &["k"], body)]);
+    let Expr::Match { arms, .. } = after else {
+        unreachable!("the `match` is kept")
+    };
+    assert!(
+        unchanged(&binding_arm_body, &arms[0].body),
+        "the binding arm's `bind` is the local: {:?}",
+        arms[0].body
+    );
+    assert!(
+        matches!(arms[1].body, Expr::ParBind { .. }),
+        "the other arm's pair groups: {:?}",
+        arms[1].body
+    );
+}
+
+// spec: spec/10-io.md §10.12.1 — C9, a chain step's binder reaches the later
+// steps only: the steps before it still group, and the `(bind …)` after it is
+// the local
+#[test]
+fn chain_binder_reaches_later_steps_only() {
+    let fx = Fixture::new(BindExposure::Import);
+    let n = Nodes::new();
+    let later = n.bind(n.call("get-time", vec![]), "c", n.int(0));
+    let middle = n.bind(n.call("http-get", vec![]), "bind", later.clone());
+    let body = n.bind(n.call("get-time", vec![]), "a", middle);
+    let (_, after) = schedule(&fx, vec![defn("main", &[], body)]);
+    let Expr::ParBind { bindings, body, .. } = after else {
+        unreachable!("the steps before the binder group: {after:?}")
+    };
+    assert_eq!(bindings.len(), 2, "both earlier steps are in the group");
+    assert!(
+        unchanged(&later, &body),
+        "the later `bind` is the local: {body:?}"
+    );
 }

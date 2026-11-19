@@ -5,39 +5,35 @@ use cranelisp_types::{
 
 type SymbolTables = dashmap::DashMap<ModuleFullPath, SymbolTable>;
 
-/// Runs `f` with the pass a definition whose whole body is `expr` gets in
-/// module `m`, with no cluster declarations and no prelude.
+/// Runs `f` with the pass a parameterless definition gets in module `m`,
+/// with no cluster declarations and no prelude.
 fn with_pass<R>(
     tables: &SymbolTables,
     m: &ModuleFullPath,
-    expr: &Expr,
-    f: impl FnOnce(&Pass<'_, '_, (), ()>) -> R,
+    f: impl FnOnce(&mut Pass<'_, '_, (), ()>) -> R,
 ) -> R {
     let aliases = ModuleAliases::default();
     let table = tables.get(m).expect("module table");
     let view = View::single(&table);
     let scope = ResolutionScope::new(tables, &aliases, &view, m, None);
     let declarations = ClusterDeclarations(HashSet::new());
-    let mut locals = HashSet::new();
-    collect_binders(expr, &mut locals);
-    let pass = Pass::new(&scope, &declarations, m, locals);
-    f(&pass)
+    let mut pass = Pass::new(&scope, &declarations, m, Vec::new());
+    f(&mut pass)
 }
 
 fn transform_expr(expr: Expr, tables: &SymbolTables, m: &ModuleFullPath) -> Expr {
-    let probe = expr.clone();
-    with_pass(tables, m, &probe, |pass| pass.transform(expr))
+    with_pass(tables, m, |pass| pass.transform(expr))
 }
 
 fn classify_expr(expr: &Expr, tables: &SymbolTables, m: &ModuleFullPath) -> SchedulingClass {
-    with_pass(tables, m, expr, |pass| match pass.callee_of_call(expr) {
+    with_pass(tables, m, |pass| match pass.callee_of_call(expr) {
         Callee::PlatformEffect { class, .. } => class,
         _ => SchedulingClass::Sequential,
     })
 }
 
 fn is_bind_chain_start(expr: &Expr, tables: &SymbolTables, m: &ModuleFullPath) -> bool {
-    with_pass(tables, m, expr, |pass| pass.starts_chain(expr))
+    with_pass(tables, m, |pass| pass.starts_chain(expr))
 }
 
 fn is_bind_callee(expr: &Expr) -> bool {
@@ -221,8 +217,7 @@ fn test_collect_two_step_chain() {
     let inner = make_bind_expr(make_apply("get-time", vec![]), "t2", make_int(42));
     let expr = make_bind_expr(make_apply("get-time", vec![]), "t1", inner);
     let (tables, m) = commutative_tables();
-    let probe = expr.clone();
-    let (chain, body) = with_pass(&tables, &m, &probe, |pass| pass.collect_chain(expr));
+    let (chain, body) = with_pass(&tables, &m, |pass| pass.collect_chain(expr));
     assert_eq!(chain.len(), 2);
     assert_eq!(chain[0].binder.as_ref(), "t1");
     assert_eq!(chain[1].binder.as_ref(), "t2");

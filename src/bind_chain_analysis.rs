@@ -16,7 +16,8 @@ use cranelisp_types::{
     Pattern, Program, ResolutionScope, Resolved, Span, Symbol, TopLevel, TypeExpr, free_vars_expr,
 };
 
-/// Rewrite the bind chains of one single-signature definition (§5.3).
+/// Rewrite the bind chains of one single-signature definition (§5.3), with
+/// its parameters as the root scope (§3.8).
 ///
 /// `scope` is the cluster's committed resolution scope and `declarations` the
 /// names its program declares (§3.1, layers 3 and 2).
@@ -30,9 +31,8 @@ pub(crate) fn auto_schedule_defn<C: CodeStore, L: LinkerStore>(
         unreachable!("invariant: auto_schedule_defn called on multi-sig defn");
     }
     let variant = &mut defn.variants[0];
-    let mut locals: HashSet<Symbol> = variant.params.iter().map(|(p, _)| p.clone()).collect();
-    collect_binders(&variant.body, &mut locals);
-    let pass = Pass::new(scope, declarations, current_module, locals);
+    let params = variant.params.iter().map(|(p, _)| p.clone()).collect();
+    let mut pass = Pass::new(scope, declarations, current_module, params);
     let body = std::mem::replace(
         &mut variant.body,
         Expr::BoolLit {
@@ -111,8 +111,9 @@ struct Pass<'r, 'a, C: CodeStore, L: LinkerStore> {
     scope: &'r ResolutionScope<'a, C, L>,
     declarations: &'r ClusterDeclarations,
     current_module: &'r ModuleFullPath,
-    /// Every name any binder in the definition binds (§3.1, layer 1).
-    locals: HashSet<Symbol>,
+    /// The binders whose region contains the position being read (§3.8):
+    /// extended on entry to a region and truncated on exit.
+    locals: Vec<Symbol>,
     bind: FQSymbol,
     sleep: FQSymbol,
 }
@@ -122,7 +123,7 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
         scope: &'r ResolutionScope<'a, C, L>,
         declarations: &'r ClusterDeclarations,
         current_module: &'r ModuleFullPath,
-        locals: HashSet<Symbol>,
+        locals: Vec<Symbol>,
     ) -> Self {
         Pass {
             scope,
@@ -176,30 +177,61 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
         }
     }
 
-    /// True for `(bind io (fn [x] body))` whose callee is the primitive.
+    /// The effect, binder and continuation body of `(bind io (fn [x] body))`
+    /// whose callee is the primitive.
+    fn chain_step<'e>(&self, expr: &'e Expr) -> Option<(&'e Expr, &'e Symbol, &'e Expr)> {
+        let Expr::Apply { callee, args, .. } = expr else {
+            return None;
+        };
+        let [effect, Expr::Lambda { params, body, .. }] = args.as_slice() else {
+            return None;
+        };
+        let [(binder, _)] = params.as_slice() else {
+            return None;
+        };
+        (self.callee(callee) == Callee::Bind).then_some((effect, binder, body))
+    }
+
     fn starts_chain(&self, expr: &Expr) -> bool {
-        matches!(expr, Expr::Apply { callee, args, .. }
-            if args.len() == 2
-            && matches!(&args[1], Expr::Lambda { params, .. } if params.len() == 1)
-            && self.callee(callee) == Callee::Bind)
+        self.chain_step(expr).is_some()
+    }
+
+    // -----------------------------------------------------------------------
+    // Binder scope (§3.8)
+    // -----------------------------------------------------------------------
+
+    /// Brings `names` into scope and returns the mark that `exit` restores.
+    fn enter(&mut self, names: impl IntoIterator<Item = Symbol>) -> usize {
+        let mark = self.locals.len();
+        self.locals.extend(names);
+        mark
+    }
+
+    fn exit(&mut self, mark: usize) {
+        self.locals.truncate(mark);
     }
 
     // -----------------------------------------------------------------------
     // Transform
     // -----------------------------------------------------------------------
 
-    fn transform(&self, expr: Expr) -> Expr {
+    fn transform(&mut self, expr: Expr) -> Expr {
         if self.starts_chain(&expr) {
+            let mark = self.locals.len();
             let (chain, final_body) = self.collect_chain(expr);
-            self.rebuild_chain(chain, final_body)
+            let rebuilt = self.rebuild_chain(chain, final_body);
+            self.exit(mark);
+            rebuilt
         } else {
             self.recurse_children(expr)
         }
     }
 
     /// Flatten a chain into its steps and the terminal body (§3.2). The first
-    /// application that is not a step is the terminal body.
-    fn collect_chain(&self, mut expr: Expr) -> (Vec<BindStep>, Expr) {
+    /// application that is not a step is the terminal body. Each step is read
+    /// under the binders before it, and every step's binder is left in scope
+    /// for the terminal body.
+    fn collect_chain(&mut self, mut expr: Expr) -> (Vec<BindStep>, Expr) {
         let mut steps = Vec::new();
         while self.starts_chain(&expr) {
             let Expr::Apply {
@@ -226,10 +258,17 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
             let Some((binder, annotation)) = params.pop() else {
                 unreachable!("invariant: a chain step's lambda has one parameter")
             };
+            let schedulable = matches!(
+                self.callee_of_call(&effect),
+                Callee::PlatformEffect { class, .. } if class != SchedulingClass::Sequential
+            );
+            let depth = self.enter([binder.clone()]);
             steps.push(BindStep {
                 binder,
                 annotation,
                 effect,
+                schedulable,
+                depth,
                 application,
                 callee: *callee,
                 lambda,
@@ -239,21 +278,19 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
         (steps, expr)
     }
 
-    /// Group a flat chain (§3.5) and fold it back right to left (§3.6).
-    fn rebuild_chain(&self, chain: Vec<BindStep>, final_body: Expr) -> Expr {
+    /// Group a flat chain (§3.5) and fold it back right to left (§3.6). The
+    /// terminal body is read under every step's binder, and the scope is cut
+    /// back to each step's depth before its effect is read.
+    fn rebuild_chain(&mut self, chain: Vec<BindStep>, final_body: Expr) -> Expr {
         let mut segments: Vec<Segment> = Vec::new();
         let mut group: Vec<BindStep> = Vec::new();
         let mut bound_so_far: HashSet<Symbol> = HashSet::new();
 
         for step in chain {
-            let schedulable = matches!(
-                self.callee_of_call(&step.effect),
-                Callee::PlatformEffect { class, .. } if class != SchedulingClass::Sequential
-            );
             let mut all_bound = bound_so_far.clone();
             all_bound.extend(group.iter().map(|s| s.binder.clone()));
 
-            if schedulable && is_independent(&step.effect, &all_bound) {
+            if step.schedulable && is_independent(&step.effect, &all_bound) {
                 group.push(step);
             } else {
                 flush_par_group(&mut segments, &mut bound_so_far, std::mem::take(&mut group));
@@ -268,6 +305,7 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
             result = match segment {
                 Segment::Sequential(step) => {
                     let step = *step;
+                    self.exit(step.depth);
                     let effect = self.transform(step.effect);
                     // Launch-and-continue (§3.7): declining is always sound.
                     if self.launch_eligible(&step.binder, &effect, &result) {
@@ -283,10 +321,12 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
                 }
                 Segment::Parallel(steps) => {
                     let span = steps[0].application;
-                    let bindings = steps
-                        .into_iter()
-                        .map(|step| (step.binder, self.transform(step.effect)))
-                        .collect();
+                    let mut bindings = Vec::with_capacity(steps.len());
+                    for step in steps.into_iter().rev() {
+                        self.exit(step.depth);
+                        bindings.push((step.binder, self.transform(step.effect)));
+                    }
+                    bindings.reverse();
                     Expr::ParBind {
                         bindings,
                         body: Box::new(result),
@@ -304,96 +344,61 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
     // (design/arch/effect-concurrency.md §4.1; spec/10-io.md §10.12.7)
     // -----------------------------------------------------------------------
 
-    /// The launch-eligibility predicate (§4.1). A bind step `(bind io_expr (fn [name]
-    /// continuation))` whose `io_expr` is either a single platform effect OR a whole
-    /// discarded **bind sub-tree** may be lowered as a detached supervised strand
-    /// (`Expr::LaunchContinue`) instead of an ordinary `Bind` iff ALL of:
+    /// The launch-eligibility predicate (`design/arch/effect-concurrency.md`
+    /// §4.1). A step `(bind io_expr (fn [name] continuation))` whose `io_expr`
+    /// is one platform effect or a whole discarded bind sub-tree may lower to
+    /// a detached `Expr::LaunchContinue` iff all of:
     ///
-    /// - **(E1) Result-discarded** — `name` is unused in `continuation`
-    ///   (`!free_vars(continuation).contains(name)`): no one awaits the launched
-    ///   value, so detaching does not change the program's value (§10.12.7 step 1).
-    /// - **(E2) Value-locality** — the launched effect's resource value must not flow
-    ///   into a same-token continuation effect. A fresh, non-shared value (the
-    ///   `accept`-minted `conn`) yields a fresh, disjoint token by construction (§4
-    ///   fact 2). This is the load-bearing disjointness *witness*: token VALUES are
-    ///   dynamic/runtime (§5/§8.1), so disjointness is derived from value provenance,
-    ///   not token comparison. **BOTH arms run the SAME literal free-var disjointness**
-    ///   (`free_vars(launched) ∩ free_vars(cont) == ∅`, modulo globals; FIXME 0478 —
-    ///   Principle 7, one E2 core): a shared free var means the launched value also
-    ///   flows into the continuation, so it cannot be proven token-disjoint and is
-    ///   refused. A module-global pool handle appears as a shared free var ⇒ refused.
-    ///   The §B4 launch LOOP keeps its control value OUT of the token operand
-    ///   (`(let [m (sub n 1)] (bind (rd n …) (fn [_] (recur m))))` — io free {n}, cont
-    ///   free {m} ⇒ disjoint ⇒ launches), so the unified check does not over-refuse it.
-    ///   (The former single-step-only narrow `continuation_shares_resource_handle`
-    ///   leading-operand check was a deviation with a soundness hole — aliased-handle
-    ///   and user-fn-wrapped same-token reorders slipped through — now closed.)
-    /// - **(E3) No shared-singleton-token effect** — every effect position in the
-    ///   launched expression must be a `ResourceSerial` per-value-minted-token leaf,
-    ///   never `Commutative` (token-0, unrestricted) nor `Sequential` (the global
-    ///   token-1), and (for poll-shape leaves) never a literal-`0` leading token
-    ///   operand (the dynamic shared singleton). An **opaque user-fn** in an effect
-    ///   position is an unknown footprint and is likewise refused — which is why the
-    ///   handler must be inlined to platform leaves for the launch to fire. **Timer
-    ///   refinement:** a resource-free `sleep` timer leaf (`Callee::Sleep`) is
-    ///   ALSO permitted as a sub-tree effect position — it carries no shared token and
-    ///   no observable side-effect stream, so it reorders nothing observable when
-    ///   detached as a sub-tree member (it is NOT independently launch-shaped; the
-    ///   single-step arm below still refuses it).
+    /// - **(E1) Result discarded:** `name` is not free in `continuation`.
+    /// - **(E2) Value locality:** `io_expr` and `continuation` share no free
+    ///   variable. Token values are dynamic, so disjointness is derived from
+    ///   value provenance: a shared variable, a module-global handle included,
+    ///   may carry the same token and is refused. A launch loop that keeps its
+    ///   control value out of the token operand
+    ///   (`(let [m (sub n 1)] (bind (rd n …) (fn [_] (recur m))))`) stays
+    ///   disjoint.
+    /// - **(E3) No shared-singleton token:** every effect position is a
+    ///   launchable leaf (`is_launchable_leaf`). Inside a sub-tree a `sleep`
+    ///   timer leaf is also accepted; it is never launched on its own.
     ///
-    /// Declining to detach is ALWAYS sound (§10.12.7), so every failure path lowers
-    /// as an ordinary `Bind`.
-    fn launch_eligible(&self, name: &Symbol, io_expr: &Expr, continuation: &Expr) -> bool {
+    /// Declining is always sound (spec §10.12.7): the step stays a `bind`.
+    fn launch_eligible(&mut self, name: &Symbol, io_expr: &Expr, continuation: &Expr) -> bool {
         let globals: HashSet<Symbol> = HashSet::new();
-
-        // (E1) Result-discarded — the launched binder is unused in the continuation.
-        if free_vars_expr(continuation, &globals).contains(name) {
+        let c_free = free_vars_expr(continuation, &globals);
+        if c_free.contains(name) {
             return false;
         }
-
-        if self.starts_chain(io_expr) {
-            // SUB-TREE case (the S96 C-fanout extension): walk every effect position
-            // of the already-collected local bind sub-tree (Principle 7 — no
-            // interprocedural analysis; the handler is inlined down to platform
-            // leaves so the footprint is purely local).
-            for effect in self.subtree_effect_positions(io_expr) {
-                // A `ResourceSerial` per-value-minted-token leaf (E3) OR the
-                // resource-free `sleep` timer leaf (the §4.1 timer-leaf refinement —
-                // `Callee::Sleep`). A timer touches no shared resource and
-                // produces no observable side-effect stream, so it is sound to carry
-                // INSIDE a launched sub-tree (it is NOT independently launch-shaped —
-                // the single-step arm below still refuses it).
-                if !self.is_launchable_leaf(effect) && self.callee_of_call(effect) != Callee::Sleep
-                {
-                    return false; // (E3) — non-ResourceSerial / token-0 / opaque.
-                }
-            }
-            // (E2) Value-locality witness: no free variable shared with the
-            // continuation (a fresh, non-shared value ⇒ a disjoint token).
-            let s_free = free_vars_expr(io_expr, &globals);
-            let c_free = free_vars_expr(continuation, &globals);
-            s_free.is_disjoint(&c_free)
+        let leaves_launchable = if self.starts_chain(io_expr) {
+            self.subtree_leaves_launchable(io_expr)
         } else {
-            // SINGLE-STEP case: E3 (`is_launchable_leaf` — ResourceSerial only, refuse
-            // Commutative/Sequential/token-0/opaque) + E2 (value-locality).
-            //
-            // E2 is the SAME literal free-var disjointness the sub-tree arm computes
-            // above (FIXME 0478 — Principle 7, one E2 core): the launched leaf and the
-            // continuation must share NO free variable (modulo globals). A launched
-            // effect whose resource value also flows into the continuation cannot be
-            // proven to ride a token disjoint from a continuation effect's, so detaching
-            // it could reorder two same-token effects across the launch boundary —
-            // refused. The former narrow `continuation_shares_resource_handle`
-            // (leading-operand-only) check was a deviation with a soundness hole (it
-            // permitted aliased-handle + user-fn-wrapped same-token reorders); the
-            // unified disjointness closes it. The legitimate §B4 launch LOOP keeps its
-            // control value OUT of the token operand — e.g. `(let [m (sub n 1)] (bind
-            // (rd n …) (fn [_] (recur m))))` — so io free {n}, cont free {m} ⇒ disjoint
-            // ⇒ still launches.
-            let s_free = free_vars_expr(io_expr, &globals);
-            let c_free = free_vars_expr(continuation, &globals);
-            self.is_launchable_leaf(io_expr) && s_free.is_disjoint(&c_free)
-        }
+            self.is_launchable_leaf(io_expr)
+        };
+        leaves_launchable && free_vars_expr(io_expr, &globals).is_disjoint(&c_free)
+    }
+
+    /// (E3) over a launched sub-tree: each step's effect, read under the
+    /// sub-tree's earlier binders, and the tail.
+    fn subtree_leaves_launchable(&mut self, subtree: &Expr) -> bool {
+        let mark = self.locals.len();
+        let mut cursor = subtree;
+        let launchable = loop {
+            match self.chain_step(cursor) {
+                Some((effect, binder, body)) => {
+                    if !self.is_subtree_leaf(effect) {
+                        break false;
+                    }
+                    self.enter([binder.clone()]);
+                    cursor = body;
+                }
+                None => break self.is_subtree_leaf(cursor),
+            }
+        };
+        self.exit(mark);
+        launchable
+    }
+
+    fn is_subtree_leaf(&self, effect: &Expr) -> bool {
+        self.is_launchable_leaf(effect) || self.callee_of_call(effect) == Callee::Sleep
     }
 
     /// (E3) for a single effect position: a `ResourceSerial` platform leaf,
@@ -409,48 +414,37 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
         }
     }
 
-    /// The effect positions of a launched bind sub-tree: each step's effect
-    /// plus the tail, so a non-leaf tail is refused too.
-    fn subtree_effect_positions<'e>(&self, subtree: &'e Expr) -> Vec<&'e Expr> {
-        let mut effects: Vec<&Expr> = Vec::new();
-        let mut cursor = subtree;
-        loop {
-            if self.starts_chain(cursor)
-                && let Expr::Apply { args, .. } = cursor
-            {
-                effects.push(&args[0]);
-                if let Expr::Lambda { body, .. } = &args[1] {
-                    cursor = body;
-                    continue;
-                }
-            }
-            effects.push(cursor);
-            break;
-        }
-        effects
-    }
-
     // -----------------------------------------------------------------------
     // Child recursion
     // -----------------------------------------------------------------------
 
     /// Recurse into sub-expressions without touching this node's structure.
-    fn recurse_children(&self, expr: Expr) -> Expr {
+    /// Each binder is in scope over its region (§3.8); every other form binds
+    /// nothing.
+    fn recurse_children(&mut self, expr: Expr) -> Expr {
         match expr {
             Expr::Let {
                 bindings,
                 body,
                 span,
                 inferred_type,
-            } => Expr::Let {
-                bindings: bindings
-                    .into_iter()
-                    .map(|(n, v)| (n, self.transform(v)))
-                    .collect(),
-                body: Box::new(self.transform(*body)),
-                span,
-                inferred_type,
-            },
+            } => {
+                let mark = self.locals.len();
+                let mut transformed = Vec::with_capacity(bindings.len());
+                for (name, value) in bindings {
+                    let value = self.transform(value);
+                    self.enter([name.clone()]);
+                    transformed.push((name, value));
+                }
+                let body = Box::new(self.transform(*body));
+                self.exit(mark);
+                Expr::Let {
+                    bindings: transformed,
+                    body,
+                    span,
+                    inferred_type,
+                }
+            }
             Expr::If {
                 cond,
                 then_branch,
@@ -469,12 +463,17 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
                 body,
                 span,
                 inferred_type,
-            } => Expr::Lambda {
-                params,
-                body: Box::new(self.transform(*body)),
-                span,
-                inferred_type,
-            },
+            } => {
+                let mark = self.enter(params.iter().map(|(name, _)| name.clone()));
+                let body = Box::new(self.transform(*body));
+                self.exit(mark);
+                Expr::Lambda {
+                    params,
+                    body,
+                    span,
+                    inferred_type,
+                }
+            }
             Expr::Apply {
                 callee,
                 args,
@@ -498,10 +497,15 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
                 scrutinee: Box::new(self.transform(*scrutinee)),
                 arms: arms
                     .into_iter()
-                    .map(|arm| MatchArm {
-                        pattern: arm.pattern,
-                        body: self.transform(arm.body),
-                        span: arm.span,
+                    .map(|arm| {
+                        let mark = self.enter(pattern_binders(&arm.pattern));
+                        let body = self.transform(arm.body);
+                        self.exit(mark);
+                        MatchArm {
+                            pattern: arm.pattern,
+                            body,
+                            span: arm.span,
+                        }
                     })
                     .collect(),
                 span,
@@ -533,15 +537,21 @@ impl<'r, 'a, C: CodeStore, L: LinkerStore> Pass<'r, 'a, C, L> {
                 body,
                 span,
                 inferred_type,
-            } => Expr::ParBind {
-                bindings: bindings
+            } => {
+                let bindings: Vec<(Symbol, Expr)> = bindings
                     .into_iter()
-                    .map(|(n, v)| (n, self.transform(v)))
-                    .collect(),
-                body: Box::new(self.transform(*body)),
-                span,
-                inferred_type,
-            },
+                    .map(|(name, value)| (name, self.transform(value)))
+                    .collect();
+                let mark = self.enter(bindings.iter().map(|(name, _)| name.clone()));
+                let body = Box::new(self.transform(*body));
+                self.exit(mark);
+                Expr::ParBind {
+                    bindings,
+                    body,
+                    span,
+                    inferred_type,
+                }
+            }
             Expr::Trace {
                 modules,
                 body,
@@ -600,6 +610,11 @@ struct BindStep {
     binder: Symbol,
     annotation: Option<TypeExpr>,
     effect: Expr,
+    /// The effect calls a platform function of a non-`Sequential` class (§3.3),
+    /// read under the binders before this step.
+    schedulable: bool,
+    /// The scope depth before this step's binder: its effect's scope (§3.8).
+    depth: usize,
     application: Span,
     callee: Expr,
     lambda: Span,
@@ -670,68 +685,12 @@ fn leading_token_is_zero(effect: &Expr) -> bool {
         if matches!(args.first(), Some(Expr::IntLit { value: 0, .. })))
 }
 
-/// Every name a binder in `expr` binds: lambda parameters, `let` bindings,
-/// match-pattern binders and `ParBind` bindings (§3.1, layer 1). Nesting is
-/// ignored, which only ever turns a recognition into a decline.
-fn collect_binders(expr: &Expr, out: &mut HashSet<Symbol>) {
-    match expr {
-        Expr::IntLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::StringLit { .. }
-        | Expr::Var { .. } => {}
-        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
-            for (name, value) in bindings {
-                out.insert(name.clone());
-                collect_binders(value, out);
-            }
-            collect_binders(body, out);
-        }
-        Expr::Lambda { params, body, .. } => {
-            out.extend(params.iter().map(|(name, _)| name.clone()));
-            collect_binders(body, out);
-        }
-        Expr::Match {
-            scrutinee, arms, ..
-        } => {
-            collect_binders(scrutinee, out);
-            for arm in arms {
-                match &arm.pattern {
-                    Pattern::Constructor { bindings, .. } => out.extend(bindings.iter().cloned()),
-                    Pattern::Var { name, .. } => {
-                        out.insert(name.clone());
-                    }
-                    Pattern::Wildcard { .. } => {}
-                }
-                collect_binders(&arm.body, out);
-            }
-        }
-        Expr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_binders(cond, out);
-            collect_binders(then_branch, out);
-            collect_binders(else_branch, out);
-        }
-        Expr::Apply { callee, args, .. } => {
-            collect_binders(callee, out);
-            args.iter().for_each(|arg| collect_binders(arg, out));
-        }
-        Expr::VecLit { elements, .. } => elements.iter().for_each(|e| collect_binders(e, out)),
-        Expr::ConstrADT { fields, .. } => fields.iter().for_each(|f| collect_binders(f, out)),
-        Expr::Annotate { expr, .. } => collect_binders(expr, out),
-        Expr::Trace { body, .. } => collect_binders(body, out),
-        Expr::LaunchContinue {
-            launched,
-            continuation,
-            ..
-        } => {
-            collect_binders(launched, out);
-            collect_binders(continuation, out);
-        }
+/// The names a match arm's pattern binds.
+fn pattern_binders(pattern: &Pattern) -> Vec<Symbol> {
+    match pattern {
+        Pattern::Constructor { bindings, .. } => bindings.clone(),
+        Pattern::Var { name, .. } => vec![name.clone()],
+        Pattern::Wildcard { .. } => Vec::new(),
     }
 }
 
