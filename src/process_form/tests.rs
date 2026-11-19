@@ -267,17 +267,6 @@ fn module_has_no_member_error_falls_back_to_synthetic_span_when_ref_absent() {
     assert_eq!(err.span(), Span::SYNTHETIC);
 }
 
-// spec: spec/09-macros.md §9.3.6 — the expand-phase macro gap (`MacroInMem`)
-// also reduces to "load `fq.module`".
-#[test]
-fn gap_target_module_macro_in_mem_names_module() {
-    let gap = cranelisp_types::ResolutionGap::MacroInMem(FQSymbol {
-        module: ModuleFullPath::from("mac"),
-        symbol: Symbol::from("twice"),
-    });
-    assert_eq!(gap_target_module(&gap), Some(ModuleFullPath::from("mac")));
-}
-
 // spec: spec/08-modules.md §8.5.4 — an FQ type reference to an unloaded
 // module (`Type`) names the module via its `FQTypeName`.
 #[test]

@@ -487,17 +487,15 @@ pub(crate) fn drive_module_dep(
 
 /// The module a `ResolutionGap` names as needing to be loaded, if any.
 ///
-/// All three gap variants reduce to "load `fq.module`": `SymbolTypechecked` is
-/// what typecheck produces for an FQ value/function reference to an unknown
-/// module (`QualifiedModuleUnknown` → `SymbolTypechecked`); `MacroInMem` is the
-/// expand-phase macro gap; `Type` is the FQ-type-reference twin. A future
-/// non-exhaustive variant returns `None` (not actionable here).
+/// Both gap variants reduce to "load `fq.module`": `SymbolTypechecked` is what
+/// typecheck produces for an FQ value/function reference to an unknown module
+/// (`QualifiedModuleUnknown` → `SymbolTypechecked`); `Type` is the
+/// FQ-type-reference twin. A future non-exhaustive variant returns `None` (not
+/// actionable here).
 pub(crate) fn gap_target_module(gap: &cranelisp_types::ResolutionGap) -> Option<ModuleFullPath> {
     use cranelisp_types::ResolutionGap;
     match gap {
-        ResolutionGap::SymbolTypechecked(fq) | ResolutionGap::MacroInMem(fq) => {
-            Some(fq.module.clone())
-        }
+        ResolutionGap::SymbolTypechecked(fq) => Some(fq.module.clone()),
         ResolutionGap::Type(fqt) => Some(fqt.module.clone()),
         _ => None,
     }
@@ -509,9 +507,7 @@ pub(crate) fn gap_target_module(gap: &cranelisp_types::ResolutionGap) -> Option<
 pub(crate) fn gap_member(gap: &cranelisp_types::ResolutionGap) -> String {
     use cranelisp_types::ResolutionGap;
     match gap {
-        ResolutionGap::SymbolTypechecked(fq) | ResolutionGap::MacroInMem(fq) => {
-            fq.symbol.to_string()
-        }
+        ResolutionGap::SymbolTypechecked(fq) => fq.symbol.to_string(),
         ResolutionGap::Type(fqt) => fqt.name.to_string(),
         _ => String::new(),
     }

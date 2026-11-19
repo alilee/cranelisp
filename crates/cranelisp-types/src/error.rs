@@ -352,38 +352,26 @@ impl std::error::Error for PlatformError {}
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// ResolutionGap — FIXME 0098
+// ResolutionGap
 // ---------------------------------------------------------------------------
 
-/// Cross-cutting "this dependency isn't ready yet" signal.
+/// The recoverable "this dependency is not ready" signal.
 ///
-/// Carried by both `cranelisp_frontend::ExpansionError::Gap` and
-/// `cranelisp_typecheck::CheckError::Gap`. The integration layer's
-/// `process_form` pattern-matches on the variant to decide what to wait
-/// on — typecheck for symbol typing, JIT for in-mem macro code, typecheck
-/// for an opaque type ref. Per FIXMEs 0092 / 0093 / 0098.
-///
-/// `ResolutionGap` is the sole multi-consumer exception that justifies
-/// staying in `cranelisp-types` per Principle 15 — both frontend and
-/// typecheck originate it, and `int` consumes from both. `CheckError`
-/// and `ExpansionError` move to their originating crates per FIXME 0100.
+/// Typecheck is the sole producer, inside `cranelisp_typecheck::CheckError::Gap`.
+/// The binary is the sole consumer: it loads or waits on the module the gap
+/// names, then retries the cluster. A gap carries no span and is never
+/// persisted. Macro recognition raises no gap; the binary drives a macro
+/// head's module itself.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionGap {
-    /// Symbol's typecheck not yet complete — wait for
-    /// `notify_symbol_typechecked(fq)`. Produced by
-    /// `cranelisp_typecheck::check_form` for value references.
+    /// A qualified value, constructor or pattern reference names a module
+    /// that is not loaded, or a member absent from a loaded module. The
+    /// consumer typechecks `fq.module` and retries.
     SymbolTypechecked(FQSymbol),
 
-    /// Macro target needs in-mem JIT — typecheck first, then
-    /// `priority_boost_jit(fq)` + `wait_for_inmem(fq)`. Produced
-    /// exclusively by `cranelisp_frontend::expand`; never raised
-    /// from typecheck.
-    MacroInMem(FQSymbol),
-
-    /// Type reference needs typecheck — wait for
-    /// `notify_type_resolved(fq)`. Produced by
-    /// `cranelisp_typecheck::check_form` for FQ type references.
+    /// A qualified name in a type position or a trait bound names a module
+    /// that is not loaded. The consumer typechecks that module and retries.
     Type(FQTypeName),
 }
 
