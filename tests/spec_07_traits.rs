@@ -19,7 +19,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
+use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -2441,13 +2441,17 @@ const LINK: &str = "--link";
 fn main_value_in_modes(
     src: &str,
     modes: &[&'static str],
+    timeout: std::time::Duration,
 ) -> Vec<(&'static str, Option<i32>, String)> {
     modes
         .iter()
         .map(|&mode| {
+            let cr = Cranelisp::new()
+                .with_prelude(PreludeVariant::PrimitivesOnly)
+                .timeout(timeout);
             let (out, value) = match mode {
                 REPL => {
-                    let out = repl_prims(&format!("{src}(main)\n"));
+                    let out = cr.stdin(&format!("{src}(main)\n")).output();
                     let value = out
                         .stdout
                         .rfind(":primitives/Int ")
@@ -2460,12 +2464,12 @@ fn main_value_in_modes(
                     (out, value)
                 }
                 RUN => {
-                    let out = run_prims(src);
+                    let out = cr.user(src).run("user.cl").output();
                     let value = out.status.code();
                     (out, value)
                 }
                 LINK => {
-                    let out = link_prims(src);
+                    let out = cr.user(src).link_then_run("user.cl").output();
                     let value = out.linked_execution_elapsed.and(out.status.code());
                     (out, value)
                 }
@@ -2482,7 +2486,23 @@ fn main_value_in_modes(
 
 /// Every named mode yields `expected`, and no mode reports `undefined function`.
 fn assert_main_value_in_modes(what: &str, src: &str, expected: i32, modes: &[&'static str]) {
-    let wrong: Vec<String> = main_value_in_modes(src, modes)
+    assert_main_value_with_timeout(
+        what,
+        src,
+        expected,
+        modes,
+        std::time::Duration::from_secs(30),
+    );
+}
+
+fn assert_main_value_with_timeout(
+    what: &str,
+    src: &str,
+    expected: i32,
+    modes: &[&'static str],
+    timeout: std::time::Duration,
+) {
+    let wrong: Vec<String> = main_value_in_modes(src, modes, timeout)
         .into_iter()
         .filter(|(_, value, diag)| *value != Some(expected) || diag.contains("undefined function"))
         .map(|(mode, value, diag)| format!("--- {mode}: observed {value:?}\n{diag}"))
@@ -3931,6 +3951,9 @@ fn s124_1034_a_begin_later_call_control_repl() {
       .assert_stdout_contains(":primitives/Int 7").assert_stdout_does_not_contain("undefined function");
 }
 
+// These cells approach the default child limit under fourteen-cell suite load.
+const S124_DEPTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 const S124_DEPTH_HEADER: &str = "(import [primitives [*]])\n(deftype (Opt a) Nope (Yep [:a v]))\n(deftrait Size (size [self] Int))\n(impl Size Int (defn size [n] n))\n";
 const S124_DEPTH_IMPL: &str =
     "(impl Size (Opt :Size a)\n (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))\n";
@@ -3983,21 +4006,39 @@ fn s124_type_refusal(src: &str, lines: &[usize], mode: &str) {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
 #[test]
 fn s124_depth_64_run() {
-    assert_main_value_in_modes("depth 64", &s124_depth_program(64), 64, &[RUN]);
+    assert_main_value_with_timeout(
+        "depth 64",
+        &s124_depth_program(64),
+        64,
+        &[RUN],
+        S124_DEPTH_TIMEOUT,
+    );
 }
 
 // spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
 #[test]
 fn s124_depth_64_link() {
-    assert_main_value_in_modes("depth 64", &s124_depth_program(64), 64, &[LINK]);
+    assert_main_value_with_timeout(
+        "depth 64",
+        &s124_depth_program(64),
+        64,
+        &[LINK],
+        S124_DEPTH_TIMEOUT,
+    );
 }
 
 // spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
 #[test]
 fn s124_depth_64_repl() {
-    assert_main_value_in_modes("depth 64", &s124_depth_program(64), 64, &[REPL]);
+    assert_main_value_with_timeout(
+        "depth 64",
+        &s124_depth_program(64),
+        64,
+        &[REPL],
+        S124_DEPTH_TIMEOUT,
+    );
 }
 
 // spec: spec/03-types.md §3.10 — T-DEPTH-b, design limit
@@ -4491,11 +4532,12 @@ fn s124_two_member_depth_program(depth: usize) -> String {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
 #[test]
 fn s124_two_member_depth_64_run() {
-    assert_main_value_in_modes(
+    assert_main_value_with_timeout(
         "two members, depth 64",
         &s124_two_member_depth_program(64),
         64,
         &[RUN],
+        S124_DEPTH_TIMEOUT,
     );
 }
 
@@ -4503,11 +4545,12 @@ fn s124_two_member_depth_64_run() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
 #[test]
 fn s124_two_member_depth_64_link() {
-    assert_main_value_in_modes(
+    assert_main_value_with_timeout(
         "two members, depth 64",
         &s124_two_member_depth_program(64),
         64,
         &[LINK],
+        S124_DEPTH_TIMEOUT,
     );
 }
 
@@ -4515,11 +4558,12 @@ fn s124_two_member_depth_64_link() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_instantiation_chain found=S124 owner=/dev
 #[test]
 fn s124_two_member_depth_64_repl() {
-    assert_main_value_in_modes(
+    assert_main_value_with_timeout(
         "two members, depth 64",
         &s124_two_member_depth_program(64),
         64,
         &[REPL],
+        S124_DEPTH_TIMEOUT,
     );
 }
 
@@ -4717,7 +4761,7 @@ fn s124_jit_call_range(arena_control: bool) {
                     let cr = Cranelisp::new()
                         .with_prelude(PreludeVariant::PrimitivesOnly)
                         // Sixteen simultaneous compiles need room under suite load.
-                        .timeout(std::time::Duration::from_secs(120))
+                        .timeout(S124_DEPTH_TIMEOUT)
                         .user(&s124_two_member_depth_program(64));
                     let cr = if arena_control {
                         cr.env("MALLOC_ARENA_MAX", "1")
