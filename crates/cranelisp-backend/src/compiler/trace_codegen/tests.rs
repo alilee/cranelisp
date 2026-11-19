@@ -355,6 +355,42 @@ fn discovery_covers_module_path_and_listed_modules_only() {
     assert_eq!(traced_names(&own_module_only), vec!["user/fact"]);
 }
 
+// spec: design/backend/trace-codegen.md §1.3 — within a group, entries are
+// ordered by name, so the trace form's CLIF does not follow hash iteration.
+#[test]
+fn discovery_orders_each_group_by_name() {
+    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+    for module in ["lib", "user"] {
+        let mut table = SymbolTable::<(), ()>::new(ModuleFullPath::from(module));
+        for (i, name) in (0..32).rev().map(|i| (i, format!("f{i:02}"))) {
+            insert_fn(
+                &mut table,
+                &name,
+                fn_scheme(vec![Type::Int], Type::Int),
+                Some(0x1000 + i),
+            );
+        }
+        tables.insert(ModuleFullPath::from(module), table);
+    }
+
+    let traced = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("user"),
+        &modules(&["lib"]),
+        Span::SYNTHETIC,
+    )
+    .expect("every covered module has a table");
+    let expected: Vec<String> = ["lib", "user"]
+        .iter()
+        .flat_map(|module| (0..32).map(move |i| format!("{module}/f{i:02}")))
+        .collect();
+    assert_eq!(
+        traced_names(&traced),
+        expected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "groups in the set's order, entries within a group by name"
+    );
+}
+
 // spec: design/backend/trace-codegen.md §1.3 — a covered module with no table
 // is a located codegen error, not a skip.
 #[test]

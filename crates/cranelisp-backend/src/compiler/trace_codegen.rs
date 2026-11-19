@@ -273,8 +273,8 @@ impl DescriptorBlob {
 
 /// Compute the traced set over the modules a trace form covers: the form's
 /// own `module_path` and the `trace_modules` int listed (`trace-codegen.md`
-/// §1.3), visited in the covered set's order so the group order does not
-/// depend on table iteration. A covered module with no table is refused at the
+/// §1.3), visited in the covered set's order and each group ordered by name,
+/// so the result does not depend on table iteration. A covered module with no table is refused at the
 /// form's `span`.
 ///
 /// An entry is selected when it claims a callable GOT slot and its scheme is a
@@ -307,6 +307,7 @@ where
                 location: ErrorLocation::from_span(span),
             });
         };
+        let group_start = traced.len();
         for (name, entry) in table.all_symbols() {
             let (Some(callable), Some(slot)) = (entry.callable(), entry.callable_got_slot()) else {
                 continue;
@@ -323,6 +324,9 @@ where
                 result_type: ret.as_ref().clone(),
             });
         }
+        // Table iteration is hash order; every group shares its module prefix,
+        // so the qualified name orders the group by symbol name.
+        traced[group_start..].sort_by(|a, b| a.name.cmp(&b.name));
     }
     Ok(traced)
 }
