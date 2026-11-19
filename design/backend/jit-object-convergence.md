@@ -70,6 +70,14 @@ identically on both paths.
 state and byte-compare per function. Any divergence is a breach.
 `CRANELISP_CODEGEN_DUMP` supplies the dumps.
 
+**One known breach, semantics-preserving.** A trace form's CLIF follows
+hash-map iteration within each covered module, so two compilations of one
+module can order its wrappers, descriptors and swapped slots differently. Each
+compilation is self-consistent, so the trace records the same calls. The
+correction is [trace codegen](trace-codegen.md) §1.3 (open). It is the reason
+the rule is stated as a function of the inputs
+([backend](backend.md) §6), not as a property of one compilation.
+
 Slot *contents* are not a second falsification. A fresh JIT finalize and a
 `Linker` mmap are independent loads into different pages; equal addresses across
 them are neither expected nor informative, and inequality is not a breach. The
@@ -95,18 +103,17 @@ document states the questions, not a test plan:
 
 ## §3 Call reach in the JIT (ACT-1070)
 
-**Status:** decided; not in source at `401ed6c0`. `arch` approved the public
-delta on 2026-11-19 as row B13 of the
-[batch record](../arch/interfaces.md#approved-changes-not-yet-in-source-s124),
-with the wrapper crate-private.
+**Status:** built at `790f4c9a` (S124 row B13; `arch` approved the public
+delta on 2026-11-19 with the wrapper crate-private). Verified against
+`jit.rs` at `81d186c6`.
 
 **Fault.** `cranelift-jit` 0.116 takes each function's code memory from the
 global allocator, so two functions of one JIT module can land any distance
 apart. A call that the CLIF marks `colocated` compiles to a pc-relative call
 (`bl` on aarch64, ±128 MB; `call rel32` on x86-64, ±2 GB). Beyond that range
-the displacement wraps or the relocation asserts
-([ACT-1070](../../sprints/actions/ACT-1070-jit-direct-call-out-of-range-of-allocator-placed-code-intake.md),
-attributed by `qa` with the `MALLOC_ARENA_MAX=1` control).
+the displacement wraps or the relocation asserts (ACT-1070, attributed by
+`qa` with the `MALLOC_ARENA_MAX=1` control and closed in S124; its record is
+in Git history).
 
 - Every function the backend declares with `Linkage::Local` or `Export` is
   `colocated` when referenced: drop glue, lambda bodies, function-value
@@ -153,52 +160,25 @@ and an indirect branch, so placement cannot put a callee out of reach.
   glibc-specific and unenforced, so it controls the symptom, not the
   mechanism.
 
-**Public delta** (row B13; the batch record carries the decision):
+**Public surface.** `Jit::jit_module` returns
+`&mut (impl cranelift_module::Module + CodeFinalizer)`, and its rustdoc states
+the promise: no call in a function defined through it depends on where the JIT
+places code. `JITModule` does not implement `CodeFinalizer`. The wrapper,
+`FarCallModule`, is crate-private. In-crate tests read a finalized address
+through `CodeFinalizer` or a crate-private accessor on `Jit`.
 
-| Item | Change |
-|---|---|
-| `Jit::jit_module(&mut self)` | Returns `&mut (impl cranelift_module::Module + CodeFinalizer)` instead of `&mut JITModule`. Its rustdoc states the promise: no call in a function defined through this module depends on where the JIT places code |
-| `impl cranelisp_backend::CodeFinalizer for cranelift_jit::JITModule` | Removed |
+**Evidence.**
 
-No public type is added. Expected baseline effect: backend −4, 1 changed, +0.
-
-**Callers.** No caller outside the backend changes: the binary's four callers
-pass the value straight to `compile_to_module` and do not name its type.
-Inside the backend, test modules that name `JITModule` on the result, or call
-its inherent `get_finalized_function`, change. Examples, under
-`crates/cranelisp-backend/src/`, are `raise/tests.rs`,
-`compiler/vec_codegen/element_release_tests.rs`,
-`compiler/apply/host_promised_tests.rs`,
-`compiler/control_flow/fn_as_value/forwarding_template_tests.rs` and
-`primitives_inline/div_tests.rs`. The build lists the rest. They read a
-finalized address through one crate-private accessor rather than through the
-opaque return.
-
-**What `dev`(backend) builds** (`jit.rs`, its test module, and the in-crate
-test callers above), as one change-set with no order against another row:
-
-1. The wrapper and its `Module` and `CodeFinalizer` implementations, and any
-   accessor the crate's own tests need, all `pub(crate)`. `Jit` stores the
-   wrapper. Its drop frees the inner module's memory as it does today.
-2. `Jit::jit_module`'s new return and rustdoc, and the removed `JITModule`
-   implementation.
-3. Module row M-1070-a. Define a caller with a `colocated` call to a second
-   function through the wrapper, then read the compiled code's relocations.
-   It must hold no pc-relative call relocation (`Arm64Call` or
-   `X86CallPCRel4`). The same context defined through a bare `JITModule`
-   must hold one. That control proves the row can detect the fault.
-4. Rustdoc on the wrapper stating the invariant and why it exists.
-
-`qa` allocated a module row that places two functions of one JIT module out
-of range of each other. It cannot be built deterministically on 0.116,
-because code placement is private to `cranelift-jit` and follows the
-allocator. M-1070-a observes the property that makes placement irrelevant.
-Its adequacy is `qa`'s call.
-
-**Cells that turn green:** `spec_07_traits::s124_1070_jit_call_range_subject`,
-with `s124_1070_jit_call_range_arena_control` passing throughout. The
-run-dependent `spec_07_traits::s124_two_member_depth_64_run` and `_link`
-cells stop varying between runs.
+- Module row M-1070-a (`jit/call_reach_tests.rs`) defines a caller with a
+  `colocated` call through the wrapper and finds no pc-relative call
+  relocation (`Arm64Call` or `X86CallPCRel4`). The same context defined
+  through a bare `JITModule` holds one, which shows the row detects the fault.
+- A row that places two functions out of range cannot be built
+  deterministically on 0.116, because placement is private to `cranelift-jit`
+  and follows the allocator. M-1070-a observes the property that makes
+  placement irrelevant; `qa` judged it adequate.
+- End to end, `spec_07_traits::s124_1070_jit_call_range_subject` passes, with
+  `s124_1070_jit_call_range_arena_control` as its control.
 
 **Residual, asserted.** The in-process linker's `adrp` relocation arm
 (`apply_elf_aarch64_reloc`, and its Mach-O twin) writes the page delta

@@ -191,23 +191,23 @@ accepted, or the module compiles from scratch.
   - `build_isa(true)` builds the position-independent ISA.
   - `write_manifest` writes the index atomically.
   - The backend's writers go through a temporary file and a rename, so a
-    concurrent reader in the same process never sees a partial sidecar or
-    manifest.
+    concurrent reader never sees a partial sidecar or manifest.
 - **Int writes the object.** The object pass publishes the emitted `.o`
   through int's own helper, not the backend's, which is private to this
   crate: a temporary unique to the process and the write, flushed, then
   renamed onto the object path. It records the manifest entry only after the
   rename succeeds (int §7.7).
-- **Atomicity across processes is not claimed (asserted limit).** The
-  backend's helper names its temporary from the target path alone, so two
-  processes writing the same sidecar or manifest share one temporary, and one
-  can rename bytes the other is still writing or has interleaved. Nothing
-  here excludes a second process: whether two processes may share a project
-  cache directory is open with the user (int §7.7, *One cache owner*). The
-  claim above holds only while one process writes the directory.
-  *Falsifier:* two processes writing one module's sidecar or the manifest
-  concurrently, after which a read finds bytes neither wrote whole, or a
-  rename fails because the other process already moved the temporary.
+- **Every write is whole; one generation across processes is not claimed.**
+  The backend's helper (`cache::atomic_write`) names its temporary from the
+  target, the process and a per-process write counter (`7d5a5d42`), so no two
+  writes share a temporary and every rename publishes a complete file. That
+  holds across processes too. What it does not give is one generation: two
+  processes on one project directory can still leave one's `.meta` beside the
+  other's object, or replace each other's manifest entries, because nothing
+  excludes the second process. That is int's cache-owner design, which waits
+  on the user (int §7.7, *One cache owner*; ACT-1085).
+  *Falsifier for the backend's half:* a sidecar or manifest read that finds
+  bytes no single write produced.
 - **No packet API.** The cache-packet family and its dormant int writer,
   which no live path called, were deleted in S124 (row R10-3, `1e4b0ce4`).
 

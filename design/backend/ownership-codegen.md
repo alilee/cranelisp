@@ -16,7 +16,7 @@ the dev tier keeps an optimisation only against a change of growth rate.
 Verified against source on 2026-11-16, and §0, §1, §4 and §13 again after
 S124 B1 on 2026-11-17, and §0, §2.1, §7 and §10 at `441e31ea` on
 2026-11-18, and §0, §1, §4, §5, §9 and §13 at `1e4b0ce4` on 2026-11-18,
-and §9 at `081134ba` on 2026-11-19.
+and §9 at `081134ba` on 2026-11-19 and again at `81d186c6` on 2026-11-20.
 The increment ladders, as-built
 narratives and falsified analyses are in Git history.
 
@@ -52,7 +52,7 @@ spec rulings). A retiring mechanism's typecheck facts keep being produced.
 | General drop-guided reuse | §6.1 | Not built | Release tier |
 | One-word value flattening | §7 | Retired at S124 B5 with packet row D4 | Constant factor: dev tier no longer carries it. The value-layout predicate stays a published fact |
 | Redefinition machinery (backend half) | §8 | Fresh slots built; the trap stub retired at S123 W4 (P13) | Not an optimisation |
-| Dual-symbol extern convention | §9 | Retired: no position borrows | The carrier leaves in S124 with packet row D6 (§9) |
+| Dual-symbol extern convention | §9 | Retired: no position borrows; the carrier left at S124 B8 | — |
 | Vec-query trio in value position | §12.7 | Built | A required lowering, not an optimisation |
 | Spark density axis | §13.4 | Retired at S124 B9 | Tuning, not parallel evaluation. Parallel evaluation itself stays (Principle 27's carve-out) |
 | Supporting contracts (golden oracle, counters, wrapper contracts, unit scenarios, producer pins) | §13 | Current | — |
@@ -414,73 +414,16 @@ is int's session pool.
 
 Retired at S123 W2 with §9.1–§9.4. A borrowed-convention extern sibling has no
 position to serve, because no position borrows
-([uniform counting](uniform-counting.md) §1). The carrier
-`Realization::ExternShim { borrowed_sibling }` has had no producer since
-ACT-0974 and leaves `cranelisp-types` in S124 with rows D6, D13 and D9
-([interfaces](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
-Row D13, the removal of `install_extern`'s sibling parameter, was approved by
-`arch` on 2026-11-19. Not in source at `081134ba` (read 2026-11-19); in scope
-as backend row B8.
-
-**The backend's half.**
-
-- The cache loader's validation of the persisted sibling slot is deleted with
-  the field. That is the `ExternShim { borrowed_sibling: Some(slot) }` arm in
-  `cache/serialize.rs`, together with its row in that module's validation
-  table.
-- The public variant `CacheStale::SiblingSlotOutOfRange` is removed with its
-  only producer (row D9, approved 2026-11-16). Its diagnostic tag arm and its
-  display arm go with it. Backend `public-api.txt` loses three lines.
-- `CACHE_SCHEMA_VERSION` goes up by one from its value when B8 lands (34 at
-  `081134ba`; `cache/mod.rs`), because `Realization` is persisted. The schema pin cell in
-  `cache/serialize/tests.rs` follows it.
-- In `cache/serialize/tests.rs`, the sibling fixtures
-  (`install_primitive_with_sibling`, `roundtrip_sibling_slot`) and the cell
-  that plants an out-of-range sibling slot are deleted. The cells that cover
-  every persisted index, the accept fence and the class-distinctness cell,
-  lose their sibling leg and keep the rest.
-- Every backend call of `SymbolTable::install_extern` drops the sibling
-  argument (row D13). Every such call is in test code:
-  `compiler/extern_call.rs`'s test module, `cache/serialize/tests.rs`,
-  `got_slab_tests.rs`, `compiler/apply/extern_entry_convention_tests.rs` and
-  `compiler/trace_codegen/tests.rs`.
-
-**Commit shape: one commit, types first in the working tree.** `sprint`
-sequences it as one callee-first migration:
-
-1. `arch` removes the field and the `install_extern` parameter from
-   `cranelisp-types`, touching `lifecycle.rs`, `module.rs` and
-   `module/tests.rs`. The workspace then stops compiling, and the broken
-   build is the checklist.
-2. `dev`(primitives) drops the argument at the one production caller,
-   `declarations.rs`.
-3. `dev`(backend) makes the half above.
-4. `dev`(typecheck) drops the argument at its test callers (`result.rs` and
-   `builtins.rs` test modules, `form/tests.rs`) and the field in three test
-   fixtures (`infer/tests.rs`, `program/finalize/tests.rs` and
-   `program/mono_collect/tests/multi_sig.rs`).
-5. `dev`(`src/`) drops the argument at its test callers (`agent/mod.rs`'s
-   test support, `imports/tests.rs`,
-   `session_v4/bare_primitive_value_path_tests.rs`). The binary reads no
-   sibling.
-6. The workspace builds, the suite runs, and the tree is committed once.
-
-Two constraints force this shape:
-
-- **The schema bump belongs to the commit that changes the persisted shape.**
-  A commit with the field removed and the version unchanged would read
-  sidecars of the other shape as current.
-- **Neither half compiles without the other.** The backend matches the field
-  by name, and the types change removes it. A backend-first commit would also
-  delete the validation while the field is still persisted.
-
-No commit leaves the workspace unbuildable. No e2e cell is owed: the default
-emission is unchanged, and a pre-bump sidecar is a miss under the existing
-version cell ([evidence delta](../../tests/plan/s124-evidence-delta.md) §9.4).
-Safety register row R5's wording for the sibling slot is `arch`'s and changes
-in the same commit.
-
----
+([uniform counting](uniform-counting.md) §1). Its carrier,
+`Realization::ExternShim { borrowed_sibling }`, left `cranelisp-types` at
+`07bb8e84` (S124 row B8: packet rows D6, D13 and D9), with
+`install_extern`'s sibling parameter and the public
+`CacheStale::SiblingSlotOutOfRange`, whose only producer was the cache
+loader's sibling-slot validation. `CACHE_SCHEMA_VERSION` went from 34 to 35 in
+that commit, because `Realization` is persisted, so a sidecar of the earlier
+shape is a miss under the existing version cell. No source names the sibling
+at `81d186c6`; the types and backend baselines still list the field and the
+variant until the phase checkpoint regenerates them.
 
 ## §10. What must not ship
 

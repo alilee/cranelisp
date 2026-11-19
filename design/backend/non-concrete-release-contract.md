@@ -467,6 +467,27 @@ The audience is the program author, so the permitted nouns are source-level.
 Mangles, `__expr`, doubled modules and `0..0` are the wrong nouns for that
 reader, not redaction candidates; nothing is suppressed for confidentiality.
 
+**Readiness for `dev`** (read at `81d186c6`, 2026-11-20):
+
+- *Prefix: ready.* The wrapping construction is
+  `From<CranelispError> for CompilationError` (`error.rs`). It stores the
+  inner error's whole rendering as `cause`, so the inner
+  `codegen error at …:` prefix travels inside it. For an inner
+  `CodegenError` or `ModuleError`, `cause` takes the message alone, as its
+  rustdoc already states; the location travels in
+  `location`, and the outer `CranelispError` renders the one prefix. No
+  signature changes.
+- *Span: ready, and the larger half.* Each requester above passes its span
+  to the registry; the result-root pre-request, which has none, passes its
+  frame's.
+- *Subject: not designed.* The frame names `{module}/{symbol}` with `symbol`
+  taken from the compiled target's `Defn` name, and that name can already
+  carry another module and a signature, for example
+  `lib/(h/helper [(base/Opt Int) Int] Int)` (ACT-1071). Before `dev` acts,
+  `design`(backend) owes one rule for which identity the frame carries,
+  read from what each target kind's name holds. If the rule changes the
+  `symbol` field's type, it is a public change for `arch`.
+
 ### 7.3 The category census, armed (open)
 
 **Status: built.** The heading's "(open)" stays only because other documents
@@ -699,9 +720,8 @@ step 1 corrected).
 - **Declaration field types stay in `CtorMeta`** for two readers that feed no
   RC seam: the trace descriptor baker and the platform schema walk. Neither
   can reach a category, because the classifier accepts only a `ConcreteType`.
-  Both still pair arguments by first appearance, ACT-1062's remaining backend
-  reader. The correction pairs them by declared position in one helper for
-  both, and is [trace codegen §3](trace-codegen.md#3-field-types-in-descriptors-and-the-schema-act-1062).
+  Both pair arguments by declared position through one helper (row B14,
+  [trace codegen §3](trace-codegen.md#3-field-types-in-descriptors-and-the-schema-act-1062)).
 
 **Why step 1 preceded step 2.** Step 2 types every match field through step
 1's accessor (the step 2 table), so it could not be built first.
