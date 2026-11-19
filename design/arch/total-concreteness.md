@@ -126,10 +126,11 @@ types at a concrete instantiation for category and glue purposes.
 - The backend is this projection's consumer outside its crate (S124 packet row D1): its
   match lowering and drop glue read field types through it. Contract:
   [the S124 close](concrete-boundary-type.md#312-the-s124-close--no-rc-operation-on-a-word-without-a-category).
-- Open: one backend helper still pairs arguments with variables by first appearance in the
-  fields, which binds a field to another parameter's type (ACT-1062):
-  `crates/cranelisp-backend/src/schema.rs::subst_for_ctor_fields`, read by the trace
-  descriptor baker and the platform schema walk.
+- The trace descriptor baker and the platform schema walk render types that may be
+  residual, which this projection refuses. They pair by the same positional rule through
+  the backend's own `crates/cranelisp-backend/src/schema.rs::ctor_field_types_at`
+  ([trace codegen §3](../backend/trace-codegen.md)); neither result reaches an RC category
+  or drop glue. No backend reader pairs by first appearance.
 
 ## 3. Populations
 

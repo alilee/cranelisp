@@ -257,11 +257,11 @@ left at `1d965ed5`. Governing rule: safety-register rows R17 and R18. Backend in
 - **Grade:** structural for the three arms and the field channel. The census is the
   permanently measured detector and reads zero from every program
   ([evidence delta §14.5](../../tests/plan/s124-evidence-delta.md#145-the-category-census)).
-- **Outside the close:** a concrete but wrong type (register row R18). One backend reader of
-  it remains: `schema::subst_for_ctor_fields` pairs arguments by first appearance for the
-  trace descriptor baker and the platform schema walk (ACT-1062;
-  [release contract §7.4](../backend/non-concrete-release-contract.md)).
-  Neither reaches an RC category.
+- **Outside the close:** a concrete but wrong type (register row R18). The backend reader
+  that produced one, first-appearance pairing in the trace descriptor baker and the platform
+  schema walk, is replaced by positional pairing
+  ([total concreteness §2.1](total-concreteness.md#21-constructor-field-types-at-an-instantiation)).
+  Neither reader reaches an RC category.
 - A design that needs a further public change returns to `arch`.
 
 ## 4-A. Mono-completeness — only all-args-concrete instances are minted

@@ -329,13 +329,29 @@ pointers live in the primitives GOT) without a special case.
 ### 5.1 Which modules a form covers
 
 **Ruled by the user, 2026-11-19; not in source at `cceb2a44`.** A trace form
-covers its own module, every module that module's load edges reach
-transitively, and the compiler-owned modules whose GOT every image defines
-(`primitives`, and the platform modules those modules declare). Spec §4.12.3
-states the rule; `spec` is scribing it.
+covers its own module, every module that module's reference edges reach
+transitively, and `primitives`, whose GOT every image defines.
+[Spec §4.12.3](../../spec/04-expressions.md#4123-what-is-traced) states the
+rule.
+
+A module's **reference edges** are the modules it makes an image load:
+
+- each module it imports or re-exports names from;
+- each module it calls into, including one named only by a qualified
+  reference;
+- the prelude, when the module resolves names through the prelude fallback.
+
+A declared child the module neither imports nor calls is not an edge. A
+platform module is covered as an ordinary edge of the module that imports or
+calls it. Only the entry module declares a platform
+([spec §5.10](../../spec/05-definitions.md#510-platform-declaration)), so no library module's own
+declaration brings one in.
+[Int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)
+owns the enumeration.
 
 - A form in the entry module or at the REPL prompt covers the whole program,
-  because its module reaches every module the program loaded by import.
+  because every module the program loads is reached from that module by a
+  reference edge.
 - A form in a module `u` does not record calls made inside a module `u` does
   not reach. `(defn profile [f] (trace (f)))` in a library records the
   library's own callees and none inside the function its caller passed.
@@ -350,7 +366,7 @@ compiles, which fails both constraints.
 
 - **An object may reference only a GOT that every image holding it defines.**
   A form imports `__cranelisp_got_{M}` for each module it swaps, and int's
-  restore walk loads exactly the load edges
+  restore walk loads exactly the reference edges
   ([int §7.1](../int/int.md#71-cache-hit-flow-inside-register_module)).
   Observed with every loaded table
   ([trace codegen §1.2](../backend/trace-codegen.md#12-what-the-built-selection-showed)):
@@ -363,9 +379,52 @@ compiles, which fails both constraints.
   ([int §7.6](../int/int.md#76-dependency-record-and-validity)), so it is the
   same cold, warm and in every mode, and a change to it invalidates the object.
 
+**The set is rooted at the finished module.** For a module compiled from a
+file, a form's covered set is the closure from the reference edges of the
+whole file, wherever the form stands in it and whichever batch compiles it.
+`--run`, `--link` and a restored object record the same frames for the same
+source.
+
+- The specification decides this. An import takes effect for the whole module
+  whatever its position
+  ([spec §8.3.10](../../spec/08-modules.md#8310-placement)); a form in the
+  entry file covers the whole program, with no qualification by position
+  (spec §4.12.3); and a form behaves identically in every mode (spec §4.12.9).
+  Coverage fixed at the form's own position in the file satisfies none of the
+  three.
+- An object compiled from the finished table already has this set. A batch
+  that compiles a form before a later cluster of the same file adds a
+  reference edge does not, unless the design supplies it. The edges a later
+  cluster can add are callee modules: a qualified reference, or a use through
+  an import that names nothing. Imports are extracted from the whole file
+  before any definition compiles.
+- `design`(int) and `design`(backend) place the mechanism. Row B10's
+  parameter keeps its meaning, the finished module's set. A placement that
+  needs another inter-crate item returns to `arch`.
+- **Falsifier.** A file module holding `(defn g [h] (trace (h 1)))`, then a
+  form that ends that cluster, then a caller of `(g x/f)` where nothing
+  imports `x`: the trace holds an `x/f` frame in a cold `--run`, a
+  warm `--run` and under `--link`. Whether it becomes a cell is `qa`'s.
+
+**Open, with the user.** Current behaviour stands for both until ruled.
+
+- *A REPL definition and a later turn.* A function defined at the prompt
+  holds a trace form; a later turn loads a module the session had not loaded;
+  a third turn calls the function. Spec §4.12.3 says a form at the prompt
+  covers the whole program and does not say whether that is the program when
+  the form was entered or when it runs. Source compiles the form in its own
+  turn, so it covers the program as of that turn. Covering later modules
+  needs the whole-program mechanism listed under *Not chosen*.
+- *A module reached only by a qualified name.* Spec §4.12.3 says "every
+  module it imports". This contract covers such a module from a library form
+  as it does from the entry, where the whole-program rule requires it,
+  because no module is privileged by name
+  ([Principle 19](principles/19-no-module-privileged-by-name.md)). The
+  specification's wording does not state that for a library module.
+
 #### 5.1.1 How the set reaches the backend
 
-Int owns the load-edge enumeration and the backend receives its result. The
+Int owns the reference-edge enumeration and the backend receives its result. The
 backend composes no copy
 ([Principle 7](principles/07-single-source-of-truth.md)): a drift between two
 enumerations is an unresolved symbol on a warm start only.
@@ -373,8 +432,8 @@ enumerations is an unresolved symbol on a warm start only.
 - **Delta.** `cranelisp_backend::compile_to_module` gains one parameter after
   `symbol_tables`: `trace_modules: &BTreeSet<ModuleFullPath>`.
 - **Meaning.** The modules a trace form in `module_path` covers besides
-  `module_path`: the transitive closure of its load edges and the
-  compiler-owned modules. The backend always covers `module_path` and adds no
+  `module_path`: the transitive closure of the finished module's reference
+  edges, and `primitives`. The backend always covers `module_path` and adds no
   other module, so it privileges none by name
   ([Principle 19](principles/19-no-module-privileged-by-name.md)). It is
   passed at every call, whether or not a target holds a trace form; there is
@@ -407,7 +466,7 @@ enumerations is an unresolved symbol on a warm start only.
   would carry a registry a form swaps. It costs every object and every image
   whether or not the program traces. Reopened if the user wants a library's
   form to record its caller's functions.
-- *Moving the load-edge enumeration into `cranelisp-types`.* A larger public
+- *Moving the reference-edge enumeration into `cranelisp-types`.* A larger public
   change that separates the null-import rule from the walk that owns it.
 - *A slice, `&[ModuleFullPath]`.* It can repeat a module and it carries the
   enumerator's traversal order into the emitted object.
