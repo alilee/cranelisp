@@ -1395,7 +1395,7 @@ mod tests {
         let view = MonoDefnVariant {
             name: Symbol::from(name),
             params: Vec::new(),
-            body: cranelisp_types::MonoExpr::lenient_from_expr(
+            body: cranelisp_types::test_support::lenient_from_expr(
                 &variant.body,
                 &Default::default(),
                 &Default::default(),

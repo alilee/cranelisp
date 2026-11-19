@@ -1385,7 +1385,7 @@ mod tests {
             body,
             span: declared,
         };
-        let mono_body = cranelisp_types::MonoExpr::lenient_from_expr(
+        let mono_body = cranelisp_types::test_support::lenient_from_expr(
             &variant.body,
             &Default::default(),
             &Default::default(),

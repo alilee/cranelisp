@@ -459,7 +459,7 @@ mod callee_modules {
 
     use cranelisp_types::{
         CallableArmDraft, CallableOrigin, CodeStore, DefnVariant, Expr, FQSymbol, MacroClauseDraft,
-        MonoDefnVariant, MonoExpr, Realization, Scheme, Sexp, Symbol, SymbolTable, TemplateBody,
+        MonoDefnVariant, Realization, Scheme, Sexp, Symbol, SymbolTable, TemplateBody,
         TemplateKind, Type,
     };
 
@@ -504,7 +504,7 @@ mod callee_modules {
         let view = MonoDefnVariant {
             name: Symbol::from(name),
             params: Vec::new(),
-            body: MonoExpr::lenient_from_expr(
+            body: cranelisp_types::test_support::lenient_from_expr(
                 &ast.body,
                 &Default::default(),
                 &Default::default(),
@@ -860,7 +860,7 @@ fn the_cache_validity_edges_keep_a_null_import() {
 mod slot_layout {
     use cranelisp_types::{
         CallableOrigin, CallableTarget, ConcreteType, DefnVariant, Expr, FQSymbol, InstanceLink,
-        MonoDefnVariant, MonoExpr, Realization, Scheme, Symbol, Type,
+        MonoDefnVariant, Realization, Scheme, Symbol, Type,
     };
 
     use super::callee_modules::concrete;
@@ -938,7 +938,7 @@ mod slot_layout {
         let view = MonoDefnVariant {
             name,
             params: Vec::new(),
-            body: MonoExpr::lenient_from_expr(
+            body: cranelisp_types::test_support::lenient_from_expr(
                 &ast.body,
                 &Default::default(),
                 &Default::default(),

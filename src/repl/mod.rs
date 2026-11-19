@@ -1031,7 +1031,7 @@ pub(crate) mod test_support {
         let view = cranelisp_types::MonoDefnVariant {
             name: name.clone(),
             params: vec![Symbol::from("x")],
-            body: cranelisp_types::MonoExpr::lenient_from_expr(
+            body: cranelisp_types::test_support::lenient_from_expr(
                 &variant.body,
                 &Default::default(),
                 &Default::default(),
@@ -1084,7 +1084,7 @@ pub(crate) mod test_support {
                 let view = cranelisp_types::MonoDefnVariant {
                     name: private_name,
                     params: Vec::new(),
-                    body: cranelisp_types::MonoExpr::lenient_from_expr(
+                    body: cranelisp_types::test_support::lenient_from_expr(
                         &variant.body,
                         &Default::default(),
                         &Default::default(),
@@ -1182,7 +1182,7 @@ pub(crate) mod test_support {
         let view = cranelisp_types::MonoDefnVariant {
             name: Symbol::from("Color.Red"),
             params: Vec::new(),
-            body: cranelisp_types::MonoExpr::lenient_from_expr(
+            body: cranelisp_types::test_support::lenient_from_expr(
                 &variant.body,
                 &Default::default(),
                 &Default::default(),

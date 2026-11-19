@@ -46,7 +46,7 @@ fn define(table: &mut SessionSymbolTable, name: &str, ty: Type) {
     let view = cranelisp_types::MonoDefnVariant {
         name: Symbol::from(name),
         params: params.clone(),
-        body: cranelisp_types::MonoExpr::lenient_from_expr(
+        body: cranelisp_types::test_support::lenient_from_expr(
             &variant.body,
             &Default::default(),
             &Default::default(),

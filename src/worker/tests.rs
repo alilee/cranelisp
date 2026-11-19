@@ -178,7 +178,7 @@ fn concrete_body_draft(name: &str) -> CallableArmDraft {
     let view = cranelisp_types::MonoDefnVariant {
         name: Symbol::from(name),
         params: Vec::new(),
-        body: cranelisp_types::MonoExpr::lenient_from_expr(
+        body: cranelisp_types::test_support::lenient_from_expr(
             &variant.body,
             &Default::default(),
             &Default::default(),
@@ -249,7 +249,7 @@ fn install_typed_body_fixture(
         &Default::default(),
     )
     .unwrap_or_else(|_| {
-        cranelisp_types::MonoExpr::lenient_from_expr(
+        cranelisp_types::test_support::lenient_from_expr(
             &variant.body,
             &Default::default(),
             &Default::default(),
