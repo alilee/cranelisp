@@ -90,12 +90,12 @@ pub fn execute_compiled_expr(
     _ready: crate::scheduler::ExecutionReadiness,
 ) -> Result<crate::result_owner::OwnedProgramResult, CranelispError> {
     let symbol_tables = &shared.symbol_tables;
-    // Read the GOT address + inferred type + code lifetime owner for the
+    // Read the GOT address + observed type + code lifetime owner for the
     // compiled `__expr` entry, in ONE read (`design/int/result-owner.md` §4.3
     // — the result owner's release target must pair with the retention owner
     // of the code that produced the result, and the type must come from the
     // same read that produced the pointer).
-    let (got_addr, expr_ty, code_owner, codegen_result_ty) = {
+    let (got_addr, ty, code_owner, codegen_result_ty) = {
         let table =
             symbol_tables
                 .get(current_module)
@@ -141,7 +141,7 @@ pub fn execute_compiled_expr(
         let inferred = ast.as_ref().and_then(|d| d.body.inferred_type().cloned());
         (
             table.got.load_slot(slot),
-            inferred,
+            observed_expr_type(display, inferred, &callable.arm.scheme.ty),
             code.clone(),
             codegen_result_ty,
         )
@@ -153,12 +153,6 @@ pub fn execute_compiled_expr(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }
-
-    // Type: display info first, then the AST node's inferred_type.
-    let ty = display
-        .map(|d| d.ty.clone())
-        .or(expr_ty)
-        .unwrap_or(Type::Int);
 
     // Run through the same C-ABI driver `--run` and `--link` use. A runtime
     // panic ends the process inside the driver, so it returns only after a
@@ -188,6 +182,30 @@ pub fn execute_compiled_expr(
         symbol_tables,
         &resolver,
     )
+}
+
+/// The type an executed `__expr` is observed at (`design/int/result-owner.md`
+/// §4.3.1): the check's display type, else the body's inferred type, else the
+/// result of the arm's scheme. The chain is total; no type is supplied by
+/// default.
+fn observed_expr_type(
+    display: Option<&cranelisp_types::DisplayInfo>,
+    inferred: Option<Type>,
+    scheme: &Type,
+) -> Type {
+    display
+        .map(|d| d.ty.clone())
+        .or(inferred)
+        .unwrap_or_else(|| zero_arg_result(scheme).clone())
+}
+
+/// The result of a zero-argument definition's scheme: `ret` of `Fn([], ret)`,
+/// else the scheme's own type.
+pub(crate) fn zero_arg_result(scheme: &Type) -> &Type {
+    match scheme {
+        Type::Fn(_, ret) => ret,
+        other => other,
+    }
 }
 
 /// The type of the word `cranelisp_run_program` returns for a program of type
@@ -224,6 +242,36 @@ mod tests {
             FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
             vec![Type::Int],
         )
+    }
+
+    // spec: design/int/result-owner.md §4.3.1 — with no display type and no
+    // inferred body type, `__expr` is observed at its scheme's result, and an
+    // `IO` scheme selects forcing.
+    #[test]
+    fn an_expr_with_no_display_or_inferred_type_takes_its_scheme_result() {
+        let scheme = Type::Fn(vec![], Box::new(io_int_type()));
+        let observed = observed_expr_type(None, None, &scheme);
+        assert_eq!(observed, io_int_type());
+        assert!(observed.is_io(), "an IO scheme selects forcing");
+    }
+
+    // spec: design/int/result-owner.md §4.3.1 — the display type comes first,
+    // then the inferred body type.
+    #[test]
+    fn the_display_type_then_the_inferred_type_wins_over_the_scheme() {
+        let scheme = Type::Fn(vec![], Box::new(io_int_type()));
+        let display = cranelisp_types::DisplayInfo {
+            ty: Type::String,
+            scheme: None,
+        };
+        assert_eq!(
+            observed_expr_type(Some(&display), Some(Type::Bool), &scheme),
+            Type::String
+        );
+        assert_eq!(
+            observed_expr_type(None, Some(Type::Bool), &scheme),
+            Type::Bool
+        );
     }
 
     // spec: design/int/result-owner.md §4.4 — a non-IO program's word has the

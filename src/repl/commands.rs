@@ -705,10 +705,16 @@ impl CompilerSession {
             &working_program,
         )?;
 
-        // Try to surface the inferred type of the synthetic `__expr` Defn
-        // by reading back from the live `SymbolTable`. Fall back to `Int`
-        // when no display info is available (matches pre-S66 fallback).
-        Ok(self.lift_expr_type(&module).unwrap_or(Type::Int))
+        // The type is the synthetic `__expr`'s scheme result, read back from
+        // the live table; it has no default (`design/int/result-owner.md`
+        // §4.3.1).
+        self.lift_expr_type(&module)
+            .ok_or_else(|| CranelispError::TypeError {
+                message: "`/type` found no `__expr` to read a type from: the checked input \
+                          is not an expression"
+                    .into(),
+                location: ErrorLocation::from_span(sexps[0].span()),
+            })
     }
 
     /// Local equivalent of the retired `wrap_exprs_as_defns` helper. Folds
@@ -746,12 +752,7 @@ impl CompilerSession {
         let table = self.shared.symbol_tables.get(module)?;
         match table.get("__expr")?.callable() {
             Some(callable) => {
-                // Zero-arg defns have type `Fn([], ret)` — surface the return.
-                if let Type::Fn(_, ret) = &callable.arm.scheme.ty {
-                    Some((*ret.clone()).clone())
-                } else {
-                    Some(callable.arm.scheme.ty.clone())
-                }
+                Some(crate::pipeline::zero_arg_result(&callable.arm.scheme.ty).clone())
             }
             _ => None,
         }
@@ -1822,5 +1823,53 @@ mod tests_for_filter_tests {
             format_symbol_layout(&["user/test-good".to_string()]).join("\n")
         );
         assert_eq!(s.handle_tests_for("f"), expected);
+    }
+}
+
+#[cfg(test)]
+mod type_command_tests {
+    use cranelisp_types::{CodegenBehaviour, Span, Type};
+
+    use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
+
+    /// A REPL session with no prelude and no workers in a fresh directory.
+    fn isolated_session() -> (CompilerSession, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 0,
+            nice_workers: 0,
+            run_mode: RunMode::Repl,
+        };
+        let mut s = CompilerSession::new(settings, root.path().to_path_buf(), "user")
+            .expect("test session bootstrap");
+        s.set_lib_dirs(Vec::new());
+        (s, root)
+    }
+
+    // spec: design/int/result-owner.md §4.3.1 — `/type` reads `__expr`'s
+    // scheme result.
+    #[test]
+    fn type_reads_the_expression_scheme_result() {
+        let (mut s, _root) = isolated_session();
+        assert_eq!(
+            s.typecheck_only("\"abc\"").map_err(|e| e.to_string()),
+            Ok(Type::String)
+        );
+    }
+
+    // spec: design/int/result-owner.md §4.3.1 — `/type` with no `__expr` after
+    // a clean check is a located error, never a default type. A definition
+    // argument in a fresh session checks clean and leaves no `__expr`.
+    #[test]
+    fn type_with_no_expr_after_a_clean_check_is_a_located_error() {
+        let (mut s, _root) = isolated_session();
+        let error = s
+            .typecheck_only("(defn g [] 1)")
+            .expect_err("no `__expr`, so no type");
+        assert_ne!(error.location().span, Span::SYNTHETIC, "{error:?}");
+        assert!(error.to_string().contains("__expr"), "{error}");
     }
 }
