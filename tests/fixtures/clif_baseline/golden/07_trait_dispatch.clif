@@ -39,7 +39,7 @@ function %Sizeable.size$user/Box(i64) -> i64 system_v {
     gv0 = symbol colocated userextname1
     sig0 = (i64) system_v
     sig1 = (i64, i64) system_v
-    fn0 = colocated u0:41 sig0
+    fn0 = colocated u0:40 sig0
     fn1 = u0:2 sig1
 
 block0(v0: i64):
@@ -79,7 +79,7 @@ function %Sizeable.size$user/Tag(i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) system_v
-    fn0 = colocated u0:42 sig0
+    fn0 = colocated u0:41 sig0
     fn1 = u0:2 sig2
 
 block0(v0: i64):

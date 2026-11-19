@@ -56,7 +56,7 @@ function %Box.items(i64) -> i64 system_v {
     gv0 = symbol colocated userextname1
     sig0 = (i64) system_v
     sig1 = (i64, i64) system_v
-    fn0 = colocated u0:49 sig0
+    fn0 = colocated u0:48 sig0
     fn1 = u0:2 sig1
 
 block0(v0: i64):
@@ -135,9 +135,9 @@ function %control-loop(i64, i64, i64) -> i64 system_v {
     sig2 = (i64) system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:49 sig0
-    fn1 = colocated u0:48 sig2
-    fn2 = colocated u0:49 sig3
+    fn0 = colocated u0:48 sig0
+    fn1 = colocated u0:47 sig2
+    fn2 = colocated u0:48 sig3
     fn3 = u0:2 sig4
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -236,9 +236,9 @@ function %control-step(i64, i64, i64) -> i64 system_v {
     sig6 = (i64) system_v
     sig7 = (i64) -> i64 system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:51 sig1
+    fn0 = colocated u0:50 sig1
     fn1 = u0:0 sig3
-    fn2 = colocated u0:51 sig6
+    fn2 = colocated u0:50 sig6
     fn3 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -333,9 +333,9 @@ function %item-at(i64, i64) -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:49 sig0
+    fn0 = colocated u0:48 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:52 sig2
+    fn2 = colocated u0:51 sig2
     fn3 = u0:11 sig3
     fn4 = u0:2 sig4
 
@@ -535,11 +535,11 @@ function %set-item(i64, i64, i64) -> i64 system_v {
     sig6 = (i64, i64) system_v
     sig7 = (i64) -> i64 system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:49 sig0
-    fn1 = colocated u0:53 sig1
-    fn2 = colocated u0:52 sig2
+    fn0 = colocated u0:48 sig0
+    fn1 = colocated u0:52 sig1
+    fn2 = colocated u0:51 sig2
     fn3 = u0:2 sig3
-    fn4 = colocated u0:52 sig4
+    fn4 = colocated u0:51 sig4
     fn5 = u0:20 sig5
     fn6 = u0:11 sig6
     fn7 = u0:0 sig7
@@ -640,9 +640,9 @@ function %subject-loop(i64, i64, i64) -> i64 system_v {
     sig2 = (i64) system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:49 sig0
-    fn1 = colocated u0:48 sig2
-    fn2 = colocated u0:49 sig3
+    fn0 = colocated u0:48 sig0
+    fn1 = colocated u0:47 sig2
+    fn2 = colocated u0:48 sig3
     fn3 = u0:2 sig4
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -739,11 +739,11 @@ function %subject-step(i64, i64, i64) -> i64 system_v {
     sig6 = (i64) system_v
     sig7 = (i64) system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:51 sig1
-    fn1 = colocated u0:49 sig2
+    fn0 = colocated u0:50 sig1
+    fn1 = colocated u0:48 sig2
     fn2 = u0:0 sig3
-    fn3 = colocated u0:51 sig6
-    fn4 = colocated u0:49 sig7
+    fn3 = colocated u0:50 sig6
+    fn4 = colocated u0:48 sig7
     fn5 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64):

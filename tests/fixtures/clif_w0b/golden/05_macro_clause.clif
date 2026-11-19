@@ -71,11 +71,11 @@ function %twice$macro-clause$0(i64) -> i64 system_v {
     sig7 = (i64) system_v
     sig8 = (i64) -> i64 system_v
     sig9 = (i64, i64) system_v
-    fn0 = colocated u0:37 sig0
+    fn0 = colocated u0:36 sig0
     fn1 = u0:9 sig1
     fn2 = u0:0 sig2
     fn3 = u0:0 sig6
-    fn4 = colocated u0:37 sig7
+    fn4 = colocated u0:36 sig7
     fn5 = u0:0 sig8
     fn6 = u0:2 sig9
 
