@@ -649,8 +649,9 @@ state of `Realization::Body`, and heap classification is total over `ConcreteTyp
 
 - `compile_to_module` in `cranelisp-backend` is the sole compilation function
   ([Principle 11](principles/11-single-pipeline-mode-parameters.md)). It takes the module, the
-  `CallableTarget`s to compile, the session tables and a Cranelift module, and returns
-  `CompilationArtifacts`. It is module-type-agnostic: the caller extracts an entry point for
+  `CallableTarget`s to compile, the session tables, the modules a trace form in that module
+  covers ([tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend)) and a Cranelift
+  module, and returns `CompilationArtifacts`. It is module-type-agnostic: the caller extracts an entry point for
   the JIT or the full map for object emission.
 - Backend-owned runtime carriers such as `Jit` and `Code` stay in the backend because they
   hold runtime state. `Realization::Body.code` is the serde-skipped lifecycle owner of
@@ -749,7 +750,8 @@ single-constructor value classifies as a heap value. The binary's display walk
 ## Approved changes not yet in source (S124)
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
-decided change that no phase checkpoint has reported yet. The user approved the rows marked
+decided change that no phase checkpoint has reported yet; a row that names a commit is in
+source and stays until the Phase 5 checkpoint reports it. Source was read at `f8c55626`. The user approved the rows marked
 *user*; `arch` approved the rows dated 2026-11-19 against the three questions (bounded
 context, simple API, strongly typed) and re-read each against them on that date. The exact delta of a
 *user* row is in the [S124 packet](../../sprints/s124-api-packet.md) (D rows, R10-9 and
@@ -759,42 +761,72 @@ design that needs a public change outside these rows stops and returns to `arch`
 
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
-| D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed; `CACHE_SCHEMA_VERSION` goes up by one | types | backend cache validation; test fixtures in typecheck | types −1, 1 changed | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
-| D13 | `SymbolTable::install_extern` loses its sixth parameter, `borrowed_sibling: Option<CallableSlot>`. Every caller passes `None`. No schema effect beyond D6's | types | primitives (the one production caller); test callers in backend, typecheck and the binary | types 1 changed | `arch`, 2026-11-19 | [safety invariants](safety-invariants.md) row R5 |
-| D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | backend −3 | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
+| D6 (R10-8) | `Realization::ExternShim::borrowed_sibling` removed; `CACHE_SCHEMA_VERSION` goes up by one | types | backend cache validation; test fixtures in typecheck | types −1: the field line. The variant line is unchanged, because a unit variant and a struct variant print alike. In source at `07bb8e84` | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
+| D13 | `SymbolTable::install_extern` loses its sixth parameter, `borrowed_sibling: Option<CallableSlot>`. Every caller passes `None`. No schema effect beyond D6's | types | primitives (the one production caller); test callers in backend, typecheck and the binary | types 1 changed. In source at `07bb8e84` | `arch`, 2026-11-19 | [safety invariants](safety-invariants.md) row R5 |
+| D9 | `CacheStale::SiblingSlotOutOfRange` removed | backend | — | backend −3. In source at `07bb8e84` | user, 2026-11-16 | [safety invariants](safety-invariants.md) row R5 |
 | K11-c | `SymbolTable::{settle_template, settle_concrete}` leave the public surface. Their only callers are the types crate's module tests, so they compile under `#[cfg(test)]` as `pub(crate)` | types | — | types −2 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [lifecycle authoring facade](#lifecycle-authoring-facade) |
-| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature | types | test code in the binary and the backend; their dev-dependencies on `cranelisp-types` enable `test-support` | types −1 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
+| K11-d | `MonoExpr::lenient_from_expr` becomes `pub(crate)`. `cranelisp_types::test_support::lenient_from_expr`, a free function with the same parameters and result, forwards to it under the `test-support` feature | types | test code only: two calls in the backend's `test_support.rs` and nineteen in the binary's test modules. Neither crate's dev-dependency on `cranelisp-types` enables `test-support` yet | types −1 | user, 2026-11-16; this realisation `arch`, 2026-11-19 | [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) |
 | R10-2 | The backend's `artefact` module, `LinkerArtefact`, `ObjectArtefact` and their root re-exports are deleted. The row approved narrowing; with `load_object` gone (R10-1) the types have no producer. The public effect is the row's. In source at `06210347` | backend | — | backend −42 | user, 2026-11-16; deletion `arch`, 2026-11-19 | — |
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
-| ACT-1084 | `ResolutionGap::MacroInMem` removed. It has no producer | types | the binary's two match arms and one module test; stale comments in frontend and `tests/process_form_dispatch.rs` | types −1 | `arch`, 2026-11-19 | [resolution gaps](#resolution-gaps) |
+| ACT-1084 | `ResolutionGap::MacroInMem` removed. It has no producer | types | the binary's two match arms in `src/process_form/dependency.rs` and one module test; a stale comment in `tests/process_form_dispatch.rs` | types −1 | `arch`, 2026-11-19 | [resolution gaps](#resolution-gaps) |
 | Trace reader | `cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos` removed with its catalog entry. It has no caller | intrinsics | backend drops the name from `is_extern_primitive`; [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) conventions table and [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) | intrinsics −1 | `arch`, 2026-11-19 | [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) |
 | B13 (ACT-1070) | `Jit::jit_module` returns `&mut (impl cranelift_module::Module + CodeFinalizer)`, not `&mut JITModule`. `impl CodeFinalizer for cranelift_jit::JITModule` is removed. The returned module is a crate-private wrapper that compiles every call far. No public type is added. The method's rustdoc states the promise: no call in a function defined through this module depends on where the JIT places code. In source at `790f4c9a` as `jit::FarCallModule` | backend | none; the binary's four callers pass the value straight to `compile_to_module` and do not name its type | backend −4, 1 changed, +0; measured at the build | `arch`, 2026-11-19 | [JIT/object convergence §3](../backend/jit-object-convergence.md#3-call-reach-in-the-jit-act-1070) |
-| B10 (ACT-1039, ACT-1078) | `compile_to_module` gains `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules a trace form in `module_path` covers besides `module_path`. Passed at every call | backend | the binary's three production callers, from int's one load-edge enumerator; test callers in backend and the binary | backend 1 changed; no persisted shape | `arch`, 2026-11-19, after the user's ruling on the covered set the same day | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
+| B10 (ACT-1039, ACT-1078) | `compile_to_module` gains `trace_modules: &BTreeSet<ModuleFullPath>` after `symbol_tables`: the modules a trace form in `module_path` covers besides `module_path`. Passed at every call | backend | the binary's two production callers, from int's one reference-edge enumerator; test callers in backend and the binary | backend 1 changed; no persisted shape. In source at `69cd9c18` and `f8c55626` | `arch`, 2026-11-19, after the user's ruling on the covered set the same day | [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend) |
 | K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
 
-Build order. `arch` builds the types changes; `dev` builds each other surface, one surface
-per invocation.
+In source and awaiting the checkpoint report: D6, D13 and D9 (`07bb8e84`), R10-2
+(`06210347`), B13 (`790f4c9a`) and B10 (`69cd9c18`, `f8c55626`). The gap-module row is not
+scheduled.
 
-- **D6, D13 and D9 are one commit**, a callee-first migration: `arch` removes the field and
-  the parameter in types and its tests; then `dev` in primitives, backend (with D9 and the
-  schema bump), typecheck and the binary drops the argument at each caller. The tree does
-  not build between steps.
-- **K11-c** is one types change-set with no order against another row.
-- **K11-d** lands in four steps that each build: types adds the `test_support` function; the
-  backend's and then the binary's test callers move to it; types narrows the method.
-- **ACT-1084** is one commit: `arch` removes the variant; `dev` in the binary removes the
-  arms and the module test; the two comments follow in frontend (`dev`) and `tests/` (`test`).
-- **Trace reader** is one commit: `dev` in intrinsics removes the function, its catalog entry
-  and its tests; `dev` in backend removes the name; `arch` corrects the two documents.
-- **Gap module** has a typecheck step only: `substitute_module_alias` in the member-absent
-  arm of `resolve_qualified`, with its module test. The binary changes nothing unless a
-  reader is found that substitutes again.
-- **B10** follows [tracing §5.1.1](tracing.md#511-how-the-set-reaches-the-backend): the
-  binary's enumerator lands first with the restore walk as its consumer; then one commit
-  changes the backend's entry and every caller.
-- **K11-a** lands last, alone, after every other row and after the baselines are regenerated
-  in the present format, so its contraction is not mixed with a functional delta
-  ([baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close)).
+**Remaining build order.** The rows land one after another, in this order, when the build is
+free. `arch` builds the types changes; `dev` builds each other surface, one surface per
+invocation; `test` owns files under `tests/`. No row changes a persisted shape or a schema
+version.
+
+| # | Row and step | Role | Builds alone | Commit |
+|---|---|---|---|---|
+| 1 | **K11-c.** Both methods become `#[cfg(test)] pub(crate)`; the [lifecycle authoring facade](#lifecycle-authoring-facade) text follows | `arch` | yes | one |
+| 2a | **K11-d.** Types adds `test_support::lenient_from_expr` | `arch` | yes | one |
+| 2b | The backend's dev-dependency enables `test-support`; its two test calls and the rustdoc link beside them move | `dev`(backend) | yes | one |
+| 2c | The binary's dev-dependency enables `test-support`; its nineteen test calls move | `dev`(`src/`) | yes | one |
+| 2d | Types narrows the method; [concrete codegen boundary §3.1.1](concrete-boundary-type.md#311-signature-driven-targets) follows | `arch` | yes | one |
+| 3a | **Trace reader.** The backend drops the name from `is_extern_primitive` and the comments that cite it | `dev`(backend) | yes | one |
+| 3b | Intrinsics removes the function, its catalog entry, the catalog and handle-census test rows and its two module tests | `dev`(intrinsics) | yes | one |
+| 3c | [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) and [tracing §4.1](tracing.md#41-the-twelve-bodies-and-the-catalog) drop the reader, with every link to the renamed heading | `arch` | documents | with 3b or after it |
+| 4a | **ACT-1084.** Types removes the variant; [resolution gaps](#resolution-gaps) follows | `arch` | no | one commit with 4b, from one uncommitted tree |
+| 4b | The binary removes the two arms, the comment above them and the module test | `dev`(`src/`) | yes, on 4a | with 4a |
+| 4c | The comment in `tests/process_form_dispatch.rs` | `test` | comment only | with 4a or after it |
+| 5 | **Checkpoint, present format.** The seven baselines are regenerated on the final tree and compared with the table below | `arch` | — | one |
+| 6 | **K11-a.** The guard, `tests/AGENTS.md` and the [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) take `--omit auto-trait-impls`; the seven baselines are regenerated again; the guard's detection proof is repeated | `test` (guard and `tests/AGENTS.md`), then `arch` | the guard fails between the halves | one commit, from one uncommitted tree |
+
+- Steps 1 to 3 build at every commit, so each is dispatched and committed alone.
+- Step 1 must leave the types crate without a dead-code warning in a non-test build. A
+  private helper that only the two methods call takes the same `#[cfg(test)]`.
+- Step 3a precedes 3b so that no commit names an absent symbol. Nothing emits a call to the
+  reader, so 3a changes no generated code.
+- Step 4 is callee-first: the binary's two arms name the variant, so the tree does not build
+  between 4a and 4b.
+- Step 6 follows the user's confirmation of step 5's diff. Its diff holds removals only.
+
+**Expected regenerated diff at the Phase 5 checkpoint (step 5).** Counted against the
+committed baselines, which predate every S124 row, and against source at `f8c55626`. Removed
+lines are counted in the committed files. Added and changed lines are read from source and
+are estimates; the regenerated diff is the exact figure. The table includes the rows that
+left this record when they were built, whose deltas are in the
+[S124 packet](../../sprints/s124-api-packet.md) and the
+[S123 packet](../../sprints/s123-api-packet.md) Part B. A line outside this table returns
+to the user.
+
+| Crate | In source at `f8c55626` | Remaining rows | At the checkpoint |
+|---|---|---|---|
+| types | +16, −5, 3 changed. D3: +13, −1, `ImportNames::Specific` changed. D10: +3, `WrittenTraitImpl::new` changed. D7: −3. D6: −1. D13: `install_extern` changed | K11-c −2; K11-d −1; ACT-1084 −1 | **+16, −9, 3 changed** |
+| backend | −170, 2 changed. R10-1 −1; R10-2 −42; R10-3 −41; D2 −23; R10-5 −1; R10-7 −6; R10-9 −49; D4 −1; D9 −3; B13 −4 and `Jit::jit_module` changed; B10 `compile_to_module` changed. The row figures sum to 171 and share one line | none | **+0, −170, 2 changed** |
+| intrinsics | +33, −5, 1 changed. R10-9: +33. D5 −2; K11-b −2; D11 −1 and `string_read` changed | Trace reader −1 | **+33, −6, 1 changed** |
+| typecheck, frontend, primitives, platform | +0 | none | **+0** |
+
+K11-a's contraction (step 6) is every generated auto-trait row left after step 5. Counted by
+pattern, with the rows this table adds and removes: types about −973, backend about −140,
+intrinsics about −91, typecheck about −70, frontend −14, platform about −196, primitives 0.
 
 Declined, `arch`, 2026-11-19:
 

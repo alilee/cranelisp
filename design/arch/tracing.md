@@ -7,8 +7,8 @@ build mode including `--link`); S76–S82 delivered it. Owner `arch`. Decision
 40's trace half is withdrawn ([label index](decisions/README.md) row 40); this
 document is the sole architecture authority for tracing. Strict evaluation
 within the trace extent (§7) is built. The mode-independent traced set (§5) and
-the covered-module rule the user ruled on 2026-11-19 (§5.1) are not in source
-at `cceb2a44`. §5 marks where source differs.
+the covered-module rule the user ruled on 2026-11-19 (§5.1) are in source at
+`f8c55626`. §5.1 states the one case where source does not meet the rule.
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -130,7 +130,7 @@ covers both shapes.
 for one `(trace body)`:
 
 1. `discover_traced_fns_from_tables` over the modules the form covers
-   (§5.1; every module in `symbol_tables` at `cceb2a44`), grouped by defining
+   (§5.1), grouped by defining
    module — each module owns one GOT and one GOT
    data symbol. An empty result takes `compile_trace_no_swap` (body, discard,
    `cranelisp_collect_trace`), which returns the minimal `::trace::` node.
@@ -314,12 +314,11 @@ decided when the trace begins, by the emitted sequence, from the pre-swap
 contents it already loads (§3.3 step 2). A slot that is empty then stays empty
 and gets no wrapper, so no wrapper calls through a null original.
 
-**Not in source at `cceb2a44`**, where step 1 reads the slot at codegen and
-skips a zero. That makes the set depend on compilation and cache-restore
-order, which is ACT-1039's mechanism, confirmed by `qa` with a control.
-Selection by claim was built and reverted. It lands in the same change-set as
-§5.1's covered set, because alone it makes every reference of §5.1's first
-constraint unconditional.
+Selection by claim and §5.1's covered set are one change (`f8c55626`).
+Selection by slot contents made the set depend on compilation and
+cache-restore order, which was ACT-1039's mechanism. Selection by claim over
+every loaded table makes every reference of §5.1's first constraint
+unconditional, so neither half stands without the other.
 Interior: [trace codegen §1](../backend/trace-codegen.md#1-the-traced-set-is-fixed-by-slot-claims-not-by-slot-contents).
 
 The callable address comes from the slot rather than from a code marker. That
@@ -328,7 +327,7 @@ pointers live in the primitives GOT) without a special case.
 
 ### 5.1 Which modules a form covers
 
-**Ruled by the user, 2026-11-19; not in source at `cceb2a44`.** A trace form
+**Ruled by the user, 2026-11-19; in source at `f8c55626`.** A trace form
 covers its own module, every module that module's reference edges reach
 transitively, and `primitives`, whose GOT every image defines.
 [Spec §4.12.3](../../spec/04-expressions.md#4123-what-is-traced) states the
@@ -361,8 +360,8 @@ owns the enumeration.
 - `macros` is outside the set. It has no object and no image defines its GOT,
   so tracing never reads its slot claims.
 
-**What the rule satisfies.** Source reads every table loaded when the form
-compiles, which fails both constraints.
+**What the rule satisfies.** Reading every table loaded when the form
+compiles, as source did before `f8c55626`, fails both constraints.
 
 - **An object may reference only a GOT that every image holding it defines.**
   A form imports `__cranelisp_got_{M}` for each module it swaps, and int's
@@ -378,12 +377,12 @@ compiles, which fails both constraints.
   run cached. The covered set is a function of the module's validity record
   ([int §7.6](../int/int.md#76-dependency-record-and-validity)), so it is the
   same cold, warm and in every mode, and a change to it invalidates the object.
+  *Members that have not published*, below, states the one exception.
 
 **The set is rooted at the finished module.** For a module compiled from a
 file, a form's covered set is the closure from the reference edges of the
-whole file, wherever the form stands in it and whichever batch compiles it.
-`--run`, `--link` and a restored object record the same frames for the same
-source.
+whole file, wherever the form stands in it. `--run`, `--link` and a restored
+object record the same frames for the same source.
 
 - The specification decides this. An import takes effect for the whole module
   whatever its position
@@ -392,21 +391,100 @@ source.
   (spec §4.12.3); and a form behaves identically in every mode (spec §4.12.9).
   Coverage fixed at the form's own position in the file satisfies none of the
   three.
-- An object compiled from the finished table already has this set. A batch
-  that compiles a form before a later cluster of the same file adds a
-  reference edge does not, unless the design supplies it. The edges a later
-  cluster can add are callee modules: a qualified reference, or a use through
-  an import that names nothing. Imports are extracted from the whole file
-  before any definition compiles.
-- `design`(int) and `design`(backend) place the mechanism. Row B10's
-  parameter keeps its meaning, the finished module's set. A placement that
-  needs another inter-crate item returns to `arch`.
-- **Falsifier.** A file module holding `(defn g [h] (trace (h 1)))`, then a
-  form that ends that cluster, then a caller of `(g x/f)` where nothing
-  imports `x`: the trace holds an `x/f` frame in a cold `--run`, a
-  warm `--run` and under `--link`. Whether it becomes a cell is `qa`'s.
+- **An ordinary form.** A file is one cluster, and its ordinary forms compile
+  in one batch against a view that holds every import and every callee module
+  of the file
+  ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)).
+  The set that batch passes is the finished module's, as the object pass's
+  is. No ordinary form compiles before a later form of its file adds an edge.
+- **A form in a macro clause body.** A `defmacro` publishes at its source
+  position, before the file's ordinary batch. Its batch passes the closure of
+  the checkpoint's view, a subset of the finished module's set, while the
+  module's object covers the whole set. Row B10's meaning admits the subset
+  (§5.1.1) because the modules it lacks are reached only through the file's
+  ordinary forms, which the clause cannot call.
+  - Grade: asserted. The argument holds for calls the clause writes and for
+    its arguments, which are syntax. It does not cover a function value the
+    clause obtains at run time from a module outside the checkpoint's
+    closure, for example from `discover-tests`.
+  - Falsifier: a trace form in a clause body records fewer frames when the
+    clause is compiled cold than when it runs from a restored object.
+- **Falsifier for the rule.** A file module holds `(defn g [h] (trace (h 1)))`
+  and, below it, a caller of `(g x/f)`, where `x` is reached by a qualified
+  name or by an import written above or below the form. The trace holds an
+  `x/f` frame in `--run`, under `--link` and at the REPL. The cells are
+  `tests/trace.rs::s124_finished_module_qualified_run` and its eight
+  siblings.
 
-**Open, with the user.** Current behaviour stands for both until ruled.
+**Members that have not published.** The set is read from members' slot
+claims, and a member fixes its claims when it publishes a generation. Int
+waits for an unpublished member before the batch, through its one dependency
+seam, and the cluster retries when the member publishes
+([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)).
+Two members are read as they stand, and a wait is correct for every other.
+
+- **A failed member.** It publishes nothing further, so a wait cannot end.
+  The covered set adds no refusal: whether a failed dependency refuses the
+  root is the dependency seam's decision. Reading it is safe, because a slot
+  that holds no code gets no wrapper (§5).
+- **The prelude, for a module the prelude's publication waits on.** A wait
+  would close `prelude → parent → child → prelude`
+  ([int §6.12](../int/int.md#612-the-implicit-prelude-dependency)). The batch
+  covers the prelude as it stands and does not follow its edges.
+
+**Not met in source: a form compiled before the prelude publishes.** The
+promise "the same cold, warm and in every mode" does not hold for the second
+case.
+
+- **Which modules.** A module whose implicit prelude import is active and
+  whose batch runs while the prelude is unpublished. These are the declared
+  children of the modules the prelude depends on, such as the stdlib's
+  `(mod- test)` children, and the modules those children load. A module the
+  prelude reaches by reference edges is not one: it must suppress the
+  implicit import
+  ([spec §8.8.1](../../spec/08-modules.md#881-implicit-import)), so
+  the prelude is no edge of it in any mode.
+- **What differs.** The batch that first compiles such a module covers the
+  prelude's claims as they stand and no module reached only through the
+  prelude. The module's object, a restore of it and `--link` cover the
+  prelude's whole closure. A first `--run` or REPL start therefore omits
+  frames that a second `--run` and `--link` record.
+- **When it is visible.** Only for a call, inside the form's extent, into the
+  prelude or a module the form's module reaches only through the prelude. A
+  call the module writes makes the callee's module its own edge, so the call
+  must go through a function value passed in from outside.
+- **What the specification requires.** The implicit import has the effect of
+  the written one (spec §8.8.1), so spec §4.12.3 covers the prelude's closure
+  and spec §4.12.9 requires the same frames in every mode. The first batch is
+  the nonconforming side.
+- **Decision (`arch`, 2026-11-19): the residual stands.** The failure is
+  missing frames in a diagnostic tree. It reads and writes no memory it
+  should not, because covering fewer modules stays inside the first
+  constraint. No shipped stdlib module holds a trace form. Each control costs
+  more than that residual:
+  - *Waiting on the prelude* deadlocks.
+  - *Removing the prelude edge from these modules in every mode* needs their
+    membership before the prelude publishes: a source walk from the prelude
+    over reference edges and declared children, memoised per prelude
+    generation, and the same answer derived again at the object pass. It also
+    contradicts spec §8.8.1 and needs the ruling below.
+  - *Recompiling the form after the prelude publishes* compiles published
+    code twice.
+- **Grade: asserted, with a named falsifier.** A project prelude holds
+  `(export [m [k]])` and `(export [p [f]])`; `m` and `p` suppress the implicit
+  import; `m` declares a child `c` that does not, and `c` holds
+  `(defn run [h] (trace (h 1)))`. The entry calls `(m.c/run f)`. A first
+  `--run` records no `p/f` frame; a second `--run` and `--link` record one.
+  Whether it becomes a cell is `qa`'s. A cell that fails is a defect of the
+  binary, carried on that test.
+- **Reopened by** a project that needs the frame, or by a module outside
+  this population whose batch can run while the prelude is unpublished. The
+  prelude injection waits only when the prelude has no table
+  (`src/process_form/dependency.rs::inject_prelude_if_needed`), so
+  `design`(int) states whether such a module exists. If one does, its cold
+  set depends on scheduling and int waits on the prelude for it.
+
+**Open, with the user.** Current behaviour stands for each until ruled.
 
 - *A REPL definition and a later turn.* A function defined at the prompt
   holds a trace form; a later turn loads a module the session had not loaded;
@@ -421,6 +499,14 @@ source.
   because no module is privileged by name
   ([Principle 19](principles/19-no-module-privileged-by-name.md)). The
   specification's wording does not state that for a library module.
+- *A form compiled before the prelude publishes.* Spec §4.12.3 and §4.12.9
+  make no exception for the residual above, so a failing cell for it is a
+  defect. An exception would be one sentence in spec §4.12.3: a trace form in
+  a module that the prelude's compilation waits on, a declared child of a
+  module the prelude depends on, does not cover the prelude or a module it
+  reaches only through its implicit prelude import. With that sentence the
+  conforming build removes the prelude edge from those modules in every
+  mode, by the source walk described above.
 
 #### 5.1.1 How the set reaches the backend
 
@@ -433,31 +519,33 @@ enumerations is an unresolved symbol on a warm start only.
   `symbol_tables`: `trace_modules: &BTreeSet<ModuleFullPath>`.
 - **Meaning.** The modules a trace form in `module_path` covers besides
   `module_path`: the transitive closure of the finished module's reference
-  edges, and `primitives`. The backend always covers `module_path` and adds no
+  edges, and `primitives`. A batch may pass a subset only where §5.1 admits
+  one: a macro checkpoint's view, and the prelude read as it stands. The
+  backend always covers `module_path` and adds no
   other module, so it privileges none by name
   ([Principle 19](principles/19-no-module-privileged-by-name.md)). It is
   passed at every call, whether or not a target holds a trace form; there is
   no "not computed" value. A set carries no order or repetition, and the
   backend emits groups in its iteration order.
-- **Producer.** The binary, at its three production callers (two in
-  `src/worker.rs`, one in `src/session_v4/nice_worker.rs`), from one
-  crate-private enumerator that the restore walk also reads
-  ([int §7.6](../int/int.md#76-dependency-record-and-validity)). Test callers
-  pass the set their fixture means, usually empty.
+- **Producer.** The binary, at its two production callers: the one JIT
+  caller in `src/worker.rs`, which passes the set commit planning stored on
+  the prepared turn, and the object pass in `src/session_v4/nice_worker.rs`.
+  Both derive it with one crate-private function over the enumerator that the
+  restore walk also reads
+  ([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10)).
+  Test callers pass the set their fixture means, usually empty.
 - **Consumer.** The backend's discovery reads the tables of `module_path` and
   the listed modules only. A listed module with no table is a located codegen
   error, not a skip.
 - **Persistence.** No persisted shape changes. An object holding a form
-  differs in content from one built under the old rule; `design`(backend)
-  confirms the cache's build identity separates them or moves
-  `CACHE_SCHEMA_VERSION`.
-- **Build order.** `dev`(src) first lands the enumerator with the restore
-  walk as its consumer; that step builds and changes no public item. Then one
-  commit, callee-first: `dev`(backend) takes the parameter, selection by claim
-  (§5) and the covered-table read with their module rows, and `dev`(src)
-  passes the set at each caller. The tree does not build between those two
-  halves. The [batch record](interfaces.md#approved-changes-not-yet-in-source-s124)
-  row B10 carries the decision.
+  differs in content from one built under the old rule, and the cache's build
+  identity separates the two
+  ([trace codegen §1.3](../backend/trace-codegen.md#13-which-modules-a-form-covers)).
+- **In source.** The enumerator with the restore walk as its consumer at
+  `69cd9c18`; the parameter, selection by claim (§5), the covered-table read
+  and every caller at `f8c55626`. The
+  [batch record](interfaces.md#approved-changes-not-yet-in-source-s124) row
+  B10 carries the decision until the checkpoint reports it.
 
 **Not chosen.**
 

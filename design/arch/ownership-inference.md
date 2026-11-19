@@ -476,8 +476,8 @@ Defaults preserve strict additivity: absent/omitted ⇒ `Fresh` / all-`Retained`
 `false` — byte-for-byte the Decision-24 conservative point, so old caches and unresolved edges
 deserialise to today's behaviour. Two small carriers accompany the summary: the **per-callable
 value-use mark** (tells the backend wrapper emission is required) and, for primitives, the
-**declared facts** of §3.1(a) plus the optional borrowed-convention sibling slot of §3.1(b),
-which rides the extern-shim realization only.
+**declared facts** of §3.1(a). The optional borrowed-convention sibling slot of §3.1(b) has
+no carrier in source (*S124 retirements*, below).
 
 The symbol-table half: the summary and the value-use mark live on the **concrete callable
 state** (`Life::Concrete`), beside the slot they correlate with, and on the compile-in-hand
@@ -508,15 +508,15 @@ shared lowering. The current disposition of each built mechanism is
 
 **S124 retirements.** Each fails Principle 27's acid test — removing it changes a constant,
 not a growth rate. Stack placement (`8f44040e`), value flattening (`441e31ea`) and spark
-density (`4b8660c9`) have left source, and so has the mode-ABI gate. The borrow-elision
-carrier is approved and still in source at `e6d566bf`:
+density (`4b8660c9`) have left source, and so have the mode-ABI gate and the borrow-elision
+carrier (`07bb8e84`):
 
 | Mechanism | What leaves the dev lowering | What stays produced for the release tier |
 |---|---|---|
 | Stack placement (Q2 consumer, §3.6) | The stack slot, the immortal header, the eligibility gates and their switch; the intrinsics emission tally (S124 packet row D5). No stack-placed value then reaches the armed decrement check, which closes ACT-1049 | The `escapes` site fact on `MonoExpr` |
 | Value flattening (Q5 consumer, §6.3) | `HeapCategory::Value` and the inline lowering (row D4) | The types-owned `value_layout` predicate and typecheck's `Copy` classification |
 | Spark density (§8.3) | The density axis of the spark gate; it has no public item | The `escapes` and `confined` site facts |
-| Borrow-elision carrier | `Realization::ExternShim::borrowed_sibling`, unproduced since ACT-0974 (row D6) | Declared extern modes, as analysis input |
+| Borrow-elision carrier | `Realization::ExternShim::borrowed_sibling`, unproduced since ACT-0974, with the `install_extern` parameter that supplied it and the backend's cache check of it (rows D6, D13 and D9) | Declared extern modes, as analysis input |
 | Mode-ABI redefinition gate (§5) | The binary's mode comparison and the three `ModeSummary` predicates it used (row D7) | Inference, `ModeSummary` and the persisted summaries |
 
 After them the dev lowering reads no summary and no site fact; U1 and U2
