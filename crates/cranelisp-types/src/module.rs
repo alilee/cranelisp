@@ -4670,7 +4670,7 @@ fn validate_slot(
     Ok(())
 }
 
-fn callable_target_owner(target: &CallableTarget) -> &FQSymbol {
+pub(crate) fn callable_target_owner(target: &CallableTarget) -> &FQSymbol {
     match target {
         CallableTarget::Binding(owner)
         | CallableTarget::OverloadArm { owner, .. }

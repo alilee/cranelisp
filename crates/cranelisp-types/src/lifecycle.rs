@@ -402,13 +402,14 @@ impl<C: crate::CodeStore> CallableArm<C> {
         }
     }
 
-    /// The module that defines the template this arm was minted from.
+    /// The declaration that owns the template this arm was minted from.
     ///
-    /// `Some` only for a monomorphised instance, which is stored in the table
-    /// of the module that demanded it and whose body is the template's source;
-    /// `None` for every authored arm, whose body belongs to the table holding
-    /// it. This reads the recorded [`InstanceLink`] and derives nothing.
-    pub fn template_module(&self) -> Option<&ModuleFullPath> {
+    /// `Some` only for a monomorphised instance (`Life::Concrete` with a
+    /// recorded [`InstanceLink`]); `None` for every authored arm. The value is
+    /// the template's own qualified name when the template is directly named,
+    /// and the overloaded or macro declaration when it is an arm or clause of
+    /// one. This reads the recorded link and derives nothing.
+    pub fn template_owner(&self) -> Option<&FQSymbol> {
         let Life::Concrete {
             minted_from: Some(link),
             ..
@@ -416,10 +417,17 @@ impl<C: crate::CodeStore> CallableArm<C> {
         else {
             return None;
         };
-        let (CallableTarget::Binding(owner)
-        | CallableTarget::OverloadArm { owner, .. }
-        | CallableTarget::MacroClause { owner, .. }) = &link.template;
-        Some(&owner.module)
+        Some(crate::module::callable_target_owner(&link.template))
+    }
+
+    /// The module that defines the template this arm was minted from.
+    ///
+    /// `Some` only for a monomorphised instance, which is stored in the table
+    /// of the module that demanded it and whose body is the template's source;
+    /// `None` for every authored arm, whose body belongs to the table holding
+    /// it. This is the module of [`Self::template_owner`].
+    pub fn template_module(&self) -> Option<&ModuleFullPath> {
+        self.template_owner().map(|owner| &owner.module)
     }
 }
 

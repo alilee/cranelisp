@@ -1123,6 +1123,7 @@ pub cranelisp_types::CallableArm::scheme: cranelisp_types::Scheme
 impl<C: cranelisp_types::CodeStore> cranelisp_types::CallableArm<C>
 pub fn cranelisp_types::CallableArm<C>::new(cranelisp_types::Scheme, alloc::vec::Vec<cranelisp_types::Symbol>, cranelisp_types::Life<C>) -> Self
 pub fn cranelisp_types::CallableArm<C>::template_module(&self) -> core::option::Option<&cranelisp_types::ModuleFullPath>
+pub fn cranelisp_types::CallableArm<C>::template_owner(&self) -> core::option::Option<&cranelisp_types::FQSymbol>
 impl<C> core::marker::Freeze for cranelisp_types::CallableArm<C> where C: core::marker::Freeze
 impl<C> core::marker::Send for cranelisp_types::CallableArm<C>
 impl<C> core::marker::Sync for cranelisp_types::CallableArm<C>

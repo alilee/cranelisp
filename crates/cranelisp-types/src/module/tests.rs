@@ -3247,7 +3247,7 @@ fn install_instance_derives_key_preserves_backlink_and_mints_slot() {
 }
 
 #[test]
-fn template_module_is_the_templates_module_for_an_instance_only() {
+fn template_owner_is_the_owning_declaration_for_an_instance_only() {
     let mut table = SymbolTable::new(ModuleFullPath::from("consumer"));
     table
         .install_template(
@@ -3305,27 +3305,36 @@ fn template_module_is_the_templates_module_for_an_instance_only() {
         ConcreteType::Bool,
     );
 
-    let template_module = |name: &str| {
-        table
-            .get(name)
-            .unwrap()
-            .callable()
-            .unwrap()
-            .arm
-            .template_module()
-            .cloned()
+    let arm = |name: &str| table.get(name).unwrap().callable().unwrap().arm.clone();
+    let fq = |module: &str, symbol: &str| FQSymbol {
+        module: ModuleFullPath::from(module),
+        symbol: Symbol::from(symbol),
     };
-    // The instances live in `consumer`; each answers its template's module.
+    // The instances live in `consumer`; each answers the declaration owning
+    // its template: the template itself, or the overload family of an arm.
     assert_eq!(
-        template_module(from_binding.as_ref()),
-        Some(ModuleFullPath::from("producer"))
+        arm(from_binding.as_ref()).template_owner(),
+        Some(&fq("producer", "generic"))
     );
     assert_eq!(
-        template_module(from_arm.as_ref()),
-        Some(ModuleFullPath::from("library"))
+        arm(from_arm.as_ref()).template_owner(),
+        Some(&fq("library", "family"))
     );
-    assert_eq!(template_module("authored"), None);
-    assert_eq!(template_module("generic"), None);
+    assert_eq!(arm("authored").template_owner(), None);
+    assert_eq!(arm("generic").template_owner(), None);
+    for name in [
+        from_binding.as_ref(),
+        from_arm.as_ref(),
+        "authored",
+        "generic",
+    ] {
+        let arm = arm(name);
+        assert_eq!(
+            arm.template_module(),
+            arm.template_owner().map(|owner| &owner.module),
+            "{name}"
+        );
+    }
 }
 
 #[test]
