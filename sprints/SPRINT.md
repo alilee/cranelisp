@@ -631,3 +631,10 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   questions, ACT-1095), `dev`(stdlib). Wave 2: `design`/`dev` on the ACT-1094
   correction, `dev`(exemplar) after stdlib. Wave 3: `docs`, `training`,
   `test`/`review`/`qa`, the sprint demo and replay, then the full run.
+- **User ruling on S124-Q10 (2026-11-20), superseding the earlier readings.**
+  "/type" given a definition form is an error: "I think it should error -
+  \"definition form has no type\"". It evaluates nothing and defines
+  nothing. The earlier record that it reports the function type, and the
+  provisional keyword answer, were the coordinator's misreadings. `spec`
+  records it; `qa` re-allocates T-TYPE-DEFN and T-TYPE-NONVALUE; the
+  correction rides ACT-1089 (carried against the binary).
