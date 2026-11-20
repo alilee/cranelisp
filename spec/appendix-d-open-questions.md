@@ -108,26 +108,22 @@ told that consequence and requested no different treatment.
 
 ## S124-Q10: What does /type report for a non-value form?
 
-**Partly settled — corrected user intent, 2026-11-20.** After “report the
-type”, “type should not evaluate a non-pure form”, and “I think refuse or just
-`defn`”, the user clarified: “I am saying either error or just literally `defn`
-(it is neither a pure type nor IO)”.
+**Closed — user ruling, 2026-11-20.** The user's message, verbatim:
+
+> I think it should error - "definition form has no type"
+
 [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory) records
-these two acceptable answers for a `defn` form, with no evaluation or session
-definition. Reporting the defined function's type misreads the ruling.
+the error requirement for a definition form, retaining no evaluation and no
+session definition. The provisional keyword answer is removed.
 
-**Provisional proposal — awaiting user confirmation.** The coordinator
-proposes printing literally `defn`, following the
-[Self-documenting REPL principle](../AGENTS.md#design-principles): the keyword
-identifies the form. An error is also acceptable to the user. The keyword
-choice is non-normative until confirmed.
-
-**Open remainder.** The user must confirm which answer to use for `defn`.
-The words do not settle whether a keyword answer extends to `deftype`,
-`deftrait`, `impl`, `defmacro`, `def`, or `import`, or what each reports.
-The prohibition on evaluating a non-pure form remains in force; it does not
-choose those reports. No general refusal rule for forms with no value type
-is established by this ruling.
+“Definition form” is already identified by [language §5](05-definitions.md),
+whose opening states its scope as the top-level definition forms;
+[§5.14](05-definitions.md#514-summary-of-top-level-forms) summarizes them.
+Which forms belong to that class is therefore not an open remainder of Q10.
+The diagnostic phrase is treated as illustrative wording, not an exact-output
+requirement: [REPL §5.1](../repl/spec/05-error-presentation.md#51-error-format)
+requires a human-readable message but prescribes no exact wording for this
+error, and the ruling is not presented as a display-format transcript.
 
 ## S124-Q11: Must multi-parameter collection traits be expressible now?
 
