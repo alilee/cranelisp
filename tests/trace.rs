@@ -1795,6 +1795,8 @@ fn s124_1090_all_restored_control() {
     s124_mixed_restore_trace(false, 10);
 }
 
+// Before ACT-1094 was corrected, the trace root discarded its body result;
+// its child frame still recorded that result.
 fn s124_root_program(body: &str, child: bool) -> String {
     let result = if child {
         r#"(match c [(SCons child rest) (match child [(TraceCall cn cp cr cc ct) (if (str-eq cr "42") 41 40)]) SNil 39])"#
@@ -1860,56 +1862,56 @@ fn s124_root_mode(body: &str, child: bool, mode: &str) {
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call cold
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_call_cold() {
     s124_root_mode("(ident 42)", false, "cold");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call cached
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_call_cached() {
     s124_root_mode("(ident 42)", false, "cached");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call link
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_call_link() {
     s124_root_mode("(ident 42)", false, "link");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call repl
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_call_repl() {
     s124_root_mode("(ident 42)", false, "repl");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal cold
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_literal_cold() {
     s124_root_mode("42", false, "cold");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal cached
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_literal_cached() {
     s124_root_mode("42", false, "cached");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal link
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_literal_link() {
     s124_root_mode("42", false, "link");
 }
 
 // spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal repl
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_literal_repl() {
     s124_root_mode("42", false, "repl");
@@ -1940,7 +1942,7 @@ fn s124_trace_root_child_control_repl() {
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-ROOT heap result
-// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_heap_result_and_balance() {
     let source = r#"(import [primitives [Pure TraceCall str-eq str-concat]])
