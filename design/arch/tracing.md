@@ -327,6 +327,12 @@ reachability set:
 3. Emit a backend-internal `TracedFnInfo { name, module_path, got_slot,
    arity, param_types, result_type }`; descriptors are baked from it at
    wrapper-compile time.
+   - `name` is the frame name spec §4.12.4 requires: an authored entry's own
+     qualified name, and for an instance its template's, read from
+     [`template_owner()`](interfaces.md#an-instances-template-owner-row-b16).
+     Two instances of one template share a name; the table key stays the
+     entry's identity
+     ([trace codegen §1.4](../backend/trace-codegen.md#14-a-frames-name)).
 
 **The traced set is a function of the program, not of compilation order**
 ([Principle 11](principles/11-single-pipeline-mode-parameters.md)). Slot claims
@@ -621,9 +627,10 @@ module*).
 - **Delta, types (in source, `bb217cdc`).**
   `CallableArm::<C>::template_module(&self) -> Option<&ModuleFullPath>`: the
   module that defines the template a minted instance was made from, and
-  `None` for any other arm. It reads `Life::Concrete::minted_from` and
-  derives nothing. Int and the backend both need this one fact, and the
-  method keeps it in one place.
+  `None` for any other arm. It is the module of
+  [`template_owner()`](interfaces.md#an-instances-template-owner-row-b16),
+  which reads the recorded instance link and derives nothing. Int and the
+  backend both need this one fact, and the method keeps it in one place.
 - **Meaning of a target's `trace_modules`.** Every module a trace form in
   that target's body covers: the module whose source holds the body, the
   transitive closure of that module's finished reference edges, and
@@ -674,7 +681,8 @@ module*).
 - **The three questions.**
   - *Bounded context:* yes. Which module holds a form stays the binary's
     reading of typecheck's recorded link; the backend gains no instance
-    concept beyond the one accessor; no dependency is added.
+    concept beyond the two projections of the instance link, the template's
+    module here and its owner for the frame name; no dependency is added.
   - *Simple API:* yes. One path: each target arrives with its set, and the
     backend looks nothing up.
   - *Strongly typed:* yes. A target without a set cannot be passed, which a
