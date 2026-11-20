@@ -5452,6 +5452,31 @@ fn s124_1089_expression_control() {
     );
 }
 
+fn s124_definition_error_pattern() -> regex::Regex {
+    regex::Regex::new(r"(?i)^error: [a-z][a-z -]*(?: at [^\r\n]+)?: \S.*").unwrap()
+}
+
+// spec: repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR checker control
+#[test]
+fn s124_type_err_pattern_accepts_location_forms_and_rejects_missing_fields() {
+    let error = s124_definition_error_pattern();
+    for line in [
+        "Error: type error at 1..9: definition form has no type",
+        "Error: type error at app.cl:2:3: definition form has no type",
+        "Error: command error: definition form has no type",
+    ] {
+        assert!(error.is_match(line), "{line}");
+    }
+    for line in [
+        ":primitives/String",
+        "Error: definition form has no type",
+        "Error: : message",
+        "Error: type error: ",
+    ] {
+        assert!(!error.is_match(line), "{line}");
+    }
+}
+
 fn s124_definition_query_result(setup: &str, form: &str) -> ((bool, bool), String) {
     let out = s124_type_session(&format!("{setup}\n\"abc\"\n/type {form}\n")).assert_ok();
     let lines = repl_output_lines(&out.stdout);
@@ -5460,7 +5485,7 @@ fn s124_definition_query_result(setup: &str, form: &str) -> ((bool, bool), Strin
         .position(|s| s == ":primitives/String \"abc\"")
         .expect("preceding expression must run");
     let response = &lines[previous + 1..];
-    let error = regex::Regex::new(r"(?i)^error: [a-z ]+ at [0-9]+\.\.[0-9]+: .+").unwrap();
+    let error = s124_definition_error_pattern();
     (
         (
             response.iter().any(|s| error.is_match(s)),
@@ -5475,7 +5500,7 @@ fn s124_definition_query_errors(setup: &str, form: &str) {
     assert_eq!(
         clauses,
         (true, false),
-        "query must report a located error and no type: {details}"
+        "query must report an error category and message and no type: {details}"
     );
 }
 
