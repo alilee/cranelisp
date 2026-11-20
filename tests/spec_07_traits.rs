@@ -2419,8 +2419,8 @@ fn constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg() {
 // =============================================================================
 //
 // Each program's `main` returns `(Pure n)`. The parametric impls are declared
-// before `impl Size Int`, except where a cell says otherwise, so that ACT-1035
-// cannot fire.
+// before `impl Size Int`, except where a cell says otherwise; this isolated
+// ACT-1034 from the crash that ACT-1035 caused before its S123 correction.
 
 const OPT_SIZE_HEADER: &str = "(deftype (Opt a) Nope (Yep [:a v]))\n\
      (deftrait Size (size [self] Int))\n";
@@ -2517,7 +2517,8 @@ fn assert_main_value_with_timeout(
 // spec: spec/07-traits.md §7.3.3 — the constrained `(Opt :Size a)` impl's
 // method, instantiated at `(Opt (Opt Int))`, calls `size` at `(Opt Int)`: the
 // same impl, satisfied through search tier 2. 1 + 1 + 3 = 5 in every mode.
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S122 owner=/dev fixed=S124/3a2692e3
+// The instance previously omitted the polymorphic callee from successor discovery.
 #[test]
 fn parametric_impl_instance_calls_same_impl_at_nested_type_all_modes() {
     let src = format!(
@@ -2530,7 +2531,8 @@ fn parametric_impl_instance_calls_same_impl_at_nested_type_all_modes() {
 // spec: spec/07-traits.md §7.3.3 — the `(Opt :Size a)` method instance at
 // `(Opt (Box Int))` calls `size` at `(Box Int)`, a different constrained impl.
 // 1 + 10 + 3 = 14 in every mode.
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S122 owner=/dev fixed=S124/3a2692e3
+// The instance previously omitted the polymorphic callee from successor discovery.
 #[test]
 fn parametric_impl_instance_calls_other_parametric_impl_all_modes() {
     let src = format!(
@@ -2545,7 +2547,8 @@ fn parametric_impl_instance_calls_other_parametric_impl_all_modes() {
 // spec: spec/07-traits.md §7.3.3 — an UNCONSTRAINED `(Opt a)` impl's method
 // instance at `(Opt Int)` calls the generic free function `k7` at `a = Int`.
 // 7 in every mode.
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S122 owner=/dev fixed=S124/c1c938c0
+// The instance previously omitted the polymorphic callee from successor discovery.
 #[test]
 fn unconstrained_parametric_impl_instance_calls_generic_free_fn_all_modes() {
     let src = format!(
@@ -2564,7 +2567,8 @@ fn unconstrained_parametric_impl_instance_calls_generic_free_fn_all_modes() {
 // spec: spec/07-traits.md §7.3.3 — the generic free function `twice` calls
 // `size` at `(Opt Int)`, instantiating the parametric impl from another
 // parametric instance. 4 + 4 = 8 in every mode.
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck impl-method instance minting found=S122 owner=/dev — provisional: producer unobserved; the consumer miss is in crates/cranelisp-backend/src/compiler/apply.rs::compile_direct_call (ACT-1034)
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S122 owner=/dev fixed=S124/3a2692e3
+// The instance previously omitted the polymorphic callee from successor discovery.
 #[test]
 fn generic_fn_instance_calls_parametric_impl_all_modes() {
     let src = format!(
@@ -3133,7 +3137,7 @@ const S124_Q7_HEADER: &str = r#"(import [primitives [*]])
 "#;
 
 // spec: spec/03-types.md §3.10 — T-q7_a_int
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_int_repl() {
     assert_main_value_in_modes(
@@ -3147,7 +3151,7 @@ fn s124_q7_a_int_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_int
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_int_run() {
     assert_main_value_in_modes(
@@ -3161,7 +3165,7 @@ fn s124_q7_a_int_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_int
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_int_link() {
     assert_main_value_in_modes(
@@ -3175,7 +3179,7 @@ fn s124_q7_a_int_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_bool
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_bool_repl() {
     assert_main_value_in_modes(
@@ -3189,7 +3193,7 @@ fn s124_q7_a_bool_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_bool
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_bool_run() {
     assert_main_value_in_modes(
@@ -3203,7 +3207,7 @@ fn s124_q7_a_bool_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_bool
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_bool_link() {
     assert_main_value_in_modes(
@@ -3217,7 +3221,7 @@ fn s124_q7_a_bool_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_shrink
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_shrink_repl() {
     assert_main_value_in_modes(
@@ -3231,7 +3235,7 @@ fn s124_q7_a_shrink_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_shrink
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_shrink_run() {
     assert_main_value_in_modes(
@@ -3245,7 +3249,7 @@ fn s124_q7_a_shrink_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_shrink
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_shrink_link() {
     assert_main_value_in_modes(
@@ -3259,7 +3263,7 @@ fn s124_q7_a_shrink_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_grow_once
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_grow_once_repl() {
     assert_main_value_in_modes(
@@ -3273,7 +3277,7 @@ fn s124_q7_a_grow_once_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_grow_once
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_grow_once_run() {
     assert_main_value_in_modes(
@@ -3287,7 +3291,7 @@ fn s124_q7_a_grow_once_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_a_grow_once
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_a_grow_once_link() {
     assert_main_value_in_modes(
@@ -3388,7 +3392,7 @@ fn s124_q7_c_helper_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_d_self
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_d_self_repl() {
     assert_main_value_in_modes(
@@ -3406,7 +3410,7 @@ fn s124_1034_d_self_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_d_self
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_d_self_run() {
     assert_main_value_in_modes(
@@ -3424,7 +3428,7 @@ fn s124_1034_d_self_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_d_self
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_d_self_link() {
     assert_main_value_in_modes(
@@ -3487,7 +3491,7 @@ fn s124_fr_monomorphic_control_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_e_sibling
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_sibling_repl() {
     assert_main_value_in_modes(
@@ -3504,7 +3508,7 @@ fn s124_1034_e_sibling_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_e_sibling
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_sibling_run() {
     assert_main_value_in_modes(
@@ -3521,7 +3525,7 @@ fn s124_1034_e_sibling_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_e_sibling
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_sibling_link() {
     assert_main_value_in_modes(
@@ -3538,7 +3542,7 @@ fn s124_1034_e_sibling_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_e_sibling_reversed
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_sibling_reversed_repl() {
     assert_main_value_in_modes(
@@ -3555,7 +3559,7 @@ fn s124_1034_e_sibling_reversed_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_e_sibling_reversed
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_sibling_reversed_run() {
     assert_main_value_in_modes(
@@ -3572,7 +3576,7 @@ fn s124_1034_e_sibling_reversed_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-1034_e_sibling_reversed
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_sibling_reversed_link() {
     assert_main_value_in_modes(
@@ -3589,7 +3593,7 @@ fn s124_1034_e_sibling_reversed_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_b_sibling
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_b_sibling_repl() {
     assert_main_value_in_modes(
@@ -3606,7 +3610,7 @@ fn s124_q7_b_sibling_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_b_sibling
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_b_sibling_run() {
     assert_main_value_in_modes(
@@ -3623,7 +3627,7 @@ fn s124_q7_b_sibling_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_b_sibling
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_b_sibling_link() {
     assert_main_value_in_modes(
@@ -3640,7 +3644,7 @@ fn s124_q7_b_sibling_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_b_sibling_reversed
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_b_sibling_reversed_repl() {
     assert_main_value_in_modes(
@@ -3657,7 +3661,7 @@ fn s124_q7_b_sibling_reversed_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_b_sibling_reversed
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_b_sibling_reversed_run() {
     assert_main_value_in_modes(
@@ -3674,7 +3678,7 @@ fn s124_q7_b_sibling_reversed_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-q7_b_sibling_reversed
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_b_sibling_reversed_link() {
     assert_main_value_in_modes(
@@ -3691,7 +3695,7 @@ fn s124_q7_b_sibling_reversed_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-Q7-d
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_d_box_first_repl() {
     assert_main_value_in_modes(
@@ -3708,7 +3712,7 @@ fn s124_q7_d_box_first_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-Q7-d
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_d_box_first_run() {
     assert_main_value_in_modes(
@@ -3726,7 +3730,7 @@ fn s124_q7_d_box_first_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-Q7-d
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_d_box_first_link() {
     assert_main_value_in_modes(
@@ -3744,7 +3748,7 @@ fn s124_q7_d_box_first_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-Q7-d
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_d_opt_first_repl() {
     assert_main_value_in_modes(
@@ -3761,7 +3765,7 @@ fn s124_q7_d_opt_first_repl() {
 }
 
 // spec: spec/03-types.md §3.10 — T-Q7-d
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_d_opt_first_run() {
     assert_main_value_in_modes(
@@ -3779,7 +3783,7 @@ fn s124_q7_d_opt_first_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-Q7-d
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_q7_d_opt_first_link() {
     assert_main_value_in_modes(
@@ -3859,6 +3863,7 @@ fn s124_1034_a_imported_control_repl() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034_b_imported
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_b_imported_run() {
     s124_imported_trait_value(
@@ -3872,6 +3877,7 @@ fn s124_1034_b_imported_run() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034_b_imported
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_b_imported_link() {
     s124_imported_trait_value(
@@ -3885,6 +3891,7 @@ fn s124_1034_b_imported_link() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034_b_imported
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_b_imported_repl() {
     s124_imported_trait_value(
@@ -3898,6 +3905,7 @@ fn s124_1034_b_imported_repl() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034_c_imported
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_c_imported_run() {
     s124_imported_trait_value(
@@ -3911,6 +3919,7 @@ fn s124_1034_c_imported_run() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034_c_imported
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_c_imported_link() {
     s124_imported_trait_value(
@@ -3924,6 +3933,7 @@ fn s124_1034_c_imported_link() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034_c_imported
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_c_imported_repl() {
     s124_imported_trait_value(
@@ -3937,7 +3947,7 @@ fn s124_1034_c_imported_repl() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-a, same-cluster REPL leg
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/c1c938c0
 #[test]
 fn s124_1034_a_begin_repl() {
     repl_prims("(begin (deftype (Opt a) Nope (Yep [:a v])) (deftrait Size (size [self] Int)) (defn k7 [x] 7) (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)]))) (size (Yep 3)))\n")
@@ -4003,7 +4013,7 @@ fn s124_type_refusal(src: &str, lines: &[usize], mode: &str) {
 }
 
 // spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_depth_64_run() {
     assert_main_value_with_timeout(
@@ -4016,7 +4026,7 @@ fn s124_depth_64_run() {
 }
 
 // spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_depth_64_link() {
     assert_main_value_with_timeout(
@@ -4029,7 +4039,7 @@ fn s124_depth_64_link() {
 }
 
 // spec: spec/03-types.md §3.10 — T-DEPTH-a, floor of 64
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_depth_64_repl() {
     assert_main_value_with_timeout(
@@ -4380,7 +4390,7 @@ fn s124_fr_second_type_repl() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_imported_forward_run() {
     s124_imported_trait_value(
@@ -4392,7 +4402,7 @@ fn s124_1034_e_imported_forward_run() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_imported_forward_link() {
     s124_imported_trait_value(
@@ -4404,7 +4414,7 @@ fn s124_1034_e_imported_forward_link() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_imported_forward_repl() {
     s124_imported_trait_value(
@@ -4416,7 +4426,7 @@ fn s124_1034_e_imported_forward_repl() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_imported_reverse_run() {
     s124_imported_trait_value(
@@ -4428,7 +4438,7 @@ fn s124_1034_e_imported_reverse_run() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_imported_reverse_link() {
     s124_imported_trait_value(
@@ -4440,7 +4450,7 @@ fn s124_1034_e_imported_reverse_link() {
 }
 
 // spec: spec/07-traits.md §7.3.3 — T-1034-e imported sibling, both member orders
-// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev
+// defect: class=carrier-loss locus=crates/cranelisp-typecheck::impl_method_instance_minting found=S124 owner=/dev fixed=S124/3a2692e3
 #[test]
 fn s124_1034_e_imported_reverse_repl() {
     s124_imported_trait_value(
