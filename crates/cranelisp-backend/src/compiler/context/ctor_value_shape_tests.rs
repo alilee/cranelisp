@@ -1,13 +1,9 @@
 //! The constructor probe's determinant
 //! (`design/backend/non-concrete-release-contract.md` §6.2.1).
 //!
-//! [`CtorMeta::value_shape`] is the ONE read of a constructor's field list.
+//! [`CtorMeta::value_shape`] is the ONE read of a constructor's field list;
 //! `literals::nullary_constructor_tag` decides the bare-`iconst` lowering from
-//! it, and `fn_compiler::value_provenance` decides what that emission carries
-//! from it, so the two cannot disagree — a provenance verdict disagreeing with
-//! what was emitted is FIXME 0917's own shape one level down. These cells pin
-//! the classification; that only ONE such read exists is code shape, and is
-//! `review`'s to check.
+//! it. These cells pin the classification.
 
 use cranelisp_types::Type;
 
@@ -34,10 +30,8 @@ fn zero_fields_is_a_bare_tag_and_any_field_is_a_payload() {
 }
 
 // spec: §6.2.1 (NEGATIVE) — a constructor WITH fields must never answer
-// "bare tag". That answer is the licence to treat the word as carrying no
-// reference, and on a payload constructor it is the leak/UAF direction:
-// `NoReference` on a real box tells `protect_return_value` there is nothing to
-// keep alive past scope cleanup.
+// "bare tag": that answer lowers its use to a bare tag `iconst`, a word that
+// is not the constructor's payload box.
 #[test]
 fn a_constructor_with_fields_never_answers_bare_tag_neg() {
     for field_count in 1..8 {

@@ -23,9 +23,7 @@ use cranelisp_types::{
 ///
 /// Reads `cranelisp_intrinsics::intrinsics_table()` — the published flat
 /// Import-catalog (BC §4b invariant 11). Backend is a *reader* of this table,
-/// not the owner: the per-record shape (`name`, `ptr`, `param_count`,
-/// `has_return`, `is_runtime`) relocated to `cranelisp-intrinsics` at S76 W1a,
-/// retiring the former in-crate `IntrinsicSymbol` + `intrinsic_symbols()`.
+/// not the owner of the record shape (`IntrinsicEntry`).
 ///
 /// Each entry's `name`/`ptr` becomes a `JITBuilder::symbol(name, ptr)`
 /// registration so backend-emitted `Linkage::Import` calls resolve at JIT
