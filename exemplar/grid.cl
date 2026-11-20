@@ -1,50 +1,20 @@
-;; grid.cl — Sudoku grid data types and operations
+;; grid.cl — Sudoku grid data types and operations.
 ;;
-;; Defines the core data model for a 9x9 Sudoku grid:
 ;; - Cell: Given (fixed digit), Solved (determined digit), or Candidates (bitmask)
 ;; - Grid: flat Vec of 81 Cells
 ;; - SolveResult: Success or Unsolvable
 ;;
-;; Bitmask convention: digits 1-9 are represented as bits 0-8.
-;; Digit d is set when bit (d-1) is set, i.e. mask has value (1 << (d-1)).
-;; full-mask = 0x1FF = 511 = all 9 digits present.
+;; Candidates are a 9-bit mask: digit d (1-9) is bit d-1, and `full-mask` (511)
+;; holds all nine. The digit-domain bit verbs below adapt the bit-position verbs
+;; of `num.bits`; the masks never use the sign bit of its 64-bit operations.
 ;;
-;; Depends on: prelude (Option, traits, operators, macros)
-;;
-;; Idiomatic surface (S86 de-leak): arithmetic and comparison go through the
-;; prelude's trait operators (`+ - * / = != < <= >`); Vec access goes through
-;; the curated Clojure verbs (`count`/`get`/`assoc`) imported from
-;; `collections.vec`; the remaining string primitives (`char-at`,
-;; `str-len`) plus boolean `not` are imported by name from `primitives`.
-;; String equality goes through `=` (Eq on String). The exemplar is one of
-;; the two trees permitted to depend on stdlib (root AGENTS.md §Stdlib
-;; separation).
-;;
-;; S88 adoption (Stage D): the DEF-2 carve-out is RETIRED — heap-ADT (`Cell`)
-;; accumulators now use the curated `collections.vec/conj` (S88 confirmed it
-;; is RC-identical to the bare `vec-push`; the earlier corruption was the
-;; collateral-fixed 0417 defect).
-;;
-;; S91 adoption (Phase 6): the hand-rolled 9-bit mask layer (~55 lines of
-;; `pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest` simulating
-;; `<< >> & ~ popcount` in `+ - * /`) is replaced by the stdlib `num.bits`
-;; module, which is now a thin curated layer over the S91 native bitwise
-;; primitives (FIXME 0416, RESOLVED). grid keeps thin *digit-1-9* domain
-;; adapters over the *bit-position-0-8* `num.bits` verbs so the solver and
-;; tests are unchanged at their boundary. The native ops are full 64-bit
-;; two's-complement, but the candidate masks are always 9-bit (bits 0-8,
-;; positive), so the sign bit never participates — verified behaviour-identical
-;; to the old arithmetic sim across all 512 masks × 9 digits.
-;;
-;; ── Multi-signature definitions ────────────────────────────────────────
 ;; `peers`, `make-grid` and `is-solved` are each one multi-signature `defn`
 ;; whose short clause seeds the accumulator of the long one (spec §5.1.2).
 
 (import [collections.vec [count get assoc conj]])
 (import [primitives [char-at str-len str-concat not]])
-;; num.bits primitives — imported by name. The position-domain `bit-clear`/
-;; `bit-set` are NOT imported (they would collide with grid's digit-domain
-;; `bit-clear`/`bit-set`); grid composes those two from the primitives below.
+;; `num.bits/bit-clear` and `bit-set` are not imported: grid defines
+;; digit-domain verbs of the same names.
 (import [num.bits [bit-shift-left bit-test bit-and bit-or bit-not popcount]])
 
 ;; ── Data Types ──────────────────────────────────────────────────────────
@@ -63,29 +33,18 @@
 ;; ── Constants ───────────────────────────────────────────────────────────
 
 ;; All 9 digits set: bits 0..8 = 0b111111111 = 511
-;; Originally `(const full-mask 511)` — converted to a zero-arg function
-;; because `const` expands to a compile-time bare-symbol macro that is
-;; not visible as a value across module boundaries.
 (defn full-mask [] 511)
 
 ;; ── Arithmetic helpers ──────────────────────────────────────────────────
 
-;; Integer remainder: a mod b = a - b * (a / b)
-;; Cranelisp has no `mod`/`rem` operator, so this is a genuine domain helper.
-;; Its arithmetic now routes through the prelude operators.
+;; Integer remainder: a - b * (a / b). Same as `num.int/rem`; kept local
+;; (plan-exemplar.md, "`rem-i64` stays inline").
 (defn rem-i64 [a b]
   (- a (* (/ a b) b)))
 
 ;; ── Bitmask operations (digit-domain adapters over num.bits) ────────────
-;;
-;; Candidates are a 9-bit mask: digit d (1-9) occupies bit position (d-1).
-;; The arithmetic bit simulation that used to live here is now provided by
-;; the stdlib `num.bits` module (a thin layer over the S91 native bitwise
-;; primitives). grid keeps these thin adapters so the rest of the exemplar
-;; speaks in *digits 1-9* while `num.bits` speaks in *bit positions 0-8*.
 
-;; 2^n — single set bit at position n. (kept as a grid name for the test that
-;; exercises it directly.)
+;; 2^n — single set bit at position n.
 (defn pow2 [n] (bit-shift-left 1 n))
 
 ;; Test if digit d (1-9) is set in bitmask.
@@ -93,12 +52,10 @@
   (bit-test mask (- d 1)))
 
 ;; Clear digit d (1-9) from bitmask.
-;; (Composed locally — num.bits/bit-clear would collide with this name.)
 (defn bit-clear [mask d]
   (bit-and mask (bit-not (bit-shift-left 1 (- d 1)))))
 
 ;; Set digit d (1-9) in bitmask.
-;; (Composed locally — num.bits/bit-set would collide with this name.)
 (defn bit-set [mask d]
   (bit-or mask (bit-shift-left 1 (- d 1))))
 
@@ -232,12 +189,9 @@
 
 ;; ── Tests ───────────────────────────────────────────────────────────────
 ;;
-;; Test functions are top-level `test-*` defns returning `(Option String)`
-;; per repl/spec.md §16.1: `None` = pass, `(Some reason)` = fail. They are run
-;; by the free-standing `tests.cl` runner, which imports and calls them
-;; directly; `discover-tests`/`run-test` are REPL-only and are NOT used here.
-;; No `(mod test ...)` wrapper, no `(import [super [*]])` — the parent↔child
-;; deadlock cannot occur.
+;; Each `test-*` returns `(Option String)`, `None` for a pass
+;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
+;; `cranelisp --test` discovers them.
 
 ;; --- Bitmask tests ---
 

@@ -12,11 +12,7 @@
 (import [solver [solve format-board format-board-str]])
 (import [platform.stdio [print]])
 
-;; Main: solve a hard-coded puzzle and print the input board followed by the
-;; full solution. The whole 81-cell grid solves end-to-end (exit 0, valid
-;; solution); the earlier deep-recursion segfault is resolved. For the full
-;; story (parse-form-body → make-grid → solve → ASCII + HTML render) see the
-;; headline entry in `user.cl`.
+;; Solve a fixed puzzle and print the input board, then the solution.
 (defn main []
   (let [puzzle "003020600900305001001806400008102900700000008006708200002609500800203009005010300"]
     (bind (print (str-concat "=== Sudoku Solver ===\n\nPuzzle:\n"

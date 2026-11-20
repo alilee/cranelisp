@@ -4,15 +4,10 @@
 ;; - Form page: 9x9 grid of <input> fields for puzzle entry
 ;; - Solution page: solved grid as HTML table with given/solved styling
 ;; - Error page: error message with link back to form
+;; - Not-found page: the unknown path with link back to form
 ;;
 ;; Depends on: grid.cl (Grid, Cell, Given, Solved, Candidates, cell-at, cell-value)
 ;; Depends on: prelude (traits, operators, macros)
-;;
-;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
-;; operators (`=` on String is Eq dispatch, not a primitive); string helpers
-;; (`str-concat`, `int-to-string`, `contains?`) imported by name. S88 adoption
-;; (Stage D): test-only grid builders use the curated `collections.vec/conj`
-;; (DEF-2 carve-out retired — see grid.cl header).
 
 (import [collections.vec [conj]])
 (import [primitives [str-concat int-to-string contains?]])
@@ -168,11 +163,9 @@
 
 ;; ── Tests ─────────────────────────────────────────────────────────────
 ;;
-;; Test functions are top-level `test-*` defns returning `(Option String)`
-;; per repl/spec.md §16.1. They are run by the free-standing `tests.cl` runner,
-;; which imports and calls them directly; `discover-tests`/`run-test` are
-;; REPL-only and are NOT used here. No `(mod test ...)` wrapper, no
-;; `(import [super [*]])`.
+;; Each `test-*` returns `(Option String)`, `None` for a pass
+;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
+;; `cranelisp --test` discovers them.
 
 ;; Test that form-page contains <input elements
 (defn test-form-page-has-inputs []

@@ -1,13 +1,9 @@
 ;; web -- the connection-handle ADTs for the `web` HTTP platform DLL.
 ;;
-;; S97 ABI v9 (ctx-vtable handle model;
-;; design/platform/poll-leaf-authoring.md §4; design/arch/effect-concurrency.md
-;; §4.1.1). Scheduling state (token/capacity)
-;; NEVER rides on a value -- it flows through a trampoline-owned `ctx` vtable the
-;; platform's poll-fns call. So `web/Connection` is an OPAQUE handle carrying only
-;; the platform's `r` in a GENUINE `fd` field (`r == fd`); the platform reads `fd`
-;; back out and PROJECTS the per-direction token from it. No `token`/`capacity`
-;; fields (the dead v8 leading-pair shape), no header slot, no descriptor.
+;; Scheduling state never rides on a value (design/platform/poll-leaf-authoring.md
+;; §4; design/arch/effect-concurrency.md §4.1.1): `web/Connection` is an opaque
+;; handle whose `fd` field is the platform's `r`, from which the platform
+;; projects each direction's token.
 ;;
 ;; Platforms do NOT declare language ADT layouts -- the four `web/*` types are
 ;; ordinary `.cl` types. The DLL's `declare_platform! adts:` arm only emits Rust
@@ -34,7 +30,7 @@
 ;;     fd   : primitives/Int   listener socket fd (accept reads it to poll/accept)
 ;;     pool : primitives/Int   N, the in-flight-CONNECTION-COUNT ceiling consumed
 ;;                             by the launch-and-continue fan-out (arch §16).
-;;   web/Connection (single-ctor product, tag 0) -- OPAQUE handle (v9)
+;;   web/Connection (single-ctor product, tag 0) -- opaque handle
 ;;     fd   : primitives/Int   connection socket fd = the platform's `r`; the
 ;;                             platform reads it back + projects read_tok/write_tok.
 ;;   web/Request    (single-ctor product, tag 0)  method/path/body : String

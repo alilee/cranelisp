@@ -1,7 +1,7 @@
 ;; user.cl — Sudoku Solver: the headline end-to-end entry point.
 ;;
-;; This is the showcase story. It wires all four pure modules together and
-;; drives them through IO, exactly as the (future) web platform would:
+;; It wires all four pure modules together and drives them through IO along the
+;; same path as the web entry's `/solve` route (`main.cl`):
 ;;
 ;;   form body  --parse-form-body-->  puzzle string
 ;;   puzzle     --make-grid-------->  Grid           (the puzzle as entered)

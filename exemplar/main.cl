@@ -1,80 +1,33 @@
-;; main.cl — Sudoku Solver: the WEB entry point.
+;; main.cl — Sudoku Solver: the web entry point.
 ;;
-;; This wires the pure Sudoku core to the `web` HTTP platform DLL
-;; (exemplar/platforms/web/, Sprint 86 Wave E). It is the browser-facing
-;; counterpart to the stdio showcase in `user.cl` — both coexist:
-;;
-;;   web   :  --link exemplar/main.cl  (then run the binary; it serves)
-;;            --run  exemplar/main.cl  (serves until killed)
-;;   stdio :  --run  exemplar/user.cl  (one-shot solve-and-print)
-;;
-;; S121 verifies both web modes over the same scratch HTTP journey: GET form,
-;; POST valid solved grid, and the missing-path Not Found response. That is a
-;; serving check, not a linked fan-out or performance claim.
-;;
-;; The HTTP roundtrip:
+;; Wires the pure Sudoku core to the `web` platform (exemplar/platforms/web/).
 ;;
 ;;   GET  /        →  form-page         (9×9 puzzle-entry grid)
-;;   GET  /slow    →  ok-page (after a deterministic delay — the fan-out demo)
+;;   GET  /slow    →  ok-page after a fixed delay (the fan-out demonstration)
 ;;   POST /solve   →  parse → solve → solution-page  (or error-page)
 ;;   <anything>    →  not-found-page    (404)
 ;;
-;; The router `handle :: (Fn [Request] Response)` is PURE — no IO, no socket —
-;; so it is exercisable and testable without a server.
+;; Run with `--run exemplar/main.cl`, or `--link` it and run the binary; either
+;; serves until killed. The router `handle :: (Fn [Request] Response)` is pure.
 ;;
-;; ── The marquee: a concurrent server with NO `spawn` (S96, FIXME 0470/0472) ──
+;; Concurrency is inferred, not written: the serve loop discards a
+;; per-connection sub-tree of direct leaves (`read-conn` → `sleep` →
+;; `send-conn`) whose footprint is disjoint from `listener`, so each connection
+;; runs on its own supervised strand. Keep every effect position in that
+;; sub-tree a direct leaf. A user function returning IO there is opaque to the
+;; analysis and silently serialises the server; pure helpers such as `slow-ms`
+;; and `handle` compute leaf arguments only (plan-exemplar.md, "Web server").
 ;;
-;; The serve loop INFERS launch-and-continue concurrency. The per-connection
-;; handler is INLINED as a sub-tree of DIRECT poll/timer leaves
-;; (`read-conn` → `sleep` → `send-conn`); its result is DISCARDED (the `do`)
-;; and its footprint is disjoint from the continuation's `listener`, so /int's
-;; bind-chain analysis (effect-concurrency.md §4.1 E1/E2/E3) infers a detached
-;; launch — one supervised strand per connection. There is NO `spawn`/`go`/
-;; `async` in the source: the concurrency is written by nobody. K concurrent
-;; /slow requests OVERLAP (≈1·D on the one reactor) instead of serialising
-;; (≈K·D), witnessed by `tests/exemplar_web.rs`.
-;;
-;; THE DIRECT-LEAF DISCIPLINE (why this fires where the earlier serial loop did
-;; not): every EFFECT POSITION in the handler sub-tree must be a DIRECT
-;; launchable leaf — `read-conn`/`send-conn` (ResourceSerial poll leaves over the
-;; fresh connection token) or `sleep` (the resource-free timer leaf, §4.1 timer
-;; refinement). A USER FUNCTION that RETURNS IO in an effect position (the old
-;; `handle-conn` wrapper, or a `(slow-delay req)` returning `(IO _)`) is an
-;; OPAQUE footprint the eligibility analysis (§4.1 E3) must refuse → the launch
-;; is suppressed and the server silently serialises. So pure helpers compute the
-;; leaves' ARGUMENTS only: `slow-ms : Request -> Int` (the delay) and
-;; `handle : Request -> Response` (the pure router) are values fed to the
-;; direct `sleep`/`send-conn` leaves — never themselves placed in an effect
-;; position.
-;;
-;; ── A panic ends the server (S123) ──
-;;
-;; A runtime panic ends the process (spec/12-runtime.md §12.7.2), so there is
-;; no per-request recovery: `handle` must not panic on any request. It holds
-;; by construction — every value a request supplies reaches only total
-;; operations. The method and path are compared with `=`. The body reaches
-;; `parse-form-body`, whose only partial operation (`get` on the split
-;; `key=value` parts) sits under a `count` bound, and whose output is always an
-;; 81-character string of `.` and `1`–`9`. `make-grid` rejects anything else as
-;; `None`, so the solver only ever sees an 81-cell grid; its `/` divisors are
-;; constants and its matches are exhaustive. Bad input is a value — the error
-;; page — never a fault.
+;; A runtime panic ends the server, so `handle` must not panic on any request.
+;; Every value a request supplies reaches only total operations; bad input
+;; renders the error page (plan-exemplar.md, "Web server").
 
 (platform web)
 
-;; Idiomatic surface (S86 de-leak): trait operators bare via prelude; the
-;; IO + timer primitives imported by name.
 (import [primitives [bind sleep]])
 
-;; The web platform connection lifecycle. `listen`/`accept` stay behind the
-;; serve.cl convenience wrappers; under v9 (ctx-vtable handle model) those
-;; wrappers are near-trivial pass-throughs — there is NO leading (token,
-;; capacity) pair to thread and NO descriptor to read/write. The
-;; per-connection `read-conn`/`send-conn` poll leaves are imported RAW from
-;; `platform.web` so the serve loop can inline them down to direct leaves — the
-;; discipline the inferred launch requires (see header). The wrappers live in
-;; `serve` not `web` to avoid the platform-load pre-resolve cycle (see
-;; web.cl/serve.cl).
+;; `read-conn`/`send-conn` come straight from `platform.web` so they stay direct
+;; leaves; `listen`/`accept` are wrappers in `serve.cl` (see web.cl for why).
 (import [serve [listen accept]])
 (import [platform.web [read-conn send-conn]])
 (import [web [Request Response]])
@@ -126,12 +79,9 @@
            (Response 405 "text/html"
              (error-page "Method not allowed"))))]))
 
-;; slow-ms : (Fn [Request] Int) — PURE. The per-request parking delay, keyed on
-;; path: 100 ms for `/slow` (the fan-out overlap witness), 0 for every real
-;; route so the Sudoku pages stay instantaneous. This is a pure helper that
-;; computes the ARGUMENT to the serve loop's direct `(sleep …)` leaf — it does
-;; NOT itself sit in an effect position (that would be the opaque-footprint trap
-;; that suppresses the launch, §4.1 E3).
+;; slow-ms : (Fn [Request] Int) — pure. The delay before responding: 100 ms for
+;; `/slow` (the fan-out witness), 0 for every other route. It computes the
+;; argument of the serve loop's `sleep` leaf and must not itself return IO.
 (defn slow-ms [req]
   (match req
     [(Request method path body)
@@ -139,27 +89,18 @@
 
 ;; ── The serve loop (CONCURRENT fan-out, inferred — NO `spawn`) ─────────────
 ;;
-;; accept one connection, then LAUNCH-AND-CONTINUE: the per-connection handler
-;; sub-tree (read → sleep → send) is inlined to direct leaves and DISCARDED (the
-;; `do`), its footprint disjoint from the continuation's `listener`, so /int
-;; infers the detached launch (effect-concurrency.md §4.1 E1/E2/E3). Each
-;; iteration binds a FRESH `conn` (distinct token), so in-flight handlers ride
-;; distinct connection tokens and overlap on the one reactor. The recursive
-;; `serve-loop` call is the continuation: accept the next connection immediately
-;; rather than waiting for this one to finish. TCO keeps the stack flat across
-;; unbounded connections; the loop never terminates normally, so its IO payload
-;; is pinned to Int (`send-conn` yields Int).
+;; Accept one connection, launch its discarded handler sub-tree (read → sleep →
+;; send) and continue (design/arch/effect-concurrency.md §4.1). Each iteration
+;; binds a fresh `conn`, so in-flight handlers overlap. The recursive call is the
+;; continuation and is a tail call, so the stack stays flat; the loop never
+;; returns, and its IO payload is Int because `send-conn` yields Int.
 (defn serve-loop [listener]
   :(primitives/IO primitives/Int)
   (bind (accept listener)
     (fn [conn]
       (do
-        ;; the discarded, launch-eligible per-connection handler sub-tree. v9: the
-        ;; opaque `conn` handle is threaded directly into the DIRECT leaves
-        ;; read-conn/send-conn (Consume polls — the platform projects the token from
-        ;; the handle's fd + acquires via the ctx vtable) + `sleep` (the resource-free
-        ;; timer leaf). The pure `slow-ms`/`handle` only compute leaf arguments.
-        ;; So the whole read→sleep→send handler launches as ONE supervised strand.
+        ;; the discarded per-connection handler: direct leaves only, launched as
+        ;; one supervised strand.
         (bind (read-conn conn)
           (fn [req]
             (bind (sleep (slow-ms req))

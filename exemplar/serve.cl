@@ -1,12 +1,8 @@
 ;; serve -- the web connection-lifecycle convenience wrappers.
 ;;
-;; S97 ABI v9 (ctx-vtable handle model; design/platform/poll-leaf-authoring.md
-;; §4).
-;; Under v9 the wrappers are near-trivial pass-throughs: there is NO leading
-;; (token, capacity) pair to thread and NO descriptor to read/write -- the handle
-;; is opaque (carries only its `fd`), and the platform poll-fn projects the token
-;; from that `fd` and calls `ctx.acquire` itself. So `read`/`send` take the handle
-;; directly; `accept` takes the Listener directly.
+;; The wrappers are pass-throughs: the connection handle is opaque (it carries
+;; only its `fd`) and the platform projects the token from it
+;; (design/platform/poll-leaf-authoring.md §4).
 ;;
 ;; This module (not `web`) holds the wrappers because it imports `platform.web`,
 ;; and the platform load pre-resolves the `web` type-module but NOT `serve` (see

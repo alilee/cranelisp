@@ -9,22 +9,11 @@
 ;; Depends on: grid.cl (Cell, Grid, SolveResult, bitmask ops, peers)
 ;; Depends on: prelude (Option, traits, operators, macros)
 ;;
-;; The solver logic itself uses only Int and Vec operations; string handling
-;; (via grid.cl's make-grid char-at and the board formatters) is confined to
-;; parsing/rendering.
+;; The solver uses only Int and Vec operations; strings appear only in the board
+;; formatters and `build-output`. It is a library: it declares no platform and
+;; performs no IO, since only an entry may declare a platform (spec/10-io.md
+;; §10.9.1).
 
-;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
-;; operators; Vec access via the curated `count`/`get`/`assoc`; the string
-;; primitives imported by name. Solver logic is pure Int/Vec; only the board
-;; formatters and `build-output` touch strings. The module declares no platform
-;; and performs no IO: it is imported by the entries (`smoke.cl`, `user.cl`,
-;; `main.cl`, `tests.cl`), and only an entry may declare a platform
-;; (spec/10-io.md §10.9.1).
-;;
-;; S88 adoption (Stage D): heap-ADT (`Cell`) accumulators in the test grid
-;; builders now use the curated `collections.vec/conj` (DEF-2 carve-out
-;; retired — see grid.cl header). `digit-to-char` replaces the 10-arm
-;; `digit-string` ladder.
 (import [collections.vec [count get assoc conj]])
 (import [collections.parallel [par-map-reduce]])
 (import [primitives [char-at str-concat str-len not Pure]])
@@ -164,25 +153,17 @@
 ;;           combiner (identity `Unsolvable`) that takes the first branch that
 ;;           solved.
 ;;
-;; Because the candidate branches are fully independent (each tries a different
-;; digit on its own grid) and individually expensive, this map-reduce is
-;; embarrassingly parallel. We express it with the stdlib
-;; `collections.parallel/par-map-reduce` (S94, FIXME 0424 — D&C over the
-;; lenient-eval spark substrate). `par-map-reduce` splits the digit Vec at its
-;; midpoint and binds the two halves to **independent `let` bindings**, which
-;; the sparkability analysis auto-sparks onto the thread pool — so the search
-;; tree parallelises with **no `spark`/`par`/threads in the source**. The
-;; spark-budget create-gate bounds over-sparking (over budget → serial arm),
-;; preserving the never-slower-than-serial floor. See
-;; `design/backend/lenient-eval.md` §2.1 and `stdlib/collections/parallel.cl`.
+;; The branches are independent and pure, so the search uses
+;; `collections.parallel/par-map-reduce`. It binds the two halves of the digit
+;; Vec to independent `let` bindings, which lenient evaluation sparks onto the
+;; thread pool; the spark budget runs an over-budget branch inline
+;; (`design/backend/lenient-eval.md` §2.1, §3.6). The source has no `spark`,
+;; `par` or threads.
 ;;
-;; This is *budget-bounded speculative parallel search*: `par-map-reduce`
-;; evaluates every branch (the search is speculative — losing branches' work is
-;; simply discarded), and `first-success` is correct regardless of evaluation
-;; order because the branches are pure. CORRECTNESS IS THE CONTRACT (the
-;; parallel search returns the SAME solution as a serial one — a Sudoku has a
-;; unique solution); PARALLELISM IS A PERFORMANCE PROPERTY. Run under
-;; `CRANELISP_NO_LENIENT=1` to force everything serial and get the same answer.
+;; The search is speculative: every branch is evaluated and the losers are
+;; discarded. The result does not depend on evaluation order, so
+;; `CRANELISP_NO_LENIENT=1` gives the same solution. Parallel search is not
+;; yet faster than serial (plan-exemplar.md, "Copy-per-guess performance").
 
 ;; Enumerate the set digits (1-9) of a candidate mask into a (Vec Int), using
 ;; the digit-domain `bit-set?` adapter. This is the collection `par-map-reduce`
@@ -247,9 +228,6 @@
 ;; ── Board Formatting ──────────────────────────────────────────────────
 
 ;; Convert a cell value (1-9) to its string digit, or "." for 0.
-;; S88 G6 adoption: the 10-arm `if` ladder is replaced by the stdlib
-;; `text.string/digit-to-char` (inverse of grid's char parsing); 0 maps to
-;; the board's blank glyph ".".
 (defn digit-string [v]
   (if (= v 0) "." (digit-to-char v)))
 
@@ -337,11 +315,9 @@
 
 ;; ── Tests ───────────────────────────────────────────────────────────────
 ;;
-;; Test functions are top-level `test-*` defns returning `(Option String)`
-;; per repl/spec.md §16.1. They are run by the free-standing `tests.cl` runner,
-;; which imports and calls them directly; `discover-tests`/`run-test` are
-;; REPL-only and are NOT used here. No `(mod test ...)` wrapper, no
-;; `(import [super [*]])`.
+;; Each `test-*` returns `(Option String)`, `None` for a pass
+;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
+;; `cranelisp --test` discovers them.
 
 ;; --- Helper to count determined cells ---
 
@@ -407,48 +383,10 @@
 
 ;; --- Solver tests ---
 ;;
-;; Slice 2 + Slice 4 closure 2026-04-22 — three-layer Sudoku correctness
-;; defect, fully resolved in Sprint 61.
-;;
-;;   Layer 1 — algorithmic hole in `eliminate` (landed Wave 2). The
-;;     `(Given v)` / `(Solved v)` match arms returned `(Some g)`
-;;     unconditionally, silently allowing two peers to hold the same value.
-;;     Fix: return `None` when `v == d` (applied above in this file).
-;;
-;;   Layer 2 — Sudoku backtracking regression unmasked by the Layer 1 fix
-;;     (resolved Wave 3). Root cause: H6 `ensure_module_exists` atomicity
-;;     race in `crates/cranelisp-typecheck/src/checker.rs` — concurrent
-;;     module registration could skip the publish step, leaving the
-;;     backtracker with a torn module view. Fix: atomic
-;;     check-then-create-then-publish transaction. See
-;;     `design/int/heisenbug-race-closure.md`.
-;;
-;;   Layer 3 — inline-ADT-arg-wrapping-Vec codegen bug (resolved Wave 4).
-;;     An inline ADT constructor holding a Vec, passed as a function
-;;     argument, read a corrupt length on the callee side because the
-;;     captured inner Vec was freed before the callee returned. Fix:
-;;     H(4-1'') `emit_capture_return_inc` codegen helper. See
-;;     `design/backend/slice-4-21-hello-io-investigation.md` and
-;;     `design/backend/ring2-rc.md §5.6`.
-;;
-;; Regression guards (inline repros, no exemplar dependency):
-;;   - `tests/exemplar_solver_correctness.rs::eliminate_on_same_value_given_returns_none`
-;;     (T-S2-1) — Layer 1 contract.
-;;   - `tests/exemplar_solver_correctness.rs::inline_adt_arg_wrapping_vec_preserves_len`
-;;     (T-S2-2) — Layer 3 minimal repro.
-;;
-;; Repro-handoff migration (Slice 5 I, Wave 5): the two `.cl` repro files
-;; that previously lived in `exemplar/` (`repro-slice2.cl`,
-;; `test-eliminate-contract.cl`) have been inlined into the Rust
-;; regression tests above per `memory/feedback_repro_handoff.md` and
-;; deleted from `exemplar/`. Compiler regression guards no longer
-;; depend on the showcase tree.
-;;
-;; Pre-existing issue (unresolved, carried):
-;;   - Full 81-cell solve stack-overflows in deep recursive Grid/Vec
-;;     copying. Ledgered in `tests/plan/baseline.md`; target S62. The
-;;     IO and formatting path works end-to-end; only the inner solve
-;;     recursion is affected.
+;; `eliminate` returns `None` when a Given or Solved cell already holds the
+;; eliminated digit, so two peers never hold the same value. The compiler's
+;; regression guard for that contract is self-contained:
+;; `tests/exemplar.rs::t_s2_1_eliminate_contract_on_given_returns_none`.
 
 (defn test-easy-puzzle []
   (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")
@@ -460,16 +398,12 @@
           Unsolvable (Some "easy puzzle should be solvable")])
      None (Some "make-grid should accept the easy puzzle string")]))
 
-;; --- Parallel-search equivalence self-test (S92, FIXME 0408) ---
+;; --- Parallel-search equivalence ---
 ;;
-;; The divide-and-conquer search auto-parallelises via slice-1 apply-arg
-;; sparking. Because a proper Sudoku has a UNIQUE solution and the branches are
-;; pure, the parallel (speculative) search MUST return the same grid a serial
-;; search returns. This test pins the full 81-digit solution string; running
-;; the suite under both default (parallel) and `CRANELISP_NO_LENIENT=1`
-;; (serial) and getting the identical green run is the parallel ≡ serial guard.
-;; The puzzle is chosen to require backtracking (so the `par-map-reduce` /
-;; `first-success` sparked path actually runs), not just constraint propagation.
+;; A valid Sudoku has one solution, so the parallel and serial searches must
+;; return the same grid. `test-solve-parallel-equiv` pins the 81-digit solution
+;; of a puzzle that needs backtracking, so the `par-map-reduce` path runs;
+;; `tests.cl` passing in both modes is the parallel ≡ serial guard.
 
 ;; Flatten a solved grid to its bare 81-digit string (no separators).
 (defn solution-digits-helper [g i acc]
@@ -481,11 +415,7 @@
   (solution-digits-helper g 0 ""))
 
 (defn test-solve-parallel-equiv []
-  ;; A puzzle that genuinely requires backtracking (constraint propagation
-  ;; alone gets stuck), so the `par-map-reduce` / `first-success` sparked path
-  ;; actually runs. Its unique solution is pinned below; the parallel (default)
-  ;; search and a serial (`CRANELISP_NO_LENIENT=1`) search MUST both produce it.
-  ;; Verified identical under both modes (S92 D&C; S94 par-map-reduce reshape).
+  ;; Propagation alone stalls on this puzzle, so the search backtracks.
   (match (make-grid "..3.2.6..9..3.5..1..18.64....81.29..7.......8..67.82....26.95..8..2.3..9..5.1.3..")
     [(Some g)
        (match (solve g)

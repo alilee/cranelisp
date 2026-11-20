@@ -8,17 +8,9 @@
 ;; Example: "c00=5&c01=&c02=3&..." -> "5.3..."
 ;;
 ;; Depends on: prelude (traits, operators, the `cond` macro)
-;;
-;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
-;; operators; `=` on String is Eq dispatch. The string primitives
-;; (`char-at`, `str-len`, `str-concat`, `substring`, `split`, `replace`) are
-;; imported by name; Vec access goes through curated `count`/`get`. No grid
-;; building here, so the DEF-2 `conj` carve-out does not apply.
 
 (import [collections.vec [count get]])
 (import [primitives [char-at str-len str-concat substring split replace not]])
-;; S88 G8 adoption: the recursive make-dots loop is replaced by the stdlib
-;; `text.string/repeat-str`.
 (import [text.string [repeat-str]])
 
 ;; ── URL decoding ─────────────────────────────────────────────────────
@@ -33,8 +25,6 @@
 ;; ── Puzzle string construction ───────────────────────────────────────
 
 ;; Initialize an 81-character string of dots.
-;; S88 G8 adoption: was a hand-rolled recursive str-concat loop; now the
-;; stdlib one-liner.
 (defn make-dots []
   (repeat-str "." 81))
 
@@ -112,11 +102,9 @@
 
 ;; ── Tests ─────────────────────────────────────────────────────────────
 ;;
-;; Test functions are top-level `test-*` defns returning `(Option String)`
-;; per repl/spec.md §16.1. They are run by the free-standing `tests.cl` runner,
-;; which imports and calls them directly; `discover-tests`/`run-test` are
-;; REPL-only and are NOT used here. No `(mod test ...)` wrapper, no
-;; `(import [super [*]])`.
+;; Each `test-*` returns `(Option String)`, `None` for a pass
+;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
+;; `cranelisp --test` discovers them.
 
 ;; Test parsing a simple form body with a few digits
 (defn test-parse-simple []
