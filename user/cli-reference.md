@@ -68,7 +68,10 @@ Use `/type (+ 1 2)` to inspect an expression's type. For an installed name,
 current compiler:** it can install definitions, rewrite the backing file and
 crash the session (ACT-1089). The required answer is an error, `definition form
 has no type`, with nothing evaluated or defined; this correction is carried.
-See [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory).
+Macro expressions have a separate carried limitation: `/type` can report an
+installed macro as undefined (ACT-1099), even when evaluating that expression
+works. Use `/expand` to inspect its source expansion and `/sig` for installed
+signatures. See [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory).
 
 #### Recall language syntax — `/syntax`
 
