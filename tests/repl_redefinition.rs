@@ -1358,7 +1358,8 @@ fn s124_slot_redefinition(loaded: bool) {
 }
 
 // spec: repl/spec.md §18
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the loaded function value kept calling the old body after replacement.
 #[test]
 fn s124_1088_loaded_value_redefinition_subject() {
     s124_slot_redefinition(true);

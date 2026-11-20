@@ -1538,21 +1538,24 @@ fn s124_slot_trace(mode: &str, partial: bool, imported: bool) {
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the same-unit function-value wrapper called past its target's slot.
 #[test]
 fn s124_1088_value_subject_run() {
     s124_slot_trace("run", false, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the same-unit function-value wrapper called past its target's slot.
 #[test]
 fn s124_1088_value_subject_link() {
     s124_slot_trace("link", false, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the same-unit function-value wrapper called past its target's slot.
 #[test]
 fn s124_1088_value_subject_repl() {
     s124_slot_trace("repl", false, false);
@@ -1577,21 +1580,24 @@ fn s124_1088_value_control_repl() {
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the same-unit function-value wrapper called past its target's slot.
 #[test]
 fn s124_1088_partial_subject_run() {
     s124_slot_trace("run", true, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the same-unit function-value wrapper called past its target's slot.
 #[test]
 fn s124_1088_partial_subject_link() {
     s124_slot_trace("link", true, false);
 }
 
 // spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
-// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev (ACT-1088)
+// defect: class=slot-bypass locus=crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call found=S124 owner=/dev fixed=S124/1238b31c
+// ACT-1088: the same-unit function-value wrapper called past its target's slot.
 #[test]
 fn s124_1088_partial_subject_repl() {
     s124_slot_trace("repl", true, false);
