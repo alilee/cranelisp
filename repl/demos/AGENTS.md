@@ -44,6 +44,7 @@ only: `./repl/showcase tour` (bare name) resolves to `01-tour.demo` just as
 | `09-library-discovery.demo` | `/search` across reachable public non-macro symbols; "is there already a function for this?" answered before importing, with exact in-scope matches marked as already available. |
 | `10-redefinition.demo` | Live-editing with guarded publication: body edits late-bind; a blocked type change is rejected atomically with the prior callable intact; an unblocked change publishes as one replacement. |
 | `11-live-reload.demo` | File saves update a running module; an invalid save locks expressions and definitions while help and source remain accessible; repair releases the lock and survives restart. |
+| `12-tracing-values.demo` | Trace result text; generic calls; nested Option equality, ordering and display; Display across library containers. |
 
 The language arc deliberately ends at `08-sudoku.demo`, which reuses every concept
 the prior demos introduced. The demos after it showcase the development *workflow*

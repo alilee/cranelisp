@@ -1,0 +1,36 @@
+; Tracing values — inspect a result, then compose nested library traits
+; A generic function keeps its inferred type across different calls.
+
+(defn left [:Int n] :(collections.either/Either Int Int) (collections.either/Left n))
+(defn echo [x] x)
+echo
+(echo 42)
+(echo "hello")
+
+; trace records the evaluated body's result as text.
+; Read only that field: the root's name and parameters are not needed.
+
+(defn traced-result [t] (match t [(primitives/TraceCall _ _ result _ _) result]))
+(traced-result (trace (echo 42)))
+(traced-result (trace 42))
+
+; Nested constraints compose: Option's payload can itself be an Option.
+
+/sig =
+/sig <
+/sig show
+(= (Some (Some 1)) (Some (Some 1)))
+(= (Some (Some 1)) (Some (Some 2)))
+(< (Some (Some 1)) (Some (Some 2)))
+(show (Some (Some 1)))
+
+; The same Display interface works across the library's container types.
+
+(show :(Result Int String) (Err "bad"))
+(show (Cons 1 (Cons 2 (Cons 3 Nil))))
+(show (primitives/Pair 1 "a"))
+(show (left 1))
+
+; Combine nested ordering, a generic call and tracing.
+
+(traced-result (trace (echo (if (< (Some (Some 1)) (Some (Some 2))) 42 0))))
