@@ -5510,13 +5510,18 @@ fn s124_type_err_impl() {
     );
 }
 
-// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR guards
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR
 // defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_err_defmacro() {
+    s124_definition_query_errors("", "(defmacro mm [x] x)");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR guards
 #[test]
 fn s124_type_err_nonvalue_guards() {
     let mut failures = Vec::new();
     for form in [
-        "(defmacro mm [x] x)",
         "(import [primitives [add-i64]])",
         "(export [primitives [add-i64]])",
         "(mod foo)",
