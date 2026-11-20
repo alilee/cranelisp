@@ -17,13 +17,14 @@
 ;; Currying is not limited to top-level `defn`s. It applies to any
 ;; function VALUE — including a closure returned from another function
 ;; (12-closures.cl) and a trait operator (15-traits.cl). Both are shown
-;; at the end.
+;; below. The entry point then applies the same idea to bind (21).
 
 ;; The operator traits come from the examples-local library, which is
 ;; just lesson 15 packaged up so this example can keep its attention on
 ;; currying instead of re-declaring `Num` for a third time. See
 ;; examples/lib/README.md.
 (import [operators [Num +]])
+(import [primitives [bind]])
 
 ;; --- Basic partial application ---
 
@@ -102,15 +103,19 @@
 
 ;; Expected: 42 + 42 + 42 + 10 + 35 + 203 + 13 + 8 = 395
 ;; The process EXIT CODE is the low byte of that sum: 395 mod 256 = 139.
+;; bind is an ordinary function value too. `sequence` holds that value;
+;; supplying just its IO argument produces `with-total`, which waits for
+;; the continuation. Neither binding runs an effect: main returns an IO
+;; value for the runtime to execute. The continuation preserves the total.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
-    (add-i64 (check-inc)
-      (add-i64 (check-partial-one)
-        (add-i64 (check-partial-two)
-          (add-i64 (check-curry-compose)
-            (add-i64 (check-scalers)
-              (add-i64 (check-curry-as-arg)
-                (add-i64 (check-closure-curry)
-                         (check-operator-partial))))))))))
+  (let [sequence bind
+        with-total (sequence (Pure
+            (add-i64 (check-inc)
+              (add-i64 (check-partial-one)
+                (add-i64 (check-partial-two)
+                  (add-i64 (check-curry-compose)
+                    (add-i64 (check-scalers)
+                      (add-i64 (check-curry-as-arg)
+                        (add-i64 (check-closure-curry)
+                                 (check-operator-partial))))))))))]
+    (with-total (fn [total] (Pure total)))))
