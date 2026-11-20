@@ -38,6 +38,12 @@
 ;; sparks are live at once. Over-budget sites resolve inline, so deep recursion
 ;; can't explode.
 ;;
+;; Inside `(trace expr)`, the whole dynamic extent of expr is strict and
+;; sequential, including these recursive helpers (spec §4.12.2). Neither
+;; independent arguments nor independent let bindings spark there. A trace
+;; is useful for inspecting calls; its timings do not measure the parallel
+;; execution described here. Use untraced runs for the parallel/serial A/B.
+;;
 ;; A/B any timing claim yourself: CRANELISP_NO_LENIENT=1 suppresses spark
 ;; emission; CRANELISP_SPARK_BUDGET=0 keeps the gates but admits no sparks.
 ;; Either gives a serial baseline. Set the knob on the compiler invocation:

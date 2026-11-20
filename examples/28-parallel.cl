@@ -26,6 +26,13 @@
 ;; sequentially or in parallel. Programs MUST NOT depend on
 ;; evaluation order within a `let` block.
 ;;
+;; Tracing changes the evaluation mode: `(trace expr)` evaluates its body
+;; strictly and sequentially, including functions called from that body
+;; (spec §4.12.2). Independent bindings inside that dynamic extent do not
+;; spark. Trace timings therefore describe sequential execution, rather
+;; than the ordinary parallel run. A trace returns a Trace ADT describing
+;; the evaluation, not the body's value.
+;;
 ;; Disable by setting CRANELISP_NO_LENIENT=1 on the compiler invocation.
 ;; With --link, the setting is baked into the executable: relink to change it.
 ;; Setting it only when launching an already-linked program has no effect.
