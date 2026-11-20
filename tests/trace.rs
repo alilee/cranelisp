@@ -1981,7 +1981,7 @@ fn s124_trace_root_heap_result_and_balance() {
     );
 }
 
-fn s124_trace_owning(shape: &str, mode: &str) {
+fn s124_trace_owning(shape: &str, mode: &str, built_inside: bool) {
     let (declaration, ty, value) = match shape {
         "record" => (
             "(deftype Owned [:String text])",
@@ -1995,19 +1995,33 @@ fn s124_trace_owning(shape: &str, mode: &str) {
         ),
         _ => unreachable!(),
     };
-    let source = format!(
-        r#"(import [primitives [Pure String Vec TraceCall str-eq str-concat]])
-(import [macros [SCons SNil]])
-{declaration}
-(defn ident [:{ty} x] x)
-(defn score []
-  (let [v {value}] (match (trace (ident v))
+    let call = if built_inside {
+        "(mk \"heap-\")"
+    } else {
+        "(ident v)"
+    };
+    let observe = format!(
+        r#"(match (trace {call})
     [(TraceCall n p r c ns)
      (match c
        [(SCons child rest)
         (match child [(TraceCall cn cp cr cc ct)
           (if (str-eq cr "") 39 (if (str-eq r cr) 41 40))])
-        SNil 38])])))
+        SNil 38])])"#
+    );
+    let body = if built_inside {
+        observe
+    } else {
+        format!("(let [v {value}] {observe})")
+    };
+    let constructed = value.replace("\"heap-\"", "a");
+    let source = format!(
+        r#"(import [primitives [Pure String Vec TraceCall str-eq str-concat]])
+(import [macros [SCons SNil]])
+{declaration}
+(defn ident [:{ty} x] x)
+(defn mk [:String a] {constructed})
+(defn score [] {body})
 "#
     );
     let b = Cranelisp::new()
@@ -2064,35 +2078,71 @@ fn s124_trace_owning(shape: &str, mode: &str) {
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
 #[test]
 fn s124_trace_owning_record_cold() {
-    s124_trace_owning("record", "cold");
+    s124_trace_owning("record", "cold", false);
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
 #[test]
 fn s124_trace_owning_record_cached() {
-    s124_trace_owning("record", "cached");
+    s124_trace_owning("record", "cached", false);
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
 #[test]
 fn s124_trace_owning_record_link() {
-    s124_trace_owning("record", "link");
+    s124_trace_owning("record", "link", false);
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
 #[test]
 fn s124_trace_owning_vector_cold() {
-    s124_trace_owning("vector", "cold");
+    s124_trace_owning("vector", "cold", false);
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
 #[test]
 fn s124_trace_owning_vector_cached() {
-    s124_trace_owning("vector", "cached");
+    s124_trace_owning("vector", "cached", false);
 }
 
 // spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
 #[test]
 fn s124_trace_owning_vector_link() {
-    s124_trace_owning("vector", "link");
+    s124_trace_owning("vector", "link", false);
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING constructed inside call
+#[test]
+fn s124_trace_owning_constructed_record_cold() {
+    s124_trace_owning("record", "cold", true);
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING constructed inside call
+#[test]
+fn s124_trace_owning_constructed_record_cached() {
+    s124_trace_owning("record", "cached", true);
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING constructed inside call
+#[test]
+fn s124_trace_owning_constructed_record_link() {
+    s124_trace_owning("record", "link", true);
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING constructed inside call
+#[test]
+fn s124_trace_owning_constructed_vector_cold() {
+    s124_trace_owning("vector", "cold", true);
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING constructed inside call
+#[test]
+fn s124_trace_owning_constructed_vector_cached() {
+    s124_trace_owning("vector", "cached", true);
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING constructed inside call
+#[test]
+fn s124_trace_owning_constructed_vector_link() {
+    s124_trace_owning("vector", "link", true);
 }
