@@ -1794,3 +1794,189 @@ fn s124_1090_mixed_restore_subject() {
 fn s124_1090_all_restored_control() {
     s124_mixed_restore_trace(false, 10);
 }
+
+fn s124_root_program(body: &str, child: bool) -> String {
+    let result = if child {
+        r#"(match c [(SCons child rest) (match child [(TraceCall cn cp cr cc ct) (if (str-eq cr "42") 41 40)]) SNil 39])"#
+    } else {
+        r#"(if (str-eq r "42") 41 40)"#
+    };
+    format!(
+        r#"(import [primitives [Pure TraceCall str-eq]])
+(import [macros [SCons SNil]])
+(defn ident [x] x)
+(defn score [] (match (trace {body}) [(TraceCall n p r c ns) {result}]))
+"#
+    )
+}
+
+fn s124_root_mode(body: &str, child: bool, mode: &str) {
+    let source = s124_root_program(body, child);
+    let b = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("subject.cl", &source)
+        .user("(import [subject [score]])\n(defn main [] (primitives/Pure (score)))\n");
+    match mode {
+        "cold" => {
+            b.run("user.cl").output().assert_exit(41);
+        }
+        "cached" => {
+            // Read the restored result independently of the first launch's value.
+            let warm = b.run("user.cl").output();
+            assert!(
+                matches!(warm.status.code(), Some(40 | 41)),
+                "{}{}",
+                warm.stdout,
+                warm.stderr
+            );
+            assert!(warm.tmp_exists(".cranelisp-cache/user.o"));
+            let restored = warm
+                .run_again()
+                .run("user.cl")
+                .env("CRANELISP_MODULE_TRACE", "1")
+                .output();
+            assert!(
+                restored
+                    .stderr
+                    .lines()
+                    .any(|line| line == "module-trace: cache hit (.meta valid) for subject"),
+                "must observe a restored launch: {}{}",
+                restored.stdout,
+                restored.stderr
+            );
+            restored.assert_exit(41);
+        }
+        "link" => {
+            b.link_then_run("user.cl").output().assert_exit(41);
+        }
+        "repl" => {
+            b.stdin("(score)\n")
+                .output()
+                .assert_ok()
+                .assert_stdout_contains(":primitives/Int 41");
+        }
+        _ => unreachable!(),
+    }
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call cold
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_call_cold() {
+    s124_root_mode("(ident 42)", false, "cold");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call cached
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_call_cached() {
+    s124_root_mode("(ident 42)", false, "cached");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call link
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_call_link() {
+    s124_root_mode("(ident 42)", false, "link");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT call repl
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_call_repl() {
+    s124_root_mode("(ident 42)", false, "repl");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal cold
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_literal_cold() {
+    s124_root_mode("42", false, "cold");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal cached
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_literal_cached() {
+    s124_root_mode("42", false, "cached");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal link
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_literal_link() {
+    s124_root_mode("42", false, "link");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT literal repl
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_literal_repl() {
+    s124_root_mode("42", false, "repl");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT child_control cold
+#[test]
+fn s124_trace_root_child_control_cold() {
+    s124_root_mode("(ident 42)", true, "cold");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT child_control cached
+#[test]
+fn s124_trace_root_child_control_cached() {
+    s124_root_mode("(ident 42)", true, "cached");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT child_control link
+#[test]
+fn s124_trace_root_child_control_link() {
+    s124_root_mode("(ident 42)", true, "link");
+}
+
+// spec: spec/04-expressions.md §4.12.2 — T-TRACE-ROOT child_control repl
+#[test]
+fn s124_trace_root_child_control_repl() {
+    s124_root_mode("(ident 42)", true, "repl");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-ROOT heap result
+// defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev
+#[test]
+fn s124_trace_root_heap_result_and_balance() {
+    let source = r#"(import [primitives [Pure TraceCall str-eq str-concat]])
+(import [macros [SCons SNil]])
+(defn ident [:primitives/String x] x)
+(defn main []
+  (Pure (match (trace (ident (str-concat "heap-" "result")))
+    [(TraceCall n p r c ns)
+     (match c
+       [(SCons child rest)
+        (match child [(TraceCall cn cp cr cc ct)
+          (if (str-eq cr "") 39 (if (str-eq r cr) 41 40))])
+        SNil 38])])))
+"#;
+    let out = Cranelisp::new()
+        .user(source)
+        .run("user.cl")
+        .env("CRANELISP_RC_STATS", "1")
+        .env("CRANELISP_NO_LENIENT", "1")
+        .output();
+    let line = out
+        .stderr
+        .lines()
+        .rev()
+        .find(|s| s.contains("[RC_STATS]"))
+        .expect("run allocation statistics");
+    let field = |key: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|s| s.strip_prefix(key).and_then(|v| v.parse().ok()))
+            .unwrap()
+    };
+    assert_eq!(
+        (out.status.code(), field("allocs="), field("deallocs=")),
+        (Some(41), field("deallocs="), field("deallocs=")),
+        "heap root must equal its nonempty child result and balance: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
