@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — backend exit met at `39db1bb1` (`qa` reading `235a7ed7`); Phase 5 → 6a checkpoint presented, awaiting the user
+**Status**: PHASE 6a USER-FACING ASSESSMENT — `docs`, `training`, `dev`(stdlib), `dev`(exemplar), `spec`(repl) assess against what shipped; `audit` reads typecheck
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -18,7 +18,7 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
 | Phase 2 → Phase 3 | `arch` review, API packet D1–D8, six decisions | 2026-11-16, "advance to phase 3" | approved |
 | Phase 3 → Phase 4 | designs, packet rows D1–D12/R10-9/R10-10, S124-Q2..Q9, `qa` readiness | 2026-11-17, "approved to advance" | approved |
 | Phase 4 → Phase 5 | wave plan W0–W9, audit choice, two decisions | 2026-11-17, "approved" | approved |
-| Phase 5 → Phase 6a | — | — | pending |
+| Phase 5 → Phase 6a | backend exit reading (`235a7ed7`), 80 carried failures by module, second baseline diff | 2026-11-20, "2 approved" | approved |
 | Phase 6a → Phase 6b | — | — | pending |
 | Phase 6b → Phase 7 | — | — | pending |
 
@@ -595,9 +595,15 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
 - **Public-API checkpoint.** First diff approved by the user 2026-11-20.
   Second diff reported: row B16 (`c9f573e0`, types +1) and the K11-a format
   contraction (`c86aa1f7`, 1,481 auto-trait lines removed, nothing added);
-  ACT-0955 stays open until the user confirms the contraction.
+  The user confirmed the contraction on 2026-11-20; ACT-0955 is closed.
 - **ACT-1090 carried against the binary** (METHOD §2.5: no crash, no data
   loss): a trace form can omit a module's frames on one launch when a
   dependency's object is absent from an otherwise valid cache.
   **ACT-1092** (advisory, `design`(int)): the search index omits a module
   whose import names an unloaded or compiling module.
+- **User rulings, 2026-11-20 (second set).** (3) `/type` does not evaluate
+  a non-pure form. (4) Search returns what is reachable, not what is already
+  imported. `spec` records both and answers whether the search text was
+  already clear; `qa` then re-classifies ACT-1092 and allocates evidence.
+  Corrections in the binary are carried on their tests unless the user
+  schedules them.
