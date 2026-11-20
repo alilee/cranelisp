@@ -49,8 +49,12 @@ solution   --solution-page---->  HTML page
   `(SolveResult grid-type)` is `Success` or `Unsolvable`.
 - `Grid` and `SolveResult` are deliberately explicit generics (spec §5.2.4).
   Spelling the field as `(Vec Cell)` is legal, but it would force the
-  element type and sidestep the inference that the
-  [multi-sig obligation](#multi-sig-vec-helper-showcase) must demonstrate.
+  element type and sidestep the inference the exemplar demonstrates.
+- `peers`, `make-grid` and `is-solved` are multi-signature `defn`s: the short
+  clause seeds the accumulator of the long one. Their results reach separately
+  monomorphised consumers through bound parameters, which spec §5.1.2 requires
+  to infer exactly as the two-function form does. Do not annotate the seed or
+  the ADT field to help inference.
 
 ### Solving
 
@@ -129,23 +133,6 @@ solution   --solution-page---->  HTML page
   defect instead.
 
 ## Open obligations
-
-### Multi-sig Vec-helper showcase
-
-`is-solved` is one multi-signature `defn`: the 1-argument clause seeds the
-scan. `make-grid`/`make-grid-helper` and `peers`/`peers-helper` remain
-two-function pairs. Collapsing either pair makes a multi-signature Vec result
-reach a separately monomorphised consumer through a bound parameter. That
-currently fails with a located carrier-gate type error.
-
-- **Trigger:** collapse both pairs when
-  `tests/mc_x4_consume_at_distance_0719.rs::multi_sig_return_through_wrapper_indirection_infers`
-  passes. Spec §5.1.2 requires the multi-sig form to infer like its
-  two-function equivalent.
-- The green MC-X4 battery (`tests/mc_x4_multi_sig_return_consumer.rs`) is not
-  the trigger. It consumes the result in the same expression, not through a
-  parameter.
-- Do not force the collapse by annotating the seed or the ADT field.
 
 ### Copy-per-guess performance
 

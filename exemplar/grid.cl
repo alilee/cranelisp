@@ -37,43 +37,9 @@
 ;; positive), so the sign bit never participates — verified behaviour-identical
 ;; to the old arithmetic sim across all 512 masks × 9 digits.
 ;;
-;; ── multi-sig showcase (S113) ───────────────────────────────────────────
-;; The S113 §5.1.2 back-flow + D3 fix (poly callee reached from a clause body
-;; entered via a cross-arity self-call now monomorphises) unblocked collapsing
-;; an "entry seeds the accumulator" helper pair into ONE idiomatic multi-sig
-;; `defn`. `is-solved` is collapsed this way (see its site): the 1-arg clause
-;; seeds the scan index and delegates cross-arity to the 2-arg clause. That
-;; collapse STAYS landed (its return is a plain `Bool` — no polymorphic
-;; consumer downstream, so the residual below cannot arise).
-;;
-;; `make-grid`/`make-grid-helper` and `peers`/`peers-helper` are DELIBERATELY
-;; kept two-function. NOTE the earlier "collapse once MC-X4 is green" record
-;; was FALSIFIED (S114): the MC-X4 unit/e2e battery
-;; (`tests/mc_x4_multi_sig_return_consumer.rs`, both typecheck units) is now
-;; GREEN, yet the exemplar's own shape still fails to collapse — because it is
-;; NOT the shape MC-X4 pins. The green tests consume the multi-sig result
-;; IMMEDIATELY, in the same expression; the exemplar binds the result to a
-;; BOUND PARAMETER that a separately-monomorphised downstream consumer reads —
-;; a free element type var travelling through a parameter into a distinct
-;; monomorphisation (the *parameter-distance* variant). The failure has
-;; PROGRESSED, not closed: no longer a silent codegen leak / `undefined
-;; function`, but now a LOCATED carrier-gate type error (the W2 carrier-totality
-;; gate catches it as `ambiguous type … residual unbound type variable reached
-;; a codegen position`): `make-grid` → `user/report` (which USES the built
-;; grid — feeds `g` to `solve`/`format-board`/`solution-page`), and `peers` →
-;; the solver's polymorphic Vec verbs (`count`/`get`). The exemplar's
-;; `Grid`/`SolveResult` keep their carrier types explicit and polymorphic;
-;; annotating the seed or the ADT field to force the back-flow would be
-;; fighting the language — un-idiomatic for a showcase. RULED A DEFECT (/qa,
-;; S114; regression `tests/mc_x4_consume_at_distance_0719.rs`): inference is
-;; REQUIRED here per spec §5.1.2 — a multi-sig `defn` type-checks identically to
-;; the same logic written as separate mutually-recursive functions, so since the
-;; two-function form ships, the collapse of the SAME logic must too (annotating
-;; would indeed be "fighting the language"; this position CONFIRMED).
-;; `class=carrier-loss`, fix owner /dev(typecheck), S115. The collapse stays
-;; two-function until the 0719 consume-at-distance family flips — /testing owns
-;; the reduction + the §5.1.2 equivalence-twin matrix cells (see
-;; `plan-exemplar.md` §"Multi-sig Vec-helper showcase").
+;; ── Multi-signature definitions ────────────────────────────────────────
+;; `peers`, `make-grid` and `is-solved` are each one multi-signature `defn`
+;; whose short clause seeds the accumulator of the long one (spec §5.1.2).
 
 (import [collections.vec [count get assoc conj]])
 (import [primitives [char-at str-len str-concat not]])
@@ -184,36 +150,18 @@
 
 ;; ── Peer calculation ───────────────────────────────────────────────────
 
-;; Build list of all 20 peer indices for a given cell index.
-;; Peers share the same row, column, or 3x3 box (excluding self).
-;;
-;; Strategy: iterate all 81 indices, collect those that share
-;; row, column, or box with idx (but are not idx itself).
-;;
-;; NOTE: kept two-function (NOT collapsed to a multi-sig entry+scan like
-;; `is-solved`) because `peers` returns a bare `(Vec Int)` whose free element
-;; var flows through a BOUND PARAMETER into the solver's polymorphic Vec verbs
-;; (`count`/`get`) — the parameter-distance carrier residual, NOT the direct
-;; shape MC-X4 pins. The MC-X4 battery
-;; (`tests/mc_x4_multi_sig_return_consumer.rs`) is now GREEN, but this exemplar
-;; shape still trips a LOCATED carrier-gate type error (`ambiguous type …
-;; residual unbound type variable reached a codegen position`) — progress from
-;; the old silent codegen `undefined function`, but still blocking. RULED A
-;; DEFECT (/qa, S114 §12): inference is required per spec §5.1.2, fix owner
-;; /dev(typecheck), S115; stays two-function until the 0719 consume-at-distance
-;; family flips (see the header "multi-sig showcase" note + `plan-exemplar.md`).
-(defn peers-helper [idx i acc]
-  (if (= i 81) acc
-    (if (= i idx)
-      (peers-helper idx (+ i 1) acc)
-      (if (if (= (row-of i) (row-of idx)) true
-            (if (= (col-of i) (col-of idx)) true
-              (= (box-of i) (box-of idx))))
-        (peers-helper idx (+ i 1) (conj acc i))
-        (peers-helper idx (+ i 1) acc)))))
-
-(defn peers [idx]
-  (peers-helper idx 0 []))
+;; The indices of the 20 cells sharing a row, column or box with `idx`.
+(defn peers
+  ([idx] (peers idx 0 []))
+  ([idx i acc]
+   (if (= i 81) acc
+     (if (= i idx)
+       (peers idx (+ i 1) acc)
+       (if (if (= (row-of i) (row-of idx)) true
+             (if (= (col-of i) (col-of idx)) true
+               (= (box-of i) (box-of idx))))
+         (peers idx (+ i 1) (conj acc i))
+         (peers idx (+ i 1) acc))))))
 
 ;; ── Grid construction ──────────────────────────────────────────────────
 
@@ -225,43 +173,34 @@
 ;;
 ;; NOTE: This function depends on `char-at` (a string primitive).
 ;; `char-at` returns a 1-char String, compared with `=` (Eq on String).
-(defn make-grid-helper [s i cells]
-  (if (= i 81) (Some (Grid cells))
-    (let [ch (char-at s i)]
-      (if (= ch ".")
-        (make-grid-helper s (+ i 1) (conj cells (Candidates (full-mask))))
-        ;; Try to parse as a digit 1-9.
-        ;; We compare the character against digit strings.
-        (if (= ch "1") (make-grid-helper s (+ i 1) (conj cells (Given 1)))
-        (if (= ch "2") (make-grid-helper s (+ i 1) (conj cells (Given 2)))
-        (if (= ch "3") (make-grid-helper s (+ i 1) (conj cells (Given 3)))
-        (if (= ch "4") (make-grid-helper s (+ i 1) (conj cells (Given 4)))
-        (if (= ch "5") (make-grid-helper s (+ i 1) (conj cells (Given 5)))
-        (if (= ch "6") (make-grid-helper s (+ i 1) (conj cells (Given 6)))
-        (if (= ch "7") (make-grid-helper s (+ i 1) (conj cells (Given 7)))
-        (if (= ch "8") (make-grid-helper s (+ i 1) (conj cells (Given 8)))
-        (if (= ch "9") (make-grid-helper s (+ i 1) (conj cells (Given 9)))
-        ;; '0' treated as empty (like '.')
-        (if (= ch "0") (make-grid-helper s (+ i 1) (conj cells (Candidates (full-mask))))
-          None))))))))))))))
-
-(defn make-grid [s]
-  (if (= (str-len s) 81)
-    (make-grid-helper s 0 [])
-    None))
+(defn make-grid
+  ([s]
+   (if (= (str-len s) 81)
+     (make-grid s 0 [])
+     None))
+  ([s i cells]
+   (if (= i 81) (Some (Grid cells))
+     (let [ch (char-at s i)]
+       (if (= ch ".")
+         (make-grid s (+ i 1) (conj cells (Candidates (full-mask))))
+         ;; Try to parse as a digit 1-9.
+         ;; We compare the character against digit strings.
+         (if (= ch "1") (make-grid s (+ i 1) (conj cells (Given 1)))
+         (if (= ch "2") (make-grid s (+ i 1) (conj cells (Given 2)))
+         (if (= ch "3") (make-grid s (+ i 1) (conj cells (Given 3)))
+         (if (= ch "4") (make-grid s (+ i 1) (conj cells (Given 4)))
+         (if (= ch "5") (make-grid s (+ i 1) (conj cells (Given 5)))
+         (if (= ch "6") (make-grid s (+ i 1) (conj cells (Given 6)))
+         (if (= ch "7") (make-grid s (+ i 1) (conj cells (Given 7)))
+         (if (= ch "8") (make-grid s (+ i 1) (conj cells (Given 8)))
+         (if (= ch "9") (make-grid s (+ i 1) (conj cells (Given 9)))
+         ;; '0' treated as empty (like '.')
+         (if (= ch "0") (make-grid s (+ i 1) (conj cells (Candidates (full-mask))))
+           None)))))))))))))))
 
 ;; ── Grid solved check ──────────────────────────────────────────────────
 
 ;; Check if all cells are determined (Given or Solved).
-;; Multi-signature showcase (S113): `is-solved` + its `is-solved-helper` scan
-;; are collapsed into one multi-sig `is-solved`. The 1-arg clause seeds the
-;; scan index and delegates cross-arity to the 2-arg scanning clause — the
-;; idiomatic Clojure "public entry seeds the accumulator" shape, expressed as
-;; a single multi-sig `defn` (spec §5.1.2: clauses are inference-equivalent to
-;; separate mutually-recursive functions). Return is a plain `Bool`, so no
-;; polymorphic Vec consumer is involved — this is why `is-solved` collapses
-;; cleanly where `make-grid`/`peers` cannot (see the header "multi-sig
-;; showcase" note for the return-consumer residual that blocks those two).
 (defn is-solved
   ([g] (is-solved g 0))
   ([g i]
