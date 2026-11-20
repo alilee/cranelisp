@@ -1169,3 +1169,151 @@ fn s124_stdlib_adt_traits_across_modes() {
         failures.join("\n")
     );
 }
+
+fn stdlib_selftest_recipe(module: &str, symbol: &str) -> String {
+    format!(
+        "(import [{module} [{symbol}]])\n\
+         (import [testing.runner [run-one tally tally-line]])\n\
+         (import [collections.vec [vec-map]])\n\
+         (import [primitives [discover-tests]])\n\
+         (tally-line (tally (vec-map run-one (discover-tests [\"{module}.test\"]))))\n"
+    )
+}
+
+fn stdlib_selftest_passes(out: &helpers::e2e::CrOutput) -> bool {
+    let tally =
+        regex::Regex::new(r#"^:primitives/String "([0-9]+) passed, ([0-9]+) failed"$"#).unwrap();
+    let lines = helpers::e2e::repl_output_lines(&out.stdout);
+    let tallies: Vec<_> = lines.iter().filter_map(|s| tally.captures(s)).collect();
+    out.status.success()
+        && !format!("{}{}", out.stdout, out.stderr)
+            .to_lowercase()
+            .contains("error:")
+        && tallies.len() == 1
+        && tallies[0][1].parse::<usize>().unwrap() > 0
+        && &tallies[0][2] == "0"
+}
+
+fn s124_stdlib_selftests(shell: &str) {
+    let started = std::time::Instant::now();
+    let stdlib = stdlib_dir(); // read-only on project_root
+    let mut files = Vec::new();
+    collect_cl_files(&stdlib, &mut files);
+    files.sort();
+    let public = regex::Regex::new(r"(?m)^\((?:defn|defmacro|deftrait)\s+([^\s()]+)").unwrap();
+    let export = regex::Regex::new(r"(?m)^\(export\s+\[[^\s]+\s+\[([^\s\]]+)").unwrap();
+    let mut modules = 0;
+    let mut failures = Vec::new();
+    for file in files {
+        let source = fs::read_to_string(&file).unwrap();
+        if !declares_private_child(&file, "test") {
+            continue;
+        }
+        let module = module_path(&file, &stdlib);
+        let module_shell = module.split_once('.').map_or("root", |(parent, _)| parent);
+        if module_shell != shell {
+            continue;
+        }
+        let symbol = public
+            .captures(&source)
+            .or_else(|| export.captures(&source))
+            .unwrap_or_else(|| panic!("{module}: no public force-load symbol"));
+        modules += 1;
+        let out = stdlib_repl(&stdlib_selftest_recipe(&module, &symbol[1]));
+        if !stdlib_selftest_passes(&out) {
+            failures.push(format!(
+                "{module}: {:?}\n{}{}",
+                out.status, out.stdout, out.stderr
+            ));
+        }
+    }
+    eprintln!(
+        "{shell}: {modules} self-test modules in {:?}",
+        started.elapsed()
+    );
+    assert!(modules > 0, "must discover modules declaring test children");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests; AGENTS.md §Assurance — maintenance-check detection proof
+#[test]
+fn s124_stdlib_selftest_check_detects_empty_and_failed_discovery() {
+    for (result, force_load, expected) in [
+        ("None", true, true),
+        ("None", false, false),
+        ("(Some \"planted assertion failure\")", true, false),
+    ] {
+        let recipe = if force_load {
+            stdlib_selftest_recipe("probe", "marker")
+        } else {
+            stdlib_selftest_recipe("probe", "")
+        };
+        let out = Cranelisp::new()
+            .use_workspace_stdlib_for_stdlib_conformance_only()
+            .file("probe.cl", "(import [prelude []])\n(defn marker [] 0)\n(mod- test)\n")
+            .file("probe/test.cl", &format!("(import [primitives [Option String None Some]])\n(defn test-proof [] :(Option String) {result})\n"))
+            .stdin(&recipe)
+            .timeout(Duration::from_secs(30))
+            .output();
+        assert_eq!(
+            stdlib_selftest_passes(&out),
+            expected,
+            "force_load={force_load}, result={result}: {}{}",
+            out.stdout,
+            out.stderr
+        );
+        if !force_load {
+            out.assert_stdout_contains(":primitives/String \"0 passed, 0 failed\"");
+        } else if !expected {
+            out.assert_stdout_contains(":primitives/String \"0 passed, 1 failed\"");
+        }
+    }
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_root() {
+    s124_stdlib_selftests("root");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_collections() {
+    s124_stdlib_selftests("collections");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_compare() {
+    s124_stdlib_selftests("compare");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_core() {
+    s124_stdlib_selftests("core");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_fn() {
+    s124_stdlib_selftests("fn");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_num() {
+    s124_stdlib_selftests("num");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_testing() {
+    s124_stdlib_selftests("testing");
+}
+
+// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+#[test]
+fn s124_stdlib_selftests_text() {
+    s124_stdlib_selftests("text");
+}
