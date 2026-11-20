@@ -15,7 +15,7 @@ While the session is locked, a command that evaluates code is refused; the other
 | `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/sig <name>` | `/s` | Show signature with typed parameters (§3.8) | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/doc <name>` | `/d` | Show docstring (including builtins — see spec/appendix-a-builtins.md §A.5) | 0 | [R1] |
-| `/type <form>` | `/t` | Show the type of an expression or definition form without evaluating or defining it | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/type <form>` | `/t` | Show the type without evaluating or defining the form; refuse a form with no value type | 0 | [Uncovered S124 — was tests/repl_introspection::sig_shows_type_signature] |
 | `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/source <name>` | — | Show original source text | 0 | [R4 S10] |
 | `/sexp <name>` | — | Show parsed S-expression | 0 | [R4 S10] |
@@ -43,8 +43,10 @@ While the session is locked, a command that evaluates code is refused; the other
 
 `/type` MUST NOT evaluate a non-pure form. [S124 — nonconforming. `impl`, `deftype` and `deftrait` given to `/type` are committed to the session: tests/repl_introspection::s124_type_pure_impl_not_installed, tests/repl_introspection::s124_type_pure_deftype_not_defined and tests/repl_introspection::s124_type_pure_deftrait_not_defined fail (ACT-1089). Conforming and tested: an `IO` expression is not performed, and an `import` and a `defmacro` take no effect (tests/repl_introspection::s124_type_pure_io_not_evaluated, tests/repl_introspection::s124_type_pure_import_not_installed, tests/repl_introspection::s124_type_pure_macro_not_installed)]
 
-`/type` given a definition form MUST report its type. The query MUST NOT define
-anything in the session. [S124 — nonconforming. A definition given to `/type` is committed to the session: tests/repl_introspection::s124_1089_existing_definition_subject, tests/repl_introspection::s124_1089_new_name_subject, tests/repl_introspection::s124_1089_stale_type_subject and tests/repl_introspection::s124_1089_changed_signature_subject fail (ACT-1089); the reported type is not the definition's: tests/repl_introspection::s124_1089_definition_reports_its_function_type fails (ACT-1089)]
+`/type` given a definition form with a value type MUST report its type; for
+`defn`, this is the function's type. The query MUST NOT define anything in the
+session. A form with no value type, such as `deftype` or `defmacro`, MUST be
+refused. [Uncovered S124 — was tests/repl_introspection::s124_1089_existing_definition_subject, tests/repl_introspection::s124_1089_new_name_subject, tests/repl_introspection::s124_1089_stale_type_subject, tests/repl_introspection::s124_1089_changed_signature_subject, tests/repl_introspection::s124_1089_definition_reports_its_function_type]
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
 
