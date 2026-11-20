@@ -201,7 +201,7 @@ fn enter_sets_body_running_collect_clears() {
     // Pop the frame enter pushed.
     let _ = cranelisp_trace_exit(0, alloc_string(b"") as i64);
 
-    let t = cranelisp_collect_trace();
+    let t = cranelisp_collect_trace(0, 0);
     assert!(
         !TRACE_BODY_RUNNING.with(Cell::get),
         "collect must clear the flag"
@@ -269,7 +269,7 @@ fn capture_fidelity_got_slotted_callee_names_call_and_carries_operands() {
 
     // Collect the root: it should now hold the child TraceCall the wrapper
     // produced.
-    let root = cranelisp_collect_trace();
+    let root = cranelisp_collect_trace(0, 0);
 
     // The ROOT names "::trace::" with no operands (that's the synthetic
     // root — faithful), but its tchildren must hold the captured call.
@@ -338,7 +338,8 @@ fn empty_trace_yields_faithful_placeholder_not_a_defect() {
         lock_trace_stack().clear();
     }
 
-    let root = cranelisp_collect_trace();
+    let desc = descriptor(DescriptorKind::Int);
+    let root = cranelisp_collect_trace(42, desc.ptr());
 
     // Name is the synthetic placeholder — faithful, NOT degenerate-by-bug.
     let name_heap = unsafe { read_i64(root, TRACE_TNAME_OFFSET) };
@@ -357,6 +358,7 @@ fn empty_trace_yields_faithful_placeholder_not_a_defect() {
         children, TAG_SNIL,
         "empty-trace children are faithfully SNil"
     );
+    assert_eq!(result_of(root), "42", "the root's result is the value");
 
     consume_trace_call(crate::handle::test_owned(root));
 }
@@ -545,63 +547,85 @@ fn accessor_nanos_reads_offset_no_rc_inc() {
     // (nanos is a bare Int, not RC-managed).
 }
 
-// ── 0130 harvest: ::skipped:: concurrent-skip sentinel ────────────────────
-//
-// `design/arch/tracing.md` §4.2: when a DIFFERENT thread already owns the trace
-// role, `cranelisp_trace_swap_got` does NOT swap — it pushes a `::skipped::`
-// sentinel frame and returns SENTINEL_SAVED_GOT (the concurrent-trace skip).
-// This is the `current_owner != my_tid` branch; the W2 guards cover only the
-// same-thread (`current_owner == my_tid`) branches. Simulate a foreign owner
-// and assert the skip path. `restore_got` on the sentinel is a no-op.
-//
-// spec: spec/04-expressions.md §4.12.5 — concurrent trace on another thread
-// is skipped, not nested.
-#[test]
-fn concurrent_foreign_owner_skips_with_sentinel() {
-    // Install a FOREIGN owner (distinct from this thread's id).
+// ── Foreign owner: the skip mark (`trace-runtime.md` §7.2) ─────────────────
+
+/// Install an owner that is not this thread, as a concurrent recording thread
+/// would hold the role.
+fn install_foreign_owner() -> u64 {
     let foreign = current_thread_id() + 100_000;
     TRACE_THREAD_ID.store(foreign, Ordering::SeqCst);
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
-    let stack_depth_before = lock_trace_stack().len();
+    foreign
+}
 
+// spec: spec/04-expressions.md §4.12.6 — a form whose thread finds the role
+// held elsewhere is skipped as a whole: it pushes nothing onto the shared
+// stack, and a later swap of the same form does not acquire a role the owner
+// has meanwhile released.
+#[test]
+fn skip_mark_pushes_nothing_and_holds_for_the_form() {
+    install_foreign_owner();
+    let depth = lock_trace_stack().len();
     let mut got = vec![0i64; GOT_TABLE_SIZE];
     let base = got.as_mut_ptr() as i64;
     let slots: Vec<u32> = vec![0];
     let wrappers: Vec<i64> = vec![0xabcd];
 
     let saved = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
-
-    // Skipped: returns the sentinel, does NOT touch the GOT, does NOT raise.
+    assert_eq!(saved, SENTINEL_SAVED_GOT, "a foreign owner skips the form");
+    assert_eq!(got[0], 0, "a skipped swap installs no wrapper");
     assert_eq!(
-        saved, SENTINEL_SAVED_GOT,
-        "concurrent foreign-owned trace must return the skip sentinel"
-    );
-    assert_eq!(
-        got[0], 0,
-        "skipped swap must NOT install a wrapper into the GOT"
+        lock_trace_stack().len(),
+        depth,
+        "a skipped swap pushes nothing"
     );
 
-    // A `::skipped::` sentinel frame was pushed.
-    let mut stack = lock_trace_stack();
-    assert_eq!(
-        stack.len(),
-        stack_depth_before + 1,
-        "skip must push exactly one sentinel frame"
-    );
-    assert_eq!(
-        stack.last().map(|f| f.name.as_str()),
-        Some("::skipped::"),
-        "the pushed sentinel frame must be named ::skipped::"
-    );
-    stack.pop(); // remove our sentinel
-    drop(stack);
-
-    // restore_got on the sentinel is a no-op (does not touch the GOT).
-    cranelisp_trace_restore_got(base, SENTINEL_SAVED_GOT);
-    assert_eq!(got[0], 0, "restore on sentinel must be a no-op");
-
-    // Restore global state.
     TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+    let again = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
+    assert_eq!(again, SENTINEL_SAVED_GOT, "the form stays skipped");
+    assert_eq!(
+        TRACE_THREAD_ID.load(Ordering::SeqCst),
+        0,
+        "the role is not acquired"
+    );
+    assert_eq!(got[0], 0, "still no wrapper installed");
+
+    cranelisp_trace_restore_got(base, SENTINEL_SAVED_GOT);
+    assert_eq!(got[0], 0, "restore on the sentinel is a no-op");
+    consume_trace_call(crate::handle::test_owned(cranelisp_collect_trace(0, 0)));
+}
+
+// spec: spec/04-expressions.md §4.12.6 — a skipped form returns a childless
+// `::skipped::` root; its result stays empty under current behaviour.
+#[test]
+fn skipped_collect_returns_skipped_root_and_clears_the_mark() {
+    let foreign = install_foreign_owner();
+    let mut got = vec![0i64; GOT_TABLE_SIZE];
+    let base = got.as_mut_ptr() as i64;
+    let slots: Vec<u32> = vec![0];
+    let wrappers: Vec<i64> = vec![0xabcd];
+    let saved = cranelisp_trace_swap_got(base, 1, slots.as_ptr() as i64, wrappers.as_ptr() as i64);
+    cranelisp_trace_restore_got(base, saved);
+    let desc = descriptor(DescriptorKind::Int);
+
+    let skipped = cranelisp_collect_trace(42, desc.ptr());
+    assert_eq!(name_of(skipped), "::skipped::");
+    assert_eq!(
+        children_of(skipped),
+        TAG_SNIL,
+        "a skipped root has no children"
+    );
+    assert_eq!(result_of(skipped), "", "a skipped root's result is empty");
+    consume_trace_call(crate::handle::test_owned(skipped));
+
+    let next = cranelisp_collect_trace(42, desc.ptr());
+    assert_eq!(name_of(next), "::trace::", "the mark was cleared");
+    assert_eq!(result_of(next), "42", "the next collect reads unswapped");
+    consume_trace_call(crate::handle::test_owned(next));
+    assert_eq!(
+        TRACE_THREAD_ID.load(Ordering::SeqCst),
+        foreign,
+        "the foreign owner still holds the role"
+    );
 }
 
 // spec: spec/04-expressions.md §4.12.2 — the synthetic ROOT frame on
@@ -666,4 +690,148 @@ fn enter_and_exit_off_the_recording_thread_record_nothing() {
     .join()
     .expect("non-recording thread");
     assert_eq!(lock_trace_stack().len(), frames, "no frame pushed");
+}
+
+// ── The collect entry's three states (`trace-runtime.md` §7.2) ─────────────
+
+/// A one-record descriptor blob of `kind`, which needs no children.
+struct Descriptor(DisplayDescriptor);
+
+impl Descriptor {
+    fn ptr(&self) -> i64 {
+        &self.0 as *const DisplayDescriptor as i64
+    }
+}
+
+fn descriptor(kind: DescriptorKind) -> Descriptor {
+    Descriptor(DisplayDescriptor {
+        kind: kind as i32,
+        _pad: 0,
+        name_off: 0,
+        child0_off: 0,
+        ctors_off: 0,
+        _pad2: 0,
+    })
+}
+
+fn string_field(node: i64, offset: usize) -> String {
+    // SAFETY: `node` is a live TraceCall whose field at `offset` is a String.
+    unsafe { crate::heap_string::read_string_as_str(read_i64(node, offset)) }.to_string()
+}
+
+fn name_of(node: i64) -> String {
+    string_field(node, TRACE_TNAME_OFFSET)
+}
+
+fn result_of(node: i64) -> String {
+    string_field(node, TRACE_TRESULT_OFFSET)
+}
+
+fn children_of(node: i64) -> i64 {
+    // SAFETY: `node` is a live TraceCall.
+    unsafe { read_i64(node, TRACE_TCHILDREN_OFFSET) }
+}
+
+fn nanos_of(node: i64) -> i64 {
+    // SAFETY: `node` is a live TraceCall.
+    unsafe { read_i64(node, TRACE_TNANOS_OFFSET) }
+}
+
+// spec: spec/04-expressions.md §4.12.2 — the root's result is the formatted
+// value; the collect ends the role and leaves the stack empty.
+#[test]
+fn recorded_collect_renders_the_value() {
+    let desc = descriptor(DescriptorKind::Int);
+    let root = RecordingRole::acquire().close(42, desc.ptr());
+    assert_eq!(name_of(root), "::trace::");
+    assert_eq!(result_of(root), "42");
+    assert!(!this_thread_records(), "the role is released");
+    assert!(lock_trace_stack().is_empty(), "the root was popped");
+    consume_trace_call(crate::handle::test_owned(root));
+}
+
+// spec: spec/04-expressions.md §4.12.2 — a recorded root keeps its children,
+// and its own result is the value, not a child's.
+#[test]
+fn recorded_collect_keeps_children_and_renders_its_own_result() {
+    let desc = descriptor(DescriptorKind::Int);
+    let role = RecordingRole::acquire();
+    let name = "user/f";
+    cranelisp_trace_enter(name.as_ptr() as i64, name.len() as i64, 0, 0);
+    cranelisp_trace_exit(7, alloc_string(b"7") as i64);
+    let root = role.close(42, desc.ptr());
+
+    assert_eq!(result_of(root), "42");
+    let children = children_of(root);
+    assert_eq!(unsafe { read_i64(children, TAG_OFFSET) }, TAG_SCONS);
+    let child = unsafe { read_i64(children, FIELD0_OFFSET) };
+    assert_eq!(name_of(child), "user/f");
+    assert_eq!(
+        result_of(child),
+        "7",
+        "the child's result is its exit's String"
+    );
+    consume_trace_call(crate::handle::test_owned(root));
+}
+
+// spec: spec/04-expressions.md §4.12.2 — a heap value renders by its
+// descriptor and is borrowed: the call leaves its reference count unchanged.
+#[test]
+fn recorded_collect_borrows_a_heap_value() {
+    let desc = descriptor(DescriptorKind::String);
+    let value = alloc_string(b"hi") as i64;
+    let rc = read_rc(value);
+    let role = RecordingRole::acquire();
+    let allocs = crate::alloc::alloc_count();
+    let deallocs = crate::alloc::dealloc_count();
+
+    let root = role.close(value, desc.ptr());
+    assert_eq!(result_of(root), "\"hi\"");
+    assert_eq!(read_rc(value), rc, "the value is borrowed");
+    consume_trace_call(crate::handle::test_owned(root));
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs,
+        crate::alloc::dealloc_count() - deallocs,
+        "the node's allocations balance"
+    );
+    unsafe { crate::alloc::dealloc(value as *mut u8) };
+}
+
+// spec: spec/04-expressions.md §4.12.2 — a form that swapped no slot still
+// returns its value's display, as a childless `::trace::` root.
+#[test]
+fn unswapped_collect_renders_a_childless_root() {
+    let desc = descriptor(DescriptorKind::Int);
+    let root = cranelisp_collect_trace(42, desc.ptr());
+    assert_eq!(name_of(root), "::trace::");
+    assert_eq!(children_of(root), TAG_SNIL);
+    assert_eq!(nanos_of(root), 0, "no start event, so no elapsed time");
+    assert_eq!(result_of(root), "42");
+    consume_trace_call(crate::handle::test_owned(root));
+}
+
+// spec: spec/04-expressions.md §4.12.6 — a collect on a thread that does not
+// record leaves the recording thread's stack alone.
+#[test]
+fn unswapped_collect_leaves_the_shared_stack_alone() {
+    install_foreign_owner();
+    lock_trace_stack().push(TraceFrame {
+        name: "user/planted".to_string(),
+        params: vec![],
+        result: 0,
+        start: Instant::now(),
+        children: vec![],
+    });
+    let depth = lock_trace_stack().len();
+
+    let root = cranelisp_collect_trace(42, descriptor(DescriptorKind::Int).ptr());
+    consume_trace_call(crate::handle::test_owned(root));
+
+    let stack = lock_trace_stack();
+    assert_eq!(stack.len(), depth, "the stack's depth is unchanged");
+    assert_eq!(
+        stack.last().map(|f| f.name.as_str()),
+        Some("user/planted"),
+        "the top frame is unchanged"
+    );
 }

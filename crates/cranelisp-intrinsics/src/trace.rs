@@ -20,9 +20,11 @@
 //!    ([`cranelisp_collect_trace`]).
 //!
 //! Thread safety: `TRACE_THREAD_ID` ensures only one thread owns the trace
-//! role at a time. A different thread evaluating concurrently returns a
-//! sentinel / skips tracing. A *same-thread* re-entrant `(trace (trace ...))`
-//! is a runtime ERROR — see the nested-trace guard below.
+//! role at a time, and only the role holder pushes or pops `TRACE_STACK`. A
+//! form whose thread finds the role held elsewhere is skipped as a whole: its
+//! thread's skip mark is set and it touches neither the GOT nor the stack. A
+//! *same-thread* re-entrant `(trace (trace ...))` is a runtime ERROR — see the
+//! nested-trace guard below.
 //!
 //! Heap layout uses the base-pointer convention (Decision 10):
 //! `[alloc_size(+0) | rc=1(+8) | tag(+16) | field0(+24) | field1(+32) | ...]`
@@ -161,6 +163,13 @@ thread_local! {
     /// cleanup. `restore_got` removes the base it restores.
     static SWAPPED_GOT_BASES: std::cell::RefCell<Vec<i64>> =
         const { std::cell::RefCell::new(Vec::new()) };
+
+    /// The skip mark (`trace-runtime.md` §7.2): set, with that swap's start
+    /// time, by the first swap of a form that finds the role held by another
+    /// thread. While set, every swap on this thread skips without arbitrating,
+    /// so a form is wholly recorded or wholly skipped. The form's collect
+    /// takes it.
+    static SKIP_MARK: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 fn current_thread_id() -> u64 {
@@ -188,6 +197,20 @@ struct TraceFrame {
     result: i64,
     start: Instant,
     children: Vec<i64>, // Trace ADT heap pointers, in call order
+}
+
+impl TraceFrame {
+    /// A frame with no parameters, result or children: a root, or a call frame
+    /// before its wrapper's exit.
+    fn bare(name: &str, start: Instant) -> Self {
+        TraceFrame {
+            name: name.to_string(),
+            params: vec![],
+            result: 0,
+            start,
+            children: vec![],
+        }
+    }
 }
 
 static TRACE_STACK: Mutex<Vec<TraceFrame>> = Mutex::new(Vec::new());
@@ -294,36 +317,38 @@ fn build_trace_call(frame: TraceFrame, nanos: i64) -> i64 {
 // ── swap_got role arbitration + GOT install (decomposed from
 //    cranelisp_trace_swap_got, HIGH-3 / FIXME 0370) ─────────────────────────────
 
-/// Push a placeholder trace frame with a fixed `name`. Used for the synthetic
-/// root frame (`"::trace::"`) and the concurrent-skip sentinel (`"::skipped::"`).
-fn push_trace_frame(name: &str) {
-    lock_trace_stack().push(TraceFrame {
-        name: name.to_string(),
-        params: vec![],
-        result: 0,
-        start: Instant::now(),
-        children: vec![],
-    });
-}
+const ROOT_NAME: &str = "::trace::";
+const SKIPPED_NAME: &str = "::skipped::";
 
 /// What [`cranelisp_trace_swap_got`] should do after arbitrating the trace role.
 enum SwapDecision {
     /// This thread holds (or just claimed) the role for a legitimate swap —
     /// proceed to install the wrapper GOT.
     Proceed,
-    /// Another thread owns the role (or won the claim race) — a sentinel frame
-    /// was pushed; the caller returns `SENTINEL_SAVED_GOT` without swapping.
+    /// This thread's form is skipped (its skip mark is set); the caller returns
+    /// `SENTINEL_SAVED_GOT` without swapping.
     Skip,
+}
+
+/// Mark this thread's form as skipped, from this swap's start.
+fn mark_skipped() -> SwapDecision {
+    SKIP_MARK.with(|m| m.set(Some(Instant::now())));
+    SwapDecision::Skip
 }
 
 /// Arbitrate the trace role for one `swap_got` call (the nested-trace guard,
 /// `tracing.md` §6, FIXME 0283).
 ///
-/// On a successful first claim, pushes the synthetic root frame and records
-/// `got_base`; on a legitimate same-thread multi-module swap, records the new
-/// base; on contention, pushes the sentinel; on re-entrancy, raises the
-/// nested-trace panic, which ends the process. Returns the [`SwapDecision`] the caller acts on.
+/// A thread whose skip mark is set skips without arbitrating. On a successful
+/// first claim, pushes the synthetic root frame and records `got_base`; on a
+/// legitimate same-thread multi-module swap, records the new base; on
+/// contention, sets the skip mark and pushes nothing; on re-entrancy, raises
+/// the nested-trace panic, which ends the process. Returns the
+/// [`SwapDecision`] the caller acts on.
 fn arbitrate_trace_role(got_base: i64) -> SwapDecision {
+    if SKIP_MARK.with(Cell::get).is_some() {
+        return SwapDecision::Skip;
+    }
     let my_tid = current_thread_id();
     let current_owner = TRACE_THREAD_ID.load(Ordering::Relaxed);
 
@@ -333,20 +358,18 @@ fn arbitrate_trace_role(got_base: i64) -> SwapDecision {
             .compare_exchange(0, my_tid, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
-            // Race: another thread just claimed it -> push sentinel frame, skip.
-            push_trace_frame("::skipped::");
-            return SwapDecision::Skip;
+            // Race: another thread just claimed it.
+            return mark_skipped();
         }
         // Successfully claimed. Push the synthetic root frame.
-        push_trace_frame("::trace::");
+        lock_trace_stack().push(TraceFrame::bare(ROOT_NAME, Instant::now()));
         // Record this form's first swapped GOT base (the LEXICAL nested-trace
         // distinguisher, FIXME 0283).
         SWAPPED_GOT_BASES.with(|s| s.borrow_mut().push(got_base));
         SwapDecision::Proceed
     } else if current_owner != my_tid {
         // A different thread owns the trace role -> skip (concurrent trace).
-        push_trace_frame("::skipped::");
-        SwapDecision::Skip
+        mark_skipped()
     } else {
         // current_owner == my_tid. Distinguish:
         //   - legitimate multi-module swap (a second GOT group of the SAME
@@ -455,8 +478,9 @@ unsafe fn install_wrapper_got(
 /// - `wrappers_ptr`: `*const i64` -- wrapper code pointers
 ///
 /// Returns the saved-GOT heap pointer (pass to `cranelisp_trace_restore_got`),
-/// or `SENTINEL_SAVED_GOT` if the trace role is already taken by another
-/// thread.
+/// or `SENTINEL_SAVED_GOT` if the form is skipped: the trace role was taken by
+/// another thread at this form's first swap. A skipped swap touches neither the
+/// GOT nor the trace stack.
 ///
 /// **Nested-trace guard (`tracing.md` §6).** When the calling thread already
 /// owns the trace role (`current_owner == my_tid`) AND a trace body is running
@@ -472,8 +496,7 @@ pub extern "C" fn cranelisp_trace_swap_got(
     wrappers_ptr: i64,
 ) -> i64 {
     // Arbitrate the trace role + nested-trace guard (`tracing.md` §6). On Skip
-    // the sentinel frame is pushed inside the helper, and we return without
-    // touching the GOT.
+    // we return without touching the GOT.
     match arbitrate_trace_role(got_base) {
         SwapDecision::Proceed => {}
         SwapDecision::Skip => return SENTINEL_SAVED_GOT,
@@ -558,11 +581,8 @@ pub extern "C" fn cranelisp_trace_enter(
         vec![]
     };
     lock_trace_stack().push(TraceFrame {
-        name,
         params,
-        result: 0,
-        start: Instant::now(),
-        children: vec![],
+        ..TraceFrame::bare(&name, Instant::now())
     });
 }
 
@@ -593,42 +613,59 @@ pub extern "C" fn cranelisp_trace_exit(result: i64, result_str_ptr: i64) -> i64 
     result
 }
 
-/// Collect the root trace frame, release the trace role, and return the trace
-/// as a `Trace` ADT heap pointer.
-/// Must be called after all `cranelisp_trace_restore_got` calls for this
-/// trace expression.
+/// Close a trace form: return the `Trace` node it evaluates to, whose result is
+/// the display of the body's value (`tracing.md` §3.6).
 ///
-/// Clears `TRACE_BODY_RUNNING` (the nested-trace boundary flag) alongside the
-/// role release — this is the end of the trace body for guard purposes
-/// (`tracing.md` §6).
+/// Emitted once per trace form, last, after every
+/// [`cranelisp_trace_restore_got`] of the form.
+///
+/// - `value` is the body's value, **borrowed**: the entry neither consumes nor
+///   retains it, and the caller releases it after the call.
+/// - `descriptor_ptr` is the blob root for the value's static type, under
+///   [`cranelisp_trace_format`]'s descriptor contract; 0 renders the bare word.
+///
+/// Returns a fresh `TraceCall` (RC=1) owned by the caller:
+///
+/// - **recorded** (this thread holds the role): `::trace::`, the recorded
+///   children, the elapsed time since the role was acquired, and the value's
+///   display as its result. The entry ends the role, clearing the nested-trace
+///   boundary flag.
+/// - **skipped** (the form's first swap found the role held elsewhere):
+///   `::skipped::` with no children and an empty result. The skip mark clears.
+/// - **unswapped** (the form swapped no slot): `::trace::` with no children,
+///   elapsed 0, and the value's display as its result.
+///
+/// Off the recording thread the entry touches no shared state.
 #[unsafe(no_mangle)]
-pub extern "C" fn cranelisp_collect_trace() -> i64 {
-    // Release the trace role (only if we own it) and lower the body-running
-    // boundary flag.
-    let my_tid = current_thread_id();
-    TRACE_THREAD_ID
-        .compare_exchange(my_tid, 0, Ordering::SeqCst, Ordering::Relaxed)
-        .ok();
-    TRACE_BODY_RUNNING.with(|f| f.set(false));
-    // End of trace form: clear the swapped-base set (FIXME 0283). All
-    // restore_got calls have already removed their bases; this drains any
-    // residue defensively so the next trace form starts clean.
-    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
-
-    let mut stack = lock_trace_stack();
-    if let Some(frame) = stack.pop() {
-        let nanos = frame.start.elapsed().as_nanos() as i64;
-        build_trace_call(frame, nanos)
+pub extern "C" fn cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64 {
+    let (mut root, nanos) = if this_thread_records() {
+        close_recorded_form()
+    } else if let Some(start) = SKIP_MARK.with(Cell::take) {
+        let nanos = start.elapsed().as_nanos() as i64;
+        return build_trace_call(TraceFrame::bare(SKIPPED_NAME, start), nanos);
     } else {
-        // Empty stack -- return a minimal TraceCall with empty params/result
-        let name_heap = alloc_string(b"::trace::") as i64;
-        let empty_slist = TAG_SNIL;
-        let empty_str = alloc_string(b"") as i64;
-        alloc_adt(
-            TAG_TRACE_CALL,
-            &[name_heap, empty_slist, empty_str, empty_slist, 0i64],
-        )
-    }
+        (TraceFrame::bare(ROOT_NAME, Instant::now()), 0)
+    };
+    let display = crate::trace_format::format_with_descriptor(value, descriptor_ptr);
+    root.result = alloc_string(display.as_bytes()) as i64;
+    build_trace_call(root, nanos)
+}
+
+/// End the role on the recording thread: stamp the root's elapsed time, pop it
+/// while the role is still held, then release the role and the form's
+/// thread-local guard state. Rendering follows, outside the role.
+fn close_recorded_form() -> (TraceFrame, i64) {
+    let root = lock_trace_stack().pop();
+    debug_assert!(
+        root.is_some(),
+        "the role holder's root frame is on the stack"
+    );
+    let root = root.unwrap_or_else(|| TraceFrame::bare(ROOT_NAME, Instant::now()));
+    let nanos = root.start.elapsed().as_nanos() as i64;
+    TRACE_THREAD_ID.store(0, Ordering::SeqCst);
+    TRACE_BODY_RUNNING.with(|f| f.set(false));
+    SWAPPED_GOT_BASES.with(|s| s.borrow_mut().clear());
+    (root, nanos)
 }
 
 // ── Field accessor extern API ─────────────────────────────────────────────────
@@ -847,6 +884,7 @@ pub fn consume_trace_call(handle: Owned) {
 pub(crate) struct RecordingRole {
     got: Box<[i64]>,
     saved: i64,
+    open: bool,
 }
 
 #[cfg(test)]
@@ -857,15 +895,32 @@ impl RecordingRole {
         let no_wrappers = ptr::NonNull::<i64>::dangling().as_ptr() as i64;
         let saved = cranelisp_trace_swap_got(got.as_mut_ptr() as i64, 0, no_slots, no_wrappers);
         assert_ne!(saved, SENTINEL_SAVED_GOT, "the trace role was free");
-        Self { got, saved }
+        Self {
+            got,
+            saved,
+            open: true,
+        }
+    }
+
+    /// Close the form as emitted code does, with the body's `value` and its
+    /// descriptor, and return the node the collect entry built.
+    pub(crate) fn close(mut self, value: i64, descriptor_ptr: i64) -> i64 {
+        self.end(value, descriptor_ptr)
+    }
+
+    fn end(&mut self, value: i64, descriptor_ptr: i64) -> i64 {
+        self.open = false;
+        cranelisp_trace_restore_got(self.got.as_mut_ptr() as i64, self.saved);
+        cranelisp_collect_trace(value, descriptor_ptr)
     }
 }
 
 #[cfg(test)]
 impl Drop for RecordingRole {
     fn drop(&mut self) {
-        cranelisp_trace_restore_got(self.got.as_mut_ptr() as i64, self.saved);
-        consume_trace_call(crate::handle::test_owned(cranelisp_collect_trace()));
+        if self.open {
+            consume_trace_call(crate::handle::test_owned(self.end(0, 0)));
+        }
     }
 }
 
