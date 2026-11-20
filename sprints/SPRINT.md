@@ -657,3 +657,8 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
 - **User ruling on S124-Q10 recorded at `39be7cfe`.** S124-Q11..Q15 and two
   trace questions (a skipped form's result; a form entered inside a skipped
   form) remain open with the user.
+- **User ruling on S124-Q11 (2026-11-21).** Multi-parameter traits are a
+  future direction, not a present requirement: "this is a future direction,
+  but we need to stabilise what we have so far before we expand. let's
+  consolidate the documentation on no-multi for now, so it is consistent."
+  `spec` consolidates; other carriers are reported to their owners.
