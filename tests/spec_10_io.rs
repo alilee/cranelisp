@@ -4309,3 +4309,92 @@ fn s124_main_macro_without_dependency_retry_location_control_run() {
 fn s124_main_macro_without_dependency_retry_location_control_link() {
     main_macro_before_dependency_retry("link", false);
 }
+
+fn s124_print_balance(body: &str, linked: bool) {
+    let source = format!("(platform test-capture)\n(import [platform.test-capture [print]])\n(import [primitives [Pure bind str-concat]])\n(defn main [] {body})\n");
+    let b = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .use_workspace_platforms()
+        .user(&source)
+        .env("CRANELISP_NO_LENIENT", "1")
+        .env("CRANELISP_RC_STATS", "1");
+    let out = if linked {
+        b.link_then_run("user.cl")
+    } else {
+        b.run("user.cl")
+    }
+    .output()
+    .assert_ok();
+    let stderr = if linked {
+        out.linked_stderr.as_deref().expect("linked child ran")
+    } else {
+        &out.stderr
+    };
+    let line = stderr
+        .lines()
+        .rev()
+        .find(|s| s.contains("[RC_STATS]"))
+        .expect("runtime statistics");
+    let field = |key: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|s| s.strip_prefix(key).and_then(|v| v.parse().ok()))
+            .unwrap()
+    };
+    assert_eq!(
+        field("allocs="),
+        field("deallocs="),
+        "{body}, linked={linked}: {stderr}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE literal run
+// defect: class=rc-miscount locus=platform-call-owned-argument-release found=S124 owner=/dev (ACT-1018; unattributed among platform, backend and runtime)
+#[test]
+fn s124_print_balance_literal_run() {
+    s124_print_balance(r#"(print "a")"#, false);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE literal link
+// defect: class=rc-miscount locus=platform-call-owned-argument-release found=S124 owner=/dev (ACT-1018; unattributed among platform, backend and runtime)
+#[test]
+fn s124_print_balance_literal_link() {
+    s124_print_balance(r#"(print "a")"#, true);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE concat run
+// defect: class=rc-miscount locus=platform-call-owned-argument-release found=S124 owner=/dev (ACT-1018; unattributed among platform, backend and runtime)
+#[test]
+fn s124_print_balance_concat_run() {
+    s124_print_balance(r#"(print (str-concat "a" "b"))"#, false);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE concat link
+// defect: class=rc-miscount locus=platform-call-owned-argument-release found=S124 owner=/dev (ACT-1018; unattributed among platform, backend and runtime)
+#[test]
+fn s124_print_balance_concat_link() {
+    s124_print_balance(r#"(print (str-concat "a" "b"))"#, true);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE continuation_control run
+#[test]
+fn s124_print_balance_continuation_control_run() {
+    s124_print_balance(r#"(bind (Pure "abc") (fn [s] (print s)))"#, false);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE continuation_control link
+#[test]
+fn s124_print_balance_continuation_control_link() {
+    s124_print_balance(r#"(bind (Pure "abc") (fn [s] (print s)))"#, true);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE pure_control run
+#[test]
+fn s124_print_balance_pure_control_run() {
+    s124_print_balance(r#"(Pure 0)"#, false);
+}
+
+// spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE pure_control link
+#[test]
+fn s124_print_balance_pure_control_link() {
+    s124_print_balance(r#"(Pure 0)"#, true);
+}
