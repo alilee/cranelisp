@@ -5451,3 +5451,18 @@ fn s124_1089_expression_control() {
         out.stderr
     );
 }
+
+// spec: repl/spec.md §3 — T-TYPE-DEFN
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_1089_definition_reports_its_function_type() {
+    let out = s124_type_session("\"abc\"\n/type (defn q [:Int n] n)\n").assert_ok();
+    assert!(
+        repl_output_lines(&out.stdout)
+            .iter()
+            .any(|line| line == ":(Fn [primitives/Int] primitives/Int)"),
+        "definition query must report its function type: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
