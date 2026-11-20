@@ -667,3 +667,16 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   be builtins or primitives for any required helpers." The general statement
   is a principle, not only an answer about `sconcat`; `spec` records both and
   lists any other language feature that depends on a library helper.
+- **User ruling on the core/library boundary (2026-11-21), following Q12.**
+  Verbatim: "nothing in the spec should ever rest on prelude. builtin macros
+  can emit fully-qualified references to primitives so they do not depend on
+  any imports. bind might need to be a builtin because it is unimplementable
+  in the type system (if I recall). this must be clear and explicit in the
+  spec. the high level constructs that can be implemented in the library (or
+  by a user), should be (eg. cond could be implemented as nested ifs). the
+  spec must take a clear stance on this." Staged: `spec` records the rule
+  and inventories every construct the specification rests on a prelude or
+  library helper; `arch` determines implementability where the text does not
+  show it; the classification returns to the user before the chapters are
+  rewritten. Compiler consequences are scoped from that classification, not
+  assumed inside S124.
