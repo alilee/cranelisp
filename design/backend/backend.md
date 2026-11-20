@@ -377,7 +377,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name (designed, not built, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), and constructor field types paired by declared parameter (built, row B14, §3). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name by its template (built, row B16, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), and constructor field types paired by declared parameter (built, row B14, §3). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
@@ -386,17 +386,14 @@ The backend is S124's focus module (`sprints/METHOD.md` §Delivery
 principles): it exits with no failing test attributed to it, no build warning
 and no open review finding. This section lists every S124 backend item still
 open, its design and what it waits on. A row leaves when its change lands.
-Verified against source at `044bd8da` on 2026-11-20.
+Verified against source at `39db1bb1` on 2026-11-20.
 
-| Item | Change-set | Design | Waits on | Evidence |
-|---|---|---|---|---|
-| ACT-1091 | An instance's trace frame is named by its template's qualified name | [trace codegen](trace-codegen.md) §1.4 | Types' change-set for row B16, `CallableArm::template_owner` ([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16), approved at `eb1aa36f`) | One module row there, RED first; T-FRAME-NAME is `qa`'s |
-| Slot-call fence | No call or jump relocation in an emitted object names a function of the unit | [compile-to-module](compile-to-module.md) §12.2, *Evidence* | `sprint`'s scheduling; not on the exit list | One module row there |
+No backend design item is open. Each row of this section landed and is
+listed under *Landed in S124* below.
 
-Every earlier S124 public row that touched the backend is built and was
-reported at the Phase 5 checkpoint (`ee65d9aa`). The
-[batch record](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)
-holds one backend consumer row, B16, for ACT-1091.
+Every S124 public row that touched the backend is built. B16 (`c9f573e0`)
+landed after the Phase 5 checkpoint (`ee65d9aa`); its report is `arch`'s
+([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16)).
 
 **What stays RED, and is not the backend's.** `qa`'s standing state at
 `ee65d9aa` attributes no committed failing test to the backend
@@ -449,9 +446,15 @@ its four candidate stages (§14.1).
     [trace codegen](trace-codegen.md) §1.3).
   - Every call to a slotted function goes through its slot (`1238b31c`,
     ACT-1088; [compile-to-module](compile-to-module.md) §12.2).
-- `CACHE_SCHEMA_VERSION` is 35 (read at `044bd8da`). B8 took it from 34
-  (`07bb8e84`). B13, B14, B10, B10-C2 and the slot change changed no
-  persisted shape
+  - An instance's trace frame is named by its template (`2ffc84d3`,
+    ACT-1091, after types' row B16 at `c9f573e0`;
+    [trace codegen](trace-codegen.md) §1.4).
+  - The slot-call relocation row and its detection proof (`4407b008`,
+    `39db1bb1`; [compile-to-module](compile-to-module.md) §12.2).
+  - Comments naming items that do not exist removed (`5a9c4f07`).
+- `CACHE_SCHEMA_VERSION` is 35 (read at `39db1bb1`). B8 took it from 34
+  (`07bb8e84`). B13, B14, B10, B10-C2, the slot change and the frame name
+  changed no persisted shape
   ([trace codegen](trace-codegen.md) §1.3, *Cache*).
 - `CachedModuleRef::dependency_hashes` (`cache/manifest.rs`) holds opaque
   validity keys whose form is int's, not source hashes. `check_manifest`'s

@@ -9,15 +9,14 @@ swap and the nested-trace guard are
 [tracing](../arch/tracing.md) §3–§6 and are not restated here.
 
 Verified against `compiler/trace_codegen.rs`, `lib.rs` and `schema.rs` at
-`044bd8da` (2026-11-20).
+`39db1bb1` (2026-11-20).
 
 - §1.1–§1.3, the traced set, are built: selection by claim and the covered
   set (row B10, `69cd9c18` and `f8c55626`), the within-module order
   (`e8a9cac5`), and the set travelling with each target (row B10-C2,
   `94749709`).
-- §1.4, an instance frame's name, is designed and **not built**. Its public
-  projection is `arch`'s row B16 (approved at `eb1aa36f`), built first in
-  types (ACT-1091).
+- §1.4, an instance frame's name, is built: row B16's projection in types
+  (`c9f573e0`), then discovery (`2ffc84d3`) (ACT-1091).
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
 - §3, the substitution correction (ACT-1062's backend reader), is built
@@ -255,13 +254,12 @@ fully qualified name alone, for example `m/helper`.
 bakes it into the wrapper's read-only data; `cranelisp_trace_enter` records
 the bytes it is passed. No other surface composes or rewrites the name
 ([tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table) step 3
-makes `TracedFnInfo` backend-internal). Read at `044bd8da`: the name is
-`{covered_module}/{table key}`, which for an instance held in `user`'s table
-reads `user/(m/helper [primitives/Int] primitives/Int)`, the spelling
-ACT-1091 observed. ACT-1091's refuter, a name supplied by the binary, is
-false.
+makes `TracedFnInfo` backend-internal). Before `2ffc84d3` the name was
+`{covered_module}/{table key}`, so an instance held in `user`'s table read
+`user/(m/helper [primitives/Int] primitives/Int)`, the spelling ACT-1091
+observed.
 
-**Decision (not built).**
+**Decision (built at `2ffc84d3`).**
 
 - **The frame names the arm's source definition.** An authored entry keeps
   `{covered_module}/{table key}`, which is its own qualified name. An
@@ -274,7 +272,8 @@ false.
   ([Principle 24](../arch/principles/24-resolve-once.md)).
 - **A name is not an identity.** Two instances of one template share a frame
   name. Discovery keeps each entry's table key as its sort key within a
-  group and in its codegen diagnostics, so the wrapper, descriptor and
+  group and in its codegen diagnostics (`TracedFnInfo` holds both, as `key`
+  and `frame_name`), so the wrapper, descriptor and
   swapped-slot order stay as built (§1.3) and the change moves only the name
   bytes.
 - **No runtime, ABI or cache change.** `cranelisp_trace_enter`'s signature
@@ -282,23 +281,24 @@ false.
   only in its baked name bytes, so §1.3's *Cache* argument holds: the build
   identity separates it and no `CACHE_SCHEMA_VERSION` bump is owed.
 
-**Public projection: row B16, `arch`'s, approved 2026-11-20 (`eb1aa36f`).**
-The row adds `CallableArm::template_owner()` to `cranelisp-types` (not yet in
-source at `eb1aa36f`), and
-`template_module()` derives from it
+**Public projection: row B16, `arch`'s** (approved at `eb1aa36f`, built at
+`c9f573e0`). `CallableArm::template_owner()` in `cranelisp-types`, from which
+`template_module()` derives
 ([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16) owns
-the contract and the build order). The backend's change follows types'
-change-set; backend `public-api.txt` moves +0. The backend reads no
+the contract). Backend `public-api.txt` moved +0. The backend reads no
 `InstanceLink` or `CallableTarget` itself.
 
-**Module row, `dev`(backend)'s, RED first.** In
-`compiler/trace_codegen/tests.rs`, over the existing `insert_instance_of`
-fixture: an instance of `m/g` in a covered table is named `m/g`; an authored
-entry in the same group keeps its qualified name (control); two instances of
-`m/g` at different types are both named `m/g` and keep their table-key
-order. End to end, T-FRAME-NAME (`qa`'s allocation,
-[evidence delta](../../tests/plan/s124-evidence-delta.md) §14.3) is
-`trace::s124_template_frame_name_{run,link,repl}`, committed at `76165d36`.
+**Evidence.**
+
+- *Module row:* `discovery_names_an_instance_frame_by_its_template`
+  (`compiler/trace_codegen/tests.rs`, `2ffc84d3`, stated RED first). An
+  instance in a covered table is named by its template; an authored entry in
+  the same group keeps its qualified name (control); instances keep their
+  table-key order.
+- *End to end:* T-FRAME-NAME (`qa`'s allocation,
+  [evidence delta](../../tests/plan/s124-evidence-delta.md) §14.3),
+  `trace::s124_template_frame_name_{run,link,repl}` (`76165d36`). Its
+  acceptance is `qa`'s.
 
 ## 2. The trace extent and the wrapper's allocation
 

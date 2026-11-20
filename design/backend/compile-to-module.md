@@ -3,8 +3,8 @@
 > **Owner**: `design`, narrow-deployed to `cranelisp-backend`.
 > **Status**: current design, verified against source 2026-09-25; §2.6 at
 > `441e31ea`, 2026-11-18; §1, §10, §12 and §14 at `1e4b0ce4`, 2026-11-18,
-> with §12.1 built at `777412a7`; §12.1, §12.2 and §15 at `044bd8da`,
-> 2026-11-20.
+> with §12.1 built at `777412a7`; §12.1 and §15 at `044bd8da`, and §12.2 at
+> `39db1bb1`, 2026-11-20.
 > **Authority**: `design/arch/bounded-contexts.md` §3 owns the boundary and its
 > invariants; the rustdoc in `crates/cranelisp-backend/src/lib.rs` owns the exact
 > signatures. This document explains how the one entry is organised and why.
@@ -514,15 +514,25 @@ call is GOT-indirect, including calls within a module").
   compilation and observes the call follow it. The same-unit leg was RED
   before `1238b31c`; the other-module leg is the control. End to end,
   REPRO-1088's cells are `qa`'s.
-- *Owed, `dev`(backend)'s* ([evidence delta](../../tests/plan/s124-evidence-delta.md)
-  §14.4, §14.8): over the object `compile_to_module` emits for a unit holding
-  a plain wrapper, a curry wrapper and a constructor taken as a value, no
-  call or jump relocation names a function of the unit. A direct call
-  leaves a call relocation against the callee's symbol; a call through a
-  slot leaves none. The row proves it detects by planting a direct call, and
-  `dev` reports whether any JIT-only emission path exists that an object
-  cannot show. It fences the residual of the grade above; it is not on the
-  backend's exit list.
+- *Built:* `fn_as_value/slot_call_tests.rs` (`4407b008`, corrected at
+  `39db1bb1`). `object_holds_no_direct_call_into_its_unit`: over the object
+  `compile_to_module` emits for a unit holding a plain wrapper, a curry
+  wrapper and a constructor taken as a value, no call or jump relocation in
+  a code section names a function of the unit. A direct call leaves a call
+  relocation against the callee's symbol; a call through a slot leaves none.
+  `object_relocation_scan_reports_a_planted_direct_call` is the detection
+  proof: a direct call planted beside the unit is reported, naming its
+  target. `dev` also reports a production mutation calling each target by its
+  `FuncId` turning the row RED for each wrapper kind. It fences the residual
+  of the grade above ([evidence delta](../../tests/plan/s124-evidence-delta.md)
+  §14.4).
+- *Limit, platform.* The scan recognises AArch64 call and x86_64 branch
+  relocations, and Mach-O's leading-underscore symbol spelling. Only the
+  AArch64 ELF form has run, on the Linux host; the x86_64 and Mach-O forms
+  are written and unexercised. *Falsifier:* the detection row failing on an
+  x86_64 or macOS host.
+- *Limit, JIT.* An object cannot show a JIT-only emission path; whether one
+  exists is still `dev`'s to report.
 
 ## 13. Evidence
 
