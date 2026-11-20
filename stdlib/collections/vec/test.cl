@@ -6,7 +6,8 @@
 ;; the vec combinators, and the new eager `range` (gap G3). Vec values reduce
 ;; to Int scalars (count/get/vec-reduce) for assert-eq.
 
-(import [super [count get conj assoc range vec-map vec-filter vec-reduce vec-reverse vec-concat]])
+(import [super [count get conj assoc range vec-map vec-filter vec-reduce vec-reverse vec-concat
+                vec-flatten]])
 (import [testing.assertions [assert-eq]])
 (import [primitives [Option String Int Vec add-i64 mul-i64 eq-i64 gt-i64]])
 
@@ -58,11 +59,18 @@
 (defn test-vec-concat-empty-right [] :(Option String)
   (assert-eq 2 (count (vec-concat [1 2] :(Vec Int) []))))
 
-;; vec-flatten — self-test OWED, held per the green-self-test convention:
-;; vec-flatten is unusable from user code today (FIXME 0488 — same-module
-;; generic `vec-concat` passed as a value to `vec-reduce` loses its mono
-;; instance at the consuming turn; /qa failing guard is the durable
-;; record). Add `test-vec-flatten` rows here when 0488's fix lands.
+;; vec-flatten
+(defn test-vec-flatten-count [] :(Option String)
+  (assert-eq 6 (count (vec-flatten [[1 2] [3] [4 5 6]]))))
+
+(defn test-vec-flatten-order [] :(Option String)
+  (assert-eq 4 (get (vec-flatten [[1 2] [3] [4 5 6]]) 3)))
+
+(defn test-vec-flatten-skips-empty-inner [] :(Option String)
+  (assert-eq 7 (get (vec-flatten [:(Vec Int) [] [7] []]) 0)))
+
+(defn test-vec-flatten-empty-outer [] :(Option String)
+  (assert-eq 0 (count (vec-flatten :(Vec (Vec Int)) []))))
 
 ;; range — G3
 (defn test-range-count [] :(Option String)

@@ -144,11 +144,6 @@
   (if (ge-i64 i len) acc
     (vec-concat-loop (vec-push acc (vec-get vb i)) vb len (add-i64 i 1))))
 
-;; NOTE(0488): vec-flatten is currently UNUSABLE from user code — passing
-;; the same-module generic `vec-concat` as a value to `vec-reduce` loses
-;; its mono instance at the consuming turn's codegen batch (FIXME 0488,
-;; imported/generic value-use; /qa guard in flight). Its self-test is owed
-;; and rides 0488's fix — see collections/vec/test.cl.
 (defn vec-flatten "Flatten a Vec of Vecs into a single Vec"
   [vv]
   (vec-reduce vec-concat [] vv))
