@@ -158,3 +158,53 @@ T-TRACE-ROOT is committed (`f1724229`) and accepted: nine subjects fail on
 their result clause, in `--run` cold and restored, linked and at the REPL,
 and the heap-valued subject fails with its allocations balanced. The four
 child controls pass. The cells count against the backend.
+
+## Corrected, awaiting acceptance (qa, 2026-11-20, `3c5e41ca`)
+
+`arch` approved row B17 (`4a58af99`, `0d5cfe51`); the correction is in
+intrinsics (`ecae99c9`) and the backend (`3c5e41ca`). `dev`(backend) reports
+the nine subjects and four controls green. `qa` has not run the suite on
+this tree.
+
+**A second defect the same change closes.** The discard this filing
+attributes released the body's value with no drop glue, so a body whose
+value owns heap memory leaked what it holds. It is an `rc-miscount`,
+performance only, present since S20, reported by `design`(backend) and
+confirmed in source by `arch`.
+
+- **No separate filing:** it is corrected, and nothing of it is carried.
+- **Its evidence** is `dev`'s module row
+  `trace_root_release_balances_an_owning_value`, which read 5 allocations
+  against 4 releases with the old discard planted.
+- **By hand on the corrected binary,** `--run`, a traced body returning a
+  record holding a `String`, a vector of two `String`s, and a constructor
+  applied in the body balance at 22, 32 and 16.
+- **T-TRACE-OWNING** is allocated for the modes the module row cannot
+  reach (evidence delta §14.3). It arrives green; `qa` saw the fault only
+  through `dev`'s planted row.
+
+**The cross-thread stack disturbance** recorded in
+[trace runtime §7.1](../../design/intrinsics/trace-runtime.md) is corrected
+in the same intrinsics commit. A recorded tree could depend on scheduling
+when a second thread's form was skipped or swapped no slot. No memory
+hazard, and no cell ever observed it. It gets no filing and no
+solution-level cell: no fixture built from user commands selects the
+interleaving, and `dev`'s module rows carry detection proofs.
+
+**What acceptance needs, at the full run:**
+
+1. The nine subjects pass with no assertion changed since `f1724229`, and
+   the four controls still pass.
+2. T-TRACE-OWNING passes in every mode.
+3. `qa` reads the module rows of `ecae99c9` and `3c5e41ca` against their
+   planted faults, and the two reviews' findings.
+4. The category census is armed in that run and reads zero, since the
+   release of a traced value now goes through drop glue.
+5. The trace goldens are unchanged, and no test that passed at `b72742f7`
+   fails.
+6. `test` stamps the nine cells `fixed=S124/3c5e41ca` and puts their
+   comments in the past tense. `qa` then restores the §4.12.2 band and
+   deletes this filing.
+
+Still open with `spec`: the root's name and parameters, above; and a
+skipped form's result (trace runtime §7.3).

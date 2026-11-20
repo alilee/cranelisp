@@ -15,7 +15,7 @@ While the session is locked, a command that evaluates code is refused; the other
 | `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/sig <name>` | `/s` | Show signature with typed parameters (§3.8) | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/doc <name>` | `/d` | Show docstring (including builtins — see spec/appendix-a-builtins.md §A.5) | 0 | [R1] |
-| `/type <form>` | `/t` | Show an expression's type without evaluating it; report an error for a definition form, defining nothing (see below) | 0 | [Uncovered S124 — was tests/repl_introspection::sig_shows_type_signature] |
+| `/type <form>` | `/t` | Show an expression's type without evaluating it; report an error for a definition form, defining nothing (see below) | 0 | [S124 — partial. Tested+Neg for an expression: tests/repl_introspection::type_shows_int_for_arithmetic, tests/repl_introspection::s124_1089_expression_control, tests/repl_introspection::s124_type_pure_io_not_evaluated — its type, with no value, effect or session change. A definition form is nonconforming (below, ACT-1089), and an expression that uses a macro is refused (ACT-1099, no cell yet)] |
 | `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/source <name>` | — | Show original source text | 0 | [R4 S10] |
 | `/sexp <name>` | — | Show parsed S-expression | 0 | [R4 S10] |
@@ -50,7 +50,7 @@ session. The user's ruling is recorded verbatim in
 The phrase “definition form has no type” is treated as illustrative diagnostic
 wording: §5.1 requires a human-readable message but does not prescribe exact
 wording for this error.
-[Uncovered S124 — was tests/repl_introspection::s124_1089_existing_definition_subject, tests/repl_introspection::s124_1089_new_name_subject, tests/repl_introspection::s124_1089_stale_type_subject, tests/repl_introspection::s124_1089_changed_signature_subject, tests/repl_introspection::s124_1089_definition_reports_its_function_type]
+[S124 — nonconforming. A definition form given to `/type` is committed to the session: tests/repl_introspection::s124_1089_existing_definition_subject, tests/repl_introspection::s124_1089_new_name_subject, tests/repl_introspection::s124_1089_stale_type_subject and tests/repl_introspection::s124_1089_changed_signature_subject fail (ACT-1089). The required error has no cell yet: after an expression the query prints that expression's type. tests/repl_introspection::s124_1089_definition_reports_its_function_type asserts the withdrawn rule and is being replaced]
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
 

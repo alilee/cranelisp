@@ -108,7 +108,7 @@ When a top-level function is used as a value (passed as an argument, stored in a
 
 ## 12.3 Memory Management [Tested]
 
-### 12.3.1 Requirements [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::binder_rename_must_not_change_rc_counters, tests/same_form_rebinding::tail_transfer_releases_the_displaced_same_name_binder_run_and_link, tests/par_cont_capture_consuming_use::par_continuation_heap_capture_survives_consuming_uses]
+### 12.3.1 Requirements [S124 — partial: a value the caller owns, passed to a platform function, is never released: tests/spec_10_io::s124_print_balance_literal_run, tests/spec_10_io::s124_print_balance_literal_link, tests/spec_10_io::s124_print_balance_concat_run, tests/spec_10_io::s124_print_balance_concat_link and tests/exemplar_ownership_residue_s116::sudoku_warm_serial_solve_retains_nothing fail (ACT-1018). Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced, tests/shadowed_param_reach_stale_rc_dec::binder_rename_must_not_change_rc_counters, tests/same_form_rebinding::tail_transfer_releases_the_displaced_same_name_binder_run_and_link, tests/par_cont_capture_consuming_use::par_continuation_heap_capture_survives_consuming_uses]
 
 A conforming implementation MUST satisfy the following:
 

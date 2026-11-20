@@ -1,6 +1,6 @@
 ---
 id: ACT-1089
-title: "`/type` given a definition commits it to the live session without code; the next call ends the process on a signal"
+title: "`/type` given a definition form commits it to the live session without code and reports no error; the next call ends the process on a signal"
 status: open
 priority: required
 from: qa
@@ -129,3 +129,53 @@ unchanged. `qa` restores the REPL §3.1 bands.
 T-TYPE-PURE is committed (`ea6778aa`, `c4282cb5`) and accepted: the `impl`
 cell fails at signal 11, the `deftype` and `deftrait` cells on the `/list`
 clause, and the three guards pass. Eight cells fail on this action.
+
+## Ruled finally, 2026-11-20: a definition form is an error
+
+The user closed S124-Q10: "I think it should error - \"definition form has no
+type\"". [REPL §3.1](../../repl/spec/03-slash-commands.md#31-command-inventory)
+(`39be7cfe`) now requires `/type` given a definition form to report an error,
+evaluate nothing and define nothing. The definition forms are those of
+[language §5.14](../../spec/05-definitions.md#514-summary-of-top-level-forms).
+The message's wording is not prescribed. **The earlier ruling above, that
+`/type` reports the definition's type, is withdrawn,** and with it the fifth
+face ("the reported type is not the definition's").
+
+`qa`, 2026-11-20, the debug binary built from `3c5e41ca`, no prelude:
+
+| Given to `/type` | With no earlier expression | After the turn `"abc"` |
+|---|---|---|
+| `defn`, `defn-`, `deftype`, `deftrait`, `impl` | An error line (`found no __expr`); **the form is committed** | **`:primitives/String`, no error;** the form is committed |
+| `defmacro` | An error line; nothing defined | not run |
+| `import`, `export`, `mod`, `mod-`, `platform` | An error line (`undefined variable: import`, and so on); no effect | not run |
+| `(const x 1)`, with `const` a session macro | An error line (`undefined variable: const`); nothing defined | the same |
+
+- **Two faces against the final text.** The form is committed (the faces
+  above), and after any expression the query reports that expression's type
+  where an error is required.
+- **The error printed with no earlier expression is an accident of the
+  missing result,** so a cell that requires the error is discriminating only
+  after an expression.
+- **`const` and `def` are prelude macros** (§5.14). `/type` does not expand
+  macros at all, which is a separate defect
+  ([ACT-1099](ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md)).
+  No stdlib-free cell covers them as definition forms.
+
+## Evidence allocation after the final ruling
+
+- **REPRO-1089's four subjects stand.** They assert that nothing is defined
+  and that no stale type is printed, which the final text keeps.
+- **T-TYPE-DEFN is withdrawn.**
+  `repl_introspection::s124_1089_definition_reports_its_function_type`
+  asserts the withdrawn rule and would fail on a conforming build. T-TYPE-ERR
+  replaces it.
+- **T-TYPE-NONVALUE is released into T-TYPE-ERR:** the report for every
+  definition form is an error.
+- **T-TYPE-PURE stands unchanged.** No clause of it reads the report.
+- T-TYPE-ERR is in the
+  [evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
+
+## Completion evidence (replaces the two statements above)
+
+REPRO-1089's four subjects, T-TYPE-PURE and T-TYPE-ERR pass with their
+controls unchanged. `qa` restores the REPL §3.1 bands.

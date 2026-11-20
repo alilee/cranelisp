@@ -1,7 +1,7 @@
 ---
 id: ACT-1034
 title: A parametric impl's method instance cannot call a polymorphic callee instantiated through the impl's type variable
-status: open
+status: resolved
 priority: required
 from: qa
 to: qa
@@ -182,3 +182,18 @@ Fix or carry is the user's decision under METHOD §2.4. QA retains this intake.
 A1, A2, A3 and C3 go RED for their intended reason, then GREEN after the
 correction in every mode, with C1 and C2 still passing. QA restores the
 §7.3.3 and §5.4.3 bands.
+
+## Resolved (qa, 2026-11-20)
+
+Every cell of this filing passes in the full run at `b72742f7`: the five
+S122 cells (A1, A2, A3 and the two monomorphic controls) and the 27 cells
+named `s124_1034_*`. A1 gives 5 by hand under `--run` and linked on the
+binary built from `3c5e41ca`. Each was RED on its value when committed (evidence delta §2 and §9.1).
+`qa` did not identify the correcting commit.
+
+`qa` restored the §7.3.3 and §5.4.3 bands. The standard library's new
+`Eq`, `Ord` and `Display` implementations for `Option`, `Result` and `Pair`
+have this filing's shape and compile.
+
+Owed before the file is deleted: `test` stamps the cells' `// defect:`
+lines with `fixed=` and puts their comments in the past tense.

@@ -18,7 +18,8 @@
 > `repl/spec/16-test-discovery.md` §16.1 and §16.6.
 > **Checkpoint:** `main` at `4b58ab93` for sections 1 to 13. Section 14 is
 > read at `main` `b72742f7`, where `qa` took the full run; a row that names
-> an earlier commit was read there.
+> an earlier commit was read there. *Since the full run* at the head of
+> section 14 is read at `9d18061d`, with no suite run.
 > **Scope:** sections 1 to 7 are intake, attribution and the reproductions
 > that do not depend on the S124 designs. Sections 8 to 13 are the conditions for the S124
 > corrections and the Phase 3 readiness judgment. Section 14 is the standing state
@@ -26,8 +27,7 @@
 > the failing set by owning module, the focus module's exit list, the carry
 > list, and what each role still owes.
 > **Held:** one cell, for ACT-0985's remaining shape, on a question with
-> `spec` (§10); T-TYPE-NONVALUE, on S124-Q10 (§14.3). F-PR-3 is not written,
-> by the user's ruling.
+> `spec` (§10). F-PR-3 is not written, by the user's ruling.
 
 Condition identifiers are local to this record. Every observation below was
 made by `qa` in scratch directories outside the repository unless a row says
@@ -1511,6 +1511,32 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
 
 ## 14. The standing state
 
+**Since the full run, source has changed and no suite run covers it. A full
+run and an acceptance read are owed once `test` commits the handoff of
+§14.3.** Read at `9d18061d` (Phase 6b):
+
+- **[ACT-1094](../../sprints/actions/ACT-1094-trace-root-result-is-empty-intake.md) is corrected, not yet accepted** (row B17;
+  intrinsics `ecae99c9`, backend `3c5e41ca`). `dev`(backend) reports its
+  nine cells green. The same change closes a leak of a traced value that
+  owns heap memory, and a cross-thread disturbance of the trace stack; the
+  filing states both and what acceptance needs.
+- **`/type` given a definition form must now report an error** (the user's
+  final ruling on S124-Q10, `39be7cfe`). T-TYPE-DEFN asserts the withdrawn
+  rule and is replaced; T-TYPE-NONVALUE is released into the same cell
+  (§14.3, T-TYPE-ERR).
+- **[ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md) is opened:** `/type` refuses an expression that
+  uses a macro. Found by `qa` while re-reading ACT-1089.
+- **[ACT-1034](../../sprints/actions/ACT-1034-parametric-impl-instance-body-polymorphic-callee-intake.md) is resolved.** Its cells pass in the run below, and
+  the §7.3.3 and §5.4.3 bands are restored.
+- **The standard library gained trait implementations** for `Option`,
+  `Result`, `Pair`, `List` and `Either` (`1aa70557`), and the exemplar was
+  reduced (`a6ee047c` to `77103eb0`). No suite test runs the library's
+  self-tests.
+- **The user accepted** the residual for REPL §17.19 R10's *still
+  compiling* clause: it stands on a module row alone.
+- **The corrected search fixture is accepted** (`6137fdf7`): `xf` is now
+  valid apart from its unresolvable import.
+
 **The full suite at `b72742f7`: 7,968 run, 7,864 passed, 104 failed,
 1 skipped, in 261 s. Every failing test traces to an open filing (§14.1).
 Nine of them are attributed to the backend, this sprint's focus module, on
@@ -1520,7 +1546,6 @@ a defect found after the Phase 5 exit (§14.9).**
   reproductions arrived RED, and REPRO-1090's run-dependent subject passed
   in this run. No test that passed there fails here.
 - **All eight Phase 6a allocations are committed and accepted** (§14.2).
-  One fixture is returned to `test` (§14.3).
 - **The run's build prints no warning from a workspace crate.** Only the
   test binaries were rebuilt; no other source has changed since the build
   read at `39db1bb1`.
@@ -1570,7 +1595,7 @@ This section is the standing state under the
 | Every failing test, by owning module, with its severity | §14.1 |
 | Carried problems that have no failing test | §14.1, *No failing test* |
 | Evidence judged since `f8c55626` | §14.2 |
-| What `test` owes, and what is held | §14.3 |
+| The Phase 6b handoff to `test`, and what is held | §14.3 |
 | Residuals, and the falsifiers that got no cell | §14.4 |
 | Defects opened, narrowed and closed since `f8c55626` | §14.7 |
 | Handoffs, in order | §14.8 |
@@ -1747,7 +1772,7 @@ the correction and pass with no change to their assertions.
 | The backend's module row for ACT-1091 (`crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs::discovery_names_an_instance_frame_by_its_template`, `2ffc84d3`) | **Adequate** | Two instances of one template both take `m/g`, an authored entry keeps its own name, and the instances keep their table-key order. It covers what the cells cannot: more than one instance. `dev` states it RED first; `qa` did not observe that |
 | Row B16's module row in types (`module/tests.rs`, `c9f573e0`) | Adequate at its tier | It replaces the `template_module` row it subsumes. `review` returned no finding on the commit |
 | REPRO-1090: `trace::s124_1090_mixed_restore_subject` and `s124_1090_all_restored_control` (`f18652c6`) | **Accepted, RED as allocated** | The fixture, the launch counts and the two clauses are the allocated ones. In the full run the subject fails on its score assertion with 2 of 30 launches at 50, and the control passes. `test` reports ten of ten readings RED, five alone and five loaded, with 1 to 7 launches of 30 at 50. **Cost:** the subject took 61 s and the control 25 s inside the suite, against the 40 s estimated. **Limit:** while the defect is open the subject fails by rate; at 2 of 30 a pass is about one run in eight. `qa` re-reads the launch count when the correction lands with its module row |
-| T-TYPE-DEFN: `repl_introspection::s124_1089_definition_reports_its_function_type` (`28176b57`) | **Accepted, RED as allocated** | It fails on its type-line assertion after a zero exit, not on setup. It carries REPRO-1089's `// defect:` line |
+| T-TYPE-DEFN: `repl_introspection::s124_1089_definition_reports_its_function_type` (`28176b57`) | **Accepted, RED as allocated** | It fails on its type-line assertion after a zero exit, not on setup. It carries REPRO-1089's `// defect:` line **Withdrawn on 2026-11-20:** the rule it asserts was replaced by the user's final ruling. T-TYPE-ERR replaces the cell (§14.3) |
 | REPRO-1088's trace lines (`ee5d5fc0`) | Accepted | Seven subjects carry `fixed=S124/1238b31c` and state the defect in the past tense. No assertion changed; all twelve cells pass |
 | The backend's relocation row (`fn_as_value/slot_call_tests.rs::object_holds_no_direct_call_into_its_unit` and `object_relocation_scan_reports_a_planted_direct_call`, `4407b008`; `39db1bb1`) | **Adequate.** The safety fence §14.4 allocated | Both legs are in the change-set: the clean unit reports nothing and a planted direct call is reported by name. `dev` states that a production mutation calling each target by its function id turned the row RED for each wrapper kind; `qa` did not repeat it. The Mach-O spelling `review` found is corrected and does not execute on this host |
 | Row K11-a: the public-API baseline check (`c86aa1f7`) | **Passes; a maintenance check** | `public_api_check_runs_against_all_seven_crates`, its version-floor legs and its disposable-crate detection proof pass in the full run |
@@ -1809,37 +1834,156 @@ read; each cell passed or failed in the `f8c55626` run as its row states.
 
 ### 14.3 Allocated to `test`
 
-**Every allocation below is committed and judged (§14.2). One item is
-returned.**
+**The Phase 6b handoff, in rank order.** None of it is committed. The
+Phase 6a allocations further down are committed and judged (§14.2); their
+conditions stay as the present-tense statement of what each cell shows.
+
+| Rank | Allocation | Filing | Class | By hand at `3c5e41ca` |
+|---|---|---|---|---|
+| 1 | T-TYPE-ERR, replacing T-TYPE-DEFN | ACT-1089 | Acceptance | Four subjects fail; the guards and control hold |
+| 2 | T-TRACE-OWNING | ACT-1094 | Acceptance | Balances under `--run`; other modes not read |
+| 3 | T-TYPE-MACRO | ACT-1099 | Acceptance | Fails |
+| 4 | T-STDLIB-ADT-TRAITS | — | Acceptance, of the library | Four legs give 4 under `--run` and linked; the rest not run |
+| 5 | T-STDLIB-SELFTESTS | — | Maintenance check | Not run by `qa`; `dev` reads 317 of 317 |
+| 6 | `fixed=` stamps and past-tense comments on ACT-1034's cells | ACT-1034 | Maintenance | — |
+
+After `qa` accepts ACT-1094 at the full run, `test` stamps T-TRACE-ROOT's
+nine subjects the same way.
+
+**T-TYPE-ERR** ([ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md); REPL §3.1: "`/type` given a
+definition form MUST report an error. It MUST NOT evaluate the form or
+define anything in the session").
+
+- **Risk.** `/type` given a definition answers with the type of whatever
+  was evaluated before it, so the user reads a plausible, wrong type.
+- **The cell it replaces.**
+  `repl_introspection::s124_1089_definition_reports_its_function_type`
+  requires the definition's function type. That rule is withdrawn, and the
+  cell would fail on a conforming build. Its `defn` subject becomes the
+  first subject here.
+- **Seam and technique.** `s124_type_session`. **Every session first
+  enters the turn `"abc"`,** so an earlier result exists: with none, the
+  build prints an error by accident and the cell cannot fail.
+- **Clauses, for the response to the `/type` turn alone:**
+  1. it holds an error in the form of REPL §5.1;
+  2. it holds no type line. In particular not `:primitives/String`, the
+     earlier turn's type, and not a function type, the withdrawn answer.
+- **Do not assert the message's words.** The specification calls the
+  phrase "definition form has no type" illustrative.
+- **Subjects, one cell each:** `(defn q [:Int n] n)`; `(deftype T A B)`;
+  `(deftrait Sz (sz [self] Int))`; `(impl Sz T (defn sz [self] 7))` after
+  its trait and type.
+- **Guards, in one cell:** `(defmacro mm [x] x)`,
+  `(import [primitives [add-i64]])`, `(export [primitives [add-i64]])`,
+  `(mod foo)` and `(platform stdio)` each meet both clauses.
+- **Control.** `/type (add-i64 1 2)` after the same first turn prints
+  `:primitives/Int` and no error.
+- **Wrong implementations it rejects.** The stale answer as built (the
+  four subjects); the definition's own type (clause 2); an error only when
+  no earlier result exists (the first turn); a correction for `defn` alone
+  (the other three subjects); a refusal of every `/type` (the control).
+- **Whether the form is defined is not asserted here.** REPRO-1089's four
+  subjects and T-TYPE-PURE hold that, unchanged.
+- **Not covered.** `const` and `def` are prelude macros, and no stdlib-free
+  session has them as definition forms. The `-` variants share their
+  form's path.
+
+**T-TRACE-OWNING** ([ACT-1094](../../sprints/actions/ACT-1094-trace-root-result-is-empty-intake.md), *A second defect*; spec §12.3.1
+and §4.12.2).
+
+- **Risk.** A traced body whose value owns heap memory strands what the
+  value holds, or the value is released before the root's result is
+  rendered from it.
+- **Seam and technique.** No-prelude programs read through the harness's
+  allocation statistics with lenient evaluation off, as
+  `trace::s124_trace_root_heap_result_and_balance`.
+- **Subjects.** A traced call returning (a) a one-field record whose field
+  is a `String` built at run time, and (b) a vector of two such `String`s.
+- **Clauses, for each subject:** allocations equal frees; and the root's
+  result equals the result of the child frame for that call, and is not
+  empty.
+- **Modes.** `--run` cold, `--run` restored from cache, and `--link`. The
+  module row cannot reach the object modes, where the glue is reached
+  through a relocation.
+- **Wrong implementations it rejects.** A release with no drop glue (the
+  balance clause); a release before the collect call reads the value (the
+  equality clause, or a fault); glue that resolves only in the JIT (the
+  modes).
+- **It arrives green, and `qa` has not seen it fail.** The fault is
+  observed only through `dev`'s module row with the old discard planted.
+  No earlier tree is built to show the red.
+
+**T-TYPE-MACRO** ([ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md); REPL §3.1).
+
+- **Risk.** `/type` cannot answer for any expression that uses a macro,
+  and says the macro is undefined.
+- **The cell.** In `s124_type_session`, after
+  ``(defmacro twice [x] `(add-i64 ~x ~x))``: `/type (twice 2)` prints
+  `:primitives/Int` and no error.
+- **Control.** `(twice 2)` prints `:primitives/Int 4` in the same session.
+- **Wrong implementation it rejects.** A type query that skips macro
+  expansion, as built.
+- **It fails today** on the type clause.
+
+**T-STDLIB-ADT-TRAITS,** library conformance under the standard-library
+exception, in `tests/stdlib_conformance.rs`.
+
+- **Risk.** An implementation that passes its module's self-test is not
+  reachable from a user program through the default prelude, or its
+  instance is missing from a linked binary.
+- **Authority.** The library's own documented behaviour, in its plan and
+  its modules' docstrings. It is not the language specification. The
+  mechanisms the cell exercises are `spec/07-traits.md` §7.3.3 and
+  `spec/08-modules.md` §8.4.8.
+- **The cell.** One driver program scored by its exit status, in the REPL,
+  under `--run` and `--link`, as the existing `…_across_modes` drivers.
+- **Legs.** For each of `Option`, `Result`, `Pair`, `List` and `Either`:
+  `Eq` on equal values, on unequal payloads and on different constructors;
+  `Ord` on one ordered pair; `Display` against the documented text. One
+  nested leg, `(Some (Some 1))`, for each trait. `Default` for `Option`.
+- **Wrong outcomes it rejects.** An implementation visible only inside
+  the library (every leg); an equality that is always true (the unequal
+  legs); an instance absent after linking (the linked mode).
+- **`dev`(stdlib) confirms the expected texts** where a docstring does not
+  give one. `test` does not derive them from the implementation.
+
+**T-STDLIB-SELFTESTS,** a maintenance check on the standard library.
+
+- **What it protects.** The library's evidence is its self-tests
+  (`stdlib/AGENTS.md`), and they are run by hand only. The suite compiles
+  every public module and runs none of its tests.
+- **The cell.** A REPL session over the workspace library that runs each
+  module's self-tests by the recipe in `stdlib/AGENTS.md`. Every module
+  that declares a test child reports at least one test and no failure.
+- **The non-zero clause is the point.** A module loaded by a null import
+  reports zero tests, which reads as green.
+- **No total is pinned.** A count would change with every library edit.
+- **Its authority.** A failure blocks claims about the library. It is not
+  acceptance evidence for the compiler.
+- **Cost.** `test` reports its time in the suite. If it passes a minute
+  under load, split it by the library's top-level shells.
+
+**The Phase 6a allocations, committed.**
 
 | Rank | Allocation | Filing | Class | State at `b72742f7` |
 |---|---|---|---|---|
 | 1 | T-TYPE-PURE, the `impl` cell | ACT-1089 | Safety fence | RED: signal 11 |
 | 2 | T-MOD-CHILD | ACT-1096 | Acceptance | 4 RED, control green |
-| 3 | T-TRACE-ROOT | ACT-1094 | Acceptance | 9 RED, 4 controls green |
+| 3 | T-TRACE-ROOT | ACT-1094 | Acceptance | 9 RED, 4 controls green; corrected since |
 | 4 | T-SEARCH-REACH | ACT-1092 | Acceptance | 2 RED, 1 green |
 | 5 | T-TYPE-PURE, the other cells | ACT-1089 | Acceptance | 2 RED, 3 guards green |
 | 6 | T-TRAIT-SCALAR | ACT-1097 | Acceptance | 3 RED, 2 controls green |
 | 7 | T-PRINT-BALANCE | ACT-1018 | Acceptance | 4 RED, 4 controls green |
 | 8 | T-EXEMPLAR-TESTS | — | Maintenance check | 2 green |
 
-**Returned to `test`: T-SEARCH-REACH's negative fixture.** In
-`search::s124_search_reach_neg_missing_dependency_no_row` the module `x`
-defines `(defn xf [n] (absent n))`, so its body fails to check with or
-without the import. A feed that skips an unresolvable import and takes
-rows from the rest of the module still prints no row, and the cell passes.
-The definition must be valid apart from the import, for example
-`(defn xf [:Int n] n)` with `Int` imported. By hand on this binary that
-fixture prints no row, so the cell stays green. It blocks nothing.
+**Advisory, not returned.** The `import` and `defmacro` guards of
+T-TYPE-PURE look for `undefined` and the name anywhere in the output. They
+discriminate today.
 
-**Advisory, not returned.** The `import` and `defmacro` guards look for
-`undefined` and the name anywhere in the output. They discriminate today.
-
-Three items are held:
+Two items are held:
 
 | Item | Held on |
 |---|---|
-| **T-TYPE-NONVALUE:** what `/type` prints for `deftype`, `deftrait`, `impl`, `defmacro`, `import` or `export` | S124-Q10, with the user ([spec appendix D](../../spec/appendix-d-open-questions.md)) |
 | **T-OWNER,** below | The user's decision to build the cache-owner lock (ACT-1085) |
 | The outcome clause and the session-save and restart legs of REPRO-1081 | The user's ruling |
 
@@ -1854,8 +1998,7 @@ session").
 - **Seam and technique.** A REPL session with no prelude and piped input,
   as `s124_type_session`. Each cell gives `/type` one form and then reads
   the session by ordinary turns. The `IO` cell loads the `stdio` platform.
-- **No clause reads what `/type` itself prints** for a non-value form, nor
-  requires or forbids an error line from it. That is T-TYPE-NONVALUE.
+- **No clause reads what `/type` itself prints.** That is T-TYPE-ERR.
 
 | Cell | Given to `/type` | Clauses | Control | By hand, before the cell |
 |---|---|---|---|---|
@@ -1940,13 +2083,12 @@ loaded or is still compiling in the session").
   taken from a module whose imports cannot be resolved (3).
 - **Fixture property.** Match the whole import form. `/search tf` also
   prints an unrelated `primitives` row today.
-- **Named residual: the *still compiling* clause has no solution-level
-  cell.** Its face needs a dependency that is registered and not yet
+- **Named residual, accepted by the user on 2026-11-20: the *still
+  compiling* clause has no solution-level cell.** Its face needs a dependency that is registered and not yet
   published when the feed reaches the dependent. By hand it appeared in
   115 of 420 launches under fourteen-way load and 0 of 30 alone, with a
   1,200-definition fixture. A cell built from user commands cannot select
-  that interleaving. Its evidence is the second module row below. The user
-  approves the residual; `sprint` presents it.
+  that interleaving. Its evidence is the second module row below.
 - **`dev`(`src/`) owes two module rows with the correction,** over
   `checked_typecheck_module`: the dependent's rows are produced when its
   dependency (i) is absent from the live tables with its source on the
@@ -2031,18 +2173,17 @@ resolves "to the child directory path only").
 - **What it protects.** `exemplar/tests.cl` is run by hand only, so the
   showcase can stop passing its own tests without a failing test.
 - **The cell.** From a scratch copy of `exemplar/`, with the workspace
-  standard library and platforms, `--run tests.cl` exits 41, with lenient
-  evaluation on and with `CRANELISP_NO_LENIENT=1`.
+  standard library and platforms, `--run tests.cl` exits with the count
+  `exemplar/AGENTS.md` states, with lenient evaluation on and with
+  `CRANELISP_NO_LENIENT=1`.
 - **Its authority.** A failure blocks claims about the exemplar. It is not
   acceptance evidence for the compiler, and it is not the evidence that
   parallel and serial evaluation agree: that claim's cells are the suite's
-  own. The count 41 is the exemplar's, stated in `exemplar/AGENTS.md`;
-  `dev`(exemplar) changes the two together.
+  own. The count is the exemplar's (41 at `b72742f7`, 43 since `8fd21ddd`);
+  `dev`(exemplar) and `test` change the two together.
 - **It uses the standard library** under the exemplar's standing
   exception, as `tests/exemplar_web.rs` does.
 
-**Not asserted by T-TYPE-DEFN:** what `/type` reports for a non-value
-form. That is T-TYPE-NONVALUE, above.
 
 **T-OWNER** (ACT-1085; int §7.7, *One cache owner per project directory*),
 held. Stated now so the allocation is on record; it is re-read against the
@@ -2140,8 +2281,7 @@ ACT-1088 changed only wrapper bodies, and no golden frame moved (§14.2).
   `design`(int) accepts it; the user has been asked. No cell.
 - **`/type` in a locked session** admits `/type` and refuses every
   definition (REPL §14.5). `/type` given a definition there was not probed
-  (ACT-1089). What `/type` reports for a form with no value type is
-  S124-Q10, with the user; T-TYPE-NONVALUE is held on it (§14.3).
+  (ACT-1089).
 - **The search index omits a module whose import names a module that is
   not loaded or is still compiling** ([ACT-1092](../../sprints/actions/ACT-1092-search-index-omits-a-module-whose-import-names-an-unloaded-or-compiling-module.md)).
   The search then answers as from a complete index. It is a defect
@@ -2235,6 +2375,10 @@ running at once, and once in the full suite.
 
 | Filing | Defect | Entered | Face | State |
 |---|---|---|---|---|
+| [ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md) | `/type` refuses an expression that uses a macro | Not established | A legal query refused, with a diagnostic naming a defined macro as undefined | **Opened by `qa` on 2026-11-20.** Reproduced by hand with a control; attributed to `src/`'s type query, provisionally. T-TYPE-MACRO (§14.3) |
+| Recorded in ACT-1094 | A traced body's value that owns heap memory was released with no drop glue | S20 | Performance only: what the value holds is stranded | **Corrected at `3c5e41ca`, not yet accepted.** Reported by `design`(backend); observed only through `dev`'s module row with the fault planted. No filing. T-TRACE-OWNING (§14.3) |
+| Recorded in ACT-1094 | A second thread's skipped or unswapped trace form pushed onto, or popped from, the recording thread's stack | Before S124 | Wrong value, run-dependent: a recorded tree depends on scheduling. No memory hazard | **Corrected at `ecae99c9`, not yet accepted.** Found by `design`(intrinsics) in source; never observed by a cell. No filing and no solution-level cell: no fixture selects the interleaving. `dev`'s module rows carry detection proofs, which `qa` reads at the full run |
+| [ACT-1034](../../sprints/actions/ACT-1034-parametric-impl-instance-body-polymorphic-callee-intake.md) | A parametric implementation's method instance could not call a polymorphic callee | S122 intake | Legal program refused | **Resolved.** Every cell passes in the run at `b72742f7`; bands restored. The file stays until `test` stamps the cells |
 | [ACT-1096](../../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md) | A declared child of a library module is loaded from a same-path file earlier on the search path | The resolving line dates from 2026-06-21; no earlier tree was run | Wrong value, every mode | **Opened from `dev`(exemplar)'s probes; a defect against spec §8.2.5.** Reproduced by hand with a control that separates the search order from the project root; attributed to `src/`'s child enrolment, read in source. T-MOD-CHILD is committed, 4 cells RED. One question for `spec` |
 | [ACT-1097](../../sprints/actions/ACT-1097-trait-signature-accepts-a-bare-primitive-type-name-that-is-not-imported-intake.md) | A trait signature accepts a bare primitive type name the module has not imported | The resolver's convergence, `5ed07d60` (2026-07-16), keeping earlier behaviour | An illegal program accepted | **Opened from `audit`'s finding R6; a defect against spec §3.1.** Reproduced by hand with controls; attributed to typecheck's scalar fast path, read in source. T-TRAIT-SCALAR is committed, 3 cells RED |
 | [ACT-1094](../../sprints/actions/ACT-1094-trace-root-result-is-empty-intake.md) | A trace root's result is the empty string | S20 (`01eff049`), with the sentence it violates | Wrong value, every mode | **Opened by `training`; a defect against spec §4.12.2.** Reproduced by hand with a control; attributed to the backend's discard of the body value, read in source. T-TRACE-ROOT is committed, 9 cells RED. One question for `spec` |
@@ -2284,6 +2428,16 @@ running at once, and once in the full suite.
 - **ACT-1018's withdrawn reading.** `qa` concluded from one stdlib-free
   run that the path allocated nothing, and did not keep the reading's
   counts. A negative reading is recorded with its numbers.
+- **ACT-1099.** `/type` had cells for a primitive call and a function
+  call. The axis "the expression uses a macro" was not enumerated for any
+  slash command that takes an expression.
+- **The owning-value leak.** T-TRACE-ROOT's heap leg used a `String`, which
+  holds nothing further. `qa` allocated "heap-valued" and did not separate
+  a value that owns other heap values, which is where drop glue matters.
+- **The stale ACT-1034 bands.** Its cells turned green during S124 and no
+  read of this section compared the passing set with the bands that named
+  cells as failing. A band that names a failing cell is re-read whenever
+  that cell passes.
 
 **The `index:` note in REPRO-1090 is ACT-1092's seam and does not touch
 the score.** The cell's turn loads `m`, so the session lists `m`'s rows
@@ -2350,15 +2504,21 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 **Can proceed now, in this order.**
 
-1. **`test`:** T-SEARCH-REACH's negative fixture (§14.3, *Returned*).
-   Nothing else is owed.
-2. **`sprint`:**
-   - nine failing tests are attributed to the backend on ACT-1094, found
-     after the Phase 5 exit (§14.9). Whether the backend's exit is
-     reopened or the cells are carried is the user's;
-   - present T-SEARCH-REACH's named residual for the user's approval
-     (§14.3);
-   - the failing count is 104 (§14.1);
+1. **`test`:** the six rows of §14.3's Phase 6b table, in rank order.
+2. **`qa`, once they are committed:** one full run with the category
+   census armed; the acceptance read of ACT-1094 as its filing lists; the
+   re-read of ACT-1018's exemplar guard after the exemplar's helper
+   collapse; the reds of T-TYPE-ERR and T-TYPE-MACRO on their clauses; the
+   new failing count.
+3. **`sprint`:**
+   - ACT-1094's correction is in source and its acceptance waits on that
+     run (§14.9);
+   - ACT-1099 is new and attributed to `src/`;
+   - `crates/cranelisp-intrinsics/public-api.txt` changed at `ecae99c9`
+     under row B17. Whether that is the phase's one regeneration is
+     `arch`'s to state;
+   - the failing count is 104 at `b72742f7` (§14.1) and is not re-read
+     since;
    - return ACT-1094's outcome to `training`, ACT-1096's to
      `dev`(exemplar), ACT-1097's to `audit`'s disposition and ACT-1018's
      to `dev`(stdlib);
@@ -2413,7 +2573,9 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
    child, and §4.12.2 does not say what the root's name and parameters are
    (ACT-1094). It blocks no test.
 
-   Also blocking no test: what a file at `{project_root}/m/t.cl` is when
+   Also blocking no test: a skipped trace form's result, which §4.12.6
+   does not name ([trace runtime §7.3](../../design/intrinsics/trace-runtime.md));
+   what a file at `{project_root}/m/t.cl` is when
    `m` resolves to a library directory (ACT-1096); and whether a default
    method body naming an undefined function is reported at the trait's
    declaration (ACT-1097, *Lead*).
@@ -2429,9 +2591,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 | A public change `arch` escalates: the resolution gap's module (ACT-1082); `CallableOrigin::TraitMethod` carrying its member | ACT-1082's 4 cells | Public-API changes |
 | The ignored-path findings of the document checker | The document gate | — |
 | Whether ACT-1085's control is built | T-OWNER | Reproduce first: it has no reproduction |
-| S124-Q10: what `/type` reports for a non-value form | T-TYPE-NONVALUE | Consistent spec: silent without blocking |
-| The residual for R10's *still compiling* clause (§14.3) | No test | A residual needs the user's approval |
-| Whether the backend's exit is reopened for ACT-1094 | T-TRACE-ROOT's 9 RED cells | Focus module |
+| Whether ACT-1099's correction is scheduled with ACT-1089's | T-TYPE-MACRO | Clean house: both are in `typecheck_only` |
 
 **Carried, with nothing owed this sprint beyond the failing test:** every
 filing of §14.1 outside the backend.
@@ -2446,9 +2606,10 @@ warning from it, no open review finding on it.
 
 **At `b72742f7` the backend does not meet the first clause: nine failing
 tests are attributed to it, all T-TRACE-ROOT's, on ACT-1094. The defect
-dates from S20 and was found in Phase 6a, after the exit was taken on a
-tree where the clause was met. Reopening the exit or carrying the cells is
-the user's decision.**
+dates from S20 and was found in Phase 6a. It is corrected at `3c5e41ca`
+under row B17, and `dev` reports the nine cells green; `qa` accepts or
+returns it at the next full run. Two reviews of the correction are in
+progress, so the third clause is open again until they return.**
 
 | Clause | State at `b72742f7` |
 |---|---|
@@ -2466,7 +2627,7 @@ are failing tests of the focus module.
 
 | Filing | State at `b72742f7` |
 |---|---|
-| ACT-1094 | **9 cells RED:** a call body and a literal body in `--run` cold, `--run` restored, linked and at the REPL, and a heap-valued body. Carried on them unless the user schedules the correction, which goes to `arch` first |
+| ACT-1094 | **9 cells RED at `b72742f7`:** a call body and a literal body in `--run` cold, `--run` restored, linked and at the REPL, and a heap-valued body. Corrected at `3c5e41ca`; not yet accepted |
 | ACT-1091 | Closed and deleted. Three cells and a module row pass |
 | ACT-1088 | Closed and deleted. Seven subjects and five controls pass |
 | ACT-1086 | Closed and deleted. Its correction was shared by the backend and the binary (row B10-C2) |
@@ -2608,11 +2769,15 @@ more at `21101921` and both are restored below.
 |---|---|---|
 | Spec §4.12.4, the heading and the `name` row | Restored to `[Tested …]` with T-FRAME-NAME's three cells and the backend's module row | ACT-1091 is corrected |
 | Spec §4.12.3, the heading and the whole-program row | Still partial; they now name REPRO-1090's failing subject | The cell is committed |
-| REPL §3.1, the `/type` sentence | Still nonconforming; it now names T-TYPE-DEFN's failing cell | The cell is committed |
+| REPL §3.1, the `/type` sentence | Still nonconforming; it now names T-TYPE-DEFN's failing cell | The cell is committed Superseded by the row for the final ruling, below |
 | REPL §3.1, "MUST NOT evaluate a non-pure form" | From uncovered to nonconforming, naming T-TYPE-PURE's three failing cells and its three passing guards | `deftype`, `deftrait` and `impl` are committed by the query (ACT-1089) |
 | REPL §17.19 R10, the reachability sentence | From uncovered to nonconforming, naming T-SEARCH-REACH's two failing cells | ACT-1092. The still-compiling clause has no cell |
 | REPL §17.19, the index paragraph | Restored to its two cells | Both still observe the private typecheck and the macro omission, which `21101921` did not change. The added clause points at R10, whose band carries the nonconformance |
 | REPL §17.19.5 | Restored to its two cells | Their unindexable module references an undefined name, so it is invalid in every session and the no-rows allowance applies to it under R10. The added sentence points at R10 |
 | Spec §4.12.2 | From tested to partial, naming T-TRACE-ROOT's nine failing cells | The root's result is empty (ACT-1094) |
 | Spec §8.2.5 | From tested to partial, naming T-MOD-CHILD's four failing cells and its override control | A library's declared child is replaced (ACT-1096) |
+| REPL §3.1, the definition-form paragraph, cleared by `spec` at `39be7cfe` | Nonconforming, naming REPRO-1089's four failing subjects; the required error has no cell; T-TYPE-DEFN's cell is named as asserting the withdrawn rule | The four subjects still show that nothing may be defined. T-TYPE-ERR is allocated |
+| REPL §3.1, the `/type` table row, cleared by `spec` | Partial: tested for an expression by three cells; a definition form and a macro expression are nonconforming | The cell it named, `sig_shows_type_signature`, does not run `/type` |
+| Spec §7.3.3 and §5.4.3 | The clause on a body that discharges its constraint moves from defective to tested, naming ACT-1034's passing cells | Every cell of ACT-1034 passes in the run at `b72742f7` |
+| Spec §12.3.1 | From tested to partial, naming T-PRINT-BALANCE's four failing cells and the exemplar guard | A value the caller owns, passed to a platform function, is never released (ACT-1018) |
 | Spec §3.1 | From tested to partial, naming T-TRAIT-SCALAR's three failing cells and two controls | The import rule is not applied in a trait signature (ACT-1097) |
