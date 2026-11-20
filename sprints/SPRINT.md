@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 6b USER-FACING ACTION — backend ACT-1094 fix (`arch` first); `stdlib/` incl. trait impls, `exemplar/`, `user/`, `examples/`; demo and replay
+**Status**: PHASE 6b USER-FACING ACTION — delivered; 6b → 7 checkpoint presented, awaiting the user (backend clean and green at `9bc97297`)
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -638,3 +638,22 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   provisional keyword answer, were the coordinator's misreadings. `spec`
   records it; `qa` re-allocates T-TYPE-DEFN and T-TYPE-NONVALUE; the
   correction rides ACT-1089 (carried against the binary).
+- **Phase 6b outcome (2026-11-20/21).** ACT-1094 corrected under `arch`
+  row B17 (`4a58af99`): intrinsics `ecae99c9`, backend `3c5e41ca`, both
+  reviewed with no findings, accepted by `qa` (`9316028b`); the same change
+  closed a drop-glue leak on a trace body's value and a cross-thread
+  trace-stack disturbance. `stdlib/` `6d059922`..`e6cdbe90` (trait impls for
+  Option/Result/Pair/List/Either), `exemplar/` `a6ee047c`..`77103eb0`,
+  `examples/` `eacbdf48`..`9d18061d`, `user/` `c2e0fcb7`..`121c5c9e`; demo
+  `repl/demos/12-tracing-values.demo` (`23448d9c`), 41 demos replay.
+  Full run at `9bc97297` (`qa` `a064305e`): 8,052 run, 110 failed, all
+  attributed — typecheck 50, `src/` 49, backend 0, intrinsics 3,
+  unattributed 7, document gate 1; census zero; 234 s. New carried filings
+  from 6b: ACT-1099, ACT-1100, ACT-1101 (data loss, present on the opening
+  tree `3155f47f`), ACT-1102 (memory-unsafe cached restart after a refused
+  save, present on the opening tree; reproduction owed). Public-API
+  checkpoint (`arch` `ed7e4182`): one intrinsics line, row B17;
+  `CACHE_SCHEMA_VERSION` 35→36.
+- **User ruling on S124-Q10 recorded at `39be7cfe`.** S124-Q11..Q15 and two
+  trace questions (a skipped form's result; a form entered inside a skipped
+  form) remain open with the user.
