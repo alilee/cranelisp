@@ -5660,3 +5660,28 @@ fn s124_type_pure_macro_not_installed() {
     );
     control.assert_stdout_contains(":primitives/Int 3");
 }
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-MACRO
+// defect: class=wrong-reject locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1099)
+#[test]
+fn s124_type_macro_expression() {
+    let out =
+        s124_type_session("(defmacro twice [x] `(add-i64 ~x ~x))\n(twice 2)\n/type (twice 2)\n")
+            .assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    let control = lines
+        .iter()
+        .position(|s| s == ":primitives/Int 4")
+        .expect("ordinary macro call must produce 4");
+    let response = &lines[control + 1..];
+    assert_eq!(
+        (
+            response.iter().any(|s| s == ":primitives/Int"),
+            response.iter().any(|s| s.to_lowercase().contains("error:"))
+        ),
+        (true, false),
+        "macro query must report Int without an error: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
