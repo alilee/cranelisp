@@ -33,6 +33,82 @@ mod e2e;
 
 use e2e::{Cranelisp, PreludeVariant};
 
+fn s124_refused_save_seed() -> e2e::CrOutput {
+    Cranelisp::new()
+        .stdin("(deftype (P2 a b) [:a x :b y])\n(P2 1 2)\n(defn f [] 1)\n(f)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("(P2 1 2)")
+        .assert_stdout_contains(":primitives/Int 1")
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2 — T-REFUSED-SAVE-CACHE
+// defect: class=artifact-underkey locus=cache-generation-after-refused-save found=S124 owner=/dev
+#[test]
+fn s124_refused_save_cached_restart_survives_call_and_next_turn() {
+    let first = s124_refused_save_seed();
+    let saved = first.read_tmp("user.cl");
+    assert!(first.tmp_exists(".cranelisp-cache"), "cache seed exists");
+    let seed_diagnostics = transcript(&first);
+    // Prompt-gated input stops when the child dies, capturing its signal status
+    // rather than waiting for a prompt or writing another turn to a dead pipe.
+    let second = first.run_again().staged_output(&[
+        e2e::Stage::Line("(import [primitives [add-i64]])"),
+        e2e::Stage::Line("(f)"),
+        e2e::Stage::Line("(add-i64 5 5)"),
+        e2e::Stage::Line("/quit"),
+    ]);
+    let t = turns(&second.stdout);
+    let call = t.get(2).copied().unwrap_or("");
+    let next = t.get(3).copied().unwrap_or("");
+    let mut legs = Legs::default();
+    legs.check(second.status.code() == Some(0), "restart exits 0");
+    legs.check(
+        call.contains(":primitives/Int 1") || call.contains("undefined variable: f"),
+        "(f) gives 1 or is refused as undefined",
+    );
+    legs.check(
+        next.contains(":primitives/Int 10"),
+        "the next turn (add-i64 5 5) prints 10",
+    );
+    legs.assert_all(&format!(
+        "seed:\n{seed_diagnostics}\nbacking file:\n{saved}\nrestart:\n{}",
+        transcript(&second)
+    ));
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2 — T-REFUSED-SAVE-CACHE cold control
+#[test]
+fn s124_refused_save_cold_restart_refuses_unsaved_function_control() {
+    s124_cold_session(s124_refused_save_seed())
+        .stdin("(f)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("undefined variable: f")
+        .assert_stdout_does_not_contain(":primitives/Int 1");
+}
+
+// spec: repl/spec/15-session-persistence.md §15.2 — T-REFUSED-SAVE-CACHE external-edit control
+#[test]
+fn s124_refused_save_external_edit_restores_only_retained_function_control() {
+    let first = Cranelisp::new()
+        .stdin("(defn f [] 1)\n(defn g [] 2)\n/quit\n")
+        .output()
+        .assert_ok();
+    let saved = first.read_tmp("user.cl");
+    assert!(saved.contains("(defn f ") && saved.contains("(defn g "));
+    assert!(first.tmp_exists(".cranelisp-cache"), "cache seed exists");
+    first
+        .run_again()
+        .user("(defn g [] 2)\n")
+        .stdin("(f)\n(g)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("undefined variable: f")
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_does_not_contain(":primitives/Int 1");
+}
+
 fn s124_save_after_construction(
     setup: &str,
     value: &str,
