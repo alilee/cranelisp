@@ -376,16 +376,17 @@ fn is_call_or_jump(reloc: &::object::Relocation) -> bool {
 }
 
 /// Every call or jump relocation in a code section of `bytes` whose target is
-/// one of `unit`'s functions, as `"{section}+{offset} -> {name}"`.
+/// one of `unit`'s functions, as `"{section}+{offset} -> {unit function}"`,
+/// whatever the object format's spelling of the symbol.
 fn direct_calls_into(bytes: &[u8], unit: &[Symbol]) -> Vec<String> {
     use ::object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SectionKind};
     let file = ::object::File::parse(bytes).expect("the emitted bytes parse as an object");
-    let is_unit = |name: &str| {
+    let unit_function = |name: &str| {
         let bare = name
             .strip_prefix('_')
             .filter(|_| file.format() == ::object::BinaryFormat::MachO);
         unit.iter()
-            .any(|u| u.as_ref() == name || bare == Some(u.as_ref()))
+            .find(|u| u.as_ref() == name || bare == Some(u.as_ref()))
     };
     let mut found = Vec::new();
     for section in file.sections().filter(|s| s.kind() == SectionKind::Text) {
@@ -397,9 +398,12 @@ fn direct_calls_into(bytes: &[u8], unit: &[Symbol]) -> Vec<String> {
                 .symbol_by_index(index)
                 .and_then(|s| s.name().map(str::to_owned))
                 .unwrap_or_default();
-            if is_call_or_jump(&reloc) && is_unit(&name) {
+            if !is_call_or_jump(&reloc) {
+                continue;
+            }
+            if let Some(target) = unit_function(&name) {
                 found.push(format!(
-                    "{}+{offset:#x} -> {name}",
+                    "{}+{offset:#x} -> {target}",
                     section.name().unwrap_or("?")
                 ));
             }
