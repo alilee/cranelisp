@@ -127,22 +127,19 @@ error, and the ruling is not presented as a display-format transcript.
 
 ## S124-Q11: Must multi-parameter collection traits be expressible now?
 
-**Open problem — audit R7.** Opened
-[Appendix C §C.2.4](appendix-c-nfr.md#c24-collection-extensibility-s24), which
-says “Multi-parameter traits … MUST be expressible”, and
-[§7.12.1](07-traits.md#7121-current-restrictions), which says “No
-multi-parameter type classes.” Appendix C is normative; these requirements
-conflict. Its “Activation: Ring 2” does not supply a current scheduling rule
-under the retired ring axis. §7.12.2's future-extension entry concerns
-multi-parameter HKT and does not itself settle the container/element example.
+**Closed — user ruling, 2026-11-21.** The user's message, verbatim:
 
-**Options / tradeoffs.** Require multi-parameter collection traits now and
-revise §7.12.1: preserves C.2.4's obligation but widens the required language
-surface, needing syntax and typing decisions. Retain the single-parameter
-restriction and move C.2.4's multi-parameter clause to future intent: keeps the
-current restricted surface but removes its present expressibility guarantee.
-Explicitly defer the obligation to a user-named milestone: retains the desired
-outcome but requires a current applicability boundary. No option is selected.
+> this is a future direction, but we need to stabilise what we have so far
+> before we expand. let's consolidate the documentation on no-multi for now,
+> so it is consistent.
+
+[§7.12.1](07-traits.md#7121-current-restrictions) stands: traits take a single
+type parameter (or single type constructor for HKT).
+[Appendix C §C.2.4](appendix-c-nfr.md#c24-collection-extensibility-uncovered-s124--was-s24)
+removes the present multi-parameter expressibility obligation and retired-ring
+activation line; multi-parameter collection traits are a non-normative future
+direction, also recorded in [§7.12.2](07-traits.md#7122-future-extensions).
+The ruling is recorded in [Sprint 124 Notes](../sprints/SPRINT.md#notes).
 
 ## S124-Q12: Does unquote-splicing require a library-provided sconcat?
 

@@ -995,13 +995,18 @@ the trait reference; dispatch reaches the method reference.
 
 ### 7.12.2 Future Extensions
 
+These are non-normative future directions, not present requirements. The existing
+language is to be stabilized before expanding to multi-parameter traits;
+§7.12.1's single-parameter restriction stands.
+
 | Feature | Description |
 |---|---|
 | Default methods on HKT traits | Extend default implementations to higher-kinded traits |
 | Deriving additional traits | Extend `derive` beyond `Eq`, `Ord`, `Display` |
 | Supertraits | Declare that one trait requires another (e.g., `Ord` requires `Eq`) |
 | Monad / Applicative | HKT traits for monadic sequencing and applicative composition |
-| Multi-parameter HKT | Traits like `(deftrait (Bifunctor f) ...)` for arity-2 constructors |
+| Multi-parameter traits | Traits such as `(Indexed c a)` parameterized over container and element type; future collection abstraction (Appendix C §C.2.4) |
+| HKT over arity-2 constructors | Traits like `(deftrait (Bifunctor f) ...)` for arity-2 constructors |
 | Trait-dispatched collection verbs | A unified `Functor`/`Foldable`-style abstraction owning bare `map`/`filter`/`reduce`/`count`/`get`/`conj`/`assoc` and `first`/`rest` as single overload-unified entry points across `List`/`Vec`/`Seq`. A standard library reserves these bare names so an interim curated surface stays forward-compatible — see the non-normative naming reservation in [§11.4a](11-stdlib.md#114a-curated-collection-verb-naming-reservation-non-normative). |
 
 ## 7.13 Deriving [S21]

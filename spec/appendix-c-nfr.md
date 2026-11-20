@@ -93,21 +93,24 @@ The implementation MUST NOT commit to a flat byte-array String representation in
 
 **Activation**: Post-Ring 4. The flat representation is acceptable through the ring sequence.
 
-### C.2.4 Collection Extensibility [S24]
+### C.2.4 Collection Extensibility [Uncovered S124 — was S24]
 
 The standard library SHOULD be able to provide alternative collection implementations alongside the built-in primitives. Users SHOULD be able to choose the collection type that best fits their use case, and write code that works generically across collection types via traits.
 
 **Rationale**: Different use cases demand different data structures. A flat `Vec` with RC=1 COW gives O(1) random access — ideal for linear pipelines and small collections. An RRB tree gives O(log₃₂ n) persistent updates with structural sharing — ideal for concurrent access and large persistent workloads. Forcing all users onto one implementation serves neither case well.
 
 **Design constraint**: The trait system MUST support collection-level abstraction. Specifically:
-1. Multi-parameter traits (e.g., `(Indexed c a)` parameterized over container and element type) MUST be expressible.
-2. Higher-kinded traits (e.g., `(Functor f)` parameterized over a type constructor) SHOULD be expressible, enabling `map` to work generically across collection types.
-3. Opaque runtime-backed types (extern functions providing the implementation) MUST be registerable as first-class types participating in the trait system.
-4. Alternative collection types (e.g., `PersistentVec`, `PersistentMap`, `Deque`) SHOULD be addable as stdlib types without modifying the compiler — only the runtime needs new extern functions.
+1. Higher-kinded traits (e.g., `(Functor f)` parameterized over a type constructor) SHOULD be expressible, enabling `map` to work generically across collection types.
+2. Opaque runtime-backed types (extern functions providing the implementation) MUST be registerable as first-class types participating in the trait system.
+3. Alternative collection types (e.g., `PersistentVec`, `PersistentMap`, `Deque`) SHOULD be addable as stdlib types without modifying the compiler — only the runtime needs new extern functions.
 
 **Model**: The primitive `Vec` and `Map` types use simple implementations with stable, predictable performance characteristics. The stdlib provides advanced alternatives (`PersistentVec` backed by RRB, `PersistentMap` backed by HAMT/CHAMP) as separate types. Both primitive and advanced types implement shared collection traits.
 
-**Activation**: Ring 2 (when trait dispatch enables collection-level abstraction). Advanced collection types are post-Ring 4.
+**Future direction (non-normative)**: Multi-parameter collection traits, such as
+`(Indexed c a)` parameterized over container and element type, are future work,
+not a present expressibility requirement. The current single-parameter rule in
+[§7.12.1](07-traits.md#7121-current-restrictions) stands; stabilizing the existing
+language precedes expansion. See [§7.12.2](07-traits.md#7122-future-extensions).
 
 ## C.3 Evaluation Properties [S11]
 
@@ -271,5 +274,5 @@ The full test suite SHOULD complete in under 30 seconds. Individual tests SHOULD
 - [§12.4.3](12-runtime.md#1243-lenient-evaluation) — Lenient evaluation specification
 - [§10.12](10-io.md) — Automatic IO scheduling specification
 - [§12.5](12-runtime.md#125-tail-call-optimization) — Tail call optimization
-- [§7](07-traits.md) — Traits, higher-kinded types, multi-parameter traits (collection extensibility)
+- [§7](07-traits.md) — Single-parameter traits and higher-kinded types; multi-parameter collection traits are a future direction (§7.12.2)
 - [`design/arch/overview.md`](../design/arch/overview.md) — the architecture these NFRs constrain, and the entry point to the architecture contracts that record how each is met

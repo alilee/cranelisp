@@ -187,7 +187,7 @@ Constructors in a sum type MAY also have docstrings:
   (Err "The error case" [:b err]))
 ```
 
-### 2.2.3 `deftrait` -- Trait Declaration [Tested+Neg tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::deftrait_qualified_bare_head_rejected_binder_neg, tests/spec_07_traits::deftrait_qualified_parenthesized_head_rejected_binder_neg]
+### 2.2.3 `deftrait` -- Trait Declaration [Uncovered S124 — was tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::deftrait_qualified_bare_head_rejected_binder_neg, tests/spec_07_traits::deftrait_qualified_parenthesized_head_rejected_binder_neg]
 
 ```ebnf
 deftrait_form   = '(' deftrait_kw trait_head docstring? method_sig* ')'
@@ -195,7 +195,7 @@ deftrait_form   = '(' deftrait_kw trait_head docstring? method_sig* ')'
 deftrait_kw     = 'deftrait' | 'deftrait-'
 
 trait_head      = trait_binder
-                | '(' trait_binder type_param+ ')'
+                | '(' trait_binder type_param ')'
 
 trait_binder    = TRAIT_NAME
                   (* bare uppercase name only; no module qualifier *)
@@ -211,8 +211,8 @@ param           = annotation SYMBOL          (* typed parameter *)
 The `deftrait` form declares a trait -- a named collection of method signatures. The `deftrait-` variant makes it module-private. All methods use named parameters in brackets.
 
 The **trait head is a declaration binder**, not a reference. It is either a
-bare name (for simple traits) or a parenthesized bare name with type constructor
-parameters (for higher-kinded traits). `trait_binder` MUST be an uppercase
+bare name (for simple traits) or a parenthesized bare name with one type constructor
+parameter (for higher-kinded traits). `trait_binder` MUST be an uppercase
 **unqualified** name: a module-qualified spelling such as `fmt/Display` or
 `(fmt/Functor f)` is a compile-time error. Trait names MUST start with an
 uppercase letter. This bare-only declaration rule is distinct from the
@@ -234,7 +234,7 @@ uppercase letter. This bare-only declaration rule is distinct from the
   (>= [a b] (not (< a b))))
 ```
 
-**Higher-kinded traits**: Explicit type constructor parameters enable abstraction over parameterized types. The lowercase parameters represent type constructors (e.g., `f` in `(Functor f)` ranges over `Option`, `List`, etc.).
+**Higher-kinded traits**: A single explicit type constructor parameter enables abstraction over parameterized types. The lowercase parameter represents a type constructor (e.g., `f` in `(Functor f)` ranges over `Option`, `List`, etc.).
 
 ```clojure
 (deftrait (Functor f)

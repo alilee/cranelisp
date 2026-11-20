@@ -434,12 +434,12 @@ also structural. Type and constructor docstrings and positional sum-payload
 labels are non-structural. The complete rule and atomic-rejection guarantee are
 [`repl/spec/18-redefinition.md` §18.5](../repl/spec/18-redefinition.md#185-type-declaration-re-establishment).
 
-## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Tested]
+## 5.3 Trait Declaration (`deftrait` / `deftrait-`) [Uncovered S124 — was Tested]
 
 ```ebnf
 deftrait_form  = '(' ('deftrait' | 'deftrait-') trait_head docstring? method_sig+ ')'
 trait_head     = name                         (* simple trait *)
-               | '(' name type_var+ ')'       (* higher-kinded trait *)
+               | '(' name type_var ')'        (* higher-kinded trait *)
 method_sig     = '(' name docstring? '[' param* ']' ( type_expr | expr ) ')'
                  (* trailing type_expr => required; any other expr => default method
                     whose type is inferred (§7.1, §7.1.5). param* throughout. *)
@@ -468,9 +468,9 @@ A trait declaration introduces a named interface with one or more method signatu
 - A required method ends with a return **type expression**; a default method ends with a **body expression** whose type is inferred (§7.1.5). Which one it is, is discriminated at resolution — the trailing element is a return type iff it resolves as a type expression. [S115]
 - An optional docstring MAY appear on the trait itself and on each method.
 
-### 5.3.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg]
+### 5.3.2 Higher-Kinded Traits [Uncovered S124 — was tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg]
 
-When the trait head includes type parameters, the trait operates on type constructors rather than concrete types.
+When the trait head includes its single type constructor parameter, the trait operates on type constructors rather than concrete types.
 
 ```clojure
 (deftrait (Functor f) "Mappable container"
