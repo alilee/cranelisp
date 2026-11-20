@@ -34,13 +34,13 @@ which is not a default platform search directory, so set
 export CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib
 cargo run -- --run exemplar/user.cl       # headline showcase, exit 0
 cargo run -- --run exemplar/smoke.cl      # solves a fixed puzzle, exit 0
-cargo run -- --run exemplar/tests.cl      # exit code 41 when all pass
-CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 41
+cargo run -- --run exemplar/tests.cl      # exit code 43 when all pass
+CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 43
 cargo run -- --run exemplar/main.cl       # serves HTTP until killed
 ```
 
-- A green `tests.cl` run exits 41 (15 grid, 7 solver, 10 html, 9 form).
-  Getting 41 under both the default parallel mode and
+- A green `tests.cl` run exits 43 (15 grid, 7 solver, 12 html, 9 form).
+  Getting 43 under both the default parallel mode and
   `CRANELISP_NO_LENIENT=1` is the parallel ≡ serial guard.
   `solver/test-solve-parallel-equiv` pins a puzzle that requires
   backtracking.
@@ -57,6 +57,7 @@ cargo run -- --run exemplar/main.cl       # serves HTTP until killed
 |---|---|
 | Web server serves the form, a valid solution and a 404, under `--run` and as a linked binary | `tests/exemplar_web.rs` |
 | Concurrent `/slow` requests overlap instead of serialising (`--run`) | `tests/exemplar_web.rs::exemplar_web_server_fans_out_concurrent_requests_overlap` |
+| `tests.cl` passes in the parallel and serial modes (`--run`) | `tests/exemplar.rs::s124_exemplar_tests_runner_lenient`, `::s124_exemplar_tests_runner_serial` |
 | Linked `user.cl` output matches `--run` byte for byte | `tests/exemplar_link_run_parity.rs` |
 | Heap residue of a warm serial `smoke.cl` run stays within a bound, with a zero-work control | `tests/exemplar_ownership_residue_s116.rs` |
 
@@ -91,8 +92,9 @@ State only what these tests show:
   `primitives`.
 - Test functions are top-level `test-*` `defn`s returning `(Option String)`,
   where `None` means pass (`repl/spec/16-test-discovery.md` §16.1). Add each new
-  test to `tests.cl` and its expected count. In-language discovery is
-  REPL-only, so the runner calls tests directly.
+  test to `tests.cl` and its expected count. `cranelisp --test exemplar/main.cl`
+  discovers every `test-*` function, so a listing that differs from the runner's
+  shows a test the runner omits.
 - Every batch `main` returns `(IO _)`; the inner Int is the process exit code.
 - Only an entry (`smoke.cl`, `user.cl`, `tests.cl`, `main.cl`) declares a
   platform; the pure-core and helper modules import `platform.<name>` from the
