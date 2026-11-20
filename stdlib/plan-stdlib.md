@@ -230,7 +230,10 @@ carry the rest.
   functions. They split half-open index ranges over two independent `let`
   bindings and rely on inferred lenient evaluation
   ([lenient evaluation](../design/backend/lenient-eval.md);
-  [effect concurrency](../design/arch/effect-concurrency.md) §7).
+  [effect concurrency](../design/arch/effect-concurrency.md) §7). Inside a
+  `trace` evaluation is strict for its whole dynamic extent
+  ([spec §4.12.2](../spec/04-expressions.md#4122-semantics) item 2), so the
+  `par-*` functions run sequentially there with unchanged results.
 - **`core.syntax`** supplies SList helpers plus explicit-import reader-annotation
   helpers: `annotated?`, `annotation` (returns `(Option Sexp)`) and
   `unannotate`. They are macro-authoring tools, not prelude exports. The
