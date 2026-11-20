@@ -9,11 +9,9 @@
 ; part that matters: allocations that have been made and not yet freed.
 /mem
 
-; A prelude-loading session starts with a nonzero `live` — loading the stdlib
-; expands macros, and the macro-expansion boundary retains its marshalled
-; arguments by design. That baseline is a constant, not a growth rate: it is
-; the subject of its own known defect, and this demo reads it as the FLOOR
-; that every measurement below sits on.
+; Startup has made allocations and freed them: `live` reads zero here.
+; Read each later snapshot against the preceding one. Allocations and frees
+; should advance together as values are produced and released.
 
 ; A type with one heap field, so each value is exactly two allocations:
 ; the string, and the box that holds it.
@@ -33,7 +31,7 @@
 ; `live` did not move at all. Each result was formatted first, then released.
 /mem
 
-; The same holds for a value with structure. A three-node tree is five
+; The same holds for a value with structure. A three-leaf tree is five
 ; allocations; produce two of them and `live` still does not move.
 (deftype Tree (Leaf [:Int v]) (Node [:Tree l :Tree r]))
 
