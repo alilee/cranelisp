@@ -1682,3 +1682,109 @@ fn s124_template_frame_name_link() {
 fn s124_template_frame_name_repl() {
     s124_template_frame_name("repl");
 }
+
+fn s124_mixed_restore_trace(remove_dependency_object: bool, launches: usize) {
+    let mut app = S124_COUNT_NAMED.to_owned();
+    let mut cr = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "p.cl",
+            "(import [primitives [Int add-i64]])\n(defn pf [:Int n] n)\n",
+        )
+        .file(
+            "m.cl",
+            "(import [primitives [Int]])\n(import [p [pf]])\n(defn mf [:Int n] (pf n))\n",
+        );
+    for i in 0..6 {
+        app.push_str(&format!("(import [b{i} [b{i}f0]])\n"));
+        let mut bulk =
+            format!("(import [primitives [Int add-i64]])\n(defn b{i}f0 [:Int n] (add-i64 n 1))\n");
+        for j in 1..200 {
+            bulk.push_str(&format!(
+                "(defn b{i}f{j} [:Int n] (add-i64 (b{i}f{} n) 1))\n",
+                j - 1
+            ));
+        }
+        cr = cr.file(&format!("b{i}.cl"), &bulk);
+    }
+    cr = cr.file("app.cl", &app);
+    let turn = r#"(add-i64 (mul-i64 0 1) (match (trace (m/mf 1)) [(TraceCall n p r c ns) (add-i64 40 (add-i64 (mul-i64 10 (count-named "m/mf" c)) (count-named "p/pf" c)))]))
+"#;
+    let launch = |cr: Cranelisp| {
+        cr.cli_flag("app.cl")
+            .env("CRANELISP_NO_LENIENT", "1")
+            .env("CRANELISP_MODULE_TRACE", "1")
+            .stdin(turn)
+            .output()
+    };
+    let score = |out: &helpers::e2e::CrOutput| {
+        assert!(out.status.success(), "{}{}", out.stdout, out.stderr);
+        assert!(
+            !out.stdout.contains("error:") && !out.stdout.contains("Cannot evaluate:"),
+            "turn must execute: {}{}",
+            out.stdout,
+            out.stderr
+        );
+        let values: Vec<i32> = helpers::e2e::repl_output_lines(&out.stdout)
+            .iter()
+            .filter_map(|line| line.strip_prefix(":primitives/Int "))
+            .map(|value| value.parse().expect("numeric trace score"))
+            .collect();
+        assert_eq!(
+            values.len(),
+            1,
+            "one executed turn: {}{}",
+            out.stdout,
+            out.stderr
+        );
+        // Index-worker diagnostics do not decide the trace score.
+        for line in out.stderr.lines().filter(|line| line.starts_with("index:")) {
+            eprintln!("{line}");
+        }
+        values[0]
+    };
+    let cold = launch(cr);
+    assert_eq!(score(&cold), 51, "cache-seeding launch");
+    let mut cr = cold.run_again();
+    let mut scores = Vec::new();
+    for _ in 0..launches {
+        if remove_dependency_object {
+            // This case owns the generated cache for its entire lifetime.
+            std::fs::remove_file(cr.tmpdir_path().join(".cranelisp-cache/p.o"))
+                .expect("the preceding launch must emit p.o");
+        }
+        let out = launch(cr);
+        let value = score(&out);
+        let restored = if remove_dependency_object { "m" } else { "p" };
+        assert!(
+            out.stderr
+                .lines()
+                .any(|line| line == format!("module-trace: cache hit (.meta valid) for {restored}")),
+            "launch {} must restore {restored}: {}{}",
+            scores.len() + 1,
+            out.stdout,
+            out.stderr
+        );
+        scores.push(value);
+        cr = out.run_again();
+    }
+    eprintln!("mixed restore={remove_dependency_object}; scores={scores:?}");
+    assert_eq!(
+        scores,
+        vec![51; launches],
+        "each launch must record m/mf and p/pf"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+// defect: class=shared-state-write-race locus=src/worker.rs::plan_staging_commit_inner found=S124 owner=/dev
+#[test]
+fn s124_1090_mixed_restore_subject() {
+    s124_mixed_restore_trace(true, 30);
+}
+
+// spec: spec/04-expressions.md §4.12.3; spec/04-expressions.md §4.12.9
+#[test]
+fn s124_1090_all_restored_control() {
+    s124_mixed_restore_trace(false, 10);
+}
