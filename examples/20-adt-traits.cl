@@ -196,6 +196,27 @@
 (defn check-describe []
   (str-len (describe-point (Point 3 4))))            ;; -> 23 ("The point is Point(3 4)")
 
+;; === Part 6: One constrained impl, several nested instantiations ===
+
+;; The :Display constraint attaches to the payload type variable a.
+;; At each call, show on the payload selects that payload's own impl.
+(deftype (Box a) [:a value])
+
+(impl Display (Box :Display a)
+  (defn show [box]
+    (match box
+      [(Box x) (str-concat "Box(" (str-concat (show x) ")"))])))
+
+;; The outer Box's show re-enters the same impl at (Box Color), then
+;; reaches Color's show. A Point payload takes a different concrete path.
+;; This finite impl re-entry is allowed (spec §3.10). It does not permit
+;; a recursive defn to call itself at a different type: function recursion
+;; remains monomorphic. Unbounded impl instantiation is a type error.
+(defn check-nested-display []
+  (if (str-eq (show (Box (Box Red))) "Box(Box(Red))")
+    (str-eq (show (Box (Point 3 4))) "Box(Point(3 4))")
+    false))
+
 ;; --- Sum results ---
 
 ;; check-color-eq-same:      1
@@ -223,28 +244,28 @@
 ;; Total: 1+0+1+1+1+1+1+0+1+1+1+0+0+1+1+1+0+0+1+1+2+23 = 39
 
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
-    (add-i64 (check-color-eq-same)
-      (add-i64 (check-color-eq-diff)
-        (add-i64 (check-color-eq-all)
-          (add-i64 (check-color-show-red)
-            (add-i64 (check-color-show-green)
-              (add-i64 (check-color-show-blue)
-                (add-i64 (check-suit-eq)
-                  (add-i64 (check-suit-neq)
-                    (add-i64 (check-suit-show)
-                      (add-i64 (check-maybe-miss-eq)
-                        (add-i64 (check-maybe-has-eq)
-                          (add-i64 (check-maybe-has-neq)
-                            (add-i64 (check-maybe-mixed-neq)
-                              (add-i64 (check-maybe-show-miss)
-                                (add-i64 (check-maybe-show-has)
-                                  (add-i64 (check-point-eq-same)
-                                    (add-i64 (check-point-eq-diff)
-                                      (add-i64 (check-point-eq-partial)
-                                        (add-i64 (check-point-show)
-                                          (add-i64 (check-point-show-neg)
-                                            (add-i64 (check-find-color)
-                                                     (check-describe))))))))))))))))))))))))
+  (if (check-nested-display)
+    (Pure
+      (add-i64 (check-color-eq-same)
+        (add-i64 (check-color-eq-diff)
+          (add-i64 (check-color-eq-all)
+            (add-i64 (check-color-show-red)
+              (add-i64 (check-color-show-green)
+                (add-i64 (check-color-show-blue)
+                  (add-i64 (check-suit-eq)
+                    (add-i64 (check-suit-neq)
+                      (add-i64 (check-suit-show)
+                        (add-i64 (check-maybe-miss-eq)
+                          (add-i64 (check-maybe-has-eq)
+                            (add-i64 (check-maybe-has-neq)
+                              (add-i64 (check-maybe-mixed-neq)
+                                (add-i64 (check-maybe-show-miss)
+                                  (add-i64 (check-maybe-show-has)
+                                    (add-i64 (check-point-eq-same)
+                                      (add-i64 (check-point-eq-diff)
+                                        (add-i64 (check-point-eq-partial)
+                                          (add-i64 (check-point-show)
+                                            (add-i64 (check-point-show-neg)
+                                              (add-i64 (check-find-color)
+                                                       (check-describe)))))))))))))))))))))))
+    (Pure 0)))
