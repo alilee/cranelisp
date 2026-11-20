@@ -169,3 +169,38 @@ fn t_s2_1_eliminate_contract_on_given_returns_none() {
         .output()
         .assert_exit(0);
 }
+
+fn s124_exemplar_runner(serial: bool) {
+    // read-only on project_root; only the scratch source copy is executed.
+    let root = e2e::workspace_root();
+    let mut b = Cranelisp::new()
+        .env("CRANELISP_LIB", root.join("stdlib").to_str().unwrap())
+        .use_workspace_platforms()
+        .env_remove("CRANELISP_NO_LENIENT")
+        .timeout(std::time::Duration::from_secs(20));
+    for entry in std::fs::read_dir(root.join("exemplar")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "cl") {
+            b = b.file(
+                path.file_name().unwrap().to_str().unwrap(),
+                &std::fs::read_to_string(&path).unwrap(),
+            );
+        }
+    }
+    if serial {
+        b = b.env("CRANELISP_NO_LENIENT", "1");
+    }
+    b.run("tests.cl").output().assert_exit(41);
+}
+
+// spec: exemplar/AGENTS.md — T-EXEMPLAR-TESTS maintenance check, default lenient runner
+#[test]
+fn s124_exemplar_tests_runner_lenient() {
+    s124_exemplar_runner(false);
+}
+
+// spec: exemplar/AGENTS.md — T-EXEMPLAR-TESTS maintenance check, serial runner
+#[test]
+fn s124_exemplar_tests_runner_serial() {
+    s124_exemplar_runner(true);
+}
