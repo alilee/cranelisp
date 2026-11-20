@@ -153,10 +153,13 @@ for one `(trace body)`:
    the form's last trace call. It receives the body's value and a descriptor
    baked for the body's static type (§3.4, §3.6). Its result is the form's
    value, and it is the guard's clear point (§6).
-6. The release of the body's value, which the collect call borrowed.
+6. The release of the body's value, which the collect call borrowed. It is
+   the release every other value of that type gets: the category gate, then
+   the type's drop glue.
 
 Steps 5 and 6 are not in source. Source releases the body's value before the
-restores and calls `cranelisp_collect_trace` with no argument (§3.6).
+restores, with no drop glue, and calls `cranelisp_collect_trace` with no
+argument (§3.6).
 
 Each wrapper formats every argument through `cranelisp_trace_format(value,
 descriptor)` (§3.4), calls `cranelisp_trace_enter(name, len, n, strings)`,
@@ -360,6 +363,26 @@ eight siblings fail on it; the four child controls beside them
     adds a path, and a form that omits the call stays expressible.
   - *`cranelisp_trace_exit` for the root.* Exit appends the finished node to
     its parent's children, and the root has no parent.
+- **A second defect the release closes.** Source's discard decrements the
+  body's value with no drop glue
+  (`crates/cranelisp-backend/src/compiler/trace_codegen.rs::emit_body_discard`
+  passes `None`). A body whose value owns heap memory, for example an ADT
+  with a `String` field, frees its cell and leaks what the cell owns. A
+  `String` body owns nothing further, so the T-TRACE-ROOT heap cell does not
+  see it. Read in source, not run; no end-to-end cell holds it. Its
+  classification and cell are `qa`'s. Interior:
+  [trace codegen §4.3](../backend/trace-codegen.md#43-the-release).
+- **Residual: a form that swaps no slot reports `nanos` 0** (decided,
+  `arch`, 2026-11-20; asserted, with a named falsifier). Spec §4.12.2 gives
+  the root an elapsed time without exception, and no start event exists for
+  such a form. No program reaches the path: every covered set holds
+  `primitives` (§5.1), whose extern primitives claim slots, so only a test
+  fixture's empty set swaps nothing (§5.1.1). A start call would be a second
+  export on every form's path that corrects no program. Falsifier: a program,
+  not a fixture, whose trace form swaps no slot. If one appears, the start
+  call returns to this gate. The same falsifier covers a form that swaps no
+  slot running inside a recording body, whose collect would close the
+  enclosing form ([trace runtime §7.4](../intrinsics/trace-runtime.md#74-residuals-asserted-with-named-falsifiers)).
 - **Independent of the root's name.** ACT-1094 routes one question to
   `spec`: whether `(trace (fact 5))` returns a root named for `fact`, as
   spec §4.12.8's example shows, or the synthetic `::trace::` root that source
@@ -404,11 +427,25 @@ module does not reference it, so relocating it created no coupling.
 - `TRACE_THREAD_ID` holds the trace role, and a thread records exactly when
   it holds it. Under §7 one crate-private predicate in `trace` answers that
   question for every reader: the formatting entry, enter, exit and spark
-  admission. Role acquire is a CAS from 0; a
-  second thread swapping concurrently pushes a `::skipped::` sentinel and
-  returns a sentinel saved-GOT, so it evaluates normally and yields an empty
-  trace (spec §4.12.6). Enter/exit are no-ops on a thread that does not own the
-  role, which keeps the single stack coherent without per-thread stacks.
+  admission. Role acquire is a CAS from 0. Enter/exit are no-ops on a thread
+  that does not own the role.
+- **Only the role holder pushes or pops the stack.** That is what keeps the
+  single stack coherent without per-thread stacks: it holds exactly the
+  recording form's frames, and that form's collect pops its root before it
+  releases the role.
+- **A form is wholly recorded or wholly skipped.** A thread whose swap finds
+  the role held elsewhere gets a sentinel saved-GOT for every swap of that
+  form, evaluates normally and yields a `::skipped::` node with no children
+  (spec §4.12.6). The skip is the thread's own state and never a frame on
+  the shared stack.
+- **Not in source at `4a58af99`; built with row B17's intrinsics step.**
+  There a skipped swap pushes a `::skipped::` frame onto the shared stack, a
+  collect on a thread that does not record pops it, and the recording collect
+  releases the role before it pops. A concurrent skipped form can therefore
+  take or displace the recording form's frames, and the tree depends on
+  scheduling; no memory is misused. The correction changes no export and no
+  emitted call, so it is interior to intrinsics and takes no gate decision
+  ([trace runtime §7.1 and §7.2](../intrinsics/trace-runtime.md#71-who-touches-the-trace-stack)).
 - Lock acquisition recovers from poisoning: the stack is append-only during a
   trace, so a partially built frame is safe to discard.
 
@@ -845,6 +882,15 @@ Either signal raises through the `runtime/panic` intrinsic with the message
 actively-tracing (trace ...)`. A panic inside the bracket ends the process
 ([bounded contexts](bounded-contexts.md) §4b invariant 13), so no later form
 runs and the guard needs no panic cleanup.
+
+**Open, with `spec`: a form entered inside a skipped form on the same
+thread.** Spec §4.12.5 forbids a form "while another `(trace ...)` is
+actively tracing on the same thread" and does not say whether a skipped form
+is actively tracing. The guard reads the role, which a skipped thread does
+not hold, so no error is raised. Under row B17's runtime both forms return
+childless roots and the enclosing one reads as a form that swapped nothing
+([trace runtime §7.4](../intrinsics/trace-runtime.md#74-residuals-asserted-with-named-falsifiers)).
+That behaviour stands until a ruling; no cell reads it.
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
 and emits `cranelisp_collect_trace` exactly once per form, as the form's last
