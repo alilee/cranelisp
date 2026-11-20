@@ -189,7 +189,7 @@ non-macro definitions in the synthetic `macros` module follow the same direct fe
 
 Search returns what is reachable, regardless of what the session has already imported or
 loaded. A reachable module MUST NOT be omitted merely because it or a dependency is not yet
-loaded or is still compiling in the session. [S124 — nonconforming, no cell yet: a module whose import names a module the session has not loaded, or is still compiling, is omitted (ACT-1092); T-SEARCH-REACH is allocated, and the still-compiling clause is a named residual]
+loaded or is still compiling in the session. [S124 — nonconforming. A module whose import names a module the session has not loaded is omitted: tests/search::s124_search_reach_unloaded_dependency and tests/search::s124_search_reach_transitive_unloaded_dependency fail (ACT-1092). The still-compiling clause has no cell and is a named residual]
 
 The reachable-module set does not make every declaration a search subject. Macro declarations
 are excluded from every feed under §17.19.2a.

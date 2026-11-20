@@ -135,3 +135,9 @@ three-module chain (`t` imports `m`, `m` imports `p`, none loaded) lists
 - The two module rows pass, and the *registered, not yet published* row was
   seen to fail before the correction.
 - The design states the feed's import resolution as built.
+
+## Evidence state (qa, 2026-11-20, `b72742f7`)
+
+T-SEARCH-REACH is committed (`b5ad5600`) and accepted: its two subjects
+fail on the row clause after the `pf` control row is found. Its negative
+fixture is returned to `test`. The module rows wait for the correction.

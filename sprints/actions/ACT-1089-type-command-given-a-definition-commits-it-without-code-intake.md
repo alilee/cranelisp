@@ -123,3 +123,9 @@ rows above and is allocated to `test` in the
 
 REPRO-1089's subjects, T-TYPE-DEFN and T-TYPE-PURE pass with their controls
 unchanged. `qa` restores the REPL §3.1 bands.
+
+## Evidence state (qa, 2026-11-20, `b72742f7`)
+
+T-TYPE-PURE is committed (`ea6778aa`, `c4282cb5`) and accepted: the `impl`
+cell fails at signal 11, the `deftype` and `deftrait` cells on the `/list`
+clause, and the three guards pass. Eight cells fail on this action.

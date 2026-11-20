@@ -151,3 +151,10 @@ name or parameters.
 T-TRACE-ROOT is committed with `// spec: spec/04-expressions.md §4.12.2`,
 observed RED on its result clauses, and passes on the corrected build with
 its child control unchanged. `qa` restores the §4.12.2 band.
+
+## Evidence state (qa, 2026-11-20, `b72742f7`)
+
+T-TRACE-ROOT is committed (`f1724229`) and accepted: nine subjects fail on
+their result clause, in `--run` cold and restored, linked and at the REPL,
+and the heap-valued subject fails with its allocations balanced. The four
+child controls pass. The cells count against the backend.

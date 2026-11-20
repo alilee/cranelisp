@@ -4,7 +4,7 @@ This section defines the type system of Cranelisp: the set of types, the type in
 
 Cranelisp uses Hindley-Milner type inference extended with traits, constrained polymorphism (monomorphisation), and higher-kinded types. All types can be inferred without annotations, but optional type annotations are available to constrain types or add trait requirements (see [Section 2](02-grammar.md) for annotation syntax).
 
-## 3.1 Primitive Types [S124 — partial: a trait signature accepts a bare primitive type name that is not imported (ACT-1097; T-TRAIT-SCALAR is allocated, no cell yet). Tested tests/spec_03_types::primitive_int_display]
+## 3.1 Primitive Types [S124 — partial: a trait signature accepts a bare primitive type name that is not imported (tests/spec_03_types::s124_trait_scalar_neg_unimported_return, tests/spec_03_types::s124_trait_scalar_neg_unimported_parameter and tests/spec_03_types::s124_trait_scalar_neg_unimported_higher_kinded_argument fail; ACT-1097). Tested tests/spec_03_types::primitive_int_display, tests/spec_03_types::s124_trait_scalar_qualified_control, tests/spec_03_types::s124_trait_scalar_imported_control]
 
 Cranelisp has four primitive types. All are immutable and unboxed at runtime.
 

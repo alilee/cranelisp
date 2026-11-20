@@ -102,3 +102,8 @@ module, an error, or ignored. No clause below reads it.
 T-MOD-CHILD is committed with `// spec: spec/08-modules.md §8.2.5`,
 observed RED on its value clauses, and passes on the corrected build with
 its override control unchanged. `qa` restores the §8.2.5 band.
+
+## Evidence state (qa, 2026-11-20, `b72742f7`)
+
+T-MOD-CHILD is committed (`ccd7f2e4`) and accepted: four subjects fail on
+their exit clause with 2 against 1, and the override control passes.

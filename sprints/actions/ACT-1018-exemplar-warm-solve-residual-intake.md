@@ -171,3 +171,11 @@ the stdlib-prelude path.
   allocated to `test` in the
   [S124 evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
   It discharges the first item of the completion evidence when committed.
+
+## Evidence state (qa, 2026-11-20, `b72742f7`)
+
+T-PRINT-BALANCE is committed (`dce11541`) and accepted: the literal and the
+concatenation subjects fail on balance in `--run` and linked, 2 against 1
+and 4 against 3, and the four controls balance. The linked binary strands
+the block too. The first item of the completion evidence is discharged;
+the module is still not attributed.

@@ -94,3 +94,9 @@ the declaration. `qa` did not find the requirement that decides it.
 T-TRAIT-SCALAR is committed with `// spec: spec/03-types.md §3.1`, observed
 RED on its refusal clauses, and passes on the corrected build with both
 controls unchanged. `qa` edits the §3.1 band.
+
+## Evidence state (qa, 2026-11-20, `b72742f7`)
+
+T-TRAIT-SCALAR is committed (`9ca6948c`) and accepted: three subjects fail
+on the refusal clause at exit 0, and both controls pass. The `(Vec Int)`
+subject is not written; it waits for the correction.
