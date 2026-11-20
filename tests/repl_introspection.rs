@@ -5499,3 +5499,80 @@ fn s124_type_pure_impl_not_installed() {
         control.stderr
     );
 }
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-PURE deftype
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_pure_deftype_not_defined() {
+    let out = s124_type_session("/type (deftype T A B)\n/list\nA\n").assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    assert_eq!(
+        (
+            lines.iter().any(|s| s == "(no definitions)"),
+            lines
+                .iter()
+                .any(|s| s.contains("undefined") && s.contains("A"))
+        ),
+        (true, true),
+        "type query must leave no type or constructor: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-PURE deftrait
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_pure_deftrait_not_defined() {
+    s124_type_session("/type (deftrait Sz (sz [self] Int))\n/list\n")
+        .assert_ok()
+        .assert_stdout_contains("(no definitions)");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-PURE IO with observable later effect
+#[test]
+fn s124_type_pure_io_not_evaluated() {
+    Cranelisp::new().use_workspace_platforms()
+        .stdin("(platform stdio)\n(import [platform.stdio [print]])\n/type (print \"MARK-1\")\n(print \"MARK-2\")\n")
+        .output().assert_ok().assert_stdout_does_not_contain("MARK-1").assert_stdout_contains("MARK-2");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-PURE import and ordinary-import control
+#[test]
+fn s124_type_pure_import_not_installed() {
+    let subject = Cranelisp::new()
+        .stdin("/type (import [primitives [add-i64]])\n(add-i64 1 2)\n")
+        .output()
+        .assert_ok();
+    assert!(
+        subject.stdout.contains("undefined") && subject.stdout.contains("add-i64"),
+        "{}{}",
+        subject.stdout,
+        subject.stderr
+    );
+    Cranelisp::new()
+        .stdin("(import [primitives [add-i64]])\n(add-i64 1 2)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-PURE macro and ordinary-definition control
+#[test]
+fn s124_type_pure_macro_not_installed() {
+    let subject = s124_type_session("/type (defmacro mm [x] x)\n(mm 3)\n").assert_ok();
+    assert!(
+        subject.stdout.contains("undefined") && subject.stdout.contains("mm"),
+        "{}{}",
+        subject.stdout,
+        subject.stderr
+    );
+    let control = s124_type_session("(defmacro mm [x] x)\n(mm 3)\n").assert_ok();
+    assert!(
+        !control.stdout.contains("undefined"),
+        "{}{}",
+        control.stdout,
+        control.stderr
+    );
+    control.assert_stdout_contains(":primitives/Int 3");
+}
