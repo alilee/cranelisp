@@ -132,7 +132,8 @@ in the same default-prelude session:
 (trace (test-returned))
 ```
 
-The trace holds the call tree and the returned failure. Calling or tracing
+The trace holds the call tree and the formatted returned failure. See the
+[tracing reference](tracing.md) for accessors, coverage limits and timing. Calling or tracing
 `test-div` directly panics and ends the REPL process; it does not return a trace.
 See
 [`repl/spec/16-test-discovery.md` §16.4](../../repl/spec/16-test-discovery.md#164-tracing-failures).

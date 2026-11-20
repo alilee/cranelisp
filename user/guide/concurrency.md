@@ -360,6 +360,12 @@ The observable contract of all three is specified in
 
 ---
 
+## Tracing concurrent code
+
+A trace evaluates pure work sequentially throughout its body and called
+functions. Its timings do not represent ordinary parallel execution. See
+[tracing](tracing.md) for coverage and result inspection.
+
 ## Honest scope — current limitations
 
 Cranelisp's concurrency works as described above, but there are real edges. The docs
