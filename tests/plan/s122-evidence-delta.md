@@ -258,7 +258,7 @@ with no source edits since. Every probe ran in a fresh scratch directory under
 2026-09-29 at 09:31, before `e4062202`, served as the regression control.
 
 - **F1 (training): confirmed defect, filed as
-  [ACT-1034](../../sprints/actions/ACT-1034-parametric-impl-instance-body-polymorphic-callee-intake.md).**
+  ACT-1034 (closed S124).**
   - A parametric impl's method instance cannot call a polymorphic callee whose
     instance depends on the impl's type variable.
   - The refusal is `undefined function: <template>` at codegen. It violates

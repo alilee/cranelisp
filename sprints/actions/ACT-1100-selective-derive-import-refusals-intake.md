@@ -65,3 +65,55 @@ compiler or test source was changed by `docs`.
 `test` commits the narrow reproduction(s) with `// spec:` annotations and their
 controls, or `qa` records the governing reason the selective form is invalid.
 Any correction belongs to the attributed owner and includes module evidence.
+
+## Classification: a defect against spec §9.3.4 (qa, 2026-11-20)
+
+Reduced without the standard library, on the debug binary built from
+`3c5e41ca`, a scratch directory since removed.
+
+```clojure
+;; d.cl, on the library path
+(import [primitives [Int add-i64]])
+(defmacro inner [x] `(add-i64 ~x 1))
+(defmacro outerq [x] `(inner ~x))
+```
+
+| Session | Observed |
+|---|---|
+| `(import [d [outerq]])`, `(outerq 2)` | **`undefined variable: d/inner`, in expansion of `(outerq 2)`** |
+| The same with `outer`, which builds the symbol `inner` by hand | The same refusal |
+| The same program under `--run` | The same refusal |
+| `(import [d [*]])`, `(outerq 2)` | 3 |
+| `(import [d [outerq inner]])`, `(outerq 2)` | 3 |
+| `(import [d [outerq]])`, then `(d/inner 2)` typed by the user | 3 |
+| No import, `(d/inner 2)` | 3 |
+
+- [§9.3.4](../../spec/09-macros.md): a macro's expansion may reference
+  "macros, including macros defined earlier in the same module". The
+  using module's imports are not a condition.
+- **Severity: a legal program refused.** No wrong value and no memory
+  hazard.
+- **Mechanism, observed by control and not at its seam.** The expansion's
+  reference is qualified to the macro's module, and that qualified call is
+  not expanded unless the using module has the macro in scope. The same
+  spelling typed by the user is expanded with nothing imported. `qa` did
+  not read where the two lookups part, so **the module is not attributed.**
+  **Refuted if** a user-typed `(d/inner 2)` is refused in some session where
+  the expansion's is.
+- **The two diagnostics share this cause.** With the companions unexpanded,
+  the combined form is a `begin` holding several expressions, and the
+  compiler reports any such `begin` as `illegal redefinition of __expr`:
+  `(begin (nosuch 1) (nosuch 2))` gives the same text. Whether a `begin` of
+  two expressions should be reported in those words is a separate lead,
+  not classified here.
+- **Lead.** Under `--run` the refusal is reported "in expansion of
+  `(import [d [outerq]])`", at the import's span.
+- **Not established:** its age. The linked mode was not run.
+
+## Routing
+
+- **`qa` holds this action.**
+- **`test`:** T-MACRO-SIBLING, in the
+  [S124 evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
+- **The correction** waits on attribution, which `qa` owes before a `dev`
+  dispatch. It is carried on T-MACRO-SIBLING unless the user schedules it.

@@ -1,7 +1,7 @@
 ---
 id: ACT-1094
 title: A trace root omits the expression's formatted result
-status: open
+status: resolved
 priority: required
 from: training
 to: qa
@@ -208,3 +208,26 @@ interleaving, and `dev`'s module rows carry detection proofs.
 
 Still open with `spec`: the root's name and parameters, above; and a
 skipped form's result (trace runtime §7.3).
+
+## Accepted (qa, 2026-11-20, full run at `121c5c9e`)
+
+Read against the six needs above:
+
+1. **Met.** The nine subjects pass, and `tests/trace.rs` has only additions
+   since `f1724229`. The four controls pass.
+2. **Met as run, with one fixture returned.** T-TRACE-OWNING's six cells
+   pass. Their value is built outside the traced call and passed through
+   it, so `qa` cannot say the traced value is its only owner; a release
+   with no glue may still balance there. `test` adds a subject whose value
+   is built inside the call (evidence delta §14.3). By hand under `--run`
+   that shape balances.
+3. **Met.** The five backend rows and seven intrinsics rows named in the two
+   commits pass. Their reds and planted faults are as `dev` records them;
+   `qa` did not replant. Both reviews returned no finding, as `sprint`
+   reports.
+4. **Met.** The armed census reads zero from every program, over 298,467
+   frames.
+5. **Met.** No golden changed, and no test that passed at `b72742f7` fails.
+6. **Owed.** `test` stamps the nine cells; `qa` then deletes this file.
+
+The §4.12.2 band is restored. The backend holds no failing test.

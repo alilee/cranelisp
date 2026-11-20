@@ -140,3 +140,9 @@ follows `design`(int)'s correction of §7.6.4.
 REPRO-1090's subject fails on a launch that scores 50, then passes with its
 control unchanged, and the module row is observed RED before the correction.
 `qa` restores the spec §4.12.3 bands that name this action.
+
+## Run-dependence, as read (qa, 2026-11-20)
+
+REPRO-1090's subject passed in the full run at `b72742f7` and failed in the
+run at `121c5c9e`, where 1 of its 30 launches scored 50. The action stays
+open on it.

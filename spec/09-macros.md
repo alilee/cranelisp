@@ -285,7 +285,7 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 ;; Fixed point reached (no more macros)
 ```
 
-### 9.3.4 Macro Availability and Definition Order [Tested+Neg tests/s76_macro_availability::macro_used_before_defmacro_is_unresolved_neg, tests/s76_macro_availability::macro_defined_before_use_expands, tests/spec_09_macros::macro_persists_across_evals]
+### 9.3.4 Macro Availability and Definition Order [S124 — partial: an expansion that references a macro of its own module is refused unless the using module also imports that macro (ACT-1100; T-MACRO-SIBLING is allocated, no cell yet). Tested+Neg tests/s76_macro_availability::macro_used_before_defmacro_is_unresolved_neg, tests/s76_macro_availability::macro_defined_before_use_expands, tests/spec_09_macros::macro_persists_across_evals]
 
 **A macro MUST be defined before it is used, in source order.** Within a module (and within a REPL `(begin …)` cluster), a `defmacro` is available only to forms that *follow* its successful compilation checkpoint (§9.12.1). A use of a name that appears textually before its `defmacro`, or after a failed `defmacro` attempt for which no prior definition exists, is **not** a macro call: it is an ordinary reference that passes through to the AST builder, and fails name resolution there if the name is otherwise undefined. (This is the *defmacro-before-use* rule; it is the same rule whether the code runs in the REPL or in a batch file — see [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).) Once a checkpoint succeeds, a failure in a later form does not withdraw that macro.
 

@@ -179,3 +179,13 @@ face ("the reported type is not the definition's").
 
 REPRO-1089's four subjects, T-TYPE-PURE and T-TYPE-ERR pass with their
 controls unchanged. `qa` restores the REPL §3.1 bands.
+
+## `defmacro` joins the stale-answer face (qa, 2026-11-20, `121c5c9e`)
+
+`qa` expected `/type (defmacro mm [x] x)` to report an error after an
+expression and had not run it. It prints the earlier expression's type, as
+the four defining forms do; the macro is still not defined. `test` found it
+when the guard cell arrived RED. Twelve cells fail on this action: four of
+REPRO-1089, three of T-TYPE-PURE, the four T-TYPE-ERR subjects and the
+T-TYPE-ERR guard cell. `test` splits `defmacro` out of the guard cell
+(evidence delta §14.3).
