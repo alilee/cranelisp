@@ -2462,3 +2462,66 @@ fn ap3_match_arm_body_annotation_parses_and_checks() {
 fn ap4_if_branch_annotation_parses_and_checks() {
     repl_prims("(if true :Int 1 2)\n").assert_stdout_contains(":primitives/Int 1");
 }
+
+fn s124_trait_scalar_program(declaration: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user(&format!(
+            "{declaration}\n(defn main [] (primitives/Pure 0))\n"
+        ))
+        .run("user.cl")
+        .output()
+}
+
+fn s124_trait_scalar_refused(declaration: &str, unknown_type: bool) {
+    let out = s124_trait_scalar_program(declaration);
+    let diagnostics = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        out.status.code().is_some(),
+        "must diagnose rather than signal: {diagnostics}"
+    );
+    assert_eq!(
+        (
+            !out.status.success(),
+            diagnostics.contains("Int"),
+            !unknown_type || diagnostics.contains("unknown type")
+        ),
+        (true, true, true),
+        "unimported Int must be refused; status={:?}: {diagnostics}",
+        out.status
+    );
+}
+
+// spec: spec/03-types.md §3.1; spec/08-modules.md §8.9.1 — T-TRAIT-SCALAR return position
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_named found=S124 owner=/dev (ACT-1097)
+#[test]
+fn s124_trait_scalar_neg_unimported_return() {
+    s124_trait_scalar_refused("(deftrait T (f [self] Int))", false);
+}
+
+// spec: spec/03-types.md §3.1; spec/08-modules.md §8.9.1 — T-TRAIT-SCALAR parameter position
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_named found=S124 owner=/dev (ACT-1097)
+#[test]
+fn s124_trait_scalar_neg_unimported_parameter() {
+    s124_trait_scalar_refused("(deftrait T (f [self :Int n] primitives/Bool))", true);
+}
+
+// spec: spec/03-types.md §3.1; spec/08-modules.md §8.9.1 — T-TRAIT-SCALAR higher-kinded position
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/resolve.rs::resolve_named found=S124 owner=/dev (ACT-1097)
+#[test]
+fn s124_trait_scalar_neg_unimported_higher_kinded_argument() {
+    s124_trait_scalar_refused("(deftrait (F f) (cnt [:(f Int) x] primitives/Bool))", true);
+}
+
+// spec: spec/03-types.md §3.1; spec/08-modules.md §8.9.1 — T-TRAIT-SCALAR qualified control
+#[test]
+fn s124_trait_scalar_qualified_control() {
+    s124_trait_scalar_program("(deftrait T (f [self] primitives/Int))").assert_ok();
+}
+
+// spec: spec/03-types.md §3.1; spec/08-modules.md §8.9.1 — T-TRAIT-SCALAR imported control
+#[test]
+fn s124_trait_scalar_imported_control() {
+    s124_trait_scalar_program("(import [primitives [Int]])\n(deftrait T (f [self] Int))")
+        .assert_ok();
+}
