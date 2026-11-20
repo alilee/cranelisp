@@ -472,6 +472,7 @@ populations, each with one source of its call convention:
 | `cranelisp_trace_format` | Borrows the value. On the thread holding the trace role it returns a fresh String; on any other thread it returns `0` and allocates nothing |
 | `cranelisp_trace_enter` | Takes each formatted parameter String. On the thread holding the trace role it stores them in the trace frame; on any other thread it returns without storing or releasing them. Every argument on such a thread is `0`, so nothing is left unreleased |
 | `cranelisp_trace_exit` | Returns `result` unchanged and takes the result String. On the thread holding the trace role it stores it in the trace frame; on any other thread it returns without storing or releasing it; that argument is `0` there |
+| `cranelisp_collect_trace` | Borrows the body's value and returns a fresh `Trace`; the emitting site releases the value after the call. Decided 2026-11-20 and not in source, where the entry takes no argument ([tracing §3.6](tracing.md#36-the-roots-result)) |
 | `runtime/run_io` | Consumes the caller's tree; the trampoline it drives borrows that tree |
 | `cranelisp_ivar_create` | Takes the thunk into the new cell. Only the force that claims the cell releases the thunk, after evaluation; the cell's teardown does not. The emitting site therefore sparks every cell it creates |
 | `cranelisp_ivar_spark` | Borrows the cell; the spark task takes its own reference and releases it after its force |

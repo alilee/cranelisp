@@ -9,9 +9,10 @@ document is the sole architecture authority for tracing. Strict evaluation
 within the trace extent (§7) is built. The mode-independent traced set (§5) and
 the covered-module rule the user ruled on 2026-11-19 (§5.1) are in source at
 `f8c55626`; the form's module (§5.1, *The form's module*) at `94749709`; the
-slot obligation (§3.5) at `1238b31c`. Source does not meet the contract in one
-place: the first batch of a module compiled before the prelude publishes
-(§5.1, *Not met in source*; accepted residual).
+slot obligation (§3.5) at `1238b31c`. Source does not meet the contract in two
+places: the root's result (§3.6; decided 2026-11-20, to be built in S124), and
+the first batch of a module compiled before the prelude publishes (§5.1, *Not
+met in source*; accepted residual).
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -53,8 +54,8 @@ display). [§11.5](../../spec/11-stdlib.md) (`core.trace`) is non-normative.
 - Its name is **reserved**. `crates/cranelisp-frontend/src/ast_builder.rs::reject_reserved_binder_name`
   rejects `trace` in every binder and definition position
   (`RESERVED_BINDER_NAMES`); head position is not a binder.
-- The static type is always `Trace`, whatever the body's type; the body's
-  value is discarded.
+- The static type is always `Trace`, whatever the body's type. The body's
+  value is not returned; it produces the root node's result string (§3.6).
 
 ### 2.2 The `Trace` ADT and the form/ADT asymmetry
 
@@ -134,8 +135,9 @@ for one `(trace body)`:
 
 1. `discover_traced_fns_from_tables` over the modules the form covers
    (§5.1), grouped by the module whose table holds the slot — each module
-   owns one GOT and one GOT data symbol. An empty result takes `compile_trace_no_swap` (body, discard,
-   `cranelisp_collect_trace`), which returns the minimal `::trace::` node.
+   owns one GOT and one GOT data symbol. An empty result emits no group and
+   no restore: the form is steps 3, 5 and 6, and returns the minimal
+   `::trace::` node with its result (§3.6).
 2. Per group: the GOT base as a `global_value` against the module's GOT data
    symbol; a read-only `slots` buffer; writable `wrappers` and `originals`
    buffers; then, per traced function, a load of the pre-swap slot contents
@@ -146,10 +148,15 @@ for one `(trace body)`:
 3. The body, compiled with `in_tail_position = false` and otherwise as any
    expression. Codegen does not mark the body: the runtime declines sparks
    for the trace's dynamic extent (§7).
-4. `emit_body_discard` — a category-driven RC release of the body value.
-5. `cranelisp_trace_restore_got` per group in reverse order.
-6. `cranelisp_collect_trace`, emitted exactly once and last — its result is
-   the form's value, and it is the guard's clear point (§6).
+4. `cranelisp_trace_restore_got` per group in reverse order.
+5. `cranelisp_collect_trace(value, descriptor)`, emitted exactly once and as
+   the form's last trace call. It receives the body's value and a descriptor
+   baked for the body's static type (§3.4, §3.6). Its result is the form's
+   value, and it is the guard's clear point (§6).
+6. The release of the body's value, which the collect call borrowed.
+
+Steps 5 and 6 are not in source. Source releases the body's value before the
+restores and calls `cranelisp_collect_trace` with no argument (§3.6).
 
 Each wrapper formats every argument through `cranelisp_trace_format(value,
 descriptor)` (§3.4), calls `cranelisp_trace_enter(name, len, n, strings)`,
@@ -262,6 +269,105 @@ tier does not keep
   siblings observe the frame in every mode. The obligation is not structural:
   a new emission site that calls a slotted function by its function id still
   compiles.
+
+### 3.6 The root's result
+
+**Decided, `arch`, 2026-11-20 (row B17); not in source.**
+[Spec §4.12.2](../../spec/04-expressions.md#4122-semantics) requires the
+body's value to produce the root node's formatted result string. Source
+releases the value unformatted, so the root's result is the empty string in
+every mode (ACT-1094). `tests/trace.rs::s124_trace_root_call_cold` and its
+eight siblings fail on it; the four child controls beside them
+(`tests/trace.rs::s124_trace_root_child_control_cold` and its siblings) pass.
+
+- **Contract.** The node a form returns carries, as its result, the canonical
+  display of the body's value, rendered from a descriptor baked for the
+  body's static type (§3.4). This holds when the form's thread recorded and
+  when the form swapped no slot.
+- **Who owns what.** The root frame is intrinsics' (§4.2), so the runtime
+  writes its result. The backend holds the value and its type, so it supplies
+  the value and the descriptor. The form's closing call carries both; no
+  datum changes owner.
+- **Delta, intrinsics.** One export changes signature. Its name and its
+  catalog membership are unchanged, and the catalog row declares two
+  parameters.
+
+  ```rust
+  // was: pub extern "C" fn cranelisp_collect_trace() -> i64
+  pub extern "C" fn cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64
+  ```
+
+  - `value` is the body's value, borrowed: the emitting site releases it
+    after the call ([BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics),
+    the convention row).
+  - `descriptor_ptr` is the blob root for the body's static type, under the
+    contract `cranelisp_trace_format` already states for its descriptor.
+  - The entry renders through the crate-private descriptor walk, not through
+    `cranelisp_trace_format`. That entry declines off the recording thread
+    because a wrapper there has no consumer (§7 rule 2). The collect call
+    always has one, the node it returns.
+- **Delta, backend.** No public item changes. The emitted sequence changes
+  as §3.3 steps 4 to 6 state, with one tail for a form that swaps and a form
+  that does not. The backend bakes one more descriptor per form and calls
+  `cranelisp_trace_format` only from wrappers.
+- **A skipped form (spec §4.12.6).** This row does not decide a skipped
+  form's result. Source returns the empty string. Spec §4.12.6 says a skipped
+  form returns "no recorded children" and does not name its result, and spec
+  §4.12.2 states no exception. Current behaviour stands until `spec` records
+  a ruling. Either answer is interior to the collect entry under this
+  signature, because the value and the descriptor arrive on every path.
+- **Persistence and ABI.** The call sequence baked into a cached object
+  changes meaning: an object built before the change calls the entry with no
+  argument. `CACHE_SCHEMA_VERSION` is bumped once, in the backend change-set
+  that changes the emitted sequence
+  ([Principle 14](principles/14-ffi-layout-discipline.md)). `BUILD_ID` does
+  not cover an uncommitted build. No serialised shape, descriptor layout,
+  platform ABI or layout hash changes.
+- **Between the two change-sets.** Intrinsics changes first
+  ([approved migrations](../../sprints/METHOD.md#23-gates-that-are-cranelisps-own)).
+  - Until the backend follows, a trace form does not compile. Every module
+    declares each catalog entry with the catalog's signature
+    (`crates/cranelisp-backend/src/jit.rs::declare_intrinsics_generic`), and
+    the trace codegen's own declaration of the entry with no parameter is
+    then refused. Grade: asserted, read in source and not run. Falsifier: a
+    trace form compiles while the backend and the catalog declare different
+    parameter counts for the entry.
+  - A cache written before the intrinsics change still loads until the
+    backend's bump. A trace-form object in it would call the two-parameter
+    body with no argument. The intrinsics change-set is therefore not a
+    handoff, and no cached end-to-end run is taken between the two.
+- **The three questions.**
+  - *Bounded context:* yes, for both crates. The runtime keeps the frame and
+    the rendering; the backend keeps discovery, baking and emission
+    ([BC §3](bounded-contexts.md#3-backend-cratescranelisp-backend), BC §4b
+    invariant 12). No dependency is added.
+  - *Simple API:* yes. One call finishes a form. The backend does not ask
+    whether the thread recorded and handles no "no string" word.
+  - *Strongly typed:* yes, within the raw-word emitted ABI that BC §4b
+    fixes. The entry that could finish a form without its value no longer
+    exists, and no parameter has an absent value. That the descriptor
+    matches the value's type stays the emitter's obligation, as it is for
+    every wrapper; the nine cells above measure it for an `Int` literal, a
+    call and a heap value. No register row's grade drops.
+- **Not chosen.**
+  - *The backend formats, then passes the String:*
+    `cranelisp_trace_format(value, descriptor)` followed by
+    `cranelisp_collect_trace(result_str)`. The formatting entry returns `0`
+    off the recording thread, so a form that swaps no slot would keep an
+    empty result, the parameter would carry an absent value, and a ruling
+    for a skipped form's result would need a second interface change.
+  - *A second export that sets the root's result before the collect.* It
+    adds a path, and a form that omits the call stays expressible.
+  - *`cranelisp_trace_exit` for the root.* Exit appends the finished node to
+    its parent's children, and the root has no parent.
+- **Independent of the root's name.** ACT-1094 routes one question to
+  `spec`: whether `(trace (fact 5))` returns a root named for `fact`, as
+  spec §4.12.8's example shows, or the synthetic `::trace::` root that source
+  returns. Under either reading a synthetic root exists for a body that is
+  not one call, and its result is the body's value, so this row stands. A
+  ruling for the named root needs a further decision on which bodies omit
+  the synthetic root. That decision returns to this gate, and it is not
+  assumed here.
 
 ## 4. Intrinsics runtime
 
@@ -741,7 +847,8 @@ actively-tracing (trace ...)`. A panic inside the bracket ends the process
 runs and the guard needs no panic cleanup.
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
-and emits `cranelisp_collect_trace` exactly once per form, last (§3.3).
+and emits `cranelisp_collect_trace` exactly once per form, as the form's last
+trace call (§3.3).
 
 ## 7. Strict evaluation within the trace extent
 

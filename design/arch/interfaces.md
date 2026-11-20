@@ -756,6 +756,7 @@ public change outside these rows stops and returns to `arch`.
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
+| B17 | `cranelisp_collect_trace() -> i64` becomes `cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64`: the form's closing call receives the body's value, borrowed, and its display descriptor, and the root node's result is the formatted value | intrinsics (the entry, its catalog row, the root frame) | backend emits the new sequence and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics: 1 line changed; every other baseline +0 | `arch`, 2026-11-20; S124 Phase 6b (ACT-1094) | [the root's result](#the-roots-result-row-b17) |
 
 **Phase 5 checkpoints (2026-11-20).** Each used cargo-public-api 0.52.0 and the
 [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) of its format.
@@ -782,6 +783,58 @@ public change outside these rows stops and returns to `arch`.
   A baseline lists a re-exported item at each of its paths, so lines exceed distinct
   lines where a crate re-exports a type; the guard's drift summary counts distinct
   lines.
+
+### The root's result (row B17)
+
+[Tracing §3.6](tracing.md#36-the-roots-result) holds the contract, the exact
+delta, the persistence and ABI effect, the three questions and the
+alternatives. This entry holds what the gate adds.
+
+- **Attribution (ACT-1094).** Confirmed by reading source, not by running it:
+  `crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace`
+  releases the body's value and calls the entry with no argument, and
+  `crates/cranelisp-intrinsics/src/trace.rs::build_trace_call` writes an empty
+  string for a frame whose result word is zero. Neither crate can correct it
+  alone. [Tracing §3.3](tracing.md#33-backend-codegen) stated the release as
+  built, so the architecture record carried the defect as well.
+- **Producer and consumers.** Producer: intrinsics. Consumers: backend-emitted
+  code, and two Rust-path callers in test code, the intrinsics trace tests and
+  `crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs`. The binary
+  and `cranelisp-exe-bundle` name the entry only through the catalog and do
+  not change.
+- **Expected baseline, current format.** `crates/cranelisp-intrinsics/public-api.txt`
+  changes one line and no other baseline moves:
+
+  ```text
+  -#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_collect_trace() -> i64
+  +#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_collect_trace(i64, i64) -> i64
+  ```
+
+- **Decision.** Approved: each of the three questions is answered yes for
+  intrinsics and for the backend, and neither bounded-context statement
+  changes. Not escalated.
+- **Build order.** One callee-first migration; the intrinsics change-set is
+  not a handoff.
+  1. `design`(intrinsics), in [trace runtime](../intrinsics/trace-runtime.md):
+     how the collect entry reads which of its three states it is in (the
+     thread held the role, the form was skipped, the form swapped no slot),
+     that it renders through the crate-private walk, where the root's elapsed
+     time is stamped relative to rendering, and the module rows.
+  2. `design`(backend), in [trace codegen](../backend/trace-codegen.md): the
+     body's descriptor, the one closing tail for both paths, the release
+     after the collect call under the crate's release-by-type rule, and the
+     module rows. Steps 1 and 2 touch different documents and neither waits
+     on the other.
+  3. `dev`(intrinsics): the entry, its rustdoc, the catalog row's signature,
+     the module tests and the regenerated intrinsics baseline. After this
+     step the backend's tests do not compile and no trace form compiles.
+  4. `dev`(backend): the emitted sequence, the `CACHE_SCHEMA_VERSION` bump,
+     the test caller and the module tests. The backend baseline reads +0.
+  5. The migration closes on T-TRACE-ROOT's nine subjects passing
+     (`tests/trace.rs::s124_trace_root_call_cold` and its siblings) with the
+     four child controls unchanged, and on the full suite. `qa` then judges the spec §4.12.2 band.
+- **Waits on nothing.** The row does not depend on `spec`'s open question on
+  a root's name, nor on a skipped form's result; tracing §3.6 states both.
 
 ### An instance's template owner (row B16)
 
