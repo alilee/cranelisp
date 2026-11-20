@@ -787,7 +787,7 @@ The fields are:
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `String` | Fully qualified name of the traced function |
+| `name` | `String` | Fully qualified name of the traced function. For an instance of a generic function, MUST be the template's name alone (for example, `m/helper`), without the instance's type arguments or result type. |
 | `params` | `(SList String)` | Arguments formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)), one String per argument |
 | `result` | `String` | Return value formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)) |
 | `children` | `(SList Trace)` | Child `Trace` values representing calls made within this function, in call order. Uses the `SList` type from the `macros` module (`SCons`/`SNil`). |
