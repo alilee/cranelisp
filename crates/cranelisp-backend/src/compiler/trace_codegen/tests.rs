@@ -256,8 +256,12 @@ fn modules(names: &[&str]) -> BTreeSet<ModuleFullPath> {
         .collect()
 }
 
+fn traced_keys(traced: &[TracedFnInfo]) -> Vec<&str> {
+    traced.iter().map(|t| t.key.as_str()).collect()
+}
+
 fn traced_names(traced: &[TracedFnInfo]) -> Vec<&str> {
-    traced.iter().map(|t| t.name.as_str()).collect()
+    traced.iter().map(|t| t.frame_name.as_str()).collect()
 }
 
 /// A table holding one function whose slot is published.
@@ -327,7 +331,7 @@ fn discovery_covers_the_listed_modules_only() {
     );
     let prim = traced
         .iter()
-        .find(|t| t.name == "primitives/str-concat")
+        .find(|t| t.key == "primitives/str-concat")
         .unwrap();
     assert_eq!(prim.arity, 2);
     assert_eq!(prim.param_types, vec![Type::String, Type::String]);
@@ -338,13 +342,24 @@ fn discovery_covers_the_listed_modules_only() {
 
 /// Install an instance of `template_module/g` at `Int`; returns its key.
 fn insert_instance_of(table: &mut SymbolTable<(), ()>, template_module: &str) -> Symbol {
+    insert_instance_of_at(table, template_module, ConcreteType::Int)
+}
+
+/// Install an instance of `template_module/g : (Fn [a] a)` at `arg`; returns
+/// its key.
+fn insert_instance_of_at(
+    table: &mut SymbolTable<(), ()>,
+    template_module: &str,
+    arg: ConcreteType,
+) -> Symbol {
     use cranelisp_types::{CallableTarget, FQSymbol, InstanceLink};
+    let arg_ty = arg.to_type();
     let link = InstanceLink::from_type_args(
         CallableTarget::Binding(FQSymbol {
             module: ModuleFullPath::from(template_module),
             symbol: Symbol::from("g"),
         }),
-        vec![ConcreteType::Int],
+        vec![arg],
     );
     let template_scheme = Scheme {
         type_vars: vec![0],
@@ -357,7 +372,7 @@ fn insert_instance_of(table: &mut SymbolTable<(), ()>, template_module: &str) ->
     let (installed, _) = table
         .install_instance(
             link,
-            fn_scheme(vec![Type::Int], Type::Int),
+            fn_scheme(vec![arg_ty.clone()], arg_ty),
             vec![Symbol::from("x")],
             None,
             0,
@@ -443,10 +458,52 @@ fn discovery_selects_instances_of_covered_templates_from_module_path() {
     .expect("every covered module has a table");
     let covered = format!("user/{covered_instance}");
     assert_eq!(
-        traced_names(&traced),
+        traced_keys(&traced),
         vec!["lib/step", covered.as_str()],
         "only the instance of a listed template module is selected from module_path \
          (not user/fact, not user/{uncovered_instance})"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.4 (the `name` row);
+// design/backend/trace-codegen.md §1.4 — an instance's frame is named by its
+// template's qualified name; an authored entry keeps its own; instances keep
+// their table-key order.
+#[test]
+fn discovery_names_an_instance_frame_by_its_template() {
+    let tables: DashMap<ModuleFullPath, SymbolTable<(), ()>> = DashMap::new();
+    let mut user = table_with_fn("user", "fact", 0x1000);
+    let at_string = insert_instance_of_at(&mut user, "m", ConcreteType::String);
+    let at_int = insert_instance_of_at(&mut user, "m", ConcreteType::Int);
+    tables.insert(ModuleFullPath::from("user"), user);
+
+    let traced = discover_traced_fns_from_tables(
+        &tables,
+        &ModuleFullPath::from("user"),
+        &modules(&["user"]),
+        Span::SYNTHETIC,
+    )
+    .expect("the form's module has a table");
+
+    let mut keys = [
+        (at_int.to_string(), Type::Int),
+        (at_string.to_string(), Type::String),
+    ];
+    keys.sort_by(|a, b| a.0.cmp(&b.0));
+    assert!(
+        keys[1].0.as_str() < "fact",
+        "fixture: both instance keys order before the authored entry: {keys:?}"
+    );
+    assert_eq!(
+        traced_names(&traced),
+        vec!["m/g", "m/g", "user/fact"],
+        "instances take the template's name; the authored entry keeps its own"
+    );
+    let instance_params: Vec<&Type> = traced[..2].iter().map(|t| &t.param_types[0]).collect();
+    assert_eq!(
+        instance_params,
+        vec![&keys[0].1, &keys[1].1],
+        "the two instances keep their table-key order"
     );
 }
 
@@ -868,7 +925,8 @@ fn bake_recursive_intlist_blob_size() -> (usize, usize) {
     let module_path = ModuleFullPath::from("user");
     with_bake_compiler(&tables, |compiler| {
         let tf = TracedFnInfo {
-            name: "user/sum".to_string(),
+            key: "user/sum".to_string(),
+            frame_name: "user/sum".to_string(),
             module_path,
             got_slot: 0,
             arity: 1,

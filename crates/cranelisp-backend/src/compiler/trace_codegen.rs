@@ -274,8 +274,8 @@ impl DescriptorBlob {
 
 /// Compute the traced set of a trace form whose target covers `trace_modules`
 /// (`trace-codegen.md` §1.3). Groups are the listed modules together with
-/// `module_path`, visited in `BTreeSet` order, each ordered by name, so the
-/// result does not depend on table iteration. A listed module's table is read
+/// `module_path`, visited in `BTreeSet` order, each ordered by table key, so
+/// the result does not depend on table iteration. A listed module's table is read
 /// whole. When `module_path` is not listed, its group holds only the instances
 /// whose template module is listed. A group's module with no table is refused
 /// at the form's `span`.
@@ -285,7 +285,8 @@ impl DescriptorBlob {
 /// before codegen, while publication depends on compilation and load order.
 /// The emitted swap installs a wrapper only over a non-zero original, so that
 /// check happens at run time. Constrained-poly and overloaded base names claim
-/// no slot. Arity and param/result types come from the scheme.
+/// no slot. Arity and param/result types come from the scheme. An instance's
+/// frame is named by its template's owner as typecheck recorded it (§1.4).
 ///
 /// Free function so it is unit-testable against a hand-built `DashMap`
 /// without a full `FnCompiler`.
@@ -327,8 +328,14 @@ where
             {
                 continue;
             }
+            let key = format!("{covered_module}/{name}");
+            let frame_name = match callable.arm.template_owner() {
+                Some(template) => template.to_string(),
+                None => key.clone(),
+            };
             traced.push(TracedFnInfo {
-                name: format!("{covered_module}/{name}"),
+                key,
+                frame_name,
                 module_path: covered_module.clone(),
                 got_slot: slot,
                 arity: params.len(),
@@ -337,8 +344,8 @@ where
             });
         }
         // Table iteration is hash order; every group shares its module prefix,
-        // so the qualified name orders the group by symbol name.
-        traced[group_start..].sort_by(|a, b| a.name.cmp(&b.name));
+        // so the key orders the group by table key.
+        traced[group_start..].sort_by(|a, b| a.key.cmp(&b.key));
     }
     Ok(traced)
 }
@@ -604,7 +611,7 @@ where
             .map_err(|e| CranelispError::CodegenError {
                 message: format!(
                     "failed to declare trace descriptor data for '{}': {e}",
-                    tf.name
+                    tf.key
                 ),
                 location: ErrorLocation::from_span(span),
             })?;
@@ -617,7 +624,7 @@ where
             .map_err(|e| CranelispError::CodegenError {
                 message: format!(
                     "failed to define trace descriptor data for '{}': {e}",
-                    tf.name
+                    tf.key
                 ),
                 location: ErrorLocation::from_span(span),
             })?;
@@ -1038,7 +1045,7 @@ where
             tf.arity,
             tf.param_types.len(),
             "trace wrapper arity mismatch for '{}': arity={} but param_types={}",
-            tf.name,
+            tf.key,
             tf.arity,
             tf.param_types.len()
         );
@@ -1056,7 +1063,7 @@ where
 
         let wrapper_func_id = self.module.declare_anonymous_function(&sig).map_err(|e| {
             CranelispError::CodegenError {
-                message: format!("failed to declare trace wrapper for '{}': {}", tf.name, e),
+                message: format!("failed to declare trace wrapper for '{}': {}", tf.key, e),
                 location: ErrorLocation::from_span(span),
             }
         })?;
@@ -1070,8 +1077,8 @@ where
         // no leaked compiling-process pointer — FIXME 0275). The wrapper
         // references it via `global_value` (one relocation in object mode; JIT
         // patches the runtime address).
-        let name_len = tf.name.len() as i64;
-        let name_data_id = self.emit_ro_data(tf.name.as_bytes(), 1, "trace name", span)?;
+        let name_len = tf.frame_name.len() as i64;
+        let name_data_id = self.emit_ro_data(tf.frame_name.as_bytes(), 1, "trace name", span)?;
 
         // Build and compile the wrapper IR.
         {
@@ -1186,7 +1193,7 @@ where
             self.module
                 .define_function(wrapper_func_id, &mut ctx)
                 .map_err(|e| CranelispError::CodegenError {
-                    message: format!("failed to define trace wrapper for '{}': {}", tf.name, e),
+                    message: format!("failed to define trace wrapper for '{}': {}", tf.key, e),
                     location: ErrorLocation::from_span(span),
                 })?;
         }

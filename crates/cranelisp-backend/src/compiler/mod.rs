@@ -75,8 +75,12 @@ pub(crate) use resolution::{
 /// wrapper-compile time (`trace_codegen`), not carried on this struct.
 #[derive(Debug, Clone)]
 pub(crate) struct TracedFnInfo {
-    /// Fully-qualified function name (e.g., "user/fact").
-    pub name: String,
+    /// The entry's identity: `{module_path}/{table key}`. Orders a group and
+    /// names the entry in codegen diagnostics.
+    pub key: String,
+    /// The recorded frame's name: the source definition's qualified name, so
+    /// an instance takes its template's (spec §4.12.4). Not unique.
+    pub frame_name: String,
     /// Module that defines this function (e.g., "user", "primitives"). The
     /// grouping key for `compile_trace`, and used to reference the module's GOT
     /// **data symbol** (`got_data_symbol_name`) via relocation in both JIT and
