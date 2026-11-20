@@ -42,7 +42,7 @@ While the session is locked, a command that evaluates code is refused; the other
 | `/quit` | `/q` | Exit REPL with status 0 (§0.1) | 0 | [Tested+Neg tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::quit_while_locked_exits_zero_without_reprinting_errors — status 0 unlocked and while locked, with no reprint of the failure] |
 
 `/type` given a definition form MUST report its type. The query MUST NOT define
-anything in the session.
+anything in the session. [S124 — nonconforming. A definition given to `/type` is committed to the session: tests/repl_introspection::s124_1089_existing_definition_subject, tests/repl_introspection::s124_1089_new_name_subject, tests/repl_introspection::s124_1089_stale_type_subject and tests/repl_introspection::s124_1089_changed_signature_subject fail (ACT-1089); the reported type has no cell yet]
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
 

@@ -62,18 +62,20 @@ realization details are not part of that language type.
   documentation and patches the callable's existing slot. Calls and callable
   values that already refer through that slot reach the replacement body on
   their next invocation. No dependent is re-typechecked and no redefinition
-  report is printed beyond the ordinary definition confirmation. [S124 — partial. Tested+Neg
+  report is printed beyond the ordinary definition confirmation. [Tested+Neg
   `tests/repl_redefinition.rs::redefine_body_only_stale_closure_late_binds_new_body`,
   `tests/repl_redefinition.rs::redefine_body_only_neg_no_cascade_report_no_dependent_recompiles`,
   `tests/repl_redefinition.rs::s124_d7_single_moves_on`,
   `tests/repl_redefinition.rs::s124_d7_single_moves_off`,
   `tests/repl_redefinition.rs::s124_d7_generic_moves_on`,
-  `tests/repl_redefinition.rs::s124_d7_generic_moves_off`
+  `tests/repl_redefinition.rs::s124_d7_generic_moves_off`,
+  `tests/repl_redefinition.rs::s124_1088_loaded_value_redefinition_subject`,
+  `tests/repl_redefinition.rs::s124_1088_prompt_value_redefinition_control`
   — a replacement whose inferred ownership modes differ publishes, a direct
-  caller and a function value taken before it reach the new body, the
-  session balances against a twin that keeps its modes, and a restart agrees;
-  a function value taken in the unit that defines the function, such as a
-  loaded file, keeps the old body (ACT-1088, no cell yet)]
+  caller and a function value taken before it reach the new body, whether
+  the value was taken in the unit that defines the function, such as a
+  loaded file, or in a later turn, the session balances against a twin that
+  keeps its modes, and a restart agrees]
 - A replacement with a different language type is legal only when the existing
   definition has no blocking dependent under §18.2. If any blocking dependent
   exists, the compiler MUST reject the replacement before publication, retain

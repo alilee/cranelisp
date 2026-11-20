@@ -71,33 +71,29 @@ is absent after a clean check "only through an invariant violation" and that
 "the only face is a wrong display". Both are false for a definition
 argument. `design`(int) owns that text.
 
-## Open requirement question, for the user through `spec`
+## Ruled, 2026-11-20
 
-REPL §3 gives `/type` an `<expr>` and does not say what a definition form is
-to it. The question:
+The user ruled answer (b): `/type` given a definition form reports its type
+and defines nothing in the session
+([REPL §3.1](../../repl/spec/03-slash-commands.md#31-command-inventory),
+`467e6a97`). The user also ruled that the defect is carried past S124 on its
+reproductions (`sprints/SPRINT.md`, Notes).
 
-> When `/type` is given a definition form (`defn`, `deftype`, `deftrait`,
-> `impl`, `defmacro`, `import` or `export`) and not an expression, does it
-> (a) refuse the input with a located diagnostic saying `/type` takes an
-> expression, or (b) report the type the definition would have if entered,
-> for example the line its confirmation would print?
-
-Both answers leave the session unchanged. If the user intends `/type` to
-define what it is given, that is a third answer and REPRO-1089's clauses
-change with it. `qa` does not choose.
-
-Not probed: `/type` with a definition in a locked session, where REPL §14.5
-admits `/type` and refuses every definition; `/type` with `deftrait`,
-`impl`, `import` or `export`.
+- **Open with `spec`, blocking no test:** what "its type" is for a form
+  that has no value type (`deftype`, `deftrait`, `impl`, `defmacro`,
+  `import`, `export`). The allocated clause uses `defn` only.
+- **Not probed:** `/type` with a definition in a locked session, where REPL
+  §14.5 admits `/type` and refuses every definition; `/type` with
+  `deftrait`, `impl`, `import` or `export`.
 
 ## Evidence allocation
 
-**REPRO-1089**, allocated to `test` in the
+**REPRO-1089** is committed (`14341a53`): four subjects fail on their
+assertions and the expression control passes, as read at `ee65d9aa`. The
+clause for the reported type is **T-TYPE-DEFN**, allocated to `test` in the
 [evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test).
-Its clauses hold under answers (a) and (b) and pin no response text.
 
 ## Completion evidence
 
-REPRO-1089's subjects fail as allocated, then pass with the control
-unchanged. The user's answer is scribed in REPL §3, and `qa` allocates the
-clause for the printed response.
+REPRO-1089's subjects and T-TYPE-DEFN pass with the control unchanged. `qa`
+restores the REPL §3.1 band.
