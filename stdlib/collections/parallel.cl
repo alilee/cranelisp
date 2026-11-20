@@ -42,7 +42,8 @@
 ;;
 ;; INSIDE A TRACE THEY RUN SEQUENTIALLY. Evaluation is strict for the whole
 ;; dynamic extent of a `trace` (spec §4.12.2 item 2), so no half sparks there:
-;; the result is unchanged and every recursive call is recorded in order.
+;; the result is unchanged. Which of their calls the trace records is set by
+;; its coverage (spec §4.12.3), not by this module.
 ;;
 ;; Spec: 12-runtime.md §12.4.3 (lenient evaluation), 04-expressions.md §4.12.2;
 ;; plan-stdlib.md §3.3
