@@ -234,6 +234,105 @@ reaches the trait; dispatch reaches the method (see
 below, and
 [spec §7.11.2(d)](../../spec/07-traits.md#7112-method-import-dispatch--a-method-reference-suffices)).
 
+## Implementing a family of types
+
+A parametric implementation covers a type constructor with constrained payloads.
+This example delegates to another instance of the same trait, reducing the
+nesting each time:
+
+<!-- sample: {"kind":"definition","group":"counted"} -->
+```clojure
+(deftype (Box a) [:a value])
+(deftrait Counted (counted [self] Int))
+(impl Counted Int (defn counted [n] n))
+(impl Counted (Box :Counted a)
+  (defn counted [b] (counted (Box.value b))))
+```
+
+<!-- sample: {"kind":"repl","group":"counted"} -->
+```
+user> (counted (Box (Box 7)))
+:primitives/Int 7
+```
+
+`:Counted a` requires the payload type to support `Counted`. The call walks
+from `(Box (Box Int))` to `(Box Int)` to `Int`. Implementation bodies can also
+call generic helper functions or other parametric implementations. See
+[spec §7.3.3](../../spec/07-traits.md#733-polymorphic-implementation-with-constraints).
+
+A body that demands ever more deeply nested instances is accepted as a
+declaration, but refused when a call first needs it. For example, in a separate
+session:
+
+<!-- sample: {"kind":"definition","group":"growing"} -->
+```clojure
+(import [primitives [add-i64]])
+(deftype (Opt a) Nope (Yep [:a v]))
+(deftrait Size (size [self] Int))
+(impl Size Int (defn size [n] n))
+(impl Size (Opt :Size a)
+  (defn size [o]
+    (match o [Nope 0
+              (Yep x) (add-i64 1 (size (Yep o)))])))
+```
+
+Calling `(size (Yep 3))` then reports a type error saying the implementation's
+instantiation exceeds the depth limit of `64`. It wraps `o` again instead of
+recursing on the smaller `x`. This is a compile-time refusal, not a runtime
+stack limit. See [spec §3.10](../../spec/03-types.md#310-rank-1-hindley-milner).
+
+Keep the supported dispatch above separate from carried limitations:
+imported implementation instances that call multi-signature functions
+(ACT-1071), calls to such a function in the same definition cluster (ACT-1074),
+and selection of a polymorphic function from several candidates (ACT-1075)
+still have failing reproductions. A refused cluster can also leave a registered
+implementation shell (ACT-1073); restart from corrected source after such a
+failure.
+
+## Standard-library implementations
+
+With the standard library, `Option`, `Result`, `Pair`, `List` and `Either`
+support `Eq`, `Ord` and `Display` when their payload types support the
+corresponding trait. `Option` also supports `Default` without a payload bound:
+its default is `None`. Import the defining library module when it is not
+already in the prelude; the [stdlib map](../../stdlib/plan-stdlib.md) lists them.
+For example, with the default prelude:
+
+<!-- sample: {"kind":"repl"} -->
+```
+user> (import [default [default]])
+user> :(Option Int) (default)
+:(primitives/Option primitives/Int) Option.None
+user> (show (Some 7))
+:primitives/String "Some(7)"
+```
+
+For your own data types, import the `derive` macros together:
+
+<!-- sample: {"kind":"definition","group":"derive"} -->
+```clojure
+(import [derive [*]])
+(derive [Eq Ord Display] (deftype Color Red Blue))
+```
+
+<!-- sample: {"kind":"repl","group":"derive"} -->
+```
+user> (= Red Red)
+:primitives/Bool true
+user> (< Red Blue)
+:primitives/Bool true
+user> (show Blue)
+:primitives/String "Blue"
+```
+
+The combined form defines the type and generates implementations. The individual
+`derive-Eq`, `derive-Ord` and `derive-Display` macros take the description of an
+already defined type. Keep the companion macros in scope: selectively importing
+only `derive` currently fails during expansion. This narrower import case is
+routed to `qa`; use the verified glob form above. See
+[derive's source](../../stdlib/derive.cl), [consumer cases](../../stdlib/derive/test.cl)
+and [spec §7.13](../../spec/07-traits.md).
+
 ## Default methods — a body instead of a return type
 
 Most trait methods are **required**: the trait declares the signature and every

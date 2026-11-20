@@ -60,7 +60,10 @@ parameter receives the remaining arguments as an `(SList Sexp)`:
 
 Here `f` receives the symbol `primitives/add-i64`, and `args` holds the source
 forms `3` and `4`. Splicing inserts two arguments into the call. `&args` and
-`& args` are equivalent spellings. See
+`& args` are equivalent spellings. The name after `&` is a symbol only: a
+rest pattern such as `[& [a b]]` is rejected with `expected name after '&'`.
+Bracket destructuring belongs in ordinary parameter positions, not in that
+rest binder. See
 [quasiquote](../../spec/09-macros.md#94-quasiquote) and
 [macro parameters](../../spec/09-macros.md#922-parameters).
 
@@ -84,6 +87,15 @@ A macro can provide several clauses, selected in definition order by argument
 count and bracket shape. A bracket pattern can itself end in `& rest` to collect
 its remaining elements. See [spec §9.2.6–§9.2.7](../../spec/09-macros.md#926-multi-clause-macros)
 for the matching rules.
+
+## Locate a macro return-type error
+
+Every clause body returns a `Sexp`. If one returns an ordinary value, the
+compiler points at that clause's body, rather than the entire declaration.
+For example, `(defmacro wrong ([x] 1) ([x y] 2))` reports a type mismatch
+at the first body `1`: `expected primitives/Int, got macros/Sexp` on the
+current binary. Replace the ordinary integer with quoted source, such as `'1`.
+The location contract is [spec §9.2.1](../../spec/09-macros.md#921-syntax).
 
 ## Introduce temporary names carefully
 
@@ -192,6 +204,9 @@ A panic while executing an expansion ends the **compiler process**, including
 the REPL; there is no panic-capture wrapper. Validate a caller's source shape
 through clauses and ordinary compile-time diagnostics where possible. The
 runtime rule is [spec §12.7](../../spec/12-runtime.md#127-error-model).
+
+The [traits guide](traits.md#standard-library-implementations) shows `derive`
+for generating implementations from a type declaration.
 
 The standard prelude supplies macros such as `def`, `cond` and threading forms.
 `def` still has an [unresolved application boundary](live-development.md#the-def-macros-current-boundary);
