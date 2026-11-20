@@ -76,7 +76,7 @@ fn s124_save_after_construction(
 }
 
 // spec: repl/spec/15-session-persistence.md §15.1
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+// defect: class=enumeration-miss locus=src/save.rs::generate_types found=S124 owner=/dev
 #[test]
 fn s124_save_after_user_parametric_product_construction() {
     s124_save_after_construction(
@@ -89,14 +89,14 @@ fn s124_save_after_user_parametric_product_construction() {
 }
 
 // spec: repl/spec/15-session-persistence.md §15.1
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+// defect: class=enumeration-miss locus=src/save.rs::generate_types found=S124 owner=/dev
 #[test]
 fn s124_save_after_seeded_pair_construction() {
     s124_save_after_construction("(primitives/Pair 1 2)", "(Pair 1 2)", "f", 1, &[]);
 }
 
 // spec: repl/spec/15-session-persistence.md §15.1
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+// defect: class=enumeration-miss locus=src/save.rs::generate_types found=S124 owner=/dev
 #[test]
 fn s124_save_after_function_body_pair_construction() {
     s124_save_after_construction(
