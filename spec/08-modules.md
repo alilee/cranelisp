@@ -816,7 +816,7 @@ A project MAY provide its own `prelude.cl` that shadows a library prelude, since
 
 An empty prelude is valid. The core language -- primitives, special forms, type inference -- works without any prelude content. The prelude provides convenience (traits, operators, types, macros) but is not required for the language to function.
 
-Every language feature MUST be self-sustaining: any helper it requires MUST be provided as a built-in or primitive, without depending on a library. [Uncovered S124]
+This specification MUST NOT depend on the prelude. Every construct the language defines MUST be self-sustaining: any helper it requires MUST be provided as a built-in or primitive, without depending on a library. A built-in macro MUST emit fully-qualified references to primitives so that it depends on no imports. A high-level construct that can be implemented in a library or by a user SHOULD belong to the library, not the language. [Uncovered S124]
 
 ```clojure
 ;; A valid, empty prelude.cl
