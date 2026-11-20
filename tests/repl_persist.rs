@@ -33,6 +33,99 @@ mod e2e;
 
 use e2e::{Cranelisp, PreludeVariant};
 
+fn s124_save_after_construction(
+    setup: &str,
+    value: &str,
+    later: &str,
+    expected: i64,
+    retained: &[&str],
+) {
+    let first = Cranelisp::new()
+        .stdin(&format!(
+            "{setup}\n(defn {later} [] {expected})\n({later})\n/quit\n"
+        ))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(value)
+        .assert_stdout_contains(&format!(":primitives/Int {expected}"));
+    let saved = if first.tmp_exists("user.cl") {
+        first.read_tmp("user.cl")
+    } else {
+        String::new()
+    };
+    let no_warning = !format!("{}{}", first.stdout, first.stderr).contains("failed to save");
+    let saved_definition = saved.contains(&format!("(defn {later} "));
+    let retained_definitions = retained.iter().all(|text| saved.contains(text));
+    let diagnostics = format!("stdout:\n{}\nstderr:\n{}", first.stdout, first.stderr);
+    let second = s124_cold_session(first)
+        .stdin(&format!("({later})\n/quit\n"))
+        .output()
+        .assert_ok();
+    let restored = e2e::repl_output_lines(&second.stdout)
+        .iter()
+        .any(|line| line == &format!(":primitives/Int {expected}"));
+    // Collect every clause before asserting so a save warning cannot mask the restart loss.
+    assert!(
+        no_warning && saved_definition && retained_definitions && restored,
+        "no save warning={no_warning}; backing file holds later definition={saved_definition}; \
+         backing file retains declarations={retained_definitions}; restart evaluates it={restored}\n\
+         first {diagnostics}\nsaved:\n{saved}\nrestart stdout:\n{}\nrestart stderr:\n{}",
+        second.stdout,
+        second.stderr
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_save_after_user_parametric_product_construction() {
+    s124_save_after_construction(
+        "(deftype (P2 a b) [:a x :b y])\n(P2 1 2)",
+        "(P2 1 2)",
+        "f",
+        1,
+        &["(deftype (P2 a b)"],
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_save_after_seeded_pair_construction() {
+    s124_save_after_construction("(primitives/Pair 1 2)", "(Pair 1 2)", "f", 1, &[]);
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1
+// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S124 owner=/dev
+#[test]
+fn s124_save_after_function_body_pair_construction() {
+    s124_save_after_construction(
+        "(import [primitives [Pair]])\n(defn pair [] (Pair 1 2))\n(pair)",
+        "(Pair 1 2)",
+        "g",
+        2,
+        &["(defn pair "],
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1
+#[test]
+fn s124_save_after_named_parametric_constructor_control() {
+    s124_save_after_construction(
+        "(deftype (Box a) (Mk [:a v]))\n(Mk 1)",
+        "(Box.Mk 1)",
+        "f",
+        1,
+        &["(deftype (Box a)"],
+    );
+}
+
+// spec: repl/spec/15-session-persistence.md §15.1
+#[test]
+fn s124_save_after_seeded_some_control() {
+    s124_save_after_construction("(primitives/Some 1)", "(Option.Some 1)", "f", 1, &[]);
+}
+
 // =============================================================================
 // 1. Definitions survive restart (§15.2 — Session Restore)
 // =============================================================================
