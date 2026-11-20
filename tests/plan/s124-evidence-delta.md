@@ -1682,7 +1682,7 @@ read from their filings' headers only.
 
 | Problem | Module | State | A reproduction |
 |---|---|---|---|
-| After a value of a parametric product type is constructed, every later save is refused and later definitions are lost at restart ([ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md)) | `src/`, provisional | **A defect against REPL §15.1, data loss. Reported by `test`; reproduced by `qa`** without the standard library, with three controls. The producer of the unrenderable entry is not read. Age not established | T-SAVE-PRODUCT, allocated (§14.3) |
+| After a value of a parametric product type is constructed, every later save is refused and later definitions are lost at restart ([ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md)) | `src/` | **A defect against REPL §15.1, data loss. Reported by `test`; reproduced by `qa`** without the standard library, with three controls. `src/save.rs::generate_types` selects a product constructor's instance as a type declaration; read in source. Age not established | T-SAVE-PRODUCT, allocated (§14.3) |
 | Two processes on one project directory mix cache generations ([ACT-1085](../../sprints/actions/ACT-1085-two-processes-on-one-project-directory-can-mix-cache-generations-intake.md)) | `src/` | Asserted with a named falsifier. The backend's shared temporary name, which was a part, is corrected (`7d5a5d42`) | Judged constructible, and not attempted, below |
 | A codegen failure names `__expr` or an instance key as its subject (FIXME 0915, the binary's half; [int §9.1](../../design/int/int.md#91-the-compiler-stage-subject-is-presented-never-carried--ruling-s119-fixme-0915-item-4)) | `src/`, with a carrier that is `arch`'s | True in this read: `codegen failed for __expr in user: …` through ACT-1075's cells. No legitimate program reaches it. Wrong diagnostic | A module row in `src/`, allocated to `dev`(`src/`) (§14.8). No e2e cell: every public trigger is another module's open defect |
 | A macro-produced function restored from cache that references `discover-tests` is reported at `0..0` ([ACT-1036](../../sprints/actions/ACT-1036-main-return-refusal-synthetic-location-intake.md)) | `src/` | Stated by `design`(int); with the user | Not checked |
@@ -1861,8 +1861,7 @@ persist interactive definitions to disk").
 - **By hand, all three subjects fail** on the three clauses and both
   controls hold.
 - **Defect line:** `class=enumeration-miss`, the locus
-  `src/save.rs::generate_module_source`, `owner=/dev`. The attribution is
-  provisional.
+  `src/save.rs::generate_types`, `owner=/dev`.
 
 **Stale demos, not defects.** Both demos are `test`'s.
 
@@ -2450,7 +2449,7 @@ running at once, and once in the full suite.
 
 | Filing | Defect | Entered | Face | State |
 |---|---|---|---|---|
-| [ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md) | After a value of a parametric product type is constructed, every later save of the backing file is refused | Not established; present in a release binary built 2026-11-18, during S124 | **Data loss:** later definitions are absent at restart. A warning is printed each time | **Opened from `test`'s lead on 2026-11-20; a defect against REPL §15.1.** Reproduced by hand with three controls; attributed to `src/`'s regeneration provisionally, at its own warning. No cell yet: T-SAVE-PRODUCT (§14.3) |
+| [ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md) | After a value of a parametric product type is constructed, every later save of the backing file is refused | Not established; present in a release binary built 2026-11-18, during S124 | **Data loss:** later definitions are absent at restart. A warning is printed each time | **Opened from `test`'s lead on 2026-11-20; a defect against REPL §15.1.** Reproduced by hand with three controls; attributed to `src/save.rs::generate_types`, read in source: it selects a product constructor's instance as a type declaration. No cell yet: T-SAVE-PRODUCT (§14.3) |
 | [ACT-1100](../../sprints/actions/ACT-1100-selective-derive-import-refusals-intake.md) | A macro's expansion that references a macro of its own module is refused unless the using module imports that macro | Not established | A legal program refused | **Opened by `docs`; a defect against spec §9.3.4.** Reduced without the standard library, with controls. **Attributed to `src/`'s expansion driver,** read in source: heads are recognised in the using module's scope and qualified afterwards. T-MACRO-SIBLING is committed, 6 cells RED |
 | [ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md) | `/type` refuses an expression that uses a macro | Not established | A legal query refused, with a diagnostic naming a defined macro as undefined | **Opened by `qa` on 2026-11-20.** Reproduced by hand with a control; attributed to `src/`'s type query, provisionally. T-TYPE-MACRO (§14.3) |
 | Recorded in ACT-1094 | A traced body's value that owns heap memory was released with no drop glue | S20 | Performance only: what the value holds is stranded | **Corrected at `3c5e41ca` and accepted** on `dev`'s module row and its planted fault. T-TRACE-OWNING passes; one subject is returned so the end-to-end cell can fail on it (§14.3) |
@@ -2595,7 +2594,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 1. **`test`:** the five rows of §14.3's handoff table, in rank order.
 2. **`qa`:** the read of T-SAVE-PRODUCT's reds on their clauses, and the
-   producer of ACT-1101's entry before any `dev` dispatch on it.
+   age of ACT-1101 on the sprint's opening tree.
 3. **`sprint`:**
    - **ACT-1101 loses user data** and is new at this read. Whether it is
      corrected before S124 closes is the user's;
@@ -2625,8 +2624,9 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
      session having loaded them, and whether ACT-0952's dependency
      discovery is that correction. Carried on T-SEARCH-REACH unless the
      user schedules it;
-   - ACT-1101: which step leaves a product constructor's instance in the
-     entry module's table, and whether regeneration is to skip it;
+   - ACT-1101: the type section of regeneration excludes instances, as
+     the function section does. Whether an instance keeps its type facet
+     is `arch`'s;
    - ACT-1100: recognition of an expansion-produced macro head in the
      defining module's scope. It touches `arch`'s macro-availability
      model;
@@ -2710,9 +2710,8 @@ open on it.** No backend source has changed since `3c5e41ca`.
 | No build warning from the backend | **Met.** Read at `121c5c9e`, with the same backend source: `cargo build` and the run's build report no warning from a workspace crate. `cargo clippy -p cranelisp-backend --all-targets` reports none from the backend; its 13 are in `cranelisp-types` (7), `cranelisp-intrinsics` (3) and `cranelisp-platform` (3), as before |
 | No open review finding on the backend | **Met, as `sprint` reports:** the reviews of `ecae99c9` and `3c5e41ca` returned no finding. `qa` did not read them |
 
-**Three caveats.** ACT-1101's producer is not read, and if the entry it
-names is left by the backend's instance handling the defect is partly the
-backend's; it has no cell yet. The other two are unattributed cells. ACT-1067's two cells have four
+**Two caveats, both unattributed cells.** ACT-1101 is attributed to
+`src/` and is not one of them. ACT-1067's two cells have four
 candidate modules and ACT-1018's five have three; the backend is one of
 each. If either is attributed to the backend, its cells are failing tests
 of the focus module.
@@ -2948,8 +2947,7 @@ defect report; the defects are §14.1.
 
 **Not attributed.** ACT-1018 (one stranded block per `print` of an owned
 value) and ACT-1067 (a deeply nested expression aborts the compiler) have
-no module, and the backend is a candidate for each. ACT-1101's producer is
-not read.
+no module, and the backend is a candidate for each.
 
 **Open with `spec`, blocking no test.** A trace root's name and
 parameters; a skipped trace form's result; what a project file at a

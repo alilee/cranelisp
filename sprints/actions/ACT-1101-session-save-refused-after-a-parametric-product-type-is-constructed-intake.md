@@ -10,7 +10,8 @@ filed_at: 2026-11-20
 refers_to:
   - repl/spec/15-session-persistence.md §15.1
   - src/session_v4/lifecycle.rs
-  - src/save.rs::generate_module_source
+  - src/save.rs::generate_types
+  - crates/cranelisp-types/src/lifecycle.rs
 ---
 
 ## Origin
@@ -55,17 +56,33 @@ prelude.
   no tree from before the sprint. The refusing check dates from S122
   (`63605970`).
 
-## Attribution: the binary's regeneration, provisional
+## Attribution: the binary's regeneration, `src/save.rs::generate_types`
 
-- **At the seam.** The warning is the regeneration's own report: the
-  entry module's table holds an entry it has no authored source for, named
-  as an instance of the product type's constructor at concrete types.
-- **Control.** The `Box` row differs only in the type's form and saves.
-- **Not read:** which step installs that entry in the entry module's
-  table, and whether `src/save.rs::generate_module_source` is meant to skip
-  it as it skips other instances. The producer may be outside `src/`.
-- **Refuted if** the entry is absent from the table on a build where the
-  save still refuses.
+Read in source at `23448d9c`, with the control above.
+
+- **The refusing step.** `generate_types` selects every entry of the
+  module's table for which `Binding::type_def_info()` answers, and reports
+  an entry with no authored record as unrendered, which refuses the whole
+  save.
+- **Why a product type and not the others.** `type_def_info()`
+  (`crates/cranelisp-types/src/lifecycle.rs`) answers for a type
+  declaration and for a callable whose origin is a constructor carrying a
+  type facet. Only a product type's constructor carries one. An instance of
+  that constructor at concrete types sits in the entry module's table under
+  its instance key, keeps its template's origin, and so is selected as if
+  it were a type declaration. It has no authored record.
+- **The instance exclusion exists and is not applied here.** The function
+  section of the same file skips minted instances through
+  `worker::is_internal_listing_entry`. The type section does not.
+- **Control.** A parametric type with named constructors differs only in
+  that its constructors carry no type facet, and saves.
+- **Module: `src/`.** Whether an instance should keep the type facet at all
+  is a second question, for `arch` over `cranelisp-types`; either answer
+  leaves the type section selecting by a reader that cannot tell a
+  declaration from its instance.
+- **Not done.** `qa` did not dump the entry; the name in the warning is its
+  instance key. **Refuted if** the unrendered entry is reported by another
+  section, or the instance's origin carries no type facet.
 
 ## Why coverage missed it
 
@@ -78,8 +95,7 @@ definition.
 - **`qa` holds this action.**
 - **`test`:** T-SAVE-PRODUCT, in the
   [S124 evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
-- **`design`(int), then `dev`(`src/`):** the correction, after the producer
-  of the entry is read. Whether it is scheduled before S124 closes is the
+- **`design`(int), then `dev`(`src/`):** the correction. Whether it is scheduled before S124 closes is the
   user's: it loses user data.
 
 ## Completion evidence
