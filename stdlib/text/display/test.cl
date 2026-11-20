@@ -39,3 +39,7 @@
 
 (defn test-show-nested [] :(Option String)
   (shows "Some(Pair(None true))" (show (Some (Pair :(Option Int) None true)))))
+
+;; A nested payload shows by its own impl, so the constructor wraps it again.
+(defn test-show-some-of-some [] :(Option String)
+  (shows "Some(Some(1))" (show (Some (Some 1)))))
