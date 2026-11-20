@@ -190,7 +190,7 @@ fn s124_exemplar_runner(serial: bool) {
     if serial {
         b = b.env("CRANELISP_NO_LENIENT", "1");
     }
-    b.run("tests.cl").output().assert_exit(41);
+    b.run("tests.cl").output().assert_exit(43);
 }
 
 // spec: exemplar/AGENTS.md — T-EXEMPLAR-TESTS maintenance check, default lenient runner
