@@ -1982,21 +1982,21 @@ fn s124_macro_sibling(mode: &str, outer: &str, control: &str) {
 }
 
 // spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
-// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S124 owner=/dev
 #[test]
 fn s124_macro_sibling_outerq_subject_repl() {
     s124_macro_sibling("repl", "outerq", "subject");
 }
 
 // spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
-// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S124 owner=/dev
 #[test]
 fn s124_macro_sibling_outerq_subject_run() {
     s124_macro_sibling("run", "outerq", "subject");
 }
 
 // spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
-// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S124 owner=/dev
 #[test]
 fn s124_macro_sibling_outerq_subject_link() {
     s124_macro_sibling("link", "outerq", "subject");
@@ -2039,21 +2039,21 @@ fn s124_macro_sibling_outerq_qualified_link() {
 }
 
 // spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
-// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S124 owner=/dev
 #[test]
 fn s124_macro_sibling_outer_subject_repl() {
     s124_macro_sibling("repl", "outer", "subject");
 }
 
 // spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
-// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S124 owner=/dev
 #[test]
 fn s124_macro_sibling_outer_subject_run() {
     s124_macro_sibling("run", "outer", "subject");
 }
 
 // spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
-// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S124 owner=/dev
 #[test]
 fn s124_macro_sibling_outer_subject_link() {
     s124_macro_sibling("link", "outer", "subject");
