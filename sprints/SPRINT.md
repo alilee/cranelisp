@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 6a USER-FACING ASSESSMENT — `docs`, `training`, `dev`(stdlib), `dev`(exemplar), `spec`(repl) assess against what shipped; `audit` reads typecheck
+**Status**: PHASE 6a USER-FACING ASSESSMENT — assessments in; 6a → 6b checkpoint presented, awaiting the user (backend has nine failing cells on ACT-1094, found after its Phase 5 exit)
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -607,3 +607,15 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   already clear; `qa` then re-classifies ACT-1092 and allocates evidence.
   Corrections in the binary are carried on their tests unless the user
   schedules them.
+- **Phase 6a outcome (2026-11-20).** Plans reported by `docs`, `training`,
+  `dev`(stdlib), `dev`(exemplar); audit at `audits/cranelisp-typecheck-s124.md`
+  (`8d983bae`, seven findings pending disposition). Defects found and
+  reproduced (`qa` `dcde2001`, `0235e180`; `test` `ea6778aa`..`b72742f7`):
+  ACT-1094 (backend, trace root result empty; nine cells), ACT-1096 (`src/`,
+  library child replaced by a same-path file), ACT-1097 (typecheck, trait
+  signature accepts an unimported scalar), ACT-1092 (`src/`, search omits a
+  reachable module), ACT-1089 extended (`/type` commits `deftype`,
+  `deftrait`, `impl`). Full run at `b72742f7`: 7,968 run, 104 failed, all
+  attributed; none that passed before fails. Open with the user: the backend
+  exit against ACT-1094, stdlib trait impls in 6b, the R10 "still compiling"
+  residual, S124-Q10, audit dispositions.
