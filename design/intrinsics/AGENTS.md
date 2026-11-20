@@ -42,7 +42,7 @@ This memory establishes one collection:
 | [`diagnostic-modes.md`](diagnostic-modes.md) | The M1/M2/M3 allocator modes, the A1–A4 seam checks and their precheck ordering, and the test-only fault-plant protocol with its arming discipline |
 | [`process-lifecycle.md`](process-lifecycle.md) | The runtime switch source and its link-time baking; the one terminator that ends the process on a panic, and what it retired |
 | [`heap-layout.md`](heap-layout.md) | The one defining module for each runtime heap layout, and the constants the backend, primitives and binary read |
-| [`trace-runtime.md`](trace-runtime.md) | The recording-thread predicate and the strict trace extent: spark admission declines on that thread, formatting declines off it |
+| [`trace-runtime.md`](trace-runtime.md) | The recording-thread predicate and the strict trace extent: spark admission declines on that thread, formatting declines off it; the collect entry's three states and the root's result |
 
 Section numbers in `reactor.md` and `diagnostic-modes.md` are cited from
 source comments; keep them stable when editing.

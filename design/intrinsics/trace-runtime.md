@@ -1,19 +1,21 @@
-# The trace runtime — recording thread and the strict extent
+# The trace runtime — recording thread, strict extent and the root's result
 
 **Owner:** `design`, narrow-deployed to the primitives + intrinsics surface.
-**Subordinate to:** [tracing](../arch/tracing.md) §4 (the runtime family, its
-stack and the trace role) and §7 (strict evaluation within the trace extent).
+**Subordinate to:** [tracing](../arch/tracing.md) §3.6 (the root's result,
+row B17), §4 (the runtime family, its stack and the trace role) and §7
+(strict evaluation within the trace extent).
 
-**Status:** §1 describes the role state as built. §2–§4 are designed for S124
-and are not in source at `4b58ab93` (read 2026-11-16). They change the
-documented contract of two existing intrinsics, which is
-[S124 packet](../../sprints/s124-api-packet.md) row D8 (§6), approved by the
-user on 2026-11-17.
+**Status:** §1–§6 are in source at `4a58af99` (read 2026-11-20; landed in
+`3cdca9dc`, row D8). §7 is designed for S124 Phase 6b and is not in source: it
+is step 1 of row B17's build order
+([interfaces](../arch/interfaces.md#the-roots-result-row-b17)), and `dev`
+realises it in step 3.
 
-**Authority:** spec §4.12.2 item 2, §4.12.3 and §4.12.6; tracing §7 rules 1–4;
+**Authority:** spec §4.12.2, §4.12.3, §4.12.5 and §4.12.6; tracing §3.6 and
+§7 rules 1–4;
 [BC §4b](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)
 invariants 6 and 12 and the named-intrinsic convention rows. The backend's half
-is [trace codegen](../backend/trace-codegen.md) §2 and
+is [trace codegen](../backend/trace-codegen.md) and
 [lenient evaluation](../backend/lenient-eval.md) §2.3.
 
 ---
@@ -22,10 +24,13 @@ is [trace codegen](../backend/trace-codegen.md) §2 and
 
 - **A thread records exactly when it holds the trace role**, that is, when
   `TRACE_THREAD_ID` holds the calling thread's id (tracing §4.2).
-- **One crate-private predicate in `trace` answers it.** Four readers consume
-  that predicate and none reads the role word itself: the formatting entry
-  (§3), `cranelisp_trace_enter`, `cranelisp_trace_exit` and spark admission
-  (§2). Spark admission makes `ivar` depend on `trace` inside the crate.
+- **One crate-private predicate in `trace` answers it**
+  (`trace::this_thread_records`). Its readers are the formatting entry (§3),
+  `cranelisp_trace_enter`, `cranelisp_trace_exit`, spark admission (§2) and,
+  under §7, `cranelisp_collect_trace`. None reads the role word itself, except
+  role arbitration in `cranelisp_trace_swap_got` and the collect's release,
+  which write it. Spark admission makes `ivar` depend on `trace` inside the
+  crate.
 - **A relaxed load is sufficient.** A thread compares the role word with its
   own id. Only that thread writes its id there (the acquire CAS) or clears it
   (`cranelisp_collect_trace`), and a thread always observes its own writes. A
@@ -49,42 +54,36 @@ is [trace codegen](../backend/trace-codegen.md) §2 and
   trace form (spec §4.12.6, tracing §7 rule 4).
 - **Complete because it is the only admission point** (asserted, with a named
   falsifier). An IVar is created and sparked only in the lenient arm of a
-  granted reservation. At `4b58ab93` the backend's two creation sites are
-  `compile_let_lenient` (`compiler/control_flow/let_if.rs`) and the lenient
-  closure in `compiler/apply.rs`, both reached only through
+  granted reservation, which the backend reaches only through
   `emit_create_gate`. A waiting force does not run other pool work: the
   `ivar_force` wait loop spins, yields and sleeps, and never helps the pool, so
   no unrelated spark body runs on the recording thread. *Falsifier:* an IVar
   creation or pool spawn reachable from evaluation without a granted
   reservation, or a wait path that executes pool tasks.
 - **The decline is counted separately.** With spark statistics on, a trace
-  decline increments a `trace_declines` counter that is appended to the end of
-  the `[SPARK_STATS]` line. It is not counted in `serial_continues`, so
-  evidence can tell a trace decline from a budget or depth decline. Parsers
-  that read fields by name are unaffected. The line carries counts only.
-- **This change alone closes both of ACT-1038's mechanisms.** The backend's
-  deletion of the lexical `in_trace_body` flag (backend B10) removes a
-  redundant test and must not land before it.
+  decline increments `trace_declines`, the final field of the `[SPARK_STATS]`
+  line, and not `serial_continues`, so evidence can tell a trace decline from a
+  budget or depth decline. The line carries counts only.
 
 ## 3. Rule 2 — the formatting entry formats only for the recording thread
 
 - **The decision.** `cranelisp_trace_format` consults the predicate. Off the
   recording thread it returns 0 and allocates nothing. On it, it walks the
-  descriptor and returns a fresh String as today.
+  descriptor and returns a fresh String.
 - **The descriptor walk stays pure.** It reads only the baked descriptor and
   the heap value, with no symbol-table access and no role state (BC §4b
-  invariant 12). The entry is split into that crate-private walk and the extern
-  that gates and allocates. Intrinsics' descriptor tests call the walk.
-- **`cranelisp_trace_enter` and `cranelisp_trace_exit` are unchanged.** Off
-  the recording thread they already return without storing, and they now
-  receive zero words, so there is nothing to release.
+  invariant 12). It is the crate-private `trace_format::format_with_descriptor`;
+  the extern gates and allocates. The collect entry (§7) is the walk's second
+  caller.
+- **`cranelisp_trace_enter` and `cranelisp_trace_exit`** return without storing
+  off the recording thread, and there they receive zero words, so there is
+  nothing to release.
 - **Why the formatting entry.** The emitted wrapper formats its arguments
   before it calls `cranelisp_trace_enter`, so the decision must be made no later
   than formatting, and the formatting entry is the first intrinsic the wrapper
   calls. Rejected:
   - *A query export with an emitted branch.* It adds an export and makes the
-    backend a second reader of a fact this crate owns
-    ([trace codegen](../backend/trace-codegen.md) §2 agrees).
+    backend a second reader of a fact this crate owns.
   - *Releasing the Strings in enter and exit off the recording thread.* That
     is leak-free but allocates without a consumer, which rule 2 forbids.
   - *Gating on "a trace is active anywhere".* A thread that loaded a wrapper
@@ -109,59 +108,176 @@ is [trace codegen](../backend/trace-codegen.md) §2 and
   form. Their calls are unrecorded and allocate nothing (§3). That is correct,
   because they are outside the extent.
 - **Residual — a force of an IVar created outside the extent** (asserted; the
-  falsifier is in [trace codegen](../backend/trace-codegen.md) §2). If the
+  falsifier is in [trace codegen](../backend/trace-codegen.md)). If the
   recording thread claims the cell, the thunk runs there and is recorded. If a
   worker claimed it first, those calls are unrecorded. The tree then depends on
   scheduling, against tracing §7 rule 3. Nothing leaks in either case.
 
 ## 5. Evidence
 
-Module rows for `dev`; `qa` allocates the end-to-end cells.
+Row D8's module rows, in source.
 
 | Seam | Positive | Negative and control |
 |---|---|---|
 | Spark admission | On the recording thread it returns 0, the in-flight count is unchanged, and `trace_declines` advances under stats | The same call on a thread that does not record, with budget available, returns 1 |
-| Formatting entry | On the recording thread the String renders as before | Off it, the result is 0 and the allocation count is unchanged |
+| Formatting entry | On the recording thread the String renders | Off it, the result is 0 and the allocation count is unchanged |
 | Enter and exit | — | Off the recording thread with zero words: no frame pushed, no allocation |
 
-- The rows must exercise the real predicate. A row acquires the role either
-  through the public swap path on a GOT buffer the test owns, or through a
-  crate-private test hook; the choice is `dev`'s.
-- **Detection proof:** removing the check from either intrinsic must flip its
-  row.
-- **End to end.** Rule 1 makes ACT-1038's premise, that a worker ran a traced
-  call, permanently unsatisfiable. `qa` reallocates those cells as the action's
-  reallocation trigger states. `trace_declines` is available as the
-  observation that tells this correction apart from an absence of sparking.
+- The rows exercise the real predicate through `RecordingRole`, which acquires
+  the role by the public swap path on a GOT the test owns.
+- Rule 1 makes ACT-1038's premise, that a worker ran a traced call,
+  unsatisfiable; `trace_declines` tells that correction apart from an absence
+  of sparking.
 
 ## 6. Public surface — packet row D8
 
-- **Approved 2026-11-17 as written in the packet.** No signature changes, and
-  no export or catalog row is added or removed. Intrinsics and backend
-  `public-api.txt` are expected to show +0/−0.
-- **Documented contracts that change.** The baseline cannot show these
-  semantic changes:
-  1. `cranelisp_spark_budget_try_reserve` (`ivar::spark_budget_try_reserve`)
-     also returns 0, reserving nothing, when the calling thread holds the
-     trace role.
-  2. `cranelisp_trace_format` (`trace_format::cranelisp_trace_format`,
-     re-exported as `trace::cranelisp_trace_format`) returns 0 and allocates
-     nothing when the calling thread does not hold the trace role. Its
-     rustdoc's statement that it holds no thread-local state then describes
-     the walk, not the entry.
-  3. `cranelisp_trace_enter` and `cranelisp_trace_exit` keep their contracts;
-     off the recording thread every string argument they receive is 0.
-  4. With spark statistics on, the `[SPARK_STATS]` line gains a final
-     `trace_declines` field (§2).
-- **Rows that follow are `arch`'s:** BC §4b's convention row for
-  `cranelisp_trace_format`; the enter and exit rows, which receive no String
-  off the recording thread; invariant 12's purity sentence (the walk is pure,
-  the entry reads the role); and tracing §4.1 and §4.2 as `arch` judges.
-- **Affected consumers.** The emitted wrappers are unchanged. The only
-  Rust-path caller outside this crate is the backend's descriptor round-trip
-  tests (`compiler/trace_codegen/tests.rs`), which call the entry off the
-  recording thread and would read 0. They must run as the recording thread,
-  and they change in the same change-set (`design`(backend)). Verified by
-  search at `4b58ab93`.
-- **Order.** This crate's change, together with the backend test adaptation,
-  then the backend's `in_trace_body` deletion (backend B10).
+- **Signatures and catalog rows** are the crate's facade and `arch`'s
+  (tracing §4.1); their rustdoc states the contracts this document realises.
+- **Documented contracts realised in source:**
+  `cranelisp_spark_budget_try_reserve` returns 0, reserving nothing, on the
+  recording thread; `cranelisp_trace_format` returns 0 and allocates nothing
+  off it; enter and exit receive zero words off it; `[SPARK_STATS]` ends with
+  `trace_declines`.
+
+## 7. The collect entry and the root's result (row B17)
+
+`cranelisp_collect_trace(value, descriptor_ptr)` closes every trace form. It
+returns the node the form evaluates to, whose result is the canonical display
+of the body's value (spec §4.12.2, tracing §3.6). The backend passes the value
+borrowed and releases it after the call; the entry neither consumes nor
+retains it.
+
+### 7.1 Who touches the trace stack
+
+- **Only the role holder pushes or pops `TRACE_STACK`.** The root is pushed by
+  the acquiring swap, frames by enter and exit on the recording thread, and the
+  root is popped by that thread's collect while it still holds the role. The
+  stack therefore holds exactly the recording form's frames, and its bottom
+  frame is that form's root. This is what makes tracing §4.2's "the single
+  stack stays coherent" true.
+- **Two paths in source at `4a58af99` break it**, and §7.2 removes both:
+  - a skipped swap pushes a `::skipped::` sentinel onto the shared stack, above
+    or among the recording thread's frames, and its collect pops whatever is on
+    top;
+  - a collect on a thread that does not record (a form that swapped no slot,
+    or a skipped form) pops the shared stack, so a concurrent recording
+    thread's in-progress frame can be taken.
+
+  The recording collect also releases the role before it pops, so a second
+  thread can acquire and push its root in between. None of these is a memory
+  hazard: a frame's Strings move into whichever node is built, once. They make
+  the recorded tree, and both forms' roots, depend on scheduling. No cell
+  observes them; the skip test pins the sentinel push as built.
+
+### 7.2 Three states, read in a fixed order
+
+The collect reads which state its form is in, first match wins:
+
+| State | How the collect reads it | Name | Children | Elapsed | Result |
+|---|---|---|---|---|---|
+| **Recorded** | The predicate holds | `::trace::` | the root frame's | from the acquiring swap | the value, rendered |
+| **Skipped** | This thread's skip mark is set | `::skipped::` | none | from the first skipped swap | empty (current behaviour; open) |
+| **Unswapped** | Neither | `::trace::` | none | 0 | the value, rendered |
+
+- **The skip mark is per thread and per form.** The first swap of a form that
+  finds the role held by another thread sets the calling thread's mark, holding
+  that swap's start time, and pushes nothing. While the mark is set, every
+  further swap on that thread returns the sentinel saved-GOT without
+  arbitrating. A form is therefore wholly recorded or wholly skipped: a later
+  swap of the same form cannot acquire a role the owner has meanwhile released,
+  which in source leaves a recorded root and an orphaned sentinel. The collect
+  takes the mark, clearing it.
+- **The recorded sequence.** Stamp the root's elapsed time, pop the root, then
+  release the role, lower the boundary flag and clear the swapped-base set, and
+  only then render and build the node.
+  - *Elapsed is stamped before rendering,* so a root's `nanos` measures the
+    form's swaps, body and restores and not the display of its value. Rendering
+    a large value is this entry's cost, not the body's.
+  - *Popped before release,* so no other thread can push onto the stack while
+    this thread's root is still on it.
+  - *Rendered after release.* The walk touches no shared or role state, so
+    holding the role or the stack lock across it buys nothing.
+- **One build.** Each state supplies a root frame — popped, synthesised from the
+  mark, or synthesised empty — and the existing node builder marshals it. The
+  rendered value becomes the frame's result String; a frame with no result
+  marshals the empty string, which is how the skipped state's result arises.
+- **Rendering** is the crate-private walk (§3), never `cranelisp_trace_format`:
+  that entry declines off the recording thread, and the unswapped state is off
+  it. The result is a fresh String owned by the node. A zero descriptor renders
+  the bare word, as the walk does for any caller.
+- **Value and descriptor arrive in every state.** The skipped state does not
+  read them under current behaviour.
+
+### 7.3 Open questions this design does not decide
+
+- **A skipped form's result (spec §4.12.6), with `spec`.** §4.12.6 says a
+  skipped form returns "no recorded children" and names no result; §4.12.2
+  states no exception. This design keeps source's empty string. If `spec` rules
+  the result is the value, the skipped state renders it like the others; no
+  interface changes.
+- **The root's name and parameters (ACT-1094's question to `spec`).** The table
+  keeps source's names. A ruling that names the root for a single-call body
+  returns to `arch` (tracing §3.6).
+- **An unswapped root's elapsed time.** No start event exists for a form that
+  swaps no slot, so its `nanos` is 0, as in source. Spec §4.12.2 gives the root
+  `elapsed_nanos` without exception. Measuring it needs a start call, which is
+  an interface change for `arch`; no cell reads it.
+
+### 7.4 Residuals (asserted, with named falsifiers)
+
+- **A recorded collect closes the form that acquired.** The guard in
+  `cranelisp_trace_swap_got` (tracing §6) stops a nested swapping form, but a
+  nested form that swaps no slot calls no swap, so its collect on the recording
+  thread would pop the enclosing form's frame and release the role mid-body.
+  Discovery covers the form's own module, so a form inside a named function
+  has at least that function's slot and swaps; the shape needs a form whose
+  covered modules hold no slot, reached inside a recording body. *Falsifier:* a
+  program in which a trace form compiled through the no-swap path runs inside
+  another trace's body. This is §4.12.5's obligation, not B17's.
+- **Nesting on a skipped thread.** A trace form entered inside a skipped form
+  on the same thread is skipped too and takes the mark, so the enclosing form
+  then reads as unswapped: named `::trace::`, with its value rendered. In source
+  that shape pops the shared stack. Whether §4.12.5's error applies to an
+  enclosing form that is not recording is not stated. *Falsifier:* such a
+  program returning anything other than two childless roots.
+
+### 7.5 Module rows for `dev`
+
+Written first, observed failing, then turned green by step 3. Each recorded row
+acquires the role through `RecordingRole` or the public swap path on a GOT the
+test owns; the unswapped and skipped rows install a foreign owner as the
+existing skip test does.
+
+| Seam | Positive | Negative and control |
+|---|---|---|
+| Recorded, `Int` | A collect of `42` with an `Int` descriptor returns a `::trace::` node whose result reads `"42"` | Afterwards the predicate is false and the stack is empty |
+| Recorded, with a child | After one enter and exit, the root holds the child and its own result is the rendered value | The child's result is the String its exit passed |
+| Recorded, heap value | A String value renders by its descriptor | Its reference count is unchanged by the call; after the node is consumed, allocations balance |
+| Unswapped | With no role and no mark, the node is `::trace::`, rendered, with no children and `nanos` 0 | With a foreign owner and a planted frame on the stack, the stack's depth and top frame are unchanged |
+| Skip mark | A swap under a foreign owner returns the sentinel and leaves the stack depth unchanged | After the owner clears, a second swap on the same thread still returns the sentinel and does not acquire |
+| Skipped | The collect returns `::skipped::` with no children and the empty result, and clears the mark | A following collect on the same thread reads unswapped; the foreign owner still holds the role |
+
+- **Changes to existing tests.** `concurrent_foreign_owner_skips_with_sentinel`
+  asserts the sentinel push that §7.2 removes, and becomes the skip-mark row.
+  `empty_trace_yields_faithful_placeholder_not_a_defect` gains the rendered
+  result. Every other caller passes a value and a descriptor, a zero descriptor
+  where the result is not read, as `RecordingRole`'s release does.
+- **Detection proofs.** Dropping the render flips the recorded and unswapped
+  rows; popping the shared stack off the recording thread flips the unswapped
+  row's control; restoring the sentinel push flips the skip-mark row.
+- **End to end.** T-TRACE-ROOT's nine subjects close the migration after step 4
+  (`tests/trace.rs::s124_trace_root_call_cold` and its siblings), with the four
+  child controls unchanged. They exercise the recorded state only; `qa` judges
+  whether the skipped and unswapped states need a cell.
+
+### 7.6 The entry's documented contract
+
+Pending step 3. One export changes signature
+([tracing §3.6](../arch/tracing.md#36-the-roots-result)); the catalog row
+declares two parameters, and `crates/cranelisp-intrinsics/public-api.txt`
+changes that one line. The rustdoc states: the value is borrowed; the
+descriptor follows `cranelisp_trace_format`'s descriptor contract; the
+returned node is fresh, owned by the caller, and carries the value's display
+as its result except for a skipped form; the entry ends the role on the
+recording thread and touches no shared state elsewhere.
+
