@@ -570,3 +570,11 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   is a defect, `qa` allocates and `test` commits a minimal failing
   reproduction with its control in the S124 evidence wave; `qa` decides which
   are defects and reports any that cannot be reproduced.
+- **User rulings, 2026-11-20.** (1) `/type` given a definition form reports
+  the type; it defines nothing in the session. (2) A trace frame for an
+  instance of a generic function is named by the template's name alone
+  (`m/helper`). `spec` records both; `qa` allocates their evidence.
+- **ACT-1089 carried against the binary (user, 2026-11-20):** a type query
+  on a definition at the REPL mutates the session and the process ends on
+  signal 11. Its four reproductions stay RED past S124; it does not count
+  against the backend's exit.
