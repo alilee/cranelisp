@@ -24,7 +24,7 @@ the original computation separately if you need a typed value for further work.
 
 | Accessor | What you can inspect |
 |---|---|
-| `name` | A recorded function's qualified name. Generic calls use the template name, such as `user/identity`, without type arguments. |
+| `name` | A recorded function's qualified name. Generic calls use the template name, such as `user/identity`, without type arguments. | <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 | `params` | Formatted arguments, as an `SList` of strings. |
 | `result` | The formatted returned value. |
 | `children` | Child calls, as an `SList` of `Trace` values. |
@@ -45,7 +45,7 @@ for one node and `trace-show-tree` for a tree. Both return strings:
 (trace-show-tree (trace (identity 7)))
 ```
 
-The report includes a call named `user/identity`, argument `7`, result `7`
+The report includes a call named `user/identity`, argument `7`, result `7` <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 and a variable elapsed time. It is a string value at the REPL; pass it to a
 platform's `print` if you want plain output.
 

@@ -11,7 +11,7 @@ that run their per-element work across CPU cores automatically:
 
 They are **ordinary library functions** — there is no new syntax, no `spark`, no
 `par`, no threads in your code. You call them exactly like `map` and `reduce`; the
-parallelism comes from the compiler's automatic lenient-evaluation substrate (see
+compiler can evaluate independent recursive branches in parallel (see
 [automatic parallelism](../getting-started.md#automatic-parallelism)). Open
 `stdlib/collections/parallel.cl` and you will find plain divide-and-conquer recursion
 — nothing magic.
@@ -59,28 +59,30 @@ fully serial run for a baseline or for debugging and get the same answer either 
 
 ## When it pays off — and when it does not
 
-Parallelism here is a **performance property with a known limit**, not a blanket
-speedup. Use these functions when each chunk of work is **compute-bound and
-substantial** — roughly a microsecond or more of arithmetic-style work per element.
-On that kind of workload the parallel run is genuinely faster (around 2–3× has been
-observed on the compute-bound map-reduce example) and never meaningfully slower than
-serial.
+Use these functions for substantial independent computation, then measure with
+your actual inputs. Historical compute-bound map-reduce measurements showed
+roughly 2–3× speedup; those measurements do not guarantee current performance
+or a minimum amount of work per element.
 
-**The honest caveat:** for **allocation-heavy or reference-counting-heavy** workloads
-— code where each element copies or builds large heap structures rather than crunching
-numbers — `par-*` can currently be **slower** than the plain sequential `vec-map` /
-`vec-reduce`. The parallel branches are genuinely independent, but they contend on two
-shared, serializing resources: the global memory allocator and atomic reference-count
-updates bouncing between worker cores. The "never slower than serial" floor holds
-**unconditionally only for compute-bound work**; for allocation-/RC-heavy work it is
-contention-bounded and can be violated (measured up to ~10× on a copy-per-element
-workload). The path back to a guaranteed floor (a contention-aware decision to keep
-such branches sequential) is tracked in
-[`design/arch/effect-concurrency.md §3.1`](../../design/arch/effect-concurrency.md).
+Allocation-heavy work can be slower than sequential `vec-map` or `vec-reduce`:
+workers contend on allocation and reference counting. Keep the sequential twin
+and `CRANELISP_NO_LENIENT=1` as comparison baselines. The
+[design's performance discussion](../../design/arch/effect-concurrency.md#31-floor-scope--contention-is-the-boundary-not-compute-s94-port-finding)
+records the intended floor and known contention limit.
 
-**Rule of thumb:** reach for `par-*` on compute-bound chunked work; measure before
-relying on it for allocation-heavy work, and keep the sequential `vec-map` / `vec-reduce`
-as your baseline (`CRANELISP_NO_LENIENT=1`) to compare against.
+**Inside a trace, `par-*` runs sequentially.** Trace timings include
+instrumentation and do not measure ordinary parallel execution. See
+[tracing](tracing.md#read-timings-as-traced-execution).
+
+To flatten the resulting Vec of Vecs when needed, import
+`collections.vec/vec-flatten`:
+
+<!-- sample: {"kind":"repl"} -->
+```
+user> (import [collections.vec [vec-flatten]])
+user> (vec-flatten [[1 2] [] [3]])
+:(primitives/Vec primitives/Int) [1 2 3]
+```
 
 ## Tuning and disabling
 

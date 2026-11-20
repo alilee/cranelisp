@@ -96,7 +96,7 @@ module remains the authority for its complete contents.
 can omit a valid reachable module when its imports name a module that is not
 loaded or is still compiling (ACT-1092). Inspect or import a known module
 directly when search misses it. The reachability contract is
-[REPL §17.19](../repl/spec/17-embedded-agent.md).
+[REPL §17.19](../repl/spec/17a-agent-language-awareness.md).
 
 Search by **name** or by **type signature**, exact or partial:
 
@@ -246,7 +246,7 @@ the project-directory name. One rule covers both target shapes:
   `mymod`), beside the source.
 - **Directory-project target** — `cranelisp --link myproject` (where `myproject/`
   exists with no `myproject.cl` beside it, so the entry module is `user`) writes
-  `myproject/user`, beside `myproject/user.cl` — not `myproject/myproject`, and
+  `myproject/user`, beside `myproject/user.cl` — not `myproject/myproject`, and <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
   not a `user` file in the current directory.
 
 Because the artifact lands next to its source rather than in the current directory,
@@ -366,7 +366,7 @@ Resolution applies these rules in order:
 3. **Target is an existing directory** (no `/`, and there is *no* same-named
    `<target>.cl` file beside it) → that directory is the project root and the entry
    module is `user`. `cranelisp myproject` (where `myproject/` exists and there is no
-   `myproject.cl`) opens `myproject/user.cl`.
+   `myproject.cl`) opens `myproject/user.cl`. <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 4. **Bare name** → project root is the current directory and the entry module is the
    name. `cranelisp app` opens `app.cl` in the current directory. Dots in the
    entry module map to directories: `cranelisp --run a.b` loads `a/b.cl`
@@ -537,7 +537,7 @@ ones (`CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH`) are covered inline above and i
 | Variable | Effect |
 |---|---|
 | `CRANELISP_LIB` | Colon-separated list of extra lib directories, searched before `Cranelisp.toml` and `{project-root}/stdlib/`. See [the lib search path](#where-cranelisp-looks-for-libraries-cranelisptoml). |
-| `CRANELISP_PLATFORM_PATH` | Directory to find the platform DLL when no checked-in symlink is present (e.g. `target/debug`). See [getting-started](getting-started.md). |
+| `CRANELISP_PLATFORM_PATH` | Directory to find the platform DLL when no checked-in symlink is present (e.g. `target/debug`). See [getting-started](getting-started.md). | <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 | `CRANELISP_SPARK_BUDGET=N` | Caps how much pure computation runs in parallel at once (see [automatic parallelism](getting-started.md#automatic-parallelism)). `0` disables auto-parallelism entirely (everything runs serially). Unset uses a sensible default scaled to the number of cores. |
 | `CRANELISP_NO_LENIENT=1` | Also disables auto-parallelism, forcing strictly serial left-to-right evaluation. Useful for a serial baseline when measuring or for debugging. |
 

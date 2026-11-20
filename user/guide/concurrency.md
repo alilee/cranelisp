@@ -1,40 +1,17 @@
-# Concurrency — throughput is free, control is explicit
+# Concurrency — independent work, races and deadlines
 
-Cranelisp's concurrency model has **two complementary halves** — peers, not a
-primary feature with a footnote:
+Cranelisp can overlap independent work automatically. Use explicit `sleep`,
+`race`, `select` and `timeout` calls when the outcome depends on completion
+timing, such as a deadline or choosing the first result.
 
-- **The inferred half (throughput).** The compiler extracts concurrency from the
-  *dataflow independence* of your program automatically. You write ordinary
-  direct-style code with **zero concurrency primitives** — no `spawn`, no `go`, no
-  `async`, no threads, no locks — and the runtime overlaps independent work for you.
-  The result is provably identical to running everything sequentially. This is
-  *concurrency written by nobody*.
-- **The explicit-control half (timing).** Everything that branches on completion
-  *timing* — races, deadlines, cancellation — is a small set of in-language
-  combinators (`sleep`, `race`, `select`, and the derived `timeout`). Dataflow can
-  say "B's value depends on A's value"; it can never say "give up after 200ms" or
-  "cancel the loser". That is irreducible, so it is a handful of ordinary typed
-  functions you call explicitly.
-
-The two halves build on the same foundation as the IO model
-([getting-started § Platforms and IO](../getting-started.md#platforms-and-io)):
-a single serializing interpreter (the *trampoline*) folds all effects into one
-coherent order. Concurrency is permitted only over work that is provably
-independent, which is what makes the inferred half's "identical to sequential"
-promise hold. The full architecture is specified in
-[`design/arch/effect-concurrency.md`](../../design/arch/effect-concurrency.md) and
-the normative rules live in [`spec/10-io.md`](../../spec/10-io.md) §10.12.
-
-> **Writing your own platform?** This page is about *using* concurrency from
-> cranelisp. If you are authoring a platform DLL — poll-shape effect leaves, the
-> reactor boundary, the connection/handle model — see the companion
-> [**writing-platforms.md**](writing-platforms.md). Everything on *this* page is
-> what a program author sees; none of the platform-side scheduling machinery
-> (tokens, pools, poll functions) is visible here, by design.
+Read [platforms and IO](../getting-started.md#platforms-and-io) first: these
+combinators build IO actions, and the runtime executes them when sequenced.
+[Spec §10.12](../../spec/10-io.md) gives the precise concurrency rules.
+For writing a platform in Rust, see [writing platforms](writing-platforms.md).
 
 ---
 
-## The inferred half — concurrency written by nobody
+## Independent IO
 
 Two independent effects with no shared data may run at the same time. The classic
 case is a server: a loop that accepts a connection, handles it, and loops to accept
@@ -110,11 +87,9 @@ other data type. A minimal web `Connection` carries the socket descriptor:
   (match c [(Connection fd) fd]))     ;; reads the real fd — typechecks and works
 ```
 
-There is **no hidden scheduling state** on the value — no tokens, no pool
-bookkeeping, nothing the runtime stamps in. A handle is just data your program
-owns; how many connections may run at once is the platform's concern, decided
-platform-side, and never something you thread through your code. (How the platform
-does that is the subject of [writing-platforms.md](writing-platforms.md).)
+A handle is ordinary data you can inspect with `match`. The platform decides
+resource limits; your code does not need to carry scheduling metadata. See
+[writing platforms](writing-platforms.md) if you implement those limits.
 
 ### Honest scope: shared resources are bounded
 

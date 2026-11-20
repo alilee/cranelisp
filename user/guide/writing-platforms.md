@@ -64,9 +64,9 @@ is what keeps every platform a thin, stateless C-ABI leaf:
   The compiler does not reject such a declaration yet, so keep to the rule
   yourself.
 
-Because you never block (you return `Pending` instead), **cancellation is free**: the
-host simply stops polling you and drops the suspended state. Nothing is ever stuck
-inside a syscall waiting to be interrupted.
+Returning `Pending` lets the host stop polling and drop suspended state on
+cancellation. Release your platform-owned resources when that state is dropped;
+a pending operation must not leave a blocking syscall occupying the caller.
 
 ---
 
@@ -178,13 +178,8 @@ program a **handle**: an ordinary cranelisp ADT. Two properties define the model
    > `write_tok`) off one handle, so reads and writes do not serialize against each
    > other. `token == 0` means commutative — no acquire at all.
 
-This model deliberately replaced an earlier one that carried a descriptor on the
-value's heap header; that hit a blocker when an opaque DLL-minted handle had no room
-for the slot. Carrying nothing on the value dissolved it. A consequence worth knowing:
-because the handle carries no scheduling state and the host never reads it, a program
-that *fabricates* a handle (`(Connection 999)` with an arbitrary fd) cannot corrupt
-host state — the OS is the capability checkpoint, and a bad fd just returns `EBADF` as
-an ordinary, recoverable I/O error.
+Keep handles tied to real resources: an invalid descriptor is an operating-system
+error, not a way to create a usable connection.
 
 ---
 

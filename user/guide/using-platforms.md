@@ -105,7 +105,7 @@ worked [`examples/21-hello-io.cl`](../../examples/21-hello-io.cl).
 path**: a `platforms/` directory under the project root or under a lib directory,
 then any configured platform directories. The learning sequence's
 `examples/lib/platforms/` holds checked-in Linux symlinks (`stdio.so`,
-`test-capture.so`) to Cargo's `target/debug/` output, so `stdio` resolves there
+`test-capture.so`) to Cargo's `target/debug/` output, so `stdio` resolves there <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 with no configuration on Linux. On macOS, in `exemplar/`, and in your own project,
 add the directory holding the built library — during development this is
 typically Cargo's output:

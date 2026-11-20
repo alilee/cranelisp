@@ -14,8 +14,8 @@ Cranelisp builds with Cargo from the workspace root:
 cargo build
 ```
 
-This produces `target/debug/cranelisp`. (A release build — `cargo build --release`
-— produces `target/release/cranelisp`.) Add the chosen build directory to your
+This produces `target/debug/cranelisp`. (A release build — `cargo build --release` <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
+— produces `target/release/cranelisp`.) Add the chosen build directory to your <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 `PATH`, for example `export PATH="$PWD/target/debug:$PATH"` from the repository
 root, so the `cranelisp` commands below find it.
 
@@ -173,7 +173,7 @@ side-effecting operations (here, `print`). The binary looks for platforms in a
 `platforms/` directory under the project root and under each lib directory. The
 learning sequence puts its own `lib/` on the lib search path, and
 `examples/lib/platforms/` holds checked-in symlinks to the libraries Cargo builds
-in `target/debug/`. Only Linux links (`stdio.so`, `test-capture.so`) are checked
+in `target/debug/`. Only Linux links (`stdio.so`, `test-capture.so`) are checked <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
 in, so on Linux an entry module **inside `examples/`** finds the platform with
 **no environment variable**, once `cargo build` has run.
 
@@ -263,21 +263,15 @@ the source. It applies in two places:
   and [`examples/30-parallel-map-reduce.cl`](../examples/30-parallel-map-reduce.cl) for
   the worked divide-and-conquer case.
 
-**When it pays off — and when it does not.** Parallelism is a performance property with
-a known limit, not a blanket speedup. It is worth it when each piece of work is
-**compute-bound and substantial** — roughly a microsecond or more of arithmetic-style
-work per element gives real speedup (around 2–3× has been observed on the compute-bound
-map-reduce example), and on that kind of work it is never meaningfully slower than
-serial. For **allocation-heavy or reference-counting-heavy** work, though — code that
-copies or builds large heap structures per element rather than crunching numbers — the
-parallel run can currently be **slower** than serial, because independent branches
-contend on the shared allocator and atomic reference counts. So the "never slower than
-serial" floor holds unconditionally only for compute-bound work; for allocation-/RC-heavy
-work, measure against a serial baseline (`CRANELISP_NO_LENIENT=1`) before relying on it.
-You can cap or disable the parallelism with environment variables; see
-[`cli-reference.md`](cli-reference.md#environment-variables). The floor, its scope, and
-the known contention limit are documented in the
-[floor-scope section of the effect-concurrency design](../design/arch/effect-concurrency.md#31-floor-scope--contention-is-the-boundary-not-compute-s94-port-finding).
+**Measure your workload.** Historical compute-bound map-reduce measurements
+showed roughly 2–3× speedup; they are not current performance guarantees.
+Allocation-heavy work can become slower because workers contend on allocation
+and reference counting. Compare ordinary execution with a serial baseline using
+`CRANELISP_NO_LENIENT=1`, and see
+[parallel collections](guide/parallel-collections.md) for choosing work and
+[the environment reference](cli-reference.md#environment-variables) for controls.
+A [trace](guide/tracing.md) runs pure work sequentially and adds instrumentation,
+so its timings cannot measure ordinary parallel speedup.
 
 This is all semantically invisible: a parallel run computes exactly what a sequential
 left-to-right run would. The effect and evaluation semantics are specified normatively
@@ -299,49 +293,26 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
     cranelisp --run exemplar/user.cl
   ```
 
-- **Guide** — feature-by-feature pages:
-  - [`guide/modules.md`](guide/modules.md) — files, child modules, imports and
-    public interfaces.
-  - [`guide/macros.md`](guide/macros.md) — source transformations, templates and
-    expansion helpers.
-  - [`guide/live-development.md`](guide/live-development.md) — redefining
-    functions in a live session, editing module files while the REPL runs, and
-    moving between modules with `/mod`.
-  - [`guide/testing.md`](guide/testing.md) — writing tests and running them with
-    `/run-tests` or `cranelisp --test`.
-  - [`guide/functions.md`](guide/functions.md) — `fn` is single-arity; multi-arity
-    `defn` and how its clauses infer like separate mutually-recursive functions.
-  - [`guide/constructors.md`](guide/constructors.md) — `Type.Ctor` constructors, the
-    bare-name alias, and disambiguating two types that share a constructor name, in
-    value and pattern position.
-  - [`guide/field-accessors.md`](guide/field-accessors.md) — `Type.field` accessors
-    and the bare-name alias.
-  - [`guide/traits.md`](guide/traits.md) — declaring and implementing traits,
-    default methods, return-type dispatch, higher-kinded traits and importing
-    trait methods.
-  - [`guide/bitwise.md`](guide/bitwise.md) — bit-level arithmetic and the
-    `num.bits` module.
-  - [`guide/parallel-collections.md`](guide/parallel-collections.md) — `par-map`,
-    `par-reduce`, `par-map-reduce`.
-  - [`guide/concurrency.md`](guide/concurrency.md) — the two-halves concurrency
-    model: inferred fan-out plus the `sleep`/`race`/`select`/`timeout` control
-    combinators.
-  - [`guide/using-platforms.md`](guide/using-platforms.md) — consuming a platform:
-    the `(platform <name>)` + `(import [platform.<name> [*]])` two-step and the
-    `platform.<name>` naming.
-  - [`guide/writing-platforms.md`](guide/writing-platforms.md) — authoring a
-    platform DLL: poll-shape effect leaves, the poll-in / wake-out reactor
-    boundary, the handle model.
-- **Errors** — [`errors/trait-impl-diagnostics.md`](errors/trait-impl-diagnostics.md)
-  explains the diagnostics for traits, impls, method dispatch and definition
-  binders, with the fix each one names.
-- [`guide/syntax-command.md`](guide/syntax-command.md) — the `/syntax`
-  command for recalling a language form at the REPL, and reader annotations for
-  macro authors.
-- [`cli-reference.md`](cli-reference.md) — every command-line mode and option,
-  including the [`--test` mode](cli-reference.md#test---test), how the
-  entry-module target is resolved, how the lib search path / `Cranelisp.toml`
-  works, and the `/search` command for finding an importable function.
+- **Write functions and data.** Start with [functions](guide/functions.md), then
+  [constructors](guide/constructors.md) and [field accessors](guide/field-accessors.md).
+  [Traits](guide/traits.md) builds on those ideas, including parametric
+  implementations and `derive`. [Bitwise operations](guide/bitwise.md) cover
+  integer masks and shifts.
+- **Organize a project.** [Modules](guide/modules.md) explains file layout and
+  public names. Read it before [macros](guide/macros.md), whose expansion helpers
+  live in dependencies. [Live development](guide/live-development.md) covers
+  editing loaded files and persistence, including the source-loss limitation.
+- **Investigate behavior.** [Testing](guide/testing.md) covers the test runner;
+  [tracing](guide/tracing.md) shows calls and returned values. The
+  [error guide](errors/trait-impl-diagnostics.md) explains trait and binder
+  diagnostics. [`/syntax`](guide/syntax-command.md) recalls syntax at the prompt.
+- **Use IO and concurrency.** [Using platforms](guide/using-platforms.md) explains
+  loading an effect library. Continue with [concurrency](guide/concurrency.md)
+  for races and deadlines, or [parallel collections](guide/parallel-collections.md)
+  for pure computations. [Writing platforms](guide/writing-platforms.md) is for
+  Rust authors implementing their own effect library.
+- **Look up an invocation or function.** The [CLI reference](cli-reference.md)
+  covers modes, targets, library paths and `/search`.
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.
 - [`spec/`](../spec/) — the language specification.
