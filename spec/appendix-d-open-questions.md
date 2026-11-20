@@ -108,25 +108,26 @@ told that consequence and requested no different treatment.
 
 ## S124-Q10: What does /type report for a non-value form?
 
-**Partly recorded — user ruling, 2026-11-20:** “I think refuse or just
-`defn`”, in the [Phase 6b checkpoint](../sprints/SPRINT.md#user-rulings-on-the-phase-2-decisions-2026-11-16).
+**Partly settled — corrected user intent, 2026-11-20.** After “report the
+type”, “type should not evaluate a non-pure form”, and “I think refuse or just
+`defn`”, the user clarified: “I am saying either error or just literally `defn`
+(it is neither a pure type nor IO)”.
 [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory) records
-refusal of a form with no value type and retains the earlier rule that `defn`
-reports its function type without defining anything. The existing prohibition
-on evaluating a non-pure form is unchanged.
+these two acceptable answers for a `defn` form, with no evaluation or session
+definition. Reporting the defined function's type misreads the ruling.
 
-**Open problem.** “Or just `defn`” does not unambiguously settle whether
-`defn` is the only accepted definition form, or whether any definition form
-with a value type is accepted. For example, §9.6 illustrates a `def` macro
-expanding into a function and a macro; the ruling does not say whether a query
-on such a definition is refused or has a report. The recorded refusal of
-no-value forms does not choose that boundary.
+**Provisional proposal — awaiting user confirmation.** The coordinator
+proposes printing literally `defn`, following the
+[Self-documenting REPL principle](../AGENTS.md#design-principles): the keyword
+identifies the form. An error is also acceptable to the user. The keyword
+choice is non-normative until confirmed.
 
-**Options / tradeoffs.** Restrict definition queries to `defn`: the accepted
-surface is explicit, but macro-defined definition syntax may be refused.
-Accept other value-bearing definitions: preserves §3.1's broader definition
-wording, but needs a rule for which type a multi-definition expansion reports.
-The user must settle this boundary before Q10 can close.
+**Open remainder.** The user must confirm which answer to use for `defn`.
+The words do not settle whether a keyword answer extends to `deftype`,
+`deftrait`, `impl`, `defmacro`, `def`, or `import`, or what each reports.
+The prohibition on evaluating a non-pure form remains in force; it does not
+choose those reports. No general refusal rule for forms with no value type
+is established by this ruling.
 
 ## S124-Q11: Must multi-parameter collection traits be expressible now?
 
