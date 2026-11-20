@@ -1075,3 +1075,97 @@ fn stdlib_const_qualified_head_rejected_binder_neg() {
         out.stdout
     );
 }
+
+// spec: spec/07-traits.md §7.3.3; spec/08-modules.md §8.4.8 — library conformance,
+// T-STDLIB-ADT-TRAITS; stdlib/plan-stdlib.md §4.1 and module self-tests own values.
+#[test]
+fn s124_stdlib_adt_traits_across_modes() {
+    let checks = [
+        ("Option equal", "(= (Some 1) (Some 1))"),
+        (
+            "Option unequal payload",
+            "(if (= (Some 1) (Some 2)) false true)",
+        ),
+        ("Option constructors", "(if (= (Some 1) None) false true)"),
+        ("Option order", "(< (Some 1) (Some 2))"),
+        ("Option display", "(= (show (Some 42)) \"Some(42)\")"),
+        ("Result equal", "(= :(Result Int Int) (Ok 1) (Ok 1))"),
+        (
+            "Result unequal payload",
+            "(if (= :(Result Int Int) (Ok 1) (Ok 2)) false true)",
+        ),
+        (
+            "Result constructors",
+            "(if (= :(Result Int Int) (Ok 1) (Err 1)) false true)",
+        ),
+        ("Result order", "(< :(Result Int Int) (Ok 1) (Ok 2))"),
+        (
+            "Result display",
+            "(= (show :(Result Int String) (Err \"bad\")) \"Err(bad)\")",
+        ),
+        (
+            "Pair equal",
+            "(= (primitives/Pair 1 2) (primitives/Pair 1 2))",
+        ),
+        (
+            "Pair unequal first",
+            "(if (= (primitives/Pair 1 2) (primitives/Pair 2 2)) false true)",
+        ),
+        (
+            "Pair unequal second",
+            "(if (= (primitives/Pair 1 2) (primitives/Pair 1 3)) false true)",
+        ),
+        (
+            "Pair order",
+            "(< (primitives/Pair 1 2) (primitives/Pair 1 3))",
+        ),
+        (
+            "Pair display",
+            "(= (show (primitives/Pair 1 \"a\")) \"Pair(1 a)\")",
+        ),
+        ("List equal", "(= (Cons 1 Nil) (Cons 1 Nil))"),
+        (
+            "List unequal payload",
+            "(if (= (Cons 1 Nil) (Cons 2 Nil)) false true)",
+        ),
+        ("List constructors", "(if (= (Cons 1 Nil) Nil) false true)"),
+        ("List order", "(< (Cons 1 Nil) (Cons 2 Nil))"),
+        (
+            "List display",
+            "(= (show (Cons 1 (Cons 2 (Cons 3 Nil)))) \"(1 2 3)\")",
+        ),
+        ("Either equal", "(= (left 1) (left 1))"),
+        (
+            "Either unequal payload",
+            "(if (= (left 1) (left 2)) false true)",
+        ),
+        (
+            "Either constructors",
+            "(if (= (left 1) (right 1)) false true)",
+        ),
+        ("Either order", "(< (left 1) (right 0))"),
+        ("Either display", "(= (show (left 1)) \"Left(1)\")"),
+        ("Nested Option equal", "(= (Some (Some 1)) (Some (Some 1)))"),
+        ("Nested Option order", "(< (Some (Some 1)) (Some (Some 2)))"),
+        (
+            "Option default",
+            "(let [x :(Option Int) (default/default)] (match x [None true (Some _) false]))",
+        ),
+    ];
+    let mut score = "0".to_string();
+    for (index, (_, condition)) in checks.iter().enumerate().rev() {
+        score = format!("(if {condition} {score} {})", index + 1);
+    }
+    let source = format!(
+        r#"(defn left [:Int n] :(collections.either/Either Int Int) (collections.either/Left n))
+(defn right [:Int n] :(collections.either/Either Int Int) (collections.either/Right n))
+(defn main [] (primitives/Pure {score}))
+"#
+    );
+    let failures = core_io_mode_failures("T-STDLIB-ADT-TRAITS", &source);
+    assert!(
+        failures.is_empty(),
+        "legs={checks:?}\n{}",
+        failures.join("\n")
+    );
+}
