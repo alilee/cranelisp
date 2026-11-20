@@ -2,7 +2,7 @@
 
 ## 15. REPL Session Persistence [R4 S52]
 
-### 15.1 Source Regeneration [Tested] [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
+### 15.1 Source Regeneration [S124 — partial: after a value of a parametric product type is constructed, every later regeneration is refused and later definitions are not saved (ACT-1101; T-SAVE-PRODUCT is allocated, no cell yet)] [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
 
 The REPL MUST persist interactive definitions to disk by maintaining a backing `.cl` file for the entry module (e.g. `user.cl`). When the user enters a definition that compiles successfully:
 

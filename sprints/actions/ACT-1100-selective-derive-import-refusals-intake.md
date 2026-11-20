@@ -115,5 +115,32 @@ Reduced without the standard library, on the debug binary built from
 - **`qa` holds this action.**
 - **`test`:** T-MACRO-SIBLING, in the
   [S124 evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
-- **The correction** waits on attribution, which `qa` owes before a `dev`
-  dispatch. It is carried on T-MACRO-SIBLING unless the user schedules it.
+- **`design`(int), then `dev`(`src/`):** the correction, carried on
+  T-MACRO-SIBLING unless the user schedules it.
+
+## Attribution: the binary's expansion driver (qa, 2026-11-20)
+
+Read in source at `23448d9c`, with the control above.
+
+- `src/process_form/macro_resolution.rs` expands a form recursively and
+  recognises every macro head, including one an expansion produced,
+  through `expander::recognize_macro_head` against the **using** module's
+  scope. A head the using module has not imported is not recognised and
+  flows on as an ordinary call.
+- Only after the whole expansion does `qualify_expanded_sexp` rewrite the
+  expansion's free symbols to the macro's defining module, giving
+  `d/inner`. Nothing recognises macro heads again after that rewrite.
+- **At the seam:** the refusal names `d/inner`, the qualified and
+  unexpanded head, "in expansion of" the outer call.
+- **Control:** the same qualified spelling typed by the user is recognised,
+  because it is qualified before recognition.
+- **Module: `src/`.** The governing designs are
+  [expansion qualification](../../design/int/expansion-qualification-scope.md)
+  and `arch`'s macro-availability model.
+- **Refuted if** recognition of an expansion-produced head is shown to
+  consult the defining module.
+
+T-MACRO-SIBLING is committed (`85f32147`): six subjects fail on
+`undefined variable: d/inner` at the REPL, under `--run` and linked, and
+twelve controls pass. `test` replaces the cells' seam locus with
+`src/process_form/macro_resolution.rs`.
