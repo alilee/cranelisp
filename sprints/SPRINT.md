@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 5 LANGUAGE — focus module backend: closing its exit list (B14, B13, B8, B10); other modules carried on their tests
+**Status**: PHASE 5 LANGUAGE — backend exit met at `39db1bb1` (`qa` reading `235a7ed7`); Phase 5 → 6a checkpoint presented, awaiting the user
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -58,7 +58,10 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
 - The document checker and `citation_drift` pass against the converged package.
 - `cargo nextest run --no-fail-fast` reports zero failures: every guard failing
   on the opening tree passes, or is carried on recorded evidence that it is
-  unreachable this sprint.
+  unreachable this sprint. *Superseded for Phase 5 by the user's delivery
+  principles of 2026-11-19 (`METHOD.md` §Delivery principles): the focus
+  module (backend) exits clean and green and every other failing test is
+  carried on record by module; see Notes, "Phase 5 exit reading".*
 
 ### Included
 
@@ -578,3 +581,23 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   on a definition at the REPL mutates the session and the process ends on
   signal 11. Its four reproductions stay RED past S124; it does not count
   against the backend's exit.
+- **Phase 5 exit reading (`qa`, `235a7ed7`, tree `39db1bb1`).** Full run:
+  7,926 run, 7,846 passed, 80 failed, 1 skipped, 274 s; census zero on the
+  absent arm and non-concrete classes. Backend: 0 failing, no build warning,
+  no open review finding (`review` of `e8a9cac5`..`1238b31c` no findings;
+  one finding on `4407b008` resolved at `39db1bb1`, re-read confirmed).
+  Carried by module: typecheck 47 (ACT-1076, 1071, 1075, 1074, 1082, 1080,
+  1073), `src/` 26 (ACT-1089, 1062, 1068, 1005, 1079, 1087, 1090),
+  intrinsics 3 (ACT-0977), unattributed 3 (ACT-1067, ACT-1018), document
+  gate 1. No test passing at sprint open fails now; 78 of the 80 are S124
+  reproductions. The standing detail is `tests/plan/s124-evidence-delta.md`
+  §14.
+- **Public-API checkpoint.** First diff approved by the user 2026-11-20.
+  Second diff reported: row B16 (`c9f573e0`, types +1) and the K11-a format
+  contraction (`c86aa1f7`, 1,481 auto-trait lines removed, nothing added);
+  ACT-0955 stays open until the user confirms the contraction.
+- **ACT-1090 carried against the binary** (METHOD §2.5: no crash, no data
+  loss): a trace form can omit a module's frames on one launch when a
+  dependency's object is absent from an otherwise valid cache.
+  **ACT-1092** (advisory, `design`(int)): the search index omits a module
+  whose import names an unloaded or compiling module.
