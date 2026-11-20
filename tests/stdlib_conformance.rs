@@ -1148,6 +1148,10 @@ fn s124_stdlib_adt_traits_across_modes() {
         ("Nested Option equal", "(= (Some (Some 1)) (Some (Some 1)))"),
         ("Nested Option order", "(< (Some (Some 1)) (Some (Some 2)))"),
         (
+            "Nested Option display",
+            "(= (show (Some (Some 1))) \"Some(Some(1))\")",
+        ),
+        (
             "Option default",
             "(let [x :(Option Int) (default/default)] (match x [None true (Some _) false]))",
         ),
