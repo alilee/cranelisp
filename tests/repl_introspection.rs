@@ -31,7 +31,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
+use helpers::e2e::{repl_output_lines, Cranelisp, PreludeVariant, REPL_IO_NOTICE};
 
 // Test-authoring shortcuts: `Cranelisp::repl_capture(lines)` for bare REPL,
 // `Cranelisp::repl_prims_capture(lines)` for REPL with PrimitivesOnly prelude.
@@ -5464,5 +5464,38 @@ fn s124_1089_definition_reports_its_function_type() {
         "definition query must report its function type: {}{}",
         out.stdout,
         out.stderr
+    );
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-PURE impl safety fence
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_pure_impl_not_installed() {
+    let setup = "(deftrait Sz (sz [self] Int))\n(deftype T A)\n";
+    let tail = "(sz A)\n(add-i64 5 5)\n";
+    let control = s124_type_session(&format!("{setup}{tail}"))
+        .assert_ok()
+        .assert_stdout_contains("no impl of trait user/Sz for type user/T")
+        .assert_stdout_contains(":primitives/Int 10");
+    let subject = s124_type_session(&format!(
+        "{setup}/type (impl Sz T (defn sz [self] 7))\n{tail}"
+    ));
+    assert_eq!(
+        (
+            subject.status.code(),
+            subject
+                .stdout
+                .contains("no impl of trait user/Sz for type user/T"),
+            repl_output_lines(&subject.stdout)
+                .iter()
+                .any(|s| s == ":primitives/Int 10")
+        ),
+        (Some(0), true, true),
+        "query must not install an impl; status={:?}\n{}{}\ncontrol:\n{}{}",
+        subject.status,
+        subject.stdout,
+        subject.stderr,
+        control.stdout,
+        control.stderr
     );
 }
