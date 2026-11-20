@@ -150,7 +150,7 @@ The S87 adequacy review's stdlib verbs now exist. The exemplar has adopted
 `row-of`/`col-of`. It has not yet adopted three verbs:
 
 - `text.string/char-to-digit` for `form.cl` `parse-digit-char` and the
-  digit ladder in `grid.cl` `make-grid-helper`
+  digit ladder in `grid.cl` `make-grid`
 - `text.string/replace-at` for `form.cl` `set-char-at`
 - `collections.vec/range` with `vec-reduce`/`vec-map` for the hand-threaded
   0..9 and 0..81 index loops (`*-helper` functions) across the four pure
@@ -158,11 +158,3 @@ The S87 adequacy review's stdlib verbs now exist. The exemplar has adopted
 
 Adopt each verb only where it reads better. Do not reshape `eliminate` or the
 propagation path.
-
-### Qualified `Display Cell` spelling
-
-`grid.cl` uses the bare `(impl Display Cell …)` head. The S117 attempt to use
-the qualified `text.display/Display` head was reverted, because warm-cache
-dispatch lost the implementation. That failure is guarded by
-`tests/cache.rs::cache_restores_sibling_written_trait_impls_for_dispatch`.
-Re-attempt the qualified head only after that guard passes.

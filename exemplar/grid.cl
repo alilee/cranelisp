@@ -226,20 +226,11 @@
      (Solved _) true
      (Candidates _) false]))
 
-;; ── Display Cell (REPL/debug affordance) ────────────────────────────────
-;;
-;; A conventional bare-head `(impl Display Cell …)` so a Cell renders legibly
-;; at the REPL and in debug output — e.g. `(show (Given 5))` => "Given 5". This
-;; satisfies the exemplar's own-type trait-dispatch selection criterion (#4):
-;; the exemplar's own ADT gets a trait impl, and `show` recurses to the
-;; primitive `Display Int` impl for the inner value/mask. `Display` and `show`
-;; are in scope via the implicit prelude glob (grid does not suppress it).
-;;
-;; DELIBERATELY NOT used by the hot `format-board` path in `solver.cl`: that
-;; path stays on direct `str-concat`/digit rendering to keep `show`-dispatch
-;; overhead out of production output (the documented perf decision in
-;; exemplar/AGENTS.md "String building via str-concat" stands).
-(impl Display Cell
+;; ── Display Cell ─────────────────────────────────────────────────────────
+;; Renders a Cell at the REPL and in debug output, for example `(show (Given 5))`
+;; is "Given 5". The board formatters in `solver.cl` do not use it
+;; (plan-exemplar.md, "HTML is built with `str-concat`").
+(impl text.display/Display Cell
   (defn show [self]
     (match self
       [(Given v)      (str-concat "Given " (show v))
