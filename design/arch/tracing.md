@@ -9,10 +9,10 @@ document is the sole architecture authority for tracing. Strict evaluation
 within the trace extent (§7) is built. The mode-independent traced set (§5) and
 the covered-module rule the user ruled on 2026-11-19 (§5.1) are in source at
 `f8c55626`; the form's module (§5.1, *The form's module*) at `94749709`; the
-slot obligation (§3.5) at `1238b31c`. Source does not meet the contract in two
-places: the root's result (§3.6; decided 2026-11-20, to be built in S124), and
-the first batch of a module compiled before the prelude publishes (§5.1, *Not
-met in source*; accepted residual).
+slot obligation (§3.5) at `1238b31c`; the root's result (§3.6) and the
+role-holder's stack (§4.2) at `ecae99c9` and `3c5e41ca`. Source does not meet
+the contract in one place: the first batch of a module compiled before the
+prelude publishes (§5.1, *Not met in source*; accepted residual).
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -157,10 +157,6 @@ for one `(trace body)`:
    the release every other value of that type gets: the category gate, then
    the type's drop glue.
 
-Steps 5 and 6 are not in source. Source releases the body's value before the
-restores, with no drop glue, and calls `cranelisp_collect_trace` with no
-argument (§3.6).
-
 Each wrapper formats every argument through `cranelisp_trace_format(value,
 descriptor)` (§3.4), calls `cranelisp_trace_enter(name, len, n, strings)`,
 calls the original through `originals[i]` (never the swapped slot, which now
@@ -275,13 +271,15 @@ tier does not keep
 
 ### 3.6 The root's result
 
-**Decided, `arch`, 2026-11-20 (row B17); not in source.**
+**Decided, `arch`, 2026-11-20 (row B17); in source at `ecae99c9`
+(intrinsics) and `3c5e41ca` (backend).**
 [Spec §4.12.2](../../spec/04-expressions.md#4122-semantics) requires the
-body's value to produce the root node's formatted result string. Source
-releases the value unformatted, so the root's result is the empty string in
-every mode (ACT-1094). `tests/trace.rs::s124_trace_root_call_cold` and its
-eight siblings fail on it; the four child controls beside them
-(`tests/trace.rs::s124_trace_root_child_control_cold` and its siblings) pass.
+body's value to produce the root node's formatted result string. Before those
+commits the value was released unformatted and the root's result was the
+empty string in every mode (ACT-1094). The cells are
+`tests/trace.rs::s124_trace_root_call_cold` and its eight siblings, with the
+four child controls beside them
+(`tests/trace.rs::s124_trace_root_child_control_cold` and its siblings).
 
 - **Contract.** The node a form returns carries, as its result, the canonical
   display of the body's value, rendered from a descriptor baked for the
@@ -291,12 +289,9 @@ eight siblings fail on it; the four child controls beside them
   writes its result. The backend holds the value and its type, so it supplies
   the value and the descriptor. The form's closing call carries both; no
   datum changes owner.
-- **Delta, intrinsics.** One export changes signature. Its name and its
-  catalog membership are unchanged, and the catalog row declares two
-  parameters.
+- **The entry, intrinsics.** The catalog row declares two parameters.
 
   ```rust
-  // was: pub extern "C" fn cranelisp_collect_trace() -> i64
   pub extern "C" fn cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64
   ```
 
@@ -309,36 +304,30 @@ eight siblings fail on it; the four child controls beside them
     `cranelisp_trace_format`. That entry declines off the recording thread
     because a wrapper there has no consumer (§7 rule 2). The collect call
     always has one, the node it returns.
-- **Delta, backend.** No public item changes. The emitted sequence changes
-  as §3.3 steps 4 to 6 state, with one tail for a form that swaps and a form
-  that does not. The backend bakes one more descriptor per form and calls
-  `cranelisp_trace_format` only from wrappers.
+- **The emission, backend.** No public item is involved. The emitted
+  sequence is §3.3 steps 4 to 6, with one tail for a form that swaps and a
+  form that does not. The backend bakes one descriptor per form for the root
+  and calls `cranelisp_trace_format` only from wrappers.
 - **A skipped form (spec §4.12.6).** This row does not decide a skipped
-  form's result. Source returns the empty string. Spec §4.12.6 says a skipped
+  form's result. Source returns the empty string, as it did before the row. Spec §4.12.6 says a skipped
   form returns "no recorded children" and does not name its result, and spec
   §4.12.2 states no exception. Current behaviour stands until `spec` records
   a ruling. Either answer is interior to the collect entry under this
   signature, because the value and the descriptor arrive on every path.
 - **Persistence and ABI.** The call sequence baked into a cached object
-  changes meaning: an object built before the change calls the entry with no
-  argument. `CACHE_SCHEMA_VERSION` is bumped once, in the backend change-set
-  that changes the emitted sequence
-  ([Principle 14](principles/14-ffi-layout-discipline.md)). `BUILD_ID` does
-  not cover an uncommitted build. No serialised shape, descriptor layout,
-  platform ABI or layout hash changes.
-- **Between the two change-sets.** Intrinsics changes first
-  ([approved migrations](../../sprints/METHOD.md#23-gates-that-are-cranelisps-own)).
-  - Until the backend follows, a trace form does not compile. Every module
-    declares each catalog entry with the catalog's signature
-    (`crates/cranelisp-backend/src/jit.rs::declare_intrinsics_generic`), and
-    the trace codegen's own declaration of the entry with no parameter is
-    then refused. Grade: asserted, read in source and not run. Falsifier: a
-    trace form compiles while the backend and the catalog declare different
-    parameter counts for the entry.
-  - A cache written before the intrinsics change still loads until the
-    backend's bump. A trace-form object in it would call the two-parameter
-    body with no argument. The intrinsics change-set is therefore not a
-    handoff, and no cached end-to-end run is taken between the two.
+  changed meaning: an object built before the row calls the entry with no
+  argument. `CACHE_SCHEMA_VERSION` went from 35 to 36 in the backend
+  change-set that changed the emitted sequence
+  ([Principle 14](principles/14-ffi-layout-discipline.md)), so every older
+  cache is refused. No serialised shape, descriptor layout, platform ABI or
+  layout hash changed.
+- **A mismatched declaration does not compile a form.** Every module
+  declares each catalog entry with the catalog's signature
+  (`crates/cranelisp-backend/src/jit.rs::declare_intrinsics_generic`), so a
+  trace codegen that declares the entry with another parameter count is
+  refused when a form compiles. Grade: asserted, read in source. Falsifier: a
+  trace form compiles while the backend and the catalog declare different
+  parameter counts for the entry.
 - **The three questions.**
   - *Bounded context:* yes, for both crates. The runtime keeps the frame and
     the rendering; the backend keeps discovery, baking and emission
@@ -363,14 +352,15 @@ eight siblings fail on it; the four child controls beside them
     adds a path, and a form that omits the call stays expressible.
   - *`cranelisp_trace_exit` for the root.* Exit appends the finished node to
     its parent's children, and the root has no parent.
-- **A second defect the release closes.** Source's discard decrements the
-  body's value with no drop glue
-  (`crates/cranelisp-backend/src/compiler/trace_codegen.rs::emit_body_discard`
-  passes `None`). A body whose value owns heap memory, for example an ADT
-  with a `String` field, frees its cell and leaks what the cell owns. A
-  `String` body owns nothing further, so the T-TRACE-ROOT heap cell does not
-  see it. Read in source, not run; no end-to-end cell holds it. Its
-  classification and cell are `qa`'s. Interior:
+- **A second defect the release closed.** The discard that preceded the
+  row decremented the body's value with no drop glue. A body whose value
+  owned heap memory, for example a record with a `String` field, freed its
+  cell and leaked what the cell owned. Step 6 of §3.3 is the correction.
+  Grade: measured. The backend's module row
+  `crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs::trace_root_release_balances_an_owning_value`
+  balances allocations across the form, and
+  `tests/trace.rs::s124_trace_owning_record_cold` and its siblings hold it
+  cold, restored and linked. Interior:
   [trace codegen §4.3](../backend/trace-codegen.md#43-the-release).
 - **Residual: a form that swaps no slot reports `nanos` 0** (decided,
   `arch`, 2026-11-20; asserted, with a named falsifier). Spec §4.12.2 gives
@@ -438,13 +428,11 @@ module does not reference it, so relocating it created no coupling.
   form, evaluates normally and yields a `::skipped::` node with no children
   (spec §4.12.6). The skip is the thread's own state and never a frame on
   the shared stack.
-- **Not in source at `4a58af99`; built with row B17's intrinsics step.**
-  There a skipped swap pushes a `::skipped::` frame onto the shared stack, a
-  collect on a thread that does not record pops it, and the recording collect
-  releases the role before it pops. A concurrent skipped form can therefore
-  take or displace the recording form's frames, and the tree depends on
-  scheduling; no memory is misused. The correction changes no export and no
-  emitted call, so it is interior to intrinsics and takes no gate decision
+- **In source at `ecae99c9`.** Before it a skipped swap pushed a frame onto
+  the shared stack and a collect on a thread that did not record popped it,
+  so a concurrent skipped form could take or displace the recording form's
+  frames. The rule is interior to intrinsics: it involves no export and no
+  emitted call
   ([trace runtime §7.1 and §7.2](../intrinsics/trace-runtime.md#71-who-touches-the-trace-stack)).
 - Lock acquisition recovers from poisoning: the stack is append-only during a
   trace, so a partially built frame is safe to discard.

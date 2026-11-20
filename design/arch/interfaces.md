@@ -747,8 +747,8 @@ single-constructor value classifies as a heap value. The binary's display walk
 ## Approved changes not yet in source (S124)
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
-decided change that no phase checkpoint has reported yet. The Phase 5 checkpoints of
-2026-11-20 reported every other S124 row and removed it; those rows' deltas are in the
+decided change that no phase checkpoint has reported yet. The Phase 5 and Phase 6b
+checkpoints of 2026-11-20 reported every other S124 row and removed it; those rows' deltas are in the
 [S124 packet](../../sprints/s124-api-packet.md), the
 [S123 packet](../../sprints/s123-api-packet.md) Part B and Git. A design that needs a
 public change outside these rows stops and returns to `arch`.
@@ -756,7 +756,6 @@ public change outside these rows stops and returns to `arch`.
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
-| B17 | `cranelisp_collect_trace() -> i64` becomes `cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64`: the form's closing call receives the body's value, borrowed, and its display descriptor, and the root node's result is the formatted value | intrinsics (the entry, its catalog row, the root frame) | backend emits the new sequence and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics: 1 line changed; every other baseline +0 | `arch`, 2026-11-20; S124 Phase 6b (ACT-1094) | [the root's result](#the-roots-result-row-b17) |
 
 **Phase 5 checkpoints (2026-11-20).** Each used cargo-public-api 0.52.0 and the
 [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) of its format.
@@ -784,57 +783,35 @@ public change outside these rows stops and returns to `arch`.
   lines where a crate re-exports a type; the guard's drift summary counts distinct
   lines.
 
-### The root's result (row B17)
+**Phase 6b checkpoint (2026-11-20, read at `23448d9c`).** Read from the committed
+baselines and `git diff 3e39a647 HEAD`; no baseline was regenerated for the
+checkpoint.
 
-[Tracing §3.6](tracing.md#36-the-roots-result) holds the contract, the exact
-delta, the persistence and ABI effect, the three questions and the
-alternatives. This entry holds what the gate adds.
-
-- **Attribution (ACT-1094).** Confirmed by reading source, not by running it:
-  `crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace`
-  releases the body's value and calls the entry with no argument, and
-  `crates/cranelisp-intrinsics/src/trace.rs::build_trace_call` writes an empty
-  string for a frame whose result word is zero. Neither crate can correct it
-  alone. [Tracing §3.3](tracing.md#33-backend-codegen) stated the release as
-  built, so the architecture record carried the defect as well.
-- **Producer and consumers.** Producer: intrinsics. Consumers: backend-emitted
-  code, and two Rust-path callers in test code, the intrinsics trace tests and
-  `crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs`. The binary
-  and `cranelisp-exe-bundle` name the entry only through the catalog and do
-  not change.
-- **Expected baseline, current format.** `crates/cranelisp-intrinsics/public-api.txt`
-  changes one line and no other baseline moves:
+- **Row B17.** `crates/cranelisp-intrinsics/public-api.txt` changed one line at
+  `ecae99c9`, the line the row predicted. `dev`(intrinsics) regenerated it in the
+  implementing change-set, and that is the phase's one regeneration.
 
   ```text
   -#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_collect_trace() -> i64
   +#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_collect_trace(i64, i64) -> i64
   ```
 
-- **Decision.** Approved: each of the three questions is answered yes for
-  intrinsics and for the backend, and neither bounded-context statement
-  changes. Not escalated.
-- **Build order.** One callee-first migration; the intrinsics change-set is
-  not a handoff.
-  1. `design`(intrinsics), in [trace runtime](../intrinsics/trace-runtime.md):
-     how the collect entry reads which of its three states it is in (the
-     thread held the role, the form was skipped, the form swapped no slot),
-     that it renders through the crate-private walk, where the root's elapsed
-     time is stamped relative to rendering, and the module rows.
-  2. `design`(backend), in [trace codegen](../backend/trace-codegen.md): the
-     body's descriptor, the one closing tail for both paths, the release
-     after the collect call under the crate's release-by-type rule, and the
-     module rows. Steps 1 and 2 touch different documents and neither waits
-     on the other.
-  3. `dev`(intrinsics): the entry, its rustdoc, the catalog row's signature,
-     the module tests and the regenerated intrinsics baseline. After this
-     step the backend's tests do not compile and no trace form compiles.
-  4. `dev`(backend): the emitted sequence, the `CACHE_SCHEMA_VERSION` bump,
-     the test caller and the module tests. The backend baseline reads +0.
-  5. The migration closes on T-TRACE-ROOT's nine subjects passing
-     (`tests/trace.rs::s124_trace_root_call_cold` and its siblings) with the
-     four child controls unchanged, and on the full suite. `qa` then judges the spec §4.12.2 band.
-- **Waits on nothing.** The row does not depend on `spec`'s open question on
-  a root's name, nor on a skipped form's result; tracing §3.6 states both.
+- **Every other baseline moved +0.** No line lies outside an approved row.
+- **A change the baselines cannot show.** `cranelisp_backend::cache::CACHE_SCHEMA_VERSION`
+  is a public constant whose baseline line carries its type and not its value. Its
+  value went from 35 to 36 at `3c5e41ca`, as row B17 required. No consumer in another
+  crate reads the number as a literal; the effect is that every cache written before
+  the commit is refused and rebuilt.
+- **Surfaces without a baseline.** No file of the root crate or of
+  `cranelisp-exe-bundle` changed in the phase.
+- **Left in the record:** the gap-module row, which is not scheduled.
+
+### The root's result (row B17)
+
+In source at `ecae99c9` (intrinsics) and `3c5e41ca` (backend); reported at the Phase 6b
+checkpoint. [Tracing §3.6](tracing.md#36-the-roots-result) holds the contract, the
+entry's signature, the persistence and ABI effect, the three questions and the
+alternatives. `qa` accepted ACT-1094 at `9316028b`.
 
 ### An instance's template owner (row B16)
 
