@@ -108,7 +108,9 @@ a test panic so the remaining tests can still run.
 
 ## Your first program
 
-A runnable program defines a zero-argument `main` and runs under `--run`. The
+A runnable program defines an ordinary zero-argument `main` returning IO and
+runs under `--run`. A trait method named `main` or a multi-arity `main` does not
+supply this entry point; see [batch entry requirements](cli-reference.md#run---run). The
 clearest worked introductions live in [`examples/`](../examples/) — a numbered
 learning sequence of self-contained `.cl` files you can run directly.
 

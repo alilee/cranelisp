@@ -143,7 +143,8 @@ zero-argument `main` function and exits. The binary prints nothing itself — al
 output comes from IO effects inside your program.
 
 - `main` must be defined in the entry module as a zero-argument function
-  returning `IO _`; any other `main` is rejected before execution. `--link`
+  returning `IO _`. It is an ordinary single-signature `defn`: a trait method
+  named `main` or a multi-arity family does not supply the entry point. `--link`
   applies the same check.
 - **Exit code:** if `main`'s result (after unwrapping `IO`) is an `Int`, that value
   becomes the process exit code; any other result yields exit code `0`. A
@@ -151,6 +152,12 @@ output comes from IO effects inside your program.
   applies the identical rule** — see [Link](#link---link).
 - A program that references `discover-tests` is refused before it runs; see
   [Test discovery is REPL-only](#test-discovery-is-repl-only).
+
+If no entry function exists, the diagnostic names the entry file and missing
+`main` without a source span. A refusal about an existing definition, such as
+`main` returning an `Int`, points to that definition instead. See
+[CLI §0.6](../repl/spec/00-cli-invocation.md) and
+[type ambiguity](../spec/03-types.md#3111-the-ambiguity-rule-is-scoped-to-codegen-reaching-value-positions).
 
 A runtime panic prints to stderr and ends its process with status `1`, in the
 REPL as well as in batch mode. See [panics and checked arithmetic](getting-started.md#panics-end-the-process).
