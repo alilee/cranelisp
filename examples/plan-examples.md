@@ -48,14 +48,14 @@ test function (38).
 | 15 | Traits, operator dispatch, constrained polymorphism, default methods | 10 |
 | 16 | Multi-file programs: `mod`, specific-name `import`, qualified references | 04 |
 | 17 | User-defined traits and `Display` | 15 |
-| 18 | `defmacro`, quasiquote and unquote, multi-clause macros | 04 |
+| 18 | `defmacro`, quasiquote and unquote, multi-clause macros, intentional capture versus auto-gensym, declaration boundaries | 04 |
 | 19 | Threading pipelines with `->` and `->>` | 18 |
-| 20 | Implementing traits for user ADTs | 15, 17 |
+| 20 | Implementing traits for user ADTs; constrained impls and finite re-entry at nested payload types | 07, 10, 15, 17 |
 | 21 | The IO model: `Pure`, `bind`, combinators built from them, real console output; an IO value runs again each time it is sequenced | 04, 12 |
 | 22 | Testable IO through the `test-capture` platform | 21 |
 | 23 | IO sequencing with explicit `bind` chains | 21 |
 | 24 | Input with `read-line`; read then process | 21 |
-| 25 | Auto-currying: of a `defn`, a local closure, and a trait operator; first library import (`operators`) | 12, 13, 15 |
+| 25 | Auto-currying: of a `defn`, a local closure, a trait operator and `bind` taken as a function value; first library import (`operators`) | 12, 13, 15, 21 |
 | 26 | The higher-kinded `Functor` trait, for `Option` and for `IO` | 15, 10, 21 |
 | 27 | Lazy sequences | 12, 13 |
 | 28 | Lenient evaluation: independent `let` bindings spark in parallel | 03 |
@@ -131,31 +131,42 @@ their exit codes. Batch those changes, because `test` reconciles
 ## 4. Standing assessment
 
 The `training` contract asks this whole-sequence question every increment.
-S123 (2026-11-16) read the complete sequence and local library against the
-language and CLI contracts. Phase 6b at checkpoint `640d2ec7` replayed all 38
-entries in cold and warm `--run` and linked execution: **152/152 exits matched**
-`tests/examples.rs`. 38 also reported four `ok` lines under `--test`, exit 0.
-The replay used the isolated environment in
-[`AGENTS.md`](AGENTS.md#verification), with no stdlib path. These observations
-verify the teaching material, not independent acceptance coverage. Dated probes
-below retain their original dates where their specific scenario was not
-repeated; a green sequence run does not re-prove those diagnostic claims.
+S124 (2026-11-20) re-read the sequence and local library against the delivered
+language. After the bounded Phase 6b edits, at `9d18061d`, all 38 entries
+matched `tests/examples.rs` in cold and warm `--run` and linked execution:
+**152/152 exits matched**. 38 also reported four `ok` lines under `--test`,
+exit 0. No filenames, pinned exits or console output changed. These are
+teaching-material replays, not independent acceptance tests.
 
-**Verdict.** Every entry runs, but coverage is partial, order and pacing need
-improvement, negative-space teaching is partial, and readability is uneven.
-The early core progression works; the tail interleaves subjects by delivery
-order. The S123 correction preserves filenames, executable forms and exits.
-11 contrasts unchecked wrapping with checked `None`; 28 and 30 explain that
-serial-baseline switches belong on the compiler invocation and require
-relinking to change a linked program. These repairs leave the broader gaps
-below open; they do not constitute a sequence redesign.
+The replay used the private-copy environment in
+[`AGENTS.md`](AGENTS.md#verification), with no stdlib path and the existing
+debug compiler binary; no Cargo command ran. The source checkpoint began
+at `3c5e41ca`; binary provenance was supplied by the dispatch, not established
+by rebuilding. Focused probes rejected a rest name followed by another
+parameter, a bracket rest parameter and an integer-valued macro body; their
+valid rest and syntax-returning controls each returned 42. A focused root-result
+probe found "42" under both `--run` and linked execution (exit 41); 21 retained
+its seven-line transcript and exit 250. Dated probes below retain their dates
+where their specific scenario was not repeated.
 
-Focused replay also reproduced 15's mid-session type and result lines with
-both the default agent state and `--no-agent`. 30 linked with spark budget 64
-then launched with budget 0 reported 14 spawns; linked with budget 0 then
-launched with budget 64 reported zero spawns and seven serial continuations.
-Both exited 56. Statistics were enabled only at link time, confirming the
-linked-switch binding point rather than relying on unchanged arithmetic.
+**Verdict.** Every entry runs, but the sequence is not comprehensive or yet
+the best learning order. The early core progression works; the tail follows
+delivery order and interleaves subjects. 01 now orients the reader to `Pure`;
+18 contrasts deliberate capture with private generated bindings; 20 teaches
+nested constrained implementations; 25 uses `bind` as a partially applied
+function value; 28 and 30 explain strict evaluation during tracing. These
+repairs improve negative-space teaching and readability without completing
+the redesign below.
+
+The stdlib's new collection instances, `derive`, `vec-flatten` and `par-*`
+changes do not enter this free-standing sequence. They belong to stdlib
+learning material. A dedicated tracing lesson remains held on
+[S124-Q13](../spec/appendix-d-open-questions.md#s124-q13-what-are-a-trace-roots-name-parameters-and-children):
+ACT-1094's result correction has landed, but the root's name, parameters and
+shape are unsettled. The other open trace questions are recorded in
+[tracing §6](../design/arch/tracing.md#6-nested-trace-guard); do not teach their
+answers as settled. Current defect evidence is maintained by `qa` in
+[the S124 evidence delta §14](../tests/plan/s124-evidence-delta.md#14-the-standing-state).
 
 ### 4.1 Coverage gaps
 
@@ -166,16 +177,14 @@ linked-switch binding point rather than relying on unchanged arithmetic.
 | **A4** Module visibility and the import/export surface: private `-` forms and the private-import rejection, `export`/re-export, glob, member, alias and renamed imports, `super`, shadowing and conflict | §8.3–§8.7 | scan 2026-09-22: no `defn-`, `(export`, or `[*]` in any example | Grow `16-modules/` |
 | **A5** The string surface beyond basics, including `parse-int` to `Option` as the fallible-input idiom | App A.3, §12.1.2 | scan 2026-09-22: 09's comment defers these | Extend 09; no `Byte`/text examples until those facilities ship |
 | **B1** Pattern-matching negative space: nested, literal and or-patterns, guards; exhaustiveness as a compile-time rejection | §6.5–§6.6 | S115 | Comment-grade plus the boundaries example |
-| **B3** Macro hygiene and auto-gensym. 18's `with-double` presents an anaphoric capture as ordinary technique | §9.8 | scan 2026-09-22: no gensym spelling in the corpus | Teach the trap as a trap |
 | **B4** String byte length versus character length | §12.1.2 | S115 | — |
 | **B5** Strict left-to-right evaluation, named as the contrast for 27, 28 and 30 | §12.4.1 | S115 | Prose beat |
 | **B6** Detached strands, launch-and-continue, cancellation and draining; any strand's panic ends the process | §10.12.7, §12.7.9 | S122: the cancellation-context and drain obligations are marked uncovered in the spec; S123: panics terminate the whole process | Wait for evidence of the delivered behaviour |
 | **B7** Docstrings in all six positions | §5.2.5, §5.12, §7.1.2, §9.2.4 | S115 | — |
-| **B7a** Reader surface: string escapes, comma as whitespace, `'form`, `#(… %1)`, `x#` | §1.2–§1.5 | scan 2026-09-22: no escapes, `#(` or `x#` | — |
-| **B7b** `trace` and the `Trace`/`TraceCall` ADT | §2.3.10, §4.12.4 | scan 2026-09-22: absent | — |
+| **B7a** Reader surface: string escapes, comma as whitespace, `'form`, `#(… %1)` | §1.2–§1.5 | S124 scan: no string-escape or shorthand-lambda lesson; auto-gensym is taught in 18 | — |
+| **B7b** `trace` and the `Trace`/`TraceCall` ADT | §2.3.10, §4.12.4 | S124: 28 and 30 explain strict trace evaluation; no executable trace lesson | Held on S124-Q13; the landed root-result fix alone does not settle root shape |
 | **B8** Sexp and macro surface: nested quasiquote, `begin` expansion, zero-argument macros, SList helpers. 19 explains the rest marker and `~@` in one note only | §9 | S115 | — |
 | **B10** Explicit trait constraints; operators as values beyond 25's partial | §7.6, §7.8.2 | S115 | — |
-| **B11** Constrained-impl heads such as `(impl Display (Option :Display a) …)` | §7.3.3 | probe 2026-09-30: the flat form runs; a recursive impl used at a nested type fails at codegen | Blocked on ACT-1034 |
 | **C2** Network poll shape (accept, read, send) | — | FIXME 0463 (open) | Needs a reusable, deterministic socket platform. 34 teaches the mechanism meanwhile |
 
 Out of scope by the library ruling: the stdlib prelude vocabulary (`do`,
@@ -183,8 +192,8 @@ Out of scope by the library ruling: the stdlib prelude vocabulary (`do`,
 
 ### 4.2 Order
 
-The early core has a designed progression, but `Pure` appears in each `main`
-before the IO introduction at 21 without an orientation beat. 21–38 were
+The early core has a designed progression. 01 orients readers to the `Pure`
+entry-point wrapper before the full IO introduction at 21. 21–38 were
 appended in delivery order, so position does not signal difficulty. For
 example, 31 needs only 01–02, and
 25–27 sit inside the IO arc. Two specific defects:
@@ -202,20 +211,23 @@ change co-planned with `test`, and it comes after the content gaps close.
 
 ### 4.3 Negative space
 
-Few examples teach boundaries: 11, 29 (the best boundary writing in the
-corpus), 32, 33, 35 and 36. No example has a boundary as its subject. A
+Boundary teaching is concentrated in 11, 18, 20, 29 (the strongest boundary
+writing), 32, 33, 35 and 36. No example has a boundary as its subject. A
 runnable example cannot contain a type error, so compile-time boundaries can
 only be comments, and comments go stale unobserved. S115 found six false
-comment claims, all corrected then. Checked operations let expected failures
-run as sub-tests: 11 matches the `Option` from checked division. A runtime
-panic ends the process, so panic demonstrations require separate executions
+comment claims, all corrected then. S124 adds verified macro-declaration
+refusals and a running capture-versus-gensym contrast in 18. Checked operations
+let expected failures run as sub-tests: 11 matches the `Option` from checked
+division. A runtime panic ends the process, so panic demonstrations require separate executions
 rather than sub-tests that continue afterward. A boundaries example should
 follow A1 and gather §6.6's prohibitions,
 exhaustiveness, the binder rules, the annotation traps and ambiguity.
 S123 checked ACT-1017 at its source filing: both its failed-dependency
-location and duplicate-prefix faces are resolved. ACT-1036 remains open for
-the synthetic location on a non-IO `main` refusal; it is not a blanket
-diagnostic-prefix blocker. Re-probe any diagnostic before quoting it.
+location and duplicate-prefix faces are resolved. S124 re-read ACT-1036's
+source filing: the non-IO `main` location is corrected; the remaining case
+is a macro-produced function restored from cache that references
+`discover-tests`. That residual does not block the
+ordinary boundary lesson. Re-probe any diagnostic before quoting it.
 
 ### 4.4 Readability
 
@@ -226,27 +238,30 @@ diagnostic-prefix blocker. Re-probe any diagnostic before quoting it.
   them. In 20 the signal is inverted: a regression would raise the total.
 - **Boilerplate.** The `;; Wrap the sum-of-pass-counts in Pure …` block
   appears in 27 files (scan 2026-09-22).
-- **Weakest files.** 20 is 250 lines of hand-written derive output. 15 is long
-  and repeats setup. 19 spends more than half its length building `->` and
-  `->>` and keeps a working pipeline its opening labels wrong; its
-  thread-last definition comment also spells `->`. 18 calls `with-double` a
-  swap avoiding double evaluation although its expansion duplicates `x` and
-  deliberately captures `doubled`. 27 implements a lazy
-  library rather than using one.
-- **Library recap.** `lib/prelude.cl` hard-codes an obsolete primitive count;
-  `lib/operators.cl` overstates its match to 15, whose default `Ord` bodies
-  become explicit implementations in the library. These wording repairs
-  remain outside the bounded S123 correction.
+- **Weakest files.** 20 spends most of its length on monomorphic manual
+  implementations before its constrained example. 15 is long and repeats
+  setup. More than half of 19 builds the threading macros before using them;
+  its pipeline and insertion-point comments are now correct. 27 implements
+  a lazy library rather than using one.
+- **Library recap.** The prelude summary now states its purpose without a
+  primitive count; `operators.cl` distinguishes its explicit `Ord` methods
+  from 15's defaults. The earning rule and free-standing boundary remain.
+- **34's overlap claim.** Its final section describes overlapping waits,
+  but the second `async-read` is constructed inside the first `bind`'s
+  continuation. That is sequential IO under §10.3, and the value-only
+  check cannot observe overlap. Correct this teaching claim in a separately
+  scheduled edit; the current bounded plan does not change 34.
 - **House style.** 29, 33 and 37 show the standard to bring the rest to.
 
 ### 4.5 Direction
 
-The sequence content below is unscheduled. `sprint` schedules it and the user
-approves the phase. Each step should leave the sequence green:
+The broader sequence work below is unscheduled. `sprint` schedules it and the
+user approves the phase. Each step should leave the sequence green:
 
 1. A1, then the A2 corpus pass.
 2. A4 and A5, which are independent of each other.
-3. The boundaries example, which needs A1, with B1, B3–B5 and B7.
+3. The boundaries example, which needs A1, with B1, B4–B5 and B7, building
+   on 18's hygiene lesson.
 4. The library candidates, each alongside its earning lesson (§3).
 5. Regroup and renumber, normalise every `main` to an honest pass count, and
    replace the repeated boilerplate with one note. Do this last, with `test`.
