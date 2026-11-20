@@ -757,6 +757,7 @@ public change outside these rows stops and returns to `arch`.
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
 | K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
+| B16 | `CallableArm::<C>::template_owner(&self) -> Option<&FQSymbol>` added; `template_module()` keeps its signature and meaning and derives from it | types (producer) | backend trace discovery reads it for an instance's frame name: a new consumer edge. No schema or ABI effect | types +1; backend +0; others +0 | `arch`, 2026-11-20; build order below (ACT-1091) | [below](#an-instances-template-owner-row-b16) |
 
 **Phase 5 checkpoint, present format (2026-11-20).** The seven baselines were regenerated
 at `1238b31c` with cargo-public-api 0.52.0 and the
@@ -776,6 +777,64 @@ detection proof is repeated. The guard fails between the halves, so they are one
 from one uncommitted tree. The diff holds removals only, each a generated auto-trait row.
 Counted by pattern in the committed baselines: types −973, backend −147, intrinsics −91,
 typecheck −70, frontend −14, platform −196, primitives 0.
+
+K11-a follows row B16. The types baseline takes B16's one line in the present format, in
+the change-set that adds the method, so K11-a's diff stays removals only and `arch`
+reports that line to the user separately.
+
+### An instance's template owner (row B16)
+
+- **Need.** Spec §4.12.4 names an instance's trace frame by its template's qualified name
+  alone. The backend spells frame names
+  ([trace codegen §1.4](../backend/trace-codegen.md#14-a-frames-name)), and no published
+  projection returns the template's name: `template_module()` returns its module only.
+- **Delta, types.** One method on `CallableArm<C>`, beside `template_module()`:
+
+  ```rust
+  pub fn template_owner(&self) -> Option<&FQSymbol>
+  ```
+
+  - `Some` exactly for a minted instance (`Life::Concrete` with a recorded
+    `InstanceLink`), and `None` for every other arm.
+  - The value is the declaration that owns the link's template: the template's own
+    qualified name for a directly named template, and the overloaded or macro declaration
+    for an arm or clause of one. It reads the recorded link and derives nothing.
+  - `template_module()` becomes `template_owner().map(|owner| &owner.module)`. Its
+    signature, rustdoc meaning and three consumers are unchanged.
+  - Inside types the method reads the existing private `callable_target_owner`, so the
+    crate keeps one destructure of a target's owner.
+- **Consumer.** Backend trace discovery names an instance's frame by the returned
+  `FQSymbol`'s `Display`, and an authored entry by its covered module and table key as
+  today. It parses no instance key
+  ([Principle 24](principles/24-resolve-once.md)).
+- **Expected baseline.** Types gains the one line
+  `pub fn cranelisp_types::CallableArm<C>::template_owner(&self) -> core::option::Option<&cranelisp_types::FQSymbol>`
+  under the existing `impl<C: cranelisp_types::CodeStore> cranelisp_types::CallableArm<C>`
+  header. Every other baseline moves +0.
+- **Schema and ABI.** None. No serialised shape or meaning changes, so no
+  `CACHE_SCHEMA_VERSION` bump is owed.
+- **The three questions.**
+  - *Bounded context:* yes. Types owns the instance link and its projections
+    ([Principle 15](principles/15-facade-types-live-with-behavior.md)); no dependency is
+    added; the backend needs the fact now
+    ([Principle 02](principles/02-narrow-interfaces.md)).
+  - *Simple API:* yes. The link has one projection, from which the module reading
+    derives ([Principle 07](principles/07-single-source-of-truth.md)). The backend uses
+    the value as given.
+  - *Strongly typed:* yes. The value is an `FQSymbol`, and absence means exactly "not an
+    instance", as it does for `template_module()`.
+- **Approved under a different name from the request.** `design`(backend) asked for
+  `template()`. `InstanceLink::template` is a `CallableTarget`, which for an overload arm
+  identifies the arm; the method returns the owning declaration. One public name would
+  carry two meanings, so the method is named for what it returns. The cost is the same.
+- **Not chosen.** The backend destructuring `minted_from` and `CallableTarget` itself. No
+  item changes, but backend production gains a consumer edge to `InstanceLink` and a
+  second copy of the projection types already owns.
+- **Build order.** Types: the method, its rustdoc, a module row (an instance of a directly
+  named template, an instance of an overload arm, an authored arm answering `None`, and
+  `template_module()` agreeing with it) and the regenerated types baseline, in one
+  change-set. Then the backend's module row, RED first, and its correction
+  ([trace codegen §1.4](../backend/trace-codegen.md#14-a-frames-name)).
 
 ### The unattributed codegen failure (row B15)
 
