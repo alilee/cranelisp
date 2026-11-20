@@ -1,32 +1,5 @@
-// public_api_relocations.rs — Sprint 66 Phase 5 Stage 1 (FIXME 0100).
-//
-// Authored failing-not-ignored at Phase-5 Stage-1 open per /qa Phase-5
-// obligation. This is the structural conformance gate for the type-
-// relocation FIXME (single-consumer types move from `cranelisp-types`
-// into the consumer crate that owns them):
-//   - `CheckResult`, `CheckError`, `FormCheckResult`, `CheckPass`,
-//     `CheckState`, `TypeCheckEnv`, `ModuleCheckAccumulator`,
-//     `ReplSnapshot` move into `cranelisp-typecheck` (FIXME 0100 Phase 1).
-//   - `CompilationError`, `GotEvent`, `GotEventTag`, `GotProvenance`,
-//     `GotObserver` move into `cranelisp-backend` (FIXME 0100 Phase 2).
-//
-// Implementation: subprocess-runs `cargo +nightly public-api --diff …`
-// per crate against the committed `crates/{crate}/public-api.txt`
-// baseline. Drift produces a non-zero exit + diff in stderr.
-//
-// At Phase-5 Stage 1 this test fails because:
-//   (a) baselines for `cranelisp-primitives` + `cranelisp-intrinsics`
-//       don't exist (Wave 2 scaffolds them);
-//   (b) `cranelisp-types` baseline currently includes the to-be-relocated
-//       types — those move out in Wave 2;
-//   (c) `cranelisp-typecheck` + `cranelisp-backend` baselines don't yet
-//       reflect the in-bound relocations.
-//
-// FIXME(/dev — every per-crate workstream that lands a facade-conformant
-// change must regenerate the affected baseline per the triad pattern in
-// `tests/AGENTS.md §"Public-API enforcement"`).
-
-#![allow(dead_code)]
+// Compares the seven library API baselines with the default-feature surface.
+// The disposable-crate proof exercises the same generator and drift check.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,8 +10,7 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Crates whose public surface S66 governs by binding facade.
-/// `cranelisp-runtime` retired in Sprint 66 Wave 4a.retire (FIXME 0150 Phase 5).
+/// Library crates governed by the public-API baseline discipline.
 fn crates_with_baselines() -> &'static [&'static str] {
     &[
         "cranelisp-types",
@@ -46,16 +18,12 @@ fn crates_with_baselines() -> &'static [&'static str] {
         "cranelisp-typecheck",
         "cranelisp-backend",
         "cranelisp-platform",
-        // Live in S66 per /arch Option A — D43 binds:
         "cranelisp-primitives",
         "cranelisp-intrinsics",
     ]
 }
 
-// spec: tests/AGENTS.md §"Public-API enforcement" (structural test, no
-// language-spec section — this is a conformance gate for facade adoption).
-// FIXME(/dev — multi: every crate with a facade-conformant landing in
-// S66 must commit its `public-api.txt` baseline per /qa slice §1.1).
+// spec: tests/AGENTS.md §"Public-API enforcement" — repository surface drift.
 #[test]
 fn public_api_check_runs_against_all_seven_crates() {
     let probe = Command::new("cargo")
@@ -79,12 +47,16 @@ fn public_api_check_runs_against_all_seven_crates() {
         )
     });
 
-    let root = workspace_root();
+    // read-only on project_root; cargo writes only regenerable build artifacts.
+    check_public_api(&workspace_root(), crates_with_baselines());
+}
+
+fn check_public_api(root: &Path, crate_names: &[&str]) {
     let mut missing_baseline: Vec<&str> = Vec::new();
     let mut missing_crate: Vec<&str> = Vec::new();
     let mut drifted: Vec<(String, String)> = Vec::new();
 
-    for crate_name in crates_with_baselines() {
+    for crate_name in crate_names {
         let crate_dir = root.join("crates").join(crate_name);
         if !crate_dir.exists() {
             missing_crate.push(crate_name);
@@ -95,49 +67,13 @@ fn public_api_check_runs_against_all_seven_crates() {
             missing_baseline.push(crate_name);
             continue;
         }
-        // Generate current public-api and diff against baseline.
-        //
-        // Flags MUST match how the committed baselines were generated:
-        // `-s` (`--simplified`, once) omits blanket-impls, and
-        // `--omit auto-derived-impls` drops the `Clone`/`Debug`/`Eq`/`Serialize`
-        // impl lines. The baselines keep auto-*trait* impls (Freeze/Send/Sync)
-        // but exclude auto-*derived* impls — that is the facade-focused surface.
-        // Omitting `--omit auto-derived-impls` here (as the pre-S76 command did)
-        // makes the live output list derive impls that the baselines lack, so
-        // every crate spuriously "drifts" by hundreds of lines. The canonical
-        // regen command is the same: `cargo +nightly public-api -s
-        // --omit auto-derived-impls -p {crate} > crates/{crate}/public-api.txt`.
-        let cur = Command::new("cargo")
-            .current_dir(&root)
-            .args([
-                "+nightly",
-                "public-api",
-                "--simplified",
-                "--omit",
-                "auto-derived-impls",
-                "-p",
-                crate_name,
-            ])
-            .output();
-        let cur = match cur {
-            Ok(o) if o.status.success() => o.stdout,
-            Ok(o) => {
-                drifted.push((
-                    crate_name.to_string(),
-                    format!(
-                        "cargo public-api failed: {}\nstderr:\n{}",
-                        o.status,
-                        String::from_utf8_lossy(&o.stderr)
-                    ),
-                ));
-                continue;
-            }
-            Err(e) => {
-                drifted.push((crate_name.to_string(), format!("spawn: {e}")));
+        let actual = match generate_public_api(root, crate_name) {
+            Ok(actual) => actual,
+            Err(error) => {
+                drifted.push((crate_name.to_string(), error));
                 continue;
             }
         };
-        let actual = String::from_utf8_lossy(&cur).into_owned();
         let expected = std::fs::read_to_string(&baseline)
             .unwrap_or_else(|e| panic!("read {}: {e}", baseline.display()));
         if normalise(&actual) != normalise(&expected) {
@@ -148,14 +84,11 @@ fn public_api_check_runs_against_all_seven_crates() {
     if !missing_crate.is_empty() || !missing_baseline.is_empty() || !drifted.is_empty() {
         let mut msg = String::from("public-api conformance check failed:\n");
         if !missing_crate.is_empty() {
-            msg.push_str(&format!(
-                "  missing crates (D43 not yet executed): {:?}\n",
-                missing_crate
-            ));
+            msg.push_str(&format!("  missing crates: {:?}\n", missing_crate));
         }
         if !missing_baseline.is_empty() {
             msg.push_str(&format!(
-                "  missing baselines (run `cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crate>/public-api.txt`): {:?}\n",
+                "  missing baselines (run `cargo +nightly public-api -s --omit auto-derived-impls --omit auto-trait-impls -p <crate> > crates/<crate>/public-api.txt`): {:?}\n",
                 missing_baseline
             ));
         }
@@ -164,6 +97,83 @@ fn public_api_check_runs_against_all_seven_crates() {
         }
         panic!("{msg}");
     }
+}
+
+// Keep these flags identical to the baseline command in tests/AGENTS.md.
+fn generate_public_api(root: &Path, crate_name: &str) -> Result<String, String> {
+    let output = Command::new("cargo")
+        .current_dir(root)
+        .args([
+            "+nightly",
+            "public-api",
+            "--simplified",
+            "--omit",
+            "auto-derived-impls",
+            "--omit",
+            "auto-trait-impls",
+            "-p",
+            crate_name,
+        ])
+        .output()
+        .map_err(|error| format!("spawn: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo public-api failed: {}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+// spec: tests/AGENTS.md §"Public-API enforcement" — generated auto-traits
+// are omitted; a public-item change still fails the executing drift guard.
+#[test]
+fn public_api_detection_proof_catches_public_item_and_accepts_clean_surface() {
+    let fixture = tempfile::tempdir().expect("private API proof workspace");
+    let root = fixture.path();
+    let crate_dir = root.join("crates/api-proof");
+    std::fs::create_dir_all(crate_dir.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/api-proof\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"api-proof\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let source = crate_dir.join("src/lib.rs");
+    let clean = "pub struct Surface;\n";
+    std::fs::write(&source, clean).unwrap();
+    let baseline = generate_public_api(root, "api-proof").expect("generate proof baseline");
+    assert!(baseline.contains("pub struct api_proof::Surface"));
+    assert!(
+        !baseline.contains("impl core::marker::Send for api_proof::Surface"),
+        "new baseline format must omit generated auto-trait implementations\n{baseline}"
+    );
+    std::fs::write(crate_dir.join("public-api.txt"), baseline).unwrap();
+    check_public_api(root, &["api-proof"]);
+
+    std::fs::write(
+        &source,
+        format!("{clean}pub fn planted_public_item() {{}}\n"),
+    )
+    .unwrap();
+    // catch_unwind keeps the expected failure inside the proof while the panic
+    // hook emits the guard's real diagnostic to stderr.
+    let failure = std::panic::catch_unwind(|| check_public_api(root, &["api-proof"]))
+        .expect_err("guard must reject the planted public function");
+    let diagnostic = failure.downcast_ref::<String>().expect("guard diagnostic");
+    assert!(diagnostic.contains("public-api conformance check failed:"));
+    assert!(diagnostic.contains("drift in api-proof:"));
+    assert!(diagnostic.contains("+1 additions"));
+    assert!(diagnostic.contains("+ pub fn api_proof::planted_public_item()"));
+    assert!(!diagnostic.contains("cargo public-api failed"));
+
+    std::fs::write(&source, clean).unwrap();
+    check_public_api(root, &["api-proof"]);
 }
 
 fn require_supported_public_api_version(output: &str) -> Result<(), String> {
@@ -249,7 +259,3 @@ fn diff_summary(expected: &str, actual: &str) -> String {
     }
     out
 }
-
-// Suppress unused warning when test is disabled.
-#[allow(dead_code)]
-fn _path_unused(_: &Path) {}

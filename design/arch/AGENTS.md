@@ -229,14 +229,15 @@ Regenerate an affected baseline in the implementing change-set with the
 canonical command:
 
 ```text
-cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crate>/public-api.txt
+cargo +nightly public-api -s --omit auto-derived-impls --omit auto-trait-impls -p <crate> > crates/<crate>/public-api.txt
 ```
 
 - Use cargo-public-api 0.52 or newer. The guard enforces the version floor and
   fails on missing tooling or drift; it does not skip.
 - The flags match the guard: one `-s` (`--simplified`) omits blanket impls;
-  `--omit auto-derived-impls` removes derived implementations. Generated
-  auto-trait implementations remain in the current format.
+  `--omit auto-derived-impls` removes derived implementations;
+  `--omit auto-trait-impls` removes generated auto-trait implementations.
+  Explicit `unsafe impl Send` and `Sync` rows remain.
 - Generate the production/default-feature surface, never with `test-support`.
 - Co-land changed source, corresponding rustdoc/BC contracts and the generated
   diff. Review checks the approved and actual surfaces; `arch` compares the
@@ -244,43 +245,24 @@ cargo +nightly public-api -s --omit auto-derived-impls -p <crate> > crates/<crat
   user at the phase checkpoint. A baseline is not a substitute for rustdoc
   currentness review.
 
-**Approved format change, not yet implemented:**
-[ACT-0955](../../sprints/actions/ACT-0955-omit-auto-traits-from-public-api-baselines.md)
-owns the coordinated addition of `--omit auto-trait-impls` to this command and
-the guard, with all seven baselines regenerated together. Until that migration,
-use the command above. Its order:
+**Auto-trait promises the baselines do not show.** No baseline holds a
+generated auto-trait row, so an auto-trait property that is a cross-crate
+promise has its own check.
 
-1. A compile fence lands first, in the platform crate's module tests. It is
-   test-only, changes no public item and leaves the platform baseline at +0.
-   It asserts the promise exactly as the generated rows state it today:
-   - `CLInt`, `CLBool`, `CLFloat` and `CLString` are `Send` and `Sync`.
-   - `CLAdt<T>`, `CLIO<CL>` and `CLOwned<T>` are `Send` when their parameter
-     is `Send`, and `Sync` when it is `Sync`. Each of the six implications is
-     a generic assertion over every parameter the type's own bound admits
-     (`CLAdtType`, `CLType`, `CLHeap`), not only over one instantiation.
-   - The instantiations a platform author writes hold both: `CLAdt<M>` for a
-     unit-struct marker `M`, `CLIO` over each scalar and over `CLAdt<M>`, and
-     `CLOwned` over `CLString` and over `CLAdt<M>`.
-
-   The promise is conditional because `CLAdtType` and `CLType` are public and
-   unsealed, and the parametric types carry their parameter as a field or a
-   `PhantomData`. Making it unconditional would be a new public bound or
-   explicit impl; no consumer needs one, since a marker is a unit struct and
-   every in-crate `CLType` is `Send + Sync`. A platform author's effect
-   closure must be `Send + Sync`, so it may capture these values only while
-   they are; no workspace crate is obliged to capture each of them. No other
-   generated auto-trait row is a cross-crate promise: the negative rows
-   follow from raw-pointer fields and no contract states them.
-2. The seven baselines are regenerated in the present format on the final
-   source tree. That diff carries the functional rows and is compared with
-   the batch record and the sprint's approval packets.
-3. The guard, `tests/AGENTS.md` and this section take the new flag together,
-   and the baselines are regenerated again from the same tree. This diff must
-   contain removals only, each a generated auto-trait row. Explicit
-   `unsafe impl Send` and `Sync` rows remain; the `PlatformFn` row test in
-   `tests/facade_pif_rows.rs` fails if they do not.
-4. The guard's detection proof is repeated in the new format: a planted
-   public item fails it and the clean tree passes.
-
-The format choice is approved. `arch` reports the step 2 diff and the step 3
-contraction to the user separately.
+- The platform crate's value types: the compile fence
+  `crates/cranelisp-platform/src/tests.rs::marshalling_types_are_send_and_sync_compile_fence`.
+  - `CLInt`, `CLBool`, `CLFloat` and `CLString` are `Send` and `Sync`.
+  - `CLAdt<T>`, `CLIO<CL>` and `CLOwned<T>` are `Send` when their parameter
+    is `Send`, and `Sync` when it is `Sync`, for every parameter the type's
+    own bound admits.
+  - The promise is conditional because `CLAdtType` and `CLType` are public
+    and unsealed, and the parametric types carry their parameter as a field
+    or a `PhantomData`. An unconditional promise would be a new public bound
+    or explicit impl, which no consumer needs: a platform author's effect
+    closure must be `Send + Sync`, so it captures these values only while
+    they are.
+- `PlatformFn`'s explicit `Send` and `Sync` rows:
+  `tests/facade_pif_rows.rs::platform_send_sync_claims_match_invariants`.
+- No other generated auto-trait row is a cross-crate promise. The negative
+  rows follow from raw-pointer fields and no contract states them. A change
+  that makes one a promise adds its check in the same change-set.

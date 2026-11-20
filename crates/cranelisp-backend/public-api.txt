@@ -9,13 +9,6 @@ impl cranelisp_backend::cache::linker::Linker
 pub fn cranelisp_backend::cache::linker::Linker::get_symbol(&self, &str) -> core::result::Result<*const u8, cranelisp_backend::error::LinkerError>
 pub fn cranelisp_backend::cache::linker::Linker::new() -> core::result::Result<Self, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::cache::linker::Linker::register_symbol(&mut self, &str, *const u8)
-impl core::marker::Freeze for cranelisp_backend::cache::linker::Linker
-impl core::marker::Send for cranelisp_backend::cache::linker::Linker
-impl core::marker::Sync for cranelisp_backend::cache::linker::Linker
-impl core::marker::Unpin for cranelisp_backend::cache::linker::Linker
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::linker::Linker
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::linker::Linker
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::linker::Linker
 pub mod cranelisp_backend::cache::manifest
 #[non_exhaustive] pub enum cranelisp_backend::cache::manifest::CacheInvalidReason
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::CompilerChanged
@@ -33,13 +26,6 @@ pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple::cached
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple::current: alloc::string::String
 impl core::fmt::Display for cranelisp_backend::cache::manifest::CacheInvalidReason
 pub fn cranelisp_backend::cache::manifest::CacheInvalidReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::Send for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::Sync for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
 #[non_exhaustive] pub struct cranelisp_backend::cache::manifest::CacheManifest
 pub cranelisp_backend::cache::manifest::CacheManifest::cache_format_version: u32
 pub cranelisp_backend::cache::manifest::CacheManifest::compiler_mtime: alloc::string::String
@@ -53,23 +39,9 @@ pub fn cranelisp_backend::cache::manifest::CacheManifest::new(&str) -> Self
 pub fn cranelisp_backend::cache::manifest::CacheManifest::new_for_host() -> Self
 pub fn cranelisp_backend::cache::manifest::CacheManifest::remove_module(&mut self, &cranelisp_types::newtype::ModuleFullPath)
 pub fn cranelisp_backend::cache::manifest::CacheManifest::upsert_module(&mut self, &cranelisp_types::newtype::ModuleFullPath, alloc::string::String, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>)
-impl core::marker::Freeze for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::Send for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::Sync for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheManifest
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheManifest
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
 #[non_exhaustive] pub struct cranelisp_backend::cache::manifest::CachedModuleRef
 pub cranelisp_backend::cache::manifest::CachedModuleRef::dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub cranelisp_backend::cache::manifest::CachedModuleRef::source_hash: alloc::string::String
-impl core::marker::Freeze for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::Send for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::Sync for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::Unpin for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CachedModuleRef
 pub fn cranelisp_backend::cache::manifest::binary_fingerprint() -> alloc::string::String
 pub fn cranelisp_backend::cache::manifest::check_manifest(&cranelisp_backend::cache::manifest::CacheManifest, &cranelisp_types::newtype::ModuleFullPath, &str, &std::collections::hash::map::HashMap<cranelisp_types::newtype::ModuleFullPath, alloc::string::String>) -> core::result::Result<bool, cranelisp_backend::cache::manifest::CacheInvalidReason>
 pub fn cranelisp_backend::cache::manifest::hash_source(&str) -> alloc::string::String
@@ -122,13 +94,6 @@ impl cranelisp_backend::cache::serialize::CacheStale
 pub fn cranelisp_backend::cache::serialize::CacheStale::reason(&self) -> &'static str
 impl core::fmt::Display for cranelisp_backend::cache::serialize::CacheStale
 pub fn cranelisp_backend::cache::serialize::CacheStale::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::Send for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::Sync for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::Unpin for cranelisp_backend::cache::serialize::CacheStale
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::serialize::CacheStale
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::serialize::CacheStale
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::serialize::CacheStale
 pub fn cranelisp_backend::cache::serialize::load_meta(&std::path::Path) -> core::result::Result<cranelisp_types::module::SymbolTable, cranelisp_backend::cache::serialize::CacheStale>
 pub fn cranelisp_backend::cache::serialize::write_meta<C, L>(&std::path::Path, &cranelisp_types::module::SymbolTable<C, L>, u32) -> core::result::Result<(), cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub struct cranelisp_backend::cache::CachedModule
@@ -139,13 +104,6 @@ pub cranelisp_backend::cache::CachedModule::symbol_table: cranelisp_types::modul
 impl cranelisp_backend::cache::CachedModule
 pub fn cranelisp_backend::cache::CachedModule::imported_modules(&self) -> std::collections::hash::set::HashSet<cranelisp_types::newtype::ModuleFullPath>
 pub fn cranelisp_backend::cache::CachedModule::symbol_table(&self) -> &cranelisp_types::module::SymbolTable
-impl core::marker::Freeze for cranelisp_backend::cache::CachedModule
-impl core::marker::Send for cranelisp_backend::cache::CachedModule
-impl core::marker::Sync for cranelisp_backend::cache::CachedModule
-impl core::marker::Unpin for cranelisp_backend::cache::CachedModule
-impl core::marker::UnsafeUnpin for cranelisp_backend::cache::CachedModule
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::CachedModule
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::CachedModule
 pub const cranelisp_backend::cache::BUILD_ID: &str
 pub const cranelisp_backend::cache::CACHE_SCHEMA_VERSION: u32
 pub fn cranelisp_backend::cache::load_cached_object(&mut cranelisp_backend::cache::linker::Linker, &cranelisp_backend::cache::CachedModule) -> core::result::Result<std::collections::hash::map::HashMap<cranelisp_types::lifecycle::CallableTarget, *const u8>, cranelisp_types::error::CranelispError>
@@ -162,11 +120,6 @@ impl core::fmt::Debug for cranelisp_backend::code::Code
 pub fn cranelisp_backend::code::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cranelisp_backend::code::Code
 impl core::marker::Sync for cranelisp_backend::code::Code
-impl core::marker::Freeze for cranelisp_backend::code::Code
-impl core::marker::Unpin for cranelisp_backend::code::Code
-impl core::marker::UnsafeUnpin for cranelisp_backend::code::Code
-impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::code::Code
-impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::code::Code
 pub mod cranelisp_backend::error
 #[non_exhaustive] pub enum cranelisp_backend::error::CompilationError
 pub cranelisp_backend::error::CompilationError::CodegenFailed
@@ -186,13 +139,6 @@ pub fn cranelisp_types::error::CranelispError::from(cranelisp_backend::error::Co
 impl core::error::Error for cranelisp_backend::error::CompilationError
 impl core::fmt::Display for cranelisp_backend::error::CompilationError
 pub fn cranelisp_backend::error::CompilationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::error::CompilationError
-impl core::marker::Send for cranelisp_backend::error::CompilationError
-impl core::marker::Sync for cranelisp_backend::error::CompilationError
-impl core::marker::Unpin for cranelisp_backend::error::CompilationError
-impl core::marker::UnsafeUnpin for cranelisp_backend::error::CompilationError
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::CompilationError
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::CompilationError
 #[non_exhaustive] pub enum cranelisp_backend::error::LinkerError
 pub cranelisp_backend::error::LinkerError::RelocationFailed
 pub cranelisp_backend::error::LinkerError::RelocationFailed::cause: alloc::string::String
@@ -202,48 +148,20 @@ pub cranelisp_backend::error::LinkerError::SymbolNotFound::name: cranelisp_types
 impl core::error::Error for cranelisp_backend::error::LinkerError
 impl core::fmt::Display for cranelisp_backend::error::LinkerError
 pub fn cranelisp_backend::error::LinkerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::error::LinkerError
-impl core::marker::Send for cranelisp_backend::error::LinkerError
-impl core::marker::Sync for cranelisp_backend::error::LinkerError
-impl core::marker::Unpin for cranelisp_backend::error::LinkerError
-impl core::marker::UnsafeUnpin for cranelisp_backend::error::LinkerError
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::LinkerError
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::LinkerError
 pub mod cranelisp_backend::exe
 pub struct cranelisp_backend::exe::PlatformLayoutCheck
 pub cranelisp_backend::exe::PlatformLayoutCheck::expected_hash: alloc::string::String
 pub cranelisp_backend::exe::PlatformLayoutCheck::name: alloc::string::String
-impl core::marker::Freeze for cranelisp_backend::exe::PlatformLayoutCheck
-impl core::marker::Send for cranelisp_backend::exe::PlatformLayoutCheck
-impl core::marker::Sync for cranelisp_backend::exe::PlatformLayoutCheck
-impl core::marker::Unpin for cranelisp_backend::exe::PlatformLayoutCheck
-impl core::marker::UnsafeUnpin for cranelisp_backend::exe::PlatformLayoutCheck
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::exe::PlatformLayoutCheck
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::exe::PlatformLayoutCheck
 pub mod cranelisp_backend::got_observer
 #[non_exhaustive] #[repr(u8)] pub enum cranelisp_backend::got_observer::GotEventTag
 pub cranelisp_backend::got_observer::GotEventTag::JitWrite
 pub cranelisp_backend::got_observer::GotEventTag::LinkerWrite
 pub cranelisp_backend::got_observer::GotEventTag::Redefinition
-impl core::marker::Freeze for cranelisp_backend::got_observer::GotEventTag
-impl core::marker::Send for cranelisp_backend::got_observer::GotEventTag
-impl core::marker::Sync for cranelisp_backend::got_observer::GotEventTag
-impl core::marker::Unpin for cranelisp_backend::got_observer::GotEventTag
-impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEventTag
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEventTag
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEventTag
 #[non_exhaustive] pub enum cranelisp_backend::got_observer::GotProvenance
 pub cranelisp_backend::got_observer::GotProvenance::Jit
 pub cranelisp_backend::got_observer::GotProvenance::Jit::jit_addr: usize
 pub cranelisp_backend::got_observer::GotProvenance::Linker
 pub cranelisp_backend::got_observer::GotProvenance::Linker::linker_addr: usize
-impl core::marker::Freeze for cranelisp_backend::got_observer::GotProvenance
-impl core::marker::Send for cranelisp_backend::got_observer::GotProvenance
-impl core::marker::Sync for cranelisp_backend::got_observer::GotProvenance
-impl core::marker::Unpin for cranelisp_backend::got_observer::GotProvenance
-impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotProvenance
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotProvenance
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotProvenance
 #[non_exhaustive] pub struct cranelisp_backend::got_observer::GotEvent
 pub cranelisp_backend::got_observer::GotEvent::module: cranelisp_types::newtype::ModuleFullPath
 pub cranelisp_backend::got_observer::GotEvent::provenance: cranelisp_backend::got_observer::GotProvenance
@@ -252,11 +170,6 @@ pub cranelisp_backend::got_observer::GotEvent::slot: usize
 pub cranelisp_backend::got_observer::GotEvent::symbol: cranelisp_types::newtype::Symbol
 impl core::marker::Send for cranelisp_backend::got_observer::GotEvent
 impl core::marker::Sync for cranelisp_backend::got_observer::GotEvent
-impl core::marker::Freeze for cranelisp_backend::got_observer::GotEvent
-impl core::marker::Unpin for cranelisp_backend::got_observer::GotEvent
-impl core::marker::UnsafeUnpin for cranelisp_backend::got_observer::GotEvent
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::got_observer::GotEvent
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::got_observer::GotEvent
 pub fn cranelisp_backend::got_observer::register_got_observer(core::option::Option<cranelisp_backend::got_observer::GotObserver>)
 pub type cranelisp_backend::got_observer::GotObserver = fn(cranelisp_backend::got_observer::GotEventTag, &cranelisp_backend::got_observer::GotEvent)
 pub mod cranelisp_backend::heap
@@ -266,13 +179,6 @@ pub cranelisp_backend::heap::HeapCategory::Mixed
 pub cranelisp_backend::heap::HeapCategory::NeverHeap
 impl cranelisp_backend::heap::HeapCategory
 pub fn cranelisp_backend::heap::HeapCategory::classify<C, L>(&cranelisp_types::concrete::ConcreteType, core::option::Option<&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>>) -> cranelisp_backend::heap::HeapCategory where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
-impl core::marker::Freeze for cranelisp_backend::heap::HeapCategory
-impl core::marker::Send for cranelisp_backend::heap::HeapCategory
-impl core::marker::Sync for cranelisp_backend::heap::HeapCategory
-impl core::marker::Unpin for cranelisp_backend::heap::HeapCategory
-impl core::marker::UnsafeUnpin for cranelisp_backend::heap::HeapCategory
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::heap::HeapCategory
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::heap::HeapCategory
 pub mod cranelisp_backend::jit
 pub struct cranelisp_backend::jit::Jit
 impl cranelisp_backend::jit::Jit
@@ -281,13 +187,6 @@ pub fn cranelisp_backend::jit::Jit::jit_module(&mut self) -> &mut impl cranelift
 pub fn cranelisp_backend::jit::Jit::new<C, L>(&cranelisp_types::module::SymbolTables<C, L>) -> core::result::Result<Self, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl core::ops::drop::Drop for cranelisp_backend::jit::Jit
 pub fn cranelisp_backend::jit::Jit::drop(&mut self)
-impl !core::marker::Freeze for cranelisp_backend::jit::Jit
-impl core::marker::Send for cranelisp_backend::jit::Jit
-impl !core::marker::Sync for cranelisp_backend::jit::Jit
-impl core::marker::Unpin for cranelisp_backend::jit::Jit
-impl core::marker::UnsafeUnpin for cranelisp_backend::jit::Jit
-impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::jit::Jit
-impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::jit::Jit
 pub mod cranelisp_backend::schema
 pub fn cranelisp_backend::schema::compute_layout_hash<C, L>(&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::schema::generate_schema<C, L>(&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &[cranelisp_types::types::Type]) -> alloc::string::String where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
@@ -302,11 +201,6 @@ impl core::fmt::Debug for cranelisp_backend::code::Code
 pub fn cranelisp_backend::code::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cranelisp_backend::code::Code
 impl core::marker::Sync for cranelisp_backend::code::Code
-impl core::marker::Freeze for cranelisp_backend::code::Code
-impl core::marker::Unpin for cranelisp_backend::code::Code
-impl core::marker::UnsafeUnpin for cranelisp_backend::code::Code
-impl !core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::code::Code
-impl !core::panic::unwind_safe::UnwindSafe for cranelisp_backend::code::Code
 #[non_exhaustive] pub enum cranelisp_backend::CompilationError
 pub cranelisp_backend::CompilationError::CodegenFailed
 pub cranelisp_backend::CompilationError::CodegenFailed::cause: alloc::string::String
@@ -325,13 +219,6 @@ pub fn cranelisp_types::error::CranelispError::from(cranelisp_backend::error::Co
 impl core::error::Error for cranelisp_backend::error::CompilationError
 impl core::fmt::Display for cranelisp_backend::error::CompilationError
 pub fn cranelisp_backend::error::CompilationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::error::CompilationError
-impl core::marker::Send for cranelisp_backend::error::CompilationError
-impl core::marker::Sync for cranelisp_backend::error::CompilationError
-impl core::marker::Unpin for cranelisp_backend::error::CompilationError
-impl core::marker::UnsafeUnpin for cranelisp_backend::error::CompilationError
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::CompilationError
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::CompilationError
 #[non_exhaustive] pub enum cranelisp_backend::LinkerError
 pub cranelisp_backend::LinkerError::RelocationFailed
 pub cranelisp_backend::LinkerError::RelocationFailed::cause: alloc::string::String
@@ -341,45 +228,17 @@ pub cranelisp_backend::LinkerError::SymbolNotFound::name: cranelisp_types::newty
 impl core::error::Error for cranelisp_backend::error::LinkerError
 impl core::fmt::Display for cranelisp_backend::error::LinkerError
 pub fn cranelisp_backend::error::LinkerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for cranelisp_backend::error::LinkerError
-impl core::marker::Send for cranelisp_backend::error::LinkerError
-impl core::marker::Sync for cranelisp_backend::error::LinkerError
-impl core::marker::Unpin for cranelisp_backend::error::LinkerError
-impl core::marker::UnsafeUnpin for cranelisp_backend::error::LinkerError
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::error::LinkerError
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::error::LinkerError
 pub struct cranelisp_backend::CodegenTarget<'a>
 impl<'a> cranelisp_backend::CodegenTarget<'a>
 pub fn cranelisp_backend::CodegenTarget<'a>::new(&'a cranelisp_types::lifecycle::CallableTarget, &'a alloc::collections::btree::set::BTreeSet<cranelisp_types::newtype::ModuleFullPath>) -> Self
-impl<'a> core::marker::Freeze for cranelisp_backend::CodegenTarget<'a>
-impl<'a> core::marker::Send for cranelisp_backend::CodegenTarget<'a>
-impl<'a> core::marker::Sync for cranelisp_backend::CodegenTarget<'a>
-impl<'a> core::marker::Unpin for cranelisp_backend::CodegenTarget<'a>
-impl<'a> core::marker::UnsafeUnpin for cranelisp_backend::CodegenTarget<'a>
-impl<'a> core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::CodegenTarget<'a>
-impl<'a> core::panic::unwind_safe::UnwindSafe for cranelisp_backend::CodegenTarget<'a>
 #[non_exhaustive] pub struct cranelisp_backend::CompilationArtifacts
 pub cranelisp_backend::CompilationArtifacts::clif_ir: alloc::string::String
 pub cranelisp_backend::CompilationArtifacts::code_size: usize
 pub cranelisp_backend::CompilationArtifacts::compile_duration: core::time::Duration
 pub cranelisp_backend::CompilationArtifacts::drop_glues: std::collections::hash::map::HashMap<cranelisp_types::concrete::ConcreteType, cranelisp_backend::DropGlueArtifact>
-impl core::marker::Freeze for cranelisp_backend::CompilationArtifacts
-impl core::marker::Send for cranelisp_backend::CompilationArtifacts
-impl core::marker::Sync for cranelisp_backend::CompilationArtifacts
-impl core::marker::Unpin for cranelisp_backend::CompilationArtifacts
-impl core::marker::UnsafeUnpin for cranelisp_backend::CompilationArtifacts
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::CompilationArtifacts
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::CompilationArtifacts
 #[non_exhaustive] pub struct cranelisp_backend::DropGlueArtifact
 pub cranelisp_backend::DropGlueArtifact::jit_address: core::option::Option<usize>
 pub cranelisp_backend::DropGlueArtifact::symbol: cranelisp_types::newtype::LinkerSymbol
-impl core::marker::Freeze for cranelisp_backend::DropGlueArtifact
-impl core::marker::Send for cranelisp_backend::DropGlueArtifact
-impl core::marker::Sync for cranelisp_backend::DropGlueArtifact
-impl core::marker::Unpin for cranelisp_backend::DropGlueArtifact
-impl core::marker::UnsafeUnpin for cranelisp_backend::DropGlueArtifact
-impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::DropGlueArtifact
-impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::DropGlueArtifact
 pub trait cranelisp_backend::CodeFinalizer
 pub fn cranelisp_backend::CodeFinalizer::define_module_got_data(&mut self, &str, usize, &[(usize, cranelift_module::module::FuncId)]) -> core::result::Result<(), cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::CodeFinalizer::finalize_for_code_read(&mut self) -> core::result::Result<(), cranelisp_types::error::CranelispError>

@@ -747,7 +747,7 @@ single-constructor value classifies as a heap value. The binary's display walk
 ## Approved changes not yet in source (S124)
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
-decided change that no phase checkpoint has reported yet. The Phase 5 checkpoint of
+decided change that no phase checkpoint has reported yet. The Phase 5 checkpoints of
 2026-11-20 reported every other S124 row and removed it; those rows' deltas are in the
 [S124 packet](../../sprints/s124-api-packet.md), the
 [S123 packet](../../sprints/s123-api-packet.md) Part B and Git. A design that needs a
@@ -756,31 +756,32 @@ public change outside these rows stops and returns to `arch`.
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
-| K11-a | Baseline format omits generated auto-trait rows; seven baselines regenerate together | all seven guarded crates | the public-API guard; `tests/AGENTS.md`; a compile fence in the platform crate's module tests | removals only | user, 2026-11-16 | [baseline-diff discipline](AGENTS.md#baseline-diff-discipline-sprint-67-close) |
-| B16 | `CallableArm::<C>::template_owner(&self) -> Option<&FQSymbol>` added; `template_module()` keeps its signature and meaning and derives from it | types (producer) | backend trace discovery reads it for an instance's frame name: a new consumer edge. No schema or ABI effect | types +1; backend +0; others +0 | `arch`, 2026-11-20; build order below (ACT-1091) | [below](#an-instances-template-owner-row-b16) |
 
-**Phase 5 checkpoint, present format (2026-11-20).** The seven baselines were regenerated
-at `1238b31c` with cargo-public-api 0.52.0 and the
-[canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close). Every line of the
-diff lies in an approved row. The user's confirmation of this diff precedes K11-a.
+**Phase 5 checkpoints (2026-11-20).** Each used cargo-public-api 0.52.0 and the
+[canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) of its format.
 
-| Crate | Regenerated diff | Expected when the rows were counted |
-|---|---|---|
-| types | +17, −9, 3 changed | the same |
-| backend | +18, −182, 2 changed | +17: row B10-C2 counted the type, `new` and seven generated auto-trait rows, and omitted the line `impl<'a> cranelisp_backend::CodegenTarget<'a>` that the listing prints above an inherent method |
-| intrinsics | +33, −6, 1 changed | the same |
-| typecheck, frontend, primitives, platform | +0 | the same |
+- **Functional rows, old format (`ee65d9aa`).** Every line lay in an approved row. The
+  user confirmed the diff on 2026-11-20.
+- **Row B16 (`c9f573e0`).** The types baseline gained the one approved line, in the old
+  format. Every other baseline moved +0.
+- **Format contraction, row K11-a.** The seven baselines were regenerated from one tree
+  with `--omit auto-trait-impls`. The diff adds and changes no line. Each removed line
+  is a generated implementation of `Send`, `Sync`, `Freeze`, `Unpin`, `UnsafeUnpin`,
+  `UnwindSafe` or `RefUnwindSafe`, positive or negative.
 
-**K11-a.** `test` gives the guard and `tests/AGENTS.md` the flag `--omit auto-trait-impls`;
-`arch` gives it to the canonical command and regenerates the seven baselines; the guard's
-detection proof is repeated. The guard fails between the halves, so they are one commit
-from one uncommitted tree. The diff holds removals only, each a generated auto-trait row.
-Counted by pattern in the committed baselines: types −973, backend −147, intrinsics −91,
-typecheck −70, frontend −14, platform −196, primitives 0.
+  | Crate | Lines removed | Distinct lines | Explicit `Send`/`Sync` rows kept |
+  |---|---|---|---|
+  | types | 971 | 971 | 2 (`GotTable`) |
+  | backend | 141 | 122 | 6 (`Code` at two paths, `GotEvent`) |
+  | intrinsics | 91 | 70 | 0 |
+  | typecheck | 70 | 70 | 0 |
+  | frontend | 14 | 7 | 0 |
+  | platform | 194 | 194 | 2 (`PlatformFn`) |
+  | primitives | 0 | 0 | 0 |
 
-K11-a follows row B16. The types baseline takes B16's one line in the present format, in
-the change-set that adds the method, so K11-a's diff stays removals only and `arch`
-reports that line to the user separately.
+  A baseline lists a re-exported item at each of its paths, so lines exceed distinct
+  lines where a crate re-exports a type; the guard's drift summary counts distinct
+  lines.
 
 ### An instance's template owner (row B16)
 
@@ -788,7 +789,8 @@ reports that line to the user separately.
   alone. The backend spells frame names
   ([trace codegen §1.4](../backend/trace-codegen.md#14-a-frames-name)), and no published
   projection returns the template's name: `template_module()` returns its module only.
-- **Delta, types.** One method on `CallableArm<C>`, beside `template_module()`:
+- **Contract, types (in source, `c9f573e0`).** One method on `CallableArm<C>`, beside
+  `template_module()`:
 
   ```rust
   pub fn template_owner(&self) -> Option<&FQSymbol>
@@ -799,20 +801,15 @@ reports that line to the user separately.
   - The value is the declaration that owns the link's template: the template's own
     qualified name for a directly named template, and the overloaded or macro declaration
     for an arm or clause of one. It reads the recorded link and derives nothing.
-  - `template_module()` becomes `template_owner().map(|owner| &owner.module)`. Its
-    signature, rustdoc meaning and three consumers are unchanged.
-  - Inside types the method reads the existing private `callable_target_owner`, so the
-    crate keeps one destructure of a target's owner.
-- **Consumer.** Backend trace discovery names an instance's frame by the returned
-  `FQSymbol`'s `Display`, and an authored entry by its covered module and table key as
-  today. It parses no instance key
+  - `template_module()` is `template_owner().map(|owner| &owner.module)`.
+  - Inside types the method reads the private `callable_target_owner`, so the crate
+    keeps one destructure of a target's owner.
+- **Consumer (in source, `2ffc84d3`).** Backend trace discovery names an instance's
+  frame by the returned `FQSymbol`'s `Display`, and an authored entry by its covered
+  module and table key. It parses no instance key
   ([Principle 24](principles/24-resolve-once.md)).
-- **Expected baseline.** Types gains the one line
-  `pub fn cranelisp_types::CallableArm<C>::template_owner(&self) -> core::option::Option<&cranelisp_types::FQSymbol>`
-  under the existing `impl<C: cranelisp_types::CodeStore> cranelisp_types::CallableArm<C>`
-  header. Every other baseline moves +0.
 - **Schema and ABI.** None. No serialised shape or meaning changes, so no
-  `CACHE_SCHEMA_VERSION` bump is owed.
+  `CACHE_SCHEMA_VERSION` bump applies.
 - **The three questions.**
   - *Bounded context:* yes. Types owns the instance link and its projections
     ([Principle 15](principles/15-facade-types-live-with-behavior.md)); no dependency is
@@ -830,11 +827,6 @@ reports that line to the user separately.
 - **Not chosen.** The backend destructuring `minted_from` and `CallableTarget` itself. No
   item changes, but backend production gains a consumer edge to `InstanceLink` and a
   second copy of the projection types already owns.
-- **Build order.** Types: the method, its rustdoc, a module row (an instance of a directly
-  named template, an instance of an overload arm, an authored arm answering `None`, and
-  `template_module()` agreeing with it) and the regenerated types baseline, in one
-  change-set. Then the backend's module row, RED first, and its correction
-  ([trace codegen §1.4](../backend/trace-codegen.md#14-a-frames-name)).
 
 ### The unattributed codegen failure (row B15)
 
