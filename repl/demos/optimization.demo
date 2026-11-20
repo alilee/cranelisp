@@ -1,7 +1,7 @@
 ; Under the hood — what the optimizer does, and where it stops
 ; A guided read of the Cranelift IR the compiler actually emits. Each step
 ; defines a tiny function and shows its /clif — the real IR, no filtering.
-; Two acts: the wins the optimizer lands today, then the frontier it stops at.
+; Follow scalar loops, heap records, vector updates and owned arguments.
 
 ; Everything here is free-standing on primitives — bare ops, no prelude sugar —
 ; so the IR isolates exactly the optimization on display.
@@ -10,7 +10,7 @@
 
 
 ; ─────────────────────────────────────────────────────────────────────
-; ACT 1 — THE WINS
+; SCALAR LOOPS AND HEAP VALUES
 ; ─────────────────────────────────────────────────────────────────────
 
 ; 1. Scalars in a loop live in registers, not memory.
@@ -25,18 +25,15 @@
 ; No allocation appears in this function.
 
 
-; 2. A single-field wrapper vanishes into a bare word.
-; A one-constructor, one-scalar-field ADT carries no more information than its
-; field, so the compiler represents it AS its field — no heap box, no header:
+; 2. A single-field record has a heap representation.
+; Build a wrapper and immediately match it to read its scalar field:
 
 (deftype Cell (MkCell [:Int v]))
 (defn unwrap [:Int n] (let [c (MkCell n)] (match c [(MkCell v) v])))
 /clif unwrap
 
-; Read the IR: `(MkCell n)` needs no allocation. The argument flows through
-; block parameters and returns. No store or load — the value stays in a
-; register. Hold onto
-; this: it is exactly single-field that gets this treatment (see Act 2).
+; Read the IR: the constructor calls the allocator and stores its field.
+; Matching loads that field and releases the record before returning the Int.
 
 
 ; 3. Mutation happens in place when the value is unique.
@@ -66,96 +63,18 @@
 ; evidence that reading a heap value has no reference-count cost.
 
 
-; 5. A small fixed record that never escapes goes on the stack, not the heap.
-; When a value materialises (two constructors force a real object), is all
-; scalar, and does not escape its frame, the backend puts it in a stack slot
-; instead of calling the allocator:
-
-(deftype Rect (Portrait [:Int portrait-w :Int portrait-h]) (Landscape [:Int landscape-w :Int landscape-h]))
-(defn area [:Int a :Int b :Int flip] (let [r (if (eq-i64 flip 0) (Portrait a b) (Landscape a b))] (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)])))
-/clif area
-
-; Read the IR: two `explicit_slot 40` declarations reserve one slot per arm,
-; addressed by `stack_addr`. Each header stores the immortal refcount
-; `0x4000_0000_0000_0000`. Each match arm loads fields and calls typed release;
-; the immortal header keeps that release from freeing stack storage.
-; There is no allocator call. Fields still use stores and loads at +24/+32:
-; stack MEMORY. That detail is the whole story of Act 2.
-
-
-; ─────────────────────────────────────────────────────────────────────
-; ACT 2 — THE FRONTIER
-; ─────────────────────────────────────────────────────────────────────
-
-; 6. A multi-field record is never scalar-replaced into registers.
-; pair-sum builds a two-field record whose constructor is statically known,
-; that never escapes, in a straight-line (non-recursive) function — the BEST
-; possible case. Compare it to `unwrap` from Act 1:
+; 5. A two-field record follows the same heap path.
+; Both fields are scalar, and the record stays within this function:
 
 (deftype Pt (MkPt [:Int x :Int y]))
 (defn pair-sum [:Int n] (let [p (MkPt n (add-i64 n 1))] (match p [(MkPt x y) (add-i64 x y)])))
 /clif pair-sum
 
-; Read the IR: even here the record lands in a stack slot (`explicit_slot 40`,
-; `stack_addr`), and the two fields are written and read back through MEMORY
-; (`store v+24`, `store v+32`, then `load v+24`, `load v+32`). The single-field
-; Cell became a register; this two-field Pt does not. There is no multi-field
-; SSA-decomposition (SROA) — value-flattening is single-field-only today. A
-; stack slot is memory, not registers.
+; Read the IR: allocation, field stores, field loads, and a typed release.
+; Both Cell and Pt are heap records. Neither becomes a stack record or a set
+; of scalar block parameters merely because it is local to this function.
 
-
-; 7. Put that record in a loop and it goes to the heap.
-; The stack path is declined for ANY self-recursive function (a slot reused
-; each iteration would clobber the live loop-carried value). Since every loop
-; in Cranelisp is a self-recursive function, no loop body can stack-allocate:
-
-(defn sum-areas [:Int k :Int acc] (if (eq-i64 k 0) acc (let [r (if (eq-i64 (sub-i64 k (mul-i64 (div-i64 k 2) 2)) 0) (Portrait k k) (Landscape k k))] (sum-areas (sub-i64 k 1) (add-i64 acc (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)]))))))
-/clif sum-areas
-
-; Read the IR: the same Rect that stack-allocated in `area` now passes a
-; 24-byte payload size to an allocator call in each constructor arm. Each
-; match arm calls typed release before the loop back-edge. The self-call
-; disqualifies this local from stack placement even though it does not escape.
-
-
-; 8. A record with a heap field stays on the heap regardless.
-; The stack path requires an all-scalar payload. One String field (itself a
-; heap value) disqualifies the whole aggregate:
-
-(deftype Tagged (TA [:Int ta-n :String ta-s]) (TB [:Int tb-n :String tb-s]))
-(defn label [:Int n :String s :Int flip] (let [t (if (eq-i64 flip 0) (TA n s) (TB n s))] (match t [(TA k u) k (TB k u) k])))
-/clif label
-
-; Read the IR: each arm allocates on the heap and stores the owned String
-; pointer at +32. Matching calls typed release on the aggregate; that release
-; also owns the unused String field. There is no inline increment here:
-; ownership moves into the aggregate. No stack slot holds this record.
-
-
-; 9. A Vec local is heap-allocated — its size is dynamic.
-; Even read-only and non-escaping, a Vec is a dynamically-sized buffer, so it
-; cannot live in a fixed stack slot:
-
-(defn vsum [:Int n] (let [v (vec n n n)] (vec-get v 0)))
-/clif vsum
-
-; Read the IR: an allocator `call` for the backing buffer, fields stored
-; through the returned pointer, and an `atomic_rmw sub` + free on the way out.
-
-
-; ─────────────────────────────────────────────────────────────────────
-; WHAT THE IR SAYS
-; ─────────────────────────────────────────────────────────────────────
-; Loop scalars ride registers, single-field wrappers flatten to words,
-; dynamically unique writes mutate in place, and small escape-free scalar
-; records dodge the allocator via a stack slot. Heap arguments are consumed
-; uniformly; last-use moves avoid an extra retain, while typed releases
-; can carry reference-count work behind calls.
-;
-; The frontier is register-residency for AGGREGATES. A multi-field record never
-; decomposes into SSA registers — the best case is a stack SLOT, which is
-; memory; and that path is itself declined inside any loop (self-recursion) and
-; for any heap-field or dynamically-sized value. The missing piece is
-; multi-field SSA-decomposition (SROA / value-flattening beyond one word). That
-; would let more aggregate locals stay in registers. The IR shown here
-; demonstrates the current limits; it does not promise a future compiler tier.
+; The emitted IR exposes where work happens: tail calls become loop jumps,
+; vector uniqueness selects an update path, and owned records are released
+; after their fields are read. Calls can carry allocation and release work
+; that would otherwise be easy to miss when reading only inline instructions.

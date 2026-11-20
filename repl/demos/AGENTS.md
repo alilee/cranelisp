@@ -62,11 +62,8 @@ recovery from it; the permanent e2e guards carry that evidence.
 `optimization.demo` (un-numbered, so it sorts *after* the numbered arc in `--list`)
 is a compiler-internals demo, not a language-capability one: it steps through a
 series of tiny compilations and their `/clif` output to show what the optimizer
-does today (loop scalars → registers, single-field ADTs → words, mutate-in-place,
-owned argument consumption, escape→stack) and where it stops (multi-field aggregates never
-register-promote; gate 3 declines the stack path in loops; heap-field and Vec
-locals stay on the heap). It is deliberately outside the "demonstrate the language,
-not the changelog" arc — its subject is the IR, not a language feature. Each
+does today: tail-recursive scalar loops, heap records, vector copy-on-write
+and owned argument consumption. Each
 step's narration sits beside the `/clif` output it describes, so replay is the
 verification: read every narrated IR claim against the output above it. A
 mismatch is a narration fix when the IR change was intended and a defect
