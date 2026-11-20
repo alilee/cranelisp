@@ -662,3 +662,8 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   but we need to stabilise what we have so far before we expand. let's
   consolidate the documentation on no-multi for now, so it is consistent."
   `spec` consolidates; other carriers are reported to their owners.
+- **User ruling on S124-Q12 (2026-11-21).** Splicing needs no library:
+  "agreed - all language features should be self-sustaining and there should
+  be builtins or primitives for any required helpers." The general statement
+  is a principle, not only an answer about `sconcat`; `spec` records both and
+  lists any other language feature that depends on a library helper.
