@@ -377,7 +377,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name by its template (built, row B16, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), and constructor field types paired by declared parameter (built, row B14, §3). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name by its template (built, row B16, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), constructor field types paired by declared parameter (built, row B14, §3), and the root's result (designed, row B17, §4). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
@@ -386,14 +386,16 @@ The backend is S124's focus module (`sprints/METHOD.md` §Delivery
 principles): it exits with no failing test attributed to it, no build warning
 and no open review finding. This section lists every S124 backend item still
 open, its design and what it waits on. A row leaves when its change lands.
-Verified against source at `39db1bb1` on 2026-11-20.
+Verified against source at `4a58af99` on 2026-11-20.
 
-No backend design item is open. Each row of this section landed and is
-listed under *Landed in S124* below.
+| Item | Change-set | Design | Waits on | Evidence |
+|---|---|---|---|---|
+| B17 (ACT-1094, step 4) | The form's closing call passes the body's value and its descriptor; one tail for both paths; the value released after it by type; `CACHE_SCHEMA_VERSION` 35 to 36 | [trace codegen](trace-codegen.md) §4 | `dev`(intrinsics)'s step 3 ([interfaces](../arch/interfaces.md#the-roots-result-row-b17)) | Five module rows there, written first; T-TRACE-ROOT is `qa`'s |
 
-Every S124 public row that touched the backend is built. B16 (`c9f573e0`)
-landed after the Phase 5 checkpoint (`ee65d9aa`); its report is `arch`'s
+B16 (`c9f573e0`) landed after the Phase 5 checkpoint (`ee65d9aa`); its
+report is `arch`'s
 ([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16)).
+B17 changes no backend public item.
 
 **What stays RED, and is not the backend's.** `qa`'s standing state at
 `ee65d9aa` attributes no committed failing test to the backend

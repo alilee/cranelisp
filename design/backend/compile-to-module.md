@@ -531,8 +531,16 @@ call is GOT-indirect, including calls within a module").
   AArch64 ELF form has run, on the Linux host; the x86_64 and Mach-O forms
   are written and unexercised. *Falsifier:* the detection row failing on an
   x86_64 or macOS host.
-- *Limit, JIT.* An object cannot show a JIT-only emission path; whether one
-  exists is still `dev`'s to report.
+- *No JIT-only emission path.* `dev` reported none, and source agrees at
+  `4a58af99`: no code generation under `compiler/` branches on JIT versus
+  object mode. Every emitter is generic over `M: Module`, and the mentions of
+  either module there are comments. The modes differ below emission:
+  Cranelift lowers a `global_value` by the target's PIC flag, and the JIT's
+  module compiles every call far
+  ([JIT/object convergence](jit-object-convergence.md) §3), which changes a
+  call's reach, not its target. The object scan therefore sees every call
+  `compiler/` emits. *Falsifier:* a mode test, or a `Module`-specific
+  emitter, under `compiler/`.
 
 ## 13. Evidence
 
