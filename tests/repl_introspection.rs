@@ -5452,16 +5452,100 @@ fn s124_1089_expression_control() {
     );
 }
 
-// spec: repl/spec.md §3 — T-TYPE-DEFN
+fn s124_definition_query_result(setup: &str, form: &str) -> ((bool, bool), String) {
+    let out = s124_type_session(&format!("{setup}\n\"abc\"\n/type {form}\n")).assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    let previous = lines
+        .iter()
+        .position(|s| s == ":primitives/String \"abc\"")
+        .expect("preceding expression must run");
+    let response = &lines[previous + 1..];
+    let error = regex::Regex::new(r"(?i)^error: [a-z ]+ at [0-9]+\.\.[0-9]+: .+").unwrap();
+    (
+        (
+            response.iter().any(|s| error.is_match(s)),
+            response.iter().any(|s| s.starts_with(':')),
+        ),
+        format!("{form}: {}{}", out.stdout, out.stderr),
+    )
+}
+
+fn s124_definition_query_errors(setup: &str, form: &str) {
+    let (clauses, details) = s124_definition_query_result(setup, form);
+    assert_eq!(
+        clauses,
+        (true, false),
+        "query must report a located error and no type: {details}"
+    );
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR
 // defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
 #[test]
-fn s124_1089_definition_reports_its_function_type() {
-    let out = s124_type_session("\"abc\"\n/type (defn q [:Int n] n)\n").assert_ok();
-    assert!(
-        repl_output_lines(&out.stdout)
+fn s124_type_err_defn() {
+    s124_definition_query_errors("", "(defn q [:Int n] n)");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_err_deftype() {
+    s124_definition_query_errors("", "(deftype T A B)");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_err_deftrait() {
+    s124_definition_query_errors("", "(deftrait Sz (sz [self] Int))");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_err_impl() {
+    s124_definition_query_errors(
+        "(deftrait Sz (sz [self] Int))\n(deftype T A B)",
+        "(impl Sz T (defn sz [self] 7))",
+    );
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR guards
+#[test]
+fn s124_type_err_nonvalue_guards() {
+    let mut failures = Vec::new();
+    for form in [
+        "(defmacro mm [x] x)",
+        "(import [primitives [add-i64]])",
+        "(export [primitives [add-i64]])",
+        "(mod foo)",
+        "(platform stdio)",
+    ] {
+        let (clauses, details) = s124_definition_query_result("", form);
+        if clauses != (true, false) {
+            failures.push(format!("{clauses:?}: {details}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-ERR expression control
+#[test]
+fn s124_type_err_expression_control() {
+    let out = s124_type_session("\"abc\"\n/type (add-i64 1 2)\n").assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    let previous = lines
+        .iter()
+        .position(|s| s == ":primitives/String \"abc\"")
+        .unwrap();
+    assert_eq!(
+        lines[previous + 1..]
             .iter()
-            .any(|line| line == ":(Fn [primitives/Int] primitives/Int)"),
-        "definition query must report its function type: {}{}",
+            .filter(|s| !s.is_empty())
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [":primitives/Int"],
+        "{}{}",
         out.stdout,
         out.stderr
     );
