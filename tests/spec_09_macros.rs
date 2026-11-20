@@ -1939,3 +1939,158 @@ fn s124_1066_sym_control_repl() {
         out.stderr
     );
 }
+
+fn s124_macro_sibling(mode: &str, outer: &str, control: &str) {
+    let library = r#"(import [primitives [Int add-i64]])
+(import [macros [SexpList SexpSym SCons SNil]])
+(defmacro inner [x] `(add-i64 ~x 1))
+(defmacro outerq [x] `(inner ~x))
+(defmacro outer [x] (SexpList (SCons (SexpSym "inner") (SCons x SNil))))
+"#;
+    let names = if control == "glob" { "*" } else { outer };
+    let call = if control == "qualified" {
+        "d/inner"
+    } else {
+        outer
+    };
+    let import = format!("(import [d [{names}]])");
+    let cr = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .lib_dir("lib")
+        .file("lib/d.cl", library);
+    match mode {
+        "repl" => {
+            cr.stdin(&format!("{import}\n({call} 2)\n"))
+                .output()
+                .assert_ok()
+                .assert_stdout_contains(":primitives/Int 3");
+        }
+        "run" | "link" => {
+            let cr = cr.file(
+                "app.cl",
+                &format!("{import}\n(defn main [] (primitives/Pure ({call} 2)))\n"),
+            );
+            let out = if mode == "run" {
+                cr.run("app.cl").output()
+            } else {
+                cr.link_then_run("app.cl").output()
+            };
+            out.assert_exit(3);
+        }
+        _ => unreachable!(),
+    }
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
+// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+#[test]
+fn s124_macro_sibling_outerq_subject_repl() {
+    s124_macro_sibling("repl", "outerq", "subject");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
+// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+#[test]
+fn s124_macro_sibling_outerq_subject_run() {
+    s124_macro_sibling("run", "outerq", "subject");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
+// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+#[test]
+fn s124_macro_sibling_outerq_subject_link() {
+    s124_macro_sibling("link", "outerq", "subject");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING glob
+#[test]
+fn s124_macro_sibling_outerq_glob_repl() {
+    s124_macro_sibling("repl", "outerq", "glob");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING glob
+#[test]
+fn s124_macro_sibling_outerq_glob_run() {
+    s124_macro_sibling("run", "outerq", "glob");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING glob
+#[test]
+fn s124_macro_sibling_outerq_glob_link() {
+    s124_macro_sibling("link", "outerq", "glob");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING qualified
+#[test]
+fn s124_macro_sibling_outerq_qualified_repl() {
+    s124_macro_sibling("repl", "outerq", "qualified");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING qualified
+#[test]
+fn s124_macro_sibling_outerq_qualified_run() {
+    s124_macro_sibling("run", "outerq", "qualified");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING qualified
+#[test]
+fn s124_macro_sibling_outerq_qualified_link() {
+    s124_macro_sibling("link", "outerq", "qualified");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
+// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+#[test]
+fn s124_macro_sibling_outer_subject_repl() {
+    s124_macro_sibling("repl", "outer", "subject");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
+// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+#[test]
+fn s124_macro_sibling_outer_subject_run() {
+    s124_macro_sibling("run", "outer", "subject");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING subject
+// defect: class=wrong-scope-lookup locus=expansion-produced-macro-head-lookup found=S124 owner=/dev
+#[test]
+fn s124_macro_sibling_outer_subject_link() {
+    s124_macro_sibling("link", "outer", "subject");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING glob
+#[test]
+fn s124_macro_sibling_outer_glob_repl() {
+    s124_macro_sibling("repl", "outer", "glob");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING glob
+#[test]
+fn s124_macro_sibling_outer_glob_run() {
+    s124_macro_sibling("run", "outer", "glob");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING glob
+#[test]
+fn s124_macro_sibling_outer_glob_link() {
+    s124_macro_sibling("link", "outer", "glob");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING qualified
+#[test]
+fn s124_macro_sibling_outer_qualified_repl() {
+    s124_macro_sibling("repl", "outer", "qualified");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING qualified
+#[test]
+fn s124_macro_sibling_outer_qualified_run() {
+    s124_macro_sibling("run", "outer", "qualified");
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-MACRO-SIBLING qualified
+#[test]
+fn s124_macro_sibling_outer_qualified_link() {
+    s124_macro_sibling("link", "outer", "qualified");
+}
