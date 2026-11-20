@@ -390,13 +390,13 @@ Verified against source at `044bd8da` on 2026-11-20.
 
 | Item | Change-set | Design | Waits on | Evidence |
 |---|---|---|---|---|
-| ACT-1091 | An instance's trace frame is named by its template's qualified name | [trace codegen](trace-codegen.md) §1.4 | `arch`'s decision on the public projection §1.4 requests | One module row there, RED first; T-FRAME-NAME is `qa`'s |
+| ACT-1091 | An instance's trace frame is named by its template's qualified name | [trace codegen](trace-codegen.md) §1.4 | Types' change-set for row B16, `CallableArm::template_owner` ([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16), approved at `eb1aa36f`) | One module row there, RED first; T-FRAME-NAME is `qa`'s |
 | Slot-call fence | No call or jump relocation in an emitted object names a function of the unit | [compile-to-module](compile-to-module.md) §12.2, *Evidence* | `sprint`'s scheduling; not on the exit list | One module row there |
 
-Every public row of the S124 batch record that touched the backend is built
-and was reported at the Phase 5 checkpoint (`ee65d9aa`); the
+Every earlier S124 public row that touched the backend is built and was
+reported at the Phase 5 checkpoint (`ee65d9aa`). The
 [batch record](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)
-holds none of them.
+holds one backend consumer row, B16, for ACT-1091.
 
 **What stays RED, and is not the backend's.** `qa`'s standing state at
 `ee65d9aa` attributes no committed failing test to the backend

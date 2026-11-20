@@ -15,8 +15,9 @@ Verified against `compiler/trace_codegen.rs`, `lib.rs` and `schema.rs` at
   set (row B10, `69cd9c18` and `f8c55626`), the within-module order
   (`e8a9cac5`), and the set travelling with each target (row B10-C2,
   `94749709`).
-- §1.4, an instance frame's name, is designed and **not built**. It waits on
-  a public-API decision that is `arch`'s (ACT-1091).
+- §1.4, an instance frame's name, is designed and **not built**. Its public
+  projection is `arch`'s row B16 (approved at `eb1aa36f`), built first in
+  types (ACT-1091).
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
 - §3, the substitution correction (ACT-1062's backend reader), is built
@@ -265,9 +266,11 @@ false.
 - **The frame names the arm's source definition.** An authored entry keeps
   `{covered_module}/{table key}`, which is its own qualified name. An
   instance takes its template's qualified name, read from the instance link
-  that typecheck recorded when it minted the instance: the owner of
-  `InstanceLink::template`, which for an overload arm is the overloaded
-  declaration. The backend parses no key and strips no type arguments
+  that typecheck recorded when it minted the instance, as
+  `CallableArm::template_owner()` returns it (row B16), rendered by the
+  `FQSymbol`'s `Display`. For an arm or clause of an overloaded or macro
+  declaration that is the owning declaration. The backend parses no key and
+  strips no type arguments
   ([Principle 24](../arch/principles/24-resolve-once.md)).
 - **A name is not an identity.** Two instances of one template share a frame
   name. Discovery keeps each entry's table key as its sort key within a
@@ -279,30 +282,23 @@ false.
   only in its baked name bytes, so §1.3's *Cache* argument holds: the build
   identity separates it and no `CACHE_SCHEMA_VERSION` bump is owed.
 
-**Blocked on a public-API decision, `arch`'s.** The template's identity is
-public (`Life::Concrete::minted_from`, `InstanceLink::template`), but no
-published projection returns it: `CallableArm::template_module()` returns
-only its module, and the owner projection inside `cranelisp-types` is
-private. Both routes cross the inter-crate gate:
-
-- **Requested:** `pub fn CallableArm::template(&self) -> Option<&FQSymbol>`
-  in `cranelisp-types`, beside `template_module()`, `Some` exactly when
-  `template_module()` is. Types baseline +1 line; backend +0; one new
-  consumer edge, backend production to that method. It keeps one projection
-  of the instance link ([Principle 7](../arch/principles/07-single-source-of-truth.md));
-  whether `template_module()` then derives from it is `arch`'s.
-- **Not recommended:** the backend destructures `minted_from` and
-  `CallableTarget` itself. No item changes, but backend production gains a
-  consumer edge to `InstanceLink` and holds a second copy of the projection
-  `template_module()` already owns.
+**Public projection: row B16, `arch`'s, approved 2026-11-20 (`eb1aa36f`).**
+The row adds `CallableArm::template_owner()` to `cranelisp-types` (not yet in
+source at `eb1aa36f`), and
+`template_module()` derives from it
+([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16) owns
+the contract and the build order). The backend's change follows types'
+change-set; backend `public-api.txt` moves +0. The backend reads no
+`InstanceLink` or `CallableTarget` itself.
 
 **Module row, `dev`(backend)'s, RED first.** In
 `compiler/trace_codegen/tests.rs`, over the existing `insert_instance_of`
 fixture: an instance of `m/g` in a covered table is named `m/g`; an authored
 entry in the same group keeps its qualified name (control); two instances of
 `m/g` at different types are both named `m/g` and keep their table-key
-order. End to end, T-FRAME-NAME is `qa`'s
-([evidence delta](../../tests/plan/s124-evidence-delta.md) §14.3).
+order. End to end, T-FRAME-NAME (`qa`'s allocation,
+[evidence delta](../../tests/plan/s124-evidence-delta.md) §14.3) is
+`trace::s124_template_frame_name_{run,link,repl}`, committed at `76165d36`.
 
 ## 2. The trace extent and the wrapper's allocation
 
