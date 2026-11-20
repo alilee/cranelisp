@@ -1901,6 +1901,10 @@ only to produce the root trace node's formatted result string").
   value or string (3); a descriptor that works only in the JIT (the modes).
 - **No clause reads the root's name or parameters.** Spec §4.12.8 and the
   compiler disagree about them; the question is with `spec` (§14.8).
+- **Defect class: `unrecorded-value`,** added to the
+  [controlled vocabulary](../AGENTS.md#defect-repro-notation--defect) for
+  these cells. Locus: `crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace`;
+  owner `/dev`.
 - **What it cannot show.** Which of the two compile paths a given program
   takes. `dev`(backend) owes a module row for each with the correction.
 
