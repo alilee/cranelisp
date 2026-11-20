@@ -23,7 +23,6 @@ surface. Its design, design decisions and open obligations are in
 | `tests.cl` | Free-standing runner; exit code = number of passing tests |
 | `main.cl`, `serve.cl`, `web.cl` | Web server entry, serve-loop wrappers, `web` platform types |
 | `platforms/web/` | The `web` platform DLL (Rust) |
-| `collections/`, `compare/`, `fn/`, `num/`, `text/` | Copies of stdlib module `test.cl` files; not part of the showcase or its runner |
 
 ## Run
 
@@ -73,6 +72,10 @@ State only what these tests show:
   `user` module adopts `./user.cl` as its backing file and shares the `user` <!-- doc-check: literal reason="REPL backing file in the working directory, not a tracked file" -->
   cache slot. It can rewrite the headline entry and poison the cache. Use a
   scratch directory with copies of the modules.
+- **Do not add a file under `exemplar/` at a library module's path** (for
+  example `collections/vec/test.cl`). The compiler loads it in place of that
+  library module's declared child
+  ([ACT-1096](../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md)).
 - **Hard-puzzle backtracking is quadratic.** This is performance, not
   correctness: see
   [copy-per-guess performance](plan-exemplar.md#copy-per-guess-performance)
