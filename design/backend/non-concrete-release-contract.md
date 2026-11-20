@@ -467,14 +467,13 @@ The audience is the program author, so the permitted nouns are source-level.
 Mangles, `__expr`, doubled modules and `0..0` are the wrong nouns for that
 reader, not redaction candidates; nothing is suppressed for confidentiality.
 
-#### 7.2.1 The frame as designed (read at `26fbee2f`, 2026-11-20)
+#### 7.2.1 The frame (read at `044bd8da`, 2026-11-20)
 
-**Status.** Rules 1–3 are built (`a9a8c0c6`, `36e64f27`), with their three
-rows in `module_assembly_tests.rs`. *Unattributed* is decided by `arch` as
-public row B15
-([batch record](../arch/interfaces.md#the-unattributed-codegen-failure-row-b15))
-and is not built. Rules 1–3 change no public item; B15 does. No persisted shape
-changes.
+**Status.** Built. Rules 1–3 landed at `a9a8c0c6` and `36e64f27`, with their
+three rows in `module_assembly_tests.rs`. *Unattributed* is `arch`'s public row
+B15 ([interfaces](../arch/interfaces.md#the-unattributed-codegen-failure-row-b15)),
+built at `9bee5930`. Rules 1–3 changed no public item; B15 did. No persisted
+shape changed.
 
 **What the carrier holds stays as it is.** `CodegenFailed.module` is the
 module being compiled. `symbol` is the failing target's executable label, from
@@ -538,43 +537,39 @@ symbol's text. `SymbolNotCompilable` renders under the same rule.
 **Unattributed: a failure of the module, not of a target (row B15).** A
 failure with no failing target has a module and no symbol: a missing module
 table, a refused target during collection, the missing dealloc intrinsic, the
-glue fence, or GOT emission. Under B15 it is its own variant, and
-`CodegenFailed` always names a failing target.
+glue fence, or GOT emission. It is its own variant, and `CodegenFailed`
+always names a failing target.
 
 - **Shape (`arch`'s, row B15).** `CompilationError::ModuleFailed { module,
-  cause, location }` is added. `impl From<CranelispError> for
-  CompilationError`, which filled `module` and `symbol` with empty strings, is
-  removed. `CompilationError::ModuleError` is removed; nothing constructs it.
-- **One conversion per subject, both crate-private, both under Rule 1.** The
-  existing `codegen_failed(module, symbol, err)` stays for a failing target.
-  A sibling, `module_failed(module, err)`, builds `ModuleFailed` from the same
+  cause, location }`. There is no `impl From<CranelispError> for
+  CompilationError`, which filled `module` and `symbol` with empty strings,
+  and no producer-less `ModuleError`.
+- **One conversion per subject, both crate-private, both under Rule 1.**
+  `codegen_failed(module, symbol, err)` serves a failing target.
+  `module_failed(module, err)` builds `ModuleFailed` from the same
   extraction: `cause` from `message()` (a `Platform` error's whole
   rendering), `location` from `location()`. The two share that one extraction,
   so the prefix rule has one home.
 - **The entry's boundary.** `compile_to_module`'s private `EntryFailure`
-  keeps its two arms. `Unattributed` converts through `module_failed` with
-  `module_path`. The `Symbol::from("")` it passes today goes. Inside the
-  entry, a `CranelispError` reaches a `CompilationError` only through one of
-  the two functions. With the public `From` gone, a site that has no module
-  in hand does not compile; the build lists each one.
+  has two arms. `Unattributed` converts through `module_failed` with
+  `module_path`. Inside the entry, a `CranelispError` reaches a
+  `CompilationError` only through one of the two functions, so a site that
+  has no module in hand does not compile.
 - **Rendering (Rule 3).** `ModuleFailed` names the module as its only
   subject: `codegen failed in {module}: {cause}`.
-  `From<CompilationError> for CranelispError` gains the arm and carries its
-  `location`, so it renders with the one prefix.
-- **Attribution is unchanged.** A refusal during target collection names
-  its target in `cause`, as it does today, but is a `ModuleFailed`. Body
+  `From<CompilationError> for CranelispError` carries its `location`, so it
+  renders with the one prefix.
+- **Attribution.** A refusal during target collection names its target in
+  `cause` and is a `ModuleFailed`. Body
   attribution ([compile-to-module](compile-to-module.md) §15) still makes
   every body failure a `CodegenFailed`.
-- **Module rows (B15).**
-  - `sprint56_compile_to_module_ast_none_errors`
-    (`module_assembly_tests.rs`) expects `ModuleFailed` naming `user`, with
-    the offending target in the cause. Today it asserts a `CodegenFailed`
-    with an empty symbol, so rewriting it first makes it RED.
-  - One new row, for a failure outside any target, such as `module_path`
-    with no table in `symbol_tables`. It is `ModuleFailed` naming that
-    module, and its rendering holds one `codegen error at` and no
-    `codegen failed for`.
-  - The three Rule rows are the control. A body failure stays a
+- **Module rows (B15)**, in `module_assembly_tests.rs`:
+  - `sprint56_compile_to_module_ast_none_errors` expects `ModuleFailed`
+    naming `user`, with the offending target in the cause;
+  - `a_failure_outside_any_target_is_the_modules`: `module_path` with no
+    table is `ModuleFailed` naming that module, rendered with one
+    `codegen error at` and no `codegen failed for`;
+  - the three Rule rows are the control: a body failure stays a
     `CodegenFailed` with a non-empty symbol.
 - **Residual, `arch`'s.** `Symbol` admits an empty string, so a hand-built
   `CodegenFailed` with an empty symbol stays constructible. The batch
@@ -596,8 +591,8 @@ glue fence, or GOT emission. Under B15 it is its own variant, and
    fixture reaches a registry error through the entry, `dev` reports which
    seam refused first, and `qa` re-reads the allocation.
 
-Rules 1–3 landed with these rows green and the attribution cells unchanged.
-B15 lands alone after them (batch record step A1).
+Rules 1–3 landed with these rows green and the attribution cells unchanged;
+B15 landed alone after them.
 
 ### 7.3 The category census, armed (open)
 

@@ -9,20 +9,20 @@ swap and the nested-trace guard are
 [tracing](../arch/tracing.md) §3–§6 and are not restated here.
 
 Verified against `compiler/trace_codegen.rs`, `lib.rs` and `schema.rs` at
-`26fbee2f` (2026-11-20).
+`044bd8da` (2026-11-20).
 
-- §1, the traced set, is built for one set per call (row B10: int's
-  enumerator at `69cd9c18`, then the backend's parameter at `f8c55626`), and
-  its within-module order at `e8a9cac5`. `arch` decided on 2026-11-20 that
-  the set travels with each target (row B10-C2,
-  [tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend));
-  that is designed in §1.3 and not built.
+- §1.1–§1.3, the traced set, are built: selection by claim and the covered
+  set (row B10, `69cd9c18` and `f8c55626`), the within-module order
+  (`e8a9cac5`), and the set travelling with each target (row B10-C2,
+  `94749709`).
+- §1.4, an instance frame's name, is designed and **not built**. It waits on
+  a public-API decision that is `arch`'s (ACT-1091).
 - §2 is built: `3cdca9dc` (packet row D8) and its module row M-1038 at
   `997c6c2d`.
 - §3, the substitution correction (ACT-1062's backend reader), is built
   (row B14, `4d2bd8a4`).
 
-**Authority:** spec §4.12.2, §4.12.3 and §4.12.9;
+**Authority:** spec §4.12.2, §4.12.3, §4.12.4 and §4.12.9;
 [tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table) for the
 traced set and [§5.1](../arch/tracing.md#51-which-modules-a-form-covers) for
 the covered modules;
@@ -122,14 +122,15 @@ monomorphised instance is its template's module, not the module whose batch
 compiles it (tracing §5.1, *The form's module*; ACT-1086). One set per
 `compile_to_module` call cannot state a batch whose targets were written in
 different modules, so the set travels with each target (row B10-C2, decided by
-`arch` 2026-11-20; **not built** at `26fbee2f`).
+`arch` 2026-11-20; built at `94749709`).
 
-- **Input (B10-C2).** `compile_to_module` takes
+- **Input.** `compile_to_module` takes
   `targets: &[CodegenTarget<'_>]`; each `CodegenTarget` pairs a
   `&CallableTarget` with the `&BTreeSet<ModuleFullPath>` a trace form in that
   target's body covers. The call-wide `trace_modules` parameter is removed
   ([tracing §5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
-  Every target carries a set, whether or not its body holds a form.
+  Every target carries a set, whether or not its body holds a form. The
+  rustdoc on `CodegenTarget` owns the exact shape.
 - **The set is the whole covered set.** It lists the module that holds the
   body, the closure of that module's finished reference edges, and
   `primitives`. The backend adds no module, `module_path` included, and
@@ -158,12 +159,7 @@ different modules, so the set travels with each target (row B10-C2, decided by
   one module could emit different CLIF ([backend](backend.md) §6;
   [JIT/object convergence](jit-object-convergence.md) §1.3).
 - **`macros`.** The enumerator never lists it, so its claims are never read.
-- **Open, `spec`'s: an instance frame's name.** A frame's name is
-  `{module}/{entry}`. For an instance the entry is its canonical key, which
-  already names its template's module, so B10-C2's instance frames read
-  `lib/(h/helper [(base/Opt Int) Int] Int)`. Spec §4.12.4 says `name` is the
-  traced function's fully qualified name and does not say which spelling an
-  instance takes. The backend keeps today's spelling until `spec` states it.
+- **A frame's name** is §1.4's.
 
 #### What the set must contain
 
@@ -204,45 +200,20 @@ owns the composition.
   no mode writes `macros`' GOT (§1.2). Excluding it therefore drops no
   frame. *Asserted; falsifier:* a write to `macros`' GOT in any mode.
 
-#### As built (B10) and what changes (B10-C2)
+#### Evidence
 
-Built at `f8c55626`: `compile_to_module` threads one call-wide `trace_modules`
-to discovery, which covers `module_path` and the listed modules.
+Module rows in `compiler/trace_codegen/tests.rs`, each stated RED against the
+one-set rule before `94749709`:
 
-**What `dev`(backend) builds for B10-C2** (`lib.rs`,
-`compiler/context.rs`, `compiler/trace_codegen.rs`, their tests, and every
-backend test caller of `compile_to_module`), in one commit with
-`dev`(`src/`)'s callers (batch record steps A3b and A3c), after `arch`'s
-`CallableArm::template_module` (A3a):
-
-1. `CodegenTarget<'a>` with private fields, `new(&'a CallableTarget,
-   &'a BTreeSet<ModuleFullPath>)`, `Clone`, `Copy` and `Debug`, and rustdoc
-   stating the set's meaning (above). Crate-private accessors only.
-2. `compile_to_module` takes `&[CodegenTarget<'_>]` and loses
-   `trace_modules`. Target collection reads each target's `CallableTarget`
-   as today. The body loop sets each target's `CompileContext` covered set
-   from its own `CodegenTarget`.
-3. Discovery reads the groups above. The `chain([module_path])` union is
-   replaced by the filtered `module_path` group.
-4. Test callers pass the set their fixture means. A fixture that relied on
-   `module_path` being added lists it.
-
-Module rows in `compiler/trace_codegen/tests.rs`, each RED against the
-built rule where it differs:
-
-- **A listed `module_path` is read whole; an unlisted one is not.** With
-  `module_path` absent from the set, an ordinary claim in its table is not
-  selected. RED today, because the backend adds `module_path`.
-- **An instance of a covered template is selected from `module_path`.**
-  `module_path` unlisted; its table holds an instance whose
-  `template_module()` is listed, and one whose template module is not. Only
-  the first is selected. RED today.
-- **Two targets, two sets, one batch.** Two targets whose bodies each hold a
-  form and carry different sets select different groups. RED today, because
-  one set serves the call.
-- Carried, adapted to the new input:
-  `discovery_covers_module_path_and_listed_modules_only` (renamed to the
-  listed-modules rule), `discovery_selects_claimed_slots_whatever_they_hold`,
+- `discovery_reads_module_path_whole_only_when_listed`: with `module_path`
+  absent from the set, an ordinary claim in its table is not selected;
+- `discovery_selects_instances_of_covered_templates_from_module_path`: of two
+  instances in an unlisted `module_path`, only the one whose
+  `template_module()` is listed is selected;
+- `two_targets_with_two_sets_in_one_batch_swap_different_modules`: two
+  targets in one batch whose bodies each hold a form select different groups;
+- carried: `discovery_covers_the_listed_modules_only`,
+  `discovery_selects_claimed_slots_whatever_they_hold`,
   `discovery_refuses_a_covered_module_with_no_table` and
   `discovery_orders_each_group_by_name`.
 
@@ -272,6 +243,66 @@ descriptors and wrapper body are unchanged. So
 `trace::s124_1039_w_subject_run`, `_link` and `_repl`, and
 `trace::s124_1078_subject_run` and `_link`; T-1039-lib expects no frames from
 the caller's function, as §4.12.3 states.
+
+### 1.4 A frame's name
+
+**Requirement.** Spec §4.12.4, the `name` row (user ruling, 2026-11-20):
+a frame for an instance of a generic function is named by the template's
+fully qualified name alone, for example `m/helper`.
+
+**Owning surface: the backend.** Discovery spells every frame's name and
+bakes it into the wrapper's read-only data; `cranelisp_trace_enter` records
+the bytes it is passed. No other surface composes or rewrites the name
+([tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table) step 3
+makes `TracedFnInfo` backend-internal). Read at `044bd8da`: the name is
+`{covered_module}/{table key}`, which for an instance held in `user`'s table
+reads `user/(m/helper [primitives/Int] primitives/Int)`, the spelling
+ACT-1091 observed. ACT-1091's refuter, a name supplied by the binary, is
+false.
+
+**Decision (not built).**
+
+- **The frame names the arm's source definition.** An authored entry keeps
+  `{covered_module}/{table key}`, which is its own qualified name. An
+  instance takes its template's qualified name, read from the instance link
+  that typecheck recorded when it minted the instance: the owner of
+  `InstanceLink::template`, which for an overload arm is the overloaded
+  declaration. The backend parses no key and strips no type arguments
+  ([Principle 24](../arch/principles/24-resolve-once.md)).
+- **A name is not an identity.** Two instances of one template share a frame
+  name. Discovery keeps each entry's table key as its sort key within a
+  group and in its codegen diagnostics, so the wrapper, descriptor and
+  swapped-slot order stay as built (§1.3) and the change moves only the name
+  bytes.
+- **No runtime, ABI or cache change.** `cranelisp_trace_enter`'s signature
+  and the descriptors are unchanged. An object holding a trace form differs
+  only in its baked name bytes, so §1.3's *Cache* argument holds: the build
+  identity separates it and no `CACHE_SCHEMA_VERSION` bump is owed.
+
+**Blocked on a public-API decision, `arch`'s.** The template's identity is
+public (`Life::Concrete::minted_from`, `InstanceLink::template`), but no
+published projection returns it: `CallableArm::template_module()` returns
+only its module, and the owner projection inside `cranelisp-types` is
+private. Both routes cross the inter-crate gate:
+
+- **Requested:** `pub fn CallableArm::template(&self) -> Option<&FQSymbol>`
+  in `cranelisp-types`, beside `template_module()`, `Some` exactly when
+  `template_module()` is. Types baseline +1 line; backend +0; one new
+  consumer edge, backend production to that method. It keeps one projection
+  of the instance link ([Principle 7](../arch/principles/07-single-source-of-truth.md));
+  whether `template_module()` then derives from it is `arch`'s.
+- **Not recommended:** the backend destructures `minted_from` and
+  `CallableTarget` itself. No item changes, but backend production gains a
+  consumer edge to `InstanceLink` and holds a second copy of the projection
+  `template_module()` already owns.
+
+**Module row, `dev`(backend)'s, RED first.** In
+`compiler/trace_codegen/tests.rs`, over the existing `insert_instance_of`
+fixture: an instance of `m/g` in a covered table is named `m/g`; an authored
+entry in the same group keeps its qualified name (control); two instances of
+`m/g` at different types are both named `m/g` and keep their table-key
+order. End to end, T-FRAME-NAME is `qa`'s
+([evidence delta](../../tests/plan/s124-evidence-delta.md) §14.3).
 
 ## 2. The trace extent and the wrapper's allocation
 
