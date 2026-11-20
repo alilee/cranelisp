@@ -1314,3 +1314,106 @@ fn search_neg_private_mod_dash_submodule_not_surfaced_to_outside_subtree() {
     // it (§8.2.3). /search MUST NOT advertise the private submodule's import hint.
     out.assert_stdout_does_not_contain("(import [user.test");
 }
+
+fn s124_search_reach_session(query: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "p.cl",
+            "(import [primitives [Int]])\n(defn pf [:Int n] n)\n",
+        )
+        .file(
+            "m.cl",
+            "(import [primitives [Int]])\n(import [p [pf]])\n(defn mf [:Int n] (pf n))\n",
+        )
+        .file(
+            "t.cl",
+            "(import [primitives [Int]])\n(import [m [mf]])\n(defn tf [:Int n] (mf n))\n",
+        )
+        .file(
+            "x.cl",
+            "(import [missing [absent]])\n(defn xf [n] (absent n))\n",
+        )
+        .stdin(&format!(
+            "/search pf\n/search pf\n/search {query}\n/search {query}\n"
+        ))
+        .output()
+        .assert_ok()
+}
+
+fn s124_second_search_has_row(out: &helpers::e2e::CrOutput, row: &str) -> bool {
+    // Input is not echoed; prompt boundaries retain multi-line search answers.
+    out.stdout
+        .rsplit("; user> ")
+        .nth(1)
+        .expect("final search response")
+        .contains(row)
+}
+
+// spec: repl/spec/17a-agent-language-awareness.md §17.19 — T-SEARCH-REACH one dependency
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs::checked_typecheck_module found=S124 owner=/dev (ACT-1092)
+#[test]
+fn s124_search_reach_unloaded_dependency() {
+    let out = s124_search_reach_session("mf");
+    assert!(
+        out.stdout
+            .split("; user> ")
+            .nth(2)
+            .unwrap()
+            .contains("(import [p [pf]])"),
+        "feed control: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        s124_second_search_has_row(&out, "(import [m [mf]])"),
+        "second search must include m: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec/17a-agent-language-awareness.md §17.19 — T-SEARCH-REACH transitive dependency
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs::checked_typecheck_module found=S124 owner=/dev (ACT-1092)
+#[test]
+fn s124_search_reach_transitive_unloaded_dependency() {
+    let out = s124_search_reach_session("tf");
+    assert!(
+        out.stdout
+            .split("; user> ")
+            .nth(2)
+            .unwrap()
+            .contains("(import [p [pf]])"),
+        "feed control: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        s124_second_search_has_row(&out, "(import [t [tf]])"),
+        "second search must include t: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec/17a-agent-language-awareness.md §17.19 — T-SEARCH-REACH invalid dependency control
+#[test]
+fn s124_search_reach_neg_missing_dependency_no_row() {
+    let out = s124_search_reach_session("xf");
+    assert!(
+        out.stdout
+            .split("; user> ")
+            .nth(2)
+            .unwrap()
+            .contains("(import [p [pf]])"),
+        "feed control: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !s124_second_search_has_row(&out, "(import [x [xf]])"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
