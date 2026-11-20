@@ -20,6 +20,7 @@ The exemplar shows that Cranelisp handles a real multi-module program:
 ## Architecture
 
 One pure core serves three IO entries: `user.cl` and `smoke.cl` on stdio, `main.cl` on the web.
+`tests.cl` is a fourth entry that runs the core's tests and performs no IO.
 
 | Module | Responsibility |
 |---|---|
@@ -30,6 +31,7 @@ One pure core serves three IO entries: `user.cl` and `smoke.cl` on stdio, `main.
 | `user.cl` | Stdio entry (the headline showcase) |
 | `smoke.cl` | Stdio entry that solves and prints a fixed puzzle |
 | `main.cl`, `serve.cl`, `web.cl` | Web entry: router, serve loop, and the `web` platform's language-side types |
+| `tests.cl` | Test runner: calls every `test-*` except `solver/test-hard-puzzle` and exits with the pass count |
 
 `user.cl` drives the same pipeline the web route uses:
 
@@ -51,10 +53,11 @@ solution   --solution-page---->  HTML page
   Spelling the field as `(Vec Cell)` is legal, but it would force the
   element type and sidestep the inference the exemplar demonstrates.
 - `peers`, `make-grid` and `is-solved` are multi-signature `defn`s: the short
-  clause seeds the accumulator of the long one. Their results reach separately
-  monomorphised consumers through bound parameters, which spec §5.1.2 requires
-  to infer exactly as the two-function form does. Do not annotate the seed or
-  the ADT field to help inference.
+  clause seeds the accumulator of the long one. The `peers` and `make-grid`
+  results reach separately monomorphised consumers through bound parameters.
+  Spec §5.1.2 requires a multi-signature `defn` to infer exactly as its
+  two-function equivalent, so do not annotate the seed or the ADT field to help
+  inference.
 
 ### Solving
 
@@ -139,7 +142,9 @@ solution   --solution-page---->  HTML page
 `set-cell`/`assoc` copy the 81-cell Vec on every guess. That makes hard-puzzle
 search quadratic, and under parallel evaluation it causes allocator and
 atomic-RC contention, so parallel search is slower than serial.
-`solver/test-hard-puzzle` stays out of `tests.cl` until a hard puzzle solves in
+`solver/test-hard-puzzle` passes but runs about ten times longer than
+`solver/test-easy-puzzle` (about 7 s against 0.7 s on a debug build, measured
+2026-11-20), so it stays out of `tests.cl` until a hard puzzle solves in
 fast-test time. The analysis, proposed fix and re-entry trigger are in the
 [performance backlog](../design/arch/backlog/performance.md) under 0408.
 

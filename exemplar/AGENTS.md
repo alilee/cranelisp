@@ -74,7 +74,7 @@ State only what these tests show:
   cache slot. It can rewrite the headline entry and poison the cache. Use a
   scratch directory with copies of the modules.
 - **Do not add a file under `exemplar/` at a library module's path** (for
-  example `collections/vec/test.cl`). The compiler loads it in place of that
+  example `collections/vec/test.cl`). The compiler loads it in place of that <!-- doc-check: literal reason="example of a forbidden path, not a tracked file" -->
   library module's declared child
   ([ACT-1096](../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md)).
 - **Hard-puzzle backtracking is quadratic.** This is performance, not
