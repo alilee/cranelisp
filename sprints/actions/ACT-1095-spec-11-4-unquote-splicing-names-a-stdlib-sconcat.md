@@ -30,8 +30,7 @@ and appendix A, is `spec`'s call.
 
 ## Evidence
 
-`dev`(stdlib), S124 Phase 6a, on `target/debug/cranelisp` built from
-`39db1bb1`. A program with no standard library (`CRANELISP_LIB` set to an empty
+`dev`(stdlib), S124 Phase 6a, on a debug build of `39db1bb1`. A program with no standard library (`CRANELISP_LIB` set to an empty
 directory, `--run --no-cache`):
 
 ```
