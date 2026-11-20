@@ -85,8 +85,26 @@
 (defmacro with-double [x body]
   `(let [doubled (add-i64 ~x ~x)] ~body))
 
+;; A private temporary uses auto-gensym: value# and doubled# each become
+;; fresh names per expansion; repeated occurrences share that fresh name.
+;; x occurs once, so it is evaluated once. body keeps its caller's bindings.
+(defmacro add-double [x body]
+  `(let [value# ~x
+         doubled# (add-i64 value# value#)]
+     (add-i64 doubled# ~body)))
+
 (defn check-with-double []
-  (with-double 21 doubled))                              ;; -> 42
+  (let [doubled 7]
+    (if (eq-i64 (add-double 21 doubled) 49)
+      (with-double 21 doubled)                           ;; -> 42, shadows 7
+      0)))
+
+;; Declaration boundaries (spec §9.2): `[x & rest]` is valid, and rest
+;; receives syntax as an (SList Sexp). The rest name must be last and must
+;; be a simple symbol: `[x & rest y]` and `[& [a b]]` are rejected.
+;; A macro body returns syntax, not the runtime value of that syntax:
+;; `(defmacro bad [x] 42)` is rejected. `[x] x` returns the supplied
+;; syntax directly; `[x] `(add-i64 ~x 1)` builds new syntax.
 
 ;; --- Macros that nest other forms ---
 
