@@ -8,6 +8,14 @@ with `/mod`.
 > **About the transcripts.** They were checked against the real binary with the
 > standard prelude loaded. The prompt's timing prefix is elided to `user>`.
 
+> **Source-loss warning — multi-signature functions (ACT-1068).** The current
+> REPL omits every multi-signature `defn` when it regenerates a module file.
+> Entering any successful definition can therefore delete an existing family
+> from that file, even one loaded from disk. Keep a separate copy of authored
+> source and use batch mode for modules containing these families until this
+> defect is fixed. Live calls working does not mean their source was saved.
+> See [the reproduction and affected routes](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md).
+
 ## Redefining at the prompt
 
 The REPL keeps the latest **successful** definition of each name. You can edit a

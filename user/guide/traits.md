@@ -19,6 +19,18 @@ them at the edges.
 > `default` explicitly; the higher-kinded group uses the prelude's `Option`,
 > `Some`, `None` and `+` alongside the `Functor` declared in that group.
 
+> **Current dispatch limitation (ACT-1076).** Conventional methods with an
+> argument dispatch from the first argument today. A signature putting `self`
+> later, or only in the result while accepting other arguments, can be refused,
+> run the wrong implementation or crash. Keep the implementing value first in
+> methods you use today. Zero-argument return-type dispatch works as shown
+> below; this limitation does not change [spec §7.1.4](../../spec/07-traits.md#714-type-expressions-in-signatures).
+>
+> With an empty prelude, import scalar types explicitly in trait signatures.
+> The compiler currently accepts some unimported bare scalar names there
+> (ACT-1097); do not rely on that acceptance. The import rule is
+> [spec §3.1](../../spec/03-types.md#31-primitive-types).
+
 ## Declaring a trait — `deftrait`
 
 A trait is a bare (uppercase) name followed by one or more **method signatures**.

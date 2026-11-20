@@ -61,6 +61,15 @@ specified in the [REPL specification](../repl/spec/index.md); the slash-command
 catalogue is
 [`repl/spec/03-slash-commands.md` §3](../repl/spec/03-slash-commands.md).
 
+#### Query an expression's type — `/type`
+
+Use `/type (+ 1 2)` to inspect an expression's type. For an installed name,
+`/sig name` lists its signatures. **Do not give `/type` a definition form on the
+current compiler:** it can install definitions, rewrite the backing file and
+crash the session (ACT-1089). The required answer is an error, `definition form
+has no type`, with nothing evaluated or defined; this correction is carried.
+See [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory).
+
 #### Recall language syntax — `/syntax`
 
 Run bare `/syntax` to list the available core-language topics, then
@@ -82,6 +91,12 @@ intentionally outside this index. Source indexing does not expand macros, so it
 can omit ordinary definitions that require expansion; a successfully loaded
 module or cache entry can contribute eligible ordinary definitions. Importing a
 module remains the authority for its complete contents.
+
+**An empty search is not proof that a function is absent.** The current index
+can omit a valid reachable module when its imports name a module that is not
+loaded or is still compiling (ACT-1092). Inspect or import a known module
+directly when search misses it. The reachability contract is
+[REPL §17.19](../repl/spec/17-embedded-agent.md).
 
 Search by **name** or by **type signature**, exact or partial:
 
