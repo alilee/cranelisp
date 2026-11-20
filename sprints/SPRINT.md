@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 6a USER-FACING ASSESSMENT — assessments in; 6a → 6b checkpoint presented, awaiting the user (backend has nine failing cells on ACT-1094, found after its Phase 5 exit)
+**Status**: PHASE 6b USER-FACING ACTION — backend ACT-1094 fix (`arch` first); `stdlib/` incl. trait impls, `exemplar/`, `user/`, `examples/`; demo and replay
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -19,7 +19,7 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
 | Phase 3 → Phase 4 | designs, packet rows D1–D12/R10-9/R10-10, S124-Q2..Q9, `qa` readiness | 2026-11-17, "approved to advance" | approved |
 | Phase 4 → Phase 5 | wave plan W0–W9, audit choice, two decisions | 2026-11-17, "approved" | approved |
 | Phase 5 → Phase 6a | backend exit reading (`235a7ed7`), 80 carried failures by module, second baseline diff | 2026-11-20, "2 approved" | approved |
-| Phase 6a → Phase 6b | — | — | pending |
+| Phase 6a → Phase 6b | six assessments, four new defects reproduced, full run 104 failing all attributed, six decisions | 2026-11-20, "6. approved" | approved |
 | Phase 6b → Phase 7 | — | — | pending |
 
 ## Opening state (2026-11-16)
@@ -619,3 +619,15 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   attributed; none that passed before fails. Open with the user: the backend
   exit against ACT-1094, stdlib trait impls in 6b, the R10 "still compiling"
   residual, S124-Q10, audit dispositions.
+- **User decisions at the 6a → 6b checkpoint (2026-11-20).** (1) "fix the
+  focus module defects - no need to ask": ACT-1094 is fixed in 6b, `arch`
+  first. (2) "do the stdlib work": the `plan-stdlib.md` §4.1 trait impls
+  enter 6b with the other stdlib items. (3) The R10 "still compiling"
+  residual is accepted on a module row alone. (4) S124-Q10: "I think refuse
+  or just `defn`" — `spec` records it. (5) Audit dispositions agreed: R1 on
+  the open typecheck filings, R6 is ACT-1097, R7 to `spec` for a ruling,
+  R2–R5 carried as ACT-1098.
+- **6b order.** Wave 1: `arch` (ACT-1094 interface), `spec` (Q10, R7, open
+  questions, ACT-1095), `dev`(stdlib). Wave 2: `design`/`dev` on the ACT-1094
+  correction, `dev`(exemplar) after stdlib. Wave 3: `docs`, `training`,
+  `test`/`review`/`qa`, the sprint demo and replay, then the full run.
