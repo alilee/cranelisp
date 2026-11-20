@@ -1980,3 +1980,119 @@ fn s124_trace_root_heap_result_and_balance() {
         out.stderr
     );
 }
+
+fn s124_trace_owning(shape: &str, mode: &str) {
+    let (declaration, ty, value) = match shape {
+        "record" => (
+            "(deftype Owned [:String text])",
+            "Owned",
+            "(Owned (str-concat \"heap-\" \"record\"))",
+        ),
+        "vector" => (
+            "",
+            "(Vec String)",
+            "[(str-concat \"heap-\" \"first\") (str-concat \"heap-\" \"second\")]",
+        ),
+        _ => unreachable!(),
+    };
+    let source = format!(
+        r#"(import [primitives [Pure String Vec TraceCall str-eq str-concat]])
+(import [macros [SCons SNil]])
+{declaration}
+(defn ident [:{ty} x] x)
+(defn score []
+  (let [v {value}] (match (trace (ident v))
+    [(TraceCall n p r c ns)
+     (match c
+       [(SCons child rest)
+        (match child [(TraceCall cn cp cr cc ct)
+          (if (str-eq cr "") 39 (if (str-eq r cr) 41 40))])
+        SNil 38])])))
+"#
+    );
+    let b = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("subject.cl", &source)
+        .user("(import [subject [score]])\n(defn main [] (primitives/Pure (score)))\n")
+        .env("CRANELISP_RC_STATS", "1")
+        .env("CRANELISP_NO_LENIENT", "1");
+    let out = match mode {
+        "cold" => b.run("user.cl").output(),
+        "cached" => {
+            let seed = b.run("user.cl").output().assert_exit(41);
+            assert!(seed.tmp_exists(".cranelisp-cache/user.o"));
+            let restored = seed
+                .run_again()
+                .run("user.cl")
+                .env("CRANELISP_MODULE_TRACE", "1")
+                .output();
+            assert!(
+                restored
+                    .stderr
+                    .lines()
+                    .any(|s| s == "module-trace: cache hit (.meta valid) for subject"),
+                "must restore cached object: {}{}",
+                restored.stdout,
+                restored.stderr
+            );
+            restored
+        }
+        "link" => b.link_then_run("user.cl").output(),
+        _ => unreachable!(),
+    };
+    let out = out.assert_exit(41);
+    let line = out
+        .stderr
+        .lines()
+        .rev()
+        .find(|s| s.contains("[RC_STATS]"))
+        .expect("executed program allocation statistics");
+    let field = |key: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|s| s.strip_prefix(key).and_then(|v| v.parse().ok()))
+            .unwrap()
+    };
+    assert_eq!(
+        field("allocs="),
+        field("deallocs="),
+        "{shape} {mode} must release owned fields: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
+#[test]
+fn s124_trace_owning_record_cold() {
+    s124_trace_owning("record", "cold");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
+#[test]
+fn s124_trace_owning_record_cached() {
+    s124_trace_owning("record", "cached");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
+#[test]
+fn s124_trace_owning_record_link() {
+    s124_trace_owning("record", "link");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
+#[test]
+fn s124_trace_owning_vector_cold() {
+    s124_trace_owning("vector", "cold");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
+#[test]
+fn s124_trace_owning_vector_cached() {
+    s124_trace_owning("vector", "cached");
+}
+
+// spec: spec/04-expressions.md §4.12.2; spec/12-runtime.md §12.3.1 — T-TRACE-OWNING
+#[test]
+fn s124_trace_owning_vector_link() {
+    s124_trace_owning("vector", "link");
+}
