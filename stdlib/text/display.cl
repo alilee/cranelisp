@@ -23,6 +23,31 @@
 (impl Display String
   (defn show [x] x))
 
+;; ── The seeded data types ─────────────────────────────────────────────
+;; `Option`, `Result` and `Pair` are seeded by `primitives`, so their impls
+;; live with the trait. The format is the one `derive-Display` produces: a
+;; nullary constructor is its name, and a data constructor is its name followed
+;; by its fields' `show`s, space-separated, in parentheses — `Some(1)`,
+;; `Pair(1 a)`.
+
+(impl Display (Option :Display a)
+  (defn show [self]
+    (match self
+      [None "None"
+       (Some u) (str-concat "Some(" (str-concat (show u) ")"))])))
+
+(impl Display (Result :Display a :Display e)
+  (defn show [self]
+    (match self
+      [(Ok u) (str-concat "Ok(" (str-concat (show u) ")"))
+       (Err u) (str-concat "Err(" (str-concat (show u) ")"))])))
+
+(impl Display (Pair :Display a :Display b)
+  (defn show [self]
+    (match self
+      [(Pair u v)
+       (str-concat "Pair(" (str-concat (show u) (str-concat " " (str-concat (show v) ")"))))])))
+
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; `(mod- test …)` submodule (S87 Stage C.2): super-imports `show` and checks
 ;; each primitive's rendering. HARNESS-FREE by necessity: `testing.assertions`

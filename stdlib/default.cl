@@ -25,6 +25,10 @@
 (impl Default String
   (defn default [] ""))
 
+;; An absent value is the natural default for any `Option`; no bound on `a`.
+(impl Default (Option a)
+  (defn default [] None))
+
 ;; ── Self-tests — SHIPPED at S112 6b (return-type dispatch works) ──
 ;; S112 leg (c) landed nullary return-type dispatch. The backing self-test
 ;; `default/test.cl` (module `default.test`) exercises each impl via the

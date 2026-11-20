@@ -68,3 +68,9 @@
 (defn test-default-string [] :(Option String)
   (let [x :String (default)]
     (if (= x "") None (Some "expected (default):String = \"\""))))
+
+(defn test-default-option-is-none [] :(Option String)
+  (let [x :(Option Int) (default)]
+    (match x
+      [None None
+       (Some _) (Some "expected (default):(Option Int) = None")])))

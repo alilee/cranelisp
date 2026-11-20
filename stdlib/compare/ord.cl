@@ -33,6 +33,42 @@
   (defn <= [a b] (if a b true))
   (defn >= [a b] (if b a true)))
 
+;; ── The seeded data types ─────────────────────────────────────────────
+;; `Option`, `Result` and `Pair` are seeded by `primitives`, so their impls
+;; live with the trait. As with `derive-Ord`, constructor declaration order is
+;; the order (`None` < `Some`, `Ok` < `Err`), payloads of one constructor
+;; compare by their own `<`, and a `Pair` compares lexicographically. Only `<`
+;; is structural; the other three are expressed in terms of it, so they cannot
+;; disagree with it and no `Eq` impl is required.
+
+(impl Ord (Option :Ord a)
+  (defn < [x y]
+    (match x
+      [None (match y [None false _ true])
+       (Some u) (match y [(Some v) (< u v) _ false])]))
+  (defn > [x y] (< y x))
+  (defn <= [x y] (if (< y x) false true))
+  (defn >= [x y] (if (< x y) false true)))
+
+(impl Ord (Result :Ord a :Ord e)
+  (defn < [x y]
+    (match x
+      [(Ok u) (match y [(Ok v) (< u v) _ true])
+       (Err u) (match y [(Err v) (< u v) _ false])]))
+  (defn > [x y] (< y x))
+  (defn <= [x y] (if (< y x) false true))
+  (defn >= [x y] (if (< x y) false true)))
+
+(impl Ord (Pair :Ord a :Ord b)
+  (defn < [x y]
+    (match x
+      [(Pair x1 x2)
+       (match y
+         [(Pair y1 y2) (if (< x1 y1) true (if (< y1 x1) false (< x2 y2)))])]))
+  (defn > [x y] (< y x))
+  (defn <= [x y] (if (< y x) false true))
+  (defn >= [x y] (if (< x y) false true)))
+
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; `(mod- test …)` submodule (S87 Stage C.2): super-imports the Ord methods
 ;; and exercises Int + Bool ordering. (String ordering is omitted by design,

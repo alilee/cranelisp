@@ -28,6 +28,31 @@
   (defn = [a b] (str-eq a b))
   (defn != [a b] (not (str-eq a b))))
 
+;; ── The seeded data types ─────────────────────────────────────────────
+;; `Option`, `Result` and `Pair` are seeded by `primitives`, so their impls
+;; live with the trait: wherever `Eq` is reachable, so are these. Two values
+;; are equal when they have the same constructor and equal payloads.
+
+(impl Eq (Option :Eq a)
+  (defn = [x y]
+    (match x
+      [None (match y [None true _ false])
+       (Some u) (match y [(Some v) (= u v) _ false])]))
+  (defn != [x y] (if (= x y) false true)))
+
+(impl Eq (Result :Eq a :Eq e)
+  (defn = [x y]
+    (match x
+      [(Ok u) (match y [(Ok v) (= u v) _ false])
+       (Err u) (match y [(Err v) (= u v) _ false])]))
+  (defn != [x y] (if (= x y) false true)))
+
+(impl Eq (Pair :Eq a :Eq b)
+  (defn = [x y]
+    (match x
+      [(Pair x1 x2) (match y [(Pair y1 y2) (if (= x1 y1) (= x2 y2) false)])]))
+  (defn != [x y] (if (= x y) false true)))
+
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; `(mod- test …)` submodule (S87 Stage C.2): imports the parent trait + its
 ;; methods via `super` (D4 path — the trait is seeded into the child's

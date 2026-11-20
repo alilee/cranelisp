@@ -6,6 +6,10 @@
 ;; Spec: plan-stdlib.md §3.3
 
 (import [prelude []])
+(import [primitives [str-concat]])
+(import [compare.eq [Eq =]])
+(import [compare.ord [Ord <]])
+(import [text.display [Display show]])
 
 (deftype (Either a b) (Left [:a left-val]) (Right [:b right-val]))
 
@@ -43,6 +47,33 @@
   (match e
     [(Left v) (f v)
      (Right v) (g v)]))
+
+;; ── Trait impls ──────────────────────────────────────────────────────
+;; As with `derive`: same constructor and equal payloads for `=`; declaration
+;; order (`Left` < `Right`) then the payload's `<` for `Ord`; and `Left(1)` /
+;; `Right(a)` for `show`.
+
+(impl Eq (Either :Eq a :Eq b)
+  (defn = [x y]
+    (match x
+      [(Left u) (match y [(Left v) (= u v) _ false])
+       (Right u) (match y [(Right v) (= u v) _ false])]))
+  (defn != [x y] (if (= x y) false true)))
+
+(impl Ord (Either :Ord a :Ord b)
+  (defn < [x y]
+    (match x
+      [(Left u) (match y [(Left v) (< u v) _ true])
+       (Right u) (match y [(Right v) (< u v) _ false])]))
+  (defn > [x y] (< y x))
+  (defn <= [x y] (if (< y x) false true))
+  (defn >= [x y] (if (< x y) false true)))
+
+(impl Display (Either :Display a :Display b)
+  (defn show [self]
+    (match self
+      [(Left u) (str-concat "Left(" (str-concat (show u) ")"))
+       (Right u) (str-concat "Right(" (str-concat (show u) ")"))])))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; `(mod- test …)` submodule (S87 Stage C.2): exercises the Either eliminators

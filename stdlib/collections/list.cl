@@ -3,7 +3,8 @@
 ;; A recursive algebraic data type providing a classic functional list.
 ;; Constructors: Nil (empty list), Cons (head element + tail list).
 ;;
-;; Also provides the `list` construction macro.
+;; Also provides the `list` construction macro and the Eq, Ord and Display
+;; impls.
 ;;
 ;; Spec: 06-adt.md §6.1, plan-stdlib.md §3.3
 
@@ -15,6 +16,9 @@
 ;; them again from `fn.option` would bring the SAME names from a second
 ;; immediate source and collide (spec §8.6.4) — so we rely on the glob.
 (import [macros [SexpSym SexpList SCons SNil Sexp SList]])
+(import [compare.eq [Eq =]])
+(import [compare.ord [Ord <]])
+(import [text.display [Display show]])
 
 (defmacro list "Construct a list from elements"
   ([] `Nil)
@@ -125,6 +129,43 @@
      (match ys
        [Nil Nil
         (Cons yh yt) (Cons (f xh yh) (zip-with f xt yt))])]))
+
+;; ── Trait impls ──────────────────────────────────────────────────────
+;; Lists are equal when they have the same length and equal elements, and are
+;; ordered lexicographically: a proper prefix is less. Only `<` is structural
+;; (as in `derive-Ord`). `show` gives the Clojure list form, `(1 2 3)`, with
+;; each element's own `show`.
+
+(impl Eq (List :Eq a)
+  (defn = [xs ys]
+    (match xs
+      [Nil (match ys [Nil true _ false])
+       (Cons h t) (match ys [(Cons h2 t2) (if (= h h2) (= t t2) false) _ false])]))
+  (defn != [xs ys] (if (= xs ys) false true)))
+
+(impl Ord (List :Ord a)
+  (defn < [xs ys]
+    (match xs
+      [Nil (match ys [Nil false _ true])
+       (Cons h t)
+       (match ys
+         [Nil false
+          (Cons h2 t2) (if (< h h2) true (if (< h2 h) false (< t t2)))])]))
+  (defn > [xs ys] (< ys xs))
+  (defn <= [xs ys] (if (< ys xs) false true))
+  (defn >= [xs ys] (if (< xs ys) false true)))
+
+(impl Display (List :Display a)
+  (defn show [self]
+    (match self
+      [Nil "()"
+       (Cons h t) (str-concat "(" (str-concat (show h) (show-rest t)))])))
+
+(defn- show-rest "Each remaining element's show, space-prefixed, then the closing paren"
+  [xs]
+  (match xs
+    [Nil ")"
+     (Cons h t) (str-concat " " (str-concat (show h) (show-rest t)))]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; `(mod- test …)` submodule (S87 Stage C.2): exercises the list operations
