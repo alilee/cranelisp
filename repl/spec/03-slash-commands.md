@@ -15,7 +15,7 @@ While the session is locked, a command that evaluates code is refused; the other
 | `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/sig <name>` | `/s` | Show signature with typed parameters (§3.8) | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/doc <name>` | `/d` | Show docstring (including builtins — see spec/appendix-a-builtins.md §A.5) | 0 | [R1] |
-| `/type <expr>` | `/t` | Show type without evaluating | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/type <form>` | `/t` | Show the type of an expression or definition form without evaluating or defining it | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/source <name>` | — | Show original source text | 0 | [R4 S10] |
 | `/sexp <name>` | — | Show parsed S-expression | 0 | [R4 S10] |
@@ -40,6 +40,9 @@ While the session is locked, a command that evaluates code is refused; the other
 | `/syntax [topic]` | — | Core-language syntax cheat-sheet — bare `/syntax` lists topics, `/syntax <topic>` shows that topic's dense, verified-compiling content (see §17.17); a human REPL command **and** an agent pull-tool; LLM-free (a static curated asset, works with the agent absent) | 4 | [S90] |
 | `/search <query>` | — | Search public non-macro symbols reachable on the lib search path ∪ the project root by name, scheme, or docstring (see §17.19). An exact in-scope name match remains visible as `already in scope — no import needed`; source indexing does not execute macro expansion. A **normal default-build session facility** (not agent-gated), also reached by the agent via the ordinary pull | 4 | [Tested+Neg tests/search::search_by_name_exact_returns_four_facets, tests/search::search_by_scheme_partial_contains, tests/search::search_neg_no_match_self_documenting_note] |
 | `/quit` | `/q` | Exit REPL with status 0 (§0.1) | 0 | [Tested+Neg tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::quit_while_locked_exits_zero_without_reprinting_errors — status 0 unlocked and while locked, with no reprint of the failure] |
+
+`/type` given a definition form MUST report its type. The query MUST NOT define
+anything in the session.
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
 
