@@ -8,16 +8,10 @@ build mode including `--link`); S76–S82 delivered it. Owner `arch`. Decision
 document is the sole architecture authority for tracing. Strict evaluation
 within the trace extent (§7) is built. The mode-independent traced set (§5) and
 the covered-module rule the user ruled on 2026-11-19 (§5.1) are in source at
-`f8c55626`. Source does not meet the contract in four places, each stated
-where its rule is:
-
-- a form in a function instantiated in another module (§5.1, *The form's
-  module*; decided 2026-11-20, not built);
-- the object of a module compiled before the prelude publishes (§5.1, *Not met
-  in source*; correction decided, not built);
-- the first batch of such a module (same place; accepted residual);
-- a call through a function value taken in the callee's own batch (§3.5;
-  read from source, not reproduced).
+`f8c55626`; the form's module (§5.1, *The form's module*) at `94749709`; the
+slot obligation (§3.5) at `1238b31c`. Source does not meet the contract in one
+place: the first batch of a module compiled before the prelude publishes
+(§5.1, *Not met in source*; accepted residual).
 
 **Normative surface.** [Spec §4.12](../../spec/04-expressions.md#412-trace-expression)
 (form, semantics, what is traced, nested trace, concurrency, build modes);
@@ -251,20 +245,23 @@ is used as a value. A direct call saves one load, a constant factor the dev
 tier does not keep
 ([Principle 27](principles/27-dev-tier-optimises-only-against-blow-up.md)).
 
-- **Not met in source, read at `518489c2` and not reproduced.**
-  `crates/cranelisp-backend/src/compiler/control_flow/fn_as_value.rs::emit_wrapper_call`
-  emits a direct call when the target is declared in the unit being compiled.
-  A function taken as a value in the batch that defines it is then called
-  past its slot, and a trace that covers it records no frame for that call.
-  The same value taken in a later batch, such as a later REPL turn, loads the
-  slot and is recorded, so the tree depends on how the program was batched
-  ([Principle 11](principles/11-single-pipeline-mode-parameters.md)).
-- **Falsifier of this reading.** The entry file holds
-  `(defn af [:Int n] n)`, `(defn hof [:(Fn [Int] Int) h] (h 1))` and a `main`
-  that evaluates `(trace (hof af))`. Spec §4.12.3 requires an `af` frame
-  inside `hof`'s in every mode. The reading predicts none under `--run` and
-  `--link`. Intake and the cell are `qa`'s; the correction is the backend's
-  and changes no public item.
+- **Met in source at `1238b31c`.** The wrapper calls a target declared in the
+  unit being compiled through the target's slot in the current module's GOT,
+  as it calls every other target. Before that commit it called such a target
+  directly, so a trace covering a function taken as a value in the batch that
+  defines it recorded no frame for the call, and the tree depended on how the
+  program was batched
+  ([Principle 11](principles/11-single-pipeline-mode-parameters.md);
+  ACT-1088). Interior:
+  [compile-to-module §12.2](../backend/compile-to-module.md#122-every-call-to-a-slotted-function-goes-through-its-slot).
+- **Grade: measured.** The backend's module rows
+  `fn_as_value::slot_call_tests::wrapper_over_same_unit_target_calls_through_its_slot`
+  and its other-module control repoint the target's slot after compilation
+  and observe the call follow it; the first failed before the correction.
+  `tests/trace.rs::s124_1088_value_subject_run` and its `link` and `repl`
+  siblings observe the frame in every mode. The obligation is not structural:
+  a new emission site that calls a slotted function by its function id still
+  compiles.
 
 ## 4. Intrinsics runtime
 
@@ -278,12 +275,6 @@ readers `cranelisp_trace_{name,params,result,children,nanos}`, and re-exports
 §4b definition — string-named targets of backend-emitted calls — and publish
 through `crates/cranelisp-intrinsics/src/catalog.rs::intrinsics_table` like
 every other intrinsic.
-
-`cranelisp_trace_first_child_nanos` is not one of them. It read a `/run-tests`
-re-run under `trace` that the runner no longer performs, and nothing calls it.
-The backend names it nowhere (`717dd3a1`); the
-[batch record](interfaces.md#approved-changes-not-yet-in-source-s124), row
-*Trace reader*, states whether intrinsics still exports it.
 
 **Name agreement has one owner.** The catalog and its tests own the trace
 name set: a renamed or dropped symbol is a catalog test failure, not a runtime
@@ -502,25 +493,15 @@ for any member, the prelude included, and a failed member is the only one it
 reads as it stands. A module's object, and every restore and linked image
 that uses it, is therefore a function of the program.
 
-**Not met in source: a form compiled before the prelude publishes.** The
-promise "the same cold, warm and in every mode" does not hold for the second
-case. Two faults share the population below. The first is a defect with a
-decided correction; the second is the accepted residual.
-
-- **The object pass does not wait** (read at `518489c2`:
-  `src/session_v4/nice_worker.rs::emit_object` takes every member as
-  published). A child's object pass can run while the prelude is still
-  blocked on the child's parent, and then covers the prelude with only the
-  edges recorded so far. The cache keeps that object, so restores and
-  `--link` inherit it. Which launches omit the frame depends on scheduling:
-  `qa` observed every launch omit it (ACT-1087), and `test` observed the
-  restored and linked legs omit it in one reading of eleven.
-  - Correction: [int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10),
-    *The object pass waits* (C1). It is private to the binary and changes no
-    public item. This contract needs no other change for it.
-  - After it, `tests/trace.rs::s124_1087_subject_link` and the restored leg
-    of `s124_1087_subject_run` pass in every reading.
-- **The first batch covers less.** The remaining bullets state it.
+**Not met in source: the first batch of a form compiled before the prelude
+publishes.** The promise "the same cold, warm and in every mode" does not hold
+for the second case's first batch. It is the accepted residual the bullets
+below state. The object pass waits for an unpublished covered member
+([int §7.6.4](../int/int.md#764-reference-edges-and-the-covered-trace-set-row-b10),
+*The object pass waits*, C1; `fe385164`), so the module's object, a restore
+of it and a linked image cover the full set:
+`tests/trace.rs::s124_1087_subject_run_restored` and `s124_1087_subject_link`
+pass.
 
 - **Which modules.** A module whose implicit prelude import is active and
   whose batch runs while the prelude is unpublished. These are the declared
@@ -535,8 +516,7 @@ decided correction; the second is the accepted residual.
   prelude. Under the contract the module's object, a restore of it and
   `--link` cover the prelude's whole closure. A first `--run`, a
   `--no-cache --run` or a REPL start therefore omits frames that a second
-  `--run` and `--link` record. Until the object pass waits, the second
-  `--run` and `--link` can omit them as well.
+  `--run` and `--link` record.
 - **When it is visible.** Only for a call, inside the form's extent, into the
   prelude or a module the form's module reaches only through the prelude. A
   call the module writes makes the callee's module its own edge, so the call
@@ -563,10 +543,10 @@ decided correction; the second is the accepted residual.
   import; `m` declares a child `c` that does not, and `c` holds
   `(defn run [h] (trace (h 1)))`. The entry calls `(m.c/run f)`. A first
   `--run` records no `p/f` frame; a second `--run` and `--link` record one.
-  The cells are `tests/trace.rs::s124_1087_subject_run` and
-  `s124_1087_subject_link` (ACT-1087). The first-launch leg of the `--run`
-  cell fails for as long as this residual stands; it is a defect of the
-  binary, carried on that test.
+  The cells are `tests/trace.rs::s124_1087_subject_run_first_launch`,
+  `s124_1087_subject_run_restored` and `s124_1087_subject_link` (ACT-1087).
+  The first-launch cell fails for as long as this residual stands; it is a
+  defect of the binary, carried on that test.
 - **Reopened by** a project that needs the frame, or by a module outside
   this population whose batch can run while the prelude is unpublished.
   `design`(int) read the load paths and found none
@@ -701,9 +681,6 @@ module*).
     map keyed by module would allow. That a set lists the body's own module
     is the producer's obligation, like the rest of its contents; every trace
     cell that records a call in the form's own module fails if it does not.
-- **Record.** The
-  [batch record](interfaces.md#approved-changes-not-yet-in-source-s124) rows
-  B10 and B10-C2 carry the decisions until the checkpoint reports them.
 
 **Not chosen.**
 

@@ -552,10 +552,7 @@ entries take no counted heap argument.
     executable — and never at codegen, which names intrinsics by string. It is a
     function rather than a static to avoid an `unsafe impl Sync` over raw
     pointers. The catalog's own name-set test owns the entry list; no count is
-    restated here. `IntrinsicEntry::is_runtime` is documentation metadata with
-    no dispatch consumer; its removal is approved and lands in S124
-    ([approved changes](interfaces.md#approved-changes-not-yet-in-source-s124)).
-    Host-promised externs (§7) are not catalog entries.
+    restated here. Host-promised externs (§7) are not catalog entries.
 12. **The `(trace …)` runtime is an intrinsic family** published through the
     catalog and working in every mode, including linked executables. The value
     formatter is a pure walk of a backend-baked descriptor and the heap value,

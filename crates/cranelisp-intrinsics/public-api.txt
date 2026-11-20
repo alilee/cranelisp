@@ -1,5 +1,37 @@
 pub mod cranelisp_intrinsics
 pub mod cranelisp_intrinsics::alloc
+#[repr(C)] pub struct cranelisp_intrinsics::alloc::HeapAdt
+pub cranelisp_intrinsics::alloc::HeapAdt::header: cranelisp_types::heap::HeapHeader
+pub cranelisp_intrinsics::alloc::HeapAdt::tag: i64
+impl cranelisp_intrinsics::alloc::HeapAdt
+pub const cranelisp_intrinsics::alloc::HeapAdt::FIELDS_START: usize
+pub const cranelisp_intrinsics::alloc::HeapAdt::TAG_OFFSET: i32
+pub const fn cranelisp_intrinsics::alloc::HeapAdt::field_offset(usize) -> i32
+pub const fn cranelisp_intrinsics::alloc::HeapAdt::payload_size(usize) -> usize
+impl core::marker::Freeze for cranelisp_intrinsics::alloc::HeapAdt
+impl core::marker::Send for cranelisp_intrinsics::alloc::HeapAdt
+impl core::marker::Sync for cranelisp_intrinsics::alloc::HeapAdt
+impl core::marker::Unpin for cranelisp_intrinsics::alloc::HeapAdt
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::alloc::HeapAdt
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::alloc::HeapAdt
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::alloc::HeapAdt
+#[repr(C)] pub struct cranelisp_intrinsics::alloc::HeapClosure
+pub cranelisp_intrinsics::alloc::HeapClosure::code_ptr: i64
+pub cranelisp_intrinsics::alloc::HeapClosure::drop_glue_ptr: i64
+pub cranelisp_intrinsics::alloc::HeapClosure::header: cranelisp_types::heap::HeapHeader
+impl cranelisp_intrinsics::alloc::HeapClosure
+pub const cranelisp_intrinsics::alloc::HeapClosure::CAPTURES_START: usize
+pub const cranelisp_intrinsics::alloc::HeapClosure::CODE_PTR_OFFSET: i32
+pub const cranelisp_intrinsics::alloc::HeapClosure::DROP_GLUE_PTR_OFFSET: i32
+pub const fn cranelisp_intrinsics::alloc::HeapClosure::capture_offset(usize) -> i32
+pub const fn cranelisp_intrinsics::alloc::HeapClosure::payload_size(usize) -> usize
+impl core::marker::Freeze for cranelisp_intrinsics::alloc::HeapClosure
+impl core::marker::Send for cranelisp_intrinsics::alloc::HeapClosure
+impl core::marker::Sync for cranelisp_intrinsics::alloc::HeapClosure
+impl core::marker::Unpin for cranelisp_intrinsics::alloc::HeapClosure
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::alloc::HeapClosure
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::alloc::HeapClosure
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::alloc::HeapClosure
 pub fn cranelisp_intrinsics::alloc::alloc_count() -> usize
 pub fn cranelisp_intrinsics::alloc::alloc_with_rc(usize) -> *mut u8
 pub fn cranelisp_intrinsics::alloc::bytes_allocated() -> usize
@@ -14,7 +46,6 @@ pub fn cranelisp_intrinsics::alloc::is_live(usize) -> bool
 pub mod cranelisp_intrinsics::catalog
 pub struct cranelisp_intrinsics::catalog::IntrinsicEntry
 pub cranelisp_intrinsics::catalog::IntrinsicEntry::has_return: bool
-pub cranelisp_intrinsics::catalog::IntrinsicEntry::is_runtime: bool
 pub cranelisp_intrinsics::catalog::IntrinsicEntry::name: &'static str
 pub cranelisp_intrinsics::catalog::IntrinsicEntry::param_count: usize
 pub cranelisp_intrinsics::catalog::IntrinsicEntry::ptr: *const u8
@@ -81,7 +112,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::heap_string:
 pub fn cranelisp_intrinsics::heap_string::alloc_string(&[u8]) -> *mut u8
 #[export_name = "runtime/alloc_string"] pub c fn cranelisp_intrinsics::heap_string::heap_alloc_string(*const u8, i64) -> i64
 pub unsafe fn cranelisp_intrinsics::heap_string::read_string_as_str(i64) -> &'static str
-#[export_name = "runtime/string_read"] pub c fn cranelisp_intrinsics::heap_string::string_read(i64, *mut *const u8, *mut i64)
+pub c fn cranelisp_intrinsics::heap_string::string_read(i64, *mut *const u8, *mut i64)
 pub mod cranelisp_intrinsics::io
 #[no_mangle] pub c fn cranelisp_intrinsics::io::cranelisp_run_io(i64) -> i64
 pub fn cranelisp_intrinsics::io::run_io_trampoline(i64) -> i64
@@ -170,10 +201,7 @@ pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool
 pub fn cranelisp_intrinsics::rc::rc_emit_counts() -> (u64, u64)
 pub fn cranelisp_intrinsics::rc::rc_inc(i64)
 pub fn cranelisp_intrinsics::rc::rc_trace(&str, i64, i64)
-#[export_name = "runtime/rc_underflow_check"] pub c fn cranelisp_intrinsics::rc::rc_underflow_check(i64, i64) -> i64
-pub fn cranelisp_intrinsics::rc::stack_slot_hits() -> u64
 pub fn cranelisp_intrinsics::rc::tally_rc_emit(bool)
-pub fn cranelisp_intrinsics::rc::tally_stack_slot()
 pub mod cranelisp_intrinsics::runtime_switches
 pub fn cranelisp_intrinsics::runtime_switches::capture_runtime_switches() -> alloc::vec::Vec<u8>
 #[export_name = "cranelisp_install_runtime_switches"] pub c fn cranelisp_intrinsics::runtime_switches::cranelisp_install_runtime_switches(*const u8, usize)
@@ -213,7 +241,6 @@ pub fn cranelisp_intrinsics::trace::consume_trace_call(cranelisp_intrinsics::han
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_children(i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_enter(i64, i64, i64, i64)
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_exit(i64, i64) -> i64
-#[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_first_child_nanos(i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_format(i64, i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_name(i64) -> i64
 #[no_mangle] pub c fn cranelisp_intrinsics::trace::cranelisp_trace_nanos(i64) -> i64
@@ -257,6 +284,7 @@ pub mod cranelisp_intrinsics::vec_runtime
 pub const cranelisp_intrinsics::vec_runtime::CAP_OFFSET: usize
 pub const cranelisp_intrinsics::vec_runtime::DATA_PTR_OFFSET: usize
 pub const cranelisp_intrinsics::vec_runtime::LEN_OFFSET: usize
+pub const cranelisp_intrinsics::vec_runtime::PAYLOAD_SIZE: usize
 #[export_name = "runtime/vec_drop"] pub c fn cranelisp_intrinsics::vec_runtime::vec_drop(i64, i64)
 #[export_name = "runtime/vec_new"] pub c fn cranelisp_intrinsics::vec_runtime::vec_new(i64) -> i64
 #[export_name = "vec-push-copy"] pub c fn cranelisp_intrinsics::vec_runtime::vec_push_copy(i64, i64, i64) -> i64
@@ -266,7 +294,6 @@ pub unsafe fn cranelisp_intrinsics::vec_runtime::vec_strings_from_owned(alloc::v
 pub unsafe fn cranelisp_intrinsics::vec_runtime::with_vec_strings<R>(i64, impl core::ops::function::FnOnce(&[i64]) -> R) -> R
 pub struct cranelisp_intrinsics::IntrinsicEntry
 pub cranelisp_intrinsics::IntrinsicEntry::has_return: bool
-pub cranelisp_intrinsics::IntrinsicEntry::is_runtime: bool
 pub cranelisp_intrinsics::IntrinsicEntry::name: &'static str
 pub cranelisp_intrinsics::IntrinsicEntry::param_count: usize
 pub cranelisp_intrinsics::IntrinsicEntry::ptr: *const u8
