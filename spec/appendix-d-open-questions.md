@@ -143,25 +143,27 @@ The ruling is recorded in [Sprint 124 Notes](../sprints/SPRINT.md#notes).
 
 ## S124-Q12: Does unquote-splicing require a library-provided sconcat?
 
-**Open problem — ACT-1095.** Opened
-[§11.4](11-stdlib.md#114-writing-a-standard-library),
-[§9.7.0](09-macros.md#970-visibility), and the filing's source targets
-`crates/cranelisp-frontend/src/quasiquote.rs` (`make_sconcat`),
-`stdlib/core/syntax.cl`, and `stdlib/plan-stdlib.md` §6.5. Non-normative §11.4
-says a library using `~@` must provide `core.syntax/sconcat`; normative §9.7.0
-also locates `sconcat` in `core.syntax` and says it is re-exported through the
-prelude because quasiquote-generated code uses it. The expander instead emits
-`macros/sconcat`; `core.syntax` defines no such function. Implementation
-behavior cannot settle the normative text. §9.4.2 defines splicing's result
-but does not identify who supplies concatenation.
+**Closed — user ruling, 2026-11-21**, recorded in
+[Sprint 124 Notes](../sprints/SPRINT.md#notes):
 
-**Options / tradeoffs.** Make splicing independent of any standard library
-and remove the library dependency from §9.7.0 and §11.4: permits empty-library
-use and agrees with the observed implementation, but requires approval to
-change the macro chapter. Retain a library-supplied dependency: preserves that
-wording but requires the compiler and library to meet it and limits splicing
-without a library. The user must decide the dependency; any mandated helper
-path also needs confirmation. ACT-1095 remains unresolved pending that ruling.
+> agreed - all language features should be self-sustaining and there should
+> be builtins or primitives for any required helpers.
+
+[§9.7.0](09-macros.md#970-visibility) and
+[§11.4](11-stdlib.md#114-writing-a-standard-library) remove the library
+requirement for unquote-splicing and state that the compiler provides its
+concatenation. The general principle is recorded in
+[§8.8.3](08-modules.md#883-empty-prelude).
+ACT-1095 is resolved. Its claim was verified by opening §11.4, §9.7.0,
+`crates/cranelisp-frontend/src/quasiquote.rs` (`make_sconcat`),
+`stdlib/core/syntax.cl`, and `stdlib/plan-stdlib.md` §6.5: the expander emits
+`macros/sconcat`, while `core.syntax` defines no `sconcat`.
+
+**Open remainder — S124-Q12-R1: user-callable concatenation helper.** The
+macro chapter's existing visibility rules cover library helpers and qualified
+compiler-seeded constructors; they do not decide whether the concatenation
+helper used by `~@` is itself a name users may call. Neither a callable name
+nor its public visibility is settled by this ruling.
 
 ## S124-Q13: What are a trace root's name, parameters and children?
 

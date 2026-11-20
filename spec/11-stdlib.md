@@ -48,7 +48,7 @@ This ordering means a `defmacro` form can reference:
 
 Forward references to macros are not supported — a macro must appear before the code that uses it.
 
-## 11.4 Writing a Standard Library [Tested tests/spec_11_stdlib::prelude_loads_without_errors]
+## 11.4 Writing a Standard Library [Uncovered S124 — was tests/spec_11_stdlib::prelude_loads_without_errors]
 
 Practical notes for library authors:
 
@@ -58,7 +58,7 @@ Practical notes for library authors:
 
 **Module compilation order**: Modules compile in topological order (Section 8.10). A macro defined in `core.syntax` is available to `core.collections` if `core.collections` imports `core.syntax`. Library authors must ensure the module dependency graph is acyclic.
 
-**The `~@` operator**: The unquote-splicing operator (`~@expr`) requires `sconcat` to be resolvable as `core.syntax/sconcat`. A standard library that uses `~@` in macro bodies must provide this qualified path, or the generated expansion code will fail to compile. The reference implementation satisfies this by providing `core.syntax` with a public `sconcat` function.
+**The `~@` operator**: Unquote-splicing (`~@expr`) needs no library function. Its expansion uses compiler-provided concatenation, so a standard library need not provide `sconcat` or re-export it through the prelude. See [§9.7.0](09-macros.md#970-visibility).
 
 **Prelude design**: The prelude module is the mechanism by which library names become globally available. A standard library SHOULD provide a `prelude.cl` that re-exports the names it considers universally useful. The prelude itself must not import the prelude (it is excluded from implicit prelude injection).
 
