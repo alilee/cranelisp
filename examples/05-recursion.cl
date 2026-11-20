@@ -52,8 +52,8 @@
 ;; Expected: 120 + 3628800 + 55 + 6 + 5050 + 1024 = 3635055
 ;; The process EXIT CODE is the low byte of that sum: 3635055 mod 256 = 111.
 ;; (A process exit status is a single byte, so any total above 255 wraps.
-;; The exit code is still a faithful regression signal — if a sub-test
-;; regresses the sum changes and so does the byte.)
+;; This checksum can miss compensating errors or changes by multiples of
+;; 256; it does not prove that each individual result is correct.)
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).

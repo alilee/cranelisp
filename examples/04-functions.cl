@@ -3,8 +3,8 @@
 ;; (defn name [param1 param2 ...] body)
 ;;
 ;; Functions can call other functions (including themselves).
-;; Functions are declared before use in batch mode --
-;; the compiler sees all definitions before compiling any bodies.
+;; A function can call one declared later in the same compilation cluster.
+;; Example 33 explores forward references and duplicate definitions.
 ;; Type annotations on parameters are optional: (defn f [:Int x] ...)
 
 ;; A function that doubles its argument

@@ -23,7 +23,7 @@
 
 ;; --- A simple macro: increment ---
 
-;; my-inc adds 1 to its argument at compile time.
+;; my-inc emits an addition; the generated expression runs at runtime.
 ;; When you write (my-inc 41), the compiler replaces it with (add-i64 41 1).
 (defmacro my-inc [x]
   `(add-i64 ~x 1))
@@ -78,8 +78,10 @@
 
 ;; --- Macros that generate let bindings ---
 
-;; swap: evaluate two expressions and return them in opposite order
-;; via a let binding to avoid double evaluation
+;; with-double deliberately introduces the name `doubled` for body to use.
+;; This is intentional capture: an outer `doubled` is shadowed in body.
+;; The template inserts x twice, so its expression is evaluated twice;
+;; introducing a let does not by itself prevent duplicated evaluation.
 (defmacro with-double [x body]
   `(let [doubled (add-i64 ~x ~x)] ~body))
 

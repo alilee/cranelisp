@@ -1,24 +1,8 @@
-;; examples/lib/operators.cl — the arithmetic/equality/ordering operator
-;; traits, as an examples-local library module.
-;;
-;; EARNED BY: 15-traits.cl.
-;;
-;; This file is part of the examples-local library (see
-;; `examples/lib/README.md`). It exists so that an example ABOUT
-;; something else does not have to re-teach traits before it can write
-;; `+`. Nothing here is new language surface: every declaration below is
-;; exactly what 15-traits.cl builds from scratch, in front of the reader,
-;; using only `deftrait`, `impl`, and the arithmetic primitives of 01/08.
-;;
-;; So: read 15 first. After 15, `(import [operators [Num + *]])` is a
-;; shorthand for a lesson you have already had — not a new dependency and
-;; not a standard library. (For the real standard library, and the far
-;; larger vocabulary it provides, read the stdlib docs; this sequence
-;; teaches the language.)
-;;
-;; Unlike `prelude.cl`, this module is NOT implicitly in scope. An
-;; example must import it by name. That is deliberate: the import line is
-;; the reader's cue that this example is standing on lesson 15.
+;; Arithmetic, equality and ordering traits earned by 15-traits.cl.
+;; Import explicitly, for example (import [operators [Num + *]]).
+;; This module uses the mechanism taught there, with explicit implementations
+;; of Ord's <= and >= where 15 demonstrates default method bodies.
+;; It is an examples-local recap, not the standard library. See README.md.
 
 ;; --- Num: the four arithmetic operators (15-traits.cl) ----------------
 

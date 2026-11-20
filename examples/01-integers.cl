@@ -5,6 +5,12 @@
 ;;   add-i64, sub-i64, mul-i64, div-i64
 ;;
 ;; The zero-argument function named `main` is the program entry point.
+;; Its result must be an IO value. `(Pure n)` packages a computed integer
+;; without performing an effect; the runtime extracts n as the program's
+;; result and uses its low byte as the exit code. For now, read Pure as
+;; the entry-point wrapper; example 21 teaches IO and sequencing.
+;; The examples-local prelude supplies these primitive names without
+;; loading the standard library (see lib/README.md).
 
 ;; Addition
 (defn add-example [] (add-i64 3 4))
@@ -27,7 +33,7 @@
 ;; The entry point combines the results to verify they all work.
 ;; Expected: 7 + 7 + 42 + 3 + 17 + (-7) = 69
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
+  ;; Wrap the sum of results in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
     (add-i64 (add-example)

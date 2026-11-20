@@ -2,13 +2,13 @@
 ;;
 ;; Deeply nested function calls are hard to read:
 ;;
-;;   (str-len (str-concat "hello" (str-concat ", " "world")))
+;;   (str-len (str-concat (str-concat "hello" ", ") "world"))
 ;;
 ;; Threading macros let you write this as a top-to-bottom pipeline:
 ;;
 ;;   (-> "hello"
 ;;       (str-concat ", ")
-;;       (str-concat "world")    ;; NOTE: this is wrong for str-concat
+;;       (str-concat "world")
 ;;       str-len)
 ;;
 ;; Two threading macros serve different insertion points:
@@ -47,7 +47,7 @@
             SNil `(-> ~x ~@rest)])
        _ `(-> ~(SexpList (SCons form (SCons x SNil))) ~@rest)])))
 
-;; Thread-last: (-> x (f a b)) becomes (f a b x)
+;; Thread-last: (->> x (f a b)) becomes (f a b x)
 ;; Appends the threaded value at the end of each form's argument list.
 (defmacro ->>
   ([x] x)
