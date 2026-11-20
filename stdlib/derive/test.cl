@@ -12,11 +12,10 @@
 ;; a `deftype` sexp as their INTROSPECTION argument but do NOT define the type —
 ;; the type must already exist, so this module derives against pre-defined types.
 ;;
-;; NOT COVERED HERE: the `derive` dispatch form, two-field constructors, and
-;; `derive-Ord` on a three-constructor enum. The last two are covered by the
-;; `stdlib_derive_*` cases in `tests/stdlib_conformance.rs`.
+;; The `derive` dispatch form, by contrast, emits the `deftype` itself
+;; (`Suit` below).
 
-(import [super [derive-Eq derive-Ord derive-Display]])
+(import [super [derive derive-Eq derive-Ord derive-Display]])
 (import [testing.assertions [assert-eq assert-true assert-false]])
 (import [primitives [Option String Int Bool]])
 
@@ -28,12 +27,14 @@
 (deftype Colour Red Green Blue)             ; 3-ctor nullary enum
 (deftype Level (Lvl [:Int n]))              ; single 1-field data constructor
 (deftype Shade Dark (Bright [:Int level]))  ; mixed: nullary + 1-field data ctor
+(deftype Point (Pt [:Int x :Int y]))      ; single 2-field data constructor
 
 (derive-Eq (deftype Flag Off On))
 (derive-Ord (deftype Flag Off On))
 (derive-Display (deftype Flag Off On))
 
 (derive-Eq (deftype Colour Red Green Blue))
+(derive-Ord (deftype Colour Red Green Blue))
 (derive-Display (deftype Colour Red Green Blue))
 
 (derive-Eq (deftype Level (Lvl [:Int n])))
@@ -42,6 +43,13 @@
 
 (derive-Eq (deftype Shade Dark (Bright [:Int level])))
 (derive-Display (deftype Shade Dark (Bright [:Int level])))
+
+(derive-Eq (deftype Point (Pt [:Int x :Int y])))
+(derive-Ord (deftype Point (Pt [:Int x :Int y])))
+(derive-Display (deftype Point (Pt [:Int x :Int y])))
+
+;; The dispatch form defines the type and derives all three traits.
+(derive [Eq Ord Display] (deftype Suit Clubs Hearts Spades))
 
 ;; ── derive-Eq ──────────────────────────────────────────────────────────
 
@@ -78,6 +86,16 @@
 
 (defn test-eq-mixed-data-same [] :(Option String)
   (assert-true (= (Bright 3) (Bright 3))))
+
+;; Two fields: equal only when both are.
+(defn test-eq-two-field-same [] :(Option String)
+  (assert-true (= (Pt 1 2) (Pt 1 2))))
+
+(defn test-eq-two-field-first-differs [] :(Option String)
+  (assert-false (= (Pt 1 2) (Pt 9 2))))
+
+(defn test-eq-two-field-second-differs [] :(Option String)
+  (assert-false (= (Pt 1 2) (Pt 1 9))))
 
 ;; ── derive-Ord ─────────────────────────────────────────────────────────
 ;; Constructor declaration order IS the order: Off < On.
@@ -126,6 +144,30 @@
 (defn test-ord-data-ge-when-greater [] :(Option String)
   (assert-true (>= (Lvl 9) (Lvl 1))))
 
+;; Three constructors: declaration order Red < Green < Blue, including the
+;; non-adjacent pair.
+(defn test-ord-three-ctor-adjacent [] :(Option String)
+  (assert-true (< Red Green)))
+
+(defn test-ord-three-ctor-non-adjacent [] :(Option String)
+  (assert-true (< Red Blue)))
+
+(defn test-ord-three-ctor-not-lt-backwards [] :(Option String)
+  (assert-false (< Blue Green)))
+
+;; Two fields: lexicographic — the first field decides unless equal.
+(defn test-ord-two-field-first-decides [] :(Option String)
+  (assert-true (< (Pt 1 9) (Pt 2 0))))
+
+(defn test-ord-two-field-first-decides-against [] :(Option String)
+  (assert-false (< (Pt 2 0) (Pt 1 9))))
+
+(defn test-ord-two-field-second-breaks-tie [] :(Option String)
+  (assert-true (< (Pt 1 2) (Pt 1 3))))
+
+(defn test-ord-two-field-equal-is-not-lt [] :(Option String)
+  (assert-false (< (Pt 1 2) (Pt 1 2))))
+
 ;; ── derive-Display ─────────────────────────────────────────────────────
 
 (defn test-show-nullary-ctor [] :(Option String)
@@ -142,3 +184,17 @@
 
 (defn test-show-mixed-data-arm [] :(Option String)
   (assert-eq "Bright(3)" (show (Bright 3))))
+
+(defn test-show-two-field-ctor [] :(Option String)
+  (assert-eq "Pt(1 2)" (show (Pt 1 2))))
+
+;; ── derive dispatch form ───────────────────────────────────────────────
+
+(defn test-dispatch-defines-type-and-eq [] :(Option String)
+  (assert-false (= Clubs Spades)))
+
+(defn test-dispatch-derives-ord [] :(Option String)
+  (assert-true (< Hearts Spades)))
+
+(defn test-dispatch-derives-display [] :(Option String)
+  (assert-eq "Hearts" (show Hearts)))

@@ -149,8 +149,7 @@ The user may revisit this boundary. Promotion is a one-line `(export …)`.
   shells that need none. Five definition-bearing modules have no self-tests:
   `core.io`, `core.trace`, `derive.helpers` (exercised only through
   `derive.test`), `io.monad` and `seq.lazy`. See §6.3.
-- Two test headers list withheld cases: `derive/test.cl` and
-  `core/syntax/test.cl`.
+- One test header lists withheld cases: `core/syntax/test.cl`.
 
 ## 3. Modules
 
@@ -247,10 +246,8 @@ carry the rest.
   The macros cannot be tested inside `derive.cl`'s own submodule, because a
   macro is available only to later forms in its module (spec §9.3.4). The
   consumer module `derive/test.cl` is therefore the test home. The dispatch
-  form `derive` emits the `deftype` and its impls in one `begin`. S117 retired
-  FIXME 0816 after addressing macro-expanded declaration staging
-  ([S117 conformance recovery](../design/int/s117-conformance-recovery.md) §2),
-  but the path has not been re-tested here (§6.3).
+  form `derive` emits the `deftype` and its impls in one `begin`;
+  `derive.test` exercises it.
 - **`core.io`.** `timeout` composes the `race` primitive with the `sleep` leaf.
   A timeout cancels the losing arm (spec §10.12.8–§10.12.9).
 - **Accessors.** A deftype-level field list mints accessors. A constructor-arm
@@ -400,12 +397,7 @@ the parent, covering:
 
 **Open.** `core.trace`, `io.monad` and `seq.lazy` have no self-tests.
 `derive.helpers` is covered only through `derive.test`. `io.monad` has the
-highest value, because `pure`/`do`/`bind!` are prelude surface. `derive.test`
-does not exercise the two-field constructor or the three-constructor
-`derive-Ord`; both run on S122 source and are covered by the `stdlib_derive_*`
-cases in `tests/stdlib_conformance.rs`, so they can be added as self-tests.
-Before `derive` enters the prelude, add a `derive.test` case for the `derive`
-dispatch form (§3.3).
+highest value, because `pure`/`do`/`bind!` are prelude surface.
 
 ### 6.4 `Ord String`
 

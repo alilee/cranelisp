@@ -89,9 +89,9 @@
 ;;
 ;; BUILT S115: `derive/test.cl` (module `derive.test`) is that consumer — a
 ;; separate module that imports these macros from `super` and derives against
-;; its own four ADTs. It is the standing guard for the derive surface; the two
-;; S115 conformance fixes above (`!=` for Eq, `<=`/`>=` for Ord) are pinned
-;; there, and its header lists the shapes it does not cover.
+;; its own ADTs. It is the standing guard for the derive surface, including the
+;; `derive` dispatch form; the two S115 conformance fixes above (`!=` for Eq,
+;; `<=`/`>=` for Ord) are pinned there.
 
 (mod- test)
 ;;
