@@ -83,6 +83,14 @@ use `(import [helpers [answer]])` to bring its public function into scope.
 Declaring a child loads it; importing names determines which bare spellings you
 can use. The precise file lookup is [spec §8.2.5](../../spec/08-modules.md#825-file-resolution).
 
+**Library-child limitation (ACT-1096):** a library module's declared child can
+be replaced by a same-path project file or an earlier library search directory.
+Keep those paths distinct today; a declared child's file belongs beside its
+parent. How an independently resolved project child participates under a
+library parent remains open as
+[S124-Q14](../../spec/appendix-d-open-questions.md#s124-q14-can-a-project-file-be-a-child-of-a-library-resolved-parent).
+
+
 `(mod- internal)` declares a private child, accessible within the declaring
 module's subtree. The inline form `(mod child ...forms...)` creates a child file
 and rewrites the declaration to `(mod child)`; use it when you want the REPL to
@@ -137,15 +145,25 @@ applies to traits and their methods. See the [constructor guide](constructors.md
 [field-accessor guide](field-accessors.md), and
 [accessibility table](../../spec/08-modules.md#8311-accessibility-after-import).
 
-**Current limits:** the specification also defines selective member entries
-such as `[Shade.Blue]` and renamed entries such as `[(square sq)]`. On the
-current binary, the former import does not make bare `Blue` usable in this
-example; the latter is rejected with `expected symbol for import name`.
-Renamed imports are tracked in [ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md).
-Use the parent type's qualified member or a module alias for the working forms
-shown here. These observations do not change the contracts in
-[§8.3.5](../../spec/08-modules.md#835-renamed-import) and
-[§8.3.11](../../spec/08-modules.md#8311-accessibility-after-import).
+Renamed entries bind a local spelling, and selective member entries bind just
+the requested constructor. In a fresh REPL in the same project:
+
+<!-- sample: {"kind":"repl","files":{"mathx.cl":"(defn square [:Int x] (primitives/mul-i64 x x))\n(deftype Shade Red Blue)\n"}} -->
+```
+user> (import [mathx [(square sq) Shade.Blue]])
+user> (sq 7)
+:primitives/Int 49
+user> Blue
+:mathx/Shade mathx/Shade.Blue ; deftype
+```
+
+See [renamed imports](../../spec/08-modules.md#835-renamed-import) and
+[member accessibility](../../spec/08-modules.md#8311-accessibility-after-import).
+
+**Alias limitation (ACT-1082):** a missing member reached through an alias can
+be reported against the alias instead of the real module; some REPL load orders
+also refuse a valid aliased reference. Use the canonical module path when
+investigating such a refusal.
 
 ## Keep internals private; re-export a public facade
 
@@ -168,12 +186,32 @@ those names usable inside `api` and public to downstream importers. An ordinary
 `import` keeps its local exposures private; importing something is not itself a
 re-export. There is no need to import a name first and then export it.
 
-The specification also describes export mounts such as
-`(export [(mathx math) [square]])`, which would expose the module through
-`api.math`. The current binary rejects this form with `expected symbol for
-export module path`; use the simple re-export above for now. Renamed re-exports
-share the current renamed-entry limitation. The governing shapes are in
+An export mount adds a public module route. Replace `api.cl` with this file:
+
+<!-- sample: {"kind":"definition","files":{"mathx.cl":"(defn square [:Int x] (primitives/mul-i64 x x))\n"}} -->
+```clojure
+;; api.cl
+(export [(mathx math) [square]])
+```
+
+In a fresh REPL, load `api` through a public name before using its mount:
+
+<!-- sample: {"kind":"repl","files":{"mathx.cl":"(defn square [:Int x] (primitives/mul-i64 x x))\n","api.cl":"(export [(mathx math) [square]])\n"}} -->
+```
+user> (import [api [square]])
+user> (api.math/square 8)
+:primitives/Int 64
+```
+
+The mount exposes the target module's public surface through `api.math`;
+the name list also re-exports `square` directly from `api`. Renamed re-exports
+use the same `(original local)` entry shape as imports. See
 [spec §8.4](../../spec/08-modules.md#84-export).
+
+**Mount-loading limitation (ACT-1079):** a qualified reference through a mount
+can fail until its declaring module has loaded. An import of a real public
+name, as above, loads the owner; an empty import does not. A chain of mounts
+can require each owner to load first.
 
 Distinct declarations can share a bare spelling. A call may select among them
 by context and type; if it remains ambiguous, qualify the declaration you mean.
