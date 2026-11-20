@@ -105,3 +105,17 @@ A trait method named `main` does not define the program's `main`, so the
 “no `main`” refusal stands. The same reading retains refusal of the multi-arity
 `(defn main ([] …) ([x] …))`, despite its zero-argument variant; the user was
 told that consequence and requested no different treatment.
+
+## S124-Q10: What does /type report for a non-value form?
+
+**Open.** The user ruling of 2026-11-20, “type should not evaluate a non-pure
+form”, is recorded in [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory).
+It settles non-evaluation but does not specify the report for non-value forms
+such as `deftype` and `defmacro`. §3.1 requires a definition form's type to be
+reported without defining anything in the session; the report where the form
+has no value type remains unresolved.
+
+**Options and tradeoffs.** A no-value-type diagnostic makes the absence of a
+value type explicit; a form-specific description gives more useful information
+but requires the user to specify what each form reports. Neither option
+permits evaluating a non-pure form. The user must decide the report.

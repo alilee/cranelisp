@@ -187,6 +187,10 @@ discoverable. [Tested tests/search::search_finds_seeded_primitive_offers_import]
 non-macro definitions in the synthetic `macros` module follow the same direct feed.
 [Uncovered S121]
 
+Search returns what is reachable, regardless of what the session has already imported or
+loaded. A reachable module MUST NOT be omitted merely because it or a dependency is not yet
+loaded or is still compiling in the session. [Uncovered S124]
+
 The reachable-module set does not make every declaration a search subject. Macro declarations
 are excluded from every feed under §17.19.2a.
 
@@ -229,8 +233,9 @@ their public results → discard the typecheck state** sequence (`§11.1–§11.
 module into the session, the indexer omits direct macro declarations, does not execute macro
 expansion, typechecks the remaining forms in throwaway staging, reads the successfully checked
 public non-macro definitions into derived lookup indices, and **discards** that typecheck state.
-A failed non-macro indexing attempt contributes no rows from that source pass (§17.19.5).
-[Tested+Neg src/session_v4/index_worker.rs::index_typecheck_mutates_no_live_shared_state, tests/search::search_ignores_macro_declaration_but_keeps_ordinary_definition_neg]
+A failed non-macro indexing attempt contributes no rows from that source pass, subject to R10's
+session-independent reachability rule (§17.19.5).
+[Uncovered S124 — was src/session_v4/index_worker.rs::index_typecheck_mutates_no_live_shared_state, tests/search::search_ignores_macro_declaration_but_keeps_ordinary_definition_neg]
 
 Because source indexing does not execute macros, `/search` does not promise definitions created
 by macro expansion and may omit non-macro definitions whose indexing requires expansion. Actual
@@ -509,7 +514,8 @@ project-root could crash a worker if indexing were not contained (`§11.3`). **`
 crash the REPL or the session**, and indexing MUST NOT silently degrade the session, regardless
 of what a reachable module contains. If parsing, declaration processing, building, or the
 non-macro typecheck fails — including when a remaining form cannot be checked without macro
-expansion — that source-index attempt contributes no rows. The failure is never an unwound worker
+expansion — that source-index attempt contributes no rows. This allowance does not override
+R10's session-independent reachability rule (§17.19). The failure is never an unwound worker
 thread, a panic, or a lost session; it MAY be recorded or surfaced as a search-quality note such
 as `could not index <module>`, but MUST NOT be presented as a language error from `/search`.
-[Tested+Neg tests/search::search_cf2_unindexable_module_skipped_no_crash, tests/search::search_cf2_neg_no_killed_worker_no_meta]
+[Uncovered S124 — was tests/search::search_cf2_unindexable_module_skipped_no_crash, tests/search::search_cf2_neg_no_killed_worker_no_meta]

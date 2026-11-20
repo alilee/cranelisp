@@ -41,6 +41,8 @@ While the session is locked, a command that evaluates code is refused; the other
 | `/search <query>` | — | Search public non-macro symbols reachable on the lib search path ∪ the project root by name, scheme, or docstring (see §17.19). An exact in-scope name match remains visible as `already in scope — no import needed`; source indexing does not execute macro expansion. A **normal default-build session facility** (not agent-gated), also reached by the agent via the ordinary pull | 4 | [Tested+Neg tests/search::search_by_name_exact_returns_four_facets, tests/search::search_by_scheme_partial_contains, tests/search::search_neg_no_match_self_documenting_note] |
 | `/quit` | `/q` | Exit REPL with status 0 (§0.1) | 0 | [Tested+Neg tests/repl_persist::persist_function_replacement_persists_through_restart, tests/repl_persist::quit_while_locked_exits_zero_without_reprinting_errors — status 0 unlocked and while locked, with no reprint of the failure] |
 
+`/type` MUST NOT evaluate a non-pure form. [Uncovered S124]
+
 `/type` given a definition form MUST report its type. The query MUST NOT define
 anything in the session. [S124 — nonconforming. A definition given to `/type` is committed to the session: tests/repl_introspection::s124_1089_existing_definition_subject, tests/repl_introspection::s124_1089_new_name_subject, tests/repl_introspection::s124_1089_stale_type_subject and tests/repl_introspection::s124_1089_changed_signature_subject fail (ACT-1089); the reported type is not the definition's: tests/repl_introspection::s124_1089_definition_reports_its_function_type fails (ACT-1089)]
 
