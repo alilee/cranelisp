@@ -4,7 +4,6 @@
 ;; - Cell: Given (fixed digit), Solved (determined digit), or Candidates (bitmask)
 ;; - Grid: flat Vec of 81 Cells
 ;; - SolveResult: Success or Unsolvable
-;; - PropResult: result of constraint propagation on a single cell
 ;;
 ;; Bitmask convention: digits 1-9 are represented as bits 0-8.
 ;; Digit d is set when bit (d-1) is set, i.e. mask has value (1 << (d-1)).
@@ -60,12 +59,6 @@
 (deftype (SolveResult grid-type)
   (Success [:grid-type grid])
   Unsolvable)
-
-(deftype PropResult
-  Unchanged
-  Reduced
-  Determined
-  Contradiction)
 
 ;; ── Constants ───────────────────────────────────────────────────────────
 
