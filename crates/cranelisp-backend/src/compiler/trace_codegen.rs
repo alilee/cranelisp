@@ -45,7 +45,7 @@
 //! honour two constraints, both satisfied below:
 //!   (a) it never clears `TRACE_BODY_RUNNING` itself (it emits no such call);
 //!   (b) it emits `cranelisp_collect_trace` exactly once per `(trace ...)` form,
-//!       as the LAST trace operation (see `compile_trace` / `compile_trace_no_swap`).
+//!       as the LAST trace operation (see `compile_trace`).
 //!
 //! The trace externs resolve from `cranelisp_intrinsics::catalog::intrinsics_table()`
 //! in every mode (JIT `JITBuilder::symbol`, cache-hit `Linker::register_symbol`,
@@ -578,41 +578,52 @@ where
         Ok(root)
     }
 
-    /// Bake the full descriptor set for one traced function — one blob holding
-    /// the param descriptors (in order) and the result descriptor — and emit it
-    /// as a read-only data symbol. Returns the per-param + result blob-root byte
-    /// offsets plus the `DataId`, so the wrapper can materialise each
-    /// descriptor's address via `global_value` against the symbol.
-    ///
-    /// Packing all of one wrapper's descriptors into ONE data symbol matches
-    /// `tracing.md` §3.4 "one data symbol per wrapper's descriptor set, one
-    /// relocation per wrapper reference."
+    /// Bake the full descriptor set for one traced function: its parameter
+    /// descriptors in order, then its result's, in one read-only data symbol
+    /// (`tracing.md` §3.4: one data symbol per wrapper's descriptor set).
     fn bake_descriptor_blob(
         &mut self,
         tf: &TracedFnInfo,
         span: Span,
     ) -> Result<DescriptorSet, CranelispError> {
-        let mut blob = DescriptorBlob::new();
-        // One memo for the whole wrapper's descriptor set: param + result types
-        // that coincide share a single baked record (DAG), and recursive ADTs
-        // terminate at the cycle back-edge (FIXME 0340 — collapses the former
-        // exponential re-bake to linear in distinct types).
-        let mut memo = BakeMemo::new();
-        let mut param_roots = Vec::with_capacity(tf.param_types.len());
-        for pty in &tf.param_types {
-            param_roots.push(self.bake_descriptor(&mut blob, &mut memo, pty, 0, span)?);
-        }
-        let result_root = self.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0, span)?;
+        let types: Vec<&Type> = tf
+            .param_types
+            .iter()
+            .chain(std::iter::once(&tf.result_type))
+            .collect();
+        let (data_id, mut roots) = self.bake_descriptor_roots(&types, &tf.key, span)?;
+        let result_root = roots.pop().expect("the result's root is baked last");
+        Ok(DescriptorSet {
+            data_id,
+            param_roots: roots,
+            result_root,
+        })
+    }
 
-        // Read-only, non-thread-local anonymous data.
+    /// Bake `types` into one blob, in order, and emit it as a read-only
+    /// anonymous data symbol. Returns the symbol and each type's root offset,
+    /// so a caller addresses a descriptor as a `global_value` against the
+    /// symbol plus its root. One memo serves the blob: coinciding types share
+    /// one record, and a recursive type terminates at its back-edge.
+    /// `subject` names the owner in codegen errors.
+    fn bake_descriptor_roots(
+        &mut self,
+        types: &[&Type],
+        subject: &str,
+        span: Span,
+    ) -> Result<(cranelift_module::DataId, Vec<usize>), CranelispError> {
+        let mut blob = DescriptorBlob::new();
+        let mut memo = BakeMemo::new();
+        let mut roots = Vec::with_capacity(types.len());
+        for ty in types {
+            roots.push(self.bake_descriptor(&mut blob, &mut memo, ty, 0, span)?);
+        }
+
         let data_id = self
             .module
             .declare_anonymous_data(false, false)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!(
-                    "failed to declare trace descriptor data for '{}': {e}",
-                    tf.key
-                ),
+                message: format!("failed to declare trace descriptor data for '{subject}': {e}"),
                 location: ErrorLocation::from_span(span),
             })?;
         let mut desc = cranelift_module::DataDescription::new();
@@ -622,18 +633,10 @@ where
         self.module
             .define_data(data_id, &desc)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!(
-                    "failed to define trace descriptor data for '{}': {e}",
-                    tf.key
-                ),
+                message: format!("failed to define trace descriptor data for '{subject}': {e}"),
                 location: ErrorLocation::from_span(span),
             })?;
-
-        Ok(DescriptorSet {
-            data_id,
-            param_roots,
-            result_root,
-        })
+        Ok((data_id, roots))
     }
 
     /// The traced set of a form in the compiled target's body, over that
@@ -647,41 +650,6 @@ where
         )
     }
 
-    /// Discard a body result by decrementing its RC if it is heap-allocated.
-    /// Used by both `compile_trace` and `compile_trace_no_swap` to drop the
-    /// body value (the trace result is the Trace ADT, not the body's value).
-    ///
-    /// The dec MUST be category-driven: a `Mixed` body type (a sum ADT that
-    /// can be a bare nullary tag OR a heap pointer — e.g. `(Option a)`) must
-    /// use the nullary-guarded dec, else a nullary body value (e.g. `None` = 0)
-    /// makes the unguarded `atomic_rmw Sub [0+8]` fault at address 0x8 (the
-    /// RC offset on a null base) — the trace ADT-render crash, FIXME 0284.
-    /// `AlwaysHeap` is always a real pointer so the plain dec is sound.
-    fn emit_body_discard(&mut self, body_val: Value, body: &MonoExpr) {
-        match crate::heap::HeapCategory::classify(body.ty(), Some(self.ctx.symbol_tables)) {
-            crate::heap::HeapCategory::AlwaysHeap => {
-                crate::heap::emit_rc_dec(
-                    &mut self.builder,
-                    self.module,
-                    body_val,
-                    self.ctx.dealloc_func_id,
-                    None,
-                );
-            }
-            crate::heap::HeapCategory::Mixed => {
-                crate::heap::emit_rc_dec_guarded(
-                    &mut self.builder,
-                    self.module,
-                    body_val,
-                    self.ctx.dealloc_func_id,
-                    None,
-                    true,
-                );
-            }
-            crate::heap::HeapCategory::NeverHeap => {}
-        }
-    }
-
     /// Compile a `(trace body)` expression.
     ///
     /// Returns a `Value` that is a heap pointer to a `Trace` ADT.
@@ -692,11 +660,6 @@ where
         span: Span,
     ) -> Result<Value, CranelispError> {
         let traced = self.discover_traced_fns(span)?;
-        if traced.is_empty() {
-            // Degenerate program with no GOT-slotted callable — fall back to the
-            // empty-trace path (still emits collect_trace, last).
-            return self.compile_trace_no_swap(body, span);
-        }
 
         // Group by defining module (each module has its own GOT table + GOT
         // data symbol). Grouping by `module_path` rather than the raw
@@ -727,11 +690,17 @@ where
         // primitives now appear in `--link` trace trees (only inline primitives
         // `+`, `-`, … remain structurally invisible in all modes).
 
-        // Declare trace runtime functions in the module (idempotent for Import linkage).
-        let swap_id = self.declare_trace_extern("cranelisp_trace_swap_got", 4, true, span)?;
-        let restore_id =
-            self.declare_trace_extern("cranelisp_trace_restore_got", 2, false, span)?;
-        let collect_id = self.declare_trace_extern("cranelisp_collect_trace", 0, true, span)?;
+        // A form whose discovery selects nothing has no group: it runs the same
+        // sequence with no swap and no restore, and imports neither entry.
+        let swap_restore = if got_groups.is_empty() {
+            None
+        } else {
+            Some((
+                self.declare_trace_extern("cranelisp_trace_swap_got", 4, true, span)?,
+                self.declare_trace_extern("cranelisp_trace_restore_got", 2, false, span)?,
+            ))
+        };
+        let collect_id = self.declare_trace_extern("cranelisp_collect_trace", 2, true, span)?;
 
         // For each GOT group: compile wrappers and emit swap_got call. The saved
         // value carries the GOT base (a `global_value`, recomputed for restore)
@@ -739,6 +708,7 @@ where
         let mut swap_results: Vec<(GotGroupRelocs, Value)> = Vec::new();
 
         for (module_path, group) in &got_groups {
+            let (swap_id, _) = swap_restore.expect("a group declares the swap entry");
             let n = group.len();
 
             // --- GOT base: relocation against the module's GOT data symbol ---
@@ -857,61 +827,51 @@ where
         let body_result = self.compile_expr(body)?;
         self.in_tail_position = saved_tail;
 
-        // Discard body result (dec RC if it is heap-allocated).
-        // The trace result is the Trace ADT, not the body's value.
-        self.emit_body_discard(body_result, body);
-
         // Restore GOTs in reverse order (for clean nesting semantics). The GOT
         // base is recomputed via `global_value` against the same GOT data
         // symbol — never the stale compiling-process `got_base` (FIXME 0275).
-        let restore_ref = self
-            .module
-            .declare_func_in_func(restore_id, self.builder.func);
-        for (relocs, saved_got_val) in swap_results.iter().rev() {
-            let gv = self
+        if let Some((_, restore_id)) = swap_restore {
+            let restore_ref = self
                 .module
-                .declare_data_in_func(relocs.got_data_id, self.builder.func);
-            let got_base_val = self.builder.ins().global_value(types::I64, gv);
-            self.builder
-                .ins()
-                .call(restore_ref, &[got_base_val, *saved_got_val]);
+                .declare_func_in_func(restore_id, self.builder.func);
+            for (relocs, saved_got_val) in swap_results.iter().rev() {
+                let gv = self
+                    .module
+                    .declare_data_in_func(relocs.got_data_id, self.builder.func);
+                let got_base_val = self.builder.ins().global_value(types::I64, gv);
+                self.builder
+                    .ins()
+                    .call(restore_ref, &[got_base_val, *saved_got_val]);
+            }
         }
 
-        // Call cranelisp_collect_trace() -> Trace ADT heap ptr. Emitted exactly
-        // once, LAST — this clears the nested-trace boundary flag (intrinsics
-        // guard contract; backend never clears it itself).
+        // The root's descriptor, for the body's static type (§4.2).
+        let (root_data_id, roots) =
+            self.bake_descriptor_roots(&[&body.ty().to_type()], "the trace root", span)?;
+        let root_desc_ptr = {
+            let gv = self
+                .module
+                .declare_data_in_func(root_data_id, self.builder.func);
+            let base = self.builder.ins().global_value(types::I64, gv);
+            self.builder.ins().iadd_imm(base, roots[0] as i64)
+        };
+
+        // cranelisp_collect_trace(value, descriptor) -> Trace ADT heap ptr,
+        // emitted exactly once and as the form's last trace call: it clears
+        // the nested-trace boundary flag. It borrows the value.
         let collect_ref = self
             .module
             .declare_func_in_func(collect_id, self.builder.func);
-        let collect_call = self.builder.ins().call(collect_ref, &[]);
-        Ok(self.builder.inst_results(collect_call)[0])
-    }
+        let collect_call = self
+            .builder
+            .ins()
+            .call(collect_ref, &[body_result, root_desc_ptr]);
+        let trace_node = self.builder.inst_results(collect_call)[0];
 
-    /// Fallback path used when discovery finds no traced functions.
-    ///
-    /// Evaluates the body (discards result) and returns an empty TraceCall via
-    /// `cranelisp_collect_trace`. The trace stack will be empty so it returns a
-    /// minimal TraceCall with the root "::trace::" name.
-    fn compile_trace_no_swap(
-        &mut self,
-        body: &MonoExpr,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let saved_tail = self.in_tail_position;
-        self.in_tail_position = false;
-        let body_result = self.compile_expr(body)?;
-        self.in_tail_position = saved_tail;
-
-        // Discard body result.
-        self.emit_body_discard(body_result, body);
-
-        // Return empty trace from collect_trace (handles empty stack gracefully).
-        let collect_id = self.declare_trace_extern("cranelisp_collect_trace", 0, true, span)?;
-        let collect_ref = self
-            .module
-            .declare_func_in_func(collect_id, self.builder.func);
-        let call = self.builder.ins().call(collect_ref, &[]);
-        Ok(self.builder.inst_results(call)[0])
+        // Every GOT is restored and the guard is clear, so the release's drop
+        // glue is never recorded (§4.3).
+        self.emit_release(body_result, body.ty())?;
+        Ok(trace_node)
     }
 
     /// Declare a trace runtime extern function in the module.

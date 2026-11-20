@@ -26,7 +26,7 @@ use std::collections::{BTreeSet, HashMap};
 /// The formatter renders only on the thread that records a trace (packet row
 /// D8), so the call holds the trace role, taken and released through the
 /// entries a trace form calls: a swap of a GOT buffer this test owns with no
-/// slot wrapped, then restore and collect.
+/// slot wrapped, then restore and collect over an `Int` root it owns.
 fn fmt(value: i64, blob: &DescriptorBlob, root: usize) -> String {
     let mut got = vec![0i64; cranelisp_types::GOT_TABLE_SIZE];
     let got_base = got.as_mut_ptr() as i64;
@@ -41,7 +41,11 @@ fn fmt(value: i64, blob: &DescriptorBlob, root: usize) -> String {
     );
     let rendered = unsafe { read_string_as_str(s_heap) }.to_string();
     cranelisp_trace_restore_got(got_base, saved);
-    consume_trace_call(unsafe { Owned::from_abi(cranelisp_collect_trace()) });
+    let mut root = DescriptorBlob::new();
+    let int = root.reserve_desc();
+    root.set_kind(int, DescriptorKind::Int);
+    let root_ptr = unsafe { root.buf.as_ptr().add(int) } as i64;
+    consume_trace_call(unsafe { Owned::from_abi(cranelisp_collect_trace(0, root_ptr)) });
     rendered
 }
 
@@ -1210,5 +1214,393 @@ fn two_targets_with_two_sets_in_one_batch_swap_different_modules() {
         3,
         "the second target traces other's three functions\n{}",
         functions[1]
+    );
+}
+
+// ── The root's result (trace-codegen.md §4, row B17) ──────────────────────
+
+fn int_lit(value: i64) -> Expr {
+    Expr::IntLit {
+        value,
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+fn defn(name: &str, params: &[&str], body: Expr) -> cranelisp_types::Defn {
+    cranelisp_types::Defn {
+        name: Symbol::from(name),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: params.iter().map(|p| (Symbol::from(*p), None)).collect(),
+            body,
+            span: Span::SYNTHETIC,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    }
+}
+
+/// `(ident 42)`, a call to `user/ident`.
+fn ident_42() -> Expr {
+    Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("ident"),
+            span: Span::new(1, 6),
+            resolved_call: None,
+            inferred_type: Some(Box::new(Type::Fn(vec![Type::Int], Box::new(Type::Int)))),
+        }),
+        args: vec![int_lit(42)],
+        span: Span::new(0, 10),
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+fn named_type() -> cranelisp_types::FQTypeName {
+    cranelisp_types::FQTypeName::new(
+        ModuleFullPath::from("user"),
+        cranelisp_types::TypeName::from("Named"),
+    )
+}
+
+/// `(MkNamed "hi")`: a value of `(deftype Named (MkNamed [:String s]))`,
+/// whose cell owns a `String`.
+fn named_hi() -> Expr {
+    Expr::ConstrADT {
+        type_name: named_type(),
+        tag: 0,
+        fields: vec![Expr::StringLit {
+            value: "hi".to_string(),
+            span: Span::new(20, 24),
+            inferred_type: Some(Box::new(Type::String)),
+        }],
+        span: Span::new(12, 25),
+        inferred_type: Some(Box::new(Type::ADT(named_type(), vec![]))),
+    }
+}
+
+/// A unit in `user` holding `(defn ident [x] x)`, the type `Named` and
+/// `(defn probe [] (trace body))`, compiled through `compile_to_module` with
+/// the form covering `covers`. Returns the JIT, the probe's CLIF and the
+/// tables, which must outlive the JIT's code.
+fn compile_trace_probe(
+    body: Expr,
+    covers: &[&str],
+) -> (
+    crate::jit::Jit,
+    String,
+    DashMap<ModuleFullPath, SymbolTable>,
+) {
+    use crate::test_support::{
+        binding_target, call_carriers, install_ctor_fixture, install_def_entry,
+        install_def_entry_with_targets, install_type_fixture,
+    };
+    let user = ModuleFullPath::from("user");
+    let ident = defn(
+        "ident",
+        &["x"],
+        Expr::Var {
+            name: Symbol::from("x"),
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: Some(Box::new(Type::Int)),
+        },
+    );
+    let probe_body = Expr::Trace {
+        modules: vec![],
+        body: Box::new(body),
+        span: Span::new(0, 30),
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let carriers = call_carriers(&probe_body, &user, &["ident"]);
+    let probe = defn("probe", &[], probe_body);
+
+    let mut table = SymbolTable::new(user.clone());
+    install_type_fixture(
+        &mut table,
+        Symbol::from("Named"),
+        cranelisp_types::TypeDefInfo {
+            name: named_type(),
+            type_params: vec![],
+            constructors: vec![Symbol::from("MkNamed")],
+        },
+    );
+    install_ctor_fixture(
+        &mut table,
+        Symbol::from("MkNamed"),
+        fn_scheme(vec![Type::String], Type::ADT(named_type(), vec![])),
+        vec![Symbol::from("s")],
+        named_type(),
+        0,
+        1,
+        None,
+        None,
+        None,
+    );
+    install_def_entry(&mut table, ident.clone());
+    install_def_entry_with_targets(&mut table, probe.clone(), &carriers);
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    tables.insert(user.clone(), table);
+
+    let probe_target = binding_target(&user, &probe.name);
+    let ident_target = binding_target(&user, &ident.name);
+    let covered = modules(covers);
+    let mut jit = crate::jit::Jit::new(&tables).expect("JIT construction");
+    let artifacts = crate::compile_to_module(
+        user,
+        &[
+            crate::CodegenTarget::new(&probe_target, &covered),
+            crate::CodegenTarget::new(&ident_target, &covered),
+        ],
+        &tables,
+        jit.jit_module(),
+        true,
+    )
+    .expect("the trace probe compiles");
+    let collect = collect_id(&mut jit);
+    let probe_clif = split_functions(&artifacts.clif_ir)
+        .into_iter()
+        .find(|f| {
+            crate::test_support::clif_func_refs(f, collect)
+                .iter()
+                .any(|r| f.contains(&format!("call {r}(")))
+        })
+        .unwrap_or_else(|| panic!("no function calls the collect entry\n{}", artifacts.clif_ir));
+    (jit, probe_clif, tables)
+}
+
+fn collect_id(jit: &mut crate::jit::Jit) -> cranelift_module::FuncId {
+    match jit.jit_module().get_name("cranelisp_collect_trace") {
+        Some(cranelift_module::FuncOrDataId::Func(id)) => id,
+        other => panic!("the collect entry is not declared ({other:?})"),
+    }
+}
+
+/// The trimmed lines of `clif` that call `id`, with their line indices.
+fn calls_to(clif: &str, id: cranelift_module::FuncId) -> Vec<(usize, String)> {
+    let refs = crate::test_support::clif_func_refs(clif, id);
+    clif.lines()
+        .map(str::trim)
+        .enumerate()
+        .filter(|(_, line)| refs.iter().any(|r| line.contains(&format!("call {r}("))))
+        .map(|(i, line)| (i, line.to_string()))
+        .collect()
+}
+
+/// The argument values of a `call fnN(a, b, ...)` line.
+fn call_args(line: &str) -> Vec<String> {
+    let inner = line
+        .split_once('(')
+        .and_then(|(_, rest)| rest.rsplit_once(')'))
+        .map(|(args, _)| args)
+        .unwrap_or_else(|| panic!("not a call: {line}"));
+    inner
+        .split(',')
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect()
+}
+
+/// The right-hand side defining `value` in `clif`.
+fn definition_of<'c>(clif: &'c str, value: &str) -> &'c str {
+    clif.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(&format!("{value} = ")))
+        .unwrap_or_else(|| panic!("{value} is not defined\n{clif}"))
+}
+
+/// Assert that `collect`'s single call passes two arguments, the first
+/// `expected_value` and the second a descriptor data symbol's address plus an
+/// offset; return the call's line index.
+fn assert_collect_passes(
+    clif: &str,
+    collect: cranelift_module::FuncId,
+    expected_value: &str,
+) -> usize {
+    let calls = calls_to(clif, collect);
+    assert_eq!(calls.len(), 1, "one collect call\n{clif}");
+    let (at, line) = &calls[0];
+    let args = call_args(line);
+    assert_eq!(
+        args.len(),
+        2,
+        "the collect call has two arguments: {line}\n{clif}"
+    );
+    assert_eq!(
+        args[0], expected_value,
+        "the first is the body's value\n{clif}"
+    );
+    let descriptor = definition_of(clif, &args[1]);
+    let base = descriptor
+        .strip_prefix("iadd_imm ")
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("the descriptor is a base plus an offset: {descriptor}\n{clif}"));
+    let gv = definition_of(clif, base)
+        .strip_prefix("global_value.i64 ")
+        .unwrap_or_else(|| panic!("the base is a global value\n{clif}"));
+    let symbol = definition_of(clif, gv);
+    assert!(
+        symbol.starts_with("symbol "),
+        "the global value is a data symbol: {symbol}\n{clif}"
+    );
+    *at
+}
+
+// spec: design/backend/trace-codegen.md §4.1, §4.5 row 1 — the swap path
+// passes the body's value and its descriptor to the collect call, after the
+// last restore.
+#[test]
+fn trace_root_swap_path_passes_the_value_and_its_descriptor() {
+    let (mut jit, clif, _tables) = compile_trace_probe(ident_42(), &["user"]);
+    let collect = collect_id(&mut jit);
+    let body_value = clif
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let (lhs, rhs) = line.split_once(" = ")?;
+            rhs.starts_with("call_indirect").then_some(lhs)
+        })
+        .unwrap_or_else(|| panic!("the body calls ident through its slot\n{clif}"));
+    let at = assert_collect_passes(&clif, collect, body_value);
+    let restore = match jit.jit_module().get_name("cranelisp_trace_restore_got") {
+        Some(cranelift_module::FuncOrDataId::Func(id)) => id,
+        other => panic!("the swap path declares restore ({other:?})\n{clif}"),
+    };
+    let last_restore = calls_to(&clif, restore)
+        .last()
+        .map(|(i, _)| *i)
+        .unwrap_or_else(|| panic!("the swap path restores\n{clif}"));
+    assert!(
+        last_restore < at,
+        "the collect call follows the last restore\n{clif}"
+    );
+}
+
+// spec: design/backend/trace-codegen.md §4.1, §4.5 row 2 — a form whose
+// covered set selects nothing emits no swap and no restore, and the same
+// two-argument collect call.
+#[test]
+fn trace_root_no_swap_path_is_the_same_tail() {
+    let (mut jit, clif, _tables) = compile_trace_probe(int_lit(42), &[]);
+    let collect = collect_id(&mut jit);
+    for absent in ["cranelisp_trace_swap_got", "cranelisp_trace_restore_got"] {
+        if let Some(cranelift_module::FuncOrDataId::Func(id)) = jit.jit_module().get_name(absent) {
+            assert!(
+                calls_to(&clif, id).is_empty(),
+                "no call to {absent}\n{clif}"
+            );
+        }
+    }
+    let value = clif
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let (lhs, rhs) = line.split_once(" = ")?;
+            (rhs == "iconst.i64 42").then_some(lhs)
+        })
+        .unwrap_or_else(|| panic!("the body's 42\n{clif}"));
+    assert_collect_passes(&clif, collect, value);
+}
+
+// spec: design/backend/trace-codegen.md §4.3, §4.5 row 3 — a heap-typed
+// body's value is released by its drop glue after the collect call, and
+// nothing decrements it before.
+#[test]
+fn trace_root_release_follows_the_collect_call() {
+    let (mut jit, clif, _tables) = compile_trace_probe(named_hi(), &["user"]);
+    let collect = collect_id(&mut jit);
+    let calls = calls_to(&clif, collect);
+    assert_eq!(calls.len(), 1, "one collect call\n{clif}");
+    let (at, line) = &calls[0];
+    let args = call_args(line);
+    let value = args
+        .first()
+        .unwrap_or_else(|| panic!("the collect call passes the body's value: {line}\n{clif}"));
+    let lines: Vec<&str> = clif.lines().map(str::trim).collect();
+    let uses = |line: &str| {
+        line.split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == value)
+    };
+    let decrement = |line: &str| {
+        line.contains("atomic_rmw") || line.contains(" call ") || line.starts_with("call ")
+    };
+    for before in &lines[..*at] {
+        assert!(
+            !(uses(before) && decrement(before) && !before.contains(&format!("{value} = "))),
+            "nothing releases the value before the collect call: {before}\n{clif}"
+        );
+    }
+    assert!(
+        lines[at + 1..]
+            .iter()
+            .any(|after| after.contains("call ") && uses(after)),
+        "the value's release follows the collect call\n{clif}"
+    );
+}
+
+/// Run the probe and return the root node it produced.
+fn run_probe(jit: &mut crate::jit::Jit) -> i64 {
+    let ptr = jit
+        .get_ptr_by_name(&Symbol::from("probe"), 0)
+        .expect("the probe is finalized");
+    let probe: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+    probe()
+}
+
+/// Field `index` of the heap ADT at `node`.
+fn adt_field(node: i64, index: usize) -> i64 {
+    let at = node as usize + cranelisp_intrinsics::alloc::HeapAdt::field_offset(index) as usize;
+    unsafe { *(at as *const i64) }
+}
+
+/// `(TraceCall name params result children nanos)`: the result string.
+fn node_result(node: i64) -> String {
+    unsafe { read_string_as_str(adt_field(node, 2)) }.to_string()
+}
+
+// spec: spec/04-expressions.md §4.12.2; design/backend/trace-codegen.md §4.5
+// row 4 — the root's result is the display of the body's value. Control: the
+// child frame of `(trace (ident 42))` reads `42`.
+#[test]
+fn trace_root_result_is_the_value_display() {
+    let (mut jit, _clif, _tables) = compile_trace_probe(int_lit(42), &["user"]);
+    let root = run_probe(&mut jit);
+    assert_eq!(node_result(root), "42", "an Int body");
+    consume_trace_call(unsafe { Owned::from_abi(root) });
+
+    let string_body = Expr::StringLit {
+        value: "hi".to_string(),
+        span: Span::new(1, 5),
+        inferred_type: Some(Box::new(Type::String)),
+    };
+    let (mut jit, _clif, _tables) = compile_trace_probe(string_body, &["user"]);
+    let root = run_probe(&mut jit);
+    assert_eq!(node_result(root), "\"hi\"", "a String body");
+    consume_trace_call(unsafe { Owned::from_abi(root) });
+
+    let (mut jit, _clif, _tables) = compile_trace_probe(ident_42(), &["user"]);
+    let root = run_probe(&mut jit);
+    let children = adt_field(root, 3);
+    let child = adt_field(children, 0);
+    assert_eq!(node_result(child), "42", "control: the child frame");
+    assert_eq!(node_result(root), "42", "the root over a call");
+    consume_trace_call(unsafe { Owned::from_abi(root) });
+}
+
+// spec: design/backend/trace-codegen.md §4.3, §4.5 row 5 — the body's value
+// is released by its type's drop glue: a cell owning a String balances the
+// allocator once the node is consumed.
+#[test]
+fn trace_root_release_balances_an_owning_value() {
+    let (mut jit, _clif, _tables) = compile_trace_probe(named_hi(), &["user"]);
+    let allocs = cranelisp_intrinsics::alloc_count();
+    let deallocs = cranelisp_intrinsics::dealloc_count();
+    let root = run_probe(&mut jit);
+    consume_trace_call(unsafe { Owned::from_abi(root) });
+    assert_eq!(
+        cranelisp_intrinsics::alloc_count() - allocs,
+        cranelisp_intrinsics::dealloc_count() - deallocs,
+        "every allocation of the form is released"
     );
 }

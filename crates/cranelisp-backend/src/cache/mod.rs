@@ -105,7 +105,7 @@ pub mod serialize;
 ///
 /// A bump refuses every older sidecar and its paired object wholesale; there
 /// is no translation path. The reason for each past bump is in Git history.
-pub const CACHE_SCHEMA_VERSION: u32 = 35;
+pub const CACHE_SCHEMA_VERSION: u32 = 36;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
