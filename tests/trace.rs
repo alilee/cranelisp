@@ -1641,3 +1641,44 @@ fn s124_1086_helper_link() {
 fn s124_1086_helper_repl() {
     s124_generic_helper_trace("repl");
 }
+
+fn s124_template_frame_name(mode: &str) {
+    let app = format!(
+        r#"{S124_COUNT_NAMED}
+(import [m [run]])
+(import [z [zf]])
+(defn main [] (Pure (match (run zf) [(TraceCall n p r c ns)
+  (add-i64 40 (count-named "m/helper" c))])))
+"#
+    );
+    let cr = Cranelisp::new()
+        .file("m.cl", "(import [primitives [Int]])\n(defn helper [x] x)\n(defn run [h] (trace (helper (h 1))))\n")
+        .file("z.cl", "(import [primitives [Int add-i64]])\n(defn zg [:Int n] (add-i64 n 1))\n(defn zf [:Int n] (zg n))\n")
+        .file("app.cl", &app);
+    assert_eq!(
+        s124_trace_cold_warm(cr, mode, "m"),
+        [41, 41],
+        "{mode} [cold, warm]: the instance frame takes its template name m/helper"
+    );
+}
+
+// spec: spec/04-expressions.md §4.12.4 — T-FRAME-NAME
+// ACT-1091: an instance frame must use the template's module and name alone.
+#[test]
+fn s124_template_frame_name_run() {
+    s124_template_frame_name("run");
+}
+
+// spec: spec/04-expressions.md §4.12.4 — T-FRAME-NAME
+// ACT-1091: an instance frame must use the template's module and name alone.
+#[test]
+fn s124_template_frame_name_link() {
+    s124_template_frame_name("link");
+}
+
+// spec: spec/04-expressions.md §4.12.4 — T-FRAME-NAME
+// ACT-1091: an instance frame must use the template's module and name alone.
+#[test]
+fn s124_template_frame_name_repl() {
+    s124_template_frame_name("repl");
+}
