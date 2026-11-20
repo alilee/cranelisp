@@ -22,12 +22,92 @@ fn diagnostic(output: &Output) -> String {
     )
 }
 
-// spec: AGENTS.md §Design Principles — the user/ sample harness stdlib exception
+macro_rules! document_samples {
+    ($($name:ident => $path:literal),+ $(,)?) => {
+        const DOCUMENTS: &[&str] = &[$($path),+];
+        $(
+            // spec: AGENTS.md §Design Principles — the user/ sample harness stdlib exception
+            #[test]
+            fn $name() {
+                // read-only on project_root; compiler writes go to checker-owned tmpdirs.
+                let output = check(&Path::new(env!("CARGO_MANIFEST_DIR")).join("user").join($path));
+                assert!(output.status.success(), "{}", diagnostic(&output));
+                println!("{}", diagnostic(&output));
+            }
+        )+
+    };
+}
+
+document_samples! {
+    samples_entry_guidance => "AGENTS.md",
+    samples_cli_reference => "cli-reference.md",
+    samples_getting_started => "getting-started.md",
+    samples_trait_impl_diagnostics => "errors/trait-impl-diagnostics.md",
+    samples_bitwise => "guide/bitwise.md",
+    samples_concurrency => "guide/concurrency.md",
+    samples_constructors => "guide/constructors.md",
+    samples_field_accessors => "guide/field-accessors.md",
+    samples_functions => "guide/functions.md",
+    samples_live_development => "guide/live-development.md",
+    samples_macros => "guide/macros.md",
+    samples_modules => "guide/modules.md",
+    samples_parallel_collections => "guide/parallel-collections.md",
+    samples_syntax_command => "guide/syntax-command.md",
+    samples_testing => "guide/testing.md",
+    samples_tracing => "guide/tracing.md",
+    samples_traits => "guide/traits.md",
+    samples_using_platforms => "guide/using-platforms.md",
+    samples_writing_platforms => "guide/writing-platforms.md",
+}
+
+fn markdown_documents(root: &Path) -> std::collections::BTreeSet<String> {
+    fn visit(root: &Path, dir: &Path, found: &mut std::collections::BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, found);
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                found.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    visit(root, root, &mut found);
+    found
+}
+
+// spec: AGENTS.md §Assurance — every document must keep an executing sample cell
 #[test]
-fn user_documentation_samples_match_the_compiler() {
-    // read-only on project_root; all compiler writes go to checker-owned tmpdirs.
-    let output = check(&Path::new(env!("CARGO_MANIFEST_DIR")).join("user"));
-    assert!(output.status.success(), "{}", diagnostic(&output));
+fn document_sample_cells_cover_every_markdown_document() {
+    let selected = DOCUMENTS.iter().map(|path| (*path).to_owned()).collect();
+    // read-only on project_root.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("user");
+    assert_eq!(
+        markdown_documents(&root),
+        selected,
+        "update document_samples! when adding or removing a guide"
+    );
+}
+
+// spec: AGENTS.md §Assurance — the selection guard must detect an omitted document
+#[test]
+fn document_selection_detects_an_unallocated_guide_then_clears() {
+    let corpus = tempfile::tempdir().unwrap();
+    std::fs::write(corpus.path().join("guide.md"), "guide").unwrap();
+    let selected = ["guide.md".to_owned()].into_iter().collect();
+    assert_eq!(markdown_documents(corpus.path()), selected);
+    let added = corpus.path().join("nested");
+    std::fs::create_dir(&added).unwrap();
+    std::fs::write(added.join("new.md"), "new guide").unwrap();
+    assert_ne!(markdown_documents(corpus.path()), selected);
+    std::fs::remove_file(added.join("new.md")).unwrap();
+    assert_eq!(markdown_documents(corpus.path()), selected);
 }
 
 const SOUND: &str = r#"<!-- sample: {"kind":"definition","group":"double"} -->
@@ -88,6 +168,21 @@ fn sample_checker_detects_wrong_output_and_unclassified_fences_then_clears() {
     assert!(!wrong.status.success(), "{}", diagnostic(&wrong));
     assert!(String::from_utf8_lossy(&wrong.stderr).contains("expected output mismatch"));
     println!("PLANTED WRONG EXPECTED LINE\n{}", diagnostic(&wrong));
+
+    let sibling = corpus.path().join("sibling.md");
+    std::fs::write(&sibling, SOUND).unwrap();
+    let selected = check(&sibling);
+    assert!(selected.status.success(), "{}", diagnostic(&selected));
+    assert!(String::from_utf8_lossy(&selected.stdout).contains("Census: 1 documents"));
+    assert!(String::from_utf8_lossy(&selected.stdout).contains("Executed 3 fresh groups"));
+    let selected_wrong = check(&guide);
+    assert!(
+        !selected_wrong.status.success(),
+        "{}",
+        diagnostic(&selected_wrong)
+    );
+    assert!(String::from_utf8_lossy(&selected_wrong.stderr).contains("expected output mismatch"));
+    std::fs::remove_file(sibling).unwrap();
 
     std::fs::write(&guide, format!("{SOUND}\n```clojure\n(+ 1 2)\n```\n")).unwrap();
     let unclassified = check(corpus.path());

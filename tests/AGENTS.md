@@ -109,8 +109,9 @@ Keep each beside the artifacts it governs:
 with the default prelude (the named exception in root guidance). This is M-3's
 maintenance check, not language authority. Run the checker directly with
 `python3 tests/scripts/user_samples.py --binary target/debug/cranelisp`;
-`--census-only` classifies without executing. `--docs PATH` selects a disposable
-fixture corpus instead of `user/`.
+`--census-only` classifies without executing. `--docs PATH` selects a Markdown
+document or a directory tree instead of `user/`. Nextest runs one cell per
+document; a selection guard requires the cells to cover every Markdown file.
 
 Every fenced block, regardless of language tag, has a one-line JSON comment
 immediately before its opening fence:

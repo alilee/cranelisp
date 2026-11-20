@@ -23,7 +23,7 @@ class SampleError(Exception):
 
 def census(root):
     blocks = []
-    paths = sorted(root.rglob('*.md'))
+    paths = [root] if root.is_file() else sorted(root.rglob('*.md'))
     if not paths:
         raise SampleError(f"no Markdown documents under {root}")
     for path in paths:
@@ -149,7 +149,8 @@ def execute(blocks, binary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--docs', type=Path, default=REPO / 'user')
+    parser.add_argument('--docs', type=Path, default=REPO / 'user',
+                        help='Markdown document or directory tree to check')
     parser.add_argument('--binary', type=Path, default=REPO / 'target/debug/cranelisp')
     parser.add_argument('--census-only', action='store_true')
     args = parser.parse_args()
