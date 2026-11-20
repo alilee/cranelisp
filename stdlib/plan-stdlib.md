@@ -157,9 +157,9 @@ The user may revisit this boundary. Promotion is a one-line `(export …)`.
 
 | Depth | Character | Example |
 |---|---|---|
-| 1 | Standalone, small, universal | `control.cl`, `default.cl` |
-| 2 | Foundational, grouped by domain | `compare/eq.cl`, `fn/option.cl` |
-| 3+ | Specialised within a domain | `derive/helpers.cl` |
+| 1 | Standalone, small, universal | `control`, `default` |
+| 2 | Foundational, grouped by domain | `compare.eq`, `fn.option` |
+| 3+ | Specialised within a domain | `derive.helpers` |
 
 ### 3.2 Module map
 
@@ -171,25 +171,25 @@ stdlib/
 ├── prelude.cl              re-export shell (§1.4)
 ├── control.cl (t)          when, unless, cond, case
 ├── defs.cl (t)             const, const-, def, def-
-├── default.cl (t)          Default trait + scalar impls
+├── default.cl (t)          Default trait + scalar and Option impls
 ├── derive.cl (t)           derive dispatch + derive-Eq/-Ord/-Display macros
 │   └── helpers.cl          Sexp construction helpers for derive
-├── compare/  eq.cl (t)     Eq trait + scalar impls
-│             ord.cl (t)    Ord trait + Int/Float/Bool impls
+├── compare/  eq.cl (t)     Eq trait + scalar, Option/Result/Pair impls
+│             ord.cl (t)    Ord trait + Int/Float/Bool, Option/Result/Pair impls
 ├── num/      num.cl (t)    Num trait + Int/Float impls
 │             int.cl (t)    Int helpers
 │             float.cl (t)  Float helpers
 │             bits.cl (t)   64-bit bitwise layer over native primitives
-├── text/     display.cl (t) Display trait + scalar impls
+├── text/     display.cl (t) Display trait + scalar, Option/Result/Pair impls
 │             string.cl (t) str macro + string helpers
 ├── fn/       option.cl (t) re-exports primitives Option/Some/None
 │             result.cl (t) re-exports primitives Result/Ok/Err + combinators
 │             compose.cl (t) identity, compose, pipe, flip
 │             threading.cl (t) ->, ->>
-├── collections/ list.cl (t)     List type, list macro, list operations
+├── collections/ list.cl (t)     List type + Eq/Ord/Display, list macro, list operations
 │                vec.cl (t)      vec macro, curated verbs, vec-* family, range
 │                pair.cl (t)     re-exports primitives Pair + accessors
-│                either.cl (t)   Either type + operations
+│                either.cl (t)   Either type + Eq/Ord/Display, operations
 │                parallel.cl (t) par-map, par-reduce, par-map-reduce
 ├── seq/      lazy.cl       lazy Seq with producers and consumers
 ├── io/       monad.cl      pure, do, bind!
@@ -209,8 +209,19 @@ The depth-1 shells `collections.cl`, `compare.cl`, `core.cl`, `fn.cl`, `io.cl`,
 carry the rest.
 
 - **Traits.** The stdlib declares `Eq`, `Ord`, `Num`, `Display` and `Default`,
-  with impls for the scalar primitives only. User ADTs obtain impls through
-  `derive` or by hand.
+  with impls for the scalar primitives. `Eq`, `Ord` and `Display` are also
+  implemented for `Option`, `Result`, `Pair`, `List` and `Either`, each
+  constrained on its type arguments, and `Default` for `Option` (`None`).
+  User ADTs obtain impls through `derive` or by hand.
+  - *Placement.* An impl for a `primitives`-seeded type lives in the trait's
+    module, so it is present wherever the trait is reachable. An impl for a
+    stdlib-defined type lives in the type's module.
+  - *Semantics follow `derive`.* Equal means the same constructor with equal
+    payloads. Order is constructor declaration order (`None` < `Some`,
+    `Ok` < `Err`, `Nil` < `Cons`, `Left` < `Right`), then the payloads
+    lexicographically; only `<` is structural, so `Ord` needs no `Eq`.
+    `show` gives `Some(1)`, `Err(bad)`, `Pair(1 a)`, as `derive-Display`
+    would; a `List` shows in Clojure list form, `(1 2 3)`.
 - **One canonical seeded type.** `fn.option`, `fn.result` and
   `collections.pair` re-export the `primitives`-seeded `Option`, `Result` and
   `Pair` rather than defining second types. Because the source is the same,
@@ -280,7 +291,6 @@ carry the rest.
 | `collections.functor`, `collections.foldable` | `Functor` (`fmap`) and `Foldable` (`fold`) traits, with impls in each type's module; the trait-dispatched owner of the §1.5 reserved verbs |
 | `collections.map`, `collections.set` | hash-based `Map`/`Set`. The implementation strategy is undecided (HAMT, balanced tree or sorted Vec) |
 | `collections.vec` | `fold-right`, `find`, `take`, `drop`, `zip`, `enumerate`, `nth`, `contains?`, predicate count, `flat-map`, `distinct`, `index-of`, `sort`, `sort-by`, `min`, `max` |
-| ADT trait impls | `Eq`/`Ord`/`Display` for `Option`, `Result`, `List`, `Pair`, `Either`; `Default` for `Option` |
 | `testing.assertions` | shorter aliases `assert=`, `assert`, `assert-some`, `assert-ok`, only as thin aliases |
 | prelude | `derive`, `min`/`max`, `inc`/`dec` once built (§1.4) |
 
