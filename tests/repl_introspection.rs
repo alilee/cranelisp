@@ -5511,6 +5511,7 @@ fn s124_type_err_impl() {
 }
 
 // spec: repl/spec/03-slash-commands.md §3.1; repl/spec/05-error-presentation.md §5.1 — T-TYPE-ERR guards
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
 #[test]
 fn s124_type_err_nonvalue_guards() {
     let mut failures = Vec::new();
