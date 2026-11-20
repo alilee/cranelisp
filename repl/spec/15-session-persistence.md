@@ -2,7 +2,7 @@
 
 ## 15. REPL Session Persistence [R4 S52]
 
-### 15.1 Source Regeneration [S124 — partial: after a value of a parametric product type is constructed, every later regeneration is refused and later definitions are not saved (ACT-1101; T-SAVE-PRODUCT is allocated, no cell yet)] [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
+### 15.1 Source Regeneration [S124 — partial: after a value of a parametric product type is constructed, every later regeneration is refused and later definitions are not saved (tests/repl_persist::s124_save_after_user_parametric_product_construction, tests/repl_persist::s124_save_after_seeded_pair_construction and tests/repl_persist::s124_save_after_function_body_pair_construction fail; ACT-1101). A parametric type with named constructors and the seeded `Option` save: tests/repl_persist::s124_save_after_named_parametric_constructor_control, tests/repl_persist::s124_save_after_seeded_some_control] [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session] [Tested+Neg tests/repl_persist::persist_import_omitted_by_save_is_not_in_scope_or_rewritten, tests/repl_persist::persist_import_kept_by_save_stays_in_scope_and_is_written_once_control — after a reload whose saved source omits an `import`, regeneration does not write it back; a kept import is written once]
 
 The REPL MUST persist interactive definitions to disk by maintaining a backing `.cl` file for the entry module (e.g. `user.cl`). When the user enters a definition that compiles successfully:
 
@@ -17,7 +17,7 @@ While the session is locked, no backing file is regenerated; §14.5 governs it. 
 
 A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state. [Tested+Neg tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — a definition rejected at typecheck or at the commit gate and a failed `import` are not written by a later regeneration, which keeps the prior definition; an expression-only session leaves the file untouched]
 
-### 15.2 Session Restore [Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
+### 15.2 Session Restore [S124 — partial: after a refused save the next cached session restores a definition the backing file does not hold, and calling it ends the process on a signal (ACT-1102; T-REFUSED-SAVE-CACHE is allocated, no cell yet). Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
 
 On REPL startup, the entry module's backing `.cl` file MUST be loaded through the normal module graph pipeline (with cache hit for fast restore). Definitions from the previous session MUST survive restart — the user resumes where they left off. [R4 S52]
 

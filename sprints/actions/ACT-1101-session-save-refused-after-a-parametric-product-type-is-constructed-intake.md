@@ -51,10 +51,17 @@ prelude.
 - **Reach.** A product type with type parameters, which includes the
   seeded `Pair`. A parametric type with named constructors does not show
   it.
-- **Age: not established, and it may date from S124.** A release binary
-  built on 2026-11-18 at 00:11, after S124's second wave, shows it. `qa` ran
-  no tree from before the sprint. The refusing check dates from S122
-  (`63605970`).
+- **Age: it predates S124.** A debug binary built from the sprint's
+  opening commit, `3155f47f` ("Open Sprint 124", 2026-11-16), in a
+  throwaway clone since deleted, gives the same result as the current tree
+  in all three subjects and both controls: the warning, the missing
+  definition, and the controls saved. `sprints/SPRINT.md` names no opening
+  commit; `3155f47f` is the commit that opens the sprint. No bisection was
+  needed. The refusing check dates from S122 (`63605970`).
+- **A second face is filed separately.** After a refused save the next
+  session, restoring from cache, ends on signal 11 when the lost
+  definition is called:
+  [ACT-1102](ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md).
 
 ## Attribution: the binary's regeneration, `src/save.rs::generate_types`
 
@@ -103,3 +110,11 @@ definition.
 T-SAVE-PRODUCT is committed with `// spec: repl/spec/15-session-persistence.md §15.1`,
 observed RED on its file and restart clauses, and passes on the corrected
 build with its controls unchanged.
+
+## Evidence state (qa, 2026-11-20, full run at `9bc97297`)
+
+T-SAVE-PRODUCT is committed (`65471409`, locus aligned at `9bc97297`) and
+accepted: its three subjects fail on all three clauses and its two controls
+pass. Its restart is a cold one, with the cache removed, so the cells do
+not meet ACT-1102's crash.
+
