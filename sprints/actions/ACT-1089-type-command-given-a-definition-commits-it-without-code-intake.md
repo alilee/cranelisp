@@ -79,21 +79,47 @@ and defines nothing in the session
 `467e6a97`). The user also ruled that the defect is carried past S124 on its
 reproductions (`sprints/SPRINT.md`, Notes).
 
-- **Open with `spec`, blocking no test:** what "its type" is for a form
-  that has no value type (`deftype`, `deftrait`, `impl`, `defmacro`,
-  `import`, `export`). The allocated clause uses `defn` only.
+The user ruled again on 2026-11-20: "type should not evaluate a non-pure
+form" (REPL §3.1, `21101921`).
+
+- **Open with the user as S124-Q10:** what `/type` reports for a form that
+  has no value type, such as `deftype` and `defmacro`
+  ([spec appendix D](../../spec/appendix-d-open-questions.md)). No allocated
+  clause reads that report.
 - **Not probed:** `/type` with a definition in a locked session, where REPL
-  §14.5 admits `/type` and refuses every definition; `/type` with
-  `deftrait`, `impl`, `import` or `export`.
+  §14.5 admits `/type` and refuses every definition; `/type` with `export`.
+
+## Forms other than `defn`
+
+`qa`, 2026-11-20, the debug binary built from `39db1bb1` (source unchanged
+to `21101921`), no prelude, each session in its own scratch directory.
+
+| Given to `/type` | Then | Observed |
+|---|---|---|
+| `(impl Sz T (defn sz [self] 7))`, after `Sz` and `T` are defined | `(sz A)` | **The process ends on signal 11**, 4 of 4. Without the `/type` line the call is refused: `no impl of trait user/Sz for type user/T` |
+| `(deftrait Sz (sz [self] Int))` | `/list` | `Sz` is listed |
+| `(deftype T A B)` | `/list`, `A` | Row 6 above, re-read. A new session does not have `T`: nothing reached `user.cl` |
+| `(defmacro mm [x] x)` | `(mm 3)` | Refused as undefined |
+| `(import [primitives [add-i64]])` | `(add-i64 1 2)` | Refused as undefined: the import was read as an expression and not run |
+| `(print "MARK")`, an `IO` expression | — | `:(primitives/IO primitives/Int)`; `MARK` is not printed. Entered without `/type`, it prints |
+
+- **The `impl` row is a fourth memory-unsafe subject** of the same
+  mechanism: an implementation committed with no code.
+- **`deftype`, `deftrait` and `impl` are committed as `defn` is.** A
+  correction that special-cases `defn` leaves those three rows failing.
+- **An `IO` expression conforms.** The nonconformance against the new
+  sentence is the committed forms.
 
 ## Evidence allocation
 
 **REPRO-1089** is committed (`14341a53`): four subjects fail on their
-assertions and the expression control passes, as read at `ee65d9aa`. The
-clause for the reported type is **T-TYPE-DEFN**, allocated to `test` in the
-[evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test).
+assertions and the expression control passes, as read at `ee65d9aa`.
+**T-TYPE-DEFN** is committed (`28176b57`), RED. **T-TYPE-PURE** covers the
+rows above and is allocated to `test` in the
+[evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
+**T-TYPE-NONVALUE**, the report for a non-value form, is held on S124-Q10.
 
 ## Completion evidence
 
-REPRO-1089's subjects and T-TYPE-DEFN pass with the control unchanged. `qa`
-restores the REPL §3.1 band.
+REPRO-1089's subjects, T-TYPE-DEFN and T-TYPE-PURE pass with their controls
+unchanged. `qa` restores the REPL §3.1 bands.

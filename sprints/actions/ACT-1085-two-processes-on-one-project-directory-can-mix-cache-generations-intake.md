@@ -77,7 +77,7 @@ Held until the control is scheduled and its design is final.
   were; the row turns RED when the lock is removed. Negative: after the
   first session ends, a new session uses the project's cache.
 - **`test`, one e2e cell (T-OWNER),** stated in the
-  [evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test).
+  [evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
 - **Not allocated:** a cell for the falsifier itself. A mixed generation
   needs a particular interleaving of two processes, which no fixture
   built from user commands selects.

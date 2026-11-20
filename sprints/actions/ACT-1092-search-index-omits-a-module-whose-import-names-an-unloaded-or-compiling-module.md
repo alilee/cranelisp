@@ -2,9 +2,9 @@
 id: ACT-1092
 title: The search index omits a valid module whose import names a module the session has not loaded, or is still compiling, and reports the index as complete
 status: open
-priority: advisory
+priority: required
 from: qa
-to: design
+to: qa
 sprint: 124
 filed_at: 2026-11-20
 refers_to:
@@ -65,24 +65,32 @@ ran at once.
   `mf` in `m` afterwards. The cell prints the note and does not decide on
   it.
 
-## Classification: not a defect against the current text; an unrecorded limit
+## Classification: a defect against REPL §17.19 R10
 
-- [§17.19.5](../../repl/spec/17a-agent-language-awareness.md#17195-robustness--searching-the-library-must-never-crash-the-repl-s90-re-pin)
-  lets a source-index attempt whose declaration processing fails contribute
-  no rows, and lets the session say `could not index <module>`. The
-  section's status line defers complete indexing to ACT-0952.
-- R10 of §17.19 makes every `.cl` module on the project root reachable. A
-  project module that imports a sibling is the ordinary shape, so the limit
-  removes most of a multi-module project from the index until its modules
-  are loaded.
-- The search then prints `no importable symbols matched`, the complete-index
-  answer, for a symbol the project defines.
-- **Refuted as "not a defect" if** `spec` reads R10 as requiring a valid
-  reachable module's rows whatever the session has loaded. That is a
-  question for `spec` which blocks no test; current behaviour stands.
+The user ruled on 2026-11-20: "search returns what is reachable not what is
+already imported". `spec` recorded it at `21101921`.
 
-No memory is read or written that should not be. The face is a missing
-search row.
+- [§17.19 R10](../../repl/spec/17a-agent-language-awareness.md#1719-importable-symbol-search--search--pillar-3-s90-re-pin)
+  now reads: a reachable module MUST NOT be omitted merely because it or a
+  dependency is not yet loaded or is still compiling in the session. Face 1
+  is the *not yet loaded* clause and face 2 the *still compiling* clause.
+- [§17.19.5](../../repl/spec/17a-agent-language-awareness.md#17195-robustness--searching-the-library-must-never-crash-the-repl-s90-re-pin)'s
+  allowance that a failed attempt contributes no rows no longer covers
+  either face: the text makes it subordinate to R10.
+- **Severity: wrong value, no memory hazard.** The search prints
+  `no importable symbols matched`, the complete-index answer, for a symbol
+  the project defines. Importing the module still works.
+- **Reach.** A project module that imports a sibling is the ordinary shape.
+  Face 1 is every launch, so most of a multi-module project is absent from
+  the index until its modules are loaded.
+- **It predates S124** (*Age*, below) and is a nonconformance against a
+  requirement recorded on 2026-11-20. `qa` first read §17.19.5 as allowing
+  it; `spec` reports that reading was available on the earlier text.
+
+Re-read by `qa` on 2026-11-20 with the debug binary built from `39db1bb1`,
+source unchanged to `21101921`: face 1 as above in 4 of 4 launches. A
+three-module chain (`t` imports `m`, `m` imports `p`, none loaded) lists
+`pf` and neither `mf` nor `tf`, in 3 of 3 launches.
 
 ## Attribution: the binary's index feed
 
@@ -103,20 +111,27 @@ search row.
 - **Age.** The private typecheck dates from S91 and the copy from S110.
   `qa` ran no earlier tree.
 
-## Request
+## Routing
 
-`design`(int), with ACT-0952:
-
-1. Record in [index-feed isolation](../../design/int/index-worker-isolation.md)
-   that a module whose import names a module absent from, or unpublished
-   in, the live tables is not indexed in that session, and that the search
-   then reports a complete index.
-2. State in ACT-0952 that its dependency discovery closes both faces, or
-   say what does.
+- **`qa` holds this action** until the correction lands and its coverage is
+  judged.
+- **`test`:** T-SEARCH-REACH, the reproduction, allocated in the
+  [S124 evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
+- **`design`(int), then `dev`(`src/`):** the correction, carried on
+  T-SEARCH-REACH unless the user schedules it (`sprints/SPRINT.md`, Notes).
+  `design`(int) states how the feed resolves a module's imports without
+  the session having loaded them, in
+  [index-feed isolation](../../design/int/index-worker-isolation.md), and
+  whether [ACT-0952](ACT-0952-complete-semantic-search-indexing.md)'s
+  dependency discovery is that correction or a later one.
+- **`dev`(`src/`), with the correction:** two module rows over
+  `checked_typecheck_module`, stated in the delta §14.3. The second is the
+  only evidence allocated for face 2.
 
 ## Completion evidence
 
-The design states the limit or its correction. If `spec` rules that R10
-requires the rows, `qa` allocates a cell over face 1's three files:
-`/search mf` lists `mf` in `m` once the index has settled, with `/search pf`
-as its control.
+- T-SEARCH-REACH is committed, observed RED on its row clauses, and passes
+  on the corrected build.
+- The two module rows pass, and the *registered, not yet published* row was
+  seen to fail before the correction.
+- The design states the feed's import resolution as built.

@@ -102,7 +102,7 @@ the seam is observed. The backend reads the set it is passed.
 ## Evidence allocation
 
 `test` restates REPRO-1087's `--run` subject as two cells
-([evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test)):
+([evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test)):
 the first launch, RED on 40, and the restored launch, green. As one cell
 the corrected leg cannot be seen to regress, because the cell fails either
 way.

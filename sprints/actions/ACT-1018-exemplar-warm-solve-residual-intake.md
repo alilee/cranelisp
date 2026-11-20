@@ -133,3 +133,41 @@ unscheduled, and the carry is the user's decision.
   exact balance. It then fails on the residual of 2, which is this record's
   defect; the number is not written into the assertion.
 
+## The stdlib-free path reproduces it (qa, 2026-11-20)
+
+`dev`(stdlib) reported, and `qa` confirmed on the debug binary built from
+`39db1bb1`: the block is stranded with no stdlib on the path. **The
+statement above that the stdlib-free path "allocates nothing the counters
+see" is withdrawn,** and with it the conclusion that the block belongs to
+the stdlib-prelude path.
+
+`CRANELISP_LIB` at an empty directory, no prelude, `CRANELISP_NO_LENIENT=1`,
+`CRANELISP_RC_STATS=1`, `--run`, cold and warm alike:
+
+| `main` | Allocations, frees |
+|---|---|
+| `(print "a")`, `stdio` | 2, 1 |
+| `(print "a")`, `test-capture` | 2, 1 |
+| `(let [s "a"] (print s))` | 2, 1 |
+| `(print (str-concat "a" "b"))` | 4, 3 |
+| `(bind (Pure 0) (fn [u] (print "a")))` | 5, 4 |
+| `(bind (print "a") (fn [u] (print "b")))` | 6, 4 |
+| `(bind (Pure "abc") (fn [s] (print s)))` | **5, 5** |
+| `(Pure 0)` | 1, 1 |
+| `(commutative-noop)`, `test-capture` | 1, 1 |
+
+- **Candidates.** The stdlib is not one. Both platforms strand the block,
+  so it is not `stdio`'s `print` alone. What remains: the platform crate's
+  consuming capture, which both use; the backend's transfer of a heap
+  argument at a platform call; the runtime's disposal of the effect node.
+- **One discriminating reading, not a mechanism.** The block is stranded
+  when the argument is a value the caller owns outright (a literal, a
+  `let`-bound literal, a concatenation). It is released when the argument
+  is a continuation's parameter. `qa` did not read which release is absent
+  in the first case or present in the second.
+- **Not read.** The linked binary; a platform function other than `print`
+  that takes a heap argument.
+- **A reduction is now inside the suite's reach.** T-PRINT-BALANCE is
+  allocated to `test` in the
+  [S124 evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
+  It discharges the first item of the completion evidence when committed.

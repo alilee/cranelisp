@@ -189,7 +189,7 @@ non-macro definitions in the synthetic `macros` module follow the same direct fe
 
 Search returns what is reachable, regardless of what the session has already imported or
 loaded. A reachable module MUST NOT be omitted merely because it or a dependency is not yet
-loaded or is still compiling in the session. [Uncovered S124]
+loaded or is still compiling in the session. [S124 — nonconforming, no cell yet: a module whose import names a module the session has not loaded, or is still compiling, is omitted (ACT-1092); T-SEARCH-REACH is allocated, and the still-compiling clause is a named residual]
 
 The reachable-module set does not make every declaration a search subject. Macro declarations
 are excluded from every feed under §17.19.2a.
@@ -235,7 +235,7 @@ expansion, typechecks the remaining forms in throwaway staging, reads the succes
 public non-macro definitions into derived lookup indices, and **discards** that typecheck state.
 A failed non-macro indexing attempt contributes no rows from that source pass, subject to R10's
 session-independent reachability rule (§17.19.5).
-[Uncovered S124 — was src/session_v4/index_worker.rs::index_typecheck_mutates_no_live_shared_state, tests/search::search_ignores_macro_declaration_but_keeps_ordinary_definition_neg]
+[Tested+Neg src/session_v4/index_worker.rs::index_typecheck_mutates_no_live_shared_state, tests/search::search_ignores_macro_declaration_but_keeps_ordinary_definition_neg — the private typecheck and the macro omission; the no-rows clause is evidenced at §17.19.5 and its R10 limit at R10 above, which is nonconforming (ACT-1092)]
 
 Because source indexing does not execute macros, `/search` does not promise definitions created
 by macro expansion and may omit non-macro definitions whose indexing requires expansion. Actual
@@ -518,4 +518,4 @@ expansion — that source-index attempt contributes no rows. This allowance does
 R10's session-independent reachability rule (§17.19). The failure is never an unwound worker
 thread, a panic, or a lost session; it MAY be recorded or surfaced as a search-quality note such
 as `could not index <module>`, but MUST NOT be presented as a language error from `/search`.
-[Uncovered S124 — was tests/search::search_cf2_unindexable_module_skipped_no_crash, tests/search::search_cf2_neg_no_killed_worker_no_meta]
+[Tested+Neg tests/search::search_cf2_unindexable_module_skipped_no_crash, tests/search::search_cf2_neg_no_killed_worker_no_meta — containment, and no rows from a module that is invalid in every session; the allowance's R10 limit is evidenced at §17.19 R10, which is nonconforming (ACT-1092)]

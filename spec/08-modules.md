@@ -75,7 +75,7 @@ In the REPL, an inline `(mod name ...)` writes the backing file and loads the su
 
 Declares `internal` as a private submodule, accessible only within the declaring module and its submodule subtree. Other modules MUST NOT import from or reference names in a private submodule. Surfacing a private submodule's symbol as an importable result — e.g. advertising it in a REPL `/search` row with an `(import …)` hint (`repl/spec/17a-agent-language-awareness.md §17.19.2`) — counts as such a reference and MUST NOT occur; a private submodule's names are not eligible for import from outside its subtree.
 
-### 8.2.5 File Resolution [Tested tests/spec_08_modules::bare_mod_decl_resolves_nested_child_for_entry_main]
+### 8.2.5 File Resolution [S124 — partial: a declared child of a module found in a library directory is loaded from a same-path file earlier on the search path (ACT-1096; T-MOD-CHILD is allocated, no cell yet). Tested tests/spec_08_modules::bare_mod_decl_resolves_nested_child_for_entry_main — a child under the project root]
 
 When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file to the child directory path only:
 

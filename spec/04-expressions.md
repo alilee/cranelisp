@@ -727,7 +727,7 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string, tests/ownership_reuse::s124_d4_trace_run, tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_w_subject_run — canonical Int formatting of recorded values; item 2 and the spark face of item 3; item 3's argument format for a one-word ADT; item 3 in every mode and from a cached callee]
+### 4.12.2 Semantics [S124 — partial: the root's result is empty, not the formatted value (ACT-1094; T-TRACE-ROOT is allocated, no cell yet). Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string, tests/ownership_reuse::s124_d4_trace_run, tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_w_subject_run — canonical Int formatting of recorded values; item 2 and the spark face of item 3; item 3's argument format for a one-word ADT; item 3 in every mode and from a cached callee]
 
 Evaluation proceeds as follows:
 

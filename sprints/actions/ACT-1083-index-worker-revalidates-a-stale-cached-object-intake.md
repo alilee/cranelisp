@@ -142,7 +142,7 @@ after both edits records the state the next launch sees.
 ## Evidence allocation
 
 - **`test`: REPRO-1083,** in `tests/cache.rs`, as
-  [§14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test)
+  [§14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test)
   states it. Expected RED on exit 7.
 - **`dev`(`src/`): module row M-1083.** After an index pass over a module
   whose cached object was built under another key, validation does not

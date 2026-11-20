@@ -130,7 +130,7 @@ of the two reads has no row.
 ## Evidence allocation
 
 **REPRO-1090**, allocated to `test` in the
-[evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-returned-to-test).
+[evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
 `dev`(`src/`) owes a module row with the correction: a member that publishes
 after the view is taken is not read as settled from that view. Its shape
 follows `design`(int)'s correction of §7.6.4.
