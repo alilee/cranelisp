@@ -1332,7 +1332,7 @@ fn s124_search_reach_session(query: &str) -> helpers::e2e::CrOutput {
         )
         .file(
             "x.cl",
-            "(import [missing [absent]])\n(defn xf [n] (absent n))\n",
+            "(import [primitives [Int]])\n(import [missing [absent]])\n(defn xf [:Int n] n)\n",
         )
         .stdin(&format!(
             "/search pf\n/search pf\n/search {query}\n/search {query}\n"
