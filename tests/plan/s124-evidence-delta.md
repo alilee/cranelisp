@@ -18,7 +18,8 @@
 > `repl/spec/16-test-discovery.md` §16.1 and §16.6.
 > **Checkpoint:** `main` at `4b58ab93` for sections 1 to 13. Section 14 is
 > read at `main` `9bc97297`, where `qa` took the full run for the Phase 6b
-> to 7 checkpoint; a row that names an earlier commit was read there.
+> to 7 checkpoint; a row that names an earlier commit was read there. The
+> intake of 2026-11-21 is read at `cec21469` by hand, with no suite run.
 > **Scope:** sections 1 to 7 are intake, attribution and the reproductions
 > that do not depend on the S124 designs. Sections 8 to 13 are the conditions for the S124
 > corrections and the Phase 3 readiness judgment. Section 14 is the standing state
@@ -1515,17 +1516,34 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
 None is attributed to the backend, this sprint's focus module, which meets
 its three exit clauses (§14.9).**
 
+**Intake of 2026-11-21, at `cec21469`, by hand; no suite run since
+`9bc97297`.** No compiler source has changed since that run.
+
+- [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md), in typecheck, **wrong value:** a trait spelled
+  `Num`, `Eq`, `Ord` or `Display`, declared in the user's own module, has
+  its implementation for a primitive type replaced by a primitive. From
+  `arch`. No cell yet: T-TRAIT-SPELLING.
+- [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md), in typecheck, **a legal program refused:** no
+  implementation can be written for a vector type. From `arch`. No cell
+  yet: T-VEC-IMPL. Its higher-kinded face is held on S124-Q16.
+- [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md) **is attributed** to
+  `src/session_v4/lifecycle.rs`, and T-REFUSED-SAVE-CACHE is committed
+  (`7c5f009e`): one more RED, by `test`'s focused run, so the failing count
+  is 111 by that report.
+- **Seven bands cleared by `spec`** for S124-Q11, Q12 and the core/library
+  rule are re-judged (§14.12). Nothing is allocated against the Q16
+  inventory.
+
 **ACT-1101 predates S124, so it is not decay.** A debug binary built from
 the sprint's opening commit `3155f47f` shows it in all three subjects, with
 both controls saving (§14.10). It is carried on three failing cells.
 
 - **Against the 107 at `23448d9c`:** T-SAVE-PRODUCT's three subjects
   arrived RED. No test that passed there fails here.
-- **One defect is opened at this read:** [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md),
+- **One defect was opened at the run's read:** [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md),
   memory-unsafe. After a refused save, the next session restores from
   cache a definition the backing file does not hold, and calling it ends
-  the process on signal 11. The opening tree shows it too. No cell yet:
-  T-REFUSED-SAVE-CACHE (§14.3).
+  the process on signal 11. The opening tree shows it too.
 - **The category census, armed in this run, reads zero** from every
   program (§14.5).
 - **No workspace crate raises a build warning.**
@@ -1541,7 +1559,10 @@ Open, by filing:
   parametric product type is constructed in a REPL session, every later
   save is refused and later definitions are gone at restart. Three cells
   RED.
-- [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md), in `src/` provisionally, **memory-unsafe,** above.
+- [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md), in `src/`, **memory-unsafe,** above. One cell RED,
+  by `test`'s report.
+- [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md) and [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md), in typecheck, above. No
+  cells yet.
 - [ACT-1100](../../sprints/actions/ACT-1100-selective-derive-import-refusals-intake.md), in `src/`: a macro's expansion that references a
   macro of its own module is refused unless the using module imports that
   macro too. Six cells RED.
@@ -1676,13 +1697,20 @@ This section is the standing state under the
 |---|---|
 | `citation_drift::project_documents_conform_to_the_checked_in_declaration` | The user disposes the 562 ignored-path findings and the owners repair the other 27 (M-W0); both counts re-read on 2026-11-20 with this pass's edits in place |
 
+**Committed since the run, not run by `qa`:** [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md)'s
+T-REFUSED-SAVE-CACHE (`7c5f009e`), one RED in `src/`, memory-unsafe:
+signal 11 on a cached restart after a refused save. Attributed to
+`src/session_v4/lifecycle.rs`: the final persist rewrites the cache from
+the live table under the hash of a backing file that does not hold it.
+
 **No failing test.** Under *reproduce first* each of these is a carried
 problem with no committed reproduction. The older leads in the last row were
 read from their filings' headers only.
 
 | Problem | Module | State | A reproduction |
 |---|---|---|---|
-| After a refused save the next cached session restores a definition the backing file does not hold, and calling it ends the process on signal 11 ([ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md)) | `src/`, provisional | **A defect against REPL §15.2, memory-unsafe. Observed by `test`; reproduced by `qa`** with three controls, on the current and the opening tree. The cache writer is not read | T-REFUSED-SAVE-CACHE, allocated (§14.3) |
+| A trait spelled `Num`, `Eq`, `Ord` or `Display` has its implementation for a primitive type replaced by a primitive ([ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md)) | typecheck | **A defect against spec §7.3, wrong value. Reported by `arch`; reproduced by `qa`** for all four spellings, with renamed controls. `traits/dispatch.rs::primitive_for_trait_method`, read in source | T-TRAIT-SPELLING, allocated (§14.3) |
+| The built-in `Vec` is refused as an implementation target ([ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md)) | typecheck, provisional as to the site | **A defect against spec §7.3 Case 1 and §3.2.7, a legal program refused. Reported by `arch`; reproduced by `qa`** with controls | T-VEC-IMPL, allocated (§14.3). The higher-kinded cell is held on S124-Q16 |
 | Two processes on one project directory mix cache generations ([ACT-1085](../../sprints/actions/ACT-1085-two-processes-on-one-project-directory-can-mix-cache-generations-intake.md)) | `src/` | Asserted with a named falsifier. The backend's shared temporary name, which was a part, is corrected (`7d5a5d42`) | Judged constructible, and not attempted, below |
 | A codegen failure names `__expr` or an instance key as its subject (FIXME 0915, the binary's half; [int §9.1](../../design/int/int.md#91-the-compiler-stage-subject-is-presented-never-carried--ruling-s119-fixme-0915-item-4)) | `src/`, with a carrier that is `arch`'s | True in this read: `codegen failed for __expr in user: …` through ACT-1075's cells. No legitimate program reaches it. Wrong diagnostic | A module row in `src/`, allocated to `dev`(`src/`) (§14.8). No e2e cell: every public trigger is another module's open defect |
 | A macro-produced function restored from cache that references `discover-tests` is reported at `0..0` ([ACT-1036](../../sprints/actions/ACT-1036-main-return-refusal-synthetic-location-intake.md)) | `src/` | Stated by `design`(int); with the user | Not checked |
@@ -1733,6 +1761,7 @@ the correction and pass with no change to their assertions.
 
 | Evidence | Judgment | Note |
 |---|---|---|
+| T-REFUSED-SAVE-CACHE: `repl_persist::s124_refused_save_*`, three cells (`7c5f009e`) | **Accepted on reading; not run by `qa`** | The subject drives the restart by staged input, so the signal is captured as a status, and checks all three clauses before asserting. `test` reports it RED on all three with signal 11, and both controls green. The locus is to be replaced now the site is read (§14.3) |
 | T-SAVE-PRODUCT: `repl_persist::s124_save_after_*`, five cells (`65471409`, `9bc97297`) | **Accepted, RED as allocated** | The three subjects fail on the warning, file and restart clauses, collected before the assertion so none masks another. The two controls pass. The restart is cold, with the cache removed, because a cached restart ends on a signal (ACT-1102). The defect lines carry `src/save.rs::generate_types` |
 | T-MACRO-SIBLING's loci (`8eb12256`) | Accepted | Six subjects name `src/process_form/macro_resolution.rs` |
 | `repl/demos/optimization.demo` and `memory-lifecycle.demo` (`46c64e21`, `20ce70c6`) | Accepted as `test` reports | The retired stack placement and flattening acts are gone, and the startup ledger narration matches a zero baseline. `qa` did not replay them |
@@ -1825,13 +1854,97 @@ read; each cell passed or failed in the `f8c55626` run as its row states.
 
 ### 14.3 Allocated to `test`
 
-**The handoff now.** Everything else in this section is committed and
-judged (§14.2); its conditions stay as the present-tense statement of what
-each cell shows.
+**The handoff now, in rank order.** Everything else in this section is
+committed and judged (§14.2); its conditions stay as the present-tense
+statement of what each cell shows.
 
 | Rank | Item | Filing | Kind |
 |---|---|---|---|
-| 1 | T-REFUSED-SAVE-CACHE | ACT-1102 | New reproduction; memory-unsafe |
+| 1 | T-TRAIT-SPELLING | ACT-1103 | New reproduction; wrong value |
+| 2 | T-VEC-IMPL | ACT-1104 | New reproduction; legal program refused |
+| 3 | T-TRAIT-ONE-PARAM | — | Guard for S124-Q11; passes by hand |
+| 4 | T-SPLICE-BARE | — | Guard for S124-Q12; passes by hand |
+| 5 | T-REFUSED-SAVE-CACHE's defect line: the locus becomes `src/session_v4/lifecycle.rs::flush_final_persist` | ACT-1102 | Maintenance |
+
+**Held:** T-VEC-FUNCTOR, an implementation of a higher-kinded trait for
+the built-in `Vec`, on S124-Q16 (rows CL05 and CL36). **Nothing is
+allocated against the Q16 inventory's classifications.**
+
+**T-TRAIT-SPELLING** ([ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md); spec §7.3).
+
+- **Risk.** A program that declares its own `Num`, `Eq`, `Ord` or
+  `Display` gets the compiler's primitive where its implementation says
+  otherwise, with no diagnostic.
+- **Seam and technique.** One-file programs with no prelude, each
+  declaring the trait and one implementation for `Int` whose body differs
+  observably from the primitive, scored by exit status under `--run`. The
+  decision is made in typecheck and does not differ by mode.
+- **Subjects.** The six programs of the filing's table: `Num` called
+  directly, taken as a value, and reached through a constrained function;
+  `Eq`; `Ord`; `Display`.
+- **Clause, for each subject:** the result is the implementation's value,
+  **or the program is refused with a diagnostic.** It is never the
+  primitive's value.
+- **Why the clause has two arms.** Whether these traits are core or
+  library is S124-Q16, unconfirmed. Under either answer the primitive's
+  value is wrong; which of the two arms is right waits on it. `qa`
+  narrows the clause when the classification is confirmed.
+- **Controls.** The `Num`, `Eq` and `Display` subjects with the trait
+  renamed (`Numb`, `Eqq`, `Displayy`) give the implementation's value.
+- **Wrong implementations it rejects.** The spelling-keyed table as built
+  (every subject); a correction of direct calls that leaves the value or
+  the constrained route (those two subjects); a correction for `Num`
+  alone (the other three traits).
+- **By hand every subject gives the primitive's value** (8, 8, 10, 9, 9,
+  5) and every control the implementation's.
+- **Defect line:** `class=spelling-keyed-decision`, new in the vocabulary;
+  the locus
+  `crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method`;
+  `owner=/dev`.
+
+**T-VEC-IMPL** ([ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md); spec §7.3 Case 1 and §3.2.7).
+
+- **Risk.** No trait can be implemented for a vector type, and the
+  refusal tells the user to apply `Vec` to no argument.
+- **Seam and technique.** One-file programs with no prelude under `--run`,
+  with `(deftrait Sz (sz [self] Int))`.
+- **Subjects.** `(impl Sz (Vec Int) (defn sz [v] (vec-len v)))` and
+  `(impl Sz (Vec a) …)`, each with `(sz [1 2 3])`: the exit status is 3.
+- **Negative.** `(impl Sz Vec …)`, the bare constructor, is refused, as
+  Case 1 requires. Do not assert its wording: today's is not the kind
+  mismatch the specification describes.
+- **Control.** `(impl Sz (Option a) (defn sz [v] 4))` with `(sz (Some 1))`
+  gives 4.
+- **Wrong implementations it rejects.** The zero-parameter reading as
+  built (both subjects); a correction for concrete arguments only (the
+  second subject); an acceptance of the bare constructor (the negative).
+- **By hand both subjects are refused,** the negative is refused, and the
+  control gives 4.
+- **Defect line:** `class=wrong-reject`, the locus
+  `crates/cranelisp-typecheck/src/traits/impl_check.rs`, `owner=/dev`.
+
+**T-TRAIT-ONE-PARAM** (spec §2.2.3 and §5.3.2, as ruled at S124-Q11): a
+guard.
+
+- **The cell.** `(deftrait (Ix c a) (at [:(c a) x] a))`, with no prelude,
+  is refused with a located parse error. By hand: `too many elements in
+  trait head`.
+- **Control.** The existing one-parameter cell,
+  `hkt_deftrait_declaration_with_type_constructor_parameter_succeeds`.
+- **What it rejects.** A grammar that again admits a second parameter.
+  The committed cell with that message is for an `impl` head, not a
+  `deftrait` head.
+
+**T-SPLICE-BARE** (spec §9.7.0 and §8.8.3, as ruled at S124-Q12): a
+guard.
+
+- **The cell.** With no prelude and no import:
+  ``(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))`` and a `main`
+  returning `(add-all 3 4)` exit 7, under `--run` and at the REPL. By hand
+  it does.
+- **What it rejects.** An expansion of unquote-splicing that names a
+  library function, or a compiler helper by a bare name the module must
+  import. The committed splice cells run under a primitives-only prelude.
 
 **T-REFUSED-SAVE-CACHE** ([ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md); REPL §15.2), a safety
 fence.
@@ -1852,15 +1965,12 @@ fence.
   state after the save was refused, as built (the exit clause); a cache
   that is never trusted after any change (the second control still
   restores `g`).
-- **By hand the subject ends on signal 11** and both controls hold, on
-  the current tree and on the sprint's opening tree.
 - **What it cannot show after ACT-1101 is corrected.** That route to a
   refused save is then closed, and the cell passes without reaching the
   defect. `dev`(`src/`) owes a module row that refuses a regeneration by
   construction.
-- **Defect line:** `class=artifact-underkey`, the locus as the seam name
-  `cache-generation-after-refused-save`, `owner=/dev`. The module is
-  provisional.
+- **Defect line:** `class=artifact-underkey`, the locus
+  `src/session_v4/lifecycle.rs::flush_final_persist`, `owner=/dev`.
 
 **T-SAVE-PRODUCT** ([ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md); REPL §15.1: "the REPL MUST
 persist interactive definitions to disk").
@@ -1921,6 +2031,7 @@ module").
 
 | Allocation | Filing | Class | State at `9bc97297` |
 |---|---|---|---|
+| T-REFUSED-SAVE-CACHE | ACT-1102 | Safety fence | Committed after the run (`7c5f009e`): 1 RED, 2 controls green, by `test`'s report |
 | T-SAVE-PRODUCT | ACT-1101 | Acceptance | 3 RED, 2 controls green |
 | T-MACRO-SIBLING | ACT-1100 | Acceptance | 6 RED, 12 controls green |
 | T-TYPE-ERR, replacing T-TYPE-DEFN | ACT-1089 | Acceptance | 5 subjects RED; the guard cell and the control green |
@@ -2461,7 +2572,9 @@ running at once, and once in the full suite.
 
 | Filing | Defect | Entered | Face | State |
 |---|---|---|---|---|
-| [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md) | After a refused save the cache holds definitions the backing file does not, and the next cached session calls one | Before S124: the opening tree shows it | **Memory-unsafe:** signal 11 | **Opened from `test`'s observation on 2026-11-20.** Reproduced by hand with three controls; attributed to `src/` provisionally, by control. No cell yet: T-REFUSED-SAVE-CACHE (§14.3) |
+| [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md) | A trait spelled `Num`, `Eq`, `Ord` or `Display` has its implementation for a primitive type replaced by a primitive | Before S124: in typecheck since 2026-06-21, in the backend before | Wrong value, every mode, no diagnostic | **Opened from `arch`'s determination on 2026-11-21.** Reproduced by hand for all four spellings with renamed controls; attributed to `primitive_for_trait_method`, read in source. No cell yet: T-TRAIT-SPELLING (§14.3) |
+| [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md) | The built-in `Vec` is refused as an implementation target | Not established | A legal program refused, with a self-contradicting diagnostic | **Opened from `arch`'s determination on 2026-11-21.** Reproduced by hand with controls; attributed to typecheck's implementation check, provisionally as to the site. No cell yet: T-VEC-IMPL (§14.3). The higher-kinded face is held on S124-Q16 |
+| [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md) | After a refused save the cache holds definitions the backing file does not, and the next cached session calls one | Before S124: the opening tree shows it | **Memory-unsafe:** signal 11 | **Opened from `test`'s observation on 2026-11-20.** Reproduced by hand with three controls. **Attributed to `src/session_v4/lifecycle.rs`,** read in source: the final persist rewrites the cache from the live table under the unchanged source hash. T-REFUSED-SAVE-CACHE is committed, 1 cell RED by `test`'s report |
 | [ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md) | After a value of a parametric product type is constructed, every later save of the backing file is refused | Before S124: present on the opening tree. The refusing check dates from S122 | **Data loss:** later definitions are absent at restart. A warning is printed each time | **A defect against REPL §15.1; it predates S124.** A binary built from the opening commit `3155f47f` shows it in all three subjects. Attributed to `src/save.rs::generate_types`, read in source. T-SAVE-PRODUCT is committed, 3 cells RED |
 | [ACT-1100](../../sprints/actions/ACT-1100-selective-derive-import-refusals-intake.md) | A macro's expansion that references a macro of its own module is refused unless the using module imports that macro | Not established | A legal program refused | **Opened by `docs`; a defect against spec §9.3.4.** Reduced without the standard library, with controls. **Attributed to `src/`'s expansion driver,** read in source: heads are recognised in the using module's scope and qualified afterwards. T-MACRO-SIBLING is committed, 6 cells RED |
 | [ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md) | `/type` refuses an expression that uses a macro | Not established | A legal query refused, with a diagnostic naming a defined macro as undefined | **Opened by `qa` on 2026-11-20.** Reproduced by hand with a control; attributed to `src/`'s type query, provisionally. T-TYPE-MACRO (§14.3) |
@@ -2523,6 +2636,13 @@ running at once, and once in the full suite.
 - **The owning-value leak.** T-TRACE-ROOT's heap leg used a `String`, which
   holds nothing further. `qa` allocated "heap-valued" and did not separate
   a value that owns other heap values, which is where drop glue matters.
+- **ACT-1103.** Every trait cell that implements `Num`, `Eq`, `Ord` or
+  `Display` for a primitive type gives the implementation the primitive's
+  own meaning, on the suite's test prelude. No cell gives one a body that
+  differs from the primitive, so the substitution was unobservable.
+- **ACT-1104.** The implementation-target cells use user types and
+  `Option`. The axis "the target is a built-in parameterized type" was not
+  enumerated.
 - **ACT-1102.** Every restart cell follows a session whose saves
   succeeded. The axis "the previous session's last save was refused" was
   not enumerated, and no public route to a refused save was known before
@@ -2609,17 +2729,25 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 **Can proceed now, in this order.**
 
-1. **`test`:** T-REFUSED-SAVE-CACHE (§14.3).
-2. **`qa`:** the read of its red on the exit clause, and the cache writer
-   of ACT-1102 before any `dev` dispatch on it.
+1. **`test`:** the five rows of §14.3's handoff table, in rank order.
+2. **`qa`:** the read of the new reds on their clauses, and a full run
+   when they are committed. T-TRAIT-SPELLING's clause is narrowed when
+   S124-Q16 is confirmed, and T-VEC-FUNCTOR is allocated or declined then.
 3. **`sprint`:**
    - **ACT-1101 predates S124** and is carried on three failing cells; it
      does not hold the sprint under *no decay* (§14.10);
-   - **ACT-1102 is new at this read, memory-unsafe, and also predates
-     S124.** Its cell is allocated;
-   - the backend meets its three exit clauses at `9bc97297` (§14.9);
-   - the failing count is 110 (§14.1), and rises by one when
-     T-REFUSED-SAVE-CACHE is committed;
+   - **ACT-1102 is memory-unsafe and also predates S124.** Its cell is
+     committed and its site is read;
+   - **ACT-1103 and ACT-1104 are new, from `arch`'s determinations.**
+     ACT-1103 predates S124; ACT-1104's age is not established;
+   - **`spec`'s link is broken by a band edit.** Line 138 of the open
+     questions appendix links to the collection-extensibility heading of
+     appendix C by an anchor that includes the band's text, and `qa`
+     changed that band. The link is `spec`'s to repair; an anchor without
+     the band's text does not break again;
+   - the failing count is 110 at `qa`'s run (§14.1) and 111 with
+     T-REFUSED-SAVE-CACHE, by `test`'s report. It rises again with the
+     subjects of T-TRAIT-SPELLING and T-VEC-IMPL;
    - the suite takes 234 s, inside the five-minute expectation again;
    - §14.13 is what a user accepting the sprint should know is not
      covered;
@@ -2692,7 +2820,8 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
    method body naming an undefined function is reported at the trait's
    declaration (ACT-1097, *Lead*).
 9. **`design`(typecheck):** ACT-1097's correction, carried on
-   T-TRAIT-SCALAR unless the user schedules it.
+   T-TRAIT-SCALAR unless the user schedules it; ACT-1104's, carried on
+   T-VEC-IMPL; ACT-1103's, after `arch` and the confirmed classification.
 
 **Waits on the user.**
 
@@ -2705,7 +2834,8 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 | Whether ACT-1085's control is built | T-OWNER | Reproduce first: it has no reproduction |
 | Whether ACT-1099's correction is scheduled with ACT-1089's | T-TYPE-MACRO | Clean house: both are in `typecheck_only` |
 | Whether ACT-1100's correction is scheduled | T-MACRO-SIBLING's 6 RED cells | The standard library's `derive` meets it |
-| Whether ACT-1101 and ACT-1102 are corrected before the sprint closes | T-SAVE-PRODUCT's 3 RED cells; T-REFUSED-SAVE-CACHE, once committed | Data loss and a memory-unsafe restart. Neither is S124's own, so *no decay* does not require it |
+| S124-Q16: the core/library classification | T-VEC-FUNCTOR; the second arm of T-TRAIT-SPELLING's clause | Consistent spec |
+| Whether ACT-1101 and ACT-1102 are corrected before the sprint closes | T-SAVE-PRODUCT's 3 RED cells; T-REFUSED-SAVE-CACHE's 1 | Data loss and a memory-unsafe restart. Neither is S124's own, so *no decay* does not require it |
 
 **Carried, with nothing owed this sprint beyond the failing test:** every
 filing of §14.1 outside the backend.
@@ -2826,6 +2956,8 @@ a regression:
 - **ACT-1096 and ACT-1097 predate S124** by their source dates
   (2026-06-21 and 2026-07-16).
 - **ACT-1101 and ACT-1102 predate S124,** by the opening-tree reading.
+  **ACT-1103 predates it** by its source date. ACT-1104's age is not
+  established.
 - **The age of ACT-1099 and ACT-1100 is not established.** They sit in
   code S124 did not change, by `qa`'s reading of the change list and not
   by a run.
@@ -2910,6 +3042,12 @@ more at `21101921` and both are restored below.
 | Spec §9.3.4 | From tested to partial, naming T-MACRO-SIBLING's six failing cells | An expansion that references a sibling macro is refused under a selective import (ACT-1100) |
 | REPL §15.1 | From tested to partial, naming T-SAVE-PRODUCT's three failing cells and two controls | After a parametric product type is constructed, later saves are refused (ACT-1101) |
 | REPL §15.2 | From tested to partial, naming ACT-1102 with no cell yet | After a refused save a cached restart calls a definition the file does not hold |
+| Spec §2.2.3 and §5.3.2, cleared by `spec` for S124-Q11 | Restored to their cells, with the one-parameter cell added to §2.2.3 | The cells show a bare head, a one-parameter head and the binder refusals, none of which the ruling changed. The refusal of a second parameter holds by hand and has no cell: T-TRAIT-ONE-PARAM |
+| Spec §5.3, the section summary | Restored to tested | Its children are |
+| Spec §9.7.0, the splicing sentence, new at S124-Q12 | Tested, naming two committed splice cells | They run with a primitives-only prelude and no library. T-SPLICE-BARE adds no prelude and no import |
+| Spec §11.4, cleared for S124-Q12 | Restored to its cell | It shows a prelude loads. The changed sentence points at §9.7.0 |
+| Spec §8.8.3, the core/library rule | From uncovered to partial, with no cell named | It is mostly a rule about the specification itself. ACT-1103 is a known conflict. Nothing is allocated against the unconfirmed Q16 inventory |
+| Spec appendix C §C.2.4, cleared for S124-Q11 | Partial: item 1 tested by two higher-kinded cells; ACT-1104 named; items 2 and 3 without a cell | It was never tested (`[S24]`). The rest waits on S124-Q16 |
 | REPL §3.1, the definition-form paragraph and the table row | They name T-TYPE-ERR's five failing cells and T-TYPE-MACRO's | The cells are committed |
 | Spec §8.2.5 | From tested to partial, naming T-MOD-CHILD's four failing cells and its override control | A library's declared child is replaced (ACT-1096) |
 | REPL §3.1, the definition-form paragraph, cleared by `spec` at `39be7cfe` | Nonconforming, naming REPRO-1089's four failing subjects; the required error has no cell; T-TYPE-DEFN's cell is named as asserting the withdrawn rule | The four subjects still show that nothing may be defined. T-TYPE-ERR is allocated |
@@ -2930,9 +3068,14 @@ defect report; the defects are §14.1.
   (ACT-1101); a multi-signature function is omitted from the regenerated
   file (ACT-1068); regeneration can reorder definitions so the file no
   longer loads (ACT-1005).
-- **Memory-unsafe, no test yet:** the session after a refused save
+- **Memory-unsafe, on a failing test:** the session after a refused save
   restores a definition its file does not hold, and calling it ends the
   process (ACT-1102).
+- **Wrong value, no test yet:** a user's own trait named `Num`, `Eq`,
+  `Ord` or `Display` has its implementation for a primitive type ignored
+  (ACT-1103).
+- **Legal program refused, no test yet:** no trait can be implemented for
+  a vector type (ACT-1104).
 - **Memory-unsafe, on failing tests:** `/type` given a definition
   (ACT-1089); trait dispatch on a non-first self position (ACT-1076); an
   imported parametric implementation calling a multi-signature function
@@ -2971,14 +3114,15 @@ defect report; the defects are §14.1.
 
 **Not attributed.** ACT-1018 (one stranded block per `print` of an owned
 value) and ACT-1067 (a deeply nested expression aborts the compiler) have
-no module, and the backend is a candidate for each. ACT-1102's cache
-writer is not read.
+no module, and the backend is a candidate for each.
 
 **Open with `spec`, blocking no test.** A trace root's name and
 parameters; a skipped trace form's result; what a project file at a
 library child's path is; whether a default method body is checked at its
 trait's declaration; whether a `begin` of two expressions is reported in
-the words it is.
+the words it is. **S124-Q16, the core/library classification, is open with
+the user,** and the evidence takes no position on any row of its
+inventory.
 
 **Showcase, not evidence.** The demos, the exemplar's runner, the
 documentation samples and the learning sequence's replay show the

@@ -816,7 +816,7 @@ A project MAY provide its own `prelude.cl` that shadows a library prelude, since
 
 An empty prelude is valid. The core language -- primitives, special forms, type inference -- works without any prelude content. The prelude provides convenience (traits, operators, types, macros) but is not required for the language to function.
 
-This specification MUST NOT depend on the prelude. Every construct the language defines MUST be self-sustaining: any helper it requires MUST be provided as a built-in or primitive, without depending on a library. A built-in macro MUST emit fully-qualified references to primitives so that it depends on no imports. A high-level construct that can be implemented in a library or by a user SHOULD belong to the library, not the language. [Uncovered S124]
+This specification MUST NOT depend on the prelude. Every construct the language defines MUST be self-sustaining: any helper it requires MUST be provided as a built-in or primitive, without depending on a library. A built-in macro MUST emit fully-qualified references to primitives so that it depends on no imports. A high-level construct that can be implemented in a library or by a user SHOULD belong to the library, not the language. [S124 — partial. The suite's own cells run with no standard library, by its isolation rule. Splicing with no prelude and no import: T-SPLICE-BARE, allocated. A user trait spelled `Num`, `Eq`, `Ord` or `Display` is overridden by a compiler table (ACT-1103). No cell is allocated against the S124-Q16 inventory, which is not confirmed]
 
 ```clojure
 ;; A valid, empty prelude.cl

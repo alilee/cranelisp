@@ -464,7 +464,7 @@ Macro authors typically need helper functions for `SList`. A standard library ma
 
 The library-provided SList helper functions `sfold`, `sreverse`, and `sempty?` are public within `core.syntax` and available to sibling modules (such as `core.derive`) via direct import, but are not part of the user-facing standard library namespace. Macro authors who need these helpers in their own modules can import them explicitly from `core.syntax` or define local equivalents.
 
-Unquote-splicing (`~@`) MUST work without any library function. The compiler provides the concatenation required by its expansion; no library-provided `sconcat` or prelude re-export is required. [Uncovered S124]
+Unquote-splicing (`~@`) MUST work without any library function. The compiler provides the concatenation required by its expansion; no library-provided `sconcat` or prelude re-export is required. [Tested tests/spec_09_macros::repl_defmacro_rest_splice, tests/spec_09_macros::unquote_splicing_at_top_level_desugars — with a primitives-only prelude and no library on the path; a cell with no prelude and no import is allocated (T-SPLICE-BARE)]
 
 ### 9.7.1 `sfold`
 

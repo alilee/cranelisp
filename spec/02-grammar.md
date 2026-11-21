@@ -187,7 +187,7 @@ Constructors in a sum type MAY also have docstrings:
   (Err "The error case" [:b err]))
 ```
 
-### 2.2.3 `deftrait` -- Trait Declaration [Uncovered S124 — was tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::deftrait_qualified_bare_head_rejected_binder_neg, tests/spec_07_traits::deftrait_qualified_parenthesized_head_rejected_binder_neg]
+### 2.2.3 `deftrait` -- Trait Declaration [Tested+Neg tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_qualified_bare_head_rejected_binder_neg, tests/spec_07_traits::deftrait_qualified_parenthesized_head_rejected_binder_neg — a bare head and a head with one constructor parameter, and the binder refusals; a head with two parameters is refused by hand and has no cell yet (T-TRAIT-ONE-PARAM)]
 
 ```ebnf
 deftrait_form   = '(' deftrait_kw trait_head docstring? method_sig* ')'

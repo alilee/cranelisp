@@ -48,7 +48,7 @@ This ordering means a `defmacro` form can reference:
 
 Forward references to macros are not supported — a macro must appear before the code that uses it.
 
-## 11.4 Writing a Standard Library [Uncovered S124 — was tests/spec_11_stdlib::prelude_loads_without_errors]
+## 11.4 Writing a Standard Library [Tested tests/spec_11_stdlib::prelude_loads_without_errors — a prelude loads; the unquote-splicing statement is evidenced at §9.7.0]
 
 Practical notes for library authors:
 

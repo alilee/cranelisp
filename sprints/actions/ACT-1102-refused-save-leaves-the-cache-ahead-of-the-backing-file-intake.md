@@ -10,7 +10,8 @@ filed_at: 2026-11-20
 refers_to:
   - repl/spec/15-session-persistence.md §15.2
   - repl/spec/15-session-persistence.md §15.1
-  - src/session_v4/lifecycle.rs
+  - src/session_v4/lifecycle.rs::flush_final_persist
+  - src/session_v4/lifecycle.rs::regenerate_backing_file
   - sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md
 ---
 
@@ -50,16 +51,31 @@ same first four rows.
 - **Severity: memory-unsafe.** A call ends the process on a signal.
 - **It predates S124** (the opening-tree reading).
 
-## Attribution: the binary, provisional
+## Attribution: the binary, `src/session_v4/lifecycle.rs`
 
-- **By control.** An external edit that leaves the file behind the cache is
-  detected, and the cache is not used. After a refused save it is used. So
-  the session writes a cache generation from its own state under the
-  identity of a file that does not hold that state.
-- **Not read:** which step writes the cache after the refusal, and why the
-  restored `f` has no code to call.
-- **Refuted if** the cache after a refused save is byte for byte the cache
-  from before the refused definition.
+Read in source at `9bc97297`, with the controls above.
+
+- **The cache's identity is the backing source's hash.**
+  `regenerate_backing_file` refreshes the cache's recorded source hash only
+  after it has written the file. When the regeneration is refused it
+  returns first, so the recorded hash stays that of the file on disk.
+- **The cache's content is the live table.** `flush_final_persist` marks
+  the entry module's object stale at the end of every session, with no
+  condition, and the object pass then rewrites `user.o` and
+  `user.meta.json` from the session's table. After a refused save that
+  table holds definitions the file does not.
+- **So the next session's hit check passes** on the file's hash and
+  restores the newer table.
+- **Controls.** An external edit changes the file's hash and the cache is
+  not used. With no cache the definition is undefined.
+- **Not read:** why the restored definition has no code to call.
+- **Refuted if** the cache after a refused save holds no entry for the
+  later definition.
+
+T-REFUSED-SAVE-CACHE is committed (`7c5f009e`) and accepted: its subject
+fails on all three clauses with the signal captured, and its two controls
+pass. `test` replaces the seam locus with
+`src/session_v4/lifecycle.rs::flush_final_persist`.
 
 ## Relation to ACT-1101
 
