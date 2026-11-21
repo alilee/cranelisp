@@ -1417,3 +1417,157 @@ fn s124_search_reach_neg_missing_dependency_no_row() {
         out.stderr
     );
 }
+
+fn s124_child_index_session(project_file: bool) -> helpers::e2e::CrOutput {
+    let session = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .lib_dir("lib")
+        .file("lib/m.cl", "(mod t)\n(import [t [v]])\n(defn f [] (v))\n")
+        .file("lib/m/t.cl", "(defn v [] 5)\n(defn libonly-zq [] 1)\n");
+    let session = if project_file {
+        session.file("m/t.cl", "(defn v [] 6)\n(defn projonly-zq [] 2)\n")
+    } else {
+        session
+    };
+    session
+        .stdin(
+            "/search projonly-zq\n/search projonly-zq\n\
+             /search libonly-zq\n/search libonly-zq\n\
+             (import [m [f]])\n(f)\n(m.t/projonly-zq)\n(m.t/libonly-zq)\n",
+        )
+        .output()
+}
+
+fn s124_child_index_turn(out: &helpers::e2e::CrOutput, turn: usize) -> &str {
+    out.stdout
+        .split("; user> ")
+        .nth(turn)
+        .unwrap_or_else(|| panic!("missing turn {turn}: {}{}", out.stdout, out.stderr))
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 1
+// defect: class=wrong-scope-lookup locus=index-feed-module-enumeration found=S124 owner=/dev (ACT-1096)
+#[test]
+fn s124_child_index_not_offering_project_file() {
+    let out = s124_child_index_session(true).assert_ok();
+    assert!(
+        !s124_child_index_turn(&out, 2).contains("(import [m.t [projonly-zq]])"),
+        "project file must have no import row: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 2
+// defect: class=wrong-scope-lookup locus=index-feed-module-enumeration found=S124 owner=/dev (ACT-1096)
+#[test]
+fn s124_child_index_offering_library_child() {
+    let out = s124_child_index_session(true).assert_ok();
+    assert!(
+        s124_child_index_turn(&out, 4).contains("(import [m.t [libonly-zq]])"),
+        "library child must have its import row: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 3
+// defect: class=wrong-scope-lookup locus=src/process_form/dependency.rs::enrol_declared_submodule found=S124 owner=/dev (ACT-1096)
+#[test]
+fn s124_child_index_import_calls_library_value() {
+    let out = s124_child_index_session(true).assert_ok();
+    assert!(
+        s124_child_index_turn(&out, 6)
+            .lines()
+            .any(|line| line == ":primitives/Int 5"),
+        "f must return the library value: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 4, library member
+// defect: class=wrong-scope-lookup locus=src/process_form/dependency.rs::enrol_declared_submodule found=S124 owner=/dev (ACT-1096)
+#[test]
+fn s124_child_index_qualified_library_member_returns_value() {
+    let out = s124_child_index_session(true).assert_ok();
+    assert!(
+        s124_child_index_turn(&out, 8)
+            .lines()
+            .any(|line| line == ":primitives/Int 1"),
+        "qualified library member must return its value: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 4, project member
+// defect: class=wrong-scope-lookup locus=src/process_form/dependency.rs::enrol_declared_submodule found=S124 owner=/dev (ACT-1096)
+#[test]
+fn s124_child_index_qualified_project_member_not_callable() {
+    let out = s124_child_index_session(true).assert_ok();
+    let response = s124_child_index_turn(&out, 7);
+    assert!(
+        response.contains("Error:")
+            && response.contains("projonly-zq")
+            && !response.contains(":primitives/Int 2"),
+        "qualified project member must be refused: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 5
+#[test]
+fn s124_child_index_project_file_presence_not_an_error() {
+    let out = s124_child_index_session(true).assert_ok();
+    for turn in 0..7 {
+        assert!(
+            !s124_child_index_turn(&out, turn).contains("Error:"),
+            "turn before the intended refusal must not error: {}{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+    out.assert_stderr_empty();
+}
+
+// spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX control, no project file
+#[test]
+fn s124_child_index_library_only_control() {
+    let out = s124_child_index_session(false)
+        .assert_ok()
+        .assert_stderr_empty();
+    assert!(
+        s124_child_index_turn(&out, 4).contains("(import [m.t [libonly-zq]])"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        s124_child_index_turn(&out, 6)
+            .lines()
+            .any(|line| line == ":primitives/Int 5"),
+        "{}",
+        out.stdout
+    );
+    let refusal = s124_child_index_turn(&out, 7);
+    assert!(
+        refusal.contains("Error:") && refusal.contains("projonly-zq"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        s124_child_index_turn(&out, 8)
+            .lines()
+            .any(|line| line == ":primitives/Int 1"),
+        "{}",
+        out.stdout
+    );
+    for turn in 0..7 {
+        assert!(
+            !s124_child_index_turn(&out, turn).contains("Error:"),
+            "{}",
+            out.stdout
+        );
+    }
+}

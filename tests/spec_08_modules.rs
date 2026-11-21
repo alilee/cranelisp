@@ -6754,7 +6754,7 @@ fn s124_child_project() -> Cranelisp {
         .with_prelude(PreludeVariant::None)
         .lib_dir("lib")
         .file("lib/m.cl", "(mod- t)\n(import [t [v]])\n(defn f [] (v))\n")
-        .file("lib/m/t.cl", "(defn v [] 1)\n")
+        .file("lib/m/t.cl", "(defn v [] 5)\n")
         .file(
             "proj/main.cl",
             "(import [primitives [Pure]])\n(import [m [f]])\n(defn main [] (Pure (f)))\n",
@@ -6766,11 +6766,11 @@ fn s124_child_project() -> Cranelisp {
 #[test]
 fn s124_declared_child_run_not_replaced_by_project_file() {
     s124_child_project()
-        .file("proj/m/t.cl", "(defn v [] 2)\n")
+        .file("proj/m/t.cl", "(defn v [] 6)\n")
         .run("proj/main.cl")
         .cli_flag("--no-cache")
         .output()
-        .assert_exit(1);
+        .assert_exit(5);
 }
 
 // spec: spec/08-modules.md §8.2.5 — T-MOD-CHILD linked execution
@@ -6778,10 +6778,10 @@ fn s124_declared_child_run_not_replaced_by_project_file() {
 #[test]
 fn s124_declared_child_link_not_replaced_by_project_file() {
     s124_child_project()
-        .file("proj/m/t.cl", "(defn v [] 2)\n")
+        .file("proj/m/t.cl", "(defn v [] 6)\n")
         .link_then_run("proj/main.cl")
         .output()
-        .assert_exit(1);
+        .assert_exit(5);
 }
 
 // spec: spec/08-modules.md §8.2.5 — T-MOD-CHILD cached launch
@@ -6791,17 +6791,17 @@ fn s124_declared_child_cached_not_replaced_by_new_project_file() {
     let warm = s124_child_project()
         .run("proj/main.cl")
         .output()
-        .assert_exit(1);
+        .assert_exit(5);
     assert!(
         warm.tmp_exists("proj/.cranelisp-cache/m.o"),
         "library object must be cached"
     );
     warm.run_again()
         .lib_dir("lib")
-        .file("proj/m/t.cl", "(defn v [] 2)\n")
+        .file("proj/m/t.cl", "(defn v [] 6)\n")
         .run("proj/main.cl")
         .output()
-        .assert_exit(1);
+        .assert_exit(5);
 }
 
 // spec: spec/08-modules.md §8.2.5 — T-MOD-CHILD earlier library directory
@@ -6816,11 +6816,11 @@ fn s124_declared_child_not_replaced_by_earlier_library_file() {
     );
     project
         .env("CRANELISP_LIB", &path)
-        .file("early/m/t.cl", "(defn v [] 2)\n")
+        .file("early/m/t.cl", "(defn v [] 6)\n")
         .run("proj/main.cl")
         .cli_flag("--no-cache")
         .output()
-        .assert_exit(1);
+        .assert_exit(5);
 }
 
 // spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD project override control
@@ -6828,8 +6828,8 @@ fn s124_declared_child_not_replaced_by_earlier_library_file() {
 fn s124_declared_child_project_module_override_control() {
     s124_child_project()
         .file("proj/m.cl", "(mod- t)\n(import [t [v]])\n(defn f [] (v))\n")
-        .file("proj/m/t.cl", "(defn v [] 2)\n")
+        .file("proj/m/t.cl", "(defn v [] 6)\n")
         .run("proj/main.cl")
         .output()
-        .assert_exit(2);
+        .assert_exit(6);
 }
