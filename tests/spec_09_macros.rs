@@ -30,6 +30,31 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+// spec: spec/09-macros.md §9.7.0 — T-SPLICE-BARE; spec/08-modules.md §8.8.3
+#[test]
+fn s124_splice_without_prelude_or_import_run() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))\n(defn main [] (primitives/Pure (add-all 3 4)))\n",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// spec: spec/09-macros.md §9.7.0 — T-SPLICE-BARE; spec/08-modules.md §8.8.3
+#[test]
+fn s124_splice_without_prelude_or_import_repl() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .stdin("(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))\n(defn main [] (primitives/Pure (add-all 3 4)))\n(main)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7")
+        .assert_stdout_does_not_contain("error:");
+}
+
 // =============================================================================
 // §9.2 Macro Definition — basic identity macro
 // =============================================================================

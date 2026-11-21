@@ -57,6 +57,180 @@ fn link_prims(src: &str) -> helpers::e2e::CrOutput {
         .output()
 }
 
+fn s124_trait_program(declarations: &str, expression: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user(&format!("(import [primitives [Int Bool String Vec Option]])\n{declarations}\n(defn main [] (primitives/Pure {expression}))\n"))
+        .run("user.cl")
+        .output()
+}
+
+fn s124_impl_value_or_refusal(declarations: &str, expression: &str, expected: i32) {
+    let out = s124_trait_program(declarations, expression);
+    // Q16 has not selected between running this user implementation and
+    // refusing the declaration. Silently substituting a primitive is wrong
+    // under either answer (T-TRAIT-SPELLING).
+    let diagnostic = format!("{}\n{}", out.stdout, out.stderr);
+    let refused = out.status.code() == Some(1) && diagnostic.contains("error:");
+    assert!(
+        out.status.code() == Some(expected) || refused,
+        "expected implementation value {expected} or refusal with a diagnostic; got {:?}\n{diagnostic}",
+        out.status,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, direct Num call
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
+#[test]
+fn s124_trait_spelling_num_direct_uses_impl_or_refuses() {
+    s124_impl_value_or_refusal(
+        "(deftrait Num (+ [a b] self))\n(impl Num Int (defn + [a b] (primitives/sub-i64 a b)))",
+        "(+ 5 3)",
+        2,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, Num as a value
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
+#[test]
+fn s124_trait_spelling_num_value_uses_impl_or_refuses() {
+    s124_impl_value_or_refusal(
+        "(deftrait Num (+ [a b] self))\n(impl Num Int (defn + [a b] (primitives/sub-i64 a b)))",
+        "(let [f +] (f 5 3))",
+        2,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, constrained Num call
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
+#[test]
+fn s124_trait_spelling_num_constrained_uses_impl_or_refuses() {
+    s124_impl_value_or_refusal(
+        "(deftrait Num (+ [a b] self))\n(impl Num Int (defn + [a b] (primitives/sub-i64 a b)))\n(defn twice [:Num x] (+ x x))",
+        "(twice 5)",
+        0,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, Eq
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
+#[test]
+fn s124_trait_spelling_eq_uses_impl_or_refuses() {
+    s124_impl_value_or_refusal(
+        "(deftrait Eq (= [a b] Bool))\n(impl Eq Int (defn = [a b] true))",
+        "(if (= 1 2) 7 9)",
+        7,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, Ord
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
+#[test]
+fn s124_trait_spelling_ord_uses_impl_or_refuses() {
+    s124_impl_value_or_refusal(
+        "(deftrait Ord (< [a b] Bool))\n(impl Ord Int (defn < [a b] true))",
+        "(if (< 2 1) 7 9)",
+        7,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, Display
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
+#[test]
+fn s124_trait_spelling_display_uses_impl_or_refuses() {
+    s124_impl_value_or_refusal(
+        "(deftrait Display (show [self] String))\n(impl Display Int (defn show [self] \"xx\"))",
+        "(primitives/str-len (show 12345))",
+        2,
+    );
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING renamed Num control
+#[test]
+fn s124_trait_spelling_renamed_num_control() {
+    s124_trait_program(
+        "(deftrait Numb (+ [a b] self))\n(impl Numb Int (defn + [a b] (primitives/sub-i64 a b)))",
+        "(+ 5 3)",
+    )
+    .assert_exit(2);
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING renamed Eq control
+#[test]
+fn s124_trait_spelling_renamed_eq_control() {
+    s124_trait_program(
+        "(deftrait Eqq (= [a b] Bool))\n(impl Eqq Int (defn = [a b] true))",
+        "(if (= 1 2) 7 9)",
+    )
+    .assert_exit(7);
+}
+
+// spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING renamed Display control
+#[test]
+fn s124_trait_spelling_renamed_display_control() {
+    s124_trait_program(
+        "(deftrait Displayy (show [self] String))\n(impl Displayy Int (defn show [self] \"xx\"))",
+        "(primitives/str-len (show 12345))",
+    )
+    .assert_exit(2);
+}
+
+// spec: spec/07-traits.md §7.3.5 — T-VEC-IMPL concrete target; spec/03-types.md §3.2.7
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_vec_impl_concrete_applied_target_dispatches() {
+    s124_trait_program(
+        "(deftrait Sz (sz [self] Int))\n(impl Sz (Vec Int) (defn sz [v] (primitives/vec-len v)))",
+        "(sz [1 2 3])",
+    )
+    .assert_exit(3);
+}
+
+// spec: spec/07-traits.md §7.3.5 — T-VEC-IMPL polymorphic target; spec/03-types.md §3.2.7
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev
+#[test]
+fn s124_vec_impl_polymorphic_applied_target_dispatches() {
+    s124_trait_program(
+        "(deftrait Sz (sz [self] Int))\n(impl Sz (Vec a) (defn sz [v] (primitives/vec-len v)))",
+        "(sz [1 2 3])",
+    )
+    .assert_exit(3);
+}
+
+// spec: spec/07-traits.md §7.3.5 — T-VEC-IMPL bare constructor negative
+#[test]
+fn s124_vec_impl_bare_constructor_rejected_neg() {
+    let out = s124_trait_program(
+        "(deftrait Sz (sz [self] Int))\n(impl Sz Vec (defn sz [v] (primitives/vec-len v)))",
+        "(sz [1 2 3])",
+    )
+    .assert_exit(1);
+    assert!(format!("{}{}", out.stdout, out.stderr).contains("error:"));
+}
+
+// spec: spec/07-traits.md §7.3.5 — T-VEC-IMPL applied Option control
+#[test]
+fn s124_vec_impl_applied_option_control() {
+    s124_trait_program(
+        "(deftrait Sz (sz [self] Int))\n(impl Sz (Option a) (defn sz [v] 4))",
+        "(sz (primitives/Some 1))",
+    )
+    .assert_exit(4);
+}
+
+// spec: spec/02-grammar.md §2.2.3 — T-TRAIT-ONE-PARAM; spec/05-definitions.md §5.3.2
+#[test]
+fn s124_deftrait_second_parameter_located_parse_error_neg() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user("(deftrait (Ix c a) (at [:(c a) x] a))\n")
+        .run("user.cl")
+        .output()
+        .assert_exit(1)
+        .assert_stderr_contains("parse error:")
+        .assert_stderr_contains("user.cl:1:");
+}
+
 // =============================================================================
 // §7.1 Trait Declaration
 // =============================================================================

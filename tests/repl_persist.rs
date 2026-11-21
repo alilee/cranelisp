@@ -43,7 +43,7 @@ fn s124_refused_save_seed() -> e2e::CrOutput {
 }
 
 // spec: repl/spec/15-session-persistence.md §15.2 — T-REFUSED-SAVE-CACHE
-// defect: class=artifact-underkey locus=cache-generation-after-refused-save found=S124 owner=/dev
+// defect: class=artifact-underkey locus=src/session_v4/lifecycle.rs::flush_final_persist found=S124 owner=/dev
 #[test]
 fn s124_refused_save_cached_restart_survives_call_and_next_turn() {
     let first = s124_refused_save_seed();
