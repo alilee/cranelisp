@@ -680,3 +680,9 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   show it; the classification returns to the user before the chapters are
   rewritten. Compiler consequences are scoped from that classification, not
   assumed inside S124.
+- **User ruling on S124-Q14 (2026-11-21).** A project file under a
+  library-resolved parent is not part of the program. Verbatim: "A - m/t.cl
+  is not indexed, because it cannot be addressed from an FQ name." The option
+  put as A: when `m` resolves to `lib/m.cl`, a project file
+  `{project_root}/m/t.cl` is not loaded and is not an error by its presence.
+  `spec` records it; ACT-1096's cells are re-judged by `qa` against it.
