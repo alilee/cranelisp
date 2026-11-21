@@ -17,7 +17,7 @@ While the session is locked, no backing file is regenerated; §14.5 governs it. 
 
 A definition entered in the session that fails to compile MUST NOT trigger regeneration and is never written. The backing file reflects the last successfully compiled state. [Tested+Neg tests/repl_persist::persist_typecheck_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_commit_gate_rejected_redefinition_not_written_by_later_regeneration, tests/repl_persist::persist_failed_import_not_written_to_backing_neg, tests/repl_persist::persist_expression_only_session_leaves_hand_authored_user_cl_untouched — a definition rejected at typecheck or at the commit gate and a failed `import` are not written by a later regeneration, which keeps the prior definition; an expression-only session leaves the file untouched]
 
-### 15.2 Session Restore [S124 — partial: after a refused save the next cached session restores a definition the backing file does not hold, and calling it ends the process on a signal (ACT-1102; T-REFUSED-SAVE-CACHE is allocated, no cell yet). Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
+### 15.2 Session Restore [S124 — partial: after a refused save the next cached session restores a definition the backing file does not hold, and calling it ends the process on a signal (tests/repl_persist::s124_refused_save_cached_restart_survives_call_and_next_turn fails; ACT-1102). Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
 
 On REPL startup, the entry module's backing `.cl` file MUST be loaded through the normal module graph pipeline (with cache hit for fast restore). Definitions from the previous session MUST survive restart — the user resumes where they left off. [R4 S52]
 

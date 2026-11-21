@@ -83,12 +83,6 @@ directories since removed.
   handed a child's path (cache restore, the dependency record, the index
   feed).
 
-## One question for `spec`, blocking no test
-
-By §8.1.1 the file `proj/m/t.cl` is itself named `m.t`, while `m` resolves
-to the library. The specification does not say whether that file is a
-module, an error, or ignored. No clause below reads it.
-
 ## Routing
 
 - **`qa` holds this action.**
@@ -107,3 +101,40 @@ its override control unchanged. `qa` restores the §8.2.5 band.
 
 T-MOD-CHILD is committed (`ccd7f2e4`) and accepted: four subjects fail on
 their exit clause with 2 against 1, and the override control passes.
+
+## Re-judged after the ruling on S124-Q14 (qa, 2026-11-21, `11ea995e`)
+
+The user ruled: "A - m/t.cl is not indexed, because it cannot be addressed
+from an FQ name." [Spec §8.11.2](../../spec/08-modules.md#8112-module-resolution-search-order)
+now states that when `m` resolves to the library, a project file
+`{project_root}/m/t.cl` MUST NOT be indexed or loaded, and that its
+presence alone MUST NOT be an error. §8.2.5 is unchanged.
+
+**Disposition: the action stands, and gains a face.** The question this
+filing sent to `spec` is closed.
+
+`qa`, the debug binary built from `9bc97297` (no compiler source has changed
+since), a public child `(mod t)`, the library's child defining `v` as 5 and
+`libonly-zq`, the project's file defining `v` as 6 and `projonly-zq`:
+
+| Turn at the REPL, run from the project | Observed | Required |
+|---|---|---|
+| `/search zq`, settled | **`projonly-zq` in `m.t`, with an import offer** | The library's `libonly-zq`, and no row from the project file |
+| `(import [m [f]])`, `(f)` | **6** | 5 |
+| `(m.t/projonly-zq)` | **2** | Refused: `m.t` has no such member |
+| `(m.t/libonly-zq)` | **Refused:** no such member | 1 |
+| Control: the same with no project file | The library's row; 5; refused; 1 | — |
+
+- **The new face is the index:** `/search` offers a symbol from a file the
+  program cannot address.
+- **T-MOD-CHILD's four subjects still stand,** and agree with the ruling.
+  One weakness is returned to `test`: the library's value is 1, which is
+  also the exit status of a refused compile, so the cells cannot tell
+  "the library's child ran" from "the program was refused". The ruling
+  makes that difference a requirement.
+- **Attribution of the index face:** provisional, to `src/`'s index feed,
+  by control. `qa` did not read how the feed names a module from a file
+  under the project root.
+
+T-MOD-CHILD-INDEX and the returned item are in the
+[evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).

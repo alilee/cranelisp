@@ -81,3 +81,9 @@ CL04 of the inventory and is not `qa`'s to settle.
 
 T-TRAIT-SPELLING is committed, observed RED on its value clauses, and
 passes on the corrected build with its renamed controls unchanged.
+
+## Evidence state (qa, 2026-11-21, full run at `11ea995e`)
+
+T-TRAIT-SPELLING is committed (`3904fae8`) and accepted: six subjects fail
+on the primitive's value (8, 8, 10, 9, 9, 5) and three renamed controls
+pass.

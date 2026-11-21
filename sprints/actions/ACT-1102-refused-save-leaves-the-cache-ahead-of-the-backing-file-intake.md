@@ -96,3 +96,8 @@ place for any other refusal.
 T-REFUSED-SAVE-CACHE is committed and observed RED on its exit clause. The
 module row shows a refused regeneration publishes no cache generation ahead
 of the file, and was seen to fail first.
+
+## Evidence state (qa, 2026-11-21, full run at `11ea995e`)
+
+T-REFUSED-SAVE-CACHE fails on all three clauses in `qa`'s run, and its two
+controls pass. Its defect line carries `flush_final_persist` (`3904fae8`).

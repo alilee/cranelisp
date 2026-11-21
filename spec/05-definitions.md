@@ -468,7 +468,7 @@ A trait declaration introduces a named interface with one or more method signatu
 - A required method ends with a return **type expression**; a default method ends with a **body expression** whose type is inferred (§7.1.5). Which one it is, is discriminated at resolution — the trailing element is a return type iff it resolves as a type expression. [S115]
 - An optional docstring MAY appear on the trait itself and on each method.
 
-### 5.3.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg — one constructor parameter; a second parameter is refused by hand and has no cell yet (T-TRAIT-ONE-PARAM)]
+### 5.3.2 Higher-Kinded Traits [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::deftrait_bare_return_convar_never_applied_rejected_neg, tests/spec_07_traits::deftrait_bare_arg_convar_never_applied_rejected_neg — one constructor parameter; a second parameter is refused: tests/spec_07_traits::s124_deftrait_second_parameter_located_parse_error_neg]
 
 When the trait head includes its single type constructor parameter, the trait operates on type constructors rather than concrete types.
 

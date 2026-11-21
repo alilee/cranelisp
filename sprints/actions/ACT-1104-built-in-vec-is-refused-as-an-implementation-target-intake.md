@@ -82,3 +82,9 @@ inventory, which the user has not confirmed. No cell is allocated for it.
 T-VEC-IMPL is committed, observed RED on its value clauses, and passes on
 the corrected build with its controls unchanged. The higher-kinded cell is
 allocated or declined once S124-Q16 is confirmed.
+
+## Evidence state (qa, 2026-11-21, full run at `11ea995e`)
+
+T-VEC-IMPL is committed (`3904fae8`) and accepted: both subjects fail on
+the refusal, and the bare-constructor negative and the `Option` control
+pass.
