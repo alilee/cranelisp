@@ -923,7 +923,7 @@ main.cl                 ; depends on prelude (implicit)
 
 The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
-### 8.11.2 Module Resolution Search Order [Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module]
+### 8.11.2 Module Resolution Search Order [Uncovered S124 — was tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module]
 
 When resolving a module name to a file, the implementation MUST search in this order:
 
@@ -932,6 +932,11 @@ When resolving a module name to a file, the implementation MUST search in this o
 3. **Lib directories** -- `{lib_dir}/{name}.cl` for each lib directory, in order.
 
 A module in the project root shadows a module with the same name in a lib directory. This is intentional -- it allows projects to override library modules.
+
+When `m` resolves to the library file `lib/m.cl`, a project file
+`{project_root}/m/t.cl` is not part of the program: it MUST NOT be indexed or
+loaded, because it cannot be addressed from a fully-qualified name. Its
+presence alone MUST NOT be an error.
 
 #### 8.11.2.1 Bare-Name Precedence: Current-Module-Relative Submodule Wins [Tested+Neg tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module — within one compilation unit; a declaration in a later REPL turn is unsettled (ACT-0995)]
 

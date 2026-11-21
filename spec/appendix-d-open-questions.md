@@ -135,7 +135,7 @@ error, and the ruling is not presented as a display-format transcript.
 
 [§7.12.1](07-traits.md#7121-current-restrictions) stands: traits take a single
 type parameter (or single type constructor for HKT).
-[Appendix C §C.2.4](appendix-c-nfr.md#c24-collection-extensibility-uncovered-s124--was-s24)
+[Appendix C §C.2.4](appendix-c-nfr.md#c24-collection-extensibility)
 removes the present multi-parameter expressibility obligation and retired-ring
 activation line; multi-parameter collection traits are a non-normative future
 direction, also recorded in [§7.12.2](07-traits.md#7122-future-extensions).
@@ -190,30 +190,23 @@ and tree shape; no example is changed pending that ruling.
 
 ## S124-Q14: Can a project file be a child of a library-resolved parent?
 
-**Open problem — ACT-1096's spec question.** Opened
-[§8.1.1](08-modules.md#811-naming-rules),
-[§8.2.5](08-modules.md#825-file-resolution), and
-[§8.11.2](08-modules.md#8112-module-resolution-search-order).
-§8.1.1 says “A file `foo/bar.cl` defines module `foo.bar` (a submodule of
-`foo`).” §8.2.5 requires a declared child's file at
-`{parent_dir}/{stem}/{name}.cl` only, so a declaration in `lib/m.cl` loads
-`lib/m/t.cl`; a project file cannot replace that declared child via a new
-search. §8.11.2 permits project modules to shadow library modules. These rules
-do not settle how a separate `{project_root}/m/t.cl` participates when `m`
-itself resolves to `lib/m.cl`, including a collision with its declared `m.t`.
+**Closed — user ruling, 2026-11-21**, recorded as “User ruling on
+S124-Q14” in [Sprint 124 Notes](../sprints/SPRINT.md#notes). The user's
+answer, verbatim:
 
-**Options / tradeoffs.** Permit an independently resolved project `m.t`:
-preserves path-derived identity and project shadowing, but needs an identity
-and collision rule when the library already declares `m.t`. Reject the mixed
-hierarchy: gives one parent source tree, but needs the error trigger specified
-(file presence or attempted use). Ignore the project child while the parent
-resolves to the library: keeps the library subtree together, but limits
-project shadowing. No option changes §8.2.5's already-settled declared path.
+> A - m/t.cl is not indexed, because it cannot be addressed from an FQ name.
+
+The option put as A was: when `m` resolves to `lib/m.cl`, a project file
+`{project_root}/m/t.cl` is not part of the program — it is not loaded, and
+its presence alone is not an error.
+[§8.11.2](08-modules.md#8112-module-resolution-search-order) records that
+rule. [§8.2.5](08-modules.md#825-file-resolution)'s declared-child path
+rule is unchanged. No normative remainder is identified.
 
 ## S124-Q15: When is an undefined name in a default method reported?
 
 **Open problem — ACT-1097's unclassified lead.** Opened
-[§7.1](07-traits.md#71-trait-definition) and
+[§7.1](07-traits.md#71-trait-declaration) and
 [§7.1.5](07-traits.md#715-default-method-implementations).
 §7.1.5 says “The default body is not type-checked once for the trait; it is
 instantiated per impl” and an overriding impl “never instantiates the template”.
@@ -311,3 +304,45 @@ conflicting normative carriers. `spec` then revises the inventoried passages;
 `qa` reassesses evidence for changed obligations and `test` follows the affected
 spec backlinks. This is one open stage-two item, not authorization to rewrite
 the chapters or implement compiler consequences now.
+
+## S124-Q17: What result does a skipped trace form record?
+
+**Open problem — `arch`'s unclassified lead.** Opened
+[tracing §3.6, “A skipped form”](../design/arch/tracing.md#36-the-roots-result),
+[§4.12.2](04-expressions.md#4122-semantics), and
+[§4.12.6](04-expressions.md#4126-concurrency). §4.12.2 requires the
+expression's value to produce the root's formatted result string, without an
+exception for a skipped form. §4.12.6 says a thread that does not activate
+instrumentation evaluates its expression normally and returns a trace with
+no recorded children, but does not specify that root's result. `arch`
+reports that source returns an empty result string for a skipped form.
+Does the general formatted-result rule apply to this case?
+
+**Options / tradeoffs.** Require the evaluated expression's formatted value
+as the skipped root's result: retains §4.12.2's general rule and exposes the
+value even without recorded calls, but requires changing the reported
+behavior. Require an empty result string for a skipped form: retains that
+reported behavior, but needs an explicit exception to §4.12.2 and loses the
+value in the returned trace. The user must decide; neither requirement is
+changed pending a ruling.
+
+## S124-Q18: May a trace form be entered inside a skipped form on the same thread?
+
+**Open problem — `arch`'s unclassified lead.** Opened
+[tracing §6, “Open, with `spec`”](../design/arch/tracing.md#6-nested-trace-guard),
+[§4.12.5](04-expressions.md#4125-nested-trace), and
+[§4.12.6](04-expressions.md#4126-concurrency). §4.12.5 forbids entering
+a form while another form is “actively tracing on the same thread” and also
+requires a runtime error for a form entered during an enclosing trace body's
+evaluation. §4.12.6 permits a thread to evaluate a trace body without
+activating instrumentation. It is unresolved whether that skipped body's
+same-thread inner trace must raise the nested-trace error. `arch` reports
+that the guard permits entry and both forms return childless roots.
+
+**Options / tradeoffs.** Reject entry inside any enclosing trace body,
+including a skipped one: gives nesting one rule independent of whether that
+thread acquired instrumentation, but rejects the reported behavior. Permit
+entry inside a skipped body: distinguishes tracing from ordinary evaluation
+under §4.12.6, but needs the enclosing-body prohibition in §4.12.5 narrowed.
+The user must decide; no nested-trace or concurrency requirement is changed
+pending a ruling.
