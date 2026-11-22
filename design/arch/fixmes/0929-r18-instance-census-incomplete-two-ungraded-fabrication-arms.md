@@ -28,7 +28,7 @@ allow-list, every entry citing an open filing, a new site RED in its own
 change-set), with R18's residual graded asserted-with-a-named-falsifier once
 the census lands with its detection proof (arch ruling, S119).
 
-## Site state (verified 2026-09-24; backend rows re-read by `qa` 2026-11-19)
+## Site state (verified 2026-09-24; backend rows re-read by `qa` 2026-11-19; binary row by `design` (int) 2026-11-22)
 
 | Site | Current source | Disposition and owner |
 |---|---|---|
@@ -36,15 +36,14 @@ the census lands with its detection proof (arch ruling, S119).
 | `crates/cranelisp-backend/src/compiler/fn_compiler.rs` dead `variable_types` arm | absent | **done** |
 | `crates/cranelisp-backend/src/drop_glue.rs` Vec arm, `unwrap_or(ConcreteType::Int)` | absent at `f8c55626`; a refusal since `1d965ed5` | **done** (S124) |
 | `crates/cranelisp-backend/src/compiler/context.rs` constructor field read, `unwrap_or(Type::Int)` | absent at `f8c55626`; a refusal since `24c42430` (packet row D1) | **done** (S124) |
-| Binary/int display-type defaults, `src/pipeline.rs` and `src/repl/commands.rs` `unwrap_or(Type::Int)` | live at `ed6f4d87` (`execute_compiled_expr`, `typecheck_only`) | **designed** 2026-11-20 by `design` (int): [result owner §4.3.1](../../int/result-owner.md#431-the-observed-type-has-no-default) removes both defaults. The executed site's chain ends in the arm's scheme result, which is total, and the `/type` site's absence is a located error. Source does not show that the arm is unreachable, so it had no grade. `dev` (`src/`) owes the change and its module rows |
+| Binary/int display-type defaults, `src/pipeline.rs` and `src/repl/commands.rs` `unwrap_or(Type::Int)` | absent since `793af750` (re-read by `design` (int) 2026-11-22): `execute_compiled_expr` observes the check's display type, else the body's inferred type, else the arm's scheme result; `typecheck_only` reads the scheme result and returns a located error when `__expr` is absent. Pinned by the module rows `an_expr_with_no_display_or_inferred_type_takes_its_scheme_result`, `the_display_type_then_the_inferred_type_wins_over_the_scheme`, `type_reads_the_expression_scheme_result` and `type_with_no_expr_after_a_clean_check_is_a_located_error` | **done** (S124), as designed in [result owner §4.3.1](../../int/result-owner.md#431-the-observed-type-has-no-default) |
 
 ## Remaining obligation
 
-- Land the binary's display-type correction (`dev`(`src/`), designed in
-  result owner §4.3.1). No backend production site remains: the only
-  `unwrap_or(Type::Int)` in the crate is in `test_support.rs`.
 - Land the NC-2 census with both detection legs; no census test cites this
-  filing today.
+  filing today. No production site in the listed rows fabricates a type: the
+  only `unwrap_or(Type::Int)` in the backend crate is in `test_support.rs`,
+  and none remains in `src/`.
 
 ## Closure
 
