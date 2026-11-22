@@ -686,3 +686,7 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   put as A: when `m` resolves to `lib/m.cl`, a project file
   `{project_root}/m/t.cl` is not loaded and is not an error by its presence.
   `spec` records it; ACT-1096's cells are re-judged by `qa` against it.
+- **User ruling on `race` (S124-Q16, 2026-11-22).** Put to the user: classify
+  `race` as library in the specification now (it is `(select [a b])`) and
+  carry the removal of the built-in as filed work. Answer: "agreed carry".
+  The removal is not S124 scope.
