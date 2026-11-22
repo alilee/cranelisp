@@ -22,8 +22,8 @@
 > **Authority**: `spec/12-runtime.md` §12.3.1 (release of unreachable values)
 > and §12.4.3 (lenient evaluation is unobservable). The option framing is the
 > [option paper](../arch/ownership-stratum-options.md) §3 with the
-> S123 Phase 2 architecture review §3, "Option-2 measurement" (retired;
-> `git show d4e930a7:sprints/s123-architecture-review.md`).
+> S123 Phase 2 architecture review §3, "Option-2 measurement", retired by
+> `arch` and recoverable at commit `d4e930a7`.
 > Principles governing the structure:
 > [07](../arch/principles/07-single-source-of-truth.md),
 > [11](../arch/principles/11-single-pipeline-mode-parameters.md),
@@ -425,13 +425,15 @@ because one decider remains.
 ## 6. Coverage of the filed faults
 
 Each row states why the design excludes the fault. `qa` confirmed the faults
-live before the cutover; none is yet measured against it, and §8 lists the
-evidence that would.
+live before the cutover. The four filed faults, ACT-1026, ACT-1028, ACT-1029
+and ACT-1030, are resolved: `qa` deleted their filings at `5995023c`, and
+each stands as the parent of that commit records it. §8 lists the evidence
+for the rest.
 
 | Filing | Shape | Under this design |
 |---|---|---|
-| [ACT-1030](../../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md) | A `let`-wrapped tail argument forwards a borrowed alias with no reference | `alias` owns its reference; the jump releases nothing |
-| [ACT-1029](../../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md) | A same-name alias overwrites the name-keyed alias map | No alias map; liveness is per binder identity |
+| ACT-1030 | A `let`-wrapped tail argument forwards a borrowed alias with no reference | `alias` owns its reference; the jump releases nothing |
+| ACT-1029 | A same-name alias overwrites the name-keyed alias map | No alias map; liveness is per binder identity |
 | L2, borrowed pattern view through a branch | Root released at the jump | No borrowed views |
 | L3, promotion read by name | A borrowed binder shadowing a promoted parameter is released at scope exit | No promotion |
 | L4, borrowed parameter forwarded to another slot | The receiving slot is owned; nothing increments | No borrowed parameters |
@@ -440,8 +442,8 @@ evidence that would.
 | L7, consuming COW unseen by the flushes | A `let`-bound or branch-nested COW source also released at the jump | No flushes |
 | L9, `(vec-push v (vec-len v))` | Copy arm releases nothing while exit skips `v` | The first `v` duplicates; `vec-len` consumes the last; the push sees count 1 |
 | L10, alias through a non-`Var` scrutinee | The alias does not extend its root's last use | No aliases |
-| [ACT-1026](../../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md) | A forwarding join's value reaches `vec-len` unreleased | `vec-len` consumes its operand |
-| [ACT-1028](../../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md) | `(let [w (vec-set v 0 5)] w)` returned leaks 1 | Every step consumes; predicted balanced. Its mechanism is unattributed, so a leak that survives is outside the counting rules and returns to `qa` |
+| ACT-1026 | A forwarding join's value reaches `vec-len` unreleased | `vec-len` consumes its operand |
+| ACT-1028 | `(let [w (vec-set v 0 5)] w)` returned leaks 1 | Every step consumes; predicted balanced. Its mechanism is unattributed, so a leak that survives is outside the counting rules and returns to `qa` |
 | L8 | Refuted at S122 | Moot |
 
 **The wrapper copy** ([carry triage](../../tests/plan/s123-carry-triage.md)

@@ -245,11 +245,9 @@ terminal funnel in intrinsics, no slot, no sentinel and no ferry. The backend's
 part is its §1.3 emitted half: a raise is never followed by reachable code.
 
 **Status: the emitted half is built (S123 W1).** Every raise ends its block
-with a trap, and no raising frame returns a sentinel. Closing
-[ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md)
-(the SIGSEGV on a sentinel) and
-[ACT-1042](../../sprints/actions/ACT-1042-callee-panic-with-scalar-result-resumes-caller-intake.md)
-(the resumed caller) is `qa`'s decision, on their end-to-end cells.
+with a trap, and no raising frame returns a sentinel. `qa` closed ACT-1040
+(the SIGSEGV on a sentinel) and ACT-1042 (the resumed caller) on their
+end-to-end cells; their filings were deleted at `5995023c`.
 
 - **Shape.** Place the message bytes, call `runtime/panic(msg_ptr, msg_len)`,
   and end the block with a trap. There is no sentinel and no return.
