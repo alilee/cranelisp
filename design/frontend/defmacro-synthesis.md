@@ -9,12 +9,6 @@ synthesises an ordinary function definition for one clause. It never looks a
 macro head up against a symbol table, never dispatches, and never calls compiled
 code. Recognition and execution belong to the binary.
 
-**Status.** §1.1's rest and shorthand rejects and §2.2's body constraint are the
-S124 target (audit R1; ACT-1057). At `4b58ab93` the shorthand keeps its first
-body and drops the rest, a later rest marker overwrites an earlier one, a fixed
-parameter after the rest marker is accepted, and a clause with no fixed parameter
-places no constraint on its body. Remove this paragraph when they land.
-
 ## 1. Shape parse
 
 `parse_defmacro(sexp) -> DefmacroInfo` extracts the name, the optional docstring,
@@ -144,7 +138,7 @@ Rejected alternatives:
 *Falsifiers:* a nullary or rest-only clause whose body is not `Sexp` that
 compiles; a mismatch located outside the source span of the `defmacro` form. The
 second depends on typecheck reporting an annotation mismatch at the annotation
-node's span, as it does at `4b58ab93`; a change there moves this location.
+node's span, as it does today; a change there moves this location.
 
 ### 2.3 Shared construction
 

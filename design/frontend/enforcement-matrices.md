@@ -31,11 +31,10 @@ tail is not one of them: `build_method_sig` preserves exactly one raw trailing
 element for typecheck's §7.1 judgment and builds no body
 (`annotation-and-declaration-shape.md` §4).
 
-**Status.** At `4b58ab93` a width-returning one-expression helper still returns
-a constant width of one and about a dozen call sites do the arithmetic on it
-(audit R4). Removing it is the S124 target: each site keeps its present arity
-check, diagnostic and span, written as an index or length comparison. Remove
-this paragraph when it lands.
+No helper reports how many forms an expression consumed: an expression is always
+one form, and each site states its arity check as an index or length comparison.
+A width-returning helper is rejected because its width is a constant one and
+invites arithmetic at every caller.
 
 **A raw `build_expr` call plus a hand-rolled or missing tail check is the defect
 shape.** Where the position is not arity-locked it silently drops trailing forms,

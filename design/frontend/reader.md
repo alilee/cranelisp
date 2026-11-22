@@ -44,12 +44,11 @@ an operator run immediately followed by a digit is a located error — and the
 empty-module-half guard (`enforcement-matrices.md` §3.2). The three entries
 differ only in how the run began.
 
-This is the S124 target (audit R3). At `4b58ab93` the signed entries return
-their own symbol, so `+*1` and `-*1` read as an operator and then a separate `1`,
-while `*1` rejects.
-The guard keys on operator text exactly `"/"`, which a signed run never is, so
-routing the signed entries through the tail changes nothing but the digit rule.
-`-3`, `+3`, `-`, `->` and `+=` are unchanged; `->3` and `+*1` reject at the run.
+A per-entry tail is the defect shape: a signed entry that returned its own symbol
+read `+*1` as an operator and then a separate `1` while `*1` rejected. The guard
+keys on operator text exactly `"/"`, which a signed run never is, so for signed
+runs the shared tail applies only the digit rule. `-3`, `+3`, `-`, `->` and `+=`
+read as written; `->3` and `+*1` reject at the run.
 
 Strings take the spec §1.3.4 escapes; an unknown escape or an unterminated string
 is a located parse error. `(` … `)` reads as `Sexp::List` and `[` … `]` as
@@ -76,6 +75,9 @@ to know the surface spelling:
 | `~x` | `(unquote x)` |
 | `~@x` | `(unquote-splicing x)` |
 | `#(…)` | `(anon-fn (…))` |
+
+A `#` not followed by `(` is a located reader error, so a display-only marker
+such as `#io` or `#closure` is rejected rather than read as data.
 
 The quote family is then desugared into constructor applications by the AST-entry
 fold (`quasiquote-fold.md`), not by the reader.

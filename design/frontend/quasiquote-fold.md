@@ -58,7 +58,7 @@ Four facts hold it up, and each is worth an assertion:
    `quote` or `quasiquote`, and structurally rebuilds every other node by
    recursing into its children.
 2. Output heads are `macros/SexpSym`, `macros/SexpList`, `macros/SCons`,
-   `sconcat` and their siblings — none of which is a quote head. A quoted
+   `macros/sconcat` and their siblings — none of which is a quote head. A quoted
    occurrence of the *word* becomes a string: `'quote` → `(macros/SexpSym "quote")`,
    where the token now sits inside a `Sexp::Str` and can never again be a head
    symbol.

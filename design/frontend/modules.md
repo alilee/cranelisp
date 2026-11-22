@@ -10,12 +10,6 @@ result to the integration layer. It does not discover files, load modules,
 resolve names, register imports, or own a symbol table. Those are the binary's
 and typecheck's, and this document does not describe their interiors.
 
-**Status.** §2.1–§2.3 state the target the S124 entry carrier
-([import and export entries](../arch/interfaces.md#import-and-export-entries-s124-target),
-packet row D3) requires. At `4b58ab93` the names parser classifies a whole list,
-returns at the first member glob, rejects a renamed entry, and parses an export's
-module specifier as a plain symbol. Remove this paragraph when the carrier lands.
-
 ## 1. Where extraction sits
 
 ```
@@ -70,7 +64,8 @@ lost the `(module alias)` specifier (ACT-1056) while imports kept it.
 **Module specifier.** A bare module path, `super`, or `(path alias)`. The path is
 a reference and may be dotted. The alias is a binder (§8.3.4, which names export
 mount aliases too) and rejects a qualified or dotted spelling through the shared
-binder helper (`binder-head-reject.md`). An export's alias is its §8.4.4 mount and
+binder helper ([binder-head-reject.md](binder-head-reject.md)). An export's alias
+is its mount (spec §8.4.4) and
 travels in `ExportSpec::alias`; the frontend writes it and nothing else
 ([alias contract](../arch/module-alias-scoped-lookup.md) §5.1 — the parser is this
 surface's, the writer is the binary's).
@@ -180,8 +175,7 @@ form.
 
 The parameter is therefore not incidental: it is what makes the invariant
 enforceable at one place instead of at every consumer. Sharing the specifier
-parser extends it to exports; at `4b58ab93` an export's `super` passes through
-unrewritten.
+parser extends it to exports.
 
 ## 4. `ExtractedDeclarations` and how it reaches the symbol table
 
