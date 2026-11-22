@@ -87,3 +87,10 @@ passes on the corrected build with its renamed controls unchanged.
 T-TRAIT-SPELLING is committed (`3904fae8`) and accepted: six subjects fail
 on the primitive's value (8, 8, 10, 9, 9, 5) and three renamed controls
 pass.
+
+## Narrowed after S124-Q16 was confirmed (qa, 2026-11-22)
+
+The confirmed classification makes `Num`, `Eq`, `Ord` and `Display` library
+content (inventory row CL04). A program's own trait of one of those names
+runs its own implementation. T-TRAIT-SPELLING's clause loses its refusal
+arm (evidence delta §14.3).

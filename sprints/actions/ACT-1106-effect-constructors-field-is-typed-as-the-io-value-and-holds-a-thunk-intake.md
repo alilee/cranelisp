@@ -98,3 +98,11 @@ accepted at `(Fn [(primitives/IO a)] a)`, and the `test-capture` platform:
 T-EFFECT-FIELD is committed and observed RED on its no-signal clauses.
 `qa` narrows the cell to the recorded answer, and it passes on the
 corrected build with its `Pure` controls unchanged.
+
+## Narrowed after the ruling on `IO` (qa, 2026-11-22)
+
+The user ruled `IO` opaque: `Effect` is neither constructible nor matchable.
+T-EFFECT-FIELD is accepted as committed (`e9a60317`): five subjects end on a
+signal and four controls pass. Its clause is narrowed from "no signal" to
+"refused with a diagnostic" in T-IO-OPAQUE (evidence delta §14.3). Carried
+to the next sprint by the user's decision.

@@ -146,3 +146,11 @@ Two sites, each with its own control.
 T-BIND-SPELLING is committed and observed RED. The user's answer is
 recorded by `spec`; `qa` then narrows the cell to it. The module row passes
 and was seen to fail first.
+
+## Narrowed after the ruling on `IO` (qa, 2026-11-22)
+
+The user ruled `IO` opaque: no spelling may construct `Bind`. T-BIND-SPELLING
+is accepted as committed (`e9a60317`): the bare spelling is refused and the
+other three are not, so its agreement clause fails. It is narrowed to
+refusal of all four in T-IO-OPAQUE (evidence delta §14.3). Carried to the
+next sprint by the user's decision.

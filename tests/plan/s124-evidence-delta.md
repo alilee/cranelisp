@@ -1531,29 +1531,38 @@ its three exit clauses (§14.9).**
   (§14.10).
 - **What the sprint's evidence does not cover** is §14.13.
 
-**Since that run, by hand on 2026-11-22, with no suite run:**
+**Since that run, at `3d50766e`, by hand and one focused run of 26 cells;
+no full run.** The user ruled eight questions on 2026-11-22 and `spec`
+rewrote the specification for the confirmed S124-Q16 classification.
 
-- [ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md) is opened, **memory-unsafe and latent:** a
-  qualified `primitives/Bind` constructs an IO node one word shorter than
-  the runtime reads, where the bare spelling is refused. No wrong value,
-  leak or crash was observed; the ordinary path matches the builtin.
-  Whether the constructor is language surface is open with the user. No
-  cell yet: T-BIND-SPELLING.
-- [ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md) is opened, **memory-unsafe:** the `Effect`
-  constructor's field is typed as the IO's value and treated by the
-  runtime as a thunk. `(primitives/Effect 5)` ends the process on signal
-  11 in every mode, forced or not, and a match that binds the field reads
-  a thunk's address as an `Int` or a `String`. No cell yet: T-EFFECT-FIELD.
-- [ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md) is opened: a match on `IO` with `Pure` and `Effect`
-  arms is accepted as exhaustive and ends on `match failed` when given a
-  bind node. No cell yet: T-IO-MATCH.
-- **What `IO` is as a language type is open with the user.** All three
-  filings are defects under any answer; each cell's clause names only what
-  every answer forbids.
-- **The user ruled S124-Q12-R1:** `macros/sconcat` is retained as a public
-  primitive. `spec` has not written it; `qa` allocates when it has.
-- `test` committed T-MOD-CHILD-INDEX and the returned T-MOD-CHILD values
-  (`60f15a06`). `qa` has not read or run them.
+- **A new face of [ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md), memory-unsafe:** `/type` given an
+  ordinary expression that applies a constructor of a parametric type,
+  such as `(Some 1)`, makes the next evaluation end the process on signal
+  11. It happens with the standard-library prelude. The user's decision to
+  carry ACT-1089 was taken on its definition-form faces. No cell yet:
+  T-TYPE-EXPR.
+- **The compiler does not meet three of the rulings,** each carried to the
+  next sprint by the user's decision: `IO` is not opaque and
+  `primitives/pure` does not exist ([ACT-1108](../../sprints/actions/ACT-1108-io-is-not-opaque-pure-is-absent-and-the-constructors-are-surface-intake.md), with ACT-1105,
+  ACT-1106 and ACT-1107 as its unsafe faces); function and nested IO
+  values do not display as `#closure` and `#io` ([ACT-1109](../../sprints/actions/ACT-1109-function-and-nested-io-values-do-not-display-as-the-closure-and-io-markers-intake.md)); an
+  unrecorded trace root is `::skipped::` with an empty result
+  ([ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md), by source only).
+- **It meets the others, by hand:** a trace root is `::trace::` with no
+  parameters (S124-Q13); an undefined name in a default method is
+  reported at an inheriting `impl` only (Q15); `macros/sconcat` is public
+  at its stated type (Q12-R1); the reader rejects `#io` and `#closure`.
+- **`primitives/race` is still a primitive.** The ruling makes `race`
+  library composition over `select`; its removal is carried work and has
+  no conformance cell.
+- **`test`'s `60f15a06` and `e9a60317` are accepted** on a focused run: 16
+  RED, 10 green, as allocated (§14.2).
+- **The failing count is 131 by that arithmetic:** the 119 of the run and
+  the 12 of these 16 that were not already in it (T-MOD-CHILD's four
+  were). `qa` has not run the suite at this tree.
+- **108 bands cleared by the stage-two rewrite are not re-judged.** `test`
+  walks their backlinks first (§14.3); `qa` re-judged the rows the rulings
+  changed (§14.12).
 
 Open, by filing:
 
@@ -1719,6 +1728,10 @@ read from their filings' headers only.
 
 | Problem | Module | State | A reproduction |
 |---|---|---|---|
+| `/type` given an expression that applies a parametric constructor makes the next evaluation end on signal 11 (a face of [ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md)) | `src/` | **Memory-unsafe. Found and reproduced by `qa`,** with controls, with and without the standard-library prelude | T-TYPE-EXPR, allocated (§14.3) |
+| `primitives/pure` does not exist and `Pure` constructs and matches ([ACT-1108](../../sprints/actions/ACT-1108-io-is-not-opaque-pure-is-absent-and-the-constructors-are-surface-intake.md)) | `src/` (the bootstrap) | A nonconformance against the ruling of 2026-11-22. Carried to the next sprint by the user's decision | T-IO-OPAQUE, allocated (§14.3) |
+| Function and nested IO values display as `<closure>` and as their node ([ACT-1109](../../sprints/actions/ACT-1109-function-and-nested-io-values-do-not-display-as-the-closure-and-io-markers-intake.md)) | `src/` (display) | A nonconformance against the ruling of 2026-11-22. Carried | T-MARKERS, allocated (§14.3) |
+| An unrecorded trace root is `::skipped::` with an empty result ([ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md)) | intrinsics | Nonconforming by source; not observed. Carried | None: no fixture makes a form unrecorded. Module rows with the correction |
 | `Effect`'s field is typed as the IO's value and holds a thunk: constructing it with a value, or binding it in a match, ends the process on a signal ([ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md)) | The requirement (spec §10.1), as realised in `src/bootstrap.rs` | **A defect against the specification as written, memory-unsafe. Observed by `sprint`; reproduced by `qa`** in every mode with `Pure` controls | T-EFFECT-FIELD, allocated (§14.3) |
 | A match on `IO` with `Pure` and `Effect` arms is accepted and fails on a bind node ([ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md)) | typecheck | **A defect against spec §6.5. Observed by `sprint`; reproduced by `qa`** in every mode with two controls. `adt.rs` leaves internal constructors out of the set to cover; read in source | T-IO-MATCH, allocated (§14.3) |
 | A qualified `primitives/Bind` constructs an IO node one word shorter than the runtime reads; the bare spelling is refused ([ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md)) | `src/` for the seeded node; typecheck for the spelling, provisionally | **A defect under either answer to the user's open question. Observed by `qa`** in emitted code and by controls. Memory-unsafe and latent: a read past the allocation on every forced node; no wrong value observed | T-BIND-SPELLING, allocated (§14.3). The short node has no solution-level cell |
@@ -1773,6 +1786,8 @@ the correction and pass with no change to their assertions.
 
 | Evidence | Judgment | Note |
 |---|---|---|
+| T-MOD-CHILD-INDEX: `search::s124_child_index_*`, seven cells; T-MOD-CHILD's values (`60f15a06`) | **Accepted, RED as allocated,** on a focused run | Five index subjects fail and the library-only and presence-not-an-error controls pass. The four child subjects fail with values that are not an error status; the override control passes. Read by outcome, with the fixture and clauses read in source |
+| T-EFFECT-FIELD, T-IO-MATCH, T-BIND-SPELLING: `spec_10_io::s124_effect_field_*`, `s124_io_match_*`, `s124_bind_spelling_*` (`e9a60317`) | **Accepted, RED as allocated,** on a focused run; narrowed by the ruling (§14.3) | Five effect subjects end on a signal and four `Pure` controls pass; the match subject ends on `match failed` and two controls pass; the spelling cell fails on disagreement and the builtin control passes |
 | T-TRAIT-SPELLING: `spec_07_traits::s124_trait_spelling_*`, nine cells (`3904fae8`) | **Accepted, RED as allocated** | Six subjects fail on the primitive's value (8, 8, 10, 9, 9, 5), neither arm of the clause being met. The three renamed controls pass. The refusal arm requires exit 1 and a diagnostic, and no subject's expected value is 1 |
 | T-VEC-IMPL: `spec_07_traits::s124_vec_impl_*`, four cells (`3904fae8`) | **Accepted, RED as allocated** | Both subjects fail on the refusal `Vec takes 0 type parameters`. The bare-constructor negative and the `Option` control pass |
 | T-TRAIT-ONE-PARAM: `spec_07_traits::s124_deftrait_second_parameter_located_parse_error_neg` (`3904fae8`) | **Accepted,** a green guard | It requires a parse error located in the file |
@@ -1871,25 +1886,124 @@ read; each cell passed or failed in the `f8c55626` run as its row states.
 
 ### 14.3 Allocated to `test`
 
-**The handoff now, in rank order.** Everything else in this section is
-committed and judged (§14.2); its conditions stay as the present-tense
-statement of what each cell shows.
+**The handoff now, in rank order. `test` is dispatched once for all of
+it.** Everything else in this section is committed and judged (§14.2).
 
 | Rank | Item | Filing | Kind |
 |---|---|---|---|
-| 1 | T-EFFECT-FIELD | ACT-1106 | New reproduction; memory-unsafe |
-| 2 | T-IO-MATCH | ACT-1107 | New reproduction |
-| 3 | T-BIND-SPELLING | ACT-1105 | New reproduction |
-| 4 | T-MOD-CHILD-INDEX | ACT-1096 | New reproduction; committed at `60f15a06`, not yet read by `qa` |
-| 5 | T-MOD-CHILD: the library's value must not be 1 | ACT-1096 | Returned; committed at `60f15a06`, not yet read by `qa` |
+| 1 | T-TYPE-EXPR | ACT-1089 | New reproduction; memory-unsafe |
+| 2 | T-IO-OPAQUE, narrowing T-EFFECT-FIELD, T-IO-MATCH and T-BIND-SPELLING | ACT-1108, 1105, 1106, 1107 | Narrowed and new |
+| 3 | T-TRAIT-SPELLING: drop the refusal arm | ACT-1103 | Narrowed |
+| 4 | T-VEC-FUNCTOR | ACT-1104 | New reproduction, released from its hold |
+| 5 | T-MARKERS | ACT-1109 | New reproduction |
+| 6 | T-SCONCAT-PUBLIC | — | Guard for S124-Q12-R1; passes by hand |
+| 7 | T-DEFAULT-UNDEFINED | — | Guard for S124-Q15; passes by hand |
+| 8 | The backlink walk for the 108 bands the stage-two rewrite cleared | — | Clause map for `qa` |
 
-**Held:** T-VEC-FUNCTOR, an implementation of a higher-kinded trait for
-the built-in `Vec`, on S124-Q16 (rows CL05 and CL36). **Nothing is
-allocated against the Q16 inventory's classifications.** S124-Q13, Q15,
-Q17 and Q18 are open with the user and hold no allocated cell.
+**Nothing is held.** ACT-1110 has no cell by a named residual.
 
-**Held:** a cell for `macros/sconcat` as a public primitive (the user's
-ruling on S124-Q12-R1), until `spec` writes the requirement.
+**T-TYPE-EXPR** ([ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md); REPL §3.1), a safety fence.
+
+- **Risk.** The documented use of `/type` makes a later evaluation end
+  the process.
+- **The cell.** In `s124_type_session`: `/type (primitives/Some 1)`, then
+  `(primitives/Some 1)`, then `(add-i64 5 5)`. The process exits 0, the
+  second turn prints the value and the third prints 10.
+- **A second subject** with a user type: `(deftype (Box a) (Mk [:a v]))`,
+  `/type (Mk 1)`, `(Mk 1)`.
+- **Control.** The value evaluated first, then queried, then evaluated
+  again, prints it twice.
+- **Wrong implementation it rejects.** A query that commits the instance
+  of a constructor it has not compiled, as built; a correction for
+  definition forms only.
+- **By hand both subjects end on signal 11** and the control holds.
+
+**T-IO-OPAQUE** ([ACT-1108](../../sprints/actions/ACT-1108-io-is-not-opaque-pure-is-absent-and-the-constructors-are-surface-intake.md); spec §10.1 and §10.2 as ruled on
+2026-11-22).
+
+- **Risk.** User code builds or takes apart an IO value, which the runtime
+  alone may do; and the one public way to lift a value does not exist.
+- **Seam and technique.** One-file programs with no prelude under `--run`.
+- **Clauses.**
+  1. `(primitives/pure 42)` as `main`'s value exits 42, and
+     `/info primitives/pure` shows `(Fn [a] (primitives/IO a))`.
+  2. Each of these is refused at compile time with a diagnostic and no
+     signal: `(primitives/Pure 5)`; `(primitives/Effect 5)`;
+     `primitives/Bind`, bare after an import, qualified, dotted and taken
+     as a value.
+  3. A match on an IO value is refused at compile time, with constructor
+     arms alone and with a wildcard arm.
+- **What changes in the committed cells.** T-EFFECT-FIELD's "no signal"
+  becomes clause 2's refusal. T-IO-MATCH's two arms become clause 3, and
+  its wildcard control becomes a subject. T-BIND-SPELLING's agreement
+  becomes refusal of all four. Their `Pure` controls build IO values with
+  the constructor: replace them with `primitives/pure` under clause 1.
+- **Wrong implementations it rejects.** A gate on `Bind` alone, or on the
+  bare name alone (2); refusal of construction that leaves matching (3);
+  a `pure` that is the constructor under another name and can be matched
+  (3).
+- **By hand: clause 1 fails,** the name does not exist; clause 2 fails
+  except for the bare `Bind`; clause 3 fails.
+- **It will stay RED through the migration** of every fixture that writes
+  `Pure`. That is the carried work, not this cell's.
+
+**T-TRAIT-SPELLING, narrowed** ([ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md)). S124-Q16 is
+confirmed and the four traits are library content. Each subject's clause
+is now the implementation's value alone; the refusal arm is removed.
+
+**T-VEC-FUNCTOR** ([ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md); spec §7.2.3).
+
+- **The cell.** With `(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x]
+  (f b)))` and a recursive helper over `vec-len`, `vec-get` and
+  `vec-push`: `(impl (Functor f) (Functor Vec) (defn fmap [g x] (go g x 0
+  [])))`, and `main` returns the third element of `fmap` of an increment
+  over `[1 2 3]`: exit 4, under `--run`.
+- **Controls.** The same trait implemented for `Option` gives 4; the
+  helper called directly gives 4.
+- **Wrong implementation it rejects.** A parameter count read as zero for
+  the built-in type, as built; a correction of conventional targets that
+  leaves the higher-kinded slot.
+- **By hand the subject is refused** with `Vec has 0 type parameters`, and
+  both controls give 4.
+
+**T-MARKERS** ([ACT-1109](../../sprints/actions/ACT-1109-function-and-nested-io-values-do-not-display-as-the-closure-and-io-markers-intake.md); spec §12.9.1, REPL §1.5).
+
+- **Clauses, at the REPL with no prelude.**
+  1. `(let [f (fn [:primitives/Int x] x)] f)` displays `#closure`.
+  2. `[(primitives/sleep 0)]` displays `[#io]`.
+  3. `#io` and `#closure` as input are each refused, and the session
+     continues.
+- **By hand clauses 1 and 2 fail** (`<closure>`; `[<unknown-tag:4>]`) and
+  clause 3 holds.
+- **Committed cells that assert `<closure>`** are migrated with the
+  correction, not now.
+
+**T-SCONCAT-PUBLIC** (spec §9.7.3, as ruled at S124-Q12-R1): a guard.
+
+- **The cell.** With no prelude and no import, a `main` that returns the
+  length of `(macros/sconcat A B)` for two one-element lists exits 2,
+  under `--run` and linked; and `/info macros/sconcat` shows
+  `(Fn [(macros/SList macros/Sexp) (macros/SList macros/Sexp)]
+  (macros/SList macros/Sexp))`.
+- **Do not put `/type` of an expression before an evaluation in the same
+  session:** that is T-TYPE-EXPR's defect.
+- **By hand it passes.**
+
+**T-DEFAULT-UNDEFINED** (spec §7.1.5, as ruled at S124-Q15): a guard.
+
+- **The cell.** `(deftrait T (req [self] Int) (dflt [self] (nosuch
+  self)))` alone is accepted. An `impl` that defines `req` only is refused
+  with a diagnostic naming `nosuch`. An `impl` that defines both is
+  accepted, and `(dflt Mk)` gives its value.
+- **By hand all three hold.**
+
+**The backlink walk.** The stage-two rewrite cleared 108 bands, and `qa`
+has not re-judged them row by row. For each, `test` follows the cells'
+`// spec:` backlinks and returns whether the cell still shows the row as
+now written, in particular where a row's claim moved from a library name
+to a core form, or its fixture relies on a prelude the row no longer
+assumes. `qa` restores each band from that map. `spec_coverage_reconcile.py`
+lists the rows.
 
 **T-EFFECT-FIELD** ([ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md); spec §10.1), a safety fence.
 
@@ -1908,9 +2022,8 @@ ruling on S124-Q12-R1), until `spec` writes the requirement.
 - **Clause, for each subject:** the process does not end on a signal. It
   exits with a status, having refused the program with a diagnostic or
   run it.
-- **Why the clause says no more.** What `Effect` is to user code is open
-  with the user. Every answer forbids the signal. `qa` narrows the clause
-  when the answer is recorded.
+- **Narrowed on 2026-11-22.** The user ruled `IO` opaque; the clause is
+  now refusal with a diagnostic (T-IO-OPAQUE, above).
 - **Controls.** `(primitives/Pure 5)` gives 5, and `(peek (primitives/Pure
   7))` gives 7.
 - **Wrong implementations it rejects.** A field typed as the IO's value
@@ -1932,7 +2045,8 @@ ruling on S124-Q12-R1), until `spec` writes the requirement.
   `(primitives/bind (primitives/Pure 1) (fn [x] (primitives/Pure x)))` as
   `main`'s value, under `--run`.
 - **Clause.** The program is refused at compile time with a diagnostic, or
-  it runs to a value. Its output never holds `match failed`.
+  it runs to a value. Its output never holds `match failed`. **Narrowed
+  on 2026-11-22** to the refusal alone (T-IO-OPAQUE, above).
 - **Controls.** The same match with a wildcard arm in place of `Effect`
   gives the wildcard's value; with only the `Pure` arm it is refused as
   non-exhaustive.
@@ -1955,9 +2069,8 @@ ruling on S124-Q12-R1), until `spec` writes the requirement.
   a value.
 - **Clause.** The four programs have one outcome: all are refused with a
   diagnostic, or all exit 42.
-- **Why the clause does not name the outcome.** Whether the constructor is
-  language surface is open with the user. Under either answer the four
-  spellings agree. `qa` narrows the clause when the answer is recorded.
+- **Narrowed on 2026-11-22.** The user ruled `IO` opaque; all four
+  spellings are refused (T-IO-OPAQUE, above).
 - **Control.** The builtin `bind` in the same program shape exits 42.
 - **Wrong implementation it rejects.** A gate applied to the bare name
   only, as built.
@@ -2022,10 +2135,8 @@ project file, and keep the override control at the project's value.
 - **Clause, for each subject:** the result is the implementation's value,
   **or the program is refused with a diagnostic.** It is never the
   primitive's value.
-- **Why the clause has two arms.** Whether these traits are core or
-  library is S124-Q16, unconfirmed. Under either answer the primitive's
-  value is wrong; which of the two arms is right waits on it. `qa`
-  narrows the clause when the classification is confirmed.
+- **Narrowed on 2026-11-22.** S124-Q16 is confirmed and the traits are
+  library content: the clause is the implementation's value alone.
 - **Controls.** The `Num`, `Eq` and `Display` subjects with the trait
   renamed (`Numb`, `Eqq`, `Displayy`) give the implementation's value.
 - **Wrong implementations it rejects.** The spelling-keyed table as built
@@ -2709,6 +2820,9 @@ running at once, and once in the full suite.
 
 | Filing | Defect | Entered | Face | State |
 |---|---|---|---|---|
+| [ACT-1108](../../sprints/actions/ACT-1108-io-is-not-opaque-pure-is-absent-and-the-constructors-are-surface-intake.md) | `IO` is not opaque: `primitives/pure` is absent and `Pure` constructs and matches | The requirement was ruled on 2026-11-22 | Nonconformance; its unsafe faces are ACT-1105, 1106 and 1107 | **Opened on 2026-11-22; carried to the next sprint by the user's decision.** Observed by hand; attributed to the bootstrap's seeding, read in source. No cell yet: T-IO-OPAQUE |
+| [ACT-1109](../../sprints/actions/ACT-1109-function-and-nested-io-values-do-not-display-as-the-closure-and-io-markers-intake.md) | Function and nested IO values do not display as `#closure` and `#io` | The requirement was ruled on 2026-11-22; the `<unknown-tag:4>` row is older | Wrong display | **Opened on 2026-11-22; carried.** Observed by hand; attributed to the binary's display, not read. No cell yet: T-MARKERS |
+| [ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md) | An unrecorded trace root is `::skipped::` with an empty result | The requirement was ruled on 2026-11-22 | Wrong value, under concurrent tracing only | **Opened on 2026-11-22; carried.** Read in source and design; not observed. No cell: a named residual |
 | [ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md) | `Effect`'s field is typed as the IO's value and treated as a thunk | The specification's declaration (§10.1); not dated | **Memory-unsafe:** signal 11 on constructing it with a value, forced or not; a thunk's address read at another type on a match | **Opened from `sprint`'s lead on 2026-11-22.** Reproduced in every mode with `Pure` controls; attributed to the requirement as realised in `src/bootstrap.rs`, read in source. No cell yet: T-EFFECT-FIELD (§14.3) |
 | [ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md) | A match on `IO` with `Pure` and `Effect` arms is accepted and fails on a bind node | Not established | An accepted program ends on `match failed` | **Opened from `sprint`'s lead on 2026-11-22.** Reproduced in every mode with two controls; attributed to typecheck's exhaustiveness check, read in source. No cell yet: T-IO-MATCH (§14.3) |
 | [ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md) | A qualified `primitives/Bind` constructs an IO node one word shorter than the runtime reads; the bare spelling is refused | Before S124: the two-field seed is S76's, the third word S121 to S122's | Memory-unsafe, latent: a read past the allocation; a call through the stray word on a path not reached | **Opened from `sprint`'s lead on 2026-11-22.** The node's size is observed in emitted code with the builtin as control; the reader is read in source. The ordinary path matches the builtin. No cell yet: T-BIND-SPELLING (§14.3) |
@@ -2776,6 +2890,10 @@ running at once, and once in the full suite.
 - **The owning-value leak.** T-TRACE-ROOT's heap leg used a `String`, which
   holds nothing further. `qa` allocated "heap-valued" and did not separate
   a value that owns other heap values, which is where drop glue matters.
+- **ACT-1089's expression face.** The expression control queried a call
+  of a monomorphic function. `qa` allocated one expression shape and
+  called it the control for all of them; the shape that mints an instance
+  was never queried.
 - **ACT-1106 and ACT-1107.** The `IO` cells construct `Pure` and reach
   `Effect` only through a platform. No cell constructs `Effect` or matches
   on an `IO` value, though the specification calls `IO` an ordinary ADT.
@@ -2879,11 +2997,10 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 **Can proceed now, in this order.**
 
-1. **`test`:** the two rows of §14.3's handoff table.
-2. **`qa`:** the read of T-MOD-CHILD-INDEX's reds on their clauses and a
-   full run when it is committed; the index feed's enumeration site for
-   ACT-1096. T-TRAIT-SPELLING's clause is narrowed when S124-Q16 is
-   confirmed, and T-VEC-FUNCTOR is allocated or declined then.
+1. **`test`:** the eight rows of §14.3's handoff table, in one dispatch.
+2. **`qa`, after it:** one full run; the reds on their clauses; the bands
+   of the 108 rows from `test`'s clause map; the index feed's enumeration
+   site for ACT-1096.
 3. **`sprint`:**
    - the backend meets its three exit clauses at `11ea995e` (§14.9);
    - **ACT-1101 predates S124** and is carried on three failing cells; it
@@ -2892,8 +3009,13 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
      committed and its site is read;
    - **ACT-1103 and ACT-1104 are new, from `arch`'s determinations.**
      ACT-1103 predates S124; ACT-1104's age is not established;
-   - the failing count is 119 (§14.1), and rises with
-     T-MOD-CHILD-INDEX's subject;
+   - **ACT-1089 has a face on an ordinary expression** that the user's
+     carry decision did not have before it: `/type (Some 1)` then
+     `(Some 1)` ends the process;
+   - the failing count is 119 at `qa`'s run (§14.1) and 131 with the
+     cells of `60f15a06` and `e9a60317`, by a focused run;
+   - `arch`'s row B18 is with the user, and ACT-1110's correction waits on
+     it;
    - the suite takes 274 s, and 5 m 8 s with its build;
    - §14.13 is what a user accepting the sprint should know is not
      covered;
@@ -2980,9 +3102,8 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 | Whether ACT-1085's control is built | T-OWNER | Reproduce first: it has no reproduction |
 | Whether ACT-1099's correction is scheduled with ACT-1089's | T-TYPE-MACRO | Clean house: both are in `typecheck_only` |
 | Whether ACT-1100's correction is scheduled | T-MACRO-SIBLING's 6 RED cells | The standard library's `derive` meets it |
-| S124-Q16: the core/library classification | T-VEC-FUNCTOR; the second arm of T-TRAIT-SPELLING's clause | Consistent spec |
-| What `IO` is as a language type, and whether `Effect` is constructible or matchable | The outcomes T-EFFECT-FIELD and T-IO-MATCH name; the corrections of ACT-1106 and ACT-1107 | Consistent spec |
-| Whether `primitives/Bind` is language surface | The outcome T-BIND-SPELLING's clause names; ACT-1105's correction | Consistent spec |
+| Whether ACT-1089's expression face is carried with the rest | T-TYPE-EXPR, once committed | It is memory-unsafe on the ordinary use of `/type` |
+| `arch`'s row B18, typed trace entries | ACT-1110's correction | Public-API changes |
 | Whether ACT-1101 and ACT-1102 are corrected before the sprint closes | T-SAVE-PRODUCT's 3 RED cells; T-REFUSED-SAVE-CACHE's 1 | Data loss and a memory-unsafe restart. Neither is S124's own, so *no decay* does not require it |
 
 **Carried, with nothing owed this sprint beyond the failing test:** every
@@ -3191,6 +3312,11 @@ more at `21101921` and both are restored below.
 | Spec §9.3.4 | From tested to partial, naming T-MACRO-SIBLING's six failing cells | An expansion that references a sibling macro is refused under a selective import (ACT-1100) |
 | REPL §15.1 | From tested to partial, naming T-SAVE-PRODUCT's three failing cells and two controls | After a parametric product type is constructed, later saves are refused (ACT-1101) |
 | REPL §15.2 | From tested to partial, naming T-REFUSED-SAVE-CACHE's failing cell | After a refused save a cached restart calls a definition the file does not hold (ACT-1102) |
+| The rows the rulings of 2026-11-22 changed: spec §10.1, §10.2, §3.2.3, §12.9.1, §4.12.5, §4.12.6; REPL §1.5's closure row | Nonconforming or partial, each naming its filing and cells | ACT-1108, ACT-1109, ACT-1110 and the three `IO` filings |
+| Spec §4.12.2, §4.12.4 and its `name` row, §4.12.7, §4.12.8 | Restored to their cells | The synthetic `::trace::` root is what the compiler gives (S124-Q13) |
+| Spec §7.1.5 | Restored to its cells, with the S124-Q15 rule noted as holding by hand | T-DEFAULT-UNDEFINED is allocated |
+| Spec §8.8.3 and appendix C §C.2.4, `qa`'s own notes | They no longer call S124-Q16 unconfirmed | The classification is confirmed |
+| 108 further rows cleared by the stage-two rewrite | **Not re-judged.** They stay cleared | `test` walks the backlinks first (§14.3) |
 | Spec §8.11.2, cleared by `spec` for S124-Q14 | Partial: the search order restored to its four cells and the override control; the new rule nonconforming, naming three of T-MOD-CHILD's failing cells; the index clause without a cell | The project file is loaded and indexed (ACT-1096) |
 | Spec §2.2.3, §5.3.2, §9.7.0, §8.8.3 and appendix C §C.2.4 | They name the cells committed at `3904fae8` | T-TRAIT-ONE-PARAM, T-SPLICE-BARE, T-TRAIT-SPELLING and T-VEC-IMPL are committed |
 | Spec §2.2.3 and §5.3.2, cleared by `spec` for S124-Q11 | Restored to their cells, with the one-parameter cell added to §2.2.3 | The cells show a bare head, a one-parameter head and the binder refusals, none of which the ruling changed. The refusal of a second parameter holds by hand and has no cell: T-TRAIT-ONE-PARAM |
@@ -3219,14 +3345,20 @@ defect report; the defects are §14.1.
   (ACT-1101); a multi-signature function is omitted from the regenerated
   file (ACT-1068); regeneration can reorder definitions so the file no
   longer loads (ACT-1005).
-- **Memory-unsafe, no test yet:** constructing `primitives/Effect` with a
-  value, or binding its field in a match, ends the process on a signal
-  (ACT-1106).
-- **An accepted program that panics, no test yet:** a match on `IO` with
-  `Pure` and `Effect` arms fails on a bind node (ACT-1107).
-- **Memory-unsafe and latent, no test yet:** an IO node built by the
-  qualified `primitives/Bind` is one word shorter than the runtime reads
-  (ACT-1105). No wrong behaviour was observed from it.
+- **Memory-unsafe, no test yet:** `/type` of an expression such as
+  `(Some 1)`, then evaluating it, ends the process (ACT-1089).
+- **Memory-unsafe, on failing tests:** constructing `primitives/Effect`
+  with a value, or binding its field in a match, ends the process on a
+  signal (ACT-1106); an IO node built by the qualified `primitives/Bind`
+  is one word shorter than the runtime reads (ACT-1105, latent).
+- **An accepted program that panics, on a failing test:** a match on `IO`
+  with `Pure` and `Effect` arms fails on a bind node (ACT-1107).
+- **Rulings of 2026-11-22 the compiler does not yet meet:** the opaque
+  `IO` and `primitives/pure` (ACT-1108), the `#closure` and `#io` markers
+  (ACT-1109), the unrecorded trace root (ACT-1110), and `race` as library
+  code. The suite, the examples and the guides still write `Pure`.
+- **Bands.** 108 rows cleared by the specification's rewrite are not
+  re-judged, so the traceability band does not state their coverage.
 - **Memory-unsafe, on a failing test:** the session after a refused save
   restores a definition its file does not hold, and calling it ends the
   process (ACT-1102).
@@ -3281,9 +3413,7 @@ no module, and the backend is a candidate for each.
 parameters; a skipped trace form's result; what a project file at a
 library child's path is; whether a default method body is checked at its
 trait's declaration; whether a `begin` of two expressions is reported in
-the words it is. **S124-Q13, Q15, Q17, Q18 and the Q16 core/library
-classification are open with the user,** and the evidence takes no
-position on them.
+the words it is.
 
 **Showcase, not evidence.** The demos, the exemplar's runner, the
 documentation samples and the learning sequence's replay show the

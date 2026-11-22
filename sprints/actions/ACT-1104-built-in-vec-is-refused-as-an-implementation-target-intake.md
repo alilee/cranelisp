@@ -88,3 +88,12 @@ allocated or declined once S124-Q16 is confirmed.
 T-VEC-IMPL is committed (`3904fae8`) and accepted: both subjects fail on
 the refusal, and the bare-constructor negative and the `Option` control
 pass.
+
+## The higher-kinded face is released (qa, 2026-11-22)
+
+S124-Q16 is confirmed with the existing kind rules retained (rows CL05 and
+CL36), so §7.2.3 decides it: `Vec` takes one type parameter and
+`(impl (Functor f) (Functor Vec) …)` is a legal program. T-VEC-FUNCTOR is
+allocated (evidence delta §14.3). By hand it is refused with `Vec has 0 type
+parameters`; the same trait for `Option` gives 4, and the helper the
+fixture uses gives 4 on its own.

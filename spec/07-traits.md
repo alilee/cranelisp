@@ -126,7 +126,7 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
   (/ "Divide two values" [a b] self))
 ```
 
-### 7.1.5 Default Method Implementations [Uncovered S124 — was Tested+Neg tests/trait_method_tail_s116.rs::inferred_default_body_is_the_single_tail_and_dispatches, tests/trait_method_tail_s116.rs::annotated_default_body_is_one_structural_tail, tests/trait_method_tail_s116.rs::deleted_return_type_plus_body_spelling_rejected_neg, tests/trait_method_tail_s116.rs::reimpl_default_body_calls_replaced_sibling]
+### 7.1.5 Default Method Implementations [Tested+Neg tests/trait_method_tail_s116.rs::inferred_default_body_is_the_single_tail_and_dispatches, tests/trait_method_tail_s116.rs::annotated_default_body_is_one_structural_tail, tests/trait_method_tail_s116.rs::deleted_return_type_plus_body_spelling_rejected_neg, tests/trait_method_tail_s116.rs::reimpl_default_body_calls_replaced_sibling — the report of an undefined name at an inheriting `impl`, and not at the declaration or an overriding `impl` (S124-Q15), holds by hand and has no cell yet (T-DEFAULT-UNDEFINED)]
 
 A method signature whose trailing element is an **ordinary expression** (rather than a type expression, §7.1) is a **default method**, and that expression is its body. [S115]
 

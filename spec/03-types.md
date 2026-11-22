@@ -62,7 +62,7 @@ The compiler-seeded `primitives/Option` has the shape
 use this type, independently of any library. Bare names require imports under
 §8.9.1. A local `Option` in an example does not replace the seeded type.
 
-### 3.2.3 IO Type [Uncovered S124 — was S10]
+### 3.2.3 IO Type [S124 — nonconforming; see §10.1 (ACT-1108)]
 
 ```
 IO(A)

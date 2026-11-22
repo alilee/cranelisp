@@ -93,7 +93,7 @@ The implementation MUST NOT commit to a flat byte-array String representation in
 
 **Activation**: Post-Ring 4. The flat representation is acceptable through the ring sequence.
 
-### C.2.4 Collection Extensibility [S124 — partial. Item 1 is Tested for a user type and a seeded type: tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match. The built-in `Vec` is refused as an implementation target: tests/spec_07_traits::s124_vec_impl_concrete_applied_target_dispatches and tests/spec_07_traits::s124_vec_impl_polymorphic_applied_target_dispatches fail (ACT-1104). Items 2 and 3 and the shared-trait model have no cell and wait on S124-Q16]
+### C.2.4 Collection Extensibility [S124 — partial. Item 1 is Tested for a user type and a seeded type: tests/spec_07_traits::hkt_impl_on_user_well_kinded_adt_dispatches, tests/spec_07_traits::hkt_functor_impl_on_option_dispatches_via_match. The built-in `Vec` is refused as an implementation target: tests/spec_07_traits::s124_vec_impl_concrete_applied_target_dispatches and tests/spec_07_traits::s124_vec_impl_polymorphic_applied_target_dispatches fail (ACT-1104). A higher-kinded implementation for `Vec` has no cell yet (T-VEC-FUNCTOR). Items 2 and 3 are future obligations with no cell]
 
 The standard library SHOULD be able to provide alternative collection implementations alongside the built-in primitives. Users SHOULD be able to choose the collection type that best fits their use case, and write code that works generically across collection types via traits.
 

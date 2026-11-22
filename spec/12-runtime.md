@@ -366,7 +366,7 @@ Platform DLLs are discovered via the platform DLL search order defined in §8.11
 
 This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results and by the `trace` special form for formatting traced arguments and return values. It is compiler-provided and independent of library `Display` traits and `show` methods; a library chooses its own string-conversion behavior.
 
-### 12.9.1 Format by Type [Uncovered S124 — was Tested tests/repl_introspection::display_int_result, tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload]
+### 12.9.1 Format by Type [S124 — nonconforming: a function value displays as `<closure>` and a nested IO value as its node; the `#closure` and `#io` markers are carried to the next sprint (ACT-1109; T-MARKERS is allocated, no cell yet). Tested tests/repl_introspection::display_int_result, tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload]
 
 Each type has a defined display representation:
 

@@ -189,3 +189,37 @@ when the guard cell arrived RED. Twelve cells fail on this action: four of
 REPRO-1089, three of T-TYPE-PURE, the four T-TYPE-ERR subjects and the
 T-TYPE-ERR guard cell. `test` splits `defmacro` out of the guard cell
 (evidence delta §14.3).
+
+## A face on an ordinary expression (qa, 2026-11-22)
+
+Found while probing `macros/sconcat`. The debug binary built from `11ea995e`,
+at the REPL, no prelude unless stated:
+
+| Session | Observed |
+|---|---|
+| `/type (primitives/Some 1)`, then `(primitives/Some 1)` | The type, then **signal 11** |
+| `/type (primitives/Some 1)`, then `(primitives/Some 2)` | **Signal 11** |
+| `/type (primitives/Some 1)`, `(primitives/add-i64 1 2)`, `(primitives/Some 1)` | The type, 3, then **signal 11** |
+| `/type (primitives/Pair 1 2)`, then the same expression | **Signal 11** |
+| `(deftype (Box a) (Mk [:a v]))`, `/type (Mk 1)`, `(Mk 1)` | **Signal 11** |
+| `/type (macros/SCons (macros/SexpInt 1) macros/SNil)`, then the same | **Signal 11** |
+| The first row with the standard-library prelude and bare `Some` | **Signal 11** |
+| Control: `(primitives/Some 1)` first, then `/type` of it, then it again | The value, the type, the value |
+| Control: `/type "abc"` then `"abc"`; `/type [1 2]` then `[1 2]`; `/type Red` then `Red` for a type with no parameter | Each prints its value |
+
+- **`/type` given an expression is the documented use,** and REPL §3.1
+  requires it to change nothing. Here it makes a later evaluation end the
+  process.
+- **The shape.** The expression applies a constructor of a parametric
+  type at a concrete type that the session has not yet used. Evaluating
+  first makes the later query harmless.
+- **Mechanism, by control and consistent with this filing's attribution:**
+  the query commits the constructor's instance to the live table with no
+  code, and the next use calls it. `qa` did not observe the empty slot.
+- **The committed expression control does not reach it:** it queries a
+  call of a monomorphic function.
+- **This widens what the user's carry decision covers.** The decision was
+  taken on the definition-form faces.
+
+T-TYPE-EXPR is allocated in the
+[evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).

@@ -138,3 +138,10 @@ since), a public child `(mod t)`, the library's child defining `v` as 5 and
 
 T-MOD-CHILD-INDEX and the returned item are in the
 [evidence delta §14.3](../../tests/plan/s124-evidence-delta.md#143-allocated-to-test).
+
+## Evidence state (qa, 2026-11-22)
+
+T-MOD-CHILD-INDEX and the changed T-MOD-CHILD values are committed
+(`60f15a06`) and accepted on a focused run: five index cells and four
+child cells fail, and the library-only, presence-not-an-error and override
+controls pass.

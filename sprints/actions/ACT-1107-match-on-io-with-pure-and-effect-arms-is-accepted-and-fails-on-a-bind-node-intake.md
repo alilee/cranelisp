@@ -70,3 +70,11 @@ scratch directories since removed.
 
 T-IO-MATCH is committed and observed RED on its no-panic clause, and passes
 on the corrected build with its wildcard control unchanged.
+
+## Narrowed after the ruling on `IO` (qa, 2026-11-22)
+
+The user ruled `IO` opaque: no match on an IO value is accepted, with or
+without a wildcard. T-IO-MATCH is accepted as committed (`e9a60317`): its
+subject ends on `match failed`. Its clause is narrowed to refusal at compile
+time in T-IO-OPAQUE, and its wildcard control becomes a subject (evidence
+delta §14.3). Carried to the next sprint by the user's decision.

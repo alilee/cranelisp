@@ -727,7 +727,7 @@ E |- (trace expr) : Trace
 
 The type of the traced expression is not preserved in the static type -- the `Trace` ADT captures runtime information as formatted strings. The original expression's value is discarded; only the call tree is returned.
 
-### 4.12.2 Semantics [Uncovered S124 — was Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string, tests/ownership_reuse::s124_d4_trace_run, tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_w_subject_run — canonical Int formatting of recorded values; item 2 and the spark face of item 3; item 3's argument format for a one-word ADT; item 3 in every mode and from a cached callee; the root's result is the body's formatted value in every mode: tests/trace::s124_trace_root_call_cold, tests/trace::s124_trace_root_call_cached, tests/trace::s124_trace_root_call_link, tests/trace::s124_trace_root_call_repl, tests/trace::s124_trace_root_literal_cold, tests/trace::s124_trace_root_literal_link, tests/trace::s124_trace_root_heap_result_and_balance, crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs::trace_root_result_is_the_value_display]
+### 4.12.2 Semantics [Tested crates/cranelisp-intrinsics/src/trace_format/tests.rs::descriptor_int, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::traced_spark_admitted_callee_releases_every_formatted_string, tests/ownership_reuse::s124_d4_trace_run, tests/trace::trace_records_user_function_calls_in_every_mode, tests/trace::s124_1039_w_subject_run — canonical Int formatting of recorded values; item 2 and the spark face of item 3; item 3's argument format for a one-word ADT; item 3 in every mode and from a cached callee; the root's result is the body's formatted value in every mode: tests/trace::s124_trace_root_call_cold, tests/trace::s124_trace_root_call_cached, tests/trace::s124_trace_root_call_link, tests/trace::s124_trace_root_call_repl, tests/trace::s124_trace_root_literal_cold, tests/trace::s124_trace_root_literal_link, tests/trace::s124_trace_root_heap_result_and_balance, crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs::trace_root_result_is_the_value_display]
 
 Evaluation proceeds as follows:
 
@@ -770,7 +770,7 @@ The following are NOT instrumented: [S76]
 - **Host-promised extern and intrinsic-backed `primitives` entries**: `primitives`-module entries whose body is a host-supplied extern or runtime intrinsic (e.g. `discover-tests`) hold no indirection-table slot of their own — a call to them has no slot to redirect — so they are likewise structurally untraceable. (Note: the *callables that `discover-tests` returns* are ordinary fn values reached through the indirection table, and so ARE traced when invoked within the coverage above; it is only the `discover-tests` entry itself that is untraceable.) [Uncovered S124 — was S76]
 - **Anonymous lambdas**: Closures created by `fn` expressions do not have named entries in the indirection table and are not individually traced. Their effects appear as part of the enclosing traced function's execution.
 
-### 4.12.4 The Trace ADT [Uncovered S124 — was Tested tests/trace::trace_nanos_accessor_resolves_in_repl, tests/trace::s124_template_frame_name_run, tests/trace::s124_template_frame_name_link, tests/trace::s124_template_frame_name_repl]
+### 4.12.4 The Trace ADT [Tested tests/trace::trace_nanos_accessor_resolves_in_repl, tests/trace::s124_template_frame_name_run, tests/trace::s124_template_frame_name_link, tests/trace::s124_template_frame_name_repl]
 
 `Trace` is a compiler-seeded algebraic data type in the `primitives` module with a single constructor:
 
@@ -787,7 +787,7 @@ The fields are:
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `String` | For the root, the synthetic name specified in §4.12.2 or §4.12.6. For a recorded function call, the fully qualified name of the traced function. For an instance of a generic function, MUST be the template's name alone (for example, `m/helper`), without the instance's type arguments or result type. [Uncovered S124 — was Tested tests/trace::s124_template_frame_name_run, tests/trace::s124_template_frame_name_link, tests/trace::s124_template_frame_name_repl, crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs::discovery_names_an_instance_frame_by_its_template — one instance in every mode, cold and warm; two instances of one template at the module tier] |
+| `name` | `String` | For the root, the synthetic name specified in §4.12.2 or §4.12.6. For a recorded function call, the fully qualified name of the traced function. For an instance of a generic function, MUST be the template's name alone (for example, `m/helper`), without the instance's type arguments or result type. [Tested tests/trace::s124_template_frame_name_run, tests/trace::s124_template_frame_name_link, tests/trace::s124_template_frame_name_repl, crates/cranelisp-backend/src/compiler/trace_codegen/tests.rs::discovery_names_an_instance_frame_by_its_template — one instance in every mode, cold and warm; two instances of one template at the module tier] |
 | `params` | `(SList String)` | Arguments formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)), one String per argument; the synthetic root has no parameters |
 | `result` | `String` | Return value formatted using the canonical value display format ([§12.9](12-runtime.md#129-value-display-format)) |
 | `children` | `(SList Trace)` | Child `Trace` values representing calls made within this function, in call order; the synthetic root contains every recorded call beneath it. Uses the `SList` type from the `macros` module (`SCons`/`SNil`). |
@@ -808,7 +808,7 @@ Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in th
 
 There is no `trace-nanos` function. The accessor name is `nanos`, matching the field name in the `TraceCall` definition.
 
-### 4.12.5 Nested Trace [Uncovered S124 — was Tested tests/trace::trace_nested_dynamic_raises_runtime_error]
+### 4.12.5 Nested Trace [S124 — partial. Tested tests/trace::trace_nested_dynamic_raises_runtime_error — a form entered while its thread records. A form entered inside an unrecorded form (S124-Q18) has no cell: no fixture built from user commands makes a form unrecorded]
 
 A `(trace ...)` expression MUST NOT be evaluated while another `(trace ...)` is actively tracing on the same thread. An implementation MUST raise a runtime error when a `(trace ...)` form is entered while that thread is actively recording an enclosing `(trace ...)` body — whether the inner form appears lexically:
 
@@ -822,11 +822,11 @@ A trace form entered inside a form that did not activate instrumentation under �
 
 Concurrent tracing on different threads is governed by [§4.12.6](#4126-concurrency) (at most one thread traces; others return an empty trace) — that case is distinct from same-thread re-entrancy and is not an error. [S76]
 
-### 4.12.6 Concurrency [Uncovered S124 — was S20]
+### 4.12.6 Concurrency [S124 — nonconforming by source, with no cell: an unrecorded root is named `::skipped::` and its result is empty (ACT-1110). No fixture built from user commands makes a form unrecorded]
 
 Only one trace MAY be active at a time within a program. If multiple threads attempt to trace concurrently, at most one succeeds in activating instrumentation. The others evaluate their expressions normally and return a `Trace` value with no recorded children (an unrecorded trace). Its root is named `::untraced::`. Like a recording root, it has no parameters and its result MUST be the body's value formatted using §12.9; the result MUST NOT be replaced by an empty string merely because the form did not record.
 
-### 4.12.7 Composability [Uncovered S124 — was Tested tests/spec_12_runtime::trace_pattern_match_extracts_name]
+### 4.12.7 Composability [Tested tests/spec_12_runtime::trace_pattern_match_extracts_name]
 
 The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be bound with `let`, passed to functions, stored in data structures, and pattern-matched:
 
@@ -844,7 +844,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => "::trace::"
 ```
 
-### 4.12.8 Examples [Uncovered S124 — was Tested tests/spec_04_expressions::trace_returns_trace_type]
+### 4.12.8 Examples [Tested tests/spec_04_expressions::trace_returns_trace_type]
 
 **Basic tracing**:
 
