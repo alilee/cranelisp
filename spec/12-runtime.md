@@ -135,9 +135,9 @@ The implementation MAY use any memory management strategy:
 
 Vec operations (`vec-set`, `vec-push`) return a new Vec value. The implementation MAY optimize by mutating the backing storage in place when the Vec has a single owner. This is semantically invisible — the caller observes pure functional behavior regardless.
 
-## 12.4 Evaluation Order [Tested]
+## 12.4 Evaluation Order [Uncovered S124 — was Tested]
 
-### 12.4.1 Strict Evaluation [Tested tests/spec_04_expressions::application_chained]
+### 12.4.1 Strict Evaluation [Uncovered S124 — was Tested tests/spec_04_expressions::application_chained]
 
 Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully evaluated before their results are used. Specifically:
 
@@ -146,17 +146,17 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 - Both branches of `if` exist but only the selected branch is evaluated.
 - `match` arms are tested top-to-bottom; only the first matching arm's body is evaluated.
 
-The left-to-right ordering of `let` bindings and function arguments is the **observable** evaluation order: it is the order that constrains effect sequencing, and a conforming implementation MUST *behave as if* it holds. Because cranelisp arguments and binding values are pure — effects are sequenced through `IO`/`bind!` (see [§10.12](10-io.md#1012-automatic-io-scheduling)), never through raw argument or binding evaluation — the order in which *independent* pure sub-expressions are actually evaluated is unobservable. An implementation MAY therefore evaluate them concurrently or out of order under the lenient permission of [§12.4.3](#1243-lenient-evaluation) without weakening this left-to-right guarantee. Concurrent panic reporting follows §12.4.3 (user ruling, 2026-11-15). [S92]
+The left-to-right ordering of `let` bindings and function arguments is the **observable** evaluation order: it is the order that constrains effect sequencing, and a conforming implementation MUST *behave as if* it holds. Because cranelisp arguments and binding values are pure — effects are sequenced through `IO`/`primitives/bind` (see [§10.12](10-io.md#1012-automatic-io-scheduling)), never through raw argument or binding evaluation — the order in which *independent* pure sub-expressions are actually evaluated is unobservable. An implementation MAY therefore evaluate them concurrently or out of order under the lenient permission of [§12.4.3](#1243-lenient-evaluation) without weakening this left-to-right guarantee. Concurrent panic reporting follows §12.4.3 (user ruling, 2026-11-15). [Uncovered S124 — was S92]
 
-### 12.4.2 Lazy Sequences [Tested tests/spec_12_runtime::lazy_stream_take_from_infinite_terminates_with_demanded_element, tests/spec_12_runtime::lazy_stream_construction_does_not_force_tail]
+### 12.4.2 Lazy Sequences [Uncovered S124 — was Tested tests/spec_12_runtime::lazy_stream_take_from_infinite_terminates_with_demanded_element, tests/spec_12_runtime::lazy_stream_construction_does_not_force_tail]
 
-The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
+User or library ADTs can provide lazy sequences through thunks (zero-argument closures), as the illustrative `Seq` in §4.11 does. The language does not require a `Seq` type. Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation [Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity, tests/spec_12_runtime::apply_arg_panic_exits_run, tests/spec_12_runtime::apply_arg_dual_panic_exits_with_one_report, tests/concurrency_spark::dependent_spark_dependency_panic_exits_run, tests/spec_12_runtime::lenient_binding_panic_not_swallowed_neg, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::s124_1038_untraced_sparks_control — the panic rule's sparked cells each have a non-panicking twin that spawns (`tests/spec_12_runtime::apply_arg_non_panicking_twins_spawn`, `tests/concurrency_spark::dependent_spark_non_panicking_twin_spawns`); the two-panic cell accepts either message and rejects two reports; the strict-trace exception: a trace declines sparks and records every frame, and its untraced twin spawns]
+### 12.4.3 Lenient Evaluation [Uncovered S124 — was Tested+Neg tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness, tests/spec_12_runtime::apply_arg_single_expensive_preserves_result_parity, tests/spec_12_runtime::apply_arg_panic_exits_run, tests/spec_12_runtime::apply_arg_dual_panic_exits_with_one_report, tests/concurrency_spark::dependent_spark_dependency_panic_exits_run, tests/spec_12_runtime::lenient_binding_panic_not_swallowed_neg, tests/trace::trace_records_every_call_of_spark_admitted_callee, tests/trace::s124_1038_untraced_sparks_control — the panic rule's sparked cells each have a non-panicking twin that spawns (`tests/spec_12_runtime::apply_arg_non_panicking_twins_spawn`, `tests/concurrency_spark::dependent_spark_non_panicking_twin_spawns`); the two-panic cell accepts either message and rejects two reports; the strict-trace exception: a trace declines sparks and records every frame, and its untraced twin spawns]
 
-Except within the strict dynamic extent of a trace ([§4.12.2](04-expressions.md#4122-semantics)), an implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial, and MAY likewise evaluate independent arguments of a function application in parallel under the same heuristic. This is called **lenient evaluation**. Because all binding expressions in a `let` and all argument expressions in an application are pure (effects are sequenced through `IO`/`bind!`, never through raw binding or argument evaluation — see [§10.12](10-io.md#1012-automatic-io-scheduling)), evaluating independent sub-expressions concurrently produces the same result as sequential left-to-right evaluation — the non-determinism in evaluation order is not observable. The permission is granted precisely *because* it is unobservable: a conforming implementation that evaluates everything sequentially left-to-right also conforms. [S92]
+Except within the strict dynamic extent of a trace ([§4.12.2](04-expressions.md#4122-semantics)), an implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial, and MAY likewise evaluate independent arguments of a function application in parallel under the same heuristic. This is called **lenient evaluation**. Because all binding expressions in a `let` and all argument expressions in an application are pure (effects are sequenced through `IO`/`primitives/bind`, never through raw binding or argument evaluation — see [§10.12](10-io.md#1012-automatic-io-scheduling)), evaluating independent sub-expressions concurrently produces the same result as sequential left-to-right evaluation — the non-determinism in evaluation order is not observable. The permission is granted precisely *because* it is unobservable: a conforming implementation that evaluates everything sequentially left-to-right also conforms. [Uncovered S124 — was S92]
 
-A `let` binding is independent if its free variables do not include any name bound earlier in the same `let` block. An apply-argument is independent when its evaluation cannot observe the result of evaluating any sibling argument; because arguments are pure, sibling arguments of an application are always mutually independent in this sense. In both cases the implementation MUST apply a cost heuristic to avoid parallelizing trivially cheap sub-expressions (e.g., arithmetic operations, variable references); only sub-expressions whose estimated cost exceeds the heuristic threshold, and only when at least two such candidates are present, are eligible for parallel evaluation. [S92]
+A `let` binding is independent if its free variables do not include any name bound earlier in the same `let` block. An apply-argument is independent when its evaluation cannot observe the result of evaluating any sibling argument; because arguments are pure, sibling arguments of an application are always mutually independent in this sense. In both cases the implementation MUST apply a cost heuristic to avoid parallelizing trivially cheap sub-expressions (e.g., arithmetic operations, variable references); only sub-expressions whose estimated cost exceeds the heuristic threshold, and only when at least two such candidates are present, are eligible for parallel evaluation. [Uncovered S124 — was S92]
 
 Lenient evaluation is semantically transparent — programs MUST NOT depend on whether any particular binding or argument is parallelized. An implementation MAY provide an opt-out mechanism (e.g., an environment variable) for debugging purposes.
 
@@ -166,9 +166,9 @@ Detached execution and cancellation retain their timing and value semantics (§1
 
 ### 12.4.4 Structured Control Combinators and Cancellation [Uncovered S122]
 
-The explicit-control combinators — `race`, `select`, and the derived `timeout` ([§10.12.8](10-io.md#10128-structured-control-combinators--race--select--timeout)) — and the **structured cancellation** they rest on ([§10.12.9](10-io.md#10129-structured-cancellation)) are part of the language's IO model. This subsection pins their **typing** and **runtime semantics**; §10.12.8–§10.12.10 state the user-observable contract.
+The language provides `primitives/select`, `primitives/sleep` and **structured cancellation** ([§10.12.9](10-io.md#10129-structured-cancellation)). The library derivations `race` and `timeout` illustrate their composition ([§10.12.8](10-io.md#10128-structured-control-combinators--race--select--timeout)). This subsection pins the core operations' **typing** and **runtime semantics**; §10.12.8–§10.12.10 state the user-observable contract.
 
-**They are ordinary typed functions, not special forms and not platform effects.** Each combinator is a normal value with a normal type; it takes `IO` value(s) and returns a new `IO` value. Because an `IO a` is already a lazy *description* of an effect (§10.1–§10.3), no special evaluation rule is needed: the combinators compose opaque IO values that the runtime executes. They are **not** GOT-dispatched platform effects — the entire control vocabulary lives in the runtime, and a platform DLL never sees it (§12.8); this keeps the platform boundary thin even for the explicit surface. `race` is library composition over `select`, as described in §10.12.8. Their indicative types:
+**They are ordinary typed functions, not special forms and not platform effects.** Each combinator is a normal value with a normal type; it takes `IO` value(s) and returns a new `IO` value. Because an `IO a` is already a lazy *description* of an effect (§10.1–§10.3), no special evaluation rule is needed: the combinators compose opaque IO values that the runtime executes. They are **not** GOT-dispatched platform effects — the core control operations are runtime-provided, and a platform DLL never sees that composition (§12.8); this keeps the platform boundary thin even for the explicit surface. `race` is library composition over `select`, as described in §10.12.8. Their indicative types:
 
 ```
 sleep   : Int -> IO Int
@@ -181,9 +181,9 @@ timeout : forall a.   Int -> IO a -> IO (Option a)
 
 **Collection and duration units.** `select` takes a `Vec (IO a)` — the `[..]` literal of §10.12.8 is a `Vec`, not the `Nil`/`Cons` `List` ADT. Durations are plain `Int` **milliseconds**: `sleep : Int -> IO Int` parks for the given number of milliseconds and resumes with `0`, and `timeout`'s deadline is likewise an `Int` count of milliseconds (§10.12.8 "Duration unit"). The language has no dedicated `Duration` type. An **empty** `select` (`(select [])`) has no branch that can win; the runtime MUST raise a runtime panic (§12.7.2) — "select over empty collection" — rather than return a synthesised value, which at a heap-typed `a` would be an unsound null (§10.12.8 "Empty `select`"). The panic ends the process in every mode (§12.7; user ruling, 2026-11-15).
 
-**Construction is pure; the composed effect runs at the trampoline.** Applying a combinator builds an IO value and runs nothing — consistent with the laziness of `IO` everywhere (§10.3). The concurrent composition executes only when the resulting `IO` is sequenced into the program's effect (via `bind!` / `do`) and reaches the trampoline, which executes the composition by running the branches concurrently on the same execution substrate as automatic parallel composition (§10.12.5, §10.12.6) and resolving to the winner. The mechanism is implementation-internal and not prescribed (§10.12.5): a conforming implementation maps `race`/`select` onto its substrate's first-completion primitive and `timeout` onto a timer raced against the effect.
+**Construction is pure; the composed effect runs at the trampoline.** Applying a combinator builds an IO value and runs nothing — consistent with the laziness of `IO` everywhere (§10.3). The concurrent composition executes only when the resulting `IO` is sequenced into the program's effect (via `primitives/bind`) and reaches the trampoline, which executes the composition by running the branches concurrently on the same execution substrate as automatic parallel composition (§10.12.5, §10.12.6) and resolving to the winner. The mechanism is implementation-internal and not prescribed (§10.12.5): a conforming implementation maps `race`/`select` onto its substrate's first-completion primitive and the library `timeout` derives its behavior by selecting between a tagged effect and a tagged timer (§10.12.8).
 
-**Cancellation follows the program's effect structure — it is not a user primitive.** There is no `cancel` function and no user-installable cancellation handler. An in-flight effect is cancelled exactly when the cancellation context it executes in is cancelled ([§10.12.9](10-io.md#10129-structured-cancellation)): because its `race`/`select` branch loses, because its `timeout` timer fires first, or because an enclosing context is cancelled. This includes every detached strand launched within that context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), independent of whether the runtime ran a given eligible effect detached, inline or on a worker. Function return and normal completion cancel nothing. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
+**Cancellation follows the program's effect structure — it is not a user primitive.** There is no `cancel` function and no user-installable cancellation handler. An in-flight effect is cancelled exactly when the cancellation context it executes in is cancelled ([§10.12.9](10-io.md#10129-structured-cancellation)): because its `primitives/select` branch loses or because an enclosing context is cancelled. Library `race` and `timeout` inherit these rules from their `select` composition. This includes every detached strand launched within that context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), independent of whether the runtime ran a given eligible effect detached, inline or on a worker. Function return and normal completion cancel nothing. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
 
 1. **Resource release on drop.** Dropping a cancelled effect's future MUST release every resource it held: an acquired resource-capacity **permit** (§10.12.4.1) returns to its token pool, and any registered reactor interest (an fd-readiness wait, a timer) is deregistered. This is the runtime obligation underneath §10.12.9 item 1 — a permit freed by cancellation MUST become claimable by an effect parked on that token, and a cancelled effect parked *awaiting* a permit MUST be removed from the pool's wait queue so it cannot strand a later release. Cancellation under volume (a long-running server cancelling per-request work) MUST NOT leak permits or reactor registrations.
 2. **No completion side-effect; no fault.** A dropped effect does not run to its completion side-effect (§10.12.9 item 2) and does not itself raise a runtime panic (§10.12.9 item 3). Side-effects already performed before the drop point are **not** rolled back.
@@ -191,7 +191,7 @@ timeout : forall a.   Int -> IO a -> IO (Option a)
 
 **Interaction with the sequential-equivalence guarantee.** Cancellation is the **explicit-control** half of the concurrency model, the peer of the detached strand (§10.12.7). It is deliberately **outside** the §12.4.3 structured-join guarantee: a cancelled branch produces no value to join and no completion side-effect, so the set of effects a `race`/`timeout` performs is not the same as running every branch to completion sequentially. This is the program's explicit choice (the whole point of the combinator) and does not weaken the inferred half — the auto-IO scheduling of §10.12.1–§10.12.5 remains observationally identical to sequential execution. Panic termination is governed separately by §12.7 (user ruling, 2026-11-15).
 
-## 12.5 Tail Call Optimization [Tested+Neg tests/spec_12_runtime.rs::tco_deep_countdown, tests/spec_12_runtime.rs::tco_match_tail_position, tests/spec_12_runtime.rs::tco_accumulator, tests/spec_12_runtime.rs::tco_let_body_tail_position, tests/spec_12_runtime.rs::tco_non_tail_recursion_unchanged]
+## 12.5 Tail Call Optimization [Uncovered S124 — was Tested+Neg tests/spec_12_runtime.rs::tco_deep_countdown, tests/spec_12_runtime.rs::tco_match_tail_position, tests/spec_12_runtime.rs::tco_accumulator, tests/spec_12_runtime.rs::tco_let_body_tail_position, tests/spec_12_runtime.rs::tco_non_tail_recursion_unchanged]
 
 Implementations MUST optimize self-recursive tail calls into loops (no stack frame is consumed per recursive call). This is a structural guarantee, not a heuristic: every self-recursive call in tail position is compiled to a jump back to the function's entry, so unbounded self-recursion in tail position runs in constant stack space and MUST NOT stack-overflow. A tail call is a function call in tail position — the last operation before the function returns.
 
@@ -199,7 +199,7 @@ Tail position is defined recursively:
 - The body of a function is in tail position
 - In `(if c t e)`: both `t` and `e` are in tail position if the `if` is
 - In `(let [bindings] body)`: `body` is in tail position if the `let` is
-- In `(do e1 e2 ... en)`: `en` is in tail position if the `do` is
+- Library macro calls have the tail positions of their expanded core forms; `do` has no independent tail-position rule.
 - In `(match scrut [p1 b1 p2 b2 ...])`: each `b_i` is in tail position if the `match` is
 - Arguments to function calls are NOT in tail position
 - Conditions in `if` are NOT in tail position
@@ -207,7 +207,7 @@ Tail position is defined recursively:
 
 Implementation-defined: Whether mutual recursion, lambda self-recursion, or constrained polymorphic self-recursion are optimized.
 
-**Interaction with launch-and-continue.** A tail-recursive loop that **launches** an effect and then recurses — the canonical accept loop `(do (handle-conn conn) (serve listener))`, where `handle-conn` is launched-and-not-joined ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects)) and the `serve` self-call is in tail position — is still a self-recursive tail call and MUST be optimized into a loop. Detaching an effect does **not** push a frame: the loop runs in constant stack space regardless of how many handlers it launches. Consequently an unbounded accept loop launching unbounded handlers does not grow the stack; the bound on outstanding work is the in-flight admission **degree** ([§10.12.4.2](10-io.md#101242-admission-degree--program-chosen-throttle)), not the stack depth. [S96]
+**Interaction with launch-and-continue.** A tail-recursive loop that **launches** an effect and then recurses — the canonical accept loop `(primitives/bind (handle-conn conn) (fn [_] (serve listener)))`, where `handle-conn` is launched-and-not-joined ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects)) — MUST run in constant stack space under the iterative IO execution rule (§10.8.2). Detaching an effect does **not** push a frame: the loop runs in constant stack space regardless of how many handlers it launches. Consequently an unbounded accept loop launching unbounded handlers does not grow the stack; the bound on outstanding work is the in-flight admission **degree** ([§10.12.4.2](10-io.md#101242-admission-degree--program-chosen-throttle)), not the stack depth. [Uncovered S124 — was S96]
 
 ## 12.6 Entry Point [Tested+Neg tests/spec_10_io.rs::batch_main_pure_int_return_is_rejected, tests/spec_10_io.rs::main_returning_io_string_exits_zero_run_and_linked]
 
@@ -319,30 +319,31 @@ Runtime panics and the IO model (§10) interact as follows:
 (defn read-file [path] ...)   ; :: (Fn [String] (IO (Option String)))
 
 ;; User code handles the failure case explicitly
-(bind! [contents (read-file "data.txt")]
-  (match contents
-    [(Some text) (print text)]
-    [None (print "file not found")]))
+(primitives/bind (read-file "data.txt")
+  (fn [contents]
+    (match contents
+      [(primitives/Some text) (print text)
+       primitives/None (print "file not found")])))
 ```
 
 Platform operations MUST NOT panic for expected failure modes (file not found, permission denied, network timeout). Panics from platform code are reserved for **contract violations** (null pointers, corrupted state) that indicate programming errors rather than environmental conditions.
 
 **Panics during parallel IO execution** (§10.12): A panic in any branch ends the process under §12.7.2 (user ruling, 2026-11-15).
 
-### 12.7.7 No User-Exposed Panic Mechanism [S18]
+### 12.7.7 No User-Exposed Panic Mechanism [Uncovered S124 — was S18]
 
 There is no `panic`, `error`, `throw`, or `raise` special form or function available to user code. User code cannot deliberately trigger a runtime panic. Runtime panics originate only from the conditions listed in §12.7.2.1.
 
 Programs that need to signal error conditions MUST use the type system:
 
 ```clojure
-;; Use a custom error ADT for richer error information
-(deftype (Result a e) (Ok [:a val]) (Err [:e err]))
+;; Use the compiler-seeded error-value ADTs; no library is needed.
+(import [primitives [Result Ok Err Option Some None String parse-int gt-i64]])
 
 (defn parse-config [:String s]
   (match (parse-int s)
-    [(Some n) (if (> n 0) (Ok n) (Err "must be positive"))]
-    [None (Err "not a number")]))
+    [(Some n) (if (gt-i64 n 0) (Ok n) (Err "must be positive"))
+     None (Err "not a number")]))
 ```
 
 Expected failures are represented in values; a runtime panic ends the process (§12.7.2).
@@ -363,7 +364,7 @@ Platform DLLs are discovered via the platform DLL search order defined in §8.11
 
 ## 12.9 Value Display Format [Uncovered S124 — was Tested tests/repl_introspection::display_int_result]
 
-This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results, by the `trace` special form for formatting traced arguments and return values, and by the `Display` trait's default implementations.
+This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results and by the `trace` special form for formatting traced arguments and return values. It is compiler-provided and independent of library `Display` traits and `show` methods; a library chooses its own string-conversion behavior.
 
 ### 12.9.1 Format by Type [Uncovered S124 — was Tested tests/repl_introspection::display_int_result, tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload]
 
@@ -396,12 +397,12 @@ When the display format is used in a context that includes a type prefix (e.g., 
 
 Here the type prefix is `(user/Option primitives/Int)` and the value display is `(Option.Some 42)`.
 
-### 12.9.3 Elision [Tested tests/repl_introspection::display_int_result]
+### 12.9.3 Elision [Uncovered S124 — was Tested tests/repl_introspection::display_int_result]
 
 Implementations SHOULD truncate displayed values that exceed a reasonable size to keep output manageable and trace overhead bounded. Specifically:
 
-- **Collections** (Vec, List): When a collection contains more than an implementation-defined threshold of elements (SHOULD default to approximately 10), the display SHOULD truncate with an ellipsis indicator: `[1, 2, 3, ... (997 more)]`.
-- **Nesting depth**: When ADT values are nested beyond an implementation-defined depth threshold (SHOULD default to approximately 4 levels), inner values SHOULD be replaced with `...`.
+- **Vec**: When a Vec contains more than an implementation-defined threshold of elements (SHOULD default to approximately 10), the display SHOULD truncate with an ellipsis indicator: `[1, 2, 3, ... (997 more)]`.
+- **Nesting depth** (including user/library ADTs such as `List`): When ADT values are nested beyond an implementation-defined depth threshold (SHOULD default to approximately 4 levels), inner values SHOULD be replaced with `...`.
 - **String length**: When a string value exceeds an implementation-defined character threshold, the display SHOULD truncate: `"very long str..."`.
 
 Elision is purely a display concern — it does not affect the actual value. The elision thresholds are implementation-defined; the examples above are illustrative, not normative.
