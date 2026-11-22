@@ -697,3 +697,15 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   concatenation under its own name. Answer: "agreed retain as public
   primitive". Whether the question should be SHOULD or MUST in §8.8.3 was
   withdrawn by the coordinator: the user's own wording stands.
+- **User ruling on the `IO` type (2026-11-22).** Put to the user as A:
+  `IO` is an opaque built-in type — the language has `(IO a)` and no
+  constructors for it; values are made by `pure`, `bind`, `select`, `sleep`
+  and platform operations and consumed only by the runtime; user code cannot
+  match on an `IO` value; node kinds, layout and the disposer are
+  implementation detail and leave the specification. Against B, a sum type
+  with private constructors. Answer: "A". On the spelling of `pure`: "the
+  constructor is conceptually a module private thing. the public interface
+  is the `pure` function". On an `IO` value nested inside another value: an
+  opaque marker, its spelling still open with the user. ACT-1105, ACT-1106
+  and ACT-1107 are the defects against this position; the compiler work and
+  the migration of programs from `primitives/Pure` are not S124 scope.
