@@ -23,13 +23,14 @@ Registered in the `primitives` and `macros` synthetic modules.
 | `(IO a)` | `primitives` | Opaque built-in | Deferred computation; no language constructors; public operations in §10.1 | [Uncovered S124 — was S9]
 | `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/spec_04_expressions::trace_returns_trace_type]
 | `(Pair a b)` | `primitives` | Compiler-seeded ADT | Two-field product; single data constructor `Pair` with fields `first` (a), `second` (b). Not auto-imported; requires explicit import or qualified reference. | [S77 — tested-by /qa]
+| `(Option a)` | `primitives` | Compiler-seeded ADT | Optional value; constructors `None` and `Some`; import or qualified reference (§3.2.2). |
 | `(Result a b)` | `primitives` | Compiler-seeded ADT | Success/failure sum; constructors `Ok` (one field, a) and `Err` (one field, b). Not auto-imported; requires explicit import or qualified reference. | [S77 — tested-by /qa]
 | `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [Tested tests/spec_09_macros::defmacro_identity_expands]
 | `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [Tested tests/spec_09_macros::defmacro_identity_expands]
 
 ## A.3 Primitive Functions (Host-Implemented) [Tested tests/spec_04_expressions::literal_integer_positive, tests/spec_appendix_a_builtins::primitive_str_concat, tests/spec_appendix_a_builtins::primitive_int_to_string]
 
-Primitive functions are implemented in the host language and registered in the `primitives` module. They are the low-level substrate; standard library functions and trait implementations are built on top of them.
+Primitive functions are implemented in the host language and registered in the `primitives` module. They are the low-level substrate; standard library functions and trait implementations are built on top of them. Bare names below abbreviate qualified `primitives/` references, or names explicitly imported from that module. Library wrappers (including the Clojure-named bit helpers and optional testing helpers) are reference-library descriptions, not additional primitive requirements.
 
 ### Inline Primitives
 
