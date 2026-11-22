@@ -722,6 +722,18 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
     thread raises no error and is itself skipped ("4 A").
   - **Carries:** ACT-1101 and ACT-1102 are carried as the first items of the
     next sprint, and ACT-1105, ACT-1106 and ACT-1107 with them ("6 agreed").
-  - **Open:** S124-Q13 (the user leans to the synthetic root), S124-Q17 (the
-    skipped root's result and name), and the Phase 6b public-API line, on
-    which the user asked why the entry takes `i64` parameters.
+  - **S124-Q13:** a trace always has a synthetic root, named `::trace::`,
+    with no parameters and every recorded call beneath it; the examples in
+    §4.12.7 and §4.12.8 change ("2 A", to "A confirmed, and `::trace::` as
+    the root's name?").
+  - **S124-Q17:** a root that did not record carries the body's displayed
+    value as its result, as any root does ("3 A"). Its name: the user asked
+    "is it `::untraced::`?" where source has `::skipped::`; the coordinator
+    reads the "3 A" answer, given to "`::untraced::` as the name, and result
+    A or B?", as adopting `::untraced::` — the coordinator's reading, stated
+    back to the user.
+  - **The Phase 6b public-API line is not confirmed.** On
+    `cranelisp_collect_trace(value: i64, descriptor_ptr: i64)` the user
+    said: "The big missed trick here is that we should have (at least) two
+    functions so that the parameters can be typed (ie. an enum or multiple
+    functions). compiler would emit the right call." Returned to `arch`.
