@@ -59,13 +59,15 @@ cargo run -- --run exemplar/main.cl       # serves HTTP until killed
 | Concurrent `/slow` requests overlap instead of serialising (`--run`) | `tests/exemplar_web.rs::exemplar_web_server_fans_out_concurrent_requests_overlap` |
 | `tests.cl` passes in the parallel and serial modes (`--run`) | `tests/exemplar.rs::s124_exemplar_tests_runner_lenient`, `::s124_exemplar_tests_runner_serial` |
 | Linked `user.cl` output matches `--run` byte for byte | `tests/exemplar_link_run_parity.rs` |
-| Heap residue of a warm serial `smoke.cl` run stays within a bound, with a zero-work control | `tests/exemplar_ownership_residue_s116.rs` |
+| A warm serial `smoke.cl` run releases everything it allocates, with a zero-work control | `tests/exemplar_ownership_residue_s116.rs` |
 
 State only what these tests show:
 
 - Linked fan-out has not been established.
-- The residue test checks a bound. It does not show that every exemplar entry
-  balances exactly.
+- The residue subject fails: it retains 2 blocks, carried as defect ACT-1018
+  ([register](../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).
+  Its zero-work control passes.
+- The residue test covers `smoke.cl` only, not every exemplar entry.
 
 ## Known Issues
 
@@ -75,8 +77,8 @@ State only what these tests show:
   scratch directory with copies of the modules.
 - **Do not add a file under `exemplar/` at a library module's path** (for
   example `collections/vec/test.cl`). The compiler loads it in place of that <!-- doc-check: literal reason="example of a forbidden path, not a tracked file" -->
-  library module's declared child
-  ([ACT-1096](../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md)).
+  library module's declared child: defect ACT-1096, carried on failing tests
+  ([register](../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).
 - **Hard-puzzle backtracking is quadratic.** This is performance, not
   correctness: see
   [copy-per-guess performance](plan-exemplar.md#copy-per-guess-performance)
