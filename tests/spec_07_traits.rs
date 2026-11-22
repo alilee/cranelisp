@@ -65,25 +65,15 @@ fn s124_trait_program(declarations: &str, expression: &str) -> helpers::e2e::CrO
         .output()
 }
 
-fn s124_impl_value_or_refusal(declarations: &str, expression: &str, expected: i32) {
-    let out = s124_trait_program(declarations, expression);
-    // Q16 has not selected between running this user implementation and
-    // refusing the declaration. Silently substituting a primitive is wrong
-    // under either answer (T-TRAIT-SPELLING).
-    let diagnostic = format!("{}\n{}", out.stdout, out.stderr);
-    let refused = out.status.code() == Some(1) && diagnostic.contains("error:");
-    assert!(
-        out.status.code() == Some(expected) || refused,
-        "expected implementation value {expected} or refusal with a diagnostic; got {:?}\n{diagnostic}",
-        out.status,
-    );
+fn s124_impl_value(declarations: &str, expression: &str, expected: i32) {
+    s124_trait_program(declarations, expression).assert_exit(expected);
 }
 
 // spec: spec/07-traits.md §7.3 — T-TRAIT-SPELLING, direct Num call
 // defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
 #[test]
 fn s124_trait_spelling_num_direct_uses_impl_or_refuses() {
-    s124_impl_value_or_refusal(
+    s124_impl_value(
         "(deftrait Num (+ [a b] self))\n(impl Num Int (defn + [a b] (primitives/sub-i64 a b)))",
         "(+ 5 3)",
         2,
@@ -94,7 +84,7 @@ fn s124_trait_spelling_num_direct_uses_impl_or_refuses() {
 // defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
 #[test]
 fn s124_trait_spelling_num_value_uses_impl_or_refuses() {
-    s124_impl_value_or_refusal(
+    s124_impl_value(
         "(deftrait Num (+ [a b] self))\n(impl Num Int (defn + [a b] (primitives/sub-i64 a b)))",
         "(let [f +] (f 5 3))",
         2,
@@ -105,7 +95,7 @@ fn s124_trait_spelling_num_value_uses_impl_or_refuses() {
 // defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
 #[test]
 fn s124_trait_spelling_num_constrained_uses_impl_or_refuses() {
-    s124_impl_value_or_refusal(
+    s124_impl_value(
         "(deftrait Num (+ [a b] self))\n(impl Num Int (defn + [a b] (primitives/sub-i64 a b)))\n(defn twice [:Num x] (+ x x))",
         "(twice 5)",
         0,
@@ -116,7 +106,7 @@ fn s124_trait_spelling_num_constrained_uses_impl_or_refuses() {
 // defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
 #[test]
 fn s124_trait_spelling_eq_uses_impl_or_refuses() {
-    s124_impl_value_or_refusal(
+    s124_impl_value(
         "(deftrait Eq (= [a b] Bool))\n(impl Eq Int (defn = [a b] true))",
         "(if (= 1 2) 7 9)",
         7,
@@ -127,7 +117,7 @@ fn s124_trait_spelling_eq_uses_impl_or_refuses() {
 // defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
 #[test]
 fn s124_trait_spelling_ord_uses_impl_or_refuses() {
-    s124_impl_value_or_refusal(
+    s124_impl_value(
         "(deftrait Ord (< [a b] Bool))\n(impl Ord Int (defn < [a b] true))",
         "(if (< 2 1) 7 9)",
         7,
@@ -138,7 +128,7 @@ fn s124_trait_spelling_ord_uses_impl_or_refuses() {
 // defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method found=S124 owner=/dev
 #[test]
 fn s124_trait_spelling_display_uses_impl_or_refuses() {
-    s124_impl_value_or_refusal(
+    s124_impl_value(
         "(deftrait Display (show [self] String))\n(impl Display Int (defn show [self] \"xx\"))",
         "(primitives/str-len (show 12345))",
         2,
