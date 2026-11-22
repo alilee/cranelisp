@@ -22,7 +22,8 @@
 > **Authority**: `spec/12-runtime.md` §12.3.1 (release of unreachable values)
 > and §12.4.3 (lenient evaluation is unobservable). The option framing is the
 > [option paper](../arch/ownership-stratum-options.md) §3 with the
-> [S123 architecture review](../../sprints/s123-architecture-review.md) §3.
+> S123 Phase 2 architecture review §3, "Option-2 measurement" (retired;
+> `git show d4e930a7:sprints/s123-architecture-review.md`).
 > Principles governing the structure:
 > [07](../arch/principles/07-single-source-of-truth.md),
 > [11](../arch/principles/11-single-pipeline-mode-parameters.md),
