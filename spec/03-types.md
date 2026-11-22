@@ -36,13 +36,13 @@ A function type describes a callable value taking parameters of types `T1` throu
 
 All functions are first-class values. At runtime, function values are represented as closures (see [Section 12](12-runtime.md)).
 
-### 3.2.2 Algebraic Data Types [Tested crates/cranelisp-typecheck/src/adt/tests.rs::test_resolution_validates_registered_arity]
+### 3.2.2 Algebraic Data Types [Uncovered S124 — was Tested crates/cranelisp-typecheck/src/adt/tests.rs::test_resolution_validates_registered_arity]
 
 ```
 ADT(Name, [A1, A2, ..., An])
 ```
 
-Algebraic data types are user-defined types declared with `deftype` (see [Section 5](05-definitions.md)). The name is an uppercase identifier; the type arguments are zero or more types.
+Algebraic data types can be declared with `deftype` (see [Section 5](05-definitions.md)); the compiler also provides the `primitives` ADTs described below. A local declaration with a seeded type's spelling defines a distinct type in its own module. The name is an uppercase identifier; the type arguments are zero or more types.
 
 ```clojure
 (Option Int)           ; Option applied to Int
@@ -55,6 +55,12 @@ ADTs may be:
 - **Product types** (single constructor with fields): `(deftype Point [:Int x :Int y])`
 - **Sum types** (multiple constructors): `(deftype (Option a) None (Some [:a val]))`
 - **Enum types** (all constructors nullary): `(deftype Color Red Green Blue)`
+
+The compiler-seeded `primitives/Option` has the shape
+`(deftype (Option a) None (Some [:a val]))`. Its constructors are
+`primitives/None` and `primitives/Some`; checked primitives and the test protocol
+use this type, independently of any library. Bare names require imports under
+§8.9.1. A local `Option` in an example does not replace the seeded type.
 
 ### 3.2.3 IO Type [Uncovered S124 — was S10]
 
