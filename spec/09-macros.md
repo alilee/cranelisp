@@ -126,6 +126,7 @@ The `& rest` syntax captures all remaining arguments as a single value of type `
 (defmacro my-add [& args]
   `(+ ~@args))
 
+;; Non-normative library illustration: thread-first-fold is an imported helper.
 ;; Mixed: one fixed Sexp, rest as (SList Sexp)
 (defmacro -> [x & forms]
   (thread-first-fold x forms))
@@ -419,7 +420,7 @@ An implementation MUST check for zero-argument macros during expansion whenever 
 
 This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.1, 9.10.2) built on bare-symbol expansion.
 
-## 9.6 Multi-Form Expansion (`begin`) [Tested+Neg tests/spec_09_macros::macro_emitted_definition_batch_lists_all_definitions_in_order, tests/spec_09_macros::macro_expanded_begin_deftype_then_impl_registers_in_source_order, tests/spec_09_macros::macro_expanded_begin_impl_neg_before_deftype_is_rejected]
+## 9.6 Multi-Form Expansion (`begin`) [Uncovered S124 — was Tested+Neg tests/spec_09_macros::macro_emitted_definition_batch_lists_all_definitions_in_order, tests/spec_09_macros::macro_expanded_begin_deftype_then_impl_registers_in_source_order, tests/spec_09_macros::macro_expanded_begin_impl_neg_before_deftype_is_rejected]
 
 A macro MAY return a form whose head symbol is `begin`. The `begin` form causes the expander to splice multiple top-level forms into the surrounding context:
 
@@ -436,7 +437,7 @@ Each `form1` through `formN` is treated as a separate top-level form, as if the 
 
 `begin` MUST NOT appear nested inside expression positions in user source code, and MUST NOT appear at top level in batch (file) source code (where the file itself already provides the cluster scope per §5.13.1). An implementation SHOULD report an error in these cases.
 
-**Example:**
+**Non-normative library illustration** (the builders and imports are those of §9.10):
 
 ```clojure
 (defmacro def [name value]
@@ -462,7 +463,7 @@ Macro authors typically need helper functions for `SList`. A standard library ma
 
 ### 9.7.0 Visibility
 
-The library-provided SList helper functions `sfold`, `sreverse`, and `sempty?` are public within `core.syntax` and available to sibling modules (such as `core.derive`) via direct import, but are not part of the user-facing standard library namespace. Macro authors who need these helpers in their own modules can import them explicitly from `core.syntax` or define local equivalents.
+The descriptions of `sfold`, `sreverse`, `sempty?` and `slist` below are non-normative library illustrations. They are expressible using `macros/SCons`, `macros/SNil`, `match`, functions and macros; no helper name or module layout is required. A library may expose them through an explicitly imported module such as `core.syntax`.
 
 Unquote-splicing (`~@`) MUST work without any library function. The compiler provides the concatenation required by its expansion; no library-provided `sconcat` or prelude re-export is required. [Tested tests/spec_09_macros::repl_defmacro_rest_splice, tests/spec_09_macros::unquote_splicing_at_top_level_desugars — with a primitives-only prelude and no library on the path; tests/spec_09_macros::s124_splice_without_prelude_or_import_run, tests/spec_09_macros::s124_splice_without_prelude_or_import_repl — with no prelude and no import]
 
@@ -623,9 +624,22 @@ If a macro function raises a runtime error during expansion (e.g., pattern match
 
 Calling a macro with the wrong number of arguments is a compile-time error. For non-variadic macros, the number of arguments MUST exactly match the number of parameters. For variadic macros, the number of arguments MUST be at least the number of fixed parameters.
 
-## 9.10 Example Prelude Macros [Tested tests/spec_11_stdlib::macro_when_true, tests/spec_11_stdlib::macro_cond_first_match, tests/spec_11_stdlib::macro_thread_first_single, tests/spec_11_stdlib::macro_vec_elements]
+## 9.10 Example Prelude Macros [Uncovered S124 — was Tested tests/spec_11_stdlib::macro_when_true, tests/spec_11_stdlib::macro_cond_first_match, tests/spec_11_stdlib::macro_thread_first_single, tests/spec_11_stdlib::macro_vec_elements]
 
-The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude, and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here. The prelude's own module layout is the standard library's to decide and is not fixed by this specification.
+This subsection is non-normative. These optional library macros illustrate the
+macro system; their names, helper names, validation rules and expansions are not
+language requirements. Examples assume the illustrated macros and their
+dependencies have been explicitly imported or defined. No prelude content is
+required. Library module layout and library-call semantics belong to the library.
+
+The named builders (`make-def-name`, `do-build`, `bind!-fold`,
+`thread-first-fold`, `thread-last-fold`, `cond-fold`, `case-fold`, `str-fold`)
+stand for library Sexp transformations, not missing primitives. Their functions
+can be defined in dependency modules and imported (§9.2.5); recursive macro
+clauses can also express these transformations without helper functions.
+`sfold`, `sreverse` and `slist` have the same optional status (§9.7).
+The samples' bare macro-data and primitive names use the explicit example
+imports in the [notation conventions](index.md#example-scope).
 
 ### 9.10.1 `const` / `const-`
 
@@ -711,14 +725,16 @@ Note: `list` builds user-visible `List` values (using `Cons`/`Nil`), while `slis
 (do e1 e2 ... eN)
 ```
 
-Expression sequencing. Evaluates expressions left to right and returns the value of the last. Expands to nested `let` bindings with `_` as the binding name.
+An illustrative IO-sequencing macro, expanding to `primitives/bind` and
+anonymous continuations (§10.4). All operands produce IO values. Pure expression
+sequencing instead uses nested `let` bindings; discarding a constructed IO
+value in `let` does not execute its effect (§10.8).
 
 ```clojure
 (do (print "a") (print "b") (print "c"))
 ;; Expands to:
-;; (let [_ (print "a")]
-;;   (let [_ (print "b")]
-;;     (print "c")))
+;; (primitives/bind (print "a")
+;;   (fn [_] (primitives/bind (print "b") (fn [_] (print "c")))))
 ```
 
 **Implementation:**
@@ -923,7 +939,7 @@ With zero arguments, returns the empty string `""`.
        (str-fold (SexpList (SCons (SexpSym "show") (SCons x SNil))) rest)]))
 ```
 
-### 9.10.12 `when` / `unless` [S121]
+### 9.10.12 `when` / `unless` [Uncovered S124 — was S121]
 
 ```clojure
 (when test body)
