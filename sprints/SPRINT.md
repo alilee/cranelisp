@@ -690,3 +690,10 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   `race` as library in the specification now (it is `(select [a b])`) and
   carry the removal of the built-in as filed work. Answer: "agreed carry".
   The removal is not S124 scope.
+- **User ruling on S124-Q12-R1 (2026-11-22).** Put to the user:
+  `macros/sconcat` is a public primitive at the type it has today,
+  `(Fn [(SList Sexp) (SList Sexp)] (SList Sexp))`, the specification says so
+  in place of §9.7.3's general signature, and a library may offer a general
+  concatenation under its own name. Answer: "agreed retain as public
+  primitive". Whether the question should be SHOULD or MUST in §8.8.3 was
+  withdrawn by the coordinator: the user's own wording stands.
