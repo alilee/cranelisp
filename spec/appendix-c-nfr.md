@@ -106,6 +106,13 @@ The standard library SHOULD be able to provide alternative collection implementa
 
 **Model**: The primitive `Vec` and `Map` types use simple implementations with stable, predictable performance characteristics. The stdlib provides advanced alternatives (`PersistentVec` backed by RRB, `PersistentMap` backed by HAMT/CHAMP) as separate types. Both primitive and advanced types implement shared collection traits.
 
+**Classification (non-normative).** ADT-based persistent vectors, maps and deques
+can be library code over the existing Vec and bit primitives. Runtime-backed
+opaque collections still need their stated extern support. General `Hash`
+implementations for String and Float need additional primitive access, and
+channels (§C.4.4) need runtime or platform effects for shared state and parking.
+These determinations do not add those facilities or activate a future feature.
+
 **Future direction (non-normative)**: Multi-parameter collection traits, such as
 `(Indexed c a)` parameterized over container and element type, are future work,
 not a present expressibility requirement. The current single-parameter rule in
@@ -122,13 +129,13 @@ The parallel evaluation of independent `let` bindings, including the strict-trac
 
 **Activation**: Ring 4 (effects and runtime infrastructure). The mechanism requires safe stack management for parallel evaluation of pure sub-expressions.
 
-### C.3.2 Automatic IO Scheduling [S11]
+### C.3.2 Automatic IO Scheduling [Uncovered S124 — was S11]
 
-The compiler MUST perform independence analysis on `bind!` chains and insert parallel execution nodes for commutative, data-independent effect pairs. This is normatively specified in [§10.12](10-io.md).
+The compiler MUST perform independence analysis on core `primitives/bind` chains after macro expansion and insert parallel execution nodes for commutative, data-independent effect pairs. This is normatively specified in [§10.12](10-io.md).
 
 **Design constraint for architecture**: The IO trampoline MUST support concurrent execution of independent effect branches. The resource serialization model (token-based) MUST ensure that effects sharing a resource are sequenced while independent effects may run concurrently.
 
-**Explicit-control half**: alongside this *inferred* scheduling, the IO model also provides an *explicit-control* layer — the `race`/`select`/`timeout` combinators and the structured cancellation underneath them, normatively specified in [§10.12.8–§10.12.10](10-io.md#10128-structured-control-combinators--race--select--timeout) and [§12.4.4](12-runtime.md#1244-structured-control-combinators-and-cancellation). The IO trampoline MUST support **cancellation**: dropping an in-flight effect whose cancellation context is cancelled (a race loser, a timed-out effect, or any effect executing within either, including a detached strand launched there — [§10.12.9](10-io.md#10129-structured-cancellation)) such that its resource permits are released and its reactor interest deregistered. This is the architectural requirement underneath the per-request-timeout / cancel-on-disconnect / graceful-shutdown patterns; the resource-pool model (§C.4) MUST NOT be exhaustible by cancelled work.
+**Explicit-control half**: alongside this *inferred* scheduling, the IO model also provides an *explicit-control* layer — the language-provided `primitives/select` and `primitives/sleep`, the library derivations `race` and `timeout`, and the structured cancellation underneath their core composition, normatively specified in [§10.12.8–§10.12.10](10-io.md#10128-structured-control-combinators--race--select--timeout) and [§12.4.4](12-runtime.md#1244-structured-control-combinators-and-cancellation). The IO trampoline MUST support **cancellation**: dropping an in-flight effect whose cancellation context is cancelled (a race loser, a timed-out effect, or any effect executing within either, including a detached strand launched there — [§10.12.9](10-io.md#10129-structured-cancellation)) such that its resource permits are released and its reactor interest deregistered. This is the architectural requirement underneath the per-request-timeout / cancel-on-disconnect / graceful-shutdown patterns; the resource-pool model (§C.4) MUST NOT be exhaustible by cancelled work.
 
 **Activation**: Ring 4 (IO and platform infrastructure).
 
