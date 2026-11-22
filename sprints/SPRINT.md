@@ -743,3 +743,14 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   resting on the prelude, changing no behaviour beyond the rulings. Answer:
   "confirm the spec rewrite". Stage two is dispatched after the pass that
   records the 2026-11-22 rulings.
+- **Row B18 carried (2026-11-22).** `arch` recorded the typed trace value
+  entries as row B18, escalated. The user: "let's have an action for the
+  carry of the typed builtins." Filed as ACT-1111. The Phase 6b intrinsics
+  line `(i64, i64)` stands until that work; the user has not approved row
+  B18's shape or its bounded-contexts sentence.
+- **No action for a defect a failing test carries (user, 2026-11-22).**
+  "we don't want an action for a defect that can be handled by a repro in a
+  failing test." Given when asked whether to carry the `/type` expression
+  face of ACT-1089. That face is carried on its failing cell. `qa` disposes
+  of the defect filings that a committed failing reproduction already
+  carries; the rule is stated in METHOD §3.3.

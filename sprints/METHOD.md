@@ -327,6 +327,13 @@ its normal file tools can access them within the repository scope.
 
 Lifecycle and routing are in root `AGENTS.md` §Cross-Role Changes. The forms:
 
+**A defect carried by a failing reproduction has no action.** The committed
+failing, un-ignored test is its record, its trigger and its regression guard
+(root `AGENTS.md` §Usability Findings and Defects). `qa` opens an action for a
+defect only while no reproduction can carry it, and deletes the action when
+one is committed, keeping in the test's defect notation what the owner needs
+to find and fix it.
+
 **Action** — an `ACT-NNNN-short-name.md` file under `sprints/actions/`, frontmatter then body:
 
 ```markdown
