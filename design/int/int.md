@@ -933,9 +933,9 @@ FQ type-only loading. Typecheck's half produces the `Type` gap
     `cranelisp-types` resolver report the probed module on its `*NotFound`
     errors, that is a field addition and a baseline delta. No schema or ABI
     effect: a gap is never persisted. Consumers: the gap arm and the
-    reference-site lookup in `src/process_form.rs`. `arch` should confirm
-    whether frontend's `MacroInMem` for an alias-spelled macro head carries
-    the written or the resolved module.
+    reference-site lookup in `src/process_form.rs`. Macro heads raise no
+    gap: `ResolutionGap` has no macro variant since `279cc37f` (ACT-1084),
+    and a head resolves through `ResolutionScope::resolve_macro_head`.
   - *Int's change once approved* (`src/process_form.rs`, tests beside the
     lookup rows): the match rule keeps only the substituted form, and row 5
     becomes a value gap on `zz/f` located at `z/f`. Turn green: the alias
@@ -4943,6 +4943,8 @@ a private one keyed on 0907's message text.
 **Non-goal.** The `Bind`/`IO` undiscoverability the FIXME calls "the sharpest
 part" is 0907's (they are seeded by `src/bootstrap.rs`, which is why `Pure`
 introspects and `Bind` does not). It is recorded there and is not this rider.
+Under the user's ruling of 2026-11-22, `IO` is opaque with `pure` as its
+public interface, so no IO constructor is owed a user-visible name.
 
 ---
 
@@ -5157,17 +5159,19 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     - Int's half of row B10, the covered trace set:
       [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10),
       landed at `69cd9c18` and `f8c55626`.
-  - *Corrections designed 2026-11-20, read at `ed6f4d87`, not in source:*
+  - *Corrections designed 2026-11-20, landed:*
     - C1, the object pass waits for the prelude (ACT-1087), in
       [§7.6.4](#764-reference-edges-and-the-covered-trace-set-row-b10);
-      `dev`(`src/`) alone.
+      landed at `fe385164` for the restored and linked launches. The first
+      launch is `arch`'s accepted residual, carried by ACT-1087's failing
+      cell.
     - C2, a form's coverage from its module of origin (ACT-1086), in the
-      same section, to `arch`'s row B10-C2; `dev`(`src/`) after the
-      backend's half.
+      same section, as `arch`'s row B10-C2; landed with the backend's half
+      at `94749709`.
     - The observed type of an executed expression has no default
       (FIXME 0929's binary site):
       [result owner §4.3.1](result-owner.md#431-the-observed-type-has-no-default);
-      `dev`(`src/`) alone.
+      landed at `793af750`.
   - Row B8's binary followers landed at `07bb8e84`: three test fixtures that
     install an extern (`src/agent/mod.rs`, `src/imports/tests.rs`,
     `src/session_v4/bare_primitive_value_path_tests.rs`) lost the removed
@@ -5416,8 +5420,9 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     Diagnostic.
   - *ACT-1035:* [session transaction §2.5](session-transaction.md#25-trait-implementation-redefinition);
     built in W4.
-  - **Deltas at the user gate.** `arch` settled them as packet rows
-    (`sprints/s123-api-packet.md`); the user's gate decides each:
+  - **Deltas at the user gate.** `arch` settled them as rows of the S123
+    API packet, retired at the S124 close and in Git at `d4e930a7`; the
+    user approved each on 2026-11-15 or 2026-11-16:
     1. Packet row P8, consumed as stated: `src/exe.rs` calls
        `capture_runtime_switches` at `--link`, the startup stub imports
        `cranelisp_install_runtime_switches`, and `cranelisp-exe-bundle` adds

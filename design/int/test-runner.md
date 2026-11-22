@@ -24,9 +24,9 @@ Governing inputs, cited rather than restated:
   Result<TestRunReport, CranelispError>`, a `TestRunReport` with private fields
   and `text`, `warnings` and `exit_code` accessors, and one `session_v4`
   re-export. As built, this design adds no other public item. The S123 test
-  child (§6.5) adopts packet row P12 (`sprints/s123-api-packet.md`), which
-  awaits the user's gate: `run_tests` becomes the child's engine and
-  `session_v4::supervise_tests` returns the report.
+  child (§6.5) adopts S123 packet row P12 (approved by the user; the packet
+  is retired and in Git at `d4e930a7`): `run_tests` is the child's engine
+  and `session_v4::supervise_tests` returns the report.
 
 ## 1. Solution
 

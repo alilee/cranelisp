@@ -335,12 +335,12 @@ is total, and no type is supplied by default.
 
 - **Why it matters.** The observed type decides more than display. It
   decides whether the driver forces an `IO` tree, and it decides the exit
-  code. At `ed6f4d87` the chain ends in `Type::Int` (`execute_compiled_expr`,
-  `src/pipeline.rs`). Suppose an `IO` result reached that arm. The driver
-  would not force it, and the release key from the codegen view would
-  apply `a`'s glue to an unforced `IO` node. Source does not show whether
-  both earlier sources can be absent at once, so that arm has no grade.
-  Removing it decides the question structurally (safety register row R18).
+  code (`execute_compiled_expr`, `src/pipeline.rs`). A default of `Int`
+  would leave an `IO` result unforced while the release key from the
+  codegen view applied `a`'s glue to the unforced node. Source does not
+  show that both earlier sources cannot be absent at once, so the chain
+  ends in the scheme result rather than a default; that decides the
+  question structurally (safety register row R18).
 - **`/type`** reads the same scheme result (`lift_expr_type`). After a
   successful check, `__expr` is absent only through an invariant
   violation. That is a located error, never a printed `:Int`
@@ -450,7 +450,5 @@ code-lifetime guard for invocation, not another glue-registry writer
 
 ## Open obligations
 
-- **The observed type's default (FIXME 0929).** §4.3.1 is designed and not
-  in source at `ed6f4d87`; `dev`(`src/`) owes it with its module rows.
 - **Cache-hit result e2e (conditional).** Owed by the change-set that widens
   cache restoration to the CLI target (§3.2.1). `qa` allocates it then.

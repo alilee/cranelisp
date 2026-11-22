@@ -95,9 +95,10 @@ leaves the application as the user wrote it, which is sound (§1).
   falsifier is a module that imports a user `bind` and whose prelude exports
   the primitive, compiled in one cluster: the user's function must run.
   That is `qa`'s cell T-1065-f, which cannot yet execute this clause: its
-  program is refused in every mode by
-  [ACT-1075](../../sprints/actions/ACT-1075-polymorphic-candidate-selected-from-a-shared-spelling-is-undefined-at-codegen-intake.md),
-  a separate typecheck-to-codegen defect, with the pass disabled. Until
+  program is refused in every mode by ACT-1075, a separate
+  typecheck-to-codegen defect carried by its failing tests
+  ([register](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)),
+  with the pass disabled. Until
   ACT-1075 is corrected the assertion remains a debt. The C8 module rows do
   not discharge it: their fixtures commit the imports themselves, so they
   show only that the pass declines once an import is committed.
@@ -461,6 +462,7 @@ features have different safety arguments and are debugged separately.
   `/arch`-owned; evidence allocation is `qa`'s.
 - **Launched-work cancellation.** This pass emits no context boundary (§3.7),
   and nothing here changes for cancellation. Realising the ownership rules of
-  `spec/10-io.md` §10.12.7 items 5–6 and §10.12.9 is a runtime obligation,
-  tracked by
-  `sprints/actions/ACT-0977-scoped-launched-work-cancellation-evidence.md`.
+  `spec/10-io.md` §10.12.7 items 5–6 and §10.12.9 is a runtime obligation:
+  defect ACT-0977, carried by the failing `s124_0977_*` cells in
+  `tests/concurrency_cancellation.rs`
+  ([register](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).

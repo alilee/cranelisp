@@ -321,8 +321,8 @@ which ends the process, so a reachable trap would have ended the REPL.
 - **Grade: structural.** A broken symbol cannot be represented. Packet row
   P13 removed `Life::Broken`, `BrokenProvenance`, `BrokenTransition`,
   `mark_broken` and `cranelisp_backend::compile_trap_stub`, with no
-  cache-schema bump (§8.3; `sprints/s123-api-packet.md`). It is built in the
-  S123 W4 tree, not yet committed: `Life` in
+  cache-schema bump (§8.3; S123 packet row P13, retired and in Git at
+  `d4e930a7`). It is built: `Life` in
   `crates/cranelisp-types/src/lifecycle.rs` has no `Broken` variant, and no
   name of the five occurs in a source file under `crates/` or `src/` (read
   2026-11-16). `src/worker.rs`'s slot reader matches only `Life::Concrete`.
@@ -690,7 +690,7 @@ definition keeps its persisted slot, and new definitions mint above them.
   staged bodies (§2.5). Releasing it removes that state by construction.
   Which bodies to release is int's policy, recorded here; existing tombstones
   are kept. No cache-schema bump and no ABI effect
-  (`sprints/s123-api-packet.md` P15).
+  (S123 packet row P15, retired and in Git at `d4e930a7`).
 - **Defect P15 closes: the tombstones accumulated** (confirmed by `qa`,
   2026-11-16, [evidence plan](../../tests/plan/s123-evidence-delta.md) §3.6
   R-5). The earlier preload retired these bodies through
