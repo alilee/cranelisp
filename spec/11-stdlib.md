@@ -1,6 +1,6 @@
 # 11. Standard Library (Non-Normative)
 
-> **This section is non-normative.** It describes the constraints and conventions a standard library for Cranelisp must satisfy. The reference implementation's standard library is documented separately in the user guide.
+> **This section is non-normative.** It describes the reference library and offers library-author guidance; mandatory language guarantees have their authority in the linked normative chapters. The reference implementation's standard library is documented separately in the user guide.
 
 The Cranelisp language does not mandate a specific standard library. Any conforming implementation MAY provide a different set of library modules, provided it satisfies the language-level guarantees defined in Sections 1–10 and 12. This section describes those guarantees from the perspective of a standard library author.
 
@@ -25,6 +25,7 @@ The following types are seeded by the compiler into synthetic modules. A standar
 | `primitives` | `Int`, `Bool`, `String`, `Float` | Primitive scalar types |
 | `primitives` | `(Vec a)` | Built-in resizable array |
 | `primitives` | `(IO a)` | Opaque built-in computation; no language constructors (§10.1) |
+| `primitives` | `Option`, `Result`, `Pair` | Compiler-seeded ADTs; independent of library definitions (§3.2) |
 | `primitives` | `Trace` | Execution trace tree (1-constructor ADT: `TraceCall`). NOT auto-imported. |
 | `macros` | `Sexp` | S-expression ADT for macro system |
 | `macros` | `(SList a)` | Cons-list for S-expression manipulation |
@@ -84,6 +85,11 @@ The distinction is **bare-promotion vs. module-qualified curation**:
 
 - **Curating a wrapper inside its family module** (e.g. `collections.vec/count` wrapping `vec-len`) is always permitted, even for a reserved name. The wrapper is reachable module-qualified or via an explicit `(import [collections.vec [count]])`. Binding the name *inside its own module* does not pre-empt the future trait — the trait owns the *bare* name surfaced through the prelude, not the qualified path.
 - **Bare-promoting to the prelude** — re-exporting `count`/`get`/`conj`/`assoc` (etc.) as a bare name through the prelude, pointing at one concrete family — is the action that collides with the future trait method of the same name and is what this reservation asks authors to defer.
+
+The concrete-family helpers and the formatting helpers below are library code.
+Single-parameter collection traits are expressible now; the general keyed-family
+`get`/`assoc` abstraction requiring a second trait parameter remains future work
+(§7.12). This reference naming guidance imposes no prelude-content requirement.
 
 ### 11.4a.1 `first`/`rest` — list vs. pair coexistence
 
