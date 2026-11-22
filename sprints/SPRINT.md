@@ -715,3 +715,13 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   are display-only and the reader rejects them (a leading `#` not followed
   by `(` is a reader error today). Answer: "#io and #closure confirmed." The
   `<closure>` migration is carried with the `IO` work.
+- **User rulings of 2026-11-22 on the remaining questions.**
+  - **S124-Q15:** an undefined name in a default method body is reported
+    when an `impl` inherits the default, not at the `deftrait` ("1 A").
+  - **S124-Q18:** a trace form entered inside a skipped form on the same
+    thread raises no error and is itself skipped ("4 A").
+  - **Carries:** ACT-1101 and ACT-1102 are carried as the first items of the
+    next sprint, and ACT-1105, ACT-1106 and ACT-1107 with them ("6 agreed").
+  - **Open:** S124-Q13 (the user leans to the synthetic root), S124-Q17 (the
+    skipped root's result and name), and the Phase 6b public-API line, on
+    which the user asked why the entry takes `i64` parameters.
