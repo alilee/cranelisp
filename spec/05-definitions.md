@@ -41,7 +41,7 @@ All binder rows reject decisively — the principle admits no exceptions and no 
 - **Rider — the qualified type-parameter cell is a clean reject too. [S115]** `(deftype (Pair prim/a b) …)` is a **located binder-reject with the span on the type parameter**, on the same diagnostic footing as every other row. It MUST NOT surface as an incidental downstream failure (e.g. a "module not found" resolution error at a degenerate zero-width span).
 - **Scribe's note on the table above.** Before this ruling the table's per-row Rule column named only `/` on most rows while the prose two paragraphs up was already categorical over `/` **and** `.`. That divergence was a *mirror inside the spec* — the same defect class as the §7.1.4 duplicated-rule divergence: one requirement written twice, drifting on the copy nobody re-read. The table rows are now restated from the prose rather than maintained beside it; a future rule change edits the prose and the table together, or the table not at all.
 
-The surface forms **`def`/`def-` and `const`/`const-` are stdlib macros** ([§5.7](#57-named-values-def--def-), [§5.6](#56-constants-const--const-), [§9.10](09-macros.md#910-example-prelude-macros); `stdlib/defs.cl`) — **there is no native `def` special form.** They **expand** to the native binder forms (`defn`/`defmacro`), so the binder rule reaches them **after expansion**: a qualified **or dotted** head such as `(def fmt/x 1)`, `(const fmt/PI 3.14)` or `(def a.x 1)` is rejected on the same principle. [S115] Because the rejection fires on the expanded `defn`/`defmacro`, the diagnostic span MUST point at the **user's written form** — the `def`/`const` head as typed — not the synthesized expansion. [S113]
+The surface forms **`def`/`def-` and `const`/`const-` are optional library macros** ([§5.7](#57-named-values-def--def-), [§5.6](#56-constants-const--const-), [§9.10](09-macros.md#910-example-prelude-macros)) — **there is no native `def` special form.** In the illustrated library definitions they **expand** to the native binder forms (`defn`/`defmacro`), so the binder rule reaches them **after expansion**: a qualified **or dotted** head such as `(def fmt/x 1)`, `(const fmt/PI 3.14)` or `(def a.x 1)` is rejected on the same principle. [Uncovered S124 — was S115] Because the rejection fires on the expanded `defn`/`defmacro`, the diagnostic span MUST point at the **user's written form** — the `def`/`const` head as typed — not the synthesized expansion. [Uncovered S124 — was S113]
 
 ## 5.1 Function Definition (`defn` / `defn-`) [Tested]
 
@@ -674,7 +674,11 @@ A macro MAY return `(begin form1 form2 ...)` to splice multiple top-level forms 
     (defn ~(make-name2 name) [] ~b)))
 ```
 
-## 5.6 Constants (`const` / `const-`) [Tested tests/spec_11_stdlib::macro_const_int, tests/spec_11_stdlib::macro_const_string, tests/exemplar.rs::batch_const_macro_in_main]
+## 5.6 Constants (`const` / `const-`) [Uncovered S124 — was Tested tests/spec_11_stdlib::macro_const_int, tests/spec_11_stdlib::macro_const_string, tests/exemplar.rs::batch_const_macro_in_main]
+
+This subsection is a non-normative library illustration (§9.10). The language
+requires no macro with this name. Binder and diagnostic requirements apply to
+the native forms emitted by expansion (§5, §9.3.5).
 
 ```ebnf
 const_form = '(' ('const' | 'const-') name expr ')'
@@ -692,12 +696,16 @@ A constant definition creates an inline substitution. Every reference to the con
 
 **Semantics:**
 
-- `const` is a prelude macro, not a built-in special form. It expands to a zero-argument `defmacro` that returns the quoted value.
-- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(const fmt/PI 3.14)`, `(const a.PI 3.14)`) is a compile-time error (§5, *Binder positions*). [S115] Because `const` expands to a `defmacro`, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `const` head, not the synthesized form (§5, macro-surface note). [S113]
+- `const` is a library macro, not a built-in special form. It expands to a zero-argument `defmacro` that returns the quoted value.
+- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(const fmt/PI 3.14)`, `(const a.PI 3.14)`) is a compile-time error (§5, *Binder positions*). [Uncovered S124 — was S115] Because `const` expands to a `defmacro`, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `const` head, not the synthesized form (§5, macro-surface note). [Uncovered S124 — was S113]
 - The value expression MUST be a literal or a form that can be quoted as `Sexp`. It is not evaluated -- it is substituted syntactically.
 - `const-` creates a module-private constant.
 
-## 5.7 Named Values (`def` / `def-`) [Tested tests/spec_11_stdlib::macro_def_basic, tests/spec_11_stdlib::macro_def_expression]
+## 5.7 Named Values (`def` / `def-`) [Uncovered S124 — was Tested tests/spec_11_stdlib::macro_def_basic, tests/spec_11_stdlib::macro_def_expression]
+
+This subsection is a non-normative library illustration (§9.10). The language
+requires no macro with this name. Binder and diagnostic requirements apply to
+the native forms emitted by expansion (§5, §9.3.5).
 
 ```ebnf
 def_form = '(' ('def' | 'def-') name expr ')'
@@ -714,8 +722,8 @@ A named value definition evaluates its expression once and binds the result to a
 
 **Semantics:**
 
-- `def` is a prelude macro, not a built-in special form. It expands to a `begin` containing a zero-argument function definition and a zero-argument macro that calls it.
-- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(def fmt/x 1)`, `(def a.x 1)`) is a compile-time error (§5, *Binder positions*). [S115] Because `def` expands to a `defn`/`defmacro` pair, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `def` head, not the synthesized form (§5, macro-surface note). [S113]
+- `def` is a library macro, not a built-in special form. It expands to a `begin` containing a zero-argument function definition and a zero-argument macro that calls it.
+- The `name` is a **binder** (§5, *Declaration heads are binders*) — a **bare (unqualified)** symbol; a qualified **or dotted** head (`(def fmt/x 1)`, `(def a.x 1)`) is a compile-time error (§5, *Binder positions*). [Uncovered S124 — was S115] Because `def` expands to a `defn`/`defmacro` pair, the binder rule bites on that expansion, but the diagnostic span MUST point at the written `def` head, not the synthesized form (§5, macro-surface note). [Uncovered S124 — was S113]
 - The expression is evaluated once (as the body of a zero-argument function). References to the name expand to calls to that function.
 - Unlike `const`, the value expression IS evaluated. This means `def` can bind computed values, not just literals.
 - `def-` creates a module-private named value.
@@ -795,7 +803,7 @@ A platform declaration specifies which platform DLL provides IO primitives for t
 - `platform` is processed during the module loading phase, before macro expansion. It is NOT an AST node.
 - See [Section 10: IO Model](10-io.md) for platform loading and IO semantics.
 
-## 5.11 Visibility [Tested tests/spec_05_definitions::private_defn_callable_in_module]
+## 5.11 Visibility [Uncovered S124 — was Tested tests/spec_05_definitions::private_defn_callable_in_module]
 
 All definitions are **public by default**. A `-` suffix on the definition keyword makes the definition private to the defining module.
 
@@ -805,8 +813,8 @@ All definitions are **public by default**. A `-` suffix on the definition keywor
 | `deftype` | `deftype-` | Type |
 | `deftrait` | `deftrait-` | Trait |
 | `defmacro` | `defmacro-` | Macro |
-| `const` | `const-` | Constant |
-| `def` | `def-` | Named value |
+| `const` | `const-` | Library constant macro (illustrative) |
+| `def` | `def-` | Library named-value macro (illustrative) |
 | `mod` | `mod-` | Submodule |
 
 **Semantics:**
@@ -980,7 +988,7 @@ definitions publish together (§9.12.1).
 
 `mod`, `import`, `export`, and `platform` are extracted before any other processing. Their position in the source file relative to other definitions does not matter, though by convention they appear at the top.
 
-## 5.14 Summary of Top-Level Forms [Tested]
+## 5.14 Summary of Top-Level Forms [Uncovered S124 — was Tested]
 
 | Form | Kind | Visibility | Phase |
 |---|---|---|---|
@@ -989,8 +997,8 @@ definitions publish together (§9.12.1).
 | `deftrait` / `deftrait-` | Special form | Public / Private | AST building |
 | `impl` | Special form | Always public | AST building |
 | `defmacro` / `defmacro-` | Special form | Public / Private | Macro expansion |
-| `const` / `const-` | Prelude macro | Public / Private | Macro expansion |
-| `def` / `def-` | Prelude macro | Public / Private | Macro expansion |
+| `const` / `const-` | Optional library macro (illustrative) | Public / Private | Macro expansion |
+| `def` / `def-` | Optional library macro (illustrative) | Public / Private | Macro expansion |
 | `mod` / `mod-` | Module declaration | Public / Private | Module loading |
 | `import` | Module declaration | N/A | Module loading |
 | `export` | Module declaration | N/A | Module loading |
