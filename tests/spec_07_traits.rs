@@ -5556,3 +5556,29 @@ fn s124_vec_functor_helper_control() {
         "(primitives/vec-get (go (fn [x] (primitives/add-i64 x 1)) [1 2 3] 0 []) 2)",
     ).assert_exit(4);
 }
+
+const S124_DEFAULT_UNDEFINED: &str = "(import [primitives [Int]])\n(deftrait T (req [self] Int) (dflt [self] (nosuch self)))\n";
+
+// spec: spec/07-traits.md §7.1.5 — T-DEFAULT-UNDEFINED declaration is a template
+#[test]
+fn s124_default_undefined_declaration_accepted() {
+    let out = Cranelisp::new().stdin(&format!("{S124_DEFAULT_UNDEFINED}(primitives/add-i64 5 5)\n")).output().assert_ok();
+    assert!(!out.stdout.to_lowercase().contains("error:"), "{}{}", out.stdout, out.stderr);
+    out.assert_stdout_contains(":primitives/Int 10");
+}
+
+// spec: spec/07-traits.md §7.1.5 — T-DEFAULT-UNDEFINED inheriting impl reports undefined name
+#[test]
+fn s124_default_undefined_inherited_reports_name() {
+    Cranelisp::new().file("main.cl", &format!("{S124_DEFAULT_UNDEFINED}(deftype X Mk)\n(impl T X (defn req [self] 5))\n(defn main [] (primitives/Pure (req Mk)))\n"))
+        .run("main.cl").output().assert_exit(1).assert_stderr_contains("error:").assert_stderr_contains("nosuch");
+}
+
+// spec: spec/07-traits.md §7.1.5 — T-DEFAULT-UNDEFINED overriding impl never instantiates template
+#[test]
+fn s124_default_undefined_override_dispatches() {
+    s124_trait_program(
+        "(deftrait T (req [self] Int) (dflt [self] (nosuch self)))\n(deftype X Mk)\n(impl T X (defn req [self] 5) (defn dflt [self] 7))",
+        "(dflt Mk)",
+    ).assert_exit(7);
+}
