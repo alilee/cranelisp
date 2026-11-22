@@ -5526,3 +5526,33 @@ fn s124_1076_subject_e_link() {
 fn s124_1076_subject_e_repl() {
     s124_self_position("e", false, "repl");
 }
+
+const S124_FUNCTOR: &str = "(deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))";
+const S124_VEC_GO: &str = "(defn go [g v i acc] (if (primitives/eq-i64 i (primitives/vec-len v)) acc (go g v (primitives/add-i64 i 1) (primitives/vec-push acc (g (primitives/vec-get v i))))))";
+
+// spec: spec/07-traits.md §7.2.3 — T-VEC-FUNCTOR higher-kinded Vec target
+// defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S124 owner=/dev (ACT-1104)
+#[test]
+fn s124_vec_functor_maps_builtin_vec() {
+    s124_trait_program(
+        &format!("{S124_FUNCTOR}\n{S124_VEC_GO}\n(impl (Functor f) (Functor Vec) (defn fmap [g x] (go g x 0 [])))"),
+        "(primitives/vec-get (fmap (fn [x] (primitives/add-i64 x 1)) [1 2 3]) 2)",
+    ).assert_exit(4);
+}
+
+// spec: spec/07-traits.md §7.2.3 — T-VEC-FUNCTOR Option control
+#[test]
+fn s124_vec_functor_option_control() {
+    s124_trait_program(
+        &format!("{S124_FUNCTOR}\n(impl (Functor f) (Functor Option) (defn fmap [g x] (match x [primitives/None primitives/None (primitives/Some v) (primitives/Some (g v))])))"),
+        "(match (fmap (fn [x] (primitives/add-i64 x 1)) (primitives/Some 3)) [(primitives/Some v) v primitives/None 9])",
+    ).assert_exit(4);
+}
+
+// spec: spec/07-traits.md §7.2.3 — T-VEC-FUNCTOR direct helper control
+#[test]
+fn s124_vec_functor_helper_control() {
+    s124_trait_program(S124_VEC_GO,
+        "(primitives/vec-get (go (fn [x] (primitives/add-i64 x 1)) [1 2 3] 0 []) 2)",
+    ).assert_exit(4);
+}
