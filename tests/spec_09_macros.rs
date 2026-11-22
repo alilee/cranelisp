@@ -2119,3 +2119,24 @@ fn s124_macro_sibling_outer_qualified_run() {
 fn s124_macro_sibling_outer_qualified_link() {
     s124_macro_sibling("link", "outer", "qualified");
 }
+
+const S124_SCONCAT_MAIN: &str = "(defn slen [xs] (match xs [macros/SNil 0 (macros/SCons x tail) (primitives/add-i64 1 (slen tail))]))\n(defn main [] (primitives/Pure (slen (macros/sconcat (macros/SCons (macros/SexpInt 1) macros/SNil) (macros/SCons (macros/SexpInt 2) macros/SNil)))))\n";
+
+// spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC no prelude or import, run
+#[test]
+fn s124_sconcat_public_no_import_run() {
+    Cranelisp::new().file("main.cl", S124_SCONCAT_MAIN).run("main.cl").output().assert_exit(2);
+}
+
+// spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC no prelude or import, linked
+#[test]
+fn s124_sconcat_public_no_import_link() {
+    Cranelisp::new().file("main.cl", S124_SCONCAT_MAIN).link_then_run("main.cl").output().assert_exit(2);
+}
+
+// spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC public scheme
+#[test]
+fn s124_sconcat_public_info() {
+    Cranelisp::new().stdin("/info macros/sconcat\n").output().assert_ok()
+        .assert_stdout_contains("(Fn [(macros/SList macros/Sexp) (macros/SList macros/Sexp)] (macros/SList macros/Sexp))");
+}
