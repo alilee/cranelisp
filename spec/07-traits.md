@@ -851,7 +851,7 @@ Explicit annotations and inferred constraints produce identical results. Explici
 - Constrained polymorphic functions MUST NOT be used as first-class values. `(let [f add] ...)` where `add` is constrained polymorphic produces a compile-time error -- the concrete type must be known at the call site.
 - HKT trait methods are NOT constrained polymorphic functions. They dispatch through the trait resolution mechanism, not through monomorphisation. Writing a generic function like `(defn map-inc [xs] (fmap inc xs))` that is polymorphic over all Functors is not supported.
 
-## 7.9 User-Defined Traits [Uncovered S124 — was Tested tests/spec_07_traits::user_trait_simple]
+## 7.9 User-Defined Traits [Tested tests/spec_07_traits::user_trait_simple — S124 re-judgment: retains with spelling limit (evidence delta §14.14, row 32)]
 
 Users MAY define their own traits using the same `deftrait` and `impl` forms. User-defined traits are first-class citizens of the trait system and participate in the same dispatch mechanism as library traits.
 
@@ -986,7 +986,7 @@ the trait reference; dispatch reaches the method reference.
 
 **(e) The nullary return-type-dispatched method-only-import cell must accept and compile.** A **return-type-dispatched** method (empty parameter list, `self` in return position, §7.1.1) imported **without** its trait and used at a resolving site (`:Int (zed)`, §3.3.3) MUST typecheck **and** compile to a working call — this closes S112 defect D2 on the **accept** side (the earlier codegen leak on this cell was a compiler bug, not a language rejection; cf. the §7.1.1 note on defect 0628). By the same ruling the **unary** method-only-import case **inverts to accept**: a unary method imported without its trait — previously reported as "no impl in scope" because the trait was absent — dispatches on its argument's concrete type exactly as it would had the trait itself been imported.
 
-## 7.12 Restrictions and Future Extensions [Uncovered S124 — was Tested]
+## 7.12 Restrictions and Future Extensions [S124 — rollup; was Tested (evidence delta §14.14, row 33)]
 
 ### 7.12.1 Current Restrictions
 
@@ -1014,7 +1014,7 @@ language is to be stabilized before expanding to multi-parameter traits;
 | HKT over arity-2 constructors | Traits like `(deftrait (Bifunctor f) ...)` for arity-2 constructors |
 | Trait-dispatched collection verbs | A unified `Functor`/`Foldable`-style abstraction owning bare `map`/`filter`/`reduce`/`count`/`get`/`conj`/`assoc` and `first`/`rest` as single overload-unified entry points across `List`/`Vec`/`Seq`. A standard library reserves these bare names so an interim curated surface stays forward-compatible — see the non-normative naming reservation in [§11.4a](11-stdlib.md#114a-curated-collection-verb-naming-reservation-non-normative). |
 
-## 7.13 Deriving [Uncovered S124 — was S21]
+## 7.13 Deriving [S124 — library illustration; was S21 (evidence delta §14.14, row 34)]
 
 The `derive` macro automatically generates trait implementations for user-defined algebraic data types by structural recursion over constructors. This subsection is a non-normative library illustration, not a language requirement. A user or library supplies the macro and its helper macros using §9; no particular set of derivable traits is required.
 

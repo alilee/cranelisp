@@ -129,7 +129,7 @@ The parallel evaluation of independent `let` bindings, including the strict-trac
 
 **Activation**: Ring 4 (effects and runtime infrastructure). The mechanism requires safe stack management for parallel evaluation of pure sub-expressions.
 
-### C.3.2 Automatic IO Scheduling [Uncovered S124 — was S11]
+### C.3.2 Automatic IO Scheduling [S124 — partial / architectural clauses; was S11 (evidence delta §14.14, row 106)]
 
 The compiler MUST perform independence analysis on core `primitives/bind` chains after macro expansion and insert parallel execution nodes for commutative, data-independent effect pairs. This is normatively specified in [§10.12](10-io.md).
 
@@ -179,7 +179,7 @@ Generated code MUST NOT use global mutable state (static mutable variables, glob
 
 **Activation**: Always (structural invariant from Ring 0).
 
-### C.4.4 Concurrent Communication [Uncovered S124 — was S11]
+### C.4.4 Concurrent Communication [S124 — architectural / no solution cell; was S11 (evidence delta §14.14, row 107)]
 
 The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Processes) concurrent channels as a stdlib capability. Channels would enable coordination between concurrent tasks, complementing the automatic parallelism provided by lenient evaluation (§C.3.1) and IO scheduling (§C.3.2).
 

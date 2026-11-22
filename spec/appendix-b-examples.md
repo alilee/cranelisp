@@ -12,7 +12,7 @@ B.6 also explicitly imports compiler-provided macro data and optional SList
 library helpers. The examples' library-specific results do not constrain
 another library or an empty-prelude program (§8.8.3).
 
-## B.1 Hello World [Uncovered S124 — was S10]
+## B.1 Hello World [S124 — no backlink / library example; was S10 (evidence delta §14.14, row 93)]
 
 A program using the reference library's `show` function.
 
@@ -26,7 +26,7 @@ A program using the reference library's `show` function.
 
 Output: `42`
 
-## B.2 Factorial (Recursion) [Uncovered S124 — was S10]
+## B.2 Factorial (Recursion) [S124 — no backlink / library example; was S10 (evidence delta §14.14, row 94)]
 
 Recursive function with conditional and arithmetic.
 
@@ -45,7 +45,7 @@ Recursive function with conditional and arithmetic.
 
 Output: `3628800`
 
-## B.3 Algebraic Data Types [Uncovered S124 — was S10]
+## B.3 Algebraic Data Types [S124 — no backlink / library example; was S10 (evidence delta §14.14, row 95)]
 
 Product types, sum types, enums, pattern matching, and trait implementations for ADTs.
 
@@ -118,7 +118,7 @@ Red
 3.14
 ```
 
-## B.4 IO with bind! [Uncovered S124 — was S10]
+## B.4 IO with bind! [S124 — no backlink / fixture blocked; was S10 (evidence delta §14.14, row 96)]
 
 Reading input, parsing, and error handling with monadic IO.
 
@@ -145,7 +145,7 @@ Reading input, parsing, and error handling with monadic IO.
     (print (show total))))
 ```
 
-## B.5 Lazy Sequences [Uncovered S124 — was S17]
+## B.5 Lazy Sequences [S124 — no backlink / library example; was S17 (evidence delta §14.14, row 97)]
 
 Infinite sequences, lazy operations, and the unified collection API.
 
@@ -185,7 +185,7 @@ Output:
 42
 ```
 
-## B.6 Macros [Uncovered S124 — was S17]
+## B.6 Macros [S124 — no backlink / library example; was S17 (evidence delta §14.14, row 98)]
 
 Compile-time code transformation with `defmacro`.
 
@@ -213,7 +213,7 @@ Compile-time code transformation with `defmacro`.
     (print (show (my-add 10 20)))))  ; → 30
 ```
 
-## B.7 Higher-Order Functions and Closures [Uncovered S124 — was S17]
+## B.7 Higher-Order Functions and Closures [S124 — no backlink / library example; was S17 (evidence delta §14.14, row 99)]
 
 First-class functions, closures, and auto-currying.
 
@@ -240,7 +240,7 @@ First-class functions, closures, and auto-currying.
       (print (show (add5 37))))))         ; → 42
 ```
 
-## B.8 Threading Macros [Uncovered S124 — was S17]
+## B.8 Threading Macros [S124 — no backlink / library example; was S17 (evidence delta §14.14, row 100)]
 
 Data transformation pipelines with `->` and `->>`.
 
@@ -262,7 +262,7 @@ Data transformation pipelines with `->` and `->>`.
                    (reduce + 0))))))  ; → 9 (4+5)
 ```
 
-## B.9 Multi-Signature Dispatch [Uncovered S124 — was S17]
+## B.9 Multi-Signature Dispatch [S124 — no backlink / library example; was S17 (evidence delta §14.14, row 101)]
 
 Functions with multiple implementations dispatched by argument type.
 
@@ -292,7 +292,7 @@ Output:
 2
 ```
 
-## B.10 Constrained Polymorphism [Uncovered S124 — was S10]
+## B.10 Constrained Polymorphism [S124 — no backlink / library example; was S10 (evidence delta §14.14, row 102)]
 
 Functions that work across types sharing a trait.
 
@@ -322,7 +322,7 @@ Output:
 6.28
 ```
 
-## B.11 IO Sequencing with `do` [Uncovered S124 — was S10]
+## B.11 IO Sequencing with `do` [S124 — no backlink / library example; was S10 (evidence delta §14.14, row 103)]
 
 Evaluating multiple IO actions, discarding intermediate results.
 
@@ -344,7 +344,7 @@ hello, world!
 true
 ```
 
-## B.12 Conditional IO with `pure` [Uncovered S124 — was S10]
+## B.12 Conditional IO with `pure` [S124 — no backlink / fixture blocked; was S10 (evidence delta §14.14, row 104)]
 
 Using `pure` to satisfy branch type requirements.
 
@@ -370,7 +370,7 @@ The `then` branch returns `IO Int` (from `print`), so the `else` branch MUST als
 7
 ```
 
-## B.13 Combining `do` and `bind!` [Uncovered S124 — was S10]
+## B.13 Combining `do` and `bind!` [S124 — no backlink / fixture blocked; was S10 (evidence delta §14.14, row 105)]
 
 Sequencing effects and capturing results together.
 

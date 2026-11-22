@@ -420,7 +420,7 @@ An implementation MUST check for zero-argument macros during expansion whenever 
 
 This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.1, 9.10.2) built on bare-symbol expansion.
 
-## 9.6 Multi-Form Expansion (`begin`) [Uncovered S124 — was Tested+Neg tests/spec_09_macros::macro_emitted_definition_batch_lists_all_definitions_in_order, tests/spec_09_macros::macro_expanded_begin_deftype_then_impl_registers_in_source_order, tests/spec_09_macros::macro_expanded_begin_impl_neg_before_deftype_is_rejected]
+## 9.6 Multi-Form Expansion (`begin`) [Tested+Neg tests/spec_09_macros::macro_emitted_definition_batch_lists_all_definitions_in_order, tests/spec_09_macros::macro_expanded_begin_deftype_then_impl_registers_in_source_order, tests/spec_09_macros::macro_expanded_begin_impl_neg_before_deftype_is_rejected — S124 re-judgment: retains / partial total (evidence delta §14.14, row 35)]
 
 A macro MAY return a form whose head symbol is `begin`. The `begin` form causes the expander to splice multiple top-level forms into the surrounding context:
 
@@ -624,7 +624,7 @@ If a macro function raises a runtime error during expansion (e.g., pattern match
 
 Calling a macro with the wrong number of arguments is a compile-time error. For non-variadic macros, the number of arguments MUST exactly match the number of parameters. For variadic macros, the number of arguments MUST be at least the number of fixed parameters.
 
-## 9.10 Example Prelude Macros [Uncovered S124 — was Tested tests/spec_11_stdlib::macro_when_true, tests/spec_11_stdlib::macro_cond_first_match, tests/spec_11_stdlib::macro_thread_first_single, tests/spec_11_stdlib::macro_vec_elements]
+## 9.10 Example Prelude Macros [S124 — library-only; was Tested tests/spec_11_stdlib::macro_when_true, tests/spec_11_stdlib::macro_cond_first_match, tests/spec_11_stdlib::macro_thread_first_single, tests/spec_11_stdlib::macro_vec_elements (evidence delta §14.14, row 36)]
 
 This subsection is non-normative. These optional library macros illustrate the
 macro system; their names, helper names, validation rules and expansions are not
@@ -939,7 +939,7 @@ With zero arguments, returns the empty string `""`.
        (str-fold (SexpList (SCons (SexpSym "show") (SCons x SNil))) rest)]))
 ```
 
-### 9.10.12 `when` / `unless` [Uncovered S124 — was S121]
+### 9.10.12 `when` / `unless` [S124 — library-only / partial; was S121 (evidence delta §14.14, row 37)]
 
 ```clojure
 (when test body)

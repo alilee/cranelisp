@@ -36,7 +36,7 @@ A function type describes a callable value taking parameters of types `T1` throu
 
 All functions are first-class values. At runtime, function values are represented as closures (see [Section 12](12-runtime.md)).
 
-### 3.2.2 Algebraic Data Types [Uncovered S124 — was Tested crates/cranelisp-typecheck/src/adt/tests.rs::test_resolution_validates_registered_arity]
+### 3.2.2 Algebraic Data Types [S124 — partial / module seam; was Tested crates/cranelisp-typecheck/src/adt/tests.rs::test_resolution_validates_registered_arity (evidence delta §14.14, row 20)]
 
 ```
 ADT(Name, [A1, A2, ..., An])
@@ -213,7 +213,7 @@ If such a return-type-polymorphic form is left **unresolved** in a codegen-reach
 
 > **MUST (e) — an unresolved return-type polymorphism is the §3.11 ambiguity error.** A return-type-polymorphic form left unresolved in a codegen-reaching value position — no annotation, no disambiguating context — MUST be rejected as the [§3.11](#311-ambiguous-types) ambiguous-type error (the sibling disposition of an unpinned `[]`), NOT a codegen-level failure. A value-position constraint MUST NOT be treated as disambiguating; only a concrete type is. (Row 16 is the error; row 17 remains ambiguous.) [S109]
 
-### 3.3.4 Rank-1 polymorphic function values are returnable; only rank-2 use is unsupported [Uncovered S124 — was S109]
+### 3.3.4 Rank-1 polymorphic function values are returnable; only rank-2 use is unsupported [S124 — retains with fixture limit; was S109 (evidence delta §14.14, row 21)]
 
 A function may freely **return or contain** another function whose type is **rank-1 polymorphic** — every `∀` sits at the enclosing definition's own boundary (prenex; see [§3.10](#310-rank-1-hindley-milner)). `(defn mkid [] (fn [y] y))`, `const` / `(fn [y] x)`, `compose`, and their **written** twins `(defn mk [] (fn [:b y] y))` and `(defn weird [x] (fn [:b y] x))` are **all accepted**: a written `:b` on a returned lambda's parameter is **not** special — a written free type variable is identical to an inference-generated one (written ≡ unwritten, see [§3.3.1](#331-a-bare-type-variable-is-an-inference-variable-with-a-name)). `(defn mk [] (fn [:b y] y))` has type `∀a. (Fn [] (Fn [a] a))` and is **accepted**; each call `(mk)` instantiates `a` fresh, yielding a single monomorphic function instance (row 10). The MUSTs below are consolidated, alongside what the language does *not* support, in the boundary statement at [§3.5.5](#355-the-polymorphism-boundary).
 

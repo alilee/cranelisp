@@ -80,7 +80,7 @@ own `name :: (Fn …)` primary-line shape is a conformance defect against this e
 stylistic variation. Macro declarations are outside `/search` rather than being forced into a
 typed envelope (§17.19.2a). [S109]
 
-### 1.2 Expression Results [Uncovered S124 — was S122]
+### 1.2 Expression Results [S124 — partial; was S122 (evidence delta §14.14, row 1)]
 
 An expression evaluation MUST display the result in the format:
 
@@ -99,8 +99,8 @@ Examples:
 | `:primitives/Float 3.14` | [Tested tests/repl_introspection::display_float_result] |
 | `:user/Color Color.Red` | [Tested tests/repl_introspection::display_int_result] |
 | `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_introspection::display_int_result] |
-| `:(Fn [a] a) #closure` (anonymous — no bound name) | [Uncovered S124 — was Tested tests/repl_introspection::display_int_result] |
-| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (name-bearing reference — a bare/qualified symbol resolving to a named function shows the FQ name, never `#closure`; §1.5, 0572) | [Uncovered S124 — was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] |
+| `:(Fn [a] a) #closure` (anonymous — no bound name) | [S124 — mismatch / RED replacement; was Tested tests/repl_introspection::display_int_result (evidence delta §14.14, row 2)] |
+| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (name-bearing reference — a bare/qualified symbol resolving to a named function shows the FQ name, never `#closure`; §1.5, 0572) | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection — S124 re-judgment: retains with limit (evidence delta §14.14, row 3)] |
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
@@ -109,7 +109,7 @@ Examples:
 
 **Ring 4**: `Trace` — displayed using the standard ADT format per [spec §12.9](../../spec/12-runtime.md#129-value-display-format). The REPL does NOT auto-format trace trees — the raw ADT value is shown. A library may supply human-readable formatting, for example `core.trace/trace-show-tree`; this is a non-normative library illustration. [R4 S20]
 
-### 1.2.1 IO Expression Results [Uncovered S124 — was Tested+Neg tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_pure_string_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free, tests/spec_10_io.rs::repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns, tests/output_equivalence::output_equiv_single_print]
+### 1.2.1 IO Expression Results [S124 — fixture migration; was Tested+Neg tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_pure_string_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free, tests/spec_10_io.rs::repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns, tests/output_equivalence::output_equiv_single_print (evidence delta §14.14, row 4)]
 
 An expression whose type is `IO a` ([spec §10.1](../../spec/10-io.md#101-io-type)) is an IO action. The REPL MUST execute it automatically as part of evaluating the expression, and MUST present it in this order:
 
@@ -133,7 +133,7 @@ user> (+ 1 2)
 :primitives/Int 3
 ```
 
-### 1.3 Definition Results [Uncovered S124 — was Tested]
+### 1.3 Definition Results [S124 — partial; was Tested (evidence delta §14.14, row 5)]
 
 When the user enters a definition form, the REPL confirms the definition using the universal format (§1.1). The response follows the same per-class rules as bare symbol lookup (§4.1) — a definition is immediately followed by its lookup display.
 
@@ -213,12 +213,12 @@ Values are runtime results and have no module scope. They are displayed bare.
 | Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::data_constructor_applied_dot_notation_display] |
 | Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested+Neg tests/repl_introspection::data_constructor_product_no_dot_notation_display] |
 
-| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `#closure` | 1 | [Uncovered S124 — was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] | <!-- doc-check: literal reason="Illustrative language symbols" -->
+| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `#closure` | 1 | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection — S124 re-judgment: retains with limit (evidence delta §14.14, row 6)] | <!-- doc-check: literal reason="Illustrative language symbols" -->
 | Function value with no recoverable name | `#closure` — a literal `(fn …)`, a captured closure, or a named function that has passed through computation and lost its binding (`(id double)`, `(let [f double] f)`) | 1 | [S124 — nonconforming: displays `<closure>` (ACT-1109). Tested tests/repl_introspection::closure_value_display_shows_closure_token, which asserts the retired token] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/display_exact::display_exact_vec_value_lines, tests/repl_introspection::vec_value_display_shows_element_content] |
-| User/library `List` (illustrative) | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Uncovered S124 — was Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
+| User/library `List` (illustrative) | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
 | Nested `IO` value | `#io` — an IO value inside a displayed value; top-level IO execution follows §1.2.1 | 4 | |
-| User/library `Seq` (illustrative) | generic ADT recursive form (e.g., `(Seq.SeqCons h #closure)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Uncovered S124 — was Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang] |
+| User/library `Seq` (illustrative) | generic ADT recursive form (e.g., `(Seq.SeqCons h #closure)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [S124 — partial / stale expectation; was Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang (evidence delta §14.14, row 8)] |
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are illustrative user/library types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). For any such ADT containing a thunk, the display requirement is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
 
@@ -236,7 +236,7 @@ recoverable name, so `#closure` is the honest display). The distinction is about
 expression*, not the value's origin: a name-bearing reference shows the name; a value that arrived by
 computation shows `#closure`. This is the value-display facet of the 0572 unification — a bare-symbol
 value lookup and a `/search`/`/info` row of the same function agree on the qualified name because they
-render through the one canonical envelope (§1.1). [Uncovered S124 — was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] [S109]
+render through the one canonical envelope (§1.1). [S124 — partial; was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection (evidence delta §14.14, row 9)] [S109]
 
 > **Aspirational** (not currently required): A future revision MAY render `List` and `Seq` in surface form, as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ...)`. The render never forces a lazy `Seq` tail: it shows the already-evaluated elements and writes `+more` in place of the first unforced tail (`(seq elem1 elem2 ... +more)`), so the `Seq` termination MUST above still holds. `List` and `Seq` are not required built-in types; the language has no render annotation for types to opt in with. No such mechanism exists today, so the generic ADT form is normative. These forms become MUST only once the mechanism ([display protocol](../../design/arch/display-protocol.md)) lands; the obligation is [FIXME 0050](../../design/arch/fixmes/0050-promote-list-seq-pretty-printer-aspirational.md).
 

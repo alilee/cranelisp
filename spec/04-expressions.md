@@ -341,7 +341,7 @@ When the callee is an arbitrary expression (variable, lambda, function applicati
 (apply-fn inc 5)                ; f is a closure; indirect call
 ```
 
-### 4.6.3 Auto-Currying [Uncovered S124 — was Tested+Neg tests/spec_04_expressions::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error, tests/spec_04_expressions::auto_curry_passed_to_higher_order_fn, constrained_auto_curry_plus_apply, constrained_auto_curry_minus_int, constrained_auto_curry_make_adder_int, constrained_auto_curry_make_adder_float, auto_curry_lambda_partial_apply, tests/shadowing_scope_lookup::local_closure_auto_curry_non_trait_control_resolves_to_local]
+### 4.6.3 Auto-Currying [S124 — partial / stale names; was Tested+Neg tests/spec_04_expressions::auto_curry_two_param_partial_apply, auto_curry_three_param_partial_apply, auto_curry_higher_order_usage, auto_curry_repl, auto_curry_too_many_args_error, auto_curry_wrong_type_error, tests/spec_04_expressions::auto_curry_passed_to_higher_order_fn, constrained_auto_curry_plus_apply, constrained_auto_curry_minus_int, constrained_auto_curry_make_adder_int, constrained_auto_curry_make_adder_float, auto_curry_lambda_partial_apply, tests/shadowing_scope_lookup::local_closure_auto_curry_non_trait_control_resolves_to_local (evidence delta §14.14, row 22)]
 
 When a function is called with fewer arguments than it declares parameters, the result is a **closure** capturing the applied arguments. This applies to named function references and variables bound to closures — the callee MUST be a variable reference. Anonymous lambda expressions (e.g., `((fn [a b] ...) 1)`) MUST be bound to a variable first.
 
@@ -680,7 +680,7 @@ E |- [e1 e2 ... eN] => <Vec [v1, v2, ..., vN]> : (Vec T)
 [[1 2] [3 4]]               ; => [[1 2] [3 4]] : (Vec (Vec Int))
 ```
 
-## 4.11 Evaluation Order Summary [Uncovered S124 — was Tested]
+## 4.11 Evaluation Order Summary [S124 — partial rollup; was Tested (evidence delta §14.14, row 23)]
 
 Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are fully evaluated before their results are consumed. The evaluation order within each expression form is:
 
@@ -705,7 +705,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 - Lambda bodies are NOT evaluated at creation time -- only when the closure is called.
 - The `Seq` type provides explicit opt-in laziness via thunks (zero-argument closures). This is a library-level construct, not a change to the evaluation model. See [section 12.4.2](12-runtime.md#1242-lazy-sequences).
 
-The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`primitives/bind`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. Concurrent panic reporting follows [§12.4.3](12-runtime.md#1243-lenient-evaluation) (user ruling, 2026-11-15). [Uncovered S124 — was S92]
+The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`primitives/bind`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. Concurrent panic reporting follows [§12.4.3](12-runtime.md#1243-lenient-evaluation) (user ruling, 2026-11-15). [S124 — partial; was S92 (evidence delta §14.14, row 24)]
 
 ## 4.12 Trace Expression [Uncovered S124 — was S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.3 is partial (a first launch through the prelude, ACT-1087; a form compiled while a dependency of a restored module is still compiling, ACT-1090; and two unevidenced rows) and §4.12.6 is untested]
 

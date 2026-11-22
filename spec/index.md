@@ -30,7 +30,7 @@ Cranelisp is a statically typed, pure functional Lisp. Its design priorities are
 - **Self-documenting**: Every construct in the language produces useful feedback when queried — its type, value, or description.
 - **Clojure-inspired naming**: Where a standard library is provided, naming follows Clojure conventions where possible.
 
-## Notation Conventions [Uncovered S124 — was Tested]
+## Notation Conventions [S124 — editorial / no runtime cell; was Tested (evidence delta §14.14, row 108)]
 
 ### EBNF Grammar [Tested]
 

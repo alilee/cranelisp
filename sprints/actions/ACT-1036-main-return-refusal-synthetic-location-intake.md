@@ -83,7 +83,7 @@ the [S124 evidence delta](../../tests/plan/s124-evidence-delta.md#34-repro-0915-
   `main` (at the written call, also across a dependency retry) and a
   multi-arity `main`. The committed cell and the `s124_main_location_*`
   cells pass; `qa` read each RED on the location before the correction
-  ([evidence delta §14](../../tests/plan/s124-evidence-delta.md#14-the-standing-state-at-f8c55626)).
+  ([evidence delta §14](../../tests/plan/s124-evidence-delta.md#14-the-standing-state)).
 - **Not corrected: the `discover-tests` refusal.**
   `src/exe.rs::refuse_dev_session_externs` still reports
   `p.cl:1:1: error: codegen error at 0..0: `p/main` references `discover-tests` …`

@@ -334,7 +334,7 @@ Unqualified type names or an unqualified symbol name in `/sig` output are non-co
 |---|---|
 | `/sig` primary line is byte-identical to bare lookup's (FQ type + FQ name + drawer) | [Uncovered S121 — the prior guard used the retired broken-symbol state] |
 
-### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [Uncovered S124 — was S102]
+### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [S124 — partial rollup; was S102 (evidence delta §14.14, row 10)]
 
 `/mod [name]` switches the active module namespace. The prompt changes to the new module and
 no confirmation is printed (§8 Scenario 1); bare `/mod` returns to the entry
@@ -361,21 +361,21 @@ turn exactly as they are when `M`'s `.cl` file is loaded:
 - **the names actually supplied by the implicit prelude import**, if present
   and not suppressed in `M` — including its re-exports of types or functions,
   whatever they are (language §8.8.1). No operator, trait or type alias is
-  required to be provided by the prelude; an empty prelude contributes none; [Uncovered S124 — was S102]
+  required to be provided by the prelude; an empty prelude contributes none; [S124 — partial; was S102 (evidence delta §14.14, row 11)]
 - **`M`'s own imports** — every name `M`'s file imports is in scope under the same binding it
-  has in the file body. [Uncovered S124 — was S102]
+  has in the file body. [S124 — partial / fixture mismatch; was S102 (evidence delta §14.14, row 12)]
 
 **Parity is install-path-independent (MUST).** The environment MUST match `M`'s file-body
 environment **regardless of how `M` was installed this session** — whether `M` was freshly
 typechecked, or **restored from the module cache**. A cache-restored module MUST NOT present a
 degraded namespace turn (e.g. a restored module that loses a name the file body imported). This is the parity axis: fresh and
-cache-restored `/mod M` turns are indistinguishable to the user. [Uncovered S124 — was S102]
+cache-restored `/mod M` turns are indistinguishable to the user. [S124 — partial; was S102 (evidence delta §14.14, row 13)]
 
 | Requirement | Test |
 |---|---|
-| a `/mod M` turn using names supplied by its prelude compiles (fresh session) | [Uncovered S124 — was Tested tests/repl_mod_devloop.rs::devloop_fresh_prelude_using_mod_turn_compiles] |
-| the SAME turn compiles identically in a cache-restored session (parity axis) | [Uncovered S124 — was Tested tests/repl_mod_devloop.rs::devloop_cache_restored_prelude_using_mod_turn_compiles] |
-| a bare `:Int` resolves in a `/mod M` turn when imported in the file body | [Uncovered S124 — was Tested tests/repl_mod_devloop.rs::devloop_fresh_mod_turn_bare_type_alias_resolves] |
+| a `/mod M` turn using names supplied by its prelude compiles (fresh session) | [Tested tests/repl_mod_devloop.rs::devloop_fresh_prelude_using_mod_turn_compiles] |
+| the SAME turn compiles identically in a cache-restored session (parity axis) | [Tested tests/repl_mod_devloop.rs::devloop_cache_restored_prelude_using_mod_turn_compiles — S124 re-judgment: retains with cache limit (evidence delta §14.14, row 15)] |
+| a bare `:Int` resolves in a `/mod M` turn when imported in the file body | [S124 — mismatch; was Tested tests/repl_mod_devloop.rs::devloop_fresh_mod_turn_bare_type_alias_resolves (evidence delta §14.14, row 16)] |
 
 ### 3.10 Module-Qualified Arguments to Introspection Commands [S102]
 

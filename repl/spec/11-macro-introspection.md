@@ -10,7 +10,7 @@ requirements apply to any user macro. For example, `cond` is explicitly
 imported or locally defined, not a required prelude macro. Its nested-`if`
 expansion is a non-normative library illustration.
 
-### 11.1 `/expand` Command [Uncovered S124 — was Tested+Neg tests/repl_introspection::expand_user_defmacro]
+### 11.1 `/expand` Command [S124 — partial; was Tested+Neg tests/repl_introspection::expand_user_defmacro (evidence delta §14.14, row 19)]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
 

@@ -23,7 +23,7 @@ Every styled span MUST be terminated by a reset (`\033[0m`) before any newline o
 
 Escape sequences MUST NOT appear inside the value portion of `:Type value` when that value is a String literal — the string content is user data and MUST be printed verbatim.
 
-### 10.3 Token/Element Styling Contract — The One Styling Authority [Uncovered S124 — was S108]
+### 10.3 Token/Element Styling Contract — The One Styling Authority [S124 — partial; was S108 (evidence delta §14.14, row 17)]
 
 This subsection is the **single normative authority** for the element → style-role mapping across **all token-styled REPL output**: result values (§1.2/§1.5), introspection lines (§4.1 — `/sig`, `/info`, bare-symbol lookup), pretty-printed code (§3.11 — `/sexp`, `/source`, and the agent ```lisp blocks §17.13.2 routes through the same printer), `/search` result rows (§17.19.2), and error/warning lines (§5). Every byte of token-styled output derives its style from **exactly one** role in the table below; a role is defined once here and applied once at render, so styling cannot drift between surfaces. The per-surface style descriptions that predate this table (§1.1/§1.5 value styling, §3.11 "colour on adds SGR spans", §4.1 introspection styling, and the §10.4 worked illustration) are **subordinate** to it and cross-reference it — **this table wins on any conflict.** There are no user-configurable themes; the defaults work on both light and dark backgrounds using the standard 16-colour ANSI palette. [S108]
 
@@ -65,7 +65,7 @@ Notes on specific choices:
 - **Bold for structural anchors only.** Bold (R1, R8/R10 keyword prefixes, R12) is reserved for the head of an apply form, error/warning keywords, and category headers. Using bold elsewhere dilutes its signal.
 - **No colour on user input.** The line editor controls input styling. The REPL MUST NOT emit escape sequences into the input buffer.
 
-### 10.4 Styled Universal Output Format — Worked Illustration [Uncovered S124 — was R4 S22]
+### 10.4 Styled Universal Output Format — Worked Illustration [S124 — illustration; was R4 S22 (evidence delta §14.14, row 18)]
 
 This subsection **illustrates** the §10.3 contract applied to the universal output format (§1.1); **§10.3 is the authority** and wins on any conflict. Angle brackets show styled spans annotated with their §10.3 role; actual output uses SGR codes, not brackets.
 

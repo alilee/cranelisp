@@ -17,7 +17,7 @@
 > §14.2; `repl/spec/15-session-persistence.md` §15.4;
 > `repl/spec/16-test-discovery.md` §16.1 and §16.6.
 > **Checkpoint:** `main` at `4b58ab93` for sections 1 to 13. Section 14 is
-> read at `main` `11ea995e`, where `qa` took the full run on 2026-11-21; a
+> read at `main` `128255fc`, where `qa` took the full run on 2026-11-22; a
 > row that names an earlier commit was read there.
 > **Scope:** sections 1 to 7 are intake, attribution and the reproductions
 > that do not depend on the S124 designs. Sections 8 to 13 are the conditions for the S124
@@ -1510,90 +1510,57 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
 
 ## 14. The standing state
 
-**The full suite at `11ea995e`: 8,071 run, 7,952 passed, 119 failed,
-1 skipped, in 274 s. Every failing test traces to an open filing (§14.1).
+**The full suite at `128255fc`: 8,109 run, 7,966 passed, 143 failed,
+1 skipped, in 265 s. Every failing test traces to an open filing (§14.1).
 None is attributed to the backend, this sprint's focus module, which meets
 its three exit clauses (§14.9).**
 
-- **Against the 110 at `9bc97297`:** nine cells arrived RED: six of
-  T-TRAIT-SPELLING, two of T-VEC-IMPL and T-REFUSED-SAVE-CACHE's subject.
-  No test that passed there fails here. No compiler source has changed
-  between the two runs.
+- **Against the 119 at `11ea995e`:** 24 cells arrived RED, all allocated
+  reproductions of the Phase 6b intake. No test that passed there fails
+  here. No compiler source has changed between the two runs.
 - **The category census, armed in this run, reads zero** from every
   program (§14.5).
 - **No workspace crate raises a build warning.**
 - **The public-API baseline check passes.** One maintenance check fails:
-  the document gate.
-- **ACT-1096 is re-judged after the user's ruling on S124-Q14** and gains
-  a face: `/search` offers a symbol from a project file the ruling says
-  is not part of the program. Two items are with `test` (§14.3).
-- **ACT-1101 and ACT-1102 predate S124** by the opening-tree reading
-  (§14.10).
+  the document gate, on 576 findings, none in a file `qa` owns (§14.1).
+- **Every cleared band is judged.** Of the 108 rows the specification's
+  rewrite cleared, 21 are restored and 87 state why they are not
+  (§14.14). Seven older rows still await re-judgment.
+- **Nothing is with `test`.**
 - **What the sprint's evidence does not cover** is §14.13.
 
-**Since that run, at `3d50766e`, by hand and one focused run of 26 cells;
-no full run.** The user ruled eight questions on 2026-11-22 and `spec`
-rewrote the specification for the confirmed S124-Q16 classification.
+Open, by filing, worst first:
 
-- **A new face of [ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md), memory-unsafe:** `/type` given an
-  ordinary expression that applies a constructor of a parametric type,
-  such as `(Some 1)`, makes the next evaluation end the process on signal
-  11. It happens with the standard-library prelude. The user's decision to
-  carry ACT-1089 was taken on its definition-form faces. No cell yet:
-  T-TYPE-EXPR.
-- **The compiler does not meet three of the rulings,** each carried to the
-  next sprint by the user's decision: `IO` is not opaque and
-  `primitives/pure` does not exist ([ACT-1108](../../sprints/actions/ACT-1108-io-is-not-opaque-pure-is-absent-and-the-constructors-are-surface-intake.md), with ACT-1105,
-  ACT-1106 and ACT-1107 as its unsafe faces); function and nested IO
-  values do not display as `#closure` and `#io` ([ACT-1109](../../sprints/actions/ACT-1109-function-and-nested-io-values-do-not-display-as-the-closure-and-io-markers-intake.md)); an
-  unrecorded trace root is `::skipped::` with an empty result
-  ([ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md), by source only).
-- **It meets the others, by hand:** a trace root is `::trace::` with no
-  parameters (S124-Q13); an undefined name in a default method is
-  reported at an inheriting `impl` only (Q15); `macros/sconcat` is public
-  at its stated type (Q12-R1); the reader rejects `#io` and `#closure`.
-- **`primitives/race` is still a primitive.** The ruling makes `race`
-  library composition over `select`; its removal is carried work and has
-  no conformance cell.
-- **`test`'s `60f15a06` and `e9a60317` are accepted** on a focused run: 16
-  RED, 10 green, as allocated (§14.2).
-- **The failing count is 131 by that arithmetic:** the 119 of the run and
-  the 12 of these 16 that were not already in it (T-MOD-CHILD's four
-  were). `qa` has not run the suite at this tree.
-- **108 bands cleared by the stage-two rewrite are not re-judged.** `test`
-  walks their backlinks first (§14.3); `qa` re-judged the rows the rulings
-  changed (§14.12).
-
-Open, by filing:
-
-- [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md), in `src/`, **memory-unsafe:** after a refused save
-  the next session restores from cache a definition the backing file does
-  not hold, and calling it ends the process on signal 11. One cell RED.
-- [ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md), in `src/`, **data loss:** once a value of a
-  parametric product type is constructed in a REPL session, every later
-  save is refused and later definitions are gone at restart. Three cells
-  RED.
-- [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md), in typecheck, **wrong value:** a trait spelled
-  `Num`, `Eq`, `Ord` or `Display`, declared in the user's own module, has
-  its implementation for a primitive type replaced by a primitive. Six
-  cells RED.
-- [ACT-1096](../../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md), in `src/`, **wrong value:** a project file at the
-  path of a library module's child is loaded in the child's place, and is
-  indexed. Four cells RED; the index face has no cell yet.
-- [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md), in typecheck: no trait can be implemented for a
-  vector type. Two cells RED. Its higher-kinded face is held on S124-Q16.
-- [ACT-1100](../../sprints/actions/ACT-1100-selective-derive-import-refusals-intake.md), in `src/`: a macro's expansion that references a
-  macro of its own module is refused unless the using module imports that
-  macro too. Six cells RED.
-- [ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md), in `src/`: `/type` refuses an expression that uses
-  a macro. One cell RED.
-- [ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md), in `src/`, memory-unsafe: `/type` given a definition
-  form commits it and reports no error. Twelve cells RED. Carried past
-  S124 by the user's ruling.
-- Carried from Phase 6a, unchanged: [ACT-1097](../../sprints/actions/ACT-1097-trait-signature-accepts-a-bare-primitive-type-name-that-is-not-imported-intake.md) (3 cells),
-  [ACT-1092](../../sprints/actions/ACT-1092-search-index-omits-a-module-whose-import-names-an-unloaded-or-compiling-module.md) (2), [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) (5, unattributed; the
-  exemplar guard reads 2), and [ACT-1090](../../sprints/actions/ACT-1090-commit-planning-validates-a-covered-member-against-a-table-copied-before-it-published-intake.md) (run-dependent; it
-  failed in this run).
+- [ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md), in `src/`, **memory-unsafe:** `/type` commits what
+  it checks. A definition form, or an ordinary expression such as
+  `(Some 1)`, makes a later call or evaluation end the process on signal
+  11. Fourteen cells RED. Whether its expression face is carried or
+  corrected before the sprint closes is with the user.
+- [ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md) (5 cells), [ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md) (1) and
+  [ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md) (2): the `IO` constructors, memory-unsafe in the
+  first two. With [ACT-1108](../../sprints/actions/ACT-1108-io-is-not-opaque-pure-is-absent-and-the-constructors-are-surface-intake.md) (6 cells: `primitives/pure` is
+  absent and `Pure` constructs) they are the opaque-`IO` ruling the
+  compiler does not meet. Carried to the next sprint by the user's
+  decision.
+- [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md), in `src/`, **memory-unsafe:** a cached restart
+  after a refused save. One cell RED. Carried by the user's decision.
+- [ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md), in `src/`, **data loss:** saves refused after a
+  parametric product type is constructed. Three cells RED. Carried by the
+  user's decision.
+- [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md) (6 cells) and [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md) (3), in
+  typecheck: a user trait named `Num`, `Eq`, `Ord` or `Display` is
+  overridden by a primitive; no trait can be implemented for a vector
+  type.
+- [ACT-1096](../../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md), in `src/`: a project file at a library child's
+  path is loaded and indexed. Nine cells RED.
+- [ACT-1109](../../sprints/actions/ACT-1109-function-and-nested-io-values-do-not-display-as-the-closure-and-io-markers-intake.md) (2 cells): the `#closure` and `#io` markers.
+  [ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md): the unrecorded trace root, with no cell. Both
+  carried.
+- [ACT-1100](../../sprints/actions/ACT-1100-selective-derive-import-refusals-intake.md) (6 cells), [ACT-1099](../../sprints/actions/ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md) (1),
+  [ACT-1097](../../sprints/actions/ACT-1097-trait-signature-accepts-a-bare-primitive-type-name-that-is-not-imported-intake.md) (3), [ACT-1092](../../sprints/actions/ACT-1092-search-index-omits-a-module-whose-import-names-an-unloaded-or-compiling-module.md) (2), [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md)
+  (5, unattributed; the exemplar guard reads 2), [ACT-1090](../../sprints/actions/ACT-1090-commit-planning-validates-a-covered-member-against-a-table-copied-before-it-published-intake.md)
+  (run-dependent; it failed in this run), and the filings of §14.1 from
+  before Phase 6.
 
 This section is the standing state under the
 [delivery principles](../../sprints/METHOD.md#delivery-principles) (user,
@@ -1613,52 +1580,62 @@ This section is the standing state under the
 | Clean house | §14.11 |
 | The exit targets, and the bands edited | §14.12 |
 | What the sprint's evidence does not cover | §14.13 |
+| The bands the specification's rewrite cleared, row by row | §14.14 |
 
-- **Read against:** `main` at `11ea995e`. Since `9bc97297`: `test`'s
-  T-REFUSED-SAVE-CACHE (`7c5f009e`) and the cells of the 2026-11-21 handoff
-  (`3904fae8`); `spec`'s records of S124-Q11, Q12, Q14 and the core/library
-  rule; `arch`'s core/library determinations. No file under `crates/`,
-  `src/` or `stdlib/` has changed since `e6cdbe90`.
+- **Read against:** `main` at `128255fc`. Since `11ea995e`: `spec`'s
+  records of the rulings of 2026-11-22 and its stage-two rewrite; `test`'s
+  cells for the Phase 6b intake (`60f15a06`, `e9a60317`, `2929d74f` to
+  `128255fc`). No file under `crates/`, `src/` or `stdlib/` has changed
+  since `e6cdbe90`.
 - **What `qa` ran,** in the primary harness on a debug build, holding the
   build alone:
   - `cargo nextest run --no-fail-fast` once, with
     `CRANELISP_CATEGORY_CENSUS` set;
-  - by hand, in scratch directories since removed: the subjects and
-    controls of ACT-1103 and ACT-1104, and ACT-1096's index and load
-    readings with a control;
+  - the document checker and the band reconciler;
+  - by hand, in scratch directories since removed, the subjects and
+    controls of every filing opened in Phase 6b;
   - at `9bc97297`: the sprint's opening tree, `3155f47f`, built in a
     throwaway clone for ACT-1101 and ACT-1102;
   - at `121c5c9e`: `cargo build`, read for warnings, and `cargo clippy -p
     cranelisp-backend --all-targets`.
 - **Limits.**
   - **One full run.** No cell was repeated, alone or under load.
+  - **The 108 bands are judged from `test`'s source walk,** which `qa`
+    read whole and checked against source in two rows. `qa` did not
+    re-read each cell.
   - **`qa` did not replant a fault.** The module rows' reds and detection
     proofs for row B17 are as `dev` records them.
-  - **The opening tree was built for ACT-1101 and ACT-1102 only.** The age
-    of ACT-1099, ACT-1100 and ACT-1104 is not established.
-  - **`qa` did not replay the demos.** The replay is `test`'s report.
+  - **The opening tree was built for ACT-1101 and ACT-1102 only.**
+  - **`qa` did not replay the demos.**
   - **The relocation row's Mach-O leg did not execute.** This host emits
     ELF.
-  - **The run took 5 m 8 s with its build,** at the edge of the
-    five-minute expectation.
 
 ### 14.1 The failing set, by owning module
 
 | Module | Failing | Filings |
 |---|---|---|
-| typecheck | 58 | ACT-1076, ACT-1075, ACT-1071, ACT-1074, ACT-1103, ACT-1080, ACT-1082, ACT-1097, ACT-1104, ACT-1073 |
-| `src/` | 50 | ACT-1089, ACT-1079, ACT-1005, ACT-1100, ACT-1068, ACT-1096, ACT-1101, ACT-1092, ACT-1102, ACT-1099, ACT-1062 (display), ACT-1087, ACT-1090 |
+| `src/` | 71 | ACT-1089 (14), ACT-1096 (9), ACT-1079 (8), ACT-1005 (6), ACT-1100 (6), ACT-1108 (6), ACT-1106 (5), ACT-1068 (4), ACT-1101 (3), ACT-1092 (2), ACT-1109 (2), ACT-1099, ACT-1102, ACT-1105, ACT-1062 (display), ACT-1087, ACT-1090 (1 each) |
+| typecheck | 61 | ACT-1076 (15), ACT-1075 (9), ACT-1071 (7), ACT-1074 (6), ACT-1103 (6), ACT-1080 (4), ACT-1082 (4), ACT-1097 (3), ACT-1104 (3), ACT-1073 (2), ACT-1107 (2) |
 | **backend (focus)** | **0** | — |
 | intrinsics | 3 | ACT-0977 |
 | Not attributed to a module | 7 | ACT-1018 (5), ACT-1067 (2) |
 | Test and maintenance | 1 | The document gate |
 | types, frontend, primitives, platform, exe-bundle | 0 | — |
-| **Total** | **119** | No test fails without a filing |
+| **Total** | **143** | No test fails without a filing |
 
-- **The counts are `qa`'s full run at `11ea995e`.** Each failing test was
+- **The counts are `qa`'s full run at `128255fc`.** Each failing test was
   matched to its filing by the name or comment its source carries.
-- **Against the 110 at `9bc97297`:** typecheck +8 (ACT-1103 6, ACT-1104
-  2); `src/` +1 (ACT-1102).
+- **Against the 119 at `11ea995e`:** `src/` +21 (ACT-1108 6, ACT-1106 5,
+  ACT-1096 5, ACT-1089 2, ACT-1109 2, ACT-1105 1); typecheck +3 (ACT-1107
+  2, ACT-1104 1).
+- **The rows below this table are the run at `11ea995e`;** the Phase 6b
+  filings' cells are judged in §14.2 and counted in the table above.
+- **The document gate: 576 findings.** 547 are ignored-path findings,
+  with the user. The other 29 are in files of `sprint` (the plan, two API
+  packets and two architecture reviews), `design`(intrinsics) (seven
+  establishment findings and one shorthand), `design`(frontend),
+  `design`(typecheck), `audit` and `review`'s memory, and one is `test`'s
+  unregistered handoff file. None is in a file `qa` owns.
 - **Severity** is what the subject did where its assertion states what it
   must do, on the scale memory-unsafe, data loss, wrong value, legal
   program refused, wrong diagnostic, performance only. A filing with
@@ -1786,6 +1763,13 @@ the correction and pass with no change to their assertions.
 
 | Evidence | Judgment | Note |
 |---|---|---|
+| T-TYPE-EXPR: `repl_introspection::s124_type_expr_*`, three cells (`2929d74f`) | **Accepted, RED as allocated** | Both subjects end on signal 11 after the type answer; the evaluated-first control passes |
+| T-IO-OPAQUE and the narrowed `IO` cells: `spec_10_io::s124_effect_field_*`, `s124_io_match_*`, `s124_io_opaque_*`, `s124_bind_spelling_*` (`0cfe3a00`, `c0c6f4e7`) | **Accepted, RED as allocated** | 14 fail: five effect subjects on a signal, the `Pure` constructor accepted, two matches accepted, the four-spelling cell, and five public-lift cells on the absent `primitives/pure`. The subjects build IO values with `sleep 0`, so acceptance stays observable without `pure`. The single-`Pure`-arm match and a checker self-test pass. Cell names keep their earlier wording so backlinks resolve |
+| T-TRAIT-SPELLING, narrowed (`ca8f88b9`) | **Accepted** | The six subjects require the implementation's value alone and still fail on the primitive's; three controls pass |
+| T-VEC-FUNCTOR: `spec_07_traits::s124_vec_functor_*` (`8bd6b51c`) | **Accepted, RED as allocated** | The subject is refused with `Vec has 0 type parameters`; the `Option` and helper controls pass |
+| T-MARKERS: `repl_introspection::s124_markers_*` (`d4e12848`) | **Accepted, RED as allocated** | The closure and nested-IO displays fail; the reader refusal passes |
+| T-SCONCAT-PUBLIC and T-DEFAULT-UNDEFINED (`929975de`, `ace94858`) | **Accepted,** green guards | Three cells each, all passing. `test` did not plant a fault in them |
+| The backlink walk for 108 cleared bands (`128255fc`) | **Accepted as the clause map** | A source walk, not 108 executions. `qa` read it whole, checked two rows against source, and applied it (§14.14) |
 | T-MOD-CHILD-INDEX: `search::s124_child_index_*`, seven cells; T-MOD-CHILD's values (`60f15a06`) | **Accepted, RED as allocated,** on a focused run | Five index subjects fail and the library-only and presence-not-an-error controls pass. The four child subjects fail with values that are not an error status; the override control passes. Read by outcome, with the fixture and clauses read in source |
 | T-EFFECT-FIELD, T-IO-MATCH, T-BIND-SPELLING: `spec_10_io::s124_effect_field_*`, `s124_io_match_*`, `s124_bind_spelling_*` (`e9a60317`) | **Accepted, RED as allocated,** on a focused run; narrowed by the ruling (§14.3) | Five effect subjects end on a signal and four `Pure` controls pass; the match subject ends on `match failed` and two controls pass; the spelling cell fails on disagreement and the builtin control passes |
 | T-TRAIT-SPELLING: `spec_07_traits::s124_trait_spelling_*`, nine cells (`3904fae8`) | **Accepted, RED as allocated** | Six subjects fail on the primitive's value (8, 8, 10, 9, 9, 5), neither arm of the clause being met. The three renamed controls pass. The refusal arm requires exit 1 and a diagnostic, and no subject's expected value is 1 |
@@ -1886,21 +1870,9 @@ read; each cell passed or failed in the `f8c55626` run as its row states.
 
 ### 14.3 Allocated to `test`
 
-**The handoff now, in rank order. `test` is dispatched once for all of
-it.** Everything else in this section is committed and judged (§14.2).
-
-| Rank | Item | Filing | Kind |
-|---|---|---|---|
-| 1 | T-TYPE-EXPR | ACT-1089 | New reproduction; memory-unsafe |
-| 2 | T-IO-OPAQUE, narrowing T-EFFECT-FIELD, T-IO-MATCH and T-BIND-SPELLING | ACT-1108, 1105, 1106, 1107 | Narrowed and new |
-| 3 | T-TRAIT-SPELLING: drop the refusal arm | ACT-1103 | Narrowed |
-| 4 | T-VEC-FUNCTOR | ACT-1104 | New reproduction, released from its hold |
-| 5 | T-MARKERS | ACT-1109 | New reproduction |
-| 6 | T-SCONCAT-PUBLIC | — | Guard for S124-Q12-R1; passes by hand |
-| 7 | T-DEFAULT-UNDEFINED | — | Guard for S124-Q15; passes by hand |
-| 8 | The backlink walk for the 108 bands the stage-two rewrite cleared | — | Clause map for `qa` |
-
-**Nothing is held.** ACT-1110 has no cell by a named residual.
+**Nothing is with `test`.** Every allocation in this section is committed
+and judged (§14.2); its conditions stay as the present-tense statement of
+what each cell shows. ACT-1110 has no cell by a named residual.
 
 **T-TYPE-EXPR** ([ACT-1089](../../sprints/actions/ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md); REPL §3.1), a safety fence.
 
@@ -1996,14 +1968,6 @@ is now the implementation's value alone; the refusal arm is removed.
   with a diagnostic naming `nosuch`. An `impl` that defines both is
   accepted, and `(dflt Mk)` gives its value.
 - **By hand all three hold.**
-
-**The backlink walk.** The stage-two rewrite cleared 108 bands, and `qa`
-has not re-judged them row by row. For each, `test` follows the cells'
-`// spec:` backlinks and returns whether the cell still shows the row as
-now written, in particular where a row's claim moved from a library name
-to a core form, or its fixture relies on a prelude the row no longer
-assumes. `qa` restores each band from that map. `spec_coverage_reconcile.py`
-lists the rows.
 
 **T-EFFECT-FIELD** ([ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md); spec §10.1), a safety fence.
 
@@ -2746,20 +2710,20 @@ ACT-1088 changed only wrapper bodies, and no golden frame moved (§14.2).
 
 ### 14.5 The category census
 
-**The census reads zero from every program at `11ea995e`.** It was armed in
-the full run at that commit, and in the three before it with the same
+**The census reads zero from every program at `128255fc`.** It was armed in
+the full run at that commit, and in the four before it with the same
 result.
 
 - **The instrument.** The absent, field and frame points, each with its
   planted positive leg and concrete twin in the backend's module tests.
-- **The reading** (298,544 lines):
+- **The reading** (298,887 lines):
 
 | Partition | Frames compiled | Distinct symbols | Records on the absent arm or a non-concrete field class, from a program |
 |---|---|---|---|
-| `Plain` | 187,287 | 4,842 | 0 |
-| `TraitMethod` | 67,038 | 872 | 0 |
-| `Ctor` | 42,606 | 908 | 0 |
-| `Accessor` | 1,597 | 132 | 0 |
+| `Plain` | 187,497 | 4,847 | 0 |
+| `TraitMethod` | 67,100 | 874 | 0 |
+| `Ctor` | 42,695 | 913 | 0 |
+| `Accessor` | 1,579 | 132 | 0 |
 
 - **Sixteen records are not frames:** six on the absent arm and ten field
   reads. All sixteen are the backend's module fixtures, by frame name:
@@ -2997,12 +2961,14 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 **Can proceed now, in this order.**
 
-1. **`test`:** the eight rows of §14.3's handoff table, in one dispatch.
-2. **`qa`, after it:** one full run; the reds on their clauses; the bands
-   of the 108 rows from `test`'s clause map; the index feed's enumeration
+1. **`test`:** nothing is allocated. Remove the transient handoff file
+   under `tests/fixtures/s124-handoff/`. `qa` took its clause map into the
+   judgments table and its backlink walk into the last table of this
+   section.
+2. **`qa`:** the seven older cleared rows; the index feed's enumeration
    site for ACT-1096.
 3. **`sprint`:**
-   - the backend meets its three exit clauses at `11ea995e` (§14.9);
+   - the backend meets its three exit clauses at `128255fc` (§14.9);
    - **ACT-1101 predates S124** and is carried on three failing cells; it
      does not hold the sprint under *no decay* (§14.10);
    - **ACT-1102 is memory-unsafe and also predates S124.** Its cell is
@@ -3012,11 +2978,12 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
    - **ACT-1089 has a face on an ordinary expression** that the user's
      carry decision did not have before it: `/type (Some 1)` then
      `(Some 1)` ends the process;
-   - the failing count is 119 at `qa`'s run (§14.1) and 131 with the
-     cells of `60f15a06` and `e9a60317`, by a focused run;
+   - the failing count is 143 (§14.1);
+   - the document gate's 29 findings outside ignored paths are listed by
+     owner in §14.1;
    - `arch`'s row B18 is with the user, and ACT-1110's correction waits on
      it;
-   - the suite takes 274 s, and 5 m 8 s with its build;
+   - the suite takes 265 s, and 4 m 44 s with its build;
    - §14.13 is what a user accepting the sprint should know is not
      covered;
    - return ACT-1094's outcome to `training`, ACT-1096's to
@@ -3026,7 +2993,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
    - `sprints/SPRINT.md` §Settling target still lists zero failures; its
      Notes state the target ruled on 2026-11-19;
    - the root memory's testing guidance states about 170 s at 5,687 tests;
-     the suite took 274 s at 8,071 at `11ea995e`;
+     the suite took 265 s at 8,109 at `128255fc`;
    - ACT-1083 is marked resolved and its file is still present.
 4. **`design`(int):**
    - **int §7.6.4 derives the covered set from the prepared view under a
@@ -3117,13 +3084,13 @@ are tracked in ACT-0997.
 Clean and green is: no failing test attributed to the backend, no build
 warning from it, no open review finding on it.
 
-**At `11ea995e` the backend is clean and green: no failing test is
+**At `128255fc` the backend is clean and green: no failing test is
 attributed to it, it raises no build warning, and no review finding is
 open on it.** No backend source has changed since `3c5e41ca`.
 
-| Clause | State at `11ea995e` |
+| Clause | State at `128255fc` |
 |---|---|
-| No failing test attributed to the backend | **Met.** 0 of the 119 failing tests. ACT-1094's nine cells pass. The backend's module tier passes, 537 of 537 |
+| No failing test attributed to the backend | **Met.** 0 of the 143 failing tests. ACT-1094's nine cells pass. The backend's module tier passes, 537 of 537 |
 | No build warning from the backend | **Met.** Read at `121c5c9e`, with the same backend source: `cargo build` and the run's build report no warning from a workspace crate. `cargo clippy -p cranelisp-backend --all-targets` reports none from the backend; its 13 are in `cranelisp-types` (7), `cranelisp-intrinsics` (3) and `cranelisp-platform` (3), as before |
 | No open review finding on the backend | **Met, as `sprint` reports:** the reviews of `ecae99c9` and `3c5e41ca` returned no finding. `qa` did not read them |
 
@@ -3135,7 +3102,7 @@ of the focus module.
 
 **Failing tests.**
 
-| Filing | State at `11ea995e` |
+| Filing | State at `128255fc` |
 |---|---|
 | ACT-1094 | **Closed and deleted.** Nine subjects, four controls and twelve owning-value cells pass |
 | ACT-1018, only if its module is the backend | 5 cells, unattributed among the platform crate, the backend and the runtime |
@@ -3184,13 +3151,13 @@ and has not corrected.
 **No module S124 touched is shown worse than at the sprint's opening, by
 any test or by the one opening-tree reading taken.**
 
-- **Basis: the full run at `11ea995e` against the opening run** (§1: 7,024
-  run, 49 failed). Of the 119 failing tests, 117 are cells committed in
+- **Basis: the full run at `128255fc` against the opening run** (§1: 7,024
+  run, 49 failed). Of the 143 failing tests, 141 are cells committed in
   S124 as reproductions, each on a filing. The other two failed at the
   opening: the document gate and ACT-1018's guard. No test that passed at
-  the opening fails; each of `qa`'s seven full runs was compared with the
+  the opening fails; each of `qa`'s eight full runs was compared with the
   one before it.
-- **The failing count rose from 49 to 119 by reproduction,** not by
+- **The failing count rose from 49 to 143 by reproduction,** not by
   regression.
 - **[ACT-1101](../../sprints/actions/ACT-1101-session-save-refused-after-a-parametric-product-type-is-constructed-intake.md) and [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md) are not decay.** `qa`
   built the sprint's opening commit, `3155f47f`, in a throwaway clone and
@@ -3206,8 +3173,8 @@ any test or by the one opening-tree reading taken.**
 |---|---|---|---|
 | backend | Type concreteness; FIXME 0915's frame, row B15, trace order, row B10-C2, the trace reader, K11-d's fixtures, the wrapper's slot call, the instance frame's name, the relocation row, row B17's closing tail | Not shown worse | 0 failing tests; 537 module tests pass; no warning; census zero |
 | types | The template-module accessor, K11-c, K11-d, ACT-1084, row B16 | Not shown worse | 0 failing tests; the baseline check passes; clippy's 7 warnings are unchanged since `ee65d9aa` |
-| typecheck | The S124 type-concreteness and successor-discovery corrections | Not shown worse | Its 58 failing cells are S124 reproductions; every cell of ACT-1034 passes |
-| `src/` | C1, row B10-C2, the observed-type default, K11-d's fixtures, ACT-1084 | Not shown worse | Its 50 failing cells are S124 reproductions; none passed at the opening. ACT-1101 and ACT-1102 are present on the opening tree |
+| typecheck | The S124 type-concreteness and successor-discovery corrections | Not shown worse | Its 61 failing cells are S124 reproductions; every cell of ACT-1034 passes |
+| `src/` | C1, row B10-C2, the observed-type default, K11-d's fixtures, ACT-1084 | Not shown worse | Its 71 failing cells are S124 reproductions; none passed at the opening. ACT-1101 and ACT-1102 are present on the opening tree |
 | intrinsics | The unused trace reader removed; row B17's collect entry and skip mark | Not shown worse | Its 3 failing cells are ACT-0977's reproductions; 404 module tests pass. Four golden cells changed by import numbering only and were re-baselined (§14.2) |
 | primitives, frontend, platform | Nothing since `f8c55626`; their earlier S124 changes are read in §13 | Not shown worse | 0 failing tests |
 | `stdlib/` | Trait implementations for `Option`, `Result`, `Pair`, `List` and `Either`; `vec-flatten` and `derive` self-tests | Not shown worse | Every public module compiles and runs; 24 modules' self-tests pass in the suite; the trait driver passes 29 legs in three modes. The combined `derive` under a selective import is refused (ACT-1100), by a defect that is the binary's |
@@ -3245,7 +3212,7 @@ a regression:
   approved row, and compile-to-module §12.2 adds one load to each call
   through a same-unit function value. `qa` took no time comparison across
   any of them.
-- **The suite's own time.** 274 s at 8,071 tests against 153 s at 7,024 at
+- **The suite's own time.** 265 s at 8,109 tests against 153 s at 7,024 at
   the opening. REPRO-1090's two cells are 86 s of test time between them.
 
 ### 14.11 Clean house
@@ -3259,7 +3226,7 @@ a regression:
 
 - **No non-focus module is taking a larger change in what remains**
   (§14.12).
-- **Typecheck holds 58 of the 119 failing cells and has no change
+- **Typecheck holds 61 of the 143 failing cells and has no change
   scheduled.** If it is opened, ACT-1071, ACT-1073 and ACT-1074 share the
   cluster and multi-signature seam, and ACT-1075 and ACT-1076 the dispatch
   and instance-collection seam. ACT-1097 is at the resolver, a seam none
@@ -3272,18 +3239,16 @@ decay, and every other problem on a failing test.
 
 | Target | State |
 |---|---|
-| The backend clean and green | Met at `11ea995e` (§14.9). It was not met at `b72742f7`, on ACT-1094, which is corrected |
-| Every other failing test carried on record by module, with severity | Met (§14.1). 119 failing, none without a filing. ACT-1096's index face has no cell yet |
+| The backend clean and green | Met at `128255fc` (§14.9). It was not met at `b72742f7`, on ACT-1094, which is corrected |
+| Every other failing test carried on record by module, with severity | Met (§14.1). 143 failing, none without a filing. ACT-1110 has no cell, by a named residual |
 | No module the sprint touched left worse | Met on the basis of §14.10 |
 
 **The Phase 5 exit is taken** (`sprints/SPRINT.md`, Notes), with the
 review closed as `sprint` records it.
 
-**Since the exit, in Phases 6a and 6b.** Fourteen reproductions, two
-guards and three maintenance checks are committed and judged (§14.2), and
-the full run at `11ea995e` gives the table above. Two items are with
-`test` (§14.3). A further full run is owed when they are committed or
-source changes.
+**Since the exit, in Phases 6a and 6b.** Every allocation is committed and
+judged (§14.2), and the full run at `128255fc` gives the table above.
+Nothing is with `test`. A further full run is owed only if source changes.
 
 **Carried without a failing test,** for `sprint` to present: the rows of
 §14.1, *No failing test*. FIXME 0915's subject row in `src/` (§14.8) would
@@ -3316,7 +3281,7 @@ more at `21101921` and both are restored below.
 | Spec §4.12.2, §4.12.4 and its `name` row, §4.12.7, §4.12.8 | Restored to their cells | The synthetic `::trace::` root is what the compiler gives (S124-Q13) |
 | Spec §7.1.5 | Restored to its cells, with the S124-Q15 rule noted as holding by hand | T-DEFAULT-UNDEFINED is allocated |
 | Spec §8.8.3 and appendix C §C.2.4, `qa`'s own notes | They no longer call S124-Q16 unconfirmed | The classification is confirmed |
-| 108 further rows cleared by the stage-two rewrite | **Not re-judged.** They stay cleared | `test` walks the backlinks first (§14.3) |
+| 108 further rows cleared by the stage-two rewrite | 21 restored to their cells; 87 marked with the reason they are not | `test`'s backlink walk, row by row in §14.14 |
 | Spec §8.11.2, cleared by `spec` for S124-Q14 | Partial: the search order restored to its four cells and the override control; the new rule nonconforming, naming three of T-MOD-CHILD's failing cells; the index clause without a cell | The project file is loaded and indexed (ACT-1096) |
 | Spec §2.2.3, §5.3.2, §9.7.0, §8.8.3 and appendix C §C.2.4 | They name the cells committed at `3904fae8` | T-TRAIT-ONE-PARAM, T-SPLICE-BARE, T-TRAIT-SPELLING and T-VEC-IMPL are committed |
 | Spec §2.2.3 and §5.3.2, cleared by `spec` for S124-Q11 | Restored to their cells, with the one-parameter cell added to §2.2.3 | The cells show a bare head, a one-parameter head and the binder refusals, none of which the ruling changed. The refusal of a second parameter holds by hand and has no cell: T-TRAIT-ONE-PARAM |
@@ -3357,8 +3322,11 @@ defect report; the defects are §14.1.
   `IO` and `primitives/pure` (ACT-1108), the `#closure` and `#io` markers
   (ACT-1109), the unrecorded trace root (ACT-1110), and `race` as library
   code. The suite, the examples and the guides still write `Pure`.
-- **Bands.** 108 rows cleared by the specification's rewrite are not
-  re-judged, so the traceability band does not state their coverage.
+- **Bands.** Of 108 rows cleared by the specification's rewrite, 87 are
+  not covered as now written (§14.14): 25 are library illustrations with
+  no language witness, 32 are partly covered, 13 have no direct witness,
+  10 are section rollups over uncovered children, and 7 name a cell that
+  does not show the row. Seven older rows still await re-judgment.
 - **Memory-unsafe, on a failing test:** the session after a refused save
   restores a definition its file does not hold, and calling it ends the
   process (ACT-1102).
@@ -3420,3 +3388,122 @@ documentation samples and the learning sequence's replay show the
 delivered surfaces still work as their authors recorded. They are
 maintenance checks and do not accept compiler behaviour.
 
+### 14.14 Bands cleared by the specification's rewrite
+
+`spec` cleared 108 rows at `2fe6d28f` and in its stage-two rewrite. `test`
+walked each row's `// spec:` backlinks at `506ee06e` and compared the cells
+with the row as now written; `qa` applied the result at `128255fc`. This
+table is that walk's durable record. A row whose verdict begins *Retains*
+is restored to its cells; every other row's band states the verdict and
+points here.
+
+| Row | Where | Verdict | Reason, as `test` read it |
+|---:|---|---|---|
+| 1 | 01-display-format.md §1.2 | Partial | Scalar envelope cells retain their typed-value assertions; section rollup cannot be restored over the closure marker RED or unevidenced elision uniformity (row 90). |
+| 2 | 01-display-format.md §1.2 | Mismatch / RED replacement | display_int_result evaluates integer addition only; it cannot observe an anonymous function. s124_markers_closure_display now rejects the retired marker, RED on <closure>; its concrete Int signature does not cover the illustrated polymorphic signature. |
+| 3 | 01-display-format.md §1.2 | Retains with limit | Named-reference cells require primitives/vec-len or mathx/gcount and reject codegen / <closure>. Their imports are explicit or empty. They do not reject the newly forbidden #closure token; add that negative during the marker migration. |
+| 4 | 01-display-format.md §1.2.1 | Fixture migration | Notice/payload ordering and the absent-notice negative still discriminate execution/display order. Three cells construct Pure; migrate those fixtures to pure with ACT-1108. Platform-print notice and batch output equivalence do not depend on that constructor. No new pure coverage from their current green. |
+| 5 | 01-display-format.md §1.3 | Partial | Use the per-kind defn/deftype/deftrait/impl cells in repl_introspection, rather than the zero-arg-defn witness for every kind. defn_display_neg_not_closure checks the retired token only. Canonical-home twins in ps_d1_impl_confirmation_home assert foreign type/trait homes, but currently load the workspace library; they do not prove prelude independence. |
+| 6 | 01-display-format.md §1.5 | Retains with limit | Same named-reference assertions as row 3. Explicitly imported gcount and qualified vec-len observe canonical names; no proof yet against replacement with #closure. |
+| 7 | 01-display-format.md §1.5 | Retains | Both cells define List inline. Exact recursive value/whole-line assertions reject raw pointers, type tokens interleaved with values, or a special built-in-list requirement. PrimitivesOnly supplies scalar names explicitly, not stdlib. |
+| 8 | 01-display-format.md §1.5 | Partial / stale expectation | Inline Seq and bounded child observe an unforced infinite tail and head 7. The literal <closure> assertion contradicts the new #closure clause; retain termination evidence only until marker migration. No library dependency. |
+| 9 | 01-display-format.md §1.5 | Partial | The two cited cells observe named-reference and imported/FQ envelopes, not every value reached through computation. Their retired-token negative needs migration; T-MARKERS adds an anonymous-value RED, not a universal envelope proof. |
+| 10 | 03-slash-commands.md §3.9 | Partial rollup | The existing target-resolution cells still observe switching/refusal. Rows 11–16 hold environment parity only for the selected test preludes, not arbitrary or empty prelude contents; dotted/lib-directory target limits already recorded in the row remain. |
+| 11 | 03-slash-commands.md §3.9 | Partial | devloop_fresh_prelude_using_mod_turn_compiles supplies TestStandard and requires result 7 with no undefined-variable error. It shows provided + remains available, not that no operator is required with an empty prelude. A prelude absence discriminator is absent from these cells. |
+| 12 | 03-slash-commands.md §3.9 | Partial / fixture mismatch | devloop_fresh_mod_turn_bare_type_alias_resolves supplies Int through PrimitivesOnly, while m.cl imports nothing. Its 7/no-unknown-type assertions show a prelude alias, not the newly stated own-file import clause. Needs a module-local-import fixture. |
+| 13 | 03-slash-commands.md §3.9 | Partial | devloop_cache_restored_prelude_using_mod_turn_compiles preserves the directory and requires result 7 after restart. It rejects loss of + in a restored namespace; it does not assert a cache-hit diagnostic, so also passes if every module is recompiled. |
+| 14 | 03-slash-commands.md §3.9 | Retains | TestStandard is a deliberately supplied prelude. Result 7 plus no undefined-variable diagnostic rejects a fresh /mod environment losing that provided +. The example does not make + mandatory language content. |
+| 15 | 03-slash-commands.md §3.9 | Retains with cache limit | The same TestStandard setup and saved directory exercise the restart axis; result 7 rejects loss of the prelude name. No assertion forces the restore mechanism rather than recompilation (row 13). |
+| 16 | 03-slash-commands.md §3.9 | Mismatch | The named cell has no Int import in m.cl; the alias comes from its PrimitivesOnly prelude. It does not prove an import written in the file body survives /mod. Do not restore this row from that cell. |
+| 17 | 10-terminal-styling.md §10.3 | Partial | display_exact::source_comment_colour_off_carries_no_sgr_neg and its whole-block twin reject SGR in plain output; callable_and_accessor_coexistence_colour_off_carries_no_sgr_neg covers a second surface. They do not establish the whole R1–R15 role table or the new marker bytes under colour-on. No exact §10.4 backlink. |
+| 18 | 10-terminal-styling.md §10.4 | Illustration | Worked styling example is subordinate to §10.3. No direct test backlink; scalar/no-SGR cells do not validate every illustrated role or the new #closure text. Do not grade the illustration as fully tested. |
+| 19 | 11-macro-introspection.md §11.1 | Partial | expand_user_defmacro only looks for add-i64 anywhere in stdout. It neither isolates the /expand response nor checks fixed point, unchanged non-macro form, no evaluation, valid Sexp or state after an expansion error. Its macro is defined inline; no stdlib dependency. |
+| 20 | 03-types.md §3.2.2 | Partial / module seam | `crates/cranelisp-typecheck/src/adt/tests.rs::test_resolution_validates_registered_arity` registers local Option/Color and checks accepted/rejected type arities. It does not observe a seeded primitives/Option, distinct same-spelled local identity, constructor shape or no-prelude qualified use; those new clauses need other evidence. |
+| 21 | 03-types.md §3.3.4 | Retains with fixture limit | spec_03_types::returned_rank1_polymorphic_fn_accepted asserts equal written/unwritten schemes; single_poly_instance_used_at_two_types_value_restriction_neg and rank2_argument_applied_at_two_types_neg reject misuse. The result-only-var cells distinguish ambiguity at use from rejection at definition. Test preludes are explicit; batch fixtures still use Pure, so the new pure examples are not covered. |
+| 22 | 04-expressions.md §4.6.3 | Partial / stale names | Existing auto_curry_two_param_partial_apply and auto_curry_three_param_partial_apply require 3/60; auto_curry_passed_to_higher_order_fn requires 15; local_closure_auto_curry_non_trait_control_resolves_to_local requires 0. Negative functions are now auto_curry_too_many_args_error_neg / auto_curry_wrong_type_error_neg, not the old bare names. Constrained examples use TestStandard-defined traits. Result behavior survives the rewrite, but #closure examples and the whole multi-signature restriction are not proven by these former citations. |
+| 23 | 04-expressions.md §4.11 | Partial rollup | No direct §4.11 backlink. Chained application and branch/match cases observe individual results; a pure arithmetic result alone cannot prove all sequencing/deferral clauses. Reconcile by child/form, not the old section-level Tested tag. |
+| 24 | 04-expressions.md §4.11 | Partial | No direct §4.11 backlink to this paragraph. Bind-chain print sequencing (spec_platforms) rejects reversed effects; lenient result parity (spec_12_runtime) allows concurrency. Neither proves physical left-to-right pure evaluation, which is intentionally unobservable. Old Pure fixtures still need migration. |
+| 25 | 05-definitions.md §5 | Partial / two bands | stdlib_conformance::stdlib_def_qualified_head_rejected_binder_neg and stdlib_const_qualified_head_rejected_binder_neg assert qualified-head refusal and no silent binding. They load the actual library and do not assert the span at the written macro head or the dotted spelling. Keep binder evidence separate from the unproven written-span band; these are library-route witnesses, not mandatory core macro names. |
+| 26 | 05-definitions.md §5.6 | Library-only / mismatch | macro_const_int/string are workspace-library conformance and retain their 42/hi assertions for that library only. exemplar::batch_const_macro_in_main defines its own macro size; it does not exercise const at all. No language obligation that const exists; expansion/binder rules need native-form evidence. |
+| 27 | 05-definitions.md §5.6 | Partial / two bands | stdlib_const_qualified_head_rejected_binder_neg observes an error and absence of user/fmt/PI via the library macro. It does not assert dotted-head refusal or the written-head location; no restored claim for either missing clause. Core language does not require this macro. |
+| 28 | 05-definitions.md §5.7 | Library-only | macro_def_basic/expression load the workspace library and require 42/3. They still test that library's macro; they do not make def core or establish evaluation-once, visibility or every native expansion rule. |
+| 29 | 05-definitions.md §5.7 | Partial / two bands | stdlib_def_qualified_head_rejected_binder_neg and stdlib_def_bare_head_accepts_twin distinguish qualified refusal from a valid bare binding. Neither asserts a dotted spelling or source-span provenance. Both intentionally depend on the actual library; do not infer an obligatory macro. |
+| 30 | 05-definitions.md §5.11 | Partial | private_defn_callable_in_module requires result 42 for a private helper used locally. It does not reject imports from outside the subtree or exercise all private definition variants. The rewrite labels const/def as illustrative; no coverage for those follows from a defn-only test. |
+| 31 | 05-definitions.md §5.14 | Rollup / no direct witness | No §5.14 test backlink found. Native form tests and library-conformance macro tests must be judged separately; the summary alone is not one independently observed behavior. Do not restore a universal Tested rollup. |
+| 32 | 07-traits.md §7.9 | Retains with spelling limit | user_trait_simple defines Inc and its Int impl inline and requires 15. This proves user trait dispatch without stdlib, but not every spelling: the six T-TRAIT-SPELLING REDs show the same mechanism does not hold for Num/Eq/Ord/Display. |
+| 33 | 07-traits.md §7.12 | Rollup | The heading has no prose or direct backlink; its child restrictions retain their own evidence. Do not assign a test to an empty heading or promote it above its least-covered child. |
+| 34 | 07-traits.md §7.13 | Library illustration | No §7.13 test backlink. derive and its helpers are user/library macros, not required language forms. Missing derive-conformance evidence is not a compiler defect; generic macro expansion and trait impl obligations live elsewhere. |
+| 35 | 09-macros.md §9.6 | Retains / partial total | Three cited inline-macro cells require alpha-before-omega, successful type-before-impl dispatch (41), and an error/no-dispatch for reversed order. They reject reordered/spurious registration without a library dependency. They do not by themselves observe every nested/batch begin rejection or the generated-defmacro publication checkpoint. |
+| 36 | 09-macros.md §9.10 | Library-only | The four spec_11_stdlib cells use the workspace library. Their when/cond/thread/vec values still observe that library's macros, not required names, layouts or expansions. Bare names are supplied deliberately by that prelude; do not restore normative macro-name coverage. |
+| 37 | 09-macros.md §9.10.12 | Library-only / partial | macro_when_true, macro_when_false_none and macro_when_option_body_nests_the_wrap distinguish Some/None and unconditional nesting for actual library when. No unless negative/positive evidence follows from those cells; this subsection is illustrative, not a core obligation. |
+| 38 | 10-io.md §10.1.1 | Partial / fixture migration | io_propagates_into_inferred_return_type checks the inferred IO signature of a Pure-producing function. It does not call a platform operation or a wrapper of that operation. Keep that narrow inference observation only; migrate Pure before claiming the new public pure surface. |
+| 39 | 10-io.md §10.2.3 | Mismatch / RED public lift | pure_bool_unwraps_inline applies Pure, not pure. It cannot cover the rewritten ordinary-function interface, Bool/String/None lift examples or first-class/partial application. T-IO-OPAQUE public-lift cells are RED on the missing name; Bool/etc remain unallocated. |
+| 40 | 10-io.md §10.3 | Partial / fixture migration | bind_triple_chain requires 6 from nested primitive binds using an explicit PrimitivesOnly prelude. It observes composition, not non-execution at construction or the entire scheme; its Pure terminators must migrate. A library bind spelling is not assumed by this fixture. |
+| 41 | 10-io.md §10.3.1 | Partial / fixture migration | bind_pure_to_pure_plus_one requires 43, rejecting a dropped/wrong continuation value. It cannot prove that constructing the bind performs no effect (there is no observable effect). It uses Pure, so public pure remains uncovered. |
+| 42 | 10-io.md §10.4 | Library-only | macro_do_returns_last asserts 3 using the actual workspace macro. It neither makes do mandatory nor proves the compiler recognizes only expanded core bind. This remains library conformance only; Pure fixture migration is carried. |
+| 43 | 10-io.md §10.4.1 | Partial / native witness | spec_platforms::bind_chain_print_sequence_with_pure_terminator_emits_all asserts exact one/two stdout and exit 42 with explicit bind imports, without do or bind! or stdlib. It tests the expanded core behavior, not an actual macro's expansion; replace its terminal Pure during the migration. |
+| 44 | 10-io.md §10.4.2 | Library illustration / no direct witness | No exact §10.4.2 backlink. The library do cells test selected values, not a universal core form or all IO-only refusal cases. Core sequencing requirements belong to bind and native typing. |
+| 45 | 10-io.md §10.4.3 | Library illustration / no direct witness | No exact §10.4.3 backlink. The printed greeting/show examples are not executed by an exact sample test here; the compiler does not owe these library names. |
+| 46 | 10-io.md §10.5 | Library-only | macro_bind_bang_single_binding requires 42 using workspace bind!. Retains that library observation; no assertion proves an exact expansion or a mandatory bind! form. The native bind acceptance cells are separate. |
+| 47 | 10-io.md §10.5.1 | Library illustration / no direct witness | No exact §10.5.1 backlink. No test of the expansion strings follows from a successful library bind! result. New pure in the illustrated expansion is absent in the compiler. |
+| 48 | 10-io.md §10.5.2 | Library-only / partial | macro_bind_bang_sequential_reference requires 10 when y uses x through actual library sugar. It rejects losing earlier-binding scope, but does not cover all IO-type refusal or evaluation-order clauses; current fixture still uses Pure. |
+| 49 | 10-io.md §10.5.3 | Library illustration / no direct witness | No exact §10.5.3 backlink. The distinction between discarded and named results is illustrative sugar over bind; library do/bind! cells cannot establish a required syntax. |
+| 50 | 10-io.md §10.8 | Insufficient former witness | io_values_deferred defines deferred and immediately calls it, asserting 99. It has no observable side effect and cannot distinguish eager execution from deferral. The rollup's still-pending isolation/comparison children must remain visible. |
+| 51 | 10-io.md §10.8.1 | Partial / module seam and migration | `crates/cranelisp-intrinsics/src/io/tests.rs::test_run_io_pure` constructs an internal node, forces it once and requires 42. It does not observe public pure, effect deferral, bind composition or node reuse. The named reuse cells cover sequential Pure/Effect only and still use constructor fixtures; Launch/EffectPoll/concurrent reuse remain unmeasured as recorded. |
+| 52 | 10-io.md §10.8.2 | Partial / weak depth | run_mode_deep_bind_chain_named_continuation requires 8 from nine binds, rejecting a dropped/reordered continuation. Nine frames would also pass a recursive implementation; it does not prove O(1) depth. Current Pure terminals need migration; the deeper intrinsics module witness is separate, not solution-level proof. |
+| 53 | 10-io.md §10.8.3 | No direct witness | No §10.8.3 backlink. The specified choose/print two-input discriminator is not in the former covering set; io_values_deferred does not discriminate it (row 50). Return to QA as an effect-isolation gap. |
+| 54 | 10-io.md §10.8.4 | Mixed summary | No §10.8.4 backlink. The new user-inspection clause is observed RED by T-IO-OPAQUE; stack/ordering/deferral need their own witnesses. The Haskell column is explanatory comparison, not executable compiler behavior. |
+| 55 | 10-io.md §10.10 | Retains narrow ABI witness | link_repeated_platform_adt_marshal_does_not_corrupt_heap uses an inline Rectangle, explicit primitives and 200 linked platform calls; exit 0 rejects accumulated heap corruption. It does not establish every ABI layout/signature rule. Its terminal Pure requires migration, not a stdlib dependency. |
+| 56 | 10-io.md §10.10.3 | No direct witness / module allocation | No exact §10.10.3 solution backlink. The allocator callback's identity/layout is a module/ABI condition; a surviving marshal loop alone cannot distinguish every wrong allocator callback. Route to QA/dev rather than manufacture a middle-tier test. |
+| 57 | 10-io.md §10.12 | Partial / wrong former summary witness | resource_serial_same_token_serializes measures exclusion, not the newly stated independence analysis on core binds. auto_io_independent_diff_token_parallelizes_e2e and its dependent/Sequential controls are nearer candidates; timing alone does not prove a composed node when sequential runtime execution is allowed. |
+| 58 | 10-io.md §10.12.1 | Partial / over-strong timing | auto_io_independent_diff_token_parallelizes_e2e requires sub-midpoint overlap for explicit primitive bind chains in run/link; dependent and Sequential controls require serialization. They distinguish scheduling outcomes, but mandatory observed overlap is stronger than the rewritten runtime MAY (sequential execution allowed). QA must separate compiler composition evidence from runtime performance. |
+| 59 | 10-io.md §10.12.1 | Partial / same issue | Same core-bind fixtures as row 58. Their timing cannot prove composition independently of runtime execution strategy; no unchanged blanket Tested judgment is warranted for the MAY clause. This is a QA classification handoff, not a newly classified product defect. |
+| 60 | 10-io.md §10.12.4 | Partial | resource_serial_same_token_serializes asserts a lower elapsed bound in run/link. It rejects overlap on one token but cannot reject serial effects executed in reversed source order. concurrency_capacity::same_token_capacity_1_blocking_serial_and_source_ordered and the poll twin add exact stdout order; all are explicit bind fixtures, with carried Pure migration. |
+| 61 | 10-io.md §10.12.4.1 | Partial / timing classification | Capacity cells cover distinct/shared pools, N+1 parking and capacity-1 source order on blocking and poll carriers. They use explicit imports and core binds. Lower timing bounds observe admission ceilings; upper overlap bounds demand more than the paragraph's permitted sequential execution, so QA must retain those as implementation-performance evidence only. |
+| 62 | 10-io.md §10.12.4.1 | Retains ceiling; partial whole row | same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks and its poll twin assert lower bounds rejecting all N+1 effects overlapping; their upper bounds demand saturation/overlap, not required by this MAY. No direct observation of each begin instant; wall clock is the declared discriminator. Pure terminals await migration. |
+| 63 | 10-io.md §10.12.5 | Partial / mechanism-neutrality | concurrency_cancellation::blocking_par_without_select_waits_for_both_workers_control observes join behavior for the current mechanism. It cannot require rayon/reactor selection. The normative value/order/permit clauses need their dedicated cells; mandatory overlap checks cannot grade the allowed sequential alternative. |
+| 64 | 10-io.md §10.12.7 | Partial rollup | launch_and_continue_runs_concurrently_launcher_does_not_await observes an unused-result/disjoint-token bind loop; degree_n_bounds_inflight_launched_effects_nplus1_parks observes throttling. They do not cover all eligibility/cancellation ownership clauses (ACT-0977). Both use Pure terminals awaiting migration; no do spelling is needed. |
+| 65 | 10-io.md §10.12.7 | Retains current detached witness | launch_and_continue_runs_concurrently_launcher_does_not_await asserts a positive duration floor (effects ran) and an upper overlap bound (launcher did not await five effects). Its source is a primitive bind loop; result-unused eligibility is explicit. It observes the detached path, not a language requirement to detach every eligible call. |
+| 66 | 10-io.md §10.12.7 | Partial / constructive eligibility | The same fanout loop has an unused continuation parameter and returns 0; its value does not use the effect result. This shows a legal discarded-result shape, not an independent dynamic test that no launched result can ever be observed. The rule is conditional on unused-result eligibility. |
+| 67 | 10-io.md §10.12.7 | Retains panic clause | detached_faulting_effect_exits_the_process asserts a nonsignal nonzero exit and exactly the permitted panic report; the nonfaulting fanout control requires completion. This rejects recovery/continued launch execution. Explicit primitives, with Pure terminal migration still carried. |
+| 68 | 10-io.md §10.12.7 | Retains with fixture limit | degree_n_bounds_inflight_launched_effects_nplus1_parks uses distinct tokens and degree=2, so the lower timing bound rejects unbounded launch admission. Its upper bound also demands overlap of the current implementation. No library sugar; terminal Pure migration remains. |
+| 69 | 10-io.md §10.12.8 | Partial / surface split | select and sleep cells exercise language operations; race/timeout cells currently import primitives/race or implement a helper themselves. The new classification requires library derivation, so existing primitive-race greens cannot establish the public library contract. Empty-select and winner/cancellation clauses are separable below. |
+| 70 | 10-io.md §10.12.8 | Retains value; cancellation partial | concurrency_cancellation::select_returns_first_completed_value requires FAST as exit status with the fast branch in the middle; wrong source-first/last/index results differ. select_only_winner_value_returned_losers_side_effects_absent_neg adds losing-output absence. No library or Pure construction is needed for those direct select fixtures. |
+| 71 | 10-io.md §10.12.8 | Retains separated winner | The same middle-fast select fixture requires FAST and completion before SLOW. It rejects source-order-first selection when the later branch completes first. It does not choose a winner for simultaneously-ready ties, which the spec deliberately leaves unspecified. |
+| 72 | 10-io.md §10.12.8 | Retains value/index discriminator; example unbuilt | select_returns_first_completed_value returns FAST milliseconds, distinct from middle index 1. That rejects index-returning implementations. The new tagged-value example using public pure has no covering cell here; do not infer its availability from the result-only witness. |
+| 73 | 10-io.md §10.12.8 | Partial / core versus library | select_only_winner_value_returned_losers_side_effects_absent_neg rejects running all select branches to completion. The two race cells exercise primitives/race, now withdrawn from required core surface, so migrate them to select or a local/library derivation before core claims. The cancellation-context contrast remains ACT-0977; losing-output absence alone does not prove all resource releases. |
+| 74 | 10-io.md §10.12.8 | Library illustration | timeout_io_completes_before_deadline_returns_result and timeout_io_exceeds_deadline_fires_and_cancels_io_neg use a test-local timeout derivation, not required core syntax. They observe Some/None and losing completion absence for that derivation only; it still uses primitive race and Pure. No new public-library claim is established. |
+| 75 | 10-io.md §10.12.8 | Partial | sleep_parks_for_duration_then_resumes_and_continues asserts a duration floor and exit 7 after the timer; linked twin asserts exit 7 only. Neither reads the sleep payload (continuation ignores it), so the specified result 0 is not proven. A duration lower bound alone would also accept seconds instead of milliseconds; do not claim the unit's negative direction from it. Pure continuation migration remains. |
+| 76 | 10-io.md §10.12.8 | Retains with mode limit | The four empty-select cells require the message, nonsignal nonzero exit, no fabricated value, bounded completion, and run/REPL termination parity. They use direct select with explicit or qualified primitives. The carried set does not establish the linked leg from these citations alone. |
+| 77 | 11-stdlib.md §11.2 | Partial inventory | trace_returns_trace_type and the Trace import/FQ cells retain selected seeded-Trace observations. The bare-name negative is weak (contains TraceCall suffices), not a decisive unresolved-name assertion. Pure constructor execution cannot prove opaque IO; T-IO-OPAQUE is RED. Newly listed seeded Option/Result/Pair are not inventoried by this former set. Non-normative reference table does not create a second spec authority. |
+| 78 | 12-runtime.md §12.4 | Rollup / partial | Judge strictness, lazy ADTs, lenient scheduling and explicit control separately (rows 79–84). A Tested rollup cannot stand while descendants carry marker/pure migration and unmeasured clauses; no one direct section test. |
+| 79 | 12-runtime.md §12.4.1 | Partial / insufficient former witness | application_chained requires 3 from nested pure inc calls. It does not distinguish eager versus lazy argument evaluation, let order, one-branch-only evaluation or first matching arm. No library dependency, but no complete strictness claim from this cell. |
+| 80 | 12-runtime.md §12.4.1 | Partial | No exact §12.4.1 paragraph backlink. Bind/print ordering observes effect order, not unobservable scheduling among independent pure operands; lenient value-parity cells are relevant candidates. Neither justifies grading physical evaluation order by result alone. |
+| 81 | 12-runtime.md §12.4.2 | Retains core lazy-ADT behavior | Both cells declare Stream inline, with explicit primitives, and require 42/37 while constructing an infinite thunked tail. Eagerly forcing the tail times out. This matches user-controlled laziness and requires no built-in Seq; Pure main terminals await migration. |
+| 82 | 12-runtime.md §12.4.3 | Retains clauses with gaps | Panic-exit predicates reject recovery, continuation, signals and duplicate reports; dual-panic accepts either message. Nonpanicking twins assert actual spawns. Trace frame-count plus trace_declines and untraced-spawns distinguish the strict trace exception. Result parity cells alone do not grade heuristic policy. Existing Pure fixtures still need migration; no blanket all-clauses restoration. |
+| 83 | 12-runtime.md §12.4.3 | Partial / changed permission | Lenient ON/OFF result cells reject result corruption; trace decline/spawn controls observe the exception. Fixed overlap/spawn demand must be judged against the paragraph's allowed sequential implementation, not promoted to universal acceptance. No new language requirement is inferred here. |
+| 84 | 12-runtime.md §12.4.3 | Partial | apply_arg_single_expensive_preserves_result_parity requires the same result with ON/OFF, but explicitly delegates no-spark emission to another tier. It cannot prove the cost/at-least-two heuristic never spawns. Cheap/mixed let result cells have the same limitation; source-only mapping, no new module claim. |
+| 85 | 12-runtime.md §12.5 | Retains selected tails / partial total | Million-depth countdown and 100k match/let tests reject stack growth at those tail sites. Accumulator and non-tail cells only assert values (5050/55), not frame behavior. They do not prove every tail position or macro-expanded tail; Pure/library macro migration is separate. |
+| 86 | 12-runtime.md §12.5 | No dedicated depth discriminator | Fanout's five-launch and four-launch degree loops are too shallow to falsify linear stack growth; ordinary million-depth pure TCO cannot prove launch/trampoline interaction. No exact launch-depth cell located in this backlink walk. Return this clause to QA without equating shallow success to constant space. |
+| 87 | 12-runtime.md §12.7.6 | Retains report clauses / platform-value gap | platform_errors cells assert one unprefixed FQ-named stderr line, nonzero nonsignal exit and no resumed REPL; nonfaulting twins finish. auto_io_par_branch_panic_exits_neg checks a parallel panic. These reject recovery and wrong report shape; they do not observe expected platform failures returning Option/Result values. The --test leg remains module-only as recorded. |
+| 88 | 12-runtime.md §12.7.7 | No direct witness | No §12.7.7 backlink. Ordinary Option/Result matching does not prove the absence of panic/error/throw/raise core entries. The example's explicit primitive imports remove a prelude assumption, but do not create executable evidence for the entire negative inventory. |
+| 89 | 12-runtime.md §12.9 | Insufficient former witness | display_int_result only observes scalar REPL output. It cannot prove trace/REPL formatting equality, independence from a user Display impl, ADT formatting or marker rules. T-MARKERS supplies two narrow REDs, not canonical-format uniformity. |
+| 90 | 12-runtime.md §12.9.3 | Mismatch | display_int_result displays 3; it never reaches vector/string/depth thresholds or compares trace output. No uniform elision or unchanged underlying-value assertion follows. Return the SHOULD clauses to QA as unevidenced by this cited cell. |
+| 91 | appendix-a-builtins.md §A.2 | Partial reference inventory | vec_literal_int observes a Vec type prefix; defmacro_identity_expands only proves an identity macro result, not every Sexp/SList constructor; pure_int_unwraps_inline uses the retired constructor. These cannot justify the expanded seeded-type inventory or opaque IO. Treat the non-normative reference separately from normative source sections. |
+| 92 | appendix-a-builtins.md §A.2 | RED opaque IO | No former cell (S9). T-IO-OPAQUE now observes public lift absence and accepted constructors/matches; it provides RED evidence of the rewritten opaque contract. The bare-Bind and pure-only-match refusals are narrow greens, not total opacity. |
+| 93 | appendix-b-examples.md §B.1 | No backlink / library example | Hello-world explicitly imports the reference prelude and show. No direct B.1 cell; generic print tests do not execute this exact program. Reference example, not a mandatory compiler-provided show function. |
+| 94 | appendix-b-examples.md §B.2 | No backlink / library example | Factorial explicitly imports arithmetic/show from the reference prelude. No direct B.2 cell; unrelated recursion tests cannot establish this exact sample's output under its imports. |
+| 95 | appendix-b-examples.md §B.3 | No backlink / library example | Inline ADTs and Display impls depend on explicitly imported library Display/do/show. No direct B.3 witness for the combined output; trait and ADT unit results elsewhere are narrower. |
+| 96 | appendix-b-examples.md §B.4 | No backlink / fixture blocked | The sample uses library bind! and new public pure. No direct B.4 cell; pure is absent (ACT-1108), so the rewritten sample cannot currently be accepted by a conforming-output guard without that product work. |
+| 97 | appendix-b-examples.md §B.5 | No backlink / library example | The Seq collection functions come from the explicit reference prelude. No direct B.5 witness; inline Stream tests prove the core thunk mechanism, not these library transformations or this full transcript. |
+| 98 | appendix-b-examples.md §B.6 | No backlink / library example | The example explicitly imports macros data and core.syntax/slist. No direct B.6 witness for 42/Some99/30 together; no implicit requirement for slist or when is inferred from generic macro tests. |
+| 99 | appendix-b-examples.md §B.7 | No backlink / library example | Higher-order code uses explicit prelude arithmetic and do/show. No direct B.7 witness; individual closure/curry tests do not execute its combined sample or establish a mandatory library layout. |
+| 100 | appendix-b-examples.md §B.8 | No backlink / library example | Threading macros and collection helpers are explicit reference imports. No direct B.8 cell; spec_11_stdlib threading cells are library-specific and do not validate this exact pipeline. |
+| 101 | appendix-b-examples.md §B.9 | No backlink / library example | The sample's map over Vec/List/Seq relies on the reference library. No direct B.9 cell; native multi-signature tests do not prove its container helpers or output. |
+| 102 | appendix-b-examples.md §B.10 | No backlink / library example | Num/show are supplied by the reference prelude. No direct B.10 cell; constrained core tests observe selected dispatch results, not this combined reference output or every trait spelling (ACT-1103). |
+| 103 | appendix-b-examples.md §B.11 | No backlink / library example | Three prints are sequenced by explicitly imported library do. No direct B.11 cell; exact native-bind print tests are candidates for the expansion mechanism only, not execution of the authored macro sample. |
+| 104 | appendix-b-examples.md §B.12 | No backlink / fixture blocked | The conditional uses new pure for its non-effect branch. No direct B.12 witness; Pure-based branch-unification cells cannot prove the rewritten interface, absent under ACT-1108. |
+| 105 | appendix-b-examples.md §B.13 | No backlink / fixture blocked | The combined do/bind!/read-line sample imports the reference library and ends with new pure. No direct B.13 cell or exact stdin/transcript witness; public pure absence is a product blocker, not a test setup completion. |
+| 106 | appendix-c-nfr.md §C.3.2 | Partial / architectural clauses | Core-bind scheduling timing witnesses and select cancellation/output witnesses map to the behavioral parts of §10.12. The same-token order cells distinguish exclusion from order. No one cell proves emitted-node insertion or all detached cancellation contexts; ACT-0977 remains. Underlying infrastructure guarantees need module/arch evidence, not a new internal-session integration tier. |
+| 107 | appendix-c-nfr.md §C.4.4 | Architectural / no solution cell | No C.4.4 backlink. Registerable opaque Chan, reusable pool and dispatch extensibility are future architecture constraints; current IO tests cannot prove that new channels need no core-dispatch change. Route to arch/QA, not a fabricated language test. |
+| 108 | index.md §Notation | Editorial / no runtime cell | Notation defines EBNF, requirement levels and explicit example scope, not one runtime behavior. No direct notation backlink. Tests with chosen preludes show only their fixtures; they cannot establish that no prelude is assumed throughout the prose. QA/spec must judge this editorial summary separately. |
