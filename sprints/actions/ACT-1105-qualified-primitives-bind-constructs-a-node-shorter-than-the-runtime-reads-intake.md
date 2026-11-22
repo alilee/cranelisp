@@ -8,6 +8,7 @@ to: qa
 sprint: 124
 filed_at: 2026-11-22
 refers_to:
+  - spec/10-io.md §10.1
   - design/backend/io-trampoline.md §1.3
   - design/arch/core-library-boundary.md §2
   - src/bootstrap.rs
@@ -90,6 +91,12 @@ Observed, with `CRANELISP_RC_STATS` and lenient evaluation off:
   memory checker or debugger.
 
 ## Classification: a defect under either answer to the open question
+
+- **Against the specification as written it is already a defect.**
+  [Spec §10.1](../../spec/10-io.md) says `Bind` "cannot be constructed or
+  pattern-matched by user code". The committed cells
+  `spec_10_io::bind_constructor_rejected` and `bind_pattern_rejected` use
+  the bare name only.
 
 - **If the constructor is not language surface,** the qualified, dotted
   and value spellings construct it where the bare spelling is refused: one

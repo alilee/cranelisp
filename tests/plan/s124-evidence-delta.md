@@ -1539,6 +1539,19 @@ its three exit clauses (§14.9).**
   leak or crash was observed; the ordinary path matches the builtin.
   Whether the constructor is language surface is open with the user. No
   cell yet: T-BIND-SPELLING.
+- [ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md) is opened, **memory-unsafe:** the `Effect`
+  constructor's field is typed as the IO's value and treated by the
+  runtime as a thunk. `(primitives/Effect 5)` ends the process on signal
+  11 in every mode, forced or not, and a match that binds the field reads
+  a thunk's address as an `Int` or a `String`. No cell yet: T-EFFECT-FIELD.
+- [ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md) is opened: a match on `IO` with `Pure` and `Effect`
+  arms is accepted as exhaustive and ends on `match failed` when given a
+  bind node. No cell yet: T-IO-MATCH.
+- **What `IO` is as a language type is open with the user.** All three
+  filings are defects under any answer; each cell's clause names only what
+  every answer forbids.
+- **The user ruled S124-Q12-R1:** `macros/sconcat` is retained as a public
+  primitive. `spec` has not written it; `qa` allocates when it has.
 - `test` committed T-MOD-CHILD-INDEX and the returned T-MOD-CHILD values
   (`60f15a06`). `qa` has not read or run them.
 
@@ -1706,6 +1719,8 @@ read from their filings' headers only.
 
 | Problem | Module | State | A reproduction |
 |---|---|---|---|
+| `Effect`'s field is typed as the IO's value and holds a thunk: constructing it with a value, or binding it in a match, ends the process on a signal ([ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md)) | The requirement (spec §10.1), as realised in `src/bootstrap.rs` | **A defect against the specification as written, memory-unsafe. Observed by `sprint`; reproduced by `qa`** in every mode with `Pure` controls | T-EFFECT-FIELD, allocated (§14.3) |
+| A match on `IO` with `Pure` and `Effect` arms is accepted and fails on a bind node ([ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md)) | typecheck | **A defect against spec §6.5. Observed by `sprint`; reproduced by `qa`** in every mode with two controls. `adt.rs` leaves internal constructors out of the set to cover; read in source | T-IO-MATCH, allocated (§14.3) |
 | A qualified `primitives/Bind` constructs an IO node one word shorter than the runtime reads; the bare spelling is refused ([ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md)) | `src/` for the seeded node; typecheck for the spelling, provisionally | **A defect under either answer to the user's open question. Observed by `qa`** in emitted code and by controls. Memory-unsafe and latent: a read past the allocation on every forced node; no wrong value observed | T-BIND-SPELLING, allocated (§14.3). The short node has no solution-level cell |
 | `/search` offers a symbol from a project file at a library child's path, which the ruling on S124-Q14 says is not part of the program (a face of [ACT-1096](../../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md)) | `src/`, provisional | Reproduced by `qa` by hand with a control. Wrong value | T-MOD-CHILD-INDEX, allocated (§14.3) |
 | Two processes on one project directory mix cache generations ([ACT-1085](../../sprints/actions/ACT-1085-two-processes-on-one-project-directory-can-mix-cache-generations-intake.md)) | `src/` | Asserted with a named falsifier. The backend's shared temporary name, which was a part, is corrected (`7d5a5d42`) | Judged constructible, and not attempted, below |
@@ -1862,14 +1877,71 @@ statement of what each cell shows.
 
 | Rank | Item | Filing | Kind |
 |---|---|---|---|
-| 1 | T-BIND-SPELLING | ACT-1105 | New reproduction |
-| 2 | T-MOD-CHILD-INDEX | ACT-1096 | New reproduction; committed at `60f15a06`, not yet read by `qa` |
-| 3 | T-MOD-CHILD: the library's value must not be 1 | ACT-1096 | Returned; committed at `60f15a06`, not yet read by `qa` |
+| 1 | T-EFFECT-FIELD | ACT-1106 | New reproduction; memory-unsafe |
+| 2 | T-IO-MATCH | ACT-1107 | New reproduction |
+| 3 | T-BIND-SPELLING | ACT-1105 | New reproduction |
+| 4 | T-MOD-CHILD-INDEX | ACT-1096 | New reproduction; committed at `60f15a06`, not yet read by `qa` |
+| 5 | T-MOD-CHILD: the library's value must not be 1 | ACT-1096 | Returned; committed at `60f15a06`, not yet read by `qa` |
 
 **Held:** T-VEC-FUNCTOR, an implementation of a higher-kinded trait for
 the built-in `Vec`, on S124-Q16 (rows CL05 and CL36). **Nothing is
 allocated against the Q16 inventory's classifications.** S124-Q13, Q15,
 Q17 and Q18 are open with the user and hold no allocated cell.
+
+**Held:** a cell for `macros/sconcat` as a public primitive (the user's
+ruling on S124-Q12-R1), until `spec` writes the requirement.
+
+**T-EFFECT-FIELD** ([ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md); spec §10.1), a safety fence.
+
+- **Risk.** A well-typed program that constructs `Effect`, or binds its
+  field in a match, ends on a signal.
+- **Seam and technique.** One-file programs with no prelude under `--run`,
+  and one REPL session. The match subjects use the `test-capture`
+  platform.
+- **Subjects.**
+  1. `(defn main [] (primitives/Effect 5))`, under `--run` and linked.
+  2. `(defn main [] (let [e (primitives/Effect 5)] (primitives/Pure 7)))`:
+     the node is built and never forced.
+  3. `(primitives/Effect 5)` as a REPL turn.
+  4. With `peek` matching `Pure` and `Effect` and returning the bound
+     field: `(primitives/str-len (peek (read-line)))`.
+- **Clause, for each subject:** the process does not end on a signal. It
+  exits with a status, having refused the program with a diagnostic or
+  run it.
+- **Why the clause says no more.** What `Effect` is to user code is open
+  with the user. Every answer forbids the signal. `qa` narrows the clause
+  when the answer is recorded.
+- **Controls.** `(primitives/Pure 5)` gives 5, and `(peek (primitives/Pure
+  7))` gives 7.
+- **Wrong implementations it rejects.** A field typed as the IO's value
+  and used as a closure, as built (all four); a refusal of construction
+  that leaves the match (4); a guard on forcing that leaves the release of
+  an unforced node (2).
+- **By hand subjects 1 to 3 end on signal 11 and subject 4 on signal 7.**
+- **Not asserted:** `(peek (print "MARK"))` yields the thunk's address as
+  an `Int`. No outcome for it is common to every answer.
+- **Defect line:** `class=scalar-as-pointer`, the locus
+  `src/bootstrap.rs` as the seam `io-effect-constructor-seed`,
+  `owner=/dev`.
+
+**T-IO-MATCH** ([ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md); spec §6.5).
+
+- **Risk.** A match the checker accepts as exhaustive ends the process on
+  `match failed`.
+- **The cell.** `peek` with `Pure` and `Effect` arms, applied to
+  `(primitives/bind (primitives/Pure 1) (fn [x] (primitives/Pure x)))` as
+  `main`'s value, under `--run`.
+- **Clause.** The program is refused at compile time with a diagnostic, or
+  it runs to a value. Its output never holds `match failed`.
+- **Controls.** The same match with a wildcard arm in place of `Effect`
+  gives the wildcard's value; with only the `Pure` arm it is refused as
+  non-exhaustive.
+- **Wrong implementation it rejects.** A cover set that leaves out a
+  constructor the user cannot write, as built.
+- **By hand the subject ends on the panic with exit 1** and both controls
+  hold.
+- **Defect line:** `class=wrong-accept`, the locus
+  `crates/cranelisp-typecheck/src/adt.rs`, `owner=/dev`.
 
 **T-BIND-SPELLING** ([ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md);
 [IO trampoline §1.3](../../design/backend/io-trampoline.md)).
@@ -2637,6 +2709,8 @@ running at once, and once in the full suite.
 
 | Filing | Defect | Entered | Face | State |
 |---|---|---|---|---|
+| [ACT-1106](../../sprints/actions/ACT-1106-effect-constructors-field-is-typed-as-the-io-value-and-holds-a-thunk-intake.md) | `Effect`'s field is typed as the IO's value and treated as a thunk | The specification's declaration (§10.1); not dated | **Memory-unsafe:** signal 11 on constructing it with a value, forced or not; a thunk's address read at another type on a match | **Opened from `sprint`'s lead on 2026-11-22.** Reproduced in every mode with `Pure` controls; attributed to the requirement as realised in `src/bootstrap.rs`, read in source. No cell yet: T-EFFECT-FIELD (§14.3) |
+| [ACT-1107](../../sprints/actions/ACT-1107-match-on-io-with-pure-and-effect-arms-is-accepted-and-fails-on-a-bind-node-intake.md) | A match on `IO` with `Pure` and `Effect` arms is accepted and fails on a bind node | Not established | An accepted program ends on `match failed` | **Opened from `sprint`'s lead on 2026-11-22.** Reproduced in every mode with two controls; attributed to typecheck's exhaustiveness check, read in source. No cell yet: T-IO-MATCH (§14.3) |
 | [ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md) | A qualified `primitives/Bind` constructs an IO node one word shorter than the runtime reads; the bare spelling is refused | Before S124: the two-field seed is S76's, the third word S121 to S122's | Memory-unsafe, latent: a read past the allocation; a call through the stray word on a path not reached | **Opened from `sprint`'s lead on 2026-11-22.** The node's size is observed in emitted code with the builtin as control; the reader is read in source. The ordinary path matches the builtin. No cell yet: T-BIND-SPELLING (§14.3) |
 | [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md) | A trait spelled `Num`, `Eq`, `Ord` or `Display` has its implementation for a primitive type replaced by a primitive | Before S124: in typecheck since 2026-06-21, in the backend before | Wrong value, every mode, no diagnostic | **Opened from `arch`'s determination on 2026-11-21.** Reproduced by hand for all four spellings with renamed controls; attributed to `primitive_for_trait_method`, read in source. T-TRAIT-SPELLING is committed, 6 cells RED |
 | [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md) | The built-in `Vec` is refused as an implementation target | Not established | A legal program refused, with a self-contradicting diagnostic | **Opened from `arch`'s determination on 2026-11-21.** Reproduced by hand with controls; attributed to typecheck's implementation check, provisionally as to the site. T-VEC-IMPL is committed, 2 cells RED. The higher-kinded face is held on S124-Q16 |
@@ -2702,6 +2776,10 @@ running at once, and once in the full suite.
 - **The owning-value leak.** T-TRACE-ROOT's heap leg used a `String`, which
   holds nothing further. `qa` allocated "heap-valued" and did not separate
   a value that owns other heap values, which is where drop glue matters.
+- **ACT-1106 and ACT-1107.** The `IO` cells construct `Pure` and reach
+  `Effect` only through a platform. No cell constructs `Effect` or matches
+  on an `IO` value, though the specification calls `IO` an ordinary ADT.
+  The axis "what an ordinary ADT permits" was never applied to it.
 - **ACT-1105.** The cells for the internal constructor use the bare name,
   which is refused. The axis "the same name, qualified" was not enumerated
   for a refusal that is meant to hold for a declaration, not a spelling.
@@ -2903,6 +2981,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 | Whether ACT-1099's correction is scheduled with ACT-1089's | T-TYPE-MACRO | Clean house: both are in `typecheck_only` |
 | Whether ACT-1100's correction is scheduled | T-MACRO-SIBLING's 6 RED cells | The standard library's `derive` meets it |
 | S124-Q16: the core/library classification | T-VEC-FUNCTOR; the second arm of T-TRAIT-SPELLING's clause | Consistent spec |
+| What `IO` is as a language type, and whether `Effect` is constructible or matchable | The outcomes T-EFFECT-FIELD and T-IO-MATCH name; the corrections of ACT-1106 and ACT-1107 | Consistent spec |
 | Whether `primitives/Bind` is language surface | The outcome T-BIND-SPELLING's clause names; ACT-1105's correction | Consistent spec |
 | Whether ACT-1101 and ACT-1102 are corrected before the sprint closes | T-SAVE-PRODUCT's 3 RED cells; T-REFUSED-SAVE-CACHE's 1 | Data loss and a memory-unsafe restart. Neither is S124's own, so *no decay* does not require it |
 
@@ -3140,6 +3219,11 @@ defect report; the defects are §14.1.
   (ACT-1101); a multi-signature function is omitted from the regenerated
   file (ACT-1068); regeneration can reorder definitions so the file no
   longer loads (ACT-1005).
+- **Memory-unsafe, no test yet:** constructing `primitives/Effect` with a
+  value, or binding its field in a match, ends the process on a signal
+  (ACT-1106).
+- **An accepted program that panics, no test yet:** a match on `IO` with
+  `Pure` and `Effect` arms fails on a bind node (ACT-1107).
 - **Memory-unsafe and latent, no test yet:** an IO node built by the
   qualified `primitives/Bind` is one word shorter than the runtime reads
   (ACT-1105). No wrong behaviour was observed from it.
