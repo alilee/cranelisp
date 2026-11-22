@@ -3,7 +3,7 @@
 > **Owner:** `qa`. **Readers:** `test`, dispatched against §6's first row;
 > `design` and `dev`, for the attributions and module rows; `sprint`,
 > sequencing it; `review`, checking delivered evidence against it.
-> **Authority:** the [S124 sprint plan](../../sprints/SPRINT.md) scope and the
+> **Authority:** the [S124 sprint plan](../../sprints/archive/sprint-124.md) scope and the
 > user's rulings of 2026-11-16 and 2026-11-17 (S124-Q1 to Q9, with Q7 as
 > re-ruled B and its depth-limit and reporting follow-up), recorded in its
 > Notes and scribed in the sections below; the
@@ -40,7 +40,7 @@ passed, 49 failed, 1 skipped (153 s).
 | Tests | Count | Class | Traces to |
 |---|---|---|---|
 | The filed guards | 44 | Acceptance evidence, intended RED | The set is identical to the S123 close set; `arch` mapped each guard to its filing in the S124 architecture review (retired; recoverable at commit `d4e930a7` under `sprints/`) §7.1. `qa` confirmed the set, not the per-guard mapping. |
-| `citation_drift`, all three tests | 3 | Maintenance check | [S124 scope](../../sprints/SPRINT.md#included) item 6, owner `sprint`, wave W0. The converged checker exits 2 with `inventory.root_memory must be AGENTS.md`, so it inspects nothing. Until W0 lands, no claim rests on the document gate. |
+| `citation_drift`, all three tests | 3 | Maintenance check | [S124 scope](../../sprints/archive/sprint-124.md#included) item 6, owner `sprint`, wave W0. The converged checker exits 2 with `inventory.root_memory must be AGENTS.md`, so it inspects nothing. Until W0 lands, no claim rests on the document gate. |
 | `user_samples`, both tests | 2 | Maintenance check, run-dependent | ACT-1061 (closed S124), §5.1. |
 
 - **Stable failing set: 47.** The two `user_samples` tests are run-dependent
@@ -920,7 +920,7 @@ designs: the [release contract](../../design/backend/non-concrete-release-contra
 [trace codegen](../../design/backend/trace-codegen.md),
 [trace runtime](../../design/intrinsics/trace-runtime.md),
 [monomorphisation](../../design/typecheck/monomorphisation.md) §3.10,
-[typecheck](../../design/typecheck/typecheck.md) §12,
+[typecheck](../../design/typecheck/typecheck.md) (its S124 rows, then its last section, are delivered and now stand in their home sections),
 [frontend modules](../../design/frontend/modules.md),
 [int](../../design/int/int.md) §6.11 to §6.13, §7.6.3 and §16.0, and
 [session transaction](../../design/int/session-transaction.md) §2.4.
@@ -1540,7 +1540,7 @@ its three exit clauses (§14.9).**
   rewrite cleared, 21 are restored and 87 state why they are not
   (§14.14). The seven older cleared rows are settled too (§14.12); no
   row awaits re-judgment.
-- **Two notation items are with `test`** (§14.3).
+- **Nothing is with `test`** (§14.3).
 - **What the sprint's evidence does not cover** is §14.13.
 
 Open, by filing, worst first:
@@ -1885,15 +1885,18 @@ read; each cell passed or failed in the `f8c55626` run as its row states.
 
 ### 14.3 Allocated to `test`
 
-**Two notation items are with `test`, and no cell.**
+**Nothing is with `test`.** REPRO-1083's `// defect:` line carries its
+stamp (`fixed=S124/f2317af0`, in `tests/cache.rs`); the closed action's
+note that it did not was stale.
 
-1. The five `search::s124_child_index_*` subjects carry the seam name
-   `index-feed-module-enumeration` as their locus. The site is read:
-   `src/session_v4/index_worker.rs::enumerate_cl_modules_excluding`.
-2. Confirm that REPRO-1083's `// defect:` line carries its `fixed=` stamp.
-   The closed action for ACT-1083 said it did not, and `qa` could not find
-   the line by that number. Every allocation in this section is committed and judged (§14.2); its conditions stay as the present-tense statement of
-what each cell shows. ACT-1110 has no cell by a named residual.
+**Done at `cd27f1dc`:** the two `search::s124_child_index_*` subjects that
+carried a seam name as their locus now carry
+`src/session_v4/index_worker.rs::enumerate_cl_modules_excluding`. `qa` had
+written five; the other three already named the child-enrolment site.
+
+Every allocation in this section is committed and judged (§14.2); its
+conditions stay as the present-tense statement of what each cell shows.
+ACT-1110 has no cell by a named residual.
 
 **T-TYPE-EXPR** (ACT-1089; REPL §3.1), a safety fence.
 
@@ -2982,7 +2985,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 **Can proceed now, in this order.**
 
-1. **`test`:** the two notation items of §14.3. Its transient handoff
+1. **`test`:** nothing is owed. Its transient handoff
    file is removed (`52a472c7`); `qa` took its clause map into §14.2 and
    its backlink walk into §14.14.
 2. **`qa`:** nothing is owed at the close.
@@ -3009,7 +3012,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
      `dev`(exemplar), ACT-1097's to `audit`'s disposition and ACT-1018's
      to `dev`(stdlib);
    - schedule or decline ACT-1085's reproduction (§14.1);
-   - `sprints/SPRINT.md` §Settling target still lists zero failures; its
+   - `sprints/archive/sprint-124.md` §Settling target still lists zero failures; its
      Notes state the target ruled on 2026-11-19;
    - the root memory's testing guidance states about 170 s at 5,687 tests;
      the suite took 265 s at 8,109 at `128255fc`;
@@ -3183,7 +3186,7 @@ any test or by the one opening-tree reading taken.**
   ran ACT-1101's three subjects and two controls and ACT-1102's rows on
   it. Each gives the same result as the current tree: the save is
   refused, the later definition is missing, the cached restart ends on
-  signal 11, and the controls save. `sprints/SPRINT.md` names no opening
+  signal 11, and the controls save. `sprints/archive/sprint-124.md` names no opening
   commit; `3155f47f` is "Open Sprint 124".
 - **The reading is of those sessions only.** It does not show that
   nothing else in `src/` changed for the worse.
@@ -3262,7 +3265,7 @@ decay, and every other problem on a failing test.
 | Every other failing test carried on record by module, with severity | Met (§14.1). 143 failing, none without a filing. ACT-1110 has no cell, by a named residual |
 | No module the sprint touched left worse | Met on the basis of §14.10 |
 
-**The Phase 5 exit is taken** (`sprints/SPRINT.md`, Notes), with the
+**The Phase 5 exit is taken** (`sprints/archive/sprint-124.md`, Notes), with the
 review closed as `sprint` records it.
 
 **Since the exit, in Phases 6a and 6b.** Every allocation is committed and
