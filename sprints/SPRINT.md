@@ -737,3 +737,9 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
     said: "The big missed trick here is that we should have (at least) two
     functions so that the parameters can be typed (ie. an enum or multiple
     functions). compiler would emit the right call." Returned to `arch`.
+- **S124-Q16 classification confirmed (2026-11-22).** With every point
+  inside it decided (`race`, `Bind`, `sconcat`, `IO`), the user was asked for
+  the go-ahead for `spec` to rewrite the inventoried passages so they stop
+  resting on the prelude, changing no behaviour beyond the rulings. Answer:
+  "confirm the spec rewrite". Stage two is dispatched after the pass that
+  records the 2026-11-22 rulings.
