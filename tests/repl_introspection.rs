@@ -5716,3 +5716,36 @@ fn s124_type_macro_expression() {
         out.stderr
     );
 }
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-EXPR, builtin constructor
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_expr_fresh_some_remains_evaluable() {
+    s124_type_session("/type (primitives/Some 1)\n(primitives/Some 1)\n(add-i64 5 5)\n")
+        .assert_ok()
+        .assert_stdout_contains("(Option.Some 1)")
+        .assert_stdout_contains(":primitives/Int 10");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-EXPR, user constructor
+// defect: class=partial-record-update locus=src/repl/commands.rs::typecheck_only found=S124 owner=/dev (ACT-1089)
+#[test]
+fn s124_type_expr_fresh_box_remains_evaluable() {
+    s124_type_session("(deftype (Box a) (Mk [:a v]))\n/type (Mk 1)\n(Mk 1)\n(add-i64 5 5)\n")
+        .assert_ok()
+        .assert_stdout_contains("(Box.Mk 1)")
+        .assert_stdout_contains(":primitives/Int 10");
+}
+
+// spec: repl/spec/03-slash-commands.md §3.1 — T-TYPE-EXPR, evaluated-first control
+#[test]
+fn s124_type_expr_evaluated_constructor_control() {
+    for (setup, value, printed) in [
+        ("", "(primitives/Some 1)", "(Option.Some 1)"),
+        ("(deftype (Box a) (Mk [:a v]))\n", "(Mk 1)", "(Box.Mk 1)"),
+    ] {
+        let out = s124_type_session(&format!("{setup}{value}\n/type {value}\n{value}\n(add-i64 5 5)\n"))
+            .assert_ok().assert_stdout_contains(":primitives/Int 10");
+        assert_eq!(out.stdout.matches(printed).count(), 2, "{}{}", out.stdout, out.stderr);
+    }
+}
