@@ -377,7 +377,7 @@ Existing open leads retain their present carriers: ACT-0985's duplicate-impl
 question, ACT-0987's primitive-identity/rigidity leads, ACT-1001 P-2's
 unreproduced index hazard, and ACT-1034's recorded instance work. Their
 remaining behaviour was not exhaustively rerun or re-attributed. Type-size
-growth is a user-accepted named risk in `sprints/SPRINT.md`; no exponential
+growth is a user-accepted named risk in the [S124 plan](../sprints/archive/sprint-124.md); no exponential
 probe or extra bound is proposed. ACT-1067's stack failure remains
 unattributed across stages. Neither is silently assigned to typecheck.
 
