@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 7 CLOSE — approved 2026-11-22 ("advance and push"); record repairs with their owners, then archive and push
+**Status**: CLOSED 2026-11-22 — user approval "advance and push"
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -8,6 +8,104 @@ frontend carries behind it.
 
 **Audit**: `cranelisp-typecheck` (approved 2026-11-17: longest unassessed, last
 audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7 window.
+
+## Close summary
+
+**Outcome against the target.** The backend, this sprint's focus module, is
+clean and green: no failing test, module tier 537 of 537, no build warning,
+no open review finding, and every type reaching codegen concrete with the
+armed census at zero over 298,871 frames. The settling target written at
+Phase 1 (zero failures across the suite) was superseded on 2026-11-19 by the
+user's delivery principles — one focus module clean and green, every other
+defect reproduced first and carried on its failing test.
+
+**Suite at close** (`qa` `ff7f43be`, tree `128255fc`, no compiler source
+changed afterwards): 8,109 run, 7,966 passed, 143 failed, 1 skipped, 265 s.
+Every failing test is a reproduction of a carried defect: `src/` 71,
+typecheck 61, backend 0, intrinsics 3, not attributed 7, document gate 1.
+The suite opened at 7,024 run with 48 failing; 96 of today's failures are
+reproductions written during the sprint for defects that predate it or whose
+age is not established.
+
+**Delivered.**
+
+- Type concreteness at codegen: the category census, typecheck's producer
+  obligations, the backend structural close (FIXME 0903), and the
+  bind-chain rewrite.
+- The Principle 27 retirements (stack placement, value flattening, spark
+  density, the borrow-elision carrier), the raise-helper hardening, and the
+  frontend audit's R1–R5.
+- Trace: frames named by template, the root's result, and a drop-glue leak
+  and a cross-thread disturbance closed (rows B16, B17).
+- Package convergence: the `AGENTS.md` memory convention, the converged
+  document checker, `arch` and `qa` on `claude-fable-5-2` at medium.
+- The typecheck audit ([report](../../audits/cranelisp-typecheck-s124.md)).
+- User-facing: `stdlib/` trait implementations, exemplar, examples, user
+  guide and REPL demo updates.
+
+**Language rulings.** S124-Q1 to Q18 are closed in
+[appendix D](../../spec/appendix-d-open-questions.md), with the user's words.
+Those of 2026-11-21 and 2026-11-22 changed the language's stated position:
+
+- The specification never depends on the prelude; a construct a library can
+  implement belongs to the library (§8.8.3). The 38 inventoried passages are
+  rewritten.
+- `IO` is an opaque built-in type whose public interface is `pure`; its
+  constructors are not language surface.
+- An `IO` value nested in a displayed value shows as `#io`; an anonymous
+  function shows as `#closure`.
+- A trace always has the synthetic root `::trace::`; a root that did not
+  record is `::untraced::` and carries the body's displayed value.
+- Traits take one parameter; multi-parameter traits are a future direction.
+- `/type` on a definition form is an error.
+- A project file under a library-resolved parent is not part of the program.
+
+**Open with the user.** S124-Q19: §3.2.3 says "Pure functions MUST NOT
+return IO", which is false of `pure`. The Phase 6b public-API line
+`cranelisp_collect_trace(i64, i64)` was not confirmed; its replacement is
+carried as ACT-1111, with neither row B18's shape nor its bounded-contexts
+sentence approved.
+
+**Carried.** The defect register is the
+[evidence delta §14.15](../../tests/plan/s124-evidence-delta.md); a defect
+number there names failing tests, not a filing. The next sprint's candidate
+order is in the [roadmap](../ROADMAP.md).
+
+- Where the compiler does not meet the rulings: `primitives/pure` is absent
+  and the `IO` constructors are surface (defects 1105 to 1108), the display
+  markers (1109), the unrecorded trace root (ACT-1110), `race` still a
+  built-in (ACT-1112).
+- Memory-unsafe defects on failing tests: 1076 and 1071 (typecheck), 1089,
+  1102, 1106 and 1062 (`src/`), and the short `Bind` node behind 1105.
+- Data loss on failing tests: 1101, 1068, 1005.
+- Coverage: of 108 specification rows the S124-Q16 rewrite cleared, 21 are
+  restored and 87 stand uncovered with reasons (delta §14.14); 32 of those
+  are partly covered.
+- Not re-triaged: fifteen older `qa` actions with no failing test.
+- Source comments that cite moved or retired records, for the next time each
+  surface is worked: `crates/cranelisp-typecheck/src/traits/impl_check/tests.rs:1592`,
+  `crates/cranelisp-typecheck/src/checker.rs:960` and neighbouring comments
+  in `builtins.rs`, `src/platform.rs:555`,
+  `crates/cranelisp-platform/src/tests.rs:1479`.
+
+**Method changes made this sprint.**
+
+- The six delivery principles (2026-11-19): reproduce first, one focus
+  module, a consistent specification, public-API changes batched through
+  `arch`, clean house, no decay.
+- A defect carried by a failing reproduction has no action (METHOD §3.3);
+  `qa` retired 31 such filings and deleted 14 resolved ones.
+- The public-API baselines omit generated auto-trait rows (row K11-a).
+
+**Proposed for deletion, to decide at the next opening.** The four working
+packets `arch` retired at close were each linked from a dozen standing
+documents, and retiring them cost a second repair pass across six owners. A
+working packet that standing documents may not link — they cite its row
+label — would have cost none.
+
+**Document checker at close.** The findings outside the ignored-path class
+are zero in every owner's files that reported; the ignored-path class
+remains with the user.
 
 ## Phase approvals
 
@@ -36,7 +134,7 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
     requires `inventory.root_memory = "AGENTS.md"`; the documented checker
     invocation exits 2 for the same reason;
   - one `user_samples` test failed once in the full run and passed alone.
-- **`qa` classification (Phase 3, [evidence delta](../tests/plan/s124-evidence-delta.md)):**
+- **`qa` classification (Phase 3, [evidence delta](../../tests/plan/s124-evidence-delta.md)):**
   the stable failing set is 47 — the 44 guards and the three `citation_drift`
   maintenance checks. Two `user_samples` tests fail run-dependently under
   load (ACT-1061). No genuine regression.
@@ -70,20 +168,20 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
    (`design/typecheck/non-concrete-producer-obligations.md` — trait-method
    instances, synthetic accessors, the lenient view); the backend structural
    close of FIXME 0903;
-   [ACT-1050](actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md)
+   [ACT-1050](../actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md)
    grouped with it.
-2. **Crash-class:** [ACT-1052](actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md)
+2. **Crash-class:** [ACT-1052](../actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md)
    — an importer's cached object calls a moved slot after a reverted
    ABI-changing edit.
 3. **Raise-helper hardening** (P-15): a raise-helper bypass does not compile.
 4. **Principle 27 retirements:** stack placement (resolving ACT-1049), value
    flattening, the spark-density axis, the borrow-elision carrier, and the
    mode-ABI redefinition gate with
-   [ACT-0953](actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md)
+   [ACT-0953](../actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md)
    and its spec ruling.
    The S123 packet's unlanded rows K11-a to K11-d and R10-1 to R10-8 land
    with this sprint (user, 2026-11-16; see Notes).
-5. **Frontend:** the [audit](../audits/cranelisp-frontend-s123.md)'s R1–R5 as
+5. **Frontend:** the [audit](../../audits/cranelisp-frontend-s123.md)'s R1–R5 as
    disposed below, with ACT-1055, ACT-1056 (and ACT-0997 at the `arch` gate)
    and ACT-1057, each of which has committed REDs.
 6. **Package convergence (new, from the opening pull):** adopt the `AGENTS.md`
@@ -160,7 +258,7 @@ boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
   R10-10.
 - **Designs:** backend, intrinsics, typecheck, frontend and `src/` are
   written, each with its own order section.
-- **Evidence:** `qa`'s [delta](../tests/plan/s124-evidence-delta.md) is the
+- **Evidence:** `qa`'s [delta](../../tests/plan/s124-evidence-delta.md) is the
   single handoff for `test`; readiness (restated 2026-11-17) is "ready with
   two conditions": the evidence wave runs before D1 with REPRO-1062 first;
   `spec` and `design`(typecheck) settle what the depth integer counts before
@@ -189,12 +287,12 @@ boundaries; sign-off is conditional on six user decisions and the D1–D7 gate.
 
 Source-editing agents run one at a time; only the wave's `dev` runs the suite.
 Each source wave is `dev` → `review` (fresh subagent) → `qa` adequacy, with
-module rows from the [delta](../tests/plan/s124-evidence-delta.md) §6 RED
+module rows from the [delta](../../tests/plan/s124-evidence-delta.md) §6 RED
 before their correction. Change-set order inside a wave is the owning design's
-order section ([backend §9](../design/backend/backend.md#9-s124-open-work-and-its-order),
-[typecheck §12](../design/typecheck/typecheck.md#12-designed-changes-not-yet-in-source-s124),
-[int §16.0](../design/int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
-[heap layout §5](../design/intrinsics/heap-layout.md#5-order)). A public-API
+order section ([backend §9](../../design/backend/backend.md#9-s124-open-work-and-its-order),
+[typecheck §12](../../design/typecheck/typecheck.md#12-designed-changes-not-yet-in-source-s124),
+[int §16.0](../../design/int/int.md#160-open-binaryint-obligations-verified-against-source-2026-09-21),
+[heap layout §5](../../design/intrinsics/heap-layout.md#5-order)). A public-API
 delta outside the approved packet stops the wave and returns to the user.
 
 ### W0 — Package convergence (item 6), alone on the tree
@@ -240,7 +338,7 @@ delta outside the approved packet stops the wave and returns to the user.
 
 - **Agent:** `dev`(`src/`).
 - **Scope:** ACT-1050 and ACT-1065 as one change-set
-  ([bind-chain analysis](../design/int/bind-chain-analysis.md)).
+  ([bind-chain analysis](../../design/int/bind-chain-analysis.md)).
 - **Exit:** the twelve `bind_unused_heap_argument` guards and the REPRO-1065
   cells green in every mode.
 
@@ -503,9 +601,9 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   auto-trait baseline format) as its own mechanical change-set last. R10-9
   waits on its design listing.
 - **Rust context standard: stays unadopted**, on `arch`'s
-  [evaluation](s124-rust-context-standard-evaluation.md). The dependency-edge
+  [evaluation](../s124-rust-context-standard-evaluation.md). The dependency-edge
   check is taken and scheduled after S124:
-  [ACT-1058](actions/ACT-1058-measure-declared-crate-dependency-edges.md).
+  [ACT-1058](../actions/ACT-1058-measure-declared-crate-dependency-edges.md).
 - **Public-API gate: rows D1–D7 approved** as written in the
   [packet](s124-api-packet.md). D8 returns when its designs list it.
 - **Row D9 approved (2026-11-16):** remove the backend
@@ -517,7 +615,7 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   [packet](s124-api-packet.md) Part B. R10-9 supersedes S123 row R10-6. D10's
   schema bump rides D3's.
 - **S124-Q2 to Q6 ruled (2026-11-17)**, each as candidate recorded in
-  [appendix D](../spec/appendix-d-open-questions.md); `spec` scribes them.
+  [appendix D](../../spec/appendix-d-open-questions.md); `spec` scribes them.
   - **Q2 — A:** a macro rest parameter binds a symbol only; `[& [a b]]` is
     rejected.
   - **Q3 — A:** a macro return mismatch is located at the offending clause
