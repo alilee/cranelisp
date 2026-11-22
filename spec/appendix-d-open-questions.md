@@ -372,3 +372,29 @@ skipped. Answer, verbatim:
 [§4.12.5](04-expressions.md#4125-nested-trace) records that exception to
 the same-thread active-tracing error; [§4.12.6](04-expressions.md#4126-concurrency)
 owns the unrecorded root's shape and result.
+
+## S124-Q19: May a pure function return an IO value?
+
+**Open — put to the user on 2026-11-22; no answer recorded.**
+
+**Problem.** [§3.2.3](03-types.md#323-io-type) states “Pure functions MUST NOT
+return `IO`.” [§10.2](10-io.md#102-pure) specifies `primitives/pure` as a
+function returning `(IO a)` without performing a side effect, and
+[§10.3.1](10-io.md#1031-semantics) says calling `bind` performs no effect.
+The return-type prohibition and effect-free construction therefore need a
+consistent account of purity. The requirement in §3.2.3 remains unchanged
+pending the user's ruling.
+
+**Options and tradeoffs.**
+
+- **A — the wording put to the user:** replace “Pure functions MUST NOT return
+  `IO`” with “Pure functions MUST NOT perform effects”. This distinguishes
+  constructing an IO value from executing its effects and permits the
+  effect-free construction described in §10.2 and §10.3.1. Related purity and
+  effect-tracking prose would need checking against that distinction.
+- **B — retain the return-type prohibition:** reserve “pure function” for
+  functions returning non-IO values, and describe effect-free IO construction
+  separately. This preserves §3.2.3 but requires consistent terminology for
+  functions that construct IO values without performing effects.
+
+The user decides which meaning and wording govern; neither option is a ruling.

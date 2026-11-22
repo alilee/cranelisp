@@ -54,10 +54,15 @@ reference documentation for the reference implementation's stdlib.
 ## Conventions
 
 - Sections 1–10, Section 12, and **Appendix C** (non-functional requirements)
-  are **normative**. Section 11 and Appendix A are **non-normative** reference.
+  carry **normative** language requirements, except passages explicitly marked
+  non-normative, including optional-library illustrations. Section 11 and
+  Appendix A are **non-normative** reference; Appendix D records questions and
+  rulings, with normative homes linked from each closed question.
 - Keywords MUST, MUST NOT, SHOULD, SHOULD NOT, MAY follow RFC 2119 semantics.
 - EBNF grammar, typing rules, and evaluation judgments in each section are
-  authoritative. Examples define expected behaviour.
+  authoritative within its normative scope. Examples illustrate the governing
+  rules under [the example scope convention](index.md#example-scope);
+  library-specific results and expansions do not define language requirements.
 - **Traceability annotations** (`[Tested …]`, `[Tested+Neg …]`, `[S{M}]`, the
   test-side `// spec:` comment) are governed by root `AGENTS.md`
   §"Requirements/Test Traceability" — that is canonical; follow it, don't
