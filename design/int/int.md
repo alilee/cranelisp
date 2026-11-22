@@ -3913,7 +3913,7 @@ record is a miss.
 #### 7.6.4 Reference edges and the covered trace set (row B10)
 
 **Status.** Designed 2026-11-19 to the user's ruling on trace coverage
-(Reading A, `sprints/SPRINT.md`, Notes) and to `arch`'s contract that the
+(Reading A, `sprints/archive/sprint-124.md`, Notes) and to `arch`'s contract that the
 set is rooted at the finished module in every mode
 ([tracing §5.1](../arch/tracing.md#51-which-modules-a-form-covers), row B10
 in [§5.1.1](../arch/tracing.md#511-how-the-set-reaches-the-backend)).
@@ -5138,7 +5138,7 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   rulings and the 2026-11-17 approvals of rows D8, R10-9, D10 and D11 and
   rulings on S124-Q4 to Q6, and the 2026-11-17 approval of row R10-10, the
   S124-Q8 ruling, the scoping of ACT-1063 and ACT-1065, and row D12 with
-  its category condition (`sprints/SPRINT.md`, Notes), and to `arch`'s S124 contracts
+  its category condition (`sprints/archive/sprint-124.md`, Notes), and to `arch`'s S124 contracts
   ([approved changes](../arch/interfaces.md#approved-changes-not-yet-in-source-s124)).
   ACT-1050 and ACT-1065 landed at `32e434dc` (W4), D4 at `441e31ea`, and
   D3 and D10 at `42e6d929`. W8 landed the cycle-precedence mount reach at
@@ -5282,7 +5282,7 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     refusal of ACT-1036. No further change.
   - *A cached load across re-registration (ACT-0994), designed and not
     scheduled:* the persistence group carries past S124 by the user's third
-    deferral (`sprints/SPRINT.md`, Notes). Design:
+    deferral (`sprints/archive/sprint-124.md`, Notes). Design:
     [§7.1](#71-cache-hit-flow-inside-register_module), *A claim ends inside
     its registration*. The reload's settle wait also waits out the module's
     cached load, and a loaded completion acts only while its module is still
