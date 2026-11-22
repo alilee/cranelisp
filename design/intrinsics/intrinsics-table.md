@@ -99,10 +99,9 @@ and `runtime/string_read`.
 
 ### 2.1a Rows without an emitter leave (ACT-1033, row D11)
 
-**Status: designed for S124;**
-[S124 packet](../../sprints/s124-api-packet.md) row D11, approved by the user
-on 2026-11-17. At `4b58ab93` (read 2026-11-17) no backend, root or primitives
-source emits `runtime/rc_underflow_check` or `runtime/string_read`; JIT
+**Status: in source since `acc3f200`;** row D11 of the retired S124 API packet
+(recoverable from Git at `d4e930a7`), approved by the user
+on 2026-11-17. Before it, no backend, root or primitives source emitted `runtime/rc_underflow_check` or `runtime/string_read`; JIT
 registration and the generic import declaration are their only paths into
 codegen. The catalog holds targets of emitted calls (BC §4b invariant 1), so
 both rows leave in one change-set:

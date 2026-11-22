@@ -389,7 +389,7 @@ as this crate's module rows. The design-specific seams:
 ## 3. Public-API delta
 
 The exact rows, consumers and `public-api.txt` effects are `arch`'s
-[S123 API packet](../../sprints/s123-api-packet.md). This crate's rows:
+retired S123 API packet (recoverable from Git at `d4e930a7`). This crate's rows:
 
 | Row | Change | Gate |
 |---|---|---|

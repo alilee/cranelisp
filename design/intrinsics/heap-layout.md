@@ -3,8 +3,8 @@
 **Owner:** `design`, narrow-deployed to the primitives + intrinsics surface.
 
 **Status:** in source since `da459feb` (read 2026-11-22). This document is
-intrinsics' half of packet row R10-9 ([S124 packet](../../sprints/s124-api-packet.md)
-Part B), approved by the user on 2026-11-17; §2 is its intrinsics listing. §2
+intrinsics' half of row R10-9 of the retired S124 API packet
+(Part B; recoverable from Git at `d4e930a7`), approved by the user on 2026-11-17; §2 is its intrinsics listing. §2
 also carries row R10-10, approved on 2026-11-17: the Vec offset readers that
 R10-9's deletion of the backend `HeapVec` leaves. R10-9 supersedes S123 row
 R10-6.
