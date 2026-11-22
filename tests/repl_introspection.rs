@@ -5749,3 +5749,29 @@ fn s124_type_expr_evaluated_constructor_control() {
         assert_eq!(out.stdout.matches(printed).count(), 2, "{}{}", out.stdout, out.stderr);
     }
 }
+
+// spec: spec/12-runtime.md §12.9.1; repl/spec/01-display-format.md §1.5 — T-MARKERS closure
+// defect: class=display-envelope-mirror locus=src/display.rs found=S124 owner=/dev (ACT-1109)
+#[test]
+fn s124_markers_closure_display() {
+    Cranelisp::new().stdin("(let [f (fn [:primitives/Int x] x)] f)\n").output().assert_ok()
+        .assert_stdout_contains(":(Fn [primitives/Int] primitives/Int) #closure");
+}
+
+// spec: spec/12-runtime.md §12.9.1; repl/spec/01-display-format.md §1.5 — T-MARKERS nested IO
+// defect: class=display-envelope-mirror locus=src/display.rs found=S124 owner=/dev (ACT-1109)
+#[test]
+fn s124_markers_nested_io_display() {
+    Cranelisp::new().stdin("[(primitives/sleep 0)]\n").output().assert_ok()
+        .assert_stdout_contains("[#io]");
+}
+
+// spec: spec/01-lexical.md §1.6; repl/spec/01-display-format.md §1.5 — T-MARKERS are not source
+#[test]
+fn s124_markers_input_refused_session_continues() {
+    for marker in ["#io", "#closure"] {
+        let out = Cranelisp::new().stdin(&format!("{marker}\n(primitives/add-i64 5 5)\n")).output().assert_ok();
+        assert!(out.stdout.contains("parse error"), "{}{}", out.stdout, out.stderr);
+        out.assert_stdout_contains(":primitives/Int 10");
+    }
+}
