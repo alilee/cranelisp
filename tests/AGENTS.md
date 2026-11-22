@@ -425,6 +425,11 @@ adds the spec-side `[Tested …]` annotation. Two structural verifiers live in
   citation must resolve to an existing file + `fn name`. Guards against
   citation rot after suite reorgs.
 
+The [S124 test handoff](fixtures/s124-handoff/README.md) retains the allocated
+cell assertions, focused execution counts and the 108-row backlink clause map
+for QA to re-judge the cleared bands. It is dated test-side evidence, not an
+assurance-plan or specification authority.
+
 ## Public-API enforcement
 
 `tests/public_api_relocations.rs` is the executing drift guard for the seven
