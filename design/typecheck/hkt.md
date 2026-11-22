@@ -190,8 +190,11 @@ the declared kind already answers it.
      On success the effective target becomes `Named(Constructor)`. Every downstream
      step — method presence, default generation, method checking and the `$Type`
      suffix — then sees the bare constructor, exactly as for a conventional target.
-     `src/session_v4/types.rs::impl_echo_type_name` performs the reciprocal extraction for the
-     REPL's impl echo; the two must keep reading the constructor out of the pairing.
+     `crates/cranelisp-types/src/ast.rs::authored_label` performs the reciprocal extraction
+     for the authored impl label ([traits §3.0.1](traits.md#301-the-writer-side-record)): when slot 1 echoes a
+     higher-kinded head, it takes the pairing's constructor argument, so the form as written
+     and the rewritten form yield one label. The two must keep reading the constructor out
+     of the pairing.
 
 **Distinct reasons stay distinct.** A conventional method that never mentions the
 implementing type is rejected by the occurrence rule (spec §7.1.1, [trait declaration](traits.md#2-trait-declaration));

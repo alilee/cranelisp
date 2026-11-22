@@ -325,8 +325,9 @@ Nothing else in this crate is scheduled for item 1 before the census reads.
 reading is the one that gates): `TraitMethod` compiled 41,475 frames (501 distinct) with
 no non-concrete record; the only traffic is 600 absent-arm records in `Plain`, which are
 ACT-1050's (§5.4). Nothing is attributed to this crate, consistent with §5.1's
-prediction. Row C ([typecheck §12](typecheck.md#12-designed-changes-not-yet-in-source-s124))
-stays open for whatever a later reading attributes.
+prediction. The census read zero from every program at `128255fc`
+([S124 evidence delta §14.5](../../tests/plan/s124-evidence-delta.md)), so nothing is
+scheduled here; the rule below scopes any later attribution.
 
 When the census reads, each record is attributed by where the backend read the type it could not
 classify, then by partition:

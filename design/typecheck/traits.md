@@ -285,11 +285,46 @@ crate decides only where the record is staged: exactly where the shell is.
 - **Values.** The record clones the trait, target, writer module and method names
   that the shell is built from. They are resolved once and nothing is re-parsed:
   one derivation feeds two carriers (Principle 24).
-- **Authored label (S124 target T7, approved row D10; not in source at `951622cf`).** The record
-  also carries its form's authored label, from `TraitImpl::authored_label` on the form
-  as received. It is an opaque association key back to that form, never an identity
-  source, and the shell does not carry it. Its definition is
-  [`typecheck.md` §12, T7](typecheck.md#12-designed-changes-not-yet-in-source-s124).
+- **Authored label.** The record also carries its form's authored label
+  (`WrittenTraitImpl::authored_label`, filled by `TraitImpl::authored_label`). It is an
+  opaque association key back to that form, never an identity source, and the shell does
+  not carry it. The live turn, backing-file rehydration and save must label one
+  implementation identically under a renamed import
+  ([int §6.13](../int/int.md#613-import-and-export-entries-and-export-mounts-s124)). The
+  record survives a cold restart, so rehydration on a cache-restored table reads the
+  label without a second resolution ([Principle 24](../arch/principles/24-resolve-once.md)).
+  Considered: a per-form pair on `CheckResult`; rejected because rehydration runs where
+  no cluster is checked, so it would have no result to read.
+  - **The label** is a function of the `impl` form alone: slot 1's trait reference as
+    written, `.`, then the effective target's head reference as written. Each reference
+    keeps its written spelling and qualifier (`fmt/Show`, `l/Box`, a renamed local `B`).
+    The conventional target contributes its head only (`(Box a)` gives `Box`), the grain
+    of `trait_impl_key`. A higher-kinded impl contributes its pairing's constructor
+    argument (`(Functor lib/Opt)` gives `lib/Opt`); the pairing head is omitted, since
+    registration step 2 has already required it to name slot 1's trait. A target with no
+    head reference contributes `_`.
+  - **Why the qualifier stays.** A label without qualifiers would give
+    `(impl Show a/Box …)` and `(impl Show b/Box …)` in one module the same label for two
+    records, and the keyed read would be ambiguous. With written qualifiers, two forms of
+    one writer share a label only if one spelling resolved to two identities within that
+    module, which a fixed file scope cannot produce. Trait and type names, renamed import
+    locals included, contain no `.` (spec §5, binder positions), so the joined spelling
+    is unambiguous.
+  - **The label is opaque.** It is compared for equality and never split, parsed,
+    resolved or displayed; display labels come from the record's settled `trait_name`
+    and `impl_type`. Module paths may contain `.`.
+  - **Uniqueness is not enforced here.** Typecheck does not prevent two of a writer's
+    records sharing a label, and the label is not part of a record's key. The consumer
+    matches a form only when exactly one record carries its label; none or several is
+    no match, never a pick.
+  - **Producer.** `prepare_trait_impl` (registration steps 1–6, reached by every `impl`
+    path) is the only non-test constructor of `WrittenTraitImpl`. It takes the label
+    from the form as received, before step 2's higher-kinded normalisation; the
+    normalised form yields the same label, but reading the received form keeps the
+    derivation independent of the rewrite. The record reaches the writer's table only
+    on success (Transaction, below), so a failed form's label never lands and a same-key
+    re-impl replaces the label with its own. Restore enrolment's conflict comparison
+    reads the shell, which carries no label.
 - **Tables.** The shell lands in the trait's home; the record lands in the
   writer's own table (`state.current_module` at that point).
 - **Transaction.** The shell is staged at step 7 and the method entries are retained at

@@ -80,9 +80,10 @@ is a map, not a second contract.
   `TypeError`), `DispatchGap`, `UnresolvedDispatchSite`.
 - The symbol-table-ensure trace hook for `int`'s scheduler tracing.
 
-A `public-api.txt` change is an inter-crate public-API change: it needs the
-user's approval before implementation and rides its source change-set under
-`design/arch/AGENTS.md` §"Baseline-diff discipline".
+A `public-api.txt` change is an inter-crate public-API change: `arch` reviews it
+before implementation and escalates to the user only as the root `AGENTS.md`
+§Roles "Inter-crate public-API gate" directs. The baseline is regenerated at the
+phase checkpoint (`design/arch/AGENTS.md` §"Baseline-diff discipline").
 
 ---
 
@@ -287,7 +288,7 @@ qualified walk, so existing semantics decide. The public surface does not change
   - a present module without the trait, a private trait, or a non-trait is a
     located error with no gap.
 - The trait identity is the declaration's own: the resolved terminal's
-  canonical module paired with its declaration's name (§7.3.2, S124 target).
+  canonical module paired with its declaration's name (§7.3.2).
 - Unchanged:
   - how a constraint is used after registration
     ([inference](inference.md), rigid seeding);
@@ -762,8 +763,9 @@ routes decide the reading in the same three steps:
   - Either shape also recorded an alias qualifier as the home, so the impl
     lookup in the home missed.
 - **One step for both routes.** The two routes are entrances to one constraint
-  shape. A single crate-private trait-reading step replaces the syntax-only
-  `single_trait_bound_from_annotation`, whose only callers are these two
+  shape. One crate-private trait-reading step,
+  `crates/cranelisp-typecheck/src/checker.rs::resolve_annotation_trait`, serves both; it
+  replaced a syntax-only bound reader whose only callers were these two
   routes. Both routes call the step, so the decision cannot diverge between
   them again. The parameter route constrains its fresh variable with the
   resolved home. The stacked bound (§3.5) resolves each member through the
@@ -772,22 +774,16 @@ routes decide the reading in the same three steps:
   its projection. Also unchanged: the impl constraint slot and the
   satisfaction-check rules
   ([inference §4.5](inference.md#45-value-position-annotations)).
-- **The identity is the declaration's, never the spelling's** (S124 target T5, with
-  packet row D3; not in source at `951622cf`). In source, `resolve_trait` returns only the home and
-  `resolve_trait_as_written` pairs it with the spelled name. Under a renamed import
-  (`(import [lib [(Size Sz)]])`, spec §8.3.5) that mints `lib/Sz`, an identity that does
-  not exist, so the constraint's impl lookup at the home misses. `resolve_trait` returns
-  an `FQTraitName` built from the resolved terminal's canonical module and its
-  `TraitRecord`'s own name, as the impl head already does
+- **The identity is the declaration's, never the spelling's.** `resolve_trait`
+  returns an `FQTraitName` built from the resolved terminal's canonical module and
+  its `TraitRecord`'s own name, as the impl head does
   ([qualified trait impl §2](qualified-trait-impl.md#2-resolve-once-at-the-impl-seam));
-  `resolve_trait_as_written`, every stacked-bound member (§3.5) and the impl constraint
-  slot consume it. No reader pairs a home with a spelling (Principle 24). The qualified
-  arm changes nothing observable, because a qualified name is the declaration's own.
-  Renamed entries become reachable only when the frontend produces them (D3), so the
-  correction lands no later than D3's consumer step. Evidence: ACT-0997's renamed-trait
-  impl cells (`qa`); `dev` module rows for a constraint and a stacked bound written
-  through a renamed trait candidate, each resolving to the declaration's name and finding
-  its impl, installed directly as a `NameCandidate` so the rows do not wait on D3.
+  `resolve_trait_as_written`, every stacked-bound member (§3.5) and the impl
+  constraint slot consume it. No reader pairs a home with a spelling (Principle 24).
+  Pairing them would turn a renamed import (`(import [lib [(Size Sz)]])`, spec
+  §8.3.5) into `lib/Sz`, an identity that does not exist, and the constraint's impl
+  lookup at the home would miss. A qualified name is the declaration's own, so the
+  qualified arm is unaffected.
 
 **Evidence.**
 
@@ -1269,7 +1265,7 @@ never walks alias segments or spells an alias key itself, fixtures included
 | Dotted constructor registration | `dotted-ctor-registration.md` | Current |
 | Auto-currying | `auto-curry.md` | Current |
 | AST annotation, resolution carriers and publication | `ast-annotation.md` | Current |
-| IO typing | `io-types.md` | Current |
+| IO typing | `io-types.md` | Current, as built; the opaque `IO` that `spec/10-io.md` §10.1 requires is carried compiler work |
 | Importable-symbol signature match | `signature-match.md` | Current |
 | Ownership inference | `ownership-inference.md` | Current; governed by `design/arch/ownership-inference.md` |
 
@@ -1371,100 +1367,12 @@ are listed in `design/typecheck/AGENTS.md` §"Redirections".
 
 ## 12. Designed changes not yet in source (S124)
 
-Navigation for the S124 work still to land in this crate, re-verified against `main` at
-`951622cf` (after wave W3 and ACT-1072). Scope and rulings: `sprints/SPRINT.md`. Each row's design is
-in its home document; this table does not restate it. Remove a row when its change
-lands, and the section when it is empty. T1, T2, T3, T4 and T6 landed in W3 and are
-described as current design in their home documents.
-
-| # | Change | Design | Filing | Public change |
-|---|---|---|---|---|
-| T5 | A trait reference's identity is its declaration's | §7.3.2 | ACT-0997 (renamed-trait lead) | none |
-| T7 | The writer record carries its `impl` form's authored label | below; [traits §3.0.1](traits.md#301-the-writer-side-record) | ACT-0997 (impl identity) | none here; row D10 in `cranelisp-types` |
-| C | Census-attributed producer corrections | [producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it) | FIXME 0903 | none expected |
-
-**Order and dependencies.**
-
-- T5 lands no later than row D3's binary consumer step, so ACT-0997's renamed-trait
-  impl cells exercise it. Its module rows do not wait on D3.
-- T7 lands in D3's migration: types first, then this crate's producer fill, then the
-  binary's consumers (callee-first). It shares D3's cache-schema bump.
-- C waits on the census readings and on `qa`'s reduction of each attributed record. On
-  the census read `dev` reported after T4, nothing is attributed here
-  ([producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it)).
-
-**Approved rows this crate consumes.** At `951622cf` this crate reads none of D1, D3,
-D7, K11-c and K11-d: no `ctor_field_types_at`, `ImportNames`, `ExportSpec`,
-`ModeSummary` ABI predicate, `settle_template`, `settle_concrete` or `lenient_from_expr`
-call. Row D6 breaks three module-test literals that name `borrowed_sibling: None`
-(`infer/tests.rs`, `program/finalize/tests.rs`, `program/mono_collect/tests/multi_sig.rs`);
-they are edited in D6's change-set, which the broken build lists. The Principle 27
-retirements change no source here; facts keep being produced, and
-[ownership inference](ownership-inference.md) §1.1 records their consumers.
-
-**T7 — the writer record says which `impl` form wrote it.** The live turn, backing-file
-rehydration and save must label one implementation identically under a renamed import
-([int §6.13](../int/int.md#613-import-and-export-entries-and-export-mounts-s124)). The
-carrier is row D10 ([interfaces](../arch/interfaces.md); packet Part B): `WrittenTraitImpl`
-gains `authored_label`, filled by `TraitImpl::authored_label`. It is the record that
-survives a cold restart, so rehydration on a cache-restored table reads it without a
-second resolution ([Principle 24](../arch/principles/24-resolve-once.md)). Considered: a
-per-form pair on `CheckResult`; rejected because rehydration runs where no cluster is
-checked, so it would have no result to read.
-
-- **The label** is a function of the `impl` form alone: slot 1's trait reference as
-  written, `.`, then the effective target's head reference as written. Each reference
-  keeps its written spelling and qualifier (`fmt/Show`, `l/Box`, a renamed local `B`), rendered by
-  `TraitRef` and `TypeRef` display. The conventional target contributes its head only
-  (`(Box a)` gives `Box`), the grain of `trait_impl_key`. A higher-kinded impl contributes
-  its pairing's constructor argument (`(Functor lib/Opt)` gives `lib/Opt`); the pairing
-  head is omitted, since registration step 2 ([traits §3](traits.md#registration-pipeline))
-  has already required it to name slot 1's trait. A target with no head reference
-  contributes `_`.
-- **Why the qualifier stays.** The binary's present derivation
-  (`definition_result_symbol`, `impl_echo_type_name`) drops both qualifiers. Moved
-  unchanged, it would give `(impl Show a/Box …)` and `(impl Show b/Box …)` in one module
-  the same label for two records, and the keyed read would be ambiguous. With written
-  qualifiers, two forms of one writer share a label only if one spelling resolved to two
-  identities within that module, which a fixed file scope cannot produce. Trait and type
-  names, renamed import locals included, contain no `.` (spec §5, binder positions), so
-  the joined spelling is unambiguous.
-- **The label is opaque.** It is compared for equality and never split, parsed,
-  resolved or displayed; display labels come from the record's settled `trait_name` and
-  `impl_type`. Module paths may contain `.`.
-- **Uniqueness is not enforced here.** Typecheck does not prevent two of a writer's
-  records sharing a label, and the label is not part of a record's key. Row D10 decides
-  the consumer side: a form matches only when exactly one record carries its label, and
-  none or several is no match, never a pick.
-- **Producer.** `prepare_trait_impl` (registration steps 1–6, reached by every `impl`
-  path) is the only non-test constructor of `WrittenTraitImpl` and receives the form it
-  records. It takes the label from that
-  form as received, before registration step 2's higher-kinded normalisation; the normalised form
-  yields the same label, but reading the received form keeps the derivation independent
-  of the rewrite. The record reaches the writer's table only on success
-  ([traits §3.0.1](traits.md#301-the-writer-side-record)), so a failed form's label never
-  lands and a same-key re-impl replaces the label with its own. The shell does not carry
-  the label, so restore enrolment's conflict comparison is unchanged.
-- **Construction sites.** Twelve `WrittenTraitImpl::new` calls, all re-read at
-  `951622cf`: the producer above; in this crate's tests `infer/tests.rs`,
-  `checker/tests.rs` and `traits/dispatch/tests.rs` (two); in the types crate's tests
-  `module/tests.rs` (three) and `crates/cranelisp-types/tests/lifecycle_facade.rs`; in the binary's tests
-  `src/save.rs` (two) and `src/repl/mod.rs`'s test support. Each test site writes the
-  label its fixture's form would produce; one with no form writes the
-  `Trait.Type` spelling of its names.
-- **Public change.** None in this crate; its baseline is unchanged. D10's delta, schema
-  bump and order are `arch`'s row.
-- **Evidence (for `qa`).** ACT-0997's impl-identity cells, including the cold restart.
-  `dev` module rows in `traits/impl_check/tests.rs`: the recorded label for an impl
-  written through a renamed type import, through a qualified trait, and for a
-  higher-kinded impl; and two impls in one module whose heads differ only by qualifier
-  record distinct labels.
-
-**ACT-1063 needs no change here.** For `bind` or `race` in value position this crate
-records `VarRef::Global` naming the primitive's canonical entry, the keyed identity it
-records for every table-resolved value. The backend reads that carrier and finds the
-entry. The refusal is the wrapper body's missing lowering for a slot-less host-promised
-primitive, which is the backend's ([backend keyed consumption](../arch/backend-keyed-consumer.md)).
-Recording a second carrier here, such as a `BuiltinFn` on the value `Var`, would
-duplicate the identity the `VarRef` already carries (Principle 7) and would still reach a
-wrapper arm that does not lower an IO combinator.
+None. The S124 rows T1–T7 are in source and are current design in their home
+documents: T5 in §7.3.2, T7 in [traits §3.0.1](traits.md#301-the-writer-side-record).
+Row C, census-attributed producer corrections, has nothing to correct: the census
+read zero from every program at `128255fc`
+([S124 evidence delta §14.5](../../tests/plan/s124-evidence-delta.md)), and the rule
+that scopes a later attribution is
+[producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it).
+The value-position primitive note formerly here is
+[AST annotation §2.1](ast-annotation.md#21-recording-the-resolution-verdicts).

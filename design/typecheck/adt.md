@@ -14,7 +14,7 @@ Neighbouring designs this one uses without restating:
 | Concrete versus template constructors and accessors, and re-synthesis | [`non-concrete-producer-obligations.md`](non-concrete-producer-obligations.md) |
 | Bare constructor selection in value and pattern position | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7 |
 | `TypeExpr → Type` resolution and type-argument arity | [`type-expr-resolver-convergence.md`](type-expr-resolver-convergence.md) |
-| Internal constructors (`IO`'s `Bind`, `Pure`, `Effect`) | [`io-types.md`](io-types.md) §1 |
+| Internal constructors (`IO`'s `Bind`) and `IO`'s constructors as built | [`io-types.md`](io-types.md) §1–§3 |
 
 ## 1. Registration
 

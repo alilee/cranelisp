@@ -88,6 +88,14 @@ accumulator; no per-form copy is authoritative.
   the pair to its drain; the pending record cannot hold a builtin call without
   its storage identity. No site reconstructs the storage identity from the ABI
   name or defaults its module.
+- **A primitive in value position is a `Var` like any other.** For `bind` or
+  `race` passed as a value, the chokepoint records `VarRef::Global` naming the
+  primitive's canonical entry. The backend reads that carrier and finds the
+  entry; lowering a slot-less host-promised primitive inside a wrapper body is
+  the backend's ([backend keyed consumption](../arch/backend-keyed-consumer.md)).
+  Considered: a second carrier here, such as a `BuiltinFn` on the value `Var`.
+  Rejected: it duplicates the identity the `VarRef` carries (Principle 7) and
+  still reaches a wrapper arm that does not lower an IO combinator (ACT-1063).
 
 ## 3. Publication
 

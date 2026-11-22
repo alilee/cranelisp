@@ -43,9 +43,9 @@ Numbers 6–8 and 10 are unused so that the cited numbers stay stable.
 > A callable has a slot and a codegen view if and only if its type is fully concrete
 > (`Type::is_concrete()`: no `Type::Var`, no unresolved constructor head).
 
-- **Realisation.** `Life::Concrete { slot, realization, … }` is constructed only by the
-  lifecycle's `settle_concrete` funnel. The funnel checks concreteness, accepts the
-  realisation, and mints or rebinds the slot in one act.
+- **Realisation.** `Life::Concrete { slot, realization, … }` is constructed only inside
+  the lifecycle's settlement and installation funnels (§2.1). Each checks concreteness,
+  accepts the realisation, and mints or rebinds the slot in one act.
 - **Templates.** A non-concrete callable is `Life::Template { body, kind }`. It has no
   field for a slot or a view, and it is a monomorphisation source, never a codegen
   target. `kind` keeps *why* the variables are open:
@@ -67,14 +67,19 @@ Numbers 6–8 and 10 are unused so that the cited numbers stay stable.
 ### 2.1 Where the decision is made
 
 The funnel is the only place this crate decides "concrete or not". Every producer settles
-through `settle_concrete` or `settle_template`:
+through one of the types-owned operations on the symbol table
+(`crates/cranelisp-types/src/module.rs`):
 
-- ordinary definitions after Pass 2;
-- definitions whose constraints turn out spurious at re-generalisation;
-- multi-signature clause variants (§11);
-- monomorphised instances (§3);
-- synthesised constructors and accessors;
-- trait-implementation methods.
+- `settle_checked_concrete` or `settle_checked_template`, for a checked body:
+  - ordinary definitions after Pass 2;
+  - definitions whose constraints turn out spurious at re-generalisation;
+  - multi-signature clause variants (§11);
+  - trait-implementation methods;
+- `install_instance`, for monomorphised instances (§3);
+- `install_concrete` or `install_template`, for synthesised constructors and accessors.
+
+The lifecycle's own `settle_concrete` and `settle_template` are test-only; production
+does not reach them.
 
 None allocates a slot itself. Each population's route is recorded in
 [non-concrete producer obligations](non-concrete-producer-obligations.md) §2.
