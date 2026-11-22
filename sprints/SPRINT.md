@@ -709,3 +709,9 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   opaque marker, its spelling still open with the user. ACT-1105, ACT-1106
   and ACT-1107 are the defects against this position; the compiler work and
   the migration of programs from `primitives/Pure` are not S124 scope.
+- **User ruling on opaque display markers (2026-11-22).** An `IO` value
+  nested inside a displayed value shows as `#io`; the anonymous-function
+  marker `<closure>` becomes `#closure`. Put to the user with: the markers
+  are display-only and the reader rejects them (a leading `#` not followed
+  by `(` is a reader error today). Answer: "#io and #closure confirmed." The
+  `<closure>` migration is carried with the `IO` work.
