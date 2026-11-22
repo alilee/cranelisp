@@ -680,7 +680,7 @@ E |- [e1 e2 ... eN] => <Vec [v1, v2, ..., vN]> : (Vec T)
 [[1 2] [3 4]]               ; => [[1 2] [3 4]] : (Vec (Vec Int))
 ```
 
-## 4.11 Evaluation Order Summary [Tested]
+## 4.11 Evaluation Order Summary [Uncovered S124 — was Tested]
 
 Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are fully evaluated before their results are consumed. The evaluation order within each expression form is:
 
@@ -705,7 +705,7 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 - Lambda bodies are NOT evaluated at creation time -- only when the closure is called.
 - The `Seq` type provides explicit opt-in laziness via thunks (zero-argument closures). This is a library-level construct, not a change to the evaluation model. See [section 12.4.2](12-runtime.md#1242-lazy-sequences).
 
-The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`bind!`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. Concurrent panic reporting follows [§12.4.3](12-runtime.md#1243-lenient-evaluation) (user ruling, 2026-11-15). [S92]
+The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`primitives/bind`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. Concurrent panic reporting follows [§12.4.3](12-runtime.md#1243-lenient-evaluation) (user ruling, 2026-11-15). [Uncovered S124 — was S92]
 
 ## 4.12 Trace Expression [Uncovered S124 — was S122 — partial. Tested+Neg tests/spec_04_expressions::trace_returns_trace_type; §4.12.3 is partial (a first launch through the prelude, ACT-1087; a form compiled while a dependency of a restored module is still compiling, ACT-1090; and two unevidenced rows) and §4.12.6 is untested]
 
@@ -873,7 +873,8 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 **Using stdlib display functions**:
 
 ```clojure
-(import [core [trace [*]]])  ; gets the Trace ADT names AND display functions (the trace form is always available)
+;; Non-normative library rendering example; assumes this module is supplied.
+(import [core [trace [*]]])  ; optional library module; not required for trace
 
 (defn fib [n]
   (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
