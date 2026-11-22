@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 6b USER-FACING ACTION — delivered; 6b → 7 checkpoint presented, awaiting the user (backend clean and green at `9bc97297`)
+**Status**: PHASE 6b USER-FACING ACTION — delivered and re-read after the rulings of 2026-11-22; 6b → 7 checkpoint presented, awaiting the user (backend clean and green: 0 failing, 537/537, at `128255fc`)
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -20,7 +20,7 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
 | Phase 4 → Phase 5 | wave plan W0–W9, audit choice, two decisions | 2026-11-17, "approved" | approved |
 | Phase 5 → Phase 6a | backend exit reading (`235a7ed7`), 80 carried failures by module, second baseline diff | 2026-11-20, "2 approved" | approved |
 | Phase 6a → Phase 6b | six assessments, four new defects reproduced, full run 104 failing all attributed, six decisions | 2026-11-20, "6. approved" | approved |
-| Phase 6b → Phase 7 | — | — | pending |
+| Phase 6b → Phase 7 | full run 143 failing all attributed (`ff7f43be`), every open spec question ruled, row B18 carried as ACT-1111, 31 defect actions retired onto their tests | — | pending |
 
 ## Opening state (2026-11-16)
 
@@ -754,3 +754,15 @@ Numbering follows the [review](s124-architecture-review.md) §8 as presented.
   face of ACT-1089. That face is carried on its failing cell. `qa` disposes
   of the defect filings that a committed failing reproduction already
   carries; the rule is stated in METHOD §3.3.
+- **Phase 6b final state (2026-11-22).** `spec` recorded the eight rulings
+  (`2fe6d28f`) and completed S124-Q16 stage two in 19 commits to `3d50766e`;
+  appendix D holds no open S124 question. `test` committed the consolidated
+  handoff `2929d74f`..`128255fc`. Full run at `128255fc` (`qa` `ff7f43be`):
+  8,109 run, 143 failed, all attributed — `src/` 71, typecheck 61, backend
+  0, intrinsics 3, unattributed 7, document gate 1; census zero; 265 s. No
+  compiler source changed after `3c5e41ca`; the 33 failures added since
+  `9bc97297` are reproductions. Of 108 bands the rewrite cleared, 21 are
+  restored and 87 stand uncovered with reasons (delta §14.14). `qa` retired
+  31 defect actions onto their failing tests (`dc709b9f`; register in delta
+  §14.15) and kept ACT-1110. Document checker: 573 findings, 536 of them the
+  ignored-path class.
