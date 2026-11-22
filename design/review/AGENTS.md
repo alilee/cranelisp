@@ -2,9 +2,7 @@
 
 Standing change-set cues owned by `review`, extending the shared review role.
 Historical checklists and reports are recoverable from Git checkpoint
-`07f46769`. The remaining cache-packet `Send` cleanup is retained with the
-[coordinated API baseline work](../../sprints/actions/ACT-0955-omit-auto-traits-from-public-api-baselines.md);
-S122 discharged the other extracted points or corrected their current homes.
+`07f46769`.
 
 ## Where the live review standard actually lives
 
