@@ -642,9 +642,12 @@ Note: When used as a value, the operator's type is the fully polymorphic trait m
 
 This section is **non-normative**. The traits below (Num, Eq, Ord, Display, Functor) are not language primitives — they are ordinary `deftrait` declarations defined in the standard library's core modules. They appear here as illustrative examples of the trait mechanism defined in §§7.1–7.6. The authoritative home for these definitions is the standard library itself (e.g., `core/numerics`, `core/formats`); the REPL displays them under their stdlib-qualified names (e.g., `core.numerics/+`), not as builtins.
 
-**Implementation note — compiler-seeded core traits:** The four core traits (Num, Eq, Ord, Display) and their implementations for primitive types (Int, Float, Bool, String) are defined as Cranelisp `deftrait`/`impl` forms evaluated through the normal pipeline during compiler initialization. They live in the compiler-seeded `primitives` module — the same synthetic module that provides primitive types and functions. This makes them available before the standard library loads. The standard library re-exports these traits via the prelude for user convenience and may layer additional higher-level traits on top, but the core trait *declarations* and *primitive-type implementations* are language infrastructure, not stdlib content. (See Decision 17 in `design/arch/AGENTS.md`.)
-
-The following traits are available in all programs that load the prelude. They are not compiler intrinsics — they are ordinary trait declarations with ordinary implementations. A standard library typically provides these traits because operators and string conversion depend on them.
+These declarations, their primitive-type implementations and their methods
+belong to the library. None is compiler-seeded or required in the prelude.
+Primitive operations support user-written implementations. The compiler's
+canonical value renderer (§12.9) does not depend on a `Display` implementation.
+The illustrated `Functor` instances are ordinary implementations on ADTs;
+`Seq` uses a thunk field for its tail (§4.11).
 
 ### 7.7.1 Num [Uncovered S123 — partial: `+` on `Int` and `Float` tests/stdlib_trait_impls::stdlib_num_int_inline_path, tests/stdlib_trait_impls::stdlib_num_float_inline_path; the `-`, `*` and `/` examples, including truncating `Int` division, have no cell. No overflow behaviour is claimed, so none is graded; the primitives' arithmetic is graded under §12.7.3]
 
@@ -848,9 +851,9 @@ Explicit annotations and inferred constraints produce identical results. Explici
 - Constrained polymorphic functions MUST NOT be used as first-class values. `(let [f add] ...)` where `add` is constrained polymorphic produces a compile-time error -- the concrete type must be known at the call site.
 - HKT trait methods are NOT constrained polymorphic functions. They dispatch through the trait resolution mechanism, not through monomorphisation. Writing a generic function like `(defn map-inc [xs] (fmap inc xs))` that is polymorphic over all Functors is not supported.
 
-## 7.9 User-Defined Traits [Tested tests/spec_07_traits::user_trait_simple]
+## 7.9 User-Defined Traits [Uncovered S124 — was Tested tests/spec_07_traits::user_trait_simple]
 
-Users MAY define their own traits using the same `deftrait` and `impl` forms. User-defined traits are first-class citizens of the trait system and participate in the same dispatch mechanism as built-in traits.
+Users MAY define their own traits using the same `deftrait` and `impl` forms. User-defined traits are first-class citizens of the trait system and participate in the same dispatch mechanism as library traits.
 
 ### 7.9.1 Declaration and Implementation
 
@@ -878,7 +881,7 @@ User trait methods are called with the same syntax as any function:
 
 ### 7.9.3 Polymorphic ADT Implementations
 
-User traits MAY have polymorphic implementations for algebraic data types, using the same constraint syntax as built-in traits:
+User traits MAY have polymorphic implementations for algebraic data types, using the same constraint syntax as library traits:
 
 ```clojure
 (deftrait Describable
@@ -983,12 +986,12 @@ the trait reference; dispatch reaches the method reference.
 
 **(e) The nullary return-type-dispatched method-only-import cell must accept and compile.** A **return-type-dispatched** method (empty parameter list, `self` in return position, §7.1.1) imported **without** its trait and used at a resolving site (`:Int (zed)`, §3.3.3) MUST typecheck **and** compile to a working call — this closes S112 defect D2 on the **accept** side (the earlier codegen leak on this cell was a compiler bug, not a language rejection; cf. the §7.1.1 note on defect 0628). By the same ruling the **unary** method-only-import case **inverts to accept**: a unary method imported without its trait — previously reported as "no impl in scope" because the trait was absent — dispatches on its argument's concrete type exactly as it would had the trait itself been imported.
 
-## 7.12 Restrictions and Future Extensions [Tested]
+## 7.12 Restrictions and Future Extensions [Uncovered S124 — was Tested]
 
 ### 7.12.1 Current Restrictions
 
 - **No default methods on HKT traits.** Higher-kinded traits (those with type constructor parameters) do not support default method implementations.
-- **Limited automatic deriving.** The `derive` macro supports `Eq`, `Ord`, and `Display` only (see Section 7.13).
+- **Deriving is library code.** The illustrative `derive` macro is described non-normatively in §7.13; it does not restrict which traits user macros can derive.
 - **No supertraits.** A trait cannot require that implementing types also implement another trait (e.g., `Ord` cannot require `Eq`). This stays true in the presence of default methods: a constraint induced by a **default body** belongs to that **method**, not to the trait, and is owed only by an impl that actually instantiates the default — an impl that overrides the method owes nothing (§7.1.5, *Constraints induced by a default body are per-impl*). No trait-level obligation is ever created. [S115]
 - **No orphan rules.** There are no restrictions on which module may define an impl for a given trait-type pair.
 - **No multi-parameter type classes.** Traits are parameterized over a single type (or single type constructor for HKT).
@@ -1011,9 +1014,9 @@ language is to be stabilized before expanding to multi-parameter traits;
 | HKT over arity-2 constructors | Traits like `(deftrait (Bifunctor f) ...)` for arity-2 constructors |
 | Trait-dispatched collection verbs | A unified `Functor`/`Foldable`-style abstraction owning bare `map`/`filter`/`reduce`/`count`/`get`/`conj`/`assoc` and `first`/`rest` as single overload-unified entry points across `List`/`Vec`/`Seq`. A standard library reserves these bare names so an interim curated surface stays forward-compatible — see the non-normative naming reservation in [§11.4a](11-stdlib.md#114a-curated-collection-verb-naming-reservation-non-normative). |
 
-## 7.13 Deriving [S21]
+## 7.13 Deriving [Uncovered S124 — was S21]
 
-The `derive` macro automatically generates trait implementations for user-defined algebraic data types by structural recursion over constructors. It is a prelude macro, not a special form.
+The `derive` macro automatically generates trait implementations for user-defined algebraic data types by structural recursion over constructors. This subsection is a non-normative library illustration, not a language requirement. A user or library supplies the macro and its helper macros using §9; no particular set of derivable traits is required.
 
 ### 7.13.1 Syntax
 
