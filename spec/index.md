@@ -30,7 +30,7 @@ Cranelisp is a statically typed, pure functional Lisp. Its design priorities are
 - **Self-documenting**: Every construct in the language produces useful feedback when queried — its type, value, or description.
 - **Clojure-inspired naming**: Where a standard library is provided, naming follows Clojure conventions where possible.
 
-## Notation Conventions [Tested]
+## Notation Conventions [Uncovered S124 — was Tested]
 
 ### EBNF Grammar [Tested]
 
@@ -57,6 +57,35 @@ This specification uses terminology from RFC 2119:
 - **SHOULD** / **SHOULD NOT**: Recommended behavior. Implementations may deviate with good reason, but the implications must be understood.
 - **MAY**: Optional behavior. Implementations are free to include or omit.
 
+### Example scope
+
+Language examples are fragments, with the following explicit scope conventions;
+they do not assume a prelude. A bare primitive name abbreviates a name brought
+into scope by `(import [primitives [*]])`, and a bare macro-data name abbreviates
+one imported by `(import [macros [*]])`. These are example imports, not implicit
+language imports; qualified names work without them (§8.9).
+
+A locally declared `Option`, `Result` or `Pair` illustrates `deftype`; it is a
+separate type from the compiler-seeded type of the same spelling. Otherwise
+those names and their constructors refer to `primitives` (§3.2). `List` and
+`Seq` examples use the following illustrative user-declared ADTs (§4.11,
+§9.10.3), with their bare names bound by these declarations:
+
+```clojure
+(deftype (List a) Nil (Cons [:a head :(List a) tail]))
+(deftype (Seq a) SeqNil (SeqCons [:a head :(Fn [] (Seq a)) tail]))
+```
+
+Examples using `Num`, `Eq`, `Ord`, `Display`, `Functor`, their methods, collection
+helpers or library macros are conditional illustrations of user/library
+bindings, as described in §7.7 and §9.10. Their library-specific results and
+expansions are non-normative; the language obligations concern the declared
+traits, resolved bindings and expanded core forms, whatever their spelling.
+They do not require those bindings to exist in any program. Unspecified helper
+functions and platform operations are schematic context, not additional
+primitive requirements. Appendix B labels its reference-library environment
+separately.
+
 ### Annotations [Tested]
 
 - **Note**: Informational context that is not normative.
@@ -71,7 +100,7 @@ This specification uses terminology from RFC 2119:
 4. [Expressions](04-expressions.md) — Evaluation semantics for each expression form
 5. [Definitions](05-definitions.md) — Top-level definition forms
 6. [Pattern Matching](06-pattern-matching.md) — Pattern syntax, matching rules
-7. [Traits](07-traits.md) — Declaration, implementation, dispatch, built-in traits
+7. [Traits](07-traits.md) — Declaration, implementation, dispatch, library illustrations
 8. [Modules](08-modules.md) — File mapping, imports, exports, resolution
 9. [Macros](09-macros.md) — Compile-time macro system
 10. [IO Model](10-io.md) — Effect tracking, IO type, platform declarations
