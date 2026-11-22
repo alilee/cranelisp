@@ -117,7 +117,7 @@ statement except primitives'.
 
 All runs used `--declaration` and `--metadata` against scratch files, so the
 repository was not modified. Scratch directory:
-`/tmp/claude-501/-home-alilee-cranelisp/8d27f381-f1ba-4ea1-88ae-561177bcd23a/scratchpad/s124-arch-contexts/`. <!-- doc-check: literal reason="Session scratch path outside the repository" -->
+`/tmp/claude-501/-home-alilee-cranelisp/8d27f381-f1ba-4ea1-88ae-561177bcd23a/scratchpad/s124-arch-contexts/`.
 
 | Run | Declaration | Result |
 |---|---|---|
@@ -321,7 +321,7 @@ owned code.
 
 ## 7. Corrections to the Phase 2 review, and limits
 
-The [review](s124-architecture-review.md) §6 gave three reasons to stay
+The S124 Phase 2 architecture review (retired at the S124 close; Git) §6 gave three reasons to stay
 unadopted. Tested against the sources:
 
 | Review claim | Finding |

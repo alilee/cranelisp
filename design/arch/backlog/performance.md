@@ -416,8 +416,8 @@ Re-entry trigger: measured GOT slab growth from redefinition churn.
   slots (`GOT_TABLE_SIZE`). A persisted tombstone therefore costs a slot of a bounded table, not slab
   bytes: while an entry's cache stays valid, each persisted ABI-changing redefinition removes one
   slot of capacity until a cache miss rebuilds the table. The entry preload's own retirements are
-  a separate cause, with a fix proposed as [packet row P15](../../../sprints/s123-api-packet.md#a6-phase-5-deltas-from-w3-and-w4) (awaiting
-  the user); this item keeps the persisted ABI-changing tombstones.
+  a separate cause, corrected by `SymbolTable::release_callable` (S123 packet row P15, approved by
+  the user on 2026-11-16); this item keeps the persisted ABI-changing tombstones.
 - **Re-entry trigger** — measured GOT slab growth from redefinition churn actually mattering
   (long-lived dev sessions with thousands of ABI-changing redefinitions, or a future
   GOT-size-sensitive deployment mode). If actioned: load-time free-list reconstruction in the session

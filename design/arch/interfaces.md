@@ -747,16 +747,17 @@ single-constructor value classifies as a heap value. The binary's display walk
 ## Approved changes not yet in source (S124)
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
-decided change that no phase checkpoint has reported yet. The Phase 5 and Phase 6b
-checkpoints of 2026-11-20 reported every other S124 row and removed it; those rows' deltas are in the
-[S124 packet](../../sprints/s124-api-packet.md), the
-[S123 packet](../../sprints/s123-api-packet.md) Part B and Git. A design that needs a
-public change outside these rows stops and returns to `arch`.
+decided change that no phase checkpoint has reported yet, or an escalated one with the
+decision it waits on. The S124 checkpoints reported every other row and removed it. A
+reported row's contract is the source rustdoc and its baseline line. The S123 and S124
+approval packets and architecture reviews were retired at the S124 close. They are in
+Git at commit `d4e930a7`, in the `sprints` directory. A design
+that needs a public change outside these rows stops and returns to `arch`.
 
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
-| B18 | The two trace entries that take a value with its descriptor become one entry per representation: `cranelisp_collect_trace` and `cranelisp_trace_format` are each replaced by `_int`, `_float`, `_bool` and `_described` entries, and the backend emits the one the value's static type selects | intrinsics (the entries, the catalog rows) | backend selects the entry and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics −3, +12; every other baseline +0 | **Escalated to the user, 2026-11-22; not approved, not scheduled** | [typed trace value entries](#typed-trace-value-entries-row-b18) |
+| B18 | The two trace entries that take a value with its descriptor become one entry per representation: `cranelisp_collect_trace` and `cranelisp_trace_format` are each replaced by `_int`, `_float`, `_bool` and `_described` entries, and the backend emits the one the value's static type selects | intrinsics (the entries, the catalog rows) | backend selects the entry and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics −3, +12; every other baseline +0 | **Escalated to the user, 2026-11-22. Carried by the user as ACT-1111; the shape and its bounded-contexts sentence are not approved** | [typed trace value entries](#typed-trace-value-entries-row-b18) |
 
 **Phase 5 checkpoints (2026-11-20).** Each used cargo-public-api 0.52.0 and the
 [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) of its format.
@@ -808,11 +809,18 @@ checkpoint.
 - **Left in the record:** the gap-module row, which is not scheduled.
 - **Not confirmed by the user (2026-11-22).** The user did not confirm row B17's line
   and directed typed entries; row B18 is the response. The line stands in source and
-  in the baseline until the user decides row B18.
+  in the baseline, unconfirmed, until row B18's work.
+
+**Phase 7 checkpoint (2026-11-22, read at `d4e930a7`).** No baseline line and no file
+under `crates/*/src` or `src/` changed after the Phase 6b checkpoint. Two rows stay in
+the record: the gap-module row, not scheduled, and row B18, carried.
 
 ### Typed trace value entries (row B18)
 
-**Brief for the user, `arch`, 2026-11-22. Not approved and not scheduled.** At
+**Brief for the user, `arch`, 2026-11-22. Not approved.** The user carried the
+work on 2026-11-22 as
+[ACT-1111](../../sprints/actions/ACT-1111-typed-runtime-entry-points-for-trace-values.md)
+and has approved neither the shape below nor its bounded-contexts sentence. At
 the Phase 6b checkpoint the user did not confirm row B17's line,
 `cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64`, and
 directed: "we should have (at least) two functions so that the parameters can
@@ -940,26 +948,10 @@ call." This entry is the exact delta `arch` drafts to that direction.
   `tests/trace.rs::s124_trace_owning_record_cold` and their siblings) and the
   full suite. Between the two source steps no trace form builds, and the
   intrinsics step is not a handoff.
-- **Cost inside S124 against carrying it.** Input to the user's decision;
-  `arch` does not decide scheduling.
-  - *Inside S124.* It reopens the backend, the focus module, which is clean
-    and green at `9bc97297`: trace emission and its module tests change
-    again, the scoped golden CLIF moves, and the cache version bumps a
-    second time in the sprint. It is a second larger change to intrinsics,
-    which is not the focus module. The work is about the size of row B17:
-    two design passes, two build steps, two reviews, a full-suite run and
-    `qa`'s re-acceptance of the spec §4.12.2 cells, which should not change
-    colour because no behaviour changes. The Phase 6b exit waits on it. In
-    return the unconfirmed line never stands at a checkpoint.
-  - *Carried.* The line in the baseline stays `(i64, i64)` for one more
-    sprint, unconfirmed or confirmed as interim. No behaviour is wrong
-    meanwhile: the hazard of a mismatched descriptor is what it was before
-    S124. The next sprint already opens the same files: the 2026-11-22
-    rulings on what an unrecorded root holds change the collect entry, and
-    the `#io` and `#closure` markers change the descriptor walk. Building
-    this with them touches each entry once and bumps the cache once, and
-    lets item 2 above be designed before eight more word-typed lines are
-    written.
+- **What to design first.** The next sprint's trace and display work opens
+  the same entries: the unrecorded root, and the `#io` and `#closure` markers
+  in the descriptor walk. Designing the register-class catalog (item 2 above)
+  before this row avoids typing floats and truth values twice.
 
 ### The root's result (row B17)
 

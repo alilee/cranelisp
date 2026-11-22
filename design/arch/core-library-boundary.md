@@ -2,10 +2,12 @@
 
 **Status.** Determination record, `arch`, 2026-11-21. It answers the fifteen
 rows of the specification's open question S124-Q16 that need a technical
-determination. It approves and schedules nothing: the user confirms the
-classification, then `spec` revises the chapters. Retire this document when
-stage two of S124-Q16 closes, after any compiler consequence below has its own
-action.
+determination. The user confirmed the classification on 2026-11-22 and `spec`
+revised the chapters (`3d50766e`); the specification is now the authority for
+each row, and the table below is the evidence it was decided on. This record
+is retained as the cited source of
+[ACT-1112](../../sprints/actions/ACT-1112-move-race-from-built-in-to-library.md).
+Retire it when that action closes.
 
 **The rule applied.** [Spec §8.8.3](../../spec/08-modules.md#883-empty-prelude)
 (user ruling, 2026-11-21): the specification rests on no prelude; a construct
@@ -50,8 +52,10 @@ library macro row is a `defmacro` in the standard library.
 
 Four observations for stage two, none a dispute:
 
-- **Spec §3.2.3 gives `IO` as `(deftype (IO a) (IOVal [:a ioval]))`.** Source
-  seeds the constructors `Pure`, `Effect` and `Bind`.
+- **Spec §3.2.3 gave `IO` as `(deftype (IO a) (IOVal [:a ioval]))`.** Source
+  seeds the constructors `Pure`, `Effect` and `Bind`. The user ruled on
+  2026-11-22 that `IO` is an opaque built-in type with no constructors; the
+  defects against that position are ACT-1105, ACT-1106 and ACT-1107.
 - **`primitives/Bind` is callable.** The seeded constructor is marked internal,
   and a user function `(defn mybind [io f] (primitives/Bind io f))` compiles
   and sequences (probe). Spec §10.3 calls the node internal. A chain built
@@ -65,9 +69,13 @@ Four observations for stage two, none a dispute:
   and `None`, `case` emits `=`, `str` emits `show`. That is the library's
   concern; the rule's qualified-reference clause binds built-in macros.
 
+The `Vec` refusal is ACT-1104, carried by its failing cells.
+
 ## 3. Consequences that are compiler changes
 
-Neither is approved or scheduled.
+C1 is the defect ACT-1103, carried by its failing cells. C2 is carried by the
+user's ruling of 2026-11-22 as ACT-1112: the specification classifies `race`
+as library now, and the built-in's removal is that action's work.
 
 - **C1 (CL04): the compiler names library traits by spelling.**
   `crates/cranelisp-typecheck/src/traits/dispatch.rs::primitive_for_trait_method`

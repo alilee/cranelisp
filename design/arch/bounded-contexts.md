@@ -929,7 +929,7 @@ and primitives (§4b, §4a); the platform ABI (§5).
 - **A missing `main` is the batch entry operations' own outcome, not a
   compiler diagnostic** (REPL §5.5, missing-`main` exception; S124-Q8).
   The root-library change is
-  [packet row D12](../../sprints/s124-api-packet.md), approved by the user on
+  S124 packet row D12, approved by the user on
   2026-11-17 and built at `e294852f`.
   - `CompilerSession::trampoline` and `CompilerSession::link_by_name` return a
     root-owned closed sum: the entry file exists and defines no `main`,

@@ -43,7 +43,7 @@ certify implementation. Exact Rust APIs live in source rustdoc, not this index.
 | [Test discovery and the compiler test runner](test-discovery.md) | Language test discovery, the shared runner and its panic isolation by process. |
 | [Uniform executable identity](s122-overload-reorder-publication.md) | Approved signature identity and implemented types key API. |
 | [Shared document checker](s122-shared-document-checker.md) | Shared-tool boundary and project integration contract. |
-| [Core and library boundary](core-library-boundary.md) | Technical determinations for spec S124-Q16; awaiting the user's confirmation, approves nothing. |
+| [Core and library boundary](core-library-boundary.md) | Evidence for the confirmed spec S124-Q16 classification; retained as ACT-1112's source. |
 | [Byte-backed text exploration](byte-backed-text.md) | Non-normative options; no language or implementation authority. |
 | [Ownership-stratum options](ownership-stratum-options.md) | Structural option paper; option 2's target reading and decision rule for S123. Retained choices are not approval. |
 | [Release-backend proposal](release-llvm-backend.md) | Unratified future proposal; no LLVM work authorized in S122. |

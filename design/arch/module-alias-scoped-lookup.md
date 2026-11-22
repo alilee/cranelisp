@@ -122,8 +122,9 @@ is [alias-only import registration](../../tests/plan/s122-evidence-delta.md#alia
   `import_alias_and_mount_to_one_module_leave_one_public_entry`,
   `import_alias_and_mount_to_different_modules_refuse_in_either_order`). A
   qualified reference through a mount whose declaring module is not yet loaded
-  is an open defect:
-  [ACT-1079](../../sprints/actions/ACT-1079-qualified-reference-through-a-mount-needs-its-owner-loaded-intake.md).
+  is an open defect, ACT-1079, carried by its failing cells
+  (`tests/spec_08_modules.rs::s124_1079_a_subject_run` and its siblings;
+  [register](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).
 - **Types unit tier** (`crates/cranelisp-types/src/resolve/tests.rs`):
   - `module_alias_key_is_owner_scoped`;
   - `scoped_alias_exact_and_undeclared_passthrough`;

@@ -32,8 +32,8 @@ on the same input and configuration as S118's 1,143 residual; see the
 - **Trigger.** Any claim of zero session residue must first resolve this
   provenance or narrow the claim. No experiment is scheduled merely because
   the number is nonzero.
-- **Out of scope.** Residue after a macro *runtime error* is
-  [ACT-0976](../../../sprints/actions/ACT-0976-macro-runtime-error-residue-intake.md).
+- **Out of scope.** Residue after a macro *runtime error* was ACT-0976,
+  resolved in S124.
   The macro-turn contract's Rule 3 permits forfeiting the argument tree on
   that path.
 
