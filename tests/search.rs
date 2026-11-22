@@ -1446,7 +1446,7 @@ fn s124_child_index_turn(out: &helpers::e2e::CrOutput, turn: usize) -> &str {
 }
 
 // spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 1
-// defect: class=wrong-scope-lookup locus=index-feed-module-enumeration found=S124 owner=/dev (ACT-1096)
+// defect: class=wrong-scope-lookup locus=src/session_v4/index_worker.rs::enumerate_cl_modules_excluding found=S124 owner=/dev (ACT-1096)
 #[test]
 fn s124_child_index_not_offering_project_file() {
     let out = s124_child_index_session(true).assert_ok();
@@ -1459,7 +1459,7 @@ fn s124_child_index_not_offering_project_file() {
 }
 
 // spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 2
-// defect: class=wrong-scope-lookup locus=index-feed-module-enumeration found=S124 owner=/dev (ACT-1096)
+// defect: class=wrong-scope-lookup locus=src/session_v4/index_worker.rs::enumerate_cl_modules_excluding found=S124 owner=/dev (ACT-1096)
 #[test]
 fn s124_child_index_offering_library_child() {
     let out = s124_child_index_session(true).assert_ok();
