@@ -625,8 +625,9 @@ nor waits on them.
 | `ResolutionGap::Type(fqt)` | A qualified name in a type position or a stacked trait bound (§3.5) names a module absent from the session tables. | As above. |
 
 Typecheck asks for `SymbolTypechecked`, not `SymbolInMemory`: it needs a scheme,
-not compiled code, so a gap never waits on codegen. `ResolutionGap` is shared
-with frontend, which alone raises `MacroInMem`.
+not compiled code, so a gap never waits on codegen. `ResolutionGap` is defined in
+`cranelisp-types` with exactly these two variants; typecheck is its only producer
+and `int` (`src/process_form/dependency.rs`) its consumer.
 
 #### 7.3.1 Producing the type gap
 
