@@ -308,12 +308,17 @@ four child controls beside them
   sequence is §3.3 steps 4 to 6, with one tail for a form that swaps and a
   form that does not. The backend bakes one descriptor per form for the root
   and calls `cranelisp_trace_format` only from wrappers.
-- **A skipped form (spec §4.12.6).** This row does not decide a skipped
-  form's result. Source returns the empty string, as it did before the row. Spec §4.12.6 says a skipped
-  form returns "no recorded children" and does not name its result, and spec
-  §4.12.2 states no exception. Current behaviour stands until `spec` records
-  a ruling. Either answer is interior to the collect entry under this
-  signature, because the value and the descriptor arrive on every path.
+- **A form that did not record (user rulings, 2026-11-22; not in source).**
+  Its root carries the body's displayed value as its result, as any root
+  does, and is named `::untraced::`. Source names it `::skipped::` and
+  returns an empty result. The correction is interior to the collect entry,
+  because the value arrives on every path. A recording root is always the
+  synthetic `::trace::` root, as source has it.
+- **The entry's parameters are under revision (row B18, with the user).**
+  The user did not confirm `(value: i64, descriptor_ptr: i64)` at the
+  Phase 6b checkpoint. The
+  [batch record](interfaces.md#typed-trace-value-entries-row-b18) holds the
+  proposed replacement; this section states source until it is built.
 - **Persistence and ABI.** The call sequence baked into a cached object
   changed meaning: an object built before the row calls the entry with no
   argument. `CACHE_SCHEMA_VERSION` went from 35 to 36 in the backend
@@ -871,14 +876,12 @@ actively-tracing (trace ...)`. A panic inside the bracket ends the process
 ([bounded contexts](bounded-contexts.md) §4b invariant 13), so no later form
 runs and the guard needs no panic cleanup.
 
-**Open, with `spec`: a form entered inside a skipped form on the same
-thread.** Spec §4.12.5 forbids a form "while another `(trace ...)` is
-actively tracing on the same thread" and does not say whether a skipped form
-is actively tracing. The guard reads the role, which a skipped thread does
-not hold, so no error is raised. Under row B17's runtime both forms return
-childless roots and the enclosing one reads as a form that swapped nothing
+**A form entered inside a form that did not record, on the same thread,
+raises no error and does not record either** (user ruling, 2026-11-22). The
+guard reads the role, which such a thread does not hold. Both forms return
+childless roots
 ([trace runtime §7.4](../intrinsics/trace-runtime.md#74-residuals-asserted-with-named-falsifiers)).
-That behaviour stands until a ruling; no cell reads it.
+No cell reads it.
 
 **Backend obligations the guard relies on.** Backend never clears the flag,
 and emits `cranelisp_collect_trace` exactly once per form, as the form's last

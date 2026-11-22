@@ -756,6 +756,7 @@ public change outside these rows stops and returns to `arch`.
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
+| B18 | The two trace entries that take a value with its descriptor become one entry per representation: `cranelisp_collect_trace` and `cranelisp_trace_format` are each replaced by `_int`, `_float`, `_bool` and `_described` entries, and the backend emits the one the value's static type selects | intrinsics (the entries, the catalog rows) | backend selects the entry and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics −3, +12; every other baseline +0 | **Escalated to the user, 2026-11-22; not approved, not scheduled** | [typed trace value entries](#typed-trace-value-entries-row-b18) |
 
 **Phase 5 checkpoints (2026-11-20).** Each used cargo-public-api 0.52.0 and the
 [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) of its format.
@@ -805,6 +806,160 @@ checkpoint.
 - **Surfaces without a baseline.** No file of the root crate or of
   `cranelisp-exe-bundle` changed in the phase.
 - **Left in the record:** the gap-module row, which is not scheduled.
+- **Not confirmed by the user (2026-11-22).** The user did not confirm row B17's line
+  and directed typed entries; row B18 is the response. The line stands in source and
+  in the baseline until the user decides row B18.
+
+### Typed trace value entries (row B18)
+
+**Brief for the user, `arch`, 2026-11-22. Not approved and not scheduled.** At
+the Phase 6b checkpoint the user did not confirm row B17's line,
+`cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64`, and
+directed: "we should have (at least) two functions so that the parameters can
+be typed (ie. an enum or multiple functions). compiler would emit the right
+call." This entry is the exact delta `arch` drafts to that direction.
+
+- **What the direction removes.** `value` is a word whose meaning the
+  descriptor decides at run time: an integer, float bits, a truth value, or a
+  counted reference the runtime dereferences. The backend knows which when it
+  emits the call. One entry per representation puts that fact in the entry
+  chosen. A scalar entry takes no descriptor and reads no memory, so a
+  mis-emitted scalar call can print wrong text and cannot read a wild
+  address. The reference entry always has a descriptor, so the null
+  descriptor and its "render the bare word" arm go.
+- **Why functions and not an enum parameter.** An enum with a payload does
+  not cross the emitted C ABI as a word; it would travel through a stack
+  slot, and its tag would be validated at run time, which is the descriptor
+  again.
+- **Delta, intrinsics.** Two exports are removed and eight added. `Owned`
+  and `Borrowed` are the crate's existing word-sized handles
+  (`crates/cranelisp-intrinsics/src/handle.rs`).
+
+  ```rust
+  // removed
+  pub extern "C" fn cranelisp_collect_trace(value: i64, descriptor_ptr: i64) -> i64
+  pub extern "C" fn cranelisp_trace_format(value: i64, descriptor_ptr: i64) -> i64
+
+  // the form's closing call: returns the form's Trace node
+  pub extern "C" fn cranelisp_collect_trace_int(value: i64) -> Owned
+  pub extern "C" fn cranelisp_collect_trace_float(bits: i64) -> Owned
+  pub extern "C" fn cranelisp_collect_trace_bool(value: i64) -> Owned
+  pub extern "C" fn cranelisp_collect_trace_described(
+      value: Borrowed<'_>,
+      descriptor: *const DisplayDescriptor,
+  ) -> Owned
+
+  // a wrapper's parameter or result: a fresh String, or 0 off the recording thread
+  pub extern "C" fn cranelisp_trace_format_int(value: i64) -> i64
+  pub extern "C" fn cranelisp_trace_format_float(bits: i64) -> i64
+  pub extern "C" fn cranelisp_trace_format_bool(value: i64) -> i64
+  pub extern "C" fn cranelisp_trace_format_described(
+      value: Borrowed<'_>,
+      descriptor: *const DisplayDescriptor,
+  ) -> i64
+  ```
+
+  - `_described` serves every type whose display reads the heap or a
+    constructor table: `String`, `Vec`, every ADT including one whose value
+    may be a bare nullary tag, and a function value. Its value is borrowed.
+  - Each collect entry behaves as tracing §3.6 states for the one entry
+    today, in every state of the form. Each format entry keeps tracing §7
+    rule 2.
+  - The catalog gains eight rows and loses two. Its signature derivation
+    (`crates/cranelisp-intrinsics/src/catalog/signature.rs`) already admits
+    typed pointers as words; the two handles join that crate-private set.
+  - The descriptor layout does not change. `Int`, `Float` and `Bool` kinds
+    remain for fields inside a described value.
+- **Delta, backend.** No public item. One crate-private selection from a
+  value's concrete type to one of the four representations, read at the
+  form's closing call and at each wrapper parameter and result. A scalar
+  root or parameter bakes no descriptor.
+- **Producers and consumers.** Producer: intrinsics. Consumers:
+  backend-emitted code, and the Rust-path test callers in both crates. The
+  binary and `cranelisp-exe-bundle` reach the entries only through the
+  catalog and do not change.
+- **Schema, ABI and cache.** Every parameter and return is still one word,
+  so no register class changes. The emitted symbols change, so
+  `CACHE_SCHEMA_VERSION` goes from 36 to 37 in the backend change-set: a
+  cached object naming a removed entry is refused and rebuilt, not left to
+  fail at load. No serialised shape, descriptor layout or platform ABI
+  changes. Emitted code changes inside trace forms and wrappers only.
+- **Expected baseline, current format.** Intrinsics: 3 lines removed and 12
+  added. The collect entry is listed once. The format entry is listed at two
+  paths, `trace::` and `trace_format::`, so its four replacements are eight
+  lines. Every other baseline +0.
+- **The three questions.**
+  - *Bounded context:* yes for both crates. The runtime keeps rendering and
+    the frame; choosing an entry from a static type is code generation. No
+    dependency is added and no datum changes owner.
+  - *Simple API:* yes, with a cost stated. Each static type has exactly one
+    entry and the runtime dispatches on no kind for a scalar. The trace
+    family grows by six exports.
+  - *Strongly typed:* yes, and better than row B17. A scalar entry cannot
+    be handed a reference to read; the reference entry cannot be handed a
+    missing descriptor; counted references and the returned node carry
+    their handle types. Three things stay words (see *Left as words*).
+- **Why it is escalated although each answer is yes.**
+  - The user holds the unconfirmed line, and this is the exact form of the
+    user's own direction.
+  - [BC §4b](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)
+    states that emitted-call entry signatures remain raw ABI words and that
+    `Owned` and `Borrowed` are a Rust-side discipline. Handles in these
+    signatures change that sentence. The emitted ABI is unchanged.
+- **Left as words in this row; a better-typed form is a larger change.**
+  - *Float as `f64` and Bool as `bool`.* They use another register class or
+    width. The catalog describes a signature as a count of words, and the
+    backend declares every intrinsic from that count, so typing them changes
+    the public `IntrinsicEntry` and the backend's declaration loop.
+  - *A format entry's result.* It is a String or 0. A typed absent value is
+    not one word.
+- **The boundary of the row.**
+  - *Covered:* the two entries that take a value with its descriptor. They
+    are one concept, and the backend's selection serves both. Typing only
+    the collect entry would leave two conventions for handing the runtime a
+    value.
+  - *Separable:* the collect half alone is 1 line removed and 4 added, with
+    the same backend selection and the same cache bump; the format half
+    then follows with a second bump. Each half is coherent on its own.
+  - *Left:* `cranelisp_trace_enter`, `cranelisp_trace_exit`,
+    `cranelisp_trace_swap_got`, `cranelisp_trace_restore_got` and the five
+    field accessors.
+- **Carried by the same direction, outside this row.** None is approved
+  here; each returns to this gate.
+  1. The rest of the trace family can state pointers, lengths and handles
+     in place of `i64` with no new symbol and no emitted change: only the
+     Rust signatures and the baseline lines move.
+  2. A catalog that describes each parameter's register class, so a float
+     or a truth value can be typed as itself.
+  3. The remaining intrinsics entries, with the allocation surface
+     ([ACT-0959](../../sprints/actions/ACT-0959-public-allocation-api-redesign.md)).
+- **Build order, if approved.** As row B17: `design`(intrinsics) and
+  `design`(backend), then `dev`(intrinsics), then `dev`(backend) with the
+  bump, closing on the trace root and owning-value cells
+  (`tests/trace.rs::s124_trace_root_call_cold`,
+  `tests/trace.rs::s124_trace_owning_record_cold` and their siblings) and the
+  full suite. Between the two source steps no trace form builds, and the
+  intrinsics step is not a handoff.
+- **Cost inside S124 against carrying it.** Input to the user's decision;
+  `arch` does not decide scheduling.
+  - *Inside S124.* It reopens the backend, the focus module, which is clean
+    and green at `9bc97297`: trace emission and its module tests change
+    again, the scoped golden CLIF moves, and the cache version bumps a
+    second time in the sprint. It is a second larger change to intrinsics,
+    which is not the focus module. The work is about the size of row B17:
+    two design passes, two build steps, two reviews, a full-suite run and
+    `qa`'s re-acceptance of the spec §4.12.2 cells, which should not change
+    colour because no behaviour changes. The Phase 6b exit waits on it. In
+    return the unconfirmed line never stands at a checkpoint.
+  - *Carried.* The line in the baseline stays `(i64, i64)` for one more
+    sprint, unconfirmed or confirmed as interim. No behaviour is wrong
+    meanwhile: the hazard of a mismatched descriptor is what it was before
+    S124. The next sprint already opens the same files: the 2026-11-22
+    rulings on what an unrecorded root holds change the collect entry, and
+    the `#io` and `#closure` markers change the descriptor walk. Building
+    this with them touches each entry once and bumps the cache once, and
+    lets item 2 above be designed before eight more word-typed lines are
+    written.
 
 ### The root's result (row B17)
 
