@@ -4,6 +4,20 @@ Normative specification for the Cranelisp REPL user experience. A conforming REP
 
 While called repl, the repl experience encompasses the entire user experience from invoking the repl as well as its associated CLI invocation modes, exit codes, batch output format, and cache lifecycle.
 
+## Example environments
+
+Transcripts specify display and command behavior for the bindings shown. They
+do not require a particular prelude or standard library (§8.8.3 of the
+[language specification](../../spec/08-modules.md#883-empty-prelude)). Bare
+primitive and macro-data names use explicit imports from `primitives` and
+`macros`, as in the [language example conventions](../../spec/index.md#example-scope).
+`user/` ADTs and macros are session-local example definitions. A transcript
+naming a library module (such as `core.num`, `core.str`, `text.display`,
+`prelude` or `core.trace`) assumes that module has been supplied and the queried
+names explicitly imported. Its contents are illustrative; formatting,
+qualification, resolution and introspection apply to the actual definitions.
+No transcript seeds those library bindings into the language.
+
 ## Section map
 
 This index and the linked section files form one normative specification. A
