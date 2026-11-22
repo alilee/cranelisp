@@ -15,7 +15,7 @@ owns technical contracts, and the [test plan](../tests/plan/PLAN.md) owns assura
 | E | Ring 2 — Abstraction: traits, modules, constrained polymorphism | COMPLETE |
 | F | Ring 3 — Meta: macros, derive, standard library | COMPLETE |
 | G | Ring 4 — Effects: IO, platforms, parallelism, REPL, caching | COMPLETE (S80 closeout; pre-H mainline cleared through S83; **full IO auto-parallelism wired + witnessed S85** — FIXME 0367 resolved, the deferral closed) |
-| H | Release compiler: reliability, ownership/memory-model and release-performance work. | Active; S123 closed 2026-11-16, S124 next. Dev-tier optimisation follows Principle 27; future performance work follows its measured re-entry conditions below. |
+| H | Release compiler: reliability, ownership/memory-model and release-performance work. | Active; S124 closed 2026-11-22, S125 next. Dev-tier optimisation follows Principle 27; future performance work follows its measured re-entry conditions below. |
 
 ## Sprints
 
@@ -32,26 +32,41 @@ roadmap.
 
 ## Forward Plan
 
-### Next sprint — S124
+### Next sprint — S125
 
-S123 closed on 2026-11-16 ([record](archive/sprint-123.md)); its close summary
-lists every carry. By user ruling, S124 leads with type concreteness at
-codegen: run the armed category census, then typecheck's producer
-obligations (trait-method instances, synthetic accessors and the lenient
-view are monomorphised; `design/typecheck/non-concrete-producer-obligations.md`),
-then the backend structural close
-(FIXME 0903, closed in S124 at `09e92046`),
-with [ACT-1050](actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md)
-grouped in. Also scheduled for S124:
-[ACT-1052](actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md)
-(a crash with a committed RED); the raise-helper hardening (an `arch` packet
-row); the Principle 27 retirements (stack placement, value flattening, spark
-density, the borrow-elision carrier, and the mode-ABI redefinition gate with
-[ACT-0953](actions/ACT-0953-decouple-live-slot-abi-from-ownership-inference.md));
-the frontend audit's R1–R5 ([report](../audits/cranelisp-frontend-s123.md))
-with ACT-1055 to ACT-1057. The primitive checked/unchecked direction
-([ACT-1054](actions/ACT-1054-primitive-arithmetic-checked-unchecked-pairs-and-ub.md))
-is deferred. LLVM stays excluded by user direction.
+S124 closed on 2026-11-22 ([record](archive/sprint-124.md)) with the backend
+clean and green as its focus module and 143 failing tests, each a
+reproduction of a carried defect. The defect register is
+[the S124 evidence delta §14.15](../tests/plan/s124-evidence-delta.md); a
+defect number there names failing tests, not a filing
+([METHOD §3.3](METHOD.md#33-filing-formats)). Phase 1 of S125 chooses the
+focus module and the scope. Candidates, in the order the user agreed on
+2026-11-22:
+
+1. **Crashes and data loss a user can reach in ordinary work**, all in the
+   binary: `/type` on an expression followed by evaluating it (defect 1089),
+   a session that stops saving after a parametric product type (1101), and a
+   cached restart after a refused save (1102).
+2. **The opaque `IO` type**, ruled on 2026-11-22 and not yet built:
+   `primitives/pure` as the public interface, the constructors refused in
+   user code and in `match` (defects 1105 to 1108), and the `#io` and
+   `#closure` display markers (1109). The same work opens the trace entry
+   points, so it is scoped with
+   [ACT-1111](actions/ACT-1111-typed-runtime-entry-points-for-trace-values.md)
+   (typed runtime entry points) and
+   [ACT-1110](actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md)
+   (the `::untraced::` root).
+3. **Typecheck's memory-unsafe carries** (defects 1076 and 1071, 22 failing
+   tests) and the S124 typecheck audit's findings
+   ([report](../audits/cranelisp-typecheck-s124.md),
+   [ACT-1098](actions/ACT-1098-typecheck-audit-s124-maintenance-economy-findings.md)).
+
+Carried without a date:
+[ACT-1112](actions/ACT-1112-move-race-from-built-in-to-library.md) (`race`
+moves to the library); the 32 specification rows the S124-Q16 rewrite left
+partly covered (delta §14.14); the primitive checked/unchecked direction
+([ACT-1054](actions/ACT-1054-primitive-arithmetic-checked-unchecked-pairs-and-ub.md)).
+LLVM stays excluded by user direction.
 
 ### Next increment — coverage assurance and shared standard
 
@@ -221,6 +236,11 @@ Delivered scope, evidence, accepted limitations and carries are retained in
 
 Delivered scope, evidence, rulings and carries are retained in
 [the Sprint 123 record](archive/sprint-123.md).
+
+### Type concreteness at codegen and the core/library boundary — S124 CLOSED 2026-11-22
+
+Delivered scope, evidence, rulings and carries are retained in
+[the Sprint 124 record](archive/sprint-124.md).
 
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 
