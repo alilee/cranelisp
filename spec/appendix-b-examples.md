@@ -1,14 +1,24 @@
 # Appendix B: Example Programs
 
-Complete, runnable example programs demonstrating Cranelisp features. All examples assume the reference implementation's standard library (prelude) is available, including: the `do`, `bind!`, `list`, `cond`, `str`, `->`, `->>`, and `vec` macros; `pure`, `bind`, `show`, `parse-int`, and `str-concat` functions; `Option`, `List`, and `Seq` types; and the `Num`, `Eq`, `Ord`, `Display`, and `Functor` traits. See [Section 8.8.3](08-modules.md#883-empty-prelude) — an empty prelude is valid; the examples would require adjustment without prelude support.
+**Non-normative reference-library examples.** These programs illustrate a supplied
+library, not prerequisites for the language. Each imports the reference
+`prelude` module explicitly, as well as `primitives` and the declared platform.
+The macros (`do`, `bind!`, `list`, `cond`, `str`, `->`, `->>`, `vec`), traits,
+operators, collection ADTs and helpers are library bindings. `pure`, `bind`,
+`parse-int`, `str-concat` and the seeded ADTs are compiler-provided names.
+Local `Maybe` and `Tuple` declarations in B.3 are illustrative ADTs, distinct
+from the seeded `Option` and `Pair`.
+B.6 also explicitly imports compiler-provided macro data and optional SList
+library helpers. The examples' library-specific results do not constrain
+another library or an empty-prelude program (§8.8.3).
 
-## B.1 Hello World [S10]
+## B.1 Hello World [Uncovered S124 — was S10]
 
-The minimal Cranelisp program.
+A program using the reference library's `show` function.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn main []
   (print (show 42)))
@@ -16,13 +26,13 @@ The minimal Cranelisp program.
 
 Output: `42`
 
-## B.2 Factorial (Recursion) [S10]
+## B.2 Factorial (Recursion) [Uncovered S124 — was S10]
 
 Recursive function with conditional and arithmetic.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn fact [n]
   (if (= n 0)
@@ -35,25 +45,25 @@ Recursive function with conditional and arithmetic.
 
 Output: `3628800`
 
-## B.3 Algebraic Data Types [S10]
+## B.3 Algebraic Data Types [Uncovered S124 — was S10]
 
 Product types, sum types, enums, pattern matching, and trait implementations for ADTs.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 ;; Product type (struct-like)
 (deftype Point [:Int x :Int y])
 
 ;; Sum type (tagged union)
-(deftype (Option a) None (Some [:a val]))
+(deftype (Maybe a) Nothing (Just [:a val]))
 
 ;; Enum (all-nullary sum type)
 (deftype Color Red Green Blue)
 
 ;; Polymorphic product
-(deftype (Pair a b) [:a first :b second])
+(deftype (Tuple a b) [:a first :b second])
 
 ;; Constructor + match
 (defn get-x [p]
@@ -68,8 +78,8 @@ Product types, sum types, enums, pattern matching, and trait implementations for
 
 (defn unwrap-or [opt default]
   (match opt
-    [None default
-     (Some x) x]))
+    [Nothing default
+     (Just x) x]))
 
 ;; Trait impl for enum ADT
 (impl Display Color
@@ -80,21 +90,21 @@ Product types, sum types, enums, pattern matching, and trait implementations for
        Blue "Blue"])))
 
 ;; Polymorphic trait impl
-(impl Display (Option :Display a)
+(impl Display (Maybe :Display a)
   (defn show [self]
     (match self
-      [None "None"
-       (Some x) (show x)])))
+      [Nothing "Nothing"
+       (Just x) (show x)])))
 
 (defn main []
   (do
     (print (show (get-x (Point 3 4))))
     (print (show (color-value Green)))
-    (print (show (unwrap-or (Some 42) 0)))
-    (print (show (unwrap-or None 99)))
+    (print (show (unwrap-or (Just 42) 0)))
+    (print (show (unwrap-or Nothing 99)))
     (print (show Red))
-    (print (show (Some 42)))
-    (print (show (Some 3.14)))))
+    (print (show (Just 42)))
+    (print (show (Just 3.14)))))
 ```
 
 Output:
@@ -108,13 +118,13 @@ Red
 3.14
 ```
 
-## B.4 IO with bind! [S10]
+## B.4 IO with bind! [Uncovered S124 — was S10]
 
 Reading input, parsing, and error handling with monadic IO.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn read-int []
   (bind! [line (read-line)]
@@ -135,13 +145,13 @@ Reading input, parsing, and error handling with monadic IO.
     (print (show total))))
 ```
 
-## B.5 Lazy Sequences [S17]
+## B.5 Lazy Sequences [Uncovered S124 — was S17]
 
 Infinite sequences, lazy operations, and the unified collection API.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn main []
   (do
@@ -175,13 +185,14 @@ Output:
 42
 ```
 
-## B.6 Macros [S17]
+## B.6 Macros [Uncovered S124 — was S17]
 
 Compile-time code transformation with `defmacro`.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] macros [*] core.syntax [slist]
+         prelude [*] platform.stdio [*]])
 
 ;; A simple macro: wraps expression in (+ expr 1)
 (defmacro my-inc [x]
@@ -202,13 +213,13 @@ Compile-time code transformation with `defmacro`.
     (print (show (my-add 10 20)))))  ; → 30
 ```
 
-## B.7 Higher-Order Functions and Closures [S17]
+## B.7 Higher-Order Functions and Closures [Uncovered S124 — was S17]
 
 First-class functions, closures, and auto-currying.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 ;; Higher-order function
 (defn apply-twice [f x]
@@ -229,13 +240,13 @@ First-class functions, closures, and auto-currying.
       (print (show (add5 37))))))         ; → 42
 ```
 
-## B.8 Threading Macros [S17]
+## B.8 Threading Macros [Uncovered S124 — was S17]
 
 Data transformation pipelines with `->` and `->>`.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn main []
   (do
@@ -251,13 +262,13 @@ Data transformation pipelines with `->` and `->>`.
                    (reduce + 0))))))  ; → 9 (4+5)
 ```
 
-## B.9 Multi-Signature Dispatch [S17]
+## B.9 Multi-Signature Dispatch [Uncovered S124 — was S17]
 
 Functions with multiple implementations dispatched by argument type.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 ;; map dispatches on container type
 (defn main []
@@ -281,13 +292,13 @@ Output:
 2
 ```
 
-## B.10 Constrained Polymorphism [S10]
+## B.10 Constrained Polymorphism [Uncovered S124 — was S10]
 
 Functions that work across types sharing a trait.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 ;; add works for any Num type — monomorphised at call site
 (defn add [x y] (+ x y))
@@ -311,13 +322,13 @@ Output:
 6.28
 ```
 
-## B.11 IO Sequencing with `do` [S10]
+## B.11 IO Sequencing with `do` [Uncovered S124 — was S10]
 
 Evaluating multiple IO actions, discarding intermediate results.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn main []
   (do
@@ -333,13 +344,13 @@ hello, world!
 true
 ```
 
-## B.12 Conditional IO with `pure` [S10]
+## B.12 Conditional IO with `pure` [Uncovered S124 — was S10]
 
 Using `pure` to satisfy branch type requirements.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn maybe-print [x]
   (if (> x 0)
@@ -359,13 +370,13 @@ The `then` branch returns `IO Int` (from `print`), so the `else` branch MUST als
 7
 ```
 
-## B.13 Combining `do` and `bind!` [S10]
+## B.13 Combining `do` and `bind!` [Uncovered S124 — was S10]
 
 Sequencing effects and capturing results together.
 
 ```clojure
 (platform stdio)
-(import [platform.stdio [*]])
+(import [primitives [*] prelude [*] platform.stdio [*]])
 
 (defn main []
   (do
