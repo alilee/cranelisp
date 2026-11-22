@@ -4408,45 +4408,93 @@ fn s124_io_surface() -> Cranelisp {
         .cli_flag("--no-agent")
 }
 
+fn s124_io_compile_refusal(code: Option<i32>, diag: &str) -> bool {
+    code.is_some()
+        && (diag.contains("error:") || diag.contains("Error:"))
+        && !diag.contains("runtime panic")
+        && !diag.contains("match failed")
+        && !diag.contains("usage:")
+}
+
 fn s124_io_refused(out: helpers::e2e::CrOutput) {
     let diag = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        out.status.code().is_some()
-            && (diag.contains("error:") || diag.contains("Error:"))
-            && !diag.contains("runtime panic")
-            && !diag.contains("match failed")
-            && !diag.contains("usage:"),
+        s124_io_compile_refusal(out.status.code(), &diag),
         "IO surface must be refused with a compile diagnostic, got {:?}: {diag}",
         out.status
     );
+}
+
+// spec: spec/10-io.md §10.1 — T-IO-OPAQUE refusal checker; AGENTS.md §Assurance
+#[test]
+fn s124_io_opaque_refusal_checker_controls() {
+    assert!(s124_io_compile_refusal(
+        Some(1),
+        "main.cl:1:1: error: opaque IO"
+    ));
+    assert!(s124_io_compile_refusal(
+        Some(0),
+        "Error: type error: opaque IO"
+    ));
+    for (code, diag) in [
+        (None, "error: opaque IO"),
+        (Some(5), ""),
+        (Some(1), "error: runtime panic: match failed"),
+        (Some(1), "usage: cranelisp\nerror: bad invocation"),
+    ] {
+        assert!(!s124_io_compile_refusal(code, diag), "{code:?}: {diag}");
+    }
 }
 
 // spec: spec/10-io.md §10.1 — T-IO-OPAQUE construction refusal
 // defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
 #[test]
 fn s124_effect_field_forced_not_signaled_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", "(defn main [] (primitives/Effect 5))\n").run("main.cl").output());
+    s124_io_refused(
+        s124_io_surface()
+            .file("main.cl", "(defn main [] (primitives/Effect 5))\n")
+            .run("main.cl")
+            .output(),
+    );
 }
 
 // spec: spec/10-io.md §10.1 — T-IO-OPAQUE construction refusal
 // defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
 #[test]
 fn s124_effect_field_forced_not_signaled_link() {
-    s124_io_refused(s124_io_surface().file("main.cl", "(defn main [] (primitives/Effect 5))\n").link_then_run("main.cl").output());
+    s124_io_refused(
+        s124_io_surface()
+            .file("main.cl", "(defn main [] (primitives/Effect 5))\n")
+            .link_then_run("main.cl")
+            .output(),
+    );
 }
 
 // spec: spec/10-io.md §10.1 — T-IO-OPAQUE construction refusal
 // defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
 #[test]
 fn s124_effect_field_unforced_not_signaled_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", "(defn main [] (let [e (primitives/Effect 5)] (primitives/sleep 0)))\n").run("main.cl").output());
+    s124_io_refused(
+        s124_io_surface()
+            .file(
+                "main.cl",
+                "(defn main [] (let [e (primitives/Effect 5)] (primitives/sleep 0)))\n",
+            )
+            .run("main.cl")
+            .output(),
+    );
 }
 
 // spec: spec/10-io.md §10.1 — T-IO-OPAQUE construction refusal
 // defect: class=silent-accept locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
 #[test]
 fn s124_io_opaque_pure_constructor_refused_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", "(defn main [] (primitives/Pure 5))\n").run("main.cl").output());
+    s124_io_refused(
+        s124_io_surface()
+            .file("main.cl", "(defn main [] (primitives/Pure 5))\n")
+            .run("main.cl")
+            .output(),
+    );
 }
 
 // spec: spec/10-io.md §10.1 — T-EFFECT-FIELD REPL refusal
@@ -4496,62 +4544,74 @@ fn s124_io_match_pure_only_refused_control_run() {
 // defect: class=wrong-reject locus=src/bootstrap.rs::pure-seed found=S124 owner=/dev (ACT-1108)
 #[test]
 fn s124_effect_field_pure_control_run() {
-    s124_io_surface().file("main.cl", "(defn main [] (primitives/pure 42))\n").run("main.cl").output().assert_exit(42);
+    s124_io_surface()
+        .file("main.cl", "(defn main [] (primitives/pure 42))\n")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
 }
 
 // spec: spec/10-io.md §10.2 — T-IO-OPAQUE public lift
 // defect: class=wrong-reject locus=src/bootstrap.rs::pure-seed found=S124 owner=/dev (ACT-1108)
 #[test]
 fn s124_effect_field_pure_control_link() {
-    s124_io_surface().file("main.cl", "(defn main [] (primitives/pure 42))\n").link_then_run("main.cl").output().assert_exit(42);
+    s124_io_surface()
+        .file("main.cl", "(defn main [] (primitives/pure 42))\n")
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(42);
 }
 
 // spec: spec/10-io.md §10.2 — T-IO-OPAQUE public lift REPL
 // defect: class=wrong-reject locus=src/bootstrap.rs::pure-seed found=S124 owner=/dev (ACT-1108)
 #[test]
 fn s124_effect_field_pure_control_repl() {
-    s124_io_surface().stdin("(primitives/pure 42)\n").output().assert_ok().assert_stdout_contains(":primitives/Int 42");
+    s124_io_surface()
+        .stdin("(primitives/pure 42)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/10-io.md §10.2 — T-IO-OPAQUE public lift scheme
 // defect: class=wrong-reject locus=src/bootstrap.rs::pure-seed found=S124 owner=/dev (ACT-1108)
 #[test]
 fn s124_io_opaque_pure_info() {
-    s124_io_surface().stdin("/info primitives/pure\n").output().assert_ok()
+    s124_io_surface()
+        .stdin("/info primitives/pure\n")
+        .output()
+        .assert_ok()
         .assert_stdout_contains("(Fn [a] (primitives/IO a))");
 }
 
 fn s124_bind_spelling_program(import: &str, callee: &str) -> String {
     // sleep produces IO without depending on a constructor or the absent pure.
-    format!("{import}\n(defn main [] ({callee} (primitives/sleep 0) (fn [x] (primitives/sleep 0))))\n")
+    format!(
+        "{import}\n(defn main [] ({callee} (primitives/sleep 0) (fn [x] (primitives/sleep 0))))\n"
+    )
 }
 
-// spec: spec/10-io.md §10.1 — T-BIND-SPELLING bare refusal
+// spec: spec/10-io.md §10.1 — T-BIND-SPELLING all four spellings refuse
 // defect: class=silent-accept locus=crates/cranelisp-typecheck/src/checker.rs::is_internal_constructor_check_with_state found=S124 owner=/dev
 #[test]
-fn s124_bind_spelling_bare_refused_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", &s124_bind_spelling_program("(import [primitives [Bind]])", "Bind")).run("main.cl").output());
-}
-
-// spec: spec/10-io.md §10.1 — T-BIND-SPELLING qualified refusal
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/checker.rs::is_internal_constructor_check_with_state found=S124 owner=/dev
-#[test]
-fn s124_bind_spelling_qualified_refused_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", &s124_bind_spelling_program("", "primitives/Bind")).run("main.cl").output());
-}
-
-// spec: spec/10-io.md §10.1 — T-BIND-SPELLING dotted refusal
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/checker.rs::is_internal_constructor_check_with_state found=S124 owner=/dev
-#[test]
-fn s124_bind_spelling_dotted_refused_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", &s124_bind_spelling_program("", "primitives/IO.Bind")).run("main.cl").output());
-}
-
-// spec: spec/10-io.md §10.1 — T-BIND-SPELLING value refusal
-// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/checker.rs::is_internal_constructor_check_with_state found=S124 owner=/dev
-#[test]
-fn s124_bind_spelling_value_refused_run() {
-    s124_io_refused(s124_io_surface().file("main.cl", &s124_bind_spelling_program("", "(let [b primitives/Bind] b)")).run("main.cl").output());
+fn s124_bind_spelling_outcomes_agree_run() {
+    let mut failures = Vec::new();
+    for (name, import, callee) in [
+        ("bare", "(import [primitives [Bind]])", "Bind"),
+        ("qualified", "", "primitives/Bind"),
+        ("dotted", "", "primitives/IO.Bind"),
+        ("value", "", "(let [b primitives/Bind] b)"),
+    ] {
+        let out = s124_io_surface()
+            .file("main.cl", &s124_bind_spelling_program(import, callee))
+            .run("main.cl")
+            .output();
+        let diag = format!("{}{}", out.stdout, out.stderr);
+        if !s124_io_compile_refusal(out.status.code(), &diag) {
+            failures.push(format!("{name}: {:?}: {diag}", out.status));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // spec: spec/10-io.md §10.3.1 — T-BIND-SPELLING builtin public-interface control

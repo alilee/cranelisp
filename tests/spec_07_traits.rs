@@ -5552,18 +5552,31 @@ fn s124_vec_functor_option_control() {
 // spec: spec/07-traits.md §7.2.3 — T-VEC-FUNCTOR direct helper control
 #[test]
 fn s124_vec_functor_helper_control() {
-    s124_trait_program(S124_VEC_GO,
+    s124_trait_program(
+        S124_VEC_GO,
         "(primitives/vec-get (go (fn [x] (primitives/add-i64 x 1)) [1 2 3] 0 []) 2)",
-    ).assert_exit(4);
+    )
+    .assert_exit(4);
 }
 
-const S124_DEFAULT_UNDEFINED: &str = "(import [primitives [Int]])\n(deftrait T (req [self] Int) (dflt [self] (nosuch self)))\n";
+const S124_DEFAULT_UNDEFINED: &str =
+    "(import [primitives [Int]])\n(deftrait T (req [self] Int) (dflt [self] (nosuch self)))\n";
 
 // spec: spec/07-traits.md §7.1.5 — T-DEFAULT-UNDEFINED declaration is a template
 #[test]
 fn s124_default_undefined_declaration_accepted() {
-    let out = Cranelisp::new().stdin(&format!("{S124_DEFAULT_UNDEFINED}(primitives/add-i64 5 5)\n")).output().assert_ok();
-    assert!(!out.stdout.to_lowercase().contains("error:"), "{}{}", out.stdout, out.stderr);
+    let out = Cranelisp::new()
+        .stdin(&format!(
+            "{S124_DEFAULT_UNDEFINED}(primitives/add-i64 5 5)\n"
+        ))
+        .output()
+        .assert_ok();
+    assert!(
+        !out.stdout.to_lowercase().contains("error:"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
     out.assert_stdout_contains(":primitives/Int 10");
 }
 

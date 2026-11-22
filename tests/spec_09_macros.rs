@@ -2125,13 +2125,21 @@ const S124_SCONCAT_MAIN: &str = "(defn slen [xs] (match xs [macros/SNil 0 (macro
 // spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC no prelude or import, run
 #[test]
 fn s124_sconcat_public_no_import_run() {
-    Cranelisp::new().file("main.cl", S124_SCONCAT_MAIN).run("main.cl").output().assert_exit(2);
+    Cranelisp::new()
+        .file("main.cl", S124_SCONCAT_MAIN)
+        .run("main.cl")
+        .output()
+        .assert_exit(2);
 }
 
 // spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC no prelude or import, linked
 #[test]
 fn s124_sconcat_public_no_import_link() {
-    Cranelisp::new().file("main.cl", S124_SCONCAT_MAIN).link_then_run("main.cl").output().assert_exit(2);
+    Cranelisp::new()
+        .file("main.cl", S124_SCONCAT_MAIN)
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(2);
 }
 
 // spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC public scheme

@@ -5744,9 +5744,18 @@ fn s124_type_expr_evaluated_constructor_control() {
         ("", "(primitives/Some 1)", "(Option.Some 1)"),
         ("(deftype (Box a) (Mk [:a v]))\n", "(Mk 1)", "(Box.Mk 1)"),
     ] {
-        let out = s124_type_session(&format!("{setup}{value}\n/type {value}\n{value}\n(add-i64 5 5)\n"))
-            .assert_ok().assert_stdout_contains(":primitives/Int 10");
-        assert_eq!(out.stdout.matches(printed).count(), 2, "{}{}", out.stdout, out.stderr);
+        let out = s124_type_session(&format!(
+            "{setup}{value}\n/type {value}\n{value}\n(add-i64 5 5)\n"
+        ))
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 10");
+        assert_eq!(
+            out.stdout.matches(printed).count(),
+            2,
+            "{}{}",
+            out.stdout,
+            out.stderr
+        );
     }
 }
 
@@ -5754,7 +5763,10 @@ fn s124_type_expr_evaluated_constructor_control() {
 // defect: class=display-envelope-mirror locus=src/display.rs found=S124 owner=/dev (ACT-1109)
 #[test]
 fn s124_markers_closure_display() {
-    Cranelisp::new().stdin("(let [f (fn [:primitives/Int x] x)] f)\n").output().assert_ok()
+    Cranelisp::new()
+        .stdin("(let [f (fn [:primitives/Int x] x)] f)\n")
+        .output()
+        .assert_ok()
         .assert_stdout_contains(":(Fn [primitives/Int] primitives/Int) #closure");
 }
 
@@ -5762,7 +5774,10 @@ fn s124_markers_closure_display() {
 // defect: class=display-envelope-mirror locus=src/display.rs found=S124 owner=/dev (ACT-1109)
 #[test]
 fn s124_markers_nested_io_display() {
-    Cranelisp::new().stdin("[(primitives/sleep 0)]\n").output().assert_ok()
+    Cranelisp::new()
+        .stdin("[(primitives/sleep 0)]\n")
+        .output()
+        .assert_ok()
         .assert_stdout_contains("[#io]");
 }
 
@@ -5770,8 +5785,16 @@ fn s124_markers_nested_io_display() {
 #[test]
 fn s124_markers_input_refused_session_continues() {
     for marker in ["#io", "#closure"] {
-        let out = Cranelisp::new().stdin(&format!("{marker}\n(primitives/add-i64 5 5)\n")).output().assert_ok();
-        assert!(out.stdout.contains("parse error"), "{}{}", out.stdout, out.stderr);
+        let out = Cranelisp::new()
+            .stdin(&format!("{marker}\n(primitives/add-i64 5 5)\n"))
+            .output()
+            .assert_ok();
+        assert!(
+            out.stdout.contains("parse error"),
+            "{}{}",
+            out.stdout,
+            out.stderr
+        );
         out.assert_stdout_contains(":primitives/Int 10");
     }
 }
