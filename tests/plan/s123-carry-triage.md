@@ -590,7 +590,7 @@ allocations/deallocations. "On" is current emission and "off" is
   lenient. Off: 0.77 s and 0.86 s. The polarities are the same order of
   magnitude, as identical COW counts predict.
 - **Exemplar residue.** On, the warm residual is 51, the
-  [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md)
+  ACT-1018
   RED. Off, it is 556. The toggle-off figure is a new diagnostic observation,
   outside this question; nothing is filed for it.
 

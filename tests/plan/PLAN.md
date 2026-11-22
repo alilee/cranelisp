@@ -126,12 +126,12 @@ matrix is required merely because axes can be named.
   (field types, drop glue, match binders, accessors), carry declared
   parameter order × field mention order as an axis, including a parameter no
   field mentions. The in-order type is the twin
-  ([ACT-1062](../../sprints/actions/ACT-1062-match-field-binder-takes-another-parameters-type-intake.md)).
+  (ACT-1062).
 - Where a mechanism enumerates a module's definitions (regeneration,
   listing, caching, redefinition), carry the definition form as an axis:
   single-signature, multi-signature by arity and by type, macro-produced and
   `begin`-grouped, with the single-signature function as the twin
-  ([ACT-1068](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md)).
+  (ACT-1068).
 - For a strategy-bearing fix, name the negative-space module cells from the
   design's claim before the fix lands; a unit test authored from the diff
   validates the fix's model of itself.
@@ -325,7 +325,7 @@ active allocation cites them; they are not fresh source censuses.
   remains.
   - The cell is RED, with a residual of 51 against a premise of 0 (2026-09-30).
     It is carried as intake under
-    [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md).
+    ACT-1018.
   - A nonzero residual is intake to `qa`, never a threshold.
   - Provenance: S119 §5.3, `git show a07823d8:tests/plan/s119-test-plan.md`.
 - **L-B1 corpus extension: QA disposition pending.** The retired S102

@@ -106,7 +106,7 @@ unless stated. Four files:
   asserts either outcome.
 - **The same tree through a module alias** fails in one REPL order for a
   different reason,
-  [ACT-1082](ACT-1082-reference-through-a-module-alias-names-the-alias-as-the-module-intake.md).
+  ACT-1082.
 - **`review`'s two findings on `a205a29f`** (a failed restore walk still
   completing the parent; a loaded parent object masking a later child
   failure) are `dev`(`src/`)'s, at the module tier

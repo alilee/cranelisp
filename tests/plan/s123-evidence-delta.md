@@ -1259,7 +1259,7 @@ solve is faster on U′.
 control with moves on and 556 with moves off. On U′ it retains 2 in both
 polarities. Moves off is not above moves on, so nothing is filed for it. The
 2 is one block for each of `main`'s two `print` calls; the attribution is in
-[ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md).
+ACT-1018.
 
 **The full suite on the subject:** 6,679 run, 6,656 pass, 23 RED, 1 skipped.
 There are no regressions. 20 REDs are filed guards:
@@ -1594,7 +1594,7 @@ The user decides each of the three rows Phase 5 added to §5:
 |---|---|
 | [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md) | Unbounded leak in a loop, not memory-unsafe. It predates U′ and was found after W2's first review, so the correction-loop stop rule applies. Twelve REDs stand |
 | ACT-1049 (closed at S124) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
-| [ACT-1018](../../sprints/actions/ACT-1018-exemplar-warm-solve-residual-intake.md) | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
+| ACT-1018 | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
 | [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
 | ACT-1038 (closed at S124; Git history), ACT-1039 (closed at S124; Git history) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
 | ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
