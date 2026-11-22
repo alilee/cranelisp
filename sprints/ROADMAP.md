@@ -59,7 +59,7 @@ focus module and the scope. Candidates, in the order the user agreed on
 3. **Typecheck's memory-unsafe carries** (defects 1076 and 1071, 22 failing
    tests) and the S124 typecheck audit's findings
    ([report](../audits/cranelisp-typecheck-s124.md),
-   [ACT-1098](actions/ACT-1098-typecheck-audit-s124-maintenance-economy-findings.md)).
+   [ACT-1098](actions/ACT-1098-typecheck-maintenance-economy-findings-from-the-s124-audit.md)).
 
 Carried without a date:
 [ACT-1112](actions/ACT-1112-move-race-from-built-in-to-library.md) (`race`

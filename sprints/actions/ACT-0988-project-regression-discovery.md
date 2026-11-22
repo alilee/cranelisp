@@ -47,7 +47,7 @@ current increment; empty-vector primitive scope is unchanged.
 ## Confirmed defect carried with this work
 
 On 2026-09-27 the user explicitly approved carrying DT-1 from
-[ACT-0986](ACT-0986-test-discovery-contract-and-eligibility-intake.md) with this
+ACT-0986 (resolved; its filing is in Git history) with this
 increment. Ordinary `--run` silently discovers zero tests in a module that
 contains eligible tests. Resolve this when establishing the explicit harness
 boundary, rather than adding temporary discovery capability to `--run`.
