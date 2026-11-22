@@ -4398,3 +4398,262 @@ fn s124_print_balance_pure_control_run() {
 fn s124_print_balance_pure_control_link() {
     s124_print_balance(r#"(Pure 0)"#, true);
 }
+
+// T-EFFECT-FIELD, T-IO-MATCH and T-BIND-SPELLING:
+// tests/plan/s124-evidence-delta.md §14.3; ACT-1106, ACT-1107, ACT-1105.
+// The IO surface ruling is open. These clauses preserve only the outcomes
+// common to its alternatives; QA narrows them after the ruling.
+fn s124_io_surface() -> Cranelisp {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .cli_flag("--no-color")
+        .cli_flag("--no-agent")
+}
+
+fn s124_effect_not_signaled(out: helpers::e2e::CrOutput) {
+    assert!(
+        !out.stderr.contains("usage:"),
+        "T-EFFECT-FIELD setup failed: {}",
+        out.stderr
+    );
+    assert!(
+        out.status.code().is_some(),
+        "T-EFFECT-FIELD: process must not end on a signal: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/10-io.md §10.1 — constructing and forcing Effect must not signal.
+// defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
+#[test]
+fn s124_effect_field_forced_not_signaled_run() {
+    s124_effect_not_signaled(
+        s124_io_surface()
+            .file("main.cl", "(defn main [] (primitives/Effect 5))\n")
+            .run("main.cl")
+            .output(),
+    );
+}
+
+// spec: spec/10-io.md §10.1 — linked Effect construction must not signal.
+// defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
+#[test]
+fn s124_effect_field_forced_not_signaled_link() {
+    s124_effect_not_signaled(
+        s124_io_surface()
+            .file("main.cl", "(defn main [] (primitives/Effect 5))\n")
+            .link_then_run("main.cl")
+            .output(),
+    );
+}
+
+// spec: spec/10-io.md §10.1 — releasing an unforced Effect must not signal.
+// defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
+#[test]
+fn s124_effect_field_unforced_not_signaled_run() {
+    s124_effect_not_signaled(
+        s124_io_surface()
+            .file(
+                "main.cl",
+                "(defn main [] (let [e (primitives/Effect 5)] (primitives/Pure 7)))\n",
+            )
+            .run("main.cl")
+            .output(),
+    );
+}
+
+// spec: spec/10-io.md §10.1 — an Effect REPL turn must not signal.
+// defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
+#[test]
+fn s124_effect_field_forced_not_signaled_repl() {
+    s124_effect_not_signaled(s124_io_surface().stdin("(primitives/Effect 5)\n").output());
+}
+
+const S124_IO_PEEK: &str =
+    "(defn peek [io] (match io [(primitives/Pure x) x (primitives/Effect t) t]))\n";
+
+// spec: spec/10-io.md §10.1 — consuming a matched Effect field must not signal.
+// defect: class=scalar-as-pointer locus=src/bootstrap.rs::io-effect-constructor-seed found=S124 owner=/dev
+#[test]
+fn s124_effect_field_match_not_signaled_repl() {
+    s124_effect_not_signaled(
+        s124_io_surface()
+            .use_workspace_platforms()
+            .stdin(&format!(
+                "(platform test-capture)\n\
+                 (import [platform.test-capture [read-line]])\n\
+                 {S124_IO_PEEK}\
+                 (primitives/str-len (peek (read-line)))\n"
+            ))
+            .output(),
+    );
+}
+
+// spec: spec/10-io.md §10.1 — Pure value control for Effect construction.
+#[test]
+fn s124_effect_field_pure_control_run() {
+    s124_io_surface()
+        .file("main.cl", "(defn main [] (primitives/Pure 5))\n")
+        .run("main.cl")
+        .output()
+        .assert_exit(5);
+}
+
+// spec: spec/10-io.md §10.1 — linked Pure value control for Effect construction.
+#[test]
+fn s124_effect_field_pure_control_link() {
+    s124_io_surface()
+        .file("main.cl", "(defn main [] (primitives/Pure 5))\n")
+        .link_then_run("main.cl")
+        .output()
+        .assert_exit(5);
+}
+
+// spec: spec/10-io.md §10.1 — REPL Pure value control for Effect construction.
+#[test]
+fn s124_effect_field_pure_control_repl() {
+    s124_io_surface()
+        .stdin("(primitives/Pure 5)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5");
+}
+
+// spec: spec/10-io.md §10.1 — Pure field control for the Effect-field match.
+#[test]
+fn s124_effect_field_match_pure_control_repl() {
+    s124_io_surface()
+        .use_workspace_platforms()
+        .stdin(&format!(
+            "(platform test-capture)\n\
+             (import [platform.test-capture [read-line]])\n\
+             {S124_IO_PEEK}\
+             (peek (primitives/Pure 7))\n"
+        ))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 7");
+}
+
+const S124_IO_BOUND_ONE: &str =
+    "(primitives/bind (primitives/Pure 1) (fn [x] (primitives/Pure x)))";
+
+// spec: spec/06-pattern-matching.md §6.5 — a checked match cannot fail at runtime.
+// defect: class=wrong-accept locus=crates/cranelisp-typecheck/src/adt.rs found=S124 owner=/dev
+#[test]
+fn s124_io_match_not_runtime_match_failed_run() {
+    let out = s124_io_surface()
+        .file(
+            "main.cl",
+            &format!("{S124_IO_PEEK}(defn main [] (primitives/Pure (peek {S124_IO_BOUND_ONE})))\n"),
+        )
+        .run("main.cl")
+        .output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !diag.contains("match failed"),
+        "T-IO-MATCH: accepted match failed at runtime: {diag}"
+    );
+    let refused = out.status.code() == Some(1)
+        && (diag.contains("error:") || diag.contains("Error:"))
+        && !diag.contains("runtime panic");
+    let ran = out.status.code() == Some(1) && diag.trim().is_empty();
+    assert!(
+        refused || ran,
+        "expected compile diagnostic or value 1, got {:?}: {diag}",
+        out.status
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.5 — wildcard covers the internal IO node.
+#[test]
+fn s124_io_match_wildcard_control_run() {
+    s124_io_surface()
+        .file(
+            "main.cl",
+            &format!(
+                "(defn peek [io] (match io [(primitives/Pure x) x _ 0]))\n\
+                 (defn main [] (primitives/Pure (peek {S124_IO_BOUND_ONE})))\n"
+            ),
+        )
+        .run("main.cl")
+        .output()
+        .assert_ok();
+}
+
+// spec: spec/06-pattern-matching.md §6.5 — omitting Effect is non-exhaustive.
+#[test]
+fn s124_io_match_pure_only_refused_control_run() {
+    let out = s124_io_surface()
+        .file(
+            "main.cl",
+            &format!(
+                "(defn peek [io] (match io [(primitives/Pure x) x]))\n\
+                 (defn main [] (primitives/Pure (peek {S124_IO_BOUND_ONE})))\n"
+            ),
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(1);
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("non-exhaustive") && diag.contains("Effect"),
+        "{diag}"
+    );
+}
+
+fn s124_bind_spelling_program(import: &str, callee: &str) -> String {
+    format!(
+        "{import}\n\
+         (defn main [] ({callee} (primitives/Pure 1)\n\
+           (fn [x] (primitives/Pure (primitives/add-i64 x 41)))))\n"
+    )
+}
+
+// spec: spec/10-io.md §10.1 — one Bind constructor has one outcome across spellings.
+// defect: class=silent-accept locus=crates/cranelisp-typecheck/src/checker.rs::is_internal_constructor_check_with_state found=S124 owner=/dev
+#[test]
+fn s124_bind_spelling_outcomes_agree_run() {
+    let mut outcomes = Vec::new();
+    for (name, import, callee) in [
+        ("bare", "(import [primitives [Bind]])", "Bind"),
+        ("qualified", "", "primitives/Bind"),
+        ("dotted", "", "primitives/IO.Bind"),
+        ("value", "", "(let [b primitives/Bind] b)"),
+    ] {
+        let out = s124_io_surface()
+            .file("main.cl", &s124_bind_spelling_program(import, callee))
+            .run("main.cl")
+            .output();
+        let diag = format!("{}{}", out.stdout, out.stderr);
+        let refused = out.status.code() == Some(1)
+            && (diag.contains("error:") || diag.contains("Error:"))
+            && !diag.contains("runtime panic");
+        let ran = out.status.code() == Some(42);
+        assert!(
+            refused || ran,
+            "{name}: expected diagnostic refusal or value 42, got {:?}: {diag}",
+            out.status
+        );
+        outcomes.push((name, ran, diag));
+    }
+    assert!(
+        outcomes.iter().all(|(_, ran, _)| *ran == outcomes[0].1),
+        "T-BIND-SPELLING: constructor outcomes disagree: {outcomes:?}"
+    );
+}
+
+// spec: spec/10-io.md §10.3.1 — builtin bind control sequences to 42.
+#[test]
+fn s124_bind_spelling_builtin_control_run() {
+    s124_io_surface()
+        .file(
+            "main.cl",
+            &s124_bind_spelling_program("", "primitives/bind"),
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+}
