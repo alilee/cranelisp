@@ -1531,6 +1531,17 @@ its three exit clauses (§14.9).**
   (§14.10).
 - **What the sprint's evidence does not cover** is §14.13.
 
+**Since that run, by hand on 2026-11-22, with no suite run:**
+
+- [ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md) is opened, **memory-unsafe and latent:** a
+  qualified `primitives/Bind` constructs an IO node one word shorter than
+  the runtime reads, where the bare spelling is refused. No wrong value,
+  leak or crash was observed; the ordinary path matches the builtin.
+  Whether the constructor is language surface is open with the user. No
+  cell yet: T-BIND-SPELLING.
+- `test` committed T-MOD-CHILD-INDEX and the returned T-MOD-CHILD values
+  (`60f15a06`). `qa` has not read or run them.
+
 Open, by filing:
 
 - [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md), in `src/`, **memory-unsafe:** after a refused save
@@ -1695,6 +1706,7 @@ read from their filings' headers only.
 
 | Problem | Module | State | A reproduction |
 |---|---|---|---|
+| A qualified `primitives/Bind` constructs an IO node one word shorter than the runtime reads; the bare spelling is refused ([ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md)) | `src/` for the seeded node; typecheck for the spelling, provisionally | **A defect under either answer to the user's open question. Observed by `qa`** in emitted code and by controls. Memory-unsafe and latent: a read past the allocation on every forced node; no wrong value observed | T-BIND-SPELLING, allocated (§14.3). The short node has no solution-level cell |
 | `/search` offers a symbol from a project file at a library child's path, which the ruling on S124-Q14 says is not part of the program (a face of [ACT-1096](../../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md)) | `src/`, provisional | Reproduced by `qa` by hand with a control. Wrong value | T-MOD-CHILD-INDEX, allocated (§14.3) |
 | Two processes on one project directory mix cache generations ([ACT-1085](../../sprints/actions/ACT-1085-two-processes-on-one-project-directory-can-mix-cache-generations-intake.md)) | `src/` | Asserted with a named falsifier. The backend's shared temporary name, which was a part, is corrected (`7d5a5d42`) | Judged constructible, and not attempted, below |
 | A codegen failure names `__expr` or an instance key as its subject (FIXME 0915, the binary's half; [int §9.1](../../design/int/int.md#91-the-compiler-stage-subject-is-presented-never-carried--ruling-s119-fixme-0915-item-4)) | `src/`, with a carrier that is `arch`'s | True in this read: `codegen failed for __expr in user: …` through ACT-1075's cells. No legitimate program reaches it. Wrong diagnostic | A module row in `src/`, allocated to `dev`(`src/`) (§14.8). No e2e cell: every public trigger is another module's open defect |
@@ -1850,13 +1862,42 @@ statement of what each cell shows.
 
 | Rank | Item | Filing | Kind |
 |---|---|---|---|
-| 1 | T-MOD-CHILD-INDEX | ACT-1096 | New reproduction; wrong value |
-| 2 | T-MOD-CHILD: the library's value must not be 1 | ACT-1096 | Returned |
+| 1 | T-BIND-SPELLING | ACT-1105 | New reproduction |
+| 2 | T-MOD-CHILD-INDEX | ACT-1096 | New reproduction; committed at `60f15a06`, not yet read by `qa` |
+| 3 | T-MOD-CHILD: the library's value must not be 1 | ACT-1096 | Returned; committed at `60f15a06`, not yet read by `qa` |
 
 **Held:** T-VEC-FUNCTOR, an implementation of a higher-kinded trait for
 the built-in `Vec`, on S124-Q16 (rows CL05 and CL36). **Nothing is
 allocated against the Q16 inventory's classifications.** S124-Q13, Q15,
 Q17 and Q18 are open with the user and hold no allocated cell.
+
+**T-BIND-SPELLING** ([ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md);
+[IO trampoline §1.3](../../design/backend/io-trampoline.md)).
+
+- **Risk.** One constructor is refused or accepted by how it is spelled,
+  and the accepted spellings build a node the runtime reads past.
+- **Seam and technique.** One-file programs with no prelude under `--run`,
+  each sequencing `(Pure 1)` into a continuation that adds 41.
+- **Spellings.** The bare name after `(import [primitives [Bind]])`;
+  `primitives/Bind`; `primitives/IO.Bind`; and `primitives/Bind` taken as
+  a value.
+- **Clause.** The four programs have one outcome: all are refused with a
+  diagnostic, or all exit 42.
+- **Why the clause does not name the outcome.** Whether the constructor is
+  language surface is open with the user. Under either answer the four
+  spellings agree. `qa` narrows the clause when the answer is recorded.
+- **Control.** The builtin `bind` in the same program shape exits 42.
+- **Wrong implementation it rejects.** A gate applied to the bare name
+  only, as built.
+- **By hand the bare spelling is refused and the other three exit 42.**
+- **What it cannot show.** The short node. On the ordinary path a
+  constructor-built node gives the builtin's value and allocation balance,
+  with a heap-owning intermediate too. That evidence is a module row,
+  owed by `dev` with the correction. **This is a named residual:** the
+  read past the allocation has no solution-level cell.
+- **Defect line:** `class=silent-accept`, the locus
+  `crates/cranelisp-typecheck/src/checker.rs::is_internal_constructor_check_with_state`,
+  `owner=/dev`. The locus is provisional.
 
 **T-MOD-CHILD-INDEX** ([ACT-1096](../../sprints/actions/ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md); spec §8.11.2, as ruled at
 S124-Q14: the project file "MUST NOT be indexed or loaded", and "its
@@ -2596,6 +2637,7 @@ running at once, and once in the full suite.
 
 | Filing | Defect | Entered | Face | State |
 |---|---|---|---|---|
+| [ACT-1105](../../sprints/actions/ACT-1105-qualified-primitives-bind-constructs-a-node-shorter-than-the-runtime-reads-intake.md) | A qualified `primitives/Bind` constructs an IO node one word shorter than the runtime reads; the bare spelling is refused | Before S124: the two-field seed is S76's, the third word S121 to S122's | Memory-unsafe, latent: a read past the allocation; a call through the stray word on a path not reached | **Opened from `sprint`'s lead on 2026-11-22.** The node's size is observed in emitted code with the builtin as control; the reader is read in source. The ordinary path matches the builtin. No cell yet: T-BIND-SPELLING (§14.3) |
 | [ACT-1103](../../sprints/actions/ACT-1103-trait-spelled-num-eq-ord-or-display-has-its-impl-body-replaced-by-a-primitive-intake.md) | A trait spelled `Num`, `Eq`, `Ord` or `Display` has its implementation for a primitive type replaced by a primitive | Before S124: in typecheck since 2026-06-21, in the backend before | Wrong value, every mode, no diagnostic | **Opened from `arch`'s determination on 2026-11-21.** Reproduced by hand for all four spellings with renamed controls; attributed to `primitive_for_trait_method`, read in source. T-TRAIT-SPELLING is committed, 6 cells RED |
 | [ACT-1104](../../sprints/actions/ACT-1104-built-in-vec-is-refused-as-an-implementation-target-intake.md) | The built-in `Vec` is refused as an implementation target | Not established | A legal program refused, with a self-contradicting diagnostic | **Opened from `arch`'s determination on 2026-11-21.** Reproduced by hand with controls; attributed to typecheck's implementation check, provisionally as to the site. T-VEC-IMPL is committed, 2 cells RED. The higher-kinded face is held on S124-Q16 |
 | [ACT-1102](../../sprints/actions/ACT-1102-refused-save-leaves-the-cache-ahead-of-the-backing-file-intake.md) | After a refused save the cache holds definitions the backing file does not, and the next cached session calls one | Before S124: the opening tree shows it | **Memory-unsafe:** signal 11 | **Opened from `test`'s observation on 2026-11-20.** Reproduced by hand with three controls. Attributed to `src/session_v4/lifecycle.rs`, read in source. T-REFUSED-SAVE-CACHE is committed, 1 cell RED |
@@ -2660,6 +2702,9 @@ running at once, and once in the full suite.
 - **The owning-value leak.** T-TRACE-ROOT's heap leg used a `String`, which
   holds nothing further. `qa` allocated "heap-valued" and did not separate
   a value that owns other heap values, which is where drop glue matters.
+- **ACT-1105.** The cells for the internal constructor use the bare name,
+  which is refused. The axis "the same name, qualified" was not enumerated
+  for a refusal that is meant to hold for a declaration, not a spelling.
 - **ACT-1096's index face.** `qa` reproduced the load through a private
   child and did not ask what else names a module from a file's path. The
   search index does.
@@ -2858,6 +2903,7 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 | Whether ACT-1099's correction is scheduled with ACT-1089's | T-TYPE-MACRO | Clean house: both are in `typecheck_only` |
 | Whether ACT-1100's correction is scheduled | T-MACRO-SIBLING's 6 RED cells | The standard library's `derive` meets it |
 | S124-Q16: the core/library classification | T-VEC-FUNCTOR; the second arm of T-TRAIT-SPELLING's clause | Consistent spec |
+| Whether `primitives/Bind` is language surface | The outcome T-BIND-SPELLING's clause names; ACT-1105's correction | Consistent spec |
 | Whether ACT-1101 and ACT-1102 are corrected before the sprint closes | T-SAVE-PRODUCT's 3 RED cells; T-REFUSED-SAVE-CACHE's 1 | Data loss and a memory-unsafe restart. Neither is S124's own, so *no decay* does not require it |
 
 **Carried, with nothing owed this sprint beyond the failing test:** every
@@ -3094,6 +3140,9 @@ defect report; the defects are §14.1.
   (ACT-1101); a multi-signature function is omitted from the regenerated
   file (ACT-1068); regeneration can reorder definitions so the file no
   longer loads (ACT-1005).
+- **Memory-unsafe and latent, no test yet:** an IO node built by the
+  qualified `primitives/Bind` is one word shorter than the runtime reads
+  (ACT-1105). No wrong behaviour was observed from it.
 - **Memory-unsafe, on a failing test:** the session after a refused save
   restores a definition its file does not hold, and calling it ends the
   process (ACT-1102).
