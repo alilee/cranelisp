@@ -377,7 +377,7 @@ with a trap, and no raising frame returns a sentinel. Closing
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
 | IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
-| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name by its template (built, row B16, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), constructor field types paired by declared parameter (built, row B14, §3), and the root's result (designed, row B17, §4). |
+| Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name by its template (built, row B16, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), constructor field types paired by declared parameter (built, row B14, §3), and the root's result (built, row B17, §4). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
 
 ## 9. S124 open work and its order
@@ -386,25 +386,25 @@ The backend is S124's focus module (`sprints/METHOD.md` §Delivery
 principles): it exits with no failing test attributed to it, no build warning
 and no open review finding. This section lists every S124 backend item still
 open, its design and what it waits on. A row leaves when its change lands.
-Verified against source at `4a58af99` on 2026-11-20.
+Verified against source at `bf630d9f` on 2026-11-22.
 
-| Item | Change-set | Design | Waits on | Evidence |
-|---|---|---|---|---|
-| B17 (ACT-1094, step 4) | The form's closing call passes the body's value and its descriptor; one tail for both paths; the value released after it by type; `CACHE_SCHEMA_VERSION` 35 to 36 | [trace codegen](trace-codegen.md) §4 | `dev`(intrinsics)'s step 3 ([interfaces](../arch/interfaces.md#the-roots-result-row-b17)) | Five module rows there, written first; T-TRACE-ROOT is `qa`'s |
+No backend design item is open. Each row of this section landed and is
+listed under *Landed in S124* below. The typed trace entries (ACT-1111, row
+B18) are carried to a later sprint with `arch`.
 
 B16 (`c9f573e0`) landed after the Phase 5 checkpoint (`ee65d9aa`); its
 report is `arch`'s
 ([interfaces](../arch/interfaces.md#an-instances-template-owner-row-b16)).
-B17 changes no backend public item.
+B17 (`3c5e41ca`) changed no backend public item.
 
 **What stays RED, and is not the backend's.** `qa`'s standing state at
-`ee65d9aa` attributes no committed failing test to the backend
-([evidence delta](../../tests/plan/s124-evidence-delta.md) §14.1, by owning
-module; §14.9 is the backend's exit list).
+`128255fc` attributes no failing test to the backend, which meets its three
+exit clauses ([evidence delta](../../tests/plan/s124-evidence-delta.md) §14,
+§14.9; the carried defects are §14.15).
 `match_field_parameter_order::s124_1062_e_subject_repl` is the binary's
 display reader (`src/display.rs::build_adt_subst`), carried with
 `dev`(`src/`). ACT-1067's stage is not attributed, and the backend is one of
-its four candidate stages (§14.1).
+its four candidate stages (§14.15).
 
 **FIXME 0915's backend half** is built: Rules 1–3 and row B15
 ([release contract](non-concrete-release-contract.md) §7.2.1).
@@ -454,8 +454,10 @@ its four candidate stages (§14.1).
   - The slot-call relocation row and its detection proof (`4407b008`,
     `39db1bb1`; [compile-to-module](compile-to-module.md) §12.2).
   - Comments naming items that do not exist removed (`5a9c4f07`).
-- `CACHE_SCHEMA_VERSION` is 35 (read at `39db1bb1`). B8 took it from 34
-  (`07bb8e84`). B13, B14, B10, B10-C2, the slot change and the frame name
+  - B17: a trace root's result is the body's value (`3c5e41ca`, ACT-1094;
+    [trace codegen](trace-codegen.md) §4).
+- `CACHE_SCHEMA_VERSION` is 36 (read at `bf630d9f`). B8 took it from 34
+  (`07bb8e84`), and B17 to 36 (`3c5e41ca`). B13, B14, B10, B10-C2, the slot change and the frame name
   changed no persisted shape
   ([trace codegen](trace-codegen.md) §1.3, *Cache*).
 - `CachedModuleRef::dependency_hashes` (`cache/manifest.rs`) holds opaque

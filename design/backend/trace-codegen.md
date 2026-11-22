@@ -21,9 +21,7 @@ Verified against `compiler/trace_codegen.rs`, `lib.rs` and `schema.rs` at
   `997c6c2d`.
 - §3, the substitution correction (ACT-1062's backend reader), is built
   (row B14, `4d2bd8a4`).
-- §4, the root's result (row B17, ACT-1094), is designed and **not built**.
-  It is step 2 of `arch`'s build order; `dev`(backend) builds it as step 4,
-  after intrinsics' step 3.
+- §4, the root's result (row B17, ACT-1094), is built at `3c5e41ca`.
 
 **Authority:** spec §4.12.2, §4.12.3, §4.12.4 and §4.12.9; [tracing §3.3](../arch/tracing.md#33-backend-codegen) and [§3.6](../arch/tracing.md#36-the-roots-result) for the form's emitted sequence and the root's result;
 [tracing §5](../arch/tracing.md#5-discovery-swap-every-symbol-table) for the
@@ -353,8 +351,9 @@ constructors' fields in order of first appearance. For
 `(deftype (P a b) (MkP [:b y :a x]))` at `(P Int String)`, the baker gave
 `y` the type `Int` and `x` the type `String`, and the descriptor then
 formatted the integer as a string, which faulted with signal 11
-([ACT-1062](../../sprints/actions/ACT-1062-match-field-binder-takes-another-parameters-type-intake.md),
-REPRO-1062-f). A parameter that no field mentions shifted every later pairing
+(ACT-1062, REPRO-1062-f; the defect is carried by its failing reproduction
+and named in `qa`'s register,
+[evidence delta](../../tests/plan/s124-evidence-delta.md) §14.15). A parameter that no field mentions shifted every later pairing
 in the same way.
 
 **Decision: pair each argument with the declared parameter in its
@@ -411,25 +410,36 @@ outside the focus module. The binary can keep its own copy of the rule, or
 
 ## 4. The root's result (row B17, ACT-1094)
 
-**Status:** designed; not built at `4a58af99`. The interface, its delta, the
+**Status:** built at `3c5e41ca` (step 4 of `arch`'s build order). The interface, its delta, the
 persistence and ABI effect and the alternatives are
 [tracing §3.6](../arch/tracing.md#36-the-roots-result) and the
 [batch record](../arch/interfaces.md#the-roots-result-row-b17); the
 collect entry's interior is [trace runtime](../intrinsics/trace-runtime.md),
 `design`(intrinsics)'s. This section is the backend's interior.
 
-**The fault, read in source at `4a58af99`.** `compile_trace` and
-`compile_trace_no_swap` each compile the body, release its value through
-`emit_body_discard`, and call `cranelisp_collect_trace` with no argument. The
-runtime never sees the value, so the root's result is empty in every mode.
+- **The fault it corrected.** Before `3c5e41ca` the swap and no-swap paths
+  each compiled the body, released its value with no drop glue, and called
+  `cranelisp_collect_trace` with no argument, so the root's result was empty
+  in every mode.
+- **What the root holds beyond its result is not the backend's.** The root's
+  name, recorded or not, and the display of a value inside it (for example
+  the markers for a closure or an `IO` value) are the collect entry's and the
+  formatter's, under [trace runtime](../intrinsics/trace-runtime.md). The
+  user's rulings of 2026-11-22 change that specification text and the
+  compiler work is carried; this tail passes the same value and descriptor
+  whatever they decide.
+- **The two untyped words are carried.** The entry takes the value and the
+  descriptor as two `i64`s until ACT-1111 (row B18) gives it typed
+  parameters, one entry per representation; that change returns to `arch`'s
+  gate and to this section.
 
 ### 4.1 One closing tail
 
-- **One form, one emission.** `compile_trace_no_swap` is deleted. A form whose
-  discovery selects nothing runs the same sequence with zero groups, as
-  tracing §3.3 step 1 states: no swap, no restore, and the same tail. The swap
-  and restore externs are declared only when a group exists, so a no-swap
-  form imports what it does today plus the changed collect entry.
+- **One form, one emission.** A form whose discovery selects nothing runs
+  the same sequence with zero groups, as tracing §3.3 step 1 states: no swap,
+  no restore, and the same tail. The swap and restore externs are declared
+  only when a group exists, so a no-swap form imports only the collect
+  entry.
 - **The tail, in order, after the body:**
   1. the restores, per group in reverse order (none for a no-swap form);
   2. the root descriptor's address (§4.2);
@@ -452,8 +462,8 @@ runtime never sees the value, so the root's result is empty in every mode.
   memo, into one read-only anonymous data symbol. Its address is a
   `global_value` against that symbol plus the root's offset, as a wrapper's
   is. No absolute address is baked.
-- **One blob builder.** Baking a list of types into one blob and returning
-  each root is shared by the wrapper's set (parameters, then result) and the
+- **One blob builder.** `bake_descriptor_roots` bakes a list of types into
+  one blob and returns each root. It is shared by the wrapper's set (parameters, then result) and the
   form's root (one type). The wrapper's emitted blob does not change.
 - **The type is concrete.** A body reaches codegen with a `ConcreteType`, so
   the root never meets a residual variable; a recursive type terminates at
@@ -472,66 +482,48 @@ runtime never sees the value, so the root's result is empty in every mode.
   `FnCompiler::emit_release(value, body.ty())`: the category gate, then the
   type's canonical drop glue
   ([release contract](non-concrete-release-contract.md) §3.5).
-  `emit_body_discard` is deleted.
-- **What this also corrects.** `emit_body_discard` decrements with no drop
-  glue (`emit_rc_dec` with `None`). A body whose value owns heap, for example
-  an ADT with a `String` field, a closure with captures or a `Vec` of heap
-  values, frees its cell and leaks what it owns. A `String` body is
-  unaffected, so `s124_trace_root_heap_result_and_balance` cannot see it.
-  *Read in source, not run;* the falsifier is row 5 below passing against
-  the glue-less discard.
+- **What this also corrected.** The earlier discard decremented with no drop
+  glue, so a body whose value owns heap, for example an ADT with a `String`
+  field, a closure with captures or a `Vec` of heap values, freed its cell
+  and leaked what it owned. A `String` body was unaffected, so
+  `s124_trace_root_heap_result_and_balance` could not see it; module row 5
+  (§4.5) fails against the glue-less discard.
 - **No trace is live during the release.** Every GOT is restored and the
   guard is cleared before the release, so drop glue it reaches is never
   recorded.
 
 ### 4.4 Cache
 
-`CACHE_SCHEMA_VERSION` goes from 35 to 36 in the change-set that changes the
-emitted sequence (tracing §3.6, *Persistence and ABI*;
+`CACHE_SCHEMA_VERSION` went from 35 to 36 in the change-set that changed the
+emitted sequence (`3c5e41ca`; tracing §3.6, *Persistence and ABI*;
 [module caching](module-caching.md) §14.2). An object built before it calls
 the entry with no argument; the build identity does not cover an
 uncommitted build. No persisted shape, descriptor layout or platform ABI
-changes.
+changed.
 
-### 4.5 What `dev`(backend) builds (step 4)
+### 4.5 Evidence
 
-After intrinsics' step 3. Until step 4 lands no trace form compiles, because
-every module declares the catalog's two-parameter signature for the entry
-(tracing §3.6, *Between the two change-sets*).
+No backend public item changed; `public-api.txt` moved +0. The `fmt` helper
+in `compiler/trace_codegen/tests.rs` closes its role over an `Int` root it
+owns.
 
-- `compiler/trace_codegen.rs`: §4.1–§4.3; `compile_trace_no_swap` and
-  `emit_body_discard` removed.
-- `cache/mod.rs`: the bump (§4.4).
-- The test caller: `fmt` in `compiler/trace_codegen/tests.rs` closes its role
-  with `cranelisp_collect_trace(0, …)` over an `Int` descriptor it owns, and
-  consumes the node as today.
-- No backend public item changes; `public-api.txt` reads +0.
+Module rows in `compiler/trace_codegen/tests.rs`, through production
+`compile_to_module`, each stated RED first (`3c5e41ca`). Rows 1 to 3 read
+the form function's CLIF; rows 4 and 5 execute in the JIT.
 
-**Module rows, written first,** in `compiler/trace_codegen/tests.rs`,
-through production `compile_to_module`. Rows 1 to 3 read the form
-function's CLIF, rows 4 and 5 execute in the JIT after step 3:
-
-1. **The swap path passes the value.** A form with one traced call: the
-   collect call has two arguments, the first the body's value and the second
-   a `global_value` against a descriptor data symbol plus an offset; it
-   follows the last restore. RED today: no argument.
-2. **The no-swap path is the same tail.** A form whose covered set selects
-   nothing emits no swap and no restore, and its collect call has the same
-   two arguments. RED today.
-3. **The release follows the collect call.** For a heap-typed body, the body
-   value's release (its drop-glue call) appears after the collect call and
-   no decrement of that value precedes it. RED today: the discard precedes
-   the restores.
-4. **The root's result is the value's display.** `(trace 42)` returns a node
-   whose result reads `42`, and a `String` body reads with its display. The
-   control is the child frame of `(trace (ident 42))`, which reads `42`
-   before and after. RED until step 4.
-5. **The release balances.** For a body whose value owns heap (an ADT with a
-   `String` field), `cranelisp_intrinsics::alloc_count` and
-   `dealloc_count` balance across the form once the node is consumed. RED
-   against the glue-less discard; the falsifier of §4.3.
+1. `trace_root_swap_path_passes_the_value_and_its_descriptor`: the collect
+   call takes the body's value and a descriptor address, after the last
+   restore.
+2. `trace_root_no_swap_path_is_the_same_tail`: no swap and no restore, and
+   the same two arguments.
+3. `trace_root_release_follows_the_collect_call`: for a heap-typed body, no
+   decrement of the value precedes the collect call. A planted release
+   before the call fails it.
+4. `trace_root_result_is_the_value_display`: `(trace 42)`'s root reads `42`,
+   with the child frame of `(trace (ident 42))` as the control.
+5. `trace_root_release_balances_an_owning_value`: allocations and
+   deallocations balance for a body that owns heap. The glue-less discard
+   fails it.
 
 End to end, T-TRACE-ROOT's nine subjects and four child controls
-(`tests/trace.rs::s124_trace_root_call_cold` and its siblings) are `qa`'s; step 5 of `arch`'s order
-closes on them.
-
+(`tests/trace.rs::s124_trace_root_call_cold` and its siblings) are `qa`'s.
