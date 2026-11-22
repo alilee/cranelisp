@@ -53,7 +53,7 @@ top_level    = defn_form
              | platform_form      (* handled in module phase *)
 ```
 
-Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 9.10](09-macros.md#910-example-prelude-macros) for their definition and expansion.
+Note: `const`, `const-`, `def`, and `def-` are optional library macros. They are not primitive syntactic forms and are not described here. See [Section 9.10](09-macros.md#910-example-prelude-macros) for non-normative definitions and expansions.
 
 ### 2.2.1 `defn` -- Function Definition [Tested crates/cranelisp-frontend/src/ast_builder/tests.rs::test_build_defn]
 
@@ -832,7 +832,7 @@ The symbol `_` matches any value and binds nothing.
    _        0])
 ```
 
-Note: Patterns are **constructor / wildcard / variable only** — there are no literal patterns. An integer, float, string, or boolean literal MUST NOT appear in pattern position (§6.2, §6.6.2). To dispatch on a scalar value, use `if`/`case` chains or equality checks in the arm body, not pattern matching. (FIXME 0433: a prior revision showed a literal-`0` pattern here, which the grammar forbids.)
+Note: Patterns are **constructor / wildcard / variable only** — there are no literal patterns. An integer, float, string, or boolean literal MUST NOT appear in pattern position (§6.2, §6.6.2). To dispatch on a scalar value, use `if` with primitive comparisons in the arm body. A library may provide `case` sugar (§9.10.9). (FIXME 0433: a prior revision showed a literal-`0` pattern here, which the grammar forbids.)
 
 ### 2.5.3 Variable Pattern
 
