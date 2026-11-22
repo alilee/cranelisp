@@ -48,6 +48,14 @@ remaining repeated cost negligible enough for B.
 This is dated evidence, established by [the audit collection](AGENTS.md), under
 [the audit contract](../.agents/skills/audit/SKILL.md) and
 [the rotation/disposition rule](../sprints/METHOD.md#27-rolling-whole-context-audit).
+
+**Reference maintenance, 2026-11-22 (S124 close):** ACT-0997 was resolved
+in S124 and deleted at `5995023c`. Its resolution section was reopened in
+that commit's parent; the link below now selects the S123 audit checkpoint.
+Recommendations below to retain or reuse that filing describe the assessment
+at that checkpoint, not a current open action. This repair does not regrade
+the assessment or dispose its other recommendations.
+
 The working tree contained unrelated changes to the shared package, a role
 adapter, root guidance, the sprint plan and an untracked context file. The
 audited crate, design and spec had no diff against HEAD. Only this assessment
@@ -198,7 +206,7 @@ aliases, under §8.4 and §8.4.4.
   Imports use `parse_module_spec`; exports do not. This is source-confirmed
   wrong rejection, not proof about downstream mount behavior.
 - Renamed names still call `expect_symbol` in the shared names-list parser.
-  This is already [ACT-0997](../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md).
+  This is already [ACT-0997](https://github.com/alilee/cranelisp/blob/f091a8f3e530f6cd3db031fd70175e81241f3472/sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md).
   Contrary to that action's older statement about missing committed evidence,
   `tests/spec_08_modules.rs:4609` and `tests/spec_08_modules.rs:4622` now contain
   unignored renamed/self-renamed type reproductions with the unrenamed control.
