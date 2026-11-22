@@ -14,7 +14,8 @@ with `/mod`.
 > from that file, even one loaded from disk. Keep a separate copy of authored
 > source and use batch mode for modules containing these families until this
 > defect is fixed. Live calls working does not mean their source was saved.
-> See [the reproduction and affected routes](../../sprints/actions/ACT-1068-multi-signature-definition-omitted-from-regeneration-intake.md).
+> See the [permanent persistence reproductions](../../tests/repl_persist.rs)
+> and [ACT-1068's evidence record](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests).
 
 ## Redefining at the prompt
 

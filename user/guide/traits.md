@@ -329,7 +329,7 @@ The combined form defines the type and generates implementations. The individual
 `derive-Eq`, `derive-Ord` and `derive-Display` macros take the description of an
 already defined type. Keep the companion macros in scope: selectively importing
 only `derive` currently fails during expansion
-([ACT-1100](../../sprints/actions/ACT-1100-selective-derive-import-refusals-intake.md)).
+([ACT-1100's evidence record](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).
 Use the verified glob form above. See
 [derive's source](../../stdlib/derive.cl), [consumer cases](../../stdlib/derive/test.cl)
 and [spec §7.13](../../spec/07-traits.md).

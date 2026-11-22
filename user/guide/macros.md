@@ -146,6 +146,8 @@ available at expansion time. Create this separate three-file project:
 ```
 
 Run `cranelisp --run app` from that directory: it prints nothing and exits `7`.
+The program uses the compiler's [current IO spelling](modules.md#current-io-spelling),
+`primitives/Pure`; the specified `primitives/pure` function is not available yet.
 The files are separate modules: `forms` depends on `syntax-tools`, and `app`
 depends on `forms`. Qualified macro calls such as `(forms/seven)` also reach
 dependency modules. See [availability and order](../../spec/09-macros.md#934-macro-availability-and-definition-order)

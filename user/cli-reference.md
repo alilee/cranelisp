@@ -517,7 +517,9 @@ excluded; compile-only settings need no runtime payload. The linked worker pool
 uses the machine's available core count. A linked program reads environment
 values only through a platform operation.
 
-For example, in a directory containing this complete `app.cl`:
+The example uses the compiler's [current IO spelling](guide/modules.md#current-io-spelling),
+`primitives/Pure`; the specified `primitives/pure` function is not available yet.
+In a directory containing this complete `app.cl`:
 
 <!-- sample: {"kind":"definition"} -->
 ```clojure

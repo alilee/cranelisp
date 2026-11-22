@@ -7,6 +7,13 @@ explicitly so their dependencies are visible.
 
 ## A two-file program
 
+<a id="current-io-spelling"></a>
+
+**Current IO spelling:** these examples use `primitives/Pure`, which the
+current compiler provides to wrap a result in IO. The specified public function
+[`primitives/pure`](../../spec/10-io.md#102-pure) is not implemented yet
+(ACT-1108); the examples retain the working spelling until that migration ships.
+
 Create these two files in an empty project directory. `mathx.cl` defines a peer
 module; `app.cl` imports one of its public names:
 
