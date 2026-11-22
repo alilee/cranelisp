@@ -6,10 +6,16 @@
 | Increment | Sprint 122, Phase 6a (rotation audit, `sprints/archive/sprint-122.md` "Audit") |
 | Checkpoint | `88bbbd12` on `main`; the audited surfaces were clean against it throughout |
 | Date | 2026-09-30 |
-| Predecessor | S110 assessment, recoverable at [`57253cf2:audits/cranelisp-backend-s110.md`](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-backend-s110.md). Its undisposed residue is carried by [ACT-0964](../sprints/actions/ACT-0964-backend-audit-residuals.md) and the backend row of [ACT-0969](../sprints/actions/ACT-0969-next-rotation-audit-inputs.md) |
+| Predecessor | S110 assessment, recoverable at [`57253cf2:audits/cranelisp-backend-s110.md`](https://github.com/alilee/cranelisp/blob/57253cf2/audits/cranelisp-backend-s110.md). At this checkpoint its undisposed residue was carried by [ACT-0964](https://github.com/alilee/cranelisp/blob/88bbbd12/sprints/actions/ACT-0964-backend-audit-residuals.md) and the backend row of [ACT-0969](../sprints/actions/ACT-0969-next-rotation-audit-inputs.md) |
 | Disposition | **Pending.** Every recommendation in §8 awaits S123 Phase 1 with the user. Nothing here approves work, accepts a residual or resolves a defect |
 
 This is dated evidence, not design or requirement authority.
+
+**Reference maintenance, 2026-11-22 (S124 close):** ACT-0964 was resolved and
+deleted at `35f41389`; the classifier below was removed at `152a0def`, and the
+dormant cache writer at `1e4b0ce4`. Their checkpoint links preserve the S122
+evidence. These repairs do not regrade the assessment or dispose its other
+recommendations.
 
 ---
 
@@ -25,7 +31,7 @@ are met.
 |---|---|---|
 | [Runtime model](../spec/12-runtime.md) §12.3.1 item 2: freed memory is not accessed. §12.7.8 item 4: no use-after-free | **Not met** | **Observed.** This audit re-ran `tests/vec_push_match_binder_same_name_shadow.rs` at `88bbbd12`. Its control aborts with `USE-AFTER-FREE: vec op vec_push_copy(src) touched data buffer … freed (previous free site = vec_drop)`. That is [ACT-1030](../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md). **Predicted and unmeasured:** leads L2, L4, L5, L6 (ACT-1030's face), L10 and [ACT-1029](../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md) (`design/backend/ownership-codegen.md` §13.3). See also finding F4 |
 | [Runtime model](../spec/12-runtime.md) §12.7.2.1: `vec-set` with an index `< 0` or `>= length` panics | **Not met (source)** | `compile_vec_set` and `emit_vec_set_cow_core` (`compiler/vec_codegen.rs`) have no index check. The in-place arm loads the old element at `data_ptr + idx*8`, RC-decrements it and stores the new value, all under `MemFlags::trusted()`. The copy extern `vec_set_copy` (`crates/cranelisp-intrinsics/src/vec_runtime.rs`) drops the new value silently when the index is out of range. Only `emit_vec_get_core` checks bounds. The spec row is still `[S18]`; no test has ever exercised it. Not executed by this audit (F2) |
-| §12.3.1 item 1: heap values are freed when unreachable | **Partially met** | Carried leaks: [ACT-1026](../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md) (+1 per evaluation, exposure widened by the S122 COW correction), [ACT-1028](../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md), the [ACT-1022](../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) lead. Non-concrete faces 2 and 3 are said to "leak today" (`crates/cranelisp-backend/AGENTS.md`; `rc_emission.rs::signature_heap_category` rustdoc). Nothing measures that claim (F5) |
+| §12.3.1 item 1: heap values are freed when unreachable | **Partially met** | Carried leaks: [ACT-1026](../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md) (+1 per evaluation, exposure widened by the S122 COW correction), [ACT-1028](../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md), the [ACT-1022](../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) lead. Non-concrete faces 2 and 3 were said to "leak today" in the checkpoint's backend memory and [classifier rustdoc](https://github.com/alilee/cranelisp/blob/88bbbd12/crates/cranelisp-backend/src/compiler/rc_emission.rs#L400-L447). Nothing measured that claim (F5) |
 | [Runtime model](../spec/12-runtime.md) §12.5: self tail calls run in constant stack | Met | `[Tested+Neg]`; five `spec_12_runtime` cells |
 | [Runtime model](../spec/12-runtime.md) §12.7.2: runtime faults lower to `runtime/panic`, with the spec's messages and no hardware trap | Met, except `vec-set` | No `.trap(`, `trapz` or `trapnz` in the crate. `"match failed"`, `"division by zero"` and `"vec-get: index out of bounds"` match the spec table |
 | BC §3 invariant 1: one emission path | Met | `compile_to_module` is the only emission entry |
@@ -424,8 +430,8 @@ intake, never directly to `dev`.
 
 - **Observed:**
   - `load_object`, `LinkerArtefact` and `ObjectArtefact` have no caller.
-  - The cache write-packet family is consumed only by the dormant
-    `src/cache_writer.rs`.
+  - The cache write-packet family is consumed only by the
+    [dormant cache writer at the checkpoint](https://github.com/alilee/cranelisp/blob/88bbbd12/src/cache_writer.rs).
   - `CompileContext`'s public fields, `primitives_inline` (exports nothing),
     `HeapClosure`, `NULLARY_THRESHOLD_I64`, `jit_free_memory_call_count`,
     `got_observer::emit`, `serialise_meta`/`deserialise_meta` and

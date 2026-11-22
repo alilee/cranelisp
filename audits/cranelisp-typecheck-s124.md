@@ -346,26 +346,20 @@ permanent reproduction is an explicit unresolved handoff. Historical
 compatibility language in the resolver design does not authorise a semantic
 exception.
 
-### R7 — Normative collection-trait obligations contradict the restriction
+### R7 — Collection-trait conflict (resolved in S124)
 
-**Priority: medium for requirements clarity; owner: spec through sprint.
-Cost: small clarification, potentially larger only if behaviour is changed;
-unresolved.**
+**Original priority: medium for requirements clarity; owner: spec through
+sprint. Disposition: resolved in the specification, verified 2026-11-22.**
 
-Appendix C is normative under [spec guidance](../spec/AGENTS.md).
-[Collection extensibility](../spec/appendix-c-nfr.md#c24-collection-extensibility-s24)
-says multi-parameter collection traits MUST be expressible.
-[Current restrictions](../spec/07-traits.md#7121-current-restrictions)
-explicitly forbid multi-parameter type classes, and the following future
-extensions table lists them as unimplemented. The appendix still frames
-activation with the retired ring axis.
-Neither the single-parameter implementation nor a passing HKT test resolves
-these competing requirements.
-
-Ask spec to frame the conflict for the user. This audit makes no choice and
-does not prescribe multi-parameter support or acceptance tests under an
-invented reading. The conflict is current authority drift even though it
-does not block the concrete reproductions above.
+The audit originally found a normative multi-parameter expressibility
+obligation in Appendix C competing with the single-parameter restriction.
+At close, [collection extensibility](../spec/appendix-c-nfr.md) §C.2.4
+explicitly classifies multi-parameter collection traits as non-normative
+future work and preserves [§7.12.1's current restriction](../spec/07-traits.md#7121-current-restrictions).
+Opening both sections confirms that the competing present obligations and
+retired-ring activation wording are gone. This disposes the requirements
+conflict; it does not claim multi-parameter support or change the assessment's
+other findings and grades.
 
 ## 5. Strengths, residuals and completion
 
@@ -400,8 +394,9 @@ with concurrent edits outside this assessment; it is not a clean repository
 gate. Whitespace validation passes. All compiler-probe scratch directories
 were removed.
 
-**Next invocation: sprint.** Present R1–R7 for user disposition in the next
+**Next invocation: sprint.** Present R1–R6 for user disposition in the next
 Phase 1, reuse existing intakes for R1/R2, and route R6's permanent
 reproduction to QA/test under the authorized phase. R3 goes to arch for an
-economic decision; R4 to design; R5 to the named document owners; R7 to spec.
+economic decision; R4 to design; R5 to the named document owners. R7's
+requirements conflict is resolved as recorded above.
 No action was filed, source changed, test run or push performed by this audit.
