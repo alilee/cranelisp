@@ -5,11 +5,11 @@
 row B17), §4 (the runtime family, its stack and the trace role) and §7
 (strict evaluation within the trace extent).
 
-**Status:** §1–§6 are in source at `4a58af99` (read 2026-11-20; landed in
-`3cdca9dc`, row D8). §7 is designed for S124 Phase 6b and is not in source: it
-is step 1 of row B17's build order
-([interfaces](../arch/interfaces.md#the-roots-result-row-b17)), and `dev`
-realises it in step 3.
+**Status:** describes source at the close of S124 (read 2026-11-22). §1–§6
+landed in `3cdca9dc` (row D8); §7 in `ecae99c9` and the backend's `3c5e41ca`
+(row B17). The user's rulings of 2026-11-22 on an unrecorded form (spec
+§4.12.5, §4.12.6) are not yet in source; [ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md)
+carries them, and §7.3 states where they differ.
 
 **Authority:** spec §4.12.2, §4.12.3, §4.12.5 and §4.12.6; tracing §3.6 and
 §7 rules 1–4;
@@ -155,19 +155,13 @@ retains it.
   stack therefore holds exactly the recording form's frames, and its bottom
   frame is that form's root. This is what makes tracing §4.2's "the single
   stack stays coherent" true.
-- **Two paths in source at `4a58af99` break it**, and §7.2 removes both:
-  - a skipped swap pushes a `::skipped::` sentinel onto the shared stack, above
-    or among the recording thread's frames, and its collect pops whatever is on
-    top;
-  - a collect on a thread that does not record (a form that swapped no slot,
-    or a skipped form) pops the shared stack, so a concurrent recording
-    thread's in-progress frame can be taken.
-
-  The recording collect also releases the role before it pops, so a second
-  thread can acquire and push its root in between. None of these is a memory
-  hazard: a frame's Strings move into whichever node is built, once. They make
-  the recorded tree, and both forms' roots, depend on scheduling. No cell
-  observes them; the skip test pins the sentinel push as built.
+- **What the rule excludes.** A skipped swap records its form in a per-thread
+  mark, not a frame on the shared stack; a collect on a thread that does not
+  record reads no shared state; and the recording collect pops its root before
+  it releases the role, so no second thread can push between the two. Any of
+  these, reversed, makes the recorded tree and both forms' roots depend on
+  scheduling, without a memory hazard: a frame's Strings move into whichever
+  node is built, once. The §7.5 rows catch each.
 
 ### 7.2 Three states, read in a fixed order
 
@@ -176,7 +170,7 @@ The collect reads which state its form is in, first match wins:
 | State | How the collect reads it | Name | Children | Elapsed | Result |
 |---|---|---|---|---|---|
 | **Recorded** | The predicate holds | `::trace::` | the root frame's | from the acquiring swap | the value, rendered |
-| **Skipped** | This thread's skip mark is set | `::skipped::` | none | from the first skipped swap | empty (current behaviour; open) |
+| **Skipped** | This thread's skip mark is set | `::skipped::` | none | from the first skipped swap | empty (ruled otherwise; §7.3) |
 | **Unswapped** | Neither | `::trace::` | none | 0 | the value, rendered |
 
 - **The skip mark is per thread and per form.** The first swap of a form that
@@ -184,9 +178,8 @@ The collect reads which state its form is in, first match wins:
   that swap's start time, and pushes nothing. While the mark is set, every
   further swap on that thread returns the sentinel saved-GOT without
   arbitrating. A form is therefore wholly recorded or wholly skipped: a later
-  swap of the same form cannot acquire a role the owner has meanwhile released,
-  which in source leaves a recorded root and an orphaned sentinel. The collect
-  takes the mark, clearing it.
+  swap of the same form cannot acquire a role the owner has meanwhile released.
+  The collect takes the mark, clearing it.
 - **The recorded sequence.** Stamp the root's elapsed time, pop the root, then
   release the role, lower the boundary flag and clear the swapped-base set, and
   only then render and build the node.
@@ -206,22 +199,26 @@ The collect reads which state its form is in, first match wins:
   it. The result is a fresh String owned by the node. A zero descriptor renders
   the bare word, as the walk does for any caller.
 - **Value and descriptor arrive in every state.** The skipped state does not
-  read them under current behaviour.
+  read them as built.
 
-### 7.3 Open questions this design does not decide
+### 7.3 Where source differs from the 2026-11-22 rulings
 
-- **A skipped form's result (spec §4.12.6), with `spec`.** §4.12.6 says a
-  skipped form returns "no recorded children" and names no result; §4.12.2
-  states no exception. This design keeps source's empty string. If `spec` rules
-  the result is the value, the skipped state renders it like the others; no
-  interface changes.
-- **The root's name and parameters (ACT-1094's question to `spec`).** The table
-  keeps source's names. A ruling that names the root for a single-call body
-  returns to `arch` (tracing §3.6).
+- **An unrecorded form (spec §4.12.6).** The ruling names its root
+  `::untraced::` and gives it the body's displayed value. The skipped state
+  still names its root `::skipped::` and gives it the empty result. The repair
+  is interior to the collect entry: the value and descriptor already arrive.
+  [ACT-1110](../../sprints/actions/ACT-1110-an-unrecorded-trace-root-is-named-skipped-with-an-empty-result-intake.md)
+  holds it, including whether the unswapped state is also unrecorded.
+- **A form entered inside an unrecorded form (spec §4.12.5)** raises no error.
+  The skipped state's mark already makes the inner form skipped without
+  arbitration (§7.4).
 - **An unswapped root's elapsed time.** No start event exists for a form that
-  swaps no slot, so its `nanos` is 0, as in source. Spec §4.12.2 gives the root
-  `elapsed_nanos` without exception. Measuring it needs a start call, which is
-  an interface change for `arch`; no cell reads it.
+  swaps no slot, so its `nanos` is 0. Spec §4.12.2 gives the root
+  `elapsed_nanos` without exception. Measuring it needs a start call, an
+  interface change for `arch`; no cell reads it.
+- **Typed value entries.** The collect and formatting entries take raw words;
+  [ACT-1111](../../sprints/actions/ACT-1111-typed-runtime-entry-points-for-trace-values.md)
+  carries row B18's typed replacement to `arch`.
 
 ### 7.4 Residuals (asserted, with named falsifiers)
 
@@ -236,17 +233,15 @@ The collect reads which state its form is in, first match wins:
   another trace's body. This is §4.12.5's obligation, not B17's.
 - **Nesting on a skipped thread.** A trace form entered inside a skipped form
   on the same thread is skipped too and takes the mark, so the enclosing form
-  then reads as unswapped: named `::trace::`, with its value rendered. In source
-  that shape pops the shared stack. Whether §4.12.5's error applies to an
-  enclosing form that is not recording is not stated. *Falsifier:* such a
-  program returning anything other than two childless roots.
+  then reads as unswapped: named `::trace::`, with its value rendered. No error
+  is raised, as §4.12.5 now requires. *Falsifier:* such a program returning
+  anything other than two childless roots.
 
-### 7.5 Module rows for `dev`
+### 7.5 Module rows
 
-Written first, observed failing, then turned green by step 3. Each recorded row
-acquires the role through `RecordingRole` or the public swap path on a GOT the
-test owns; the unswapped and skipped rows install a foreign owner as the
-existing skip test does.
+In `crates/cranelisp-intrinsics/src/trace/tests.rs`, written first and observed
+failing at step 3 (`ecae99c9`). Recorded rows acquire the role through
+`RecordingRole`; the unswapped and skipped rows install a foreign owner.
 
 | Seam | Positive | Negative and control |
 |---|---|---|
@@ -257,27 +252,27 @@ existing skip test does.
 | Skip mark | A swap under a foreign owner returns the sentinel and leaves the stack depth unchanged | After the owner clears, a second swap on the same thread still returns the sentinel and does not acquire |
 | Skipped | The collect returns `::skipped::` with no children and the empty result, and clears the mark | A following collect on the same thread reads unswapped; the foreign owner still holds the role |
 
-- **Changes to existing tests.** `concurrent_foreign_owner_skips_with_sentinel`
-  asserts the sentinel push that §7.2 removes, and becomes the skip-mark row.
-  `empty_trace_yields_faithful_placeholder_not_a_defect` gains the rendered
-  result. Every other caller passes a value and a descriptor, a zero descriptor
-  where the result is not read, as `RecordingRole`'s release does.
+- **Tests:** `recorded_collect_renders_the_value`,
+  `recorded_collect_keeps_children_and_renders_its_own_result`,
+  `recorded_collect_borrows_a_heap_value`,
+  `unswapped_collect_renders_a_childless_root`,
+  `unswapped_collect_leaves_the_shared_stack_alone`,
+  `skip_mark_pushes_nothing_and_holds_for_the_form` and
+  `skipped_collect_returns_skipped_root_and_clears_the_mark`.
 - **Detection proofs.** Dropping the render flips the recorded and unswapped
   rows; popping the shared stack off the recording thread flips the unswapped
   row's control; restoring the sentinel push flips the skip-mark row.
-- **End to end.** T-TRACE-ROOT's nine subjects close the migration after step 4
-  (`tests/trace.rs::s124_trace_root_call_cold` and its siblings), with the four
-  child controls unchanged. They exercise the recorded state only; `qa` judges
-  whether the skipped and unswapped states need a cell.
+- **End to end.** T-TRACE-ROOT's nine subjects
+  (`tests/trace.rs::s124_trace_root_call_cold` and its siblings) and the four
+  child controls exercise the recorded state only. No fixture reaches the
+  skipped state (ACT-1110).
 
 ### 7.6 The entry's documented contract
 
-Pending step 3. One export changes signature
-([tracing §3.6](../arch/tracing.md#36-the-roots-result)); the catalog row
-declares two parameters, and `crates/cranelisp-intrinsics/public-api.txt`
-changes that one line. The rustdoc states: the value is borrowed; the
-descriptor follows `cranelisp_trace_format`'s descriptor contract; the
-returned node is fresh, owned by the caller, and carries the value's display
-as its result except for a skipped form; the entry ends the role on the
-recording thread and touches no shared state elsewhere.
-
+`cranelisp_collect_trace(value, descriptor_ptr) -> i64`; the catalog row
+declares two parameters ([tracing §3.6](../arch/tracing.md#36-the-roots-result)).
+Its rustdoc states: the value is borrowed; the descriptor follows
+`cranelisp_trace_format`'s descriptor contract; the returned node is fresh,
+owned by the caller, and carries the value's display as its result except for a
+skipped form; the entry ends the role on the recording thread and touches no
+shared state elsewhere.

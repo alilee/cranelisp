@@ -2,13 +2,12 @@
 
 **Owner:** `design`, narrow-deployed to the primitives + intrinsics surface.
 
-**Status:** designed for S124. This document is intrinsics' half of packet row
-R10-9 ([S124 packet](../../sprints/s124-api-packet.md) Part B), approved by the
-user on 2026-11-17; §2 is its intrinsics listing. §2 also carries row R10-10,
-approved on 2026-11-17: the Vec offset readers that R10-9's deletion of the
-backend `HeapVec` leaves. R10-9 supersedes S123 row
-R10-6. At `4b58ab93` (read 2026-11-16) the ADT and closure offsets are defined
-in several modules of this crate and again in the backend's `heap.rs`.
+**Status:** in source since `da459feb` (read 2026-11-22). This document is
+intrinsics' half of packet row R10-9 ([S124 packet](../../sprints/s124-api-packet.md)
+Part B), approved by the user on 2026-11-17; §2 is its intrinsics listing. §2
+also carries row R10-10, approved on 2026-11-17: the Vec offset readers that
+R10-9's deletion of the backend `HeapVec` leaves. R10-9 supersedes S123 row
+R10-6.
 
 **Authority:** [BC §4b](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)
 invariants 2 (representation containment) and 5 (closures embed their drop
@@ -133,11 +132,13 @@ These changes land in the same change-set as §2 and have no public effect:
 
 - **Values agree structurally.** The owner's constant locks fix each value,
   and each reader holds a name, not a number.
-- **One definition is measured.** The crate's existing per-module source
-  guard (`drop/tests.rs::drop_module_declares_no_local_reader_or_layout_copy`)
-  widens to a crate-wide census: a layout offset constant defined outside its
-  owner fails. Its detection proof is a planted definition that the census
-  must reject, with a clean control.
+- **One definition is measured.** A crate-wide census fails on a layout offset
+  constant defined outside its owner
+  (`crates/cranelisp-intrinsics/src/alloc/tests.rs::no_layout_offset_is_defined_outside_its_owner`).
+  Its detection proof is a planted definition the census rejects
+  (`crates/cranelisp-intrinsics/src/alloc/tests.rs::the_layout_census_rejects_a_planted_offset`),
+  with a clean control
+  (`crates/cranelisp-intrinsics/src/alloc/tests.rs::the_layout_census_accepts_derived_and_owned_definitions`).
 - **Residual, asserted with a named falsifier:** an offset written inline as a
   literal evades a census of named constants. *Falsifier:* a `heap_access`
   call or pointer addition with a literal 16, 24 or 32 against an ADT, closure
