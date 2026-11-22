@@ -212,47 +212,44 @@ reporting point; an overriding impl does not instantiate the default.
 
 ## S124-Q16: Core/library classification and stage-two specification revision
 
-**Open — stage two waits on `arch` determinations and user confirmation.**
-The user ruling of 2026-11-21, recorded in
-[Sprint 124 Notes](../sprints/SPRINT.md#notes), is stated normatively once in
-[§8.8.3](08-modules.md#883-empty-prelude). This inventory records the passages
-that need reconciliation with that rule; it does not change their requirements
-or decide implementability. `arch` determines the unresolved technical questions
-below; the completed classification returns to the user before `spec` rewrites
-any inventoried passage. Stage two then removes the specification's reliance on
-the prelude and separates language obligations from library descriptions and
-examples according to the confirmed classification.
+**Closed — classification confirmed and stage-two prose revised, 2026-11-22.**
+The rule is stated normatively in [§8.8.3](08-modules.md#883-empty-prelude).
+The user confirmed the classification and authorized the inventoried rewrite
+in [Sprint 124 Notes](../sprints/SPRINT.md#notes), “S124-Q16 classification
+confirmed”: “confirm the spec rewrite”. Technical determinations came from
+`arch`'s core/library boundary assessment; the specific user rulings below
+override its earlier undecided points. This closes the specification revision,
+not compiler migrations, evidence allocation or future capability delivery.
 
 ### Inventory
 
 This is a non-normative inventory of `spec/`, `repl/spec.md` and `repl/spec/`
-at the S124 stage-one checkpoint. Rows group related spellings with the same
+originating at the S124 stage-one checkpoint, with the confirmed classification below. Rows group related spellings with the same
 dependency and decision; the section column identifies definitions and dependent
-passages, including examples. It includes dependencies already supplied by the
-compiler where bare-name examples or conflicting prose still assume the prelude.
+passages, including examples. The section and dependency columns preserve the stage-one
+problem inventory; the classification column records its confirmed disposition.
 References to module search paths or to introspection of whatever names happen
 to be imported are not, by themselves, dependencies on particular library content.
 
-**Library** records an explicit library designation in existing normative text
-or the user's `cond` example. **Language** records explicit compiler provision
-in existing normative text or Q12. **Needs determination** leaves conflicting
-or undecided ownership open and states the technical question for `arch`.
-These labels do not add requirements or promote non-normative reference text
-into authority. Section numbers in the table refer to language chapters unless
-prefixed REPL, A, B or C; the chapter map is in the [specification index](index.md).
+**Library** means expressible by user/library code; its descriptions and
+library-specific example results are non-normative. **Language** means
+compiler provision independent of libraries. Section numbers refer to language
+chapters unless prefixed REPL, A, B or C; see the [chapter map](index.md).
+Examples use the [explicit scope convention](index.md#example-scope) and
+[REPL environment convention](../repl/spec/index.md#example-environments).
 
-| ID | Construct | Sections carrying or relying on it | What the passages rest on | Classification / precise outstanding question |
+| ID | Construct | Sections carrying or relying on it | Stage-one dependency | Confirmed classification |
 |---|---|---|---|---|
-| CL01 | `const`, `const-` | §2.2, §2.6; §5.1 binder rules, §5.6, §5.14; §9.2.2, §9.5, §9.10.1; REPL §11 | Prelude macro; `quote-sexp`; zero-argument `defmacro`; bare operators in examples | **Library** — §5.6 explicitly says prelude macro, not special form. |
-| CL02 | `def`, `def-` | §2.2, §2.6; §5.1 binder rules, §5.7, §5.14; §9.2.2, §9.6, §9.10.2, §9.12; REPL §11 | Prelude macro; `make-def-name`, `quote-sexp`, Sexp constructors, `begin`, generated function/macro pair | **Library** — §5.7 explicitly says prelude macro, not special form. |
-| CL03 | `derive`, `derive-Eq`, `derive-Ord`, `derive-Display` | §7.13.1–§7.13.5 | Prelude macro and per-trait helper macros; `Eq`, `Ord`, `Display` and their methods | **Library** — §7.13 explicitly says prelude macro, not special form. |
-| CL04 | `Num`, `Eq`, `Ord`, `Display`; arithmetic/comparison operators and `show` | §3.6–§3.7 examples; §7.1, §7.3, §7.6–§7.8, §7.13; §9.10; §12.9; B; REPL §1.1, §4.1, §17.19.2 | Library trait declarations and primitive-type impls according to §7.7, but the same subsection also calls them compiler-seeded infrastructure; bare operators and `show` throughout examples | **Needs determination** — which of these declarations, impls and methods require compiler provision, and which are expressible entirely in the specified language? §7.7 gives conflicting accounts. |
-| CL05 | `Functor`, `fmap` | §3.7; §7.2, §7.7.5, §7.8; B introduction | User/library higher-kinded trait and collection implementations | **Needs determination** — is the illustrated `Functor` declaration and each described `fmap` implementation expressible entirely in the specified type system? §7.7 labels them library content but is expressly non-normative. |
+| CL01 | `const`, `const-` | §2.2, §2.6; §5.1 binder rules, §5.6, §5.14; §9.2.2, §9.5, §9.10.1; REPL §11 | Prelude macro; `quote-sexp`; zero-argument `defmacro`; bare operators in examples | **Library** — optional macro, illustrated non-normatively in §5.6 and §9.10.1. |
+| CL02 | `def`, `def-` | §2.2, §2.6; §5.1 binder rules, §5.7, §5.14; §9.2.2, §9.6, §9.10.2, §9.12; REPL §11 | Prelude macro; `make-def-name`, `quote-sexp`, Sexp constructors, `begin`, generated function/macro pair | **Library** — optional macro, illustrated non-normatively in §5.7 and §9.10.2. |
+| CL03 | `derive`, `derive-Eq`, `derive-Ord`, `derive-Display` | §7.13.1–§7.13.5 | Prelude macro and per-trait helper macros; `Eq`, `Ord`, `Display` and their methods | **Library** — optional macro and helper macros; §7.13 is a non-normative illustration. |
+| CL04 | `Num`, `Eq`, `Ord`, `Display`; arithmetic/comparison operators and `show` | §3.6–§3.7 examples; §7.1, §7.3, §7.6–§7.8, §7.13; §9.10; §12.9; B; REPL §1.1, §4.1, §17.19.2 | Library trait declarations and primitive-type impls according to §7.7, but the same subsection also calls them compiler-seeded infrastructure; bare operators and `show` throughout examples | **Library** — ordinary traits, implementations and methods; canonical compiler rendering is independent of `Display`. |
+| CL05 | `Functor`, `fmap` | §3.7; §7.2, §7.7.5, §7.8; B introduction | User/library higher-kinded trait and collection implementations | **Library** — single-parameter HKT declaration and ADT implementations, including a thunk-based `Seq`. |
 | CL06 | `pure` | §3.2.3; §10.1–§10.2, §10.3 examples, §10.5–§10.8; §12.4; B.12–B.13 | Public interface to opaque built-in IO; no language constructor | **Language** — user ruling, 2026-11-22: `primitives/pure` is the public function; the constructor is private. |
-| CL07 | `bind` | §3.2.3; §9.10.5; §10.3–§10.5, §10.8, §10.12; §12.4; B introduction | Primitive IO composition in §10.3; the opaque-IO ruling removes §3.2.3's former library-definition claim | **Needs determination** — is `bind` expressible in the type system as specified, including its two result types and continuation, or does it require a built-in? The user's recollection is conditional, not a ruling on this fact. |
-| CL08 | `do` | §5.1.1; §9.10.4; §10.4, §10.5.3; §12.4–§12.5; B | Prelude macro and `do-build`; §9.10.4 shows nested `let`, §10.4 shows nested `bind` | **Library** — §10.4 explicitly says library macro, not language requirement. The two expansion accounts remain for stage two. |
-| CL09 | `bind!` sugar | §9.10.5; §10.5, §10.12; §12.4; B.4, B.13 | Prelude macro, `bind!-fold`, `bind` and `fn`; §10.12 additionally requires compiler analysis of its chains | **Library** — §10.5 explicitly says library macro, not language requirement. The scheduling dependency is separately inventoried in CL10. |
-| CL10 | Automatic scheduling, resource ordering and launch rules expressed over `bind!` / `do` chains | §10.12.1–§10.12.10; §12.4.1, §12.4.3–§12.4.4, §12.5; C.3.2 | Language obligations name library sugar as the analysis/sequencing surface | **Needs determination** — can all specified scheduling, source ordering, discarded-result and cancellation behavior be expressed over the core IO composition after user/library expansion, or is compiler recognition of some sugar required? |
+| CL07 | `bind` | §3.2.3; §9.10.5; §10.3–§10.5, §10.8, §10.12; §12.4; B introduction | Primitive IO composition in §10.3; the opaque-IO ruling removes §3.2.3's former library-definition claim | **Language** — `primitives/bind`; opaque IO composition cannot be implemented as a user ADT or by running a platform effect in user code. |
+| CL08 | `do` | §5.1.1; §9.10.4; §10.4, §10.5.3; §12.4–§12.5; B | Prelude macro and `do-build`; §9.10.4 shows nested `let`, §10.4 shows nested `bind` | **Library** — §10.4 and §9.10.4 illustrate IO sequencing over `primitives/bind`; nested `let` is pure-expression sequencing. |
+| CL09 | `bind!` sugar | §9.10.5; §10.5, §10.12; §12.4; B.4, B.13 | Prelude macro, `bind!-fold`, `bind` and `fn`; §10.12 additionally requires compiler analysis of its chains | **Library** — §10.5 explicitly says library macro, not language requirement. Core scheduling is independently specified under CL10. |
+| CL10 | Automatic scheduling, resource ordering and launch rules expressed over `bind!` / `do` chains | §10.12.1–§10.12.10; §12.4.1, §12.4.3–§12.4.4, §12.5; C.3.2 | Language obligations name library sugar as the analysis/sequencing surface | **Language over core composition** — analyze expanded `primitives/bind` chains; no sugar recognition is required. |
 | CL11 | `cond` | §9.10.8; B introduction | Prelude macro, `cond-fold`; nested `if` expansion | **Library** — the user's explicit example in the 2026-11-21 ruling. |
 | CL12 | `case` | §9.10.9 | Prelude macro, `case-fold`, Sexp constructors; library equality `=` | **Library** — §9.10 identifies it as a prelude macro. |
 | CL13 | `when`, `unless` | §9.10.12; B.6 | Prelude macros; `if` and `Option` constructors `Some` / `None` | **Library** — §9.10 identifies them as prelude macros. |
@@ -262,42 +259,49 @@ prefixed REPL, A, B or C; the chapter map is in the [specification index](index.
 | CL17 | `str` | §9.10.11; B introduction | Prelude macro, `str-fold`; `show` and `str-concat` | **Library** — §9.10 identifies it as a prelude macro. |
 | CL18 | `sfold`, `sreverse`, `sempty?` | §9.7.0–§9.7.4, §9.10.3 | Optional `core.syntax` helper functions or local equivalents | **Library** — §9.7 explicitly designates optional library helpers. |
 | CL19 | User-callable `macros/sconcat` | §9.7.3; Q12-R1 | Public primitive at `(Fn [(SList Sexp) (SList Sexp)] (SList Sexp))` | **Language** — Q12-R1 user ruling, 2026-11-22. A library may supply general concatenation under its own name. |
-| CL20 | `slist` | §9.7.5, §9.10.3; B.6 | Convenience macro over compiler-seeded `SCons` / `SNil`; absent from §9.7.0's named helper list | **Needs determination** — can the full described `slist` convenience macro be supplied entirely by user/library code, or does it require any compiler-only facility? |
-| CL21 | Named macro-building helpers | §9.2.2, §9.10.2–§9.10.11 | `make-def-name`, `do-build`, `bind!-fold`, `thread-first-fold`, `thread-last-fold`, `cond-fold`, `case-fold`, `str-fold` are used but not defined there | **Needs determination** — can each helper required by these sample definitions be implemented using the specified macro/type system and primitives? Identify any missing language facility without making the helpers language requirements. |
+| CL20 | `slist` | §9.7.5, §9.10.3; B.6 | Convenience macro over compiler-seeded `SCons` / `SNil`; absent from §9.7.0's named helper list | **Library** — variadic macros can emit qualified `macros/SCons` / `macros/SNil`. |
+| CL21 | Named macro-building helpers | §9.2.2, §9.10.2–§9.10.11 | `make-def-name`, `do-build`, `bind!-fold`, `thread-first-fold`, `thread-last-fold`, `cond-fold`, `case-fold`, `str-fold` are used but not defined there | **Library** — Sexp transformations in dependency modules or recursive macro clauses; no missing primitive. |
 | CL22 | `List`, `Cons`, `Nil` | §3.2.2, §3.7 examples; §5–§7 examples; §9.10.3; §12.4.4, §12.9.3; B; REPL §1.5, §3.7, §9 | User-visible list ADT, prelude constructors and display examples | **Library** — §9.1.1 distinguishes the user/library `List` from compiler `SList`; §9.10.3 describes its library macro. |
 | CL23 | `Seq`, `SeqCons`, `SeqNil` and lazy-tail behavior | §4.11; §7.7.5; §12.4.2; B introduction; REPL §1.5, §9 | Library thunk-based lazy sequence ADT, also named by runtime and display requirements | **Library** — §4.11 explicitly calls `Seq` a library-level construct. |
-| CL24 | Collection/pipeline helpers `map`, `filter`, `reduce`, `inc`, `vec-map`, `vec-reduce`, `map-list`, `seq-map`, `filter-list`, `vec-filter`, `fold-list`, `count`, `get`, `conj`, `assoc`, `first`, `rest`, `second`, `head`, `to-list`, `take`, `lazy-take`, `lazy-drop`, `range-from`, `iterate`, `repeat` | B.5, B.8–B.9; §7.7.5, §7.12.2; §9.10.6–§9.10.7; §11.4a; A.3 | Library functions/trait methods, concrete-family wrappers and prospective naming reservations | **Needs determination** — are all the collection operations used by these examples expressible with the specified type system and primitives? The library labels in §7.7, §11.4a and A.3 are non-normative; future trait design remains future. |
-| CL25 | `Option`, `Some`, `None` | §3.2.2 examples; §7.13; §9.10.12; §10.12.8; §12.4.4, §12.7.3, §12.7.6; A.3; B; REPL §16 | Prelude/user ADT in examples, but checked primitives, timeout and test protocols require it; REPL §16.3 calls it a primitives bootstrap type | **Language** — REPL §16.3 explicitly retains primitive bootstrap `Option`. Bare-name provisioning and user-defined examples still need reconciliation. |
+| CL24 | Collection/pipeline helpers `map`, `filter`, `reduce`, `inc`, `vec-map`, `vec-reduce`, `map-list`, `seq-map`, `filter-list`, `vec-filter`, `fold-list`, `count`, `get`, `conj`, `assoc`, `first`, `rest`, `second`, `head`, `to-list`, `take`, `lazy-take`, `lazy-drop`, `range-from`, `iterate`, `repeat` | B.5, B.8–B.9; §7.7.5, §7.12.2; §9.10.6–§9.10.7; §11.4a; A.3 | Library functions/trait methods, concrete-family wrappers and prospective naming reservations | **Library** — concrete-family helpers and single-parameter collection traits; general keyed-family `get` / `assoc` requiring a second trait parameter remain future. |
+| CL25 | `Option`, `Some`, `None` | §3.2.2 examples; §7.13; §9.10.12; §10.12.8; §12.4.4, §12.7.3, §12.7.6; A.3; B; REPL §16 | Prelude/user ADT in examples, but checked primitives, timeout and test protocols require it; REPL §16.3 calls it a primitives bootstrap type | **Language** — REPL §16.3 explicitly retains primitive bootstrap `Option`. §3.2.2 distinguishes primitive provisioning from local example declarations. |
 | CL26 | `Result`, `Ok`, `Err`; `Pair`, `first`, `second` | §3.2.5–§3.2.6; §12.7.7; A.2–A.3; B.3; REPL §16 | Compiler-seeded ADTs versus user definitions and bare field/constructor examples | **Language** — §3.2.5–§3.2.6 explicitly seed them in `primitives`; user examples must not be mistaken for required library definitions. |
 | CL27 | Bare primitive names, including scalar types, `parse-int`, `str-concat`, Vec and arithmetic primitives | §2–§10 examples; §9.11.2; §12 examples; A; B; REPL examples | Prelude re-exports or explicit imports are needed for bare names, although qualified primitive paths are independent | **Language** — §3.1 and §8.9.1 explicitly provide qualified access without imports. This row records scope assumptions, not a new required primitive catalog. |
-| CL28 | Quasiquote / unquote-splicing and concatenation | §9.4, §9.7.0; §11.4; Q12 | Compiler-seeded `macros` constructors and compiler-provided concatenation; prior library-helper dependency removed by Q12 | **Language** — Q12 and §9.7.0 explicitly require library-independent splicing. No determination of a user-callable helper follows. |
+| CL28 | Quasiquote / unquote-splicing and concatenation | §9.4, §9.7.0; §11.4; Q12 | Compiler-seeded `macros` constructors and compiler-provided concatenation; prior library-helper dependency removed by Q12 | **Language** — Q12 and §9.7.0 explicitly require library-independent splicing. CL19 records the separately ruled public helper. |
 | CL29 | `quote-sexp`, Sexp / SList constructors | §8.9.2; §9.1, §9.5, §9.11.1; B.6 | Compiler provision, but bare constructor and helper names in samples require imports; qualified expansion references are already specified | **Language** — §8.9.2 and §9.1 explicitly provide compiler-seeded macro data; §9.11.1 identifies the primitive. |
 | CL30 | `trace-show-tree` | §4.12.8; §11.5 | `core.trace` display helpers over the compiler-seeded `Trace` ADT | **Library** — §4.12.8 explicitly identifies this as a stdlib display function; §11.5 describes it. The trace form itself is language-provided. |
-| CL31 | `timeout` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | A documented stdlib derivation from `race`, `sleep` and `Option`, while §12.4.4 calls it part of the language IO model | **Needs determination** — is the complete required timeout behavior implementable by a user/library derivation with the specified typing and cancellation, and which underlying facilities must be primitive? |
-| CL32 | `race`, `select`, `sleep` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | IO first-completion composition and timer support | **Library** for `race` — user ruling, 2026-11-22: `(select [a b])`; removal of today's built-in is carried. **Needs determination** for `select` and `sleep` — which require compiler/runtime provision? |
+| CL31 | `timeout` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | A documented stdlib derivation from `race`, `sleep` and `Option`, while §12.4.4 calls it part of the language IO model | **Library** — select between an effect mapped to `primitives/Some` and a timer mapped to `primitives/None`, using core IO operations. |
+| CL32 | `race`, `select`, `sleep` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | IO first-completion composition and timer support | **Library** for `race`, `(primitives/select [a b])`, by the user ruling of 2026-11-22; removal of today's built-in is carried. **Language** for `primitives/select` and `primitives/sleep`. |
 | CL33 | `discover-here`, `format-test-run`, `failures-only`, `test-passed?` | A.3; REPL §16.3, §16.5 | Optional testing library sugar and presentation functions over compiler discovery | **Library** — REPL §16 expressly makes these conveniences optional. |
-| CL34 | Library-based complete programs and transcripts | B.1–B.13; REPL §1, §3–§4, §8, §11, §17.19.2 | B explicitly assumes the reference prelude; other examples use bare operators, macros, `show`, constructors or fixed library module paths without establishing them locally | **Needs determination** — are the samples' required operations all expressible with the facilities classified above? Identify any additional compiler-only dependency; the user then confirms how stage two presents self-contained examples. |
-| CL35 | Prelude contents in `/mod` turn environments | REPL §3.9; language §8.8.1–§8.8.3, §8.9.1 | Parity contract lists bare operators, `show` and `Int` as in-scope through the prelude | **Needs determination** — does turn/file environment parity require any particular prelude content, or can the listed cases be expressed solely in terms of the names actually imported? No change to the parity obligation is made here. |
-| CL36 | Alternative collections and prospective channels | C.2.2, C.2.4, C.4.4; §7.12.2; §11.4a | Prospective `Hash` / collection traits, `PersistentVec`, `PersistentMap`, `Deque`, channels and runtime extern support | **Needs determination** — which library capabilities stated by these existing extensibility requirements are expressible with the present type system and primitives, and which require additional core facilities? Preserve their existing future status. |
-| CL37 | Clojure-named bit helpers `bit-shift-left`, `bit-shift-right`, `bit-test`, `bit-set`, `bit-clear` | A.3 bitwise integer operations | Non-normative reference describes standard-library wrappers over bit primitives | **Needs determination** — are all the named wrappers expressible using the specified integer and bitwise facilities? The reference's library designation alone is not a normative classification. |
-| CL38 | `trace-show`, `trace-call-string` | §11.5; REPL §17.19.2 (`trace-show`) | Additional library formatting helpers described only by reference guidance or search examples | **Needs determination** — are these formatting functions expressible entirely by user/library code over the specified trace ADT and string primitives? Their reference descriptions do not independently decide normative ownership. |
+| CL34 | Library-based complete programs and transcripts | B.1–B.13; REPL §1, §3–§4, §8, §11, §17.19.2 | B explicitly assumes the reference prelude; other examples use bare operators, macros, `show`, constructors or fixed library module paths without establishing them locally | **Library illustrations** — no additional compiler-only dependency identified; reference-library programs are explicitly non-normative and import their environment. Runtime verification belongs to `qa` / `test`. |
+| CL35 | Prelude contents in `/mod` turn environments | REPL §3.9; language §8.8.1–§8.8.3, §8.9.1 | Parity contract lists bare operators, `show` and `Int` as in-scope through the prelude | **Content-independent parity** — turns use the file's actual imports, including whatever an unsuppressed prelude supplies; no required prelude names. |
+| CL36 | Alternative collections and prospective channels | C.2.2, C.2.4, C.4.4; §7.12.2; §11.4a | Prospective `Hash` / collection traits, `PersistentVec`, `PersistentMap`, `Deque`, channels and runtime extern support | **Mixed, with future status retained** — ADT collections and a `Hash` declaration are library-expressible; String/Float hashing needs additional primitives, channels need runtime/platform effects, and extern-backed types need their extern support. No new present facility is required. |
+| CL37 | Clojure-named bit helpers `bit-shift-left`, `bit-shift-right`, `bit-test`, `bit-set`, `bit-clear` | A.3 bitwise integer operations | Non-normative reference describes standard-library wrappers over bit primitives | **Library** — wrappers over integer and bitwise primitives. |
+| CL38 | `trace-show`, `trace-call-string` | §11.5; REPL §17.19.2 (`trace-show`) | Additional library formatting helpers described only by reference guidance or search examples | **Library** — formatting over `Trace` and string primitives. |
 
-### Stage-two handoff
+### Stage-two disposition and handoff
 
-`arch` returns determinations for CL04–CL05, CL07, CL10, CL20–CL21, CL24 and
-CL31–CL38.
-The user confirms the resulting classification, including any reconciliation of
-conflicting normative carriers. `spec` then revises the inventoried passages;
-`qa` reassesses evidence for changed obligations and `test` follows the affected
-spec backlinks. This is one open stage-two item, not authorization to rewrite
-the chapters or implement compiler consequences now.
+The confirmed rewrite separates optional library descriptions (§5.6–§5.7,
+§7.7, §7.13, §9.7's library helpers, §9.10, §10.4–§10.5 and Appendix B)
+from language obligations. Scheduling and cancellation are stated over core IO
+composition (§10.12, §12.4–§12.5, C.3.2); REPL parity depends on actual imports
+(REPL §3.9). Primitive and macro-data examples have explicit scope conventions;
+local ADTs are distinguished from seeded ADTs. No normative question remains
+from this inventory. C.2/C.4's future capability obligations are retained,
+without asserting that absent hashing or channel facilities exist today.
+
+`qa` must reassess the changed claims and invalidated coverage tags, including
+claims moved to non-normative examples. `test` then follows affected backlinks;
+this pass runs no programs and asserts no new coverage. Compiler consequences
+and migrations remain with their owners through `sprint`; closure here neither
+accepts a defect nor authorizes a further delivery phase.
 
 ### Closed rulings of 2026-11-22 affecting the inventory
 
 The authority for these rulings and Q12-R1, Q13, Q15, Q17 and Q18 is
 [Sprint 124 Notes](../sprints/SPRINT.md#notes), from “User ruling on `race`”
-through “User rulings of 2026-11-22 on the remaining questions”. Stage two
-remains open; these rulings do not confirm the rest of the classification.
+through “S124-Q16 classification confirmed”. The latter confirms the resulting
+classification and authorizes the stage-two rewrite.
 
 **`race`.** Put to the user: classify `race` as library now, since it is
 `(select [a b])`, and carry removal of the built-in as filed work outside
@@ -337,6 +341,7 @@ display-only and rejected by the reader. Answer, verbatim:
 [§12.9.1](12-runtime.md#1291-format-by-type) owns the canonical markers;
 [REPL §1.2 and §1.5](../repl/spec/01-display-format.md#12-expression-results)
 apply them to expression results and recursive display.
+
 
 ## S124-Q17: What result does a skipped trace form record?
 
