@@ -396,7 +396,7 @@ disposition = "established"
 name = "intrinsics-current-designs"
 patterns = ["design/intrinsics/process-lifecycle.md", "design/intrinsics/diagnostic-modes.md", "design/intrinsics/intrinsics-table.md", "design/intrinsics/reactor.md", "design/intrinsics/ownership-and-disposal.md", "design/intrinsics/heap-layout.md", "design/intrinsics/trace-runtime.md"]
 owner = "design"
-purpose = "Current intrinsics interior designs for runtime heap ownership, node disposal, IO execution, intrinsic registration and diagnostics."
+purpose = "Current intrinsics interior designs for runtime heap layout and ownership, node disposal, IO execution, intrinsic registration, the trace runtime and diagnostics."
 established_by = "design/intrinsics/AGENTS.md"
 disposition = "established"
 

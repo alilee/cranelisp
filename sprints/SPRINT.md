@@ -1,6 +1,6 @@
 # Sprint 124: Type concreteness at codegen
 
-**Status**: PHASE 6b USER-FACING ACTION — delivered and re-read after the rulings of 2026-11-22; 6b → 7 checkpoint presented, awaiting the user (backend clean and green: 0 failing, 537/537, at `128255fc`)
+**Status**: PHASE 7 CLOSE — approved 2026-11-22 ("advance and push"); record repairs with their owners, then archive and push
 
 **Goal**: Make every type that reaches codegen concrete — census, typecheck
 producer obligations, backend structural close — and clear the crash-class and
@@ -20,7 +20,7 @@ audited S114, and S124 completes a major arc there). Read-only, in the Phase 6/7
 | Phase 4 → Phase 5 | wave plan W0–W9, audit choice, two decisions | 2026-11-17, "approved" | approved |
 | Phase 5 → Phase 6a | backend exit reading (`235a7ed7`), 80 carried failures by module, second baseline diff | 2026-11-20, "2 approved" | approved |
 | Phase 6a → Phase 6b | six assessments, four new defects reproduced, full run 104 failing all attributed, six decisions | 2026-11-20, "6. approved" | approved |
-| Phase 6b → Phase 7 | full run 143 failing all attributed (`ff7f43be`), every open spec question ruled, row B18 carried as ACT-1111, 31 defect actions retired onto their tests | — | pending |
+| Phase 6b → Phase 7 | full run 143 failing all attributed (`ff7f43be`), every open spec question ruled, row B18 carried as ACT-1111, 31 defect actions retired onto their tests | 2026-11-22, "advance and push" | approved; the push of `main` is included |
 
 ## Opening state (2026-11-16)
 
