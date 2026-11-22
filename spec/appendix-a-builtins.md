@@ -13,14 +13,14 @@ Registered in the `primitives` module. Available in all programs via `(import [p
 | `String` | Immutable UTF-8 string | Heap-allocated byte sequence | [Tested tests/spec_appendix_a_builtins::primitive_str_concat]
 | `Float` | IEEE 754 double-precision | 64-bit floating point | [Tested tests/spec_appendix_a_builtins::primitive_add_f64]
 
-## A.2 Built-in Compound Types [Tested tests/spec_04_expressions::vec_literal_int, tests/spec_10_io::pure_int_unwraps_inline, tests/spec_09_macros::defmacro_identity_expands]
+## A.2 Built-in Compound Types [Uncovered S124 — was Tested tests/spec_04_expressions::vec_literal_int, tests/spec_10_io::pure_int_unwraps_inline, tests/spec_09_macros::defmacro_identity_expands]
 
 Registered in the `primitives` and `macros` synthetic modules.
 
 | Type | Module | Kind | Description |
 |---|---|---|---|
 | `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives | [Tested tests/spec_04_expressions::vec_literal_int]
-| `(IO a)` | `primitives` | Compiler-seeded ADT | Effectful computation; constructors `Pure`, `Effect`, `Bind` | [S9]
+| `(IO a)` | `primitives` | Opaque built-in | Deferred computation; no language constructors; public operations in §10.1 | [Uncovered S124 — was S9]
 | `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/spec_04_expressions::trace_returns_trace_type]
 | `(Pair a b)` | `primitives` | Compiler-seeded ADT | Two-field product; single data constructor `Pair` with fields `first` (a), `second` (b). Not auto-imported; requires explicit import or qualified reference. | [S77 — tested-by /qa]
 | `(Result a b)` | `primitives` | Compiler-seeded ADT | Success/failure sum; constructors `Ok` (one field, a) and `Err` (one field, b). Not auto-imported; requires explicit import or qualified reference. | [S77 — tested-by /qa]

@@ -80,7 +80,7 @@ own `name :: (Fn …)` primary-line shape is a conformance defect against this e
 stylistic variation. Macro declarations are outside `/search` rather than being forced into a
 typed envelope (§17.19.2a). [S109]
 
-### 1.2 Expression Results [S122]
+### 1.2 Expression Results [Uncovered S124 — was S122]
 
 An expression evaluation MUST display the result in the format:
 
@@ -99,8 +99,8 @@ Examples:
 | `:primitives/Float 3.14` | [Tested tests/repl_introspection::display_float_result] |
 | `:user/Color Color.Red` | [Tested tests/repl_introspection::display_int_result] |
 | `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_introspection::display_int_result] |
-| `:(Fn [a] a) <closure>` (anonymous — no bound name) | [Tested tests/repl_introspection::display_int_result] |
-| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (name-bearing reference — a bare/qualified symbol resolving to a named function shows the FQ name, never `<closure>`; §1.5, 0572) | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] |
+| `:(Fn [a] a) #closure` (anonymous — no bound name) | [Uncovered S124 — was Tested tests/repl_introspection::display_int_result] |
+| `:(Fn [(primitives/Vec a)] primitives/Int) primitives/vec-len` (name-bearing reference — a bare/qualified symbol resolving to a named function shows the FQ name, never `#closure`; §1.5, 0572) | [Uncovered S124 — was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] |
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
@@ -109,7 +109,7 @@ Examples:
 
 **Ring 4**: `Trace` — displayed using the standard ADT format per [spec §12.9](../../spec/12-runtime.md#129-value-display-format). The REPL does NOT auto-format trace trees — the raw ADT value is shown. Users who want a human-readable indented call tree SHOULD import `core.trace` and call `trace-show-tree`. [R4 S20]
 
-### 1.2.1 IO Expression Results [Tested+Neg tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_pure_string_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free, tests/spec_10_io.rs::repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns, tests/output_equivalence::output_equiv_single_print]
+### 1.2.1 IO Expression Results [Uncovered S124 — was Tested+Neg tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_pure_string_result_prints_io_notice_then_payload, tests/spec_10_io.rs::repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free, tests/spec_10_io.rs::repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns, tests/output_equivalence::output_equiv_single_print]
 
 An expression whose type is `IO a` ([spec §10.1](../../spec/10-io.md#101-io-type)) is an IO action. The REPL MUST execute it automatically as part of evaluating the expression, and MUST present it in this order:
 
@@ -120,7 +120,7 @@ An expression whose type is `IO a` ([spec §10.1](../../spec/10-io.md#101-io-typ
 An expression whose type is not `IO` MUST NOT produce the notice. The notice is REPL output: batch output (§0.2, §0.2.1) never contains it.
 
 ```
-user> (Pure 42)
+user> (primitives/pure 42)
 Executing IO…
 :primitives/Int 42
 
@@ -133,7 +133,7 @@ user> (+ 1 2)
 :primitives/Int 3
 ```
 
-### 1.3 Definition Results [Tested]
+### 1.3 Definition Results [Uncovered S124 — was Tested]
 
 When the user enters a definition form, the REPL confirms the definition using the universal format (§1.1). The response follows the same per-class rules as bare symbol lookup (§4.1) — a definition is immediately followed by its lookup display.
 
@@ -160,7 +160,7 @@ user> (defmacro n [] (macros/SexpInt 42))
 
 **Canonical-home qualification.** In `impl Trait for Type`, the trait name and the target type MUST each be qualified by **its own canonical home module** — the module that defines it — not by the module in which the `impl` is written. In the example above both `Sizeable` and `Circle` are user-defined, so both read `user/`. When either name belongs to another module the qualifier follows it there: an impl of the prelude trait `Display` for a user type reads `impl text.display/Display for user/Widget`, and an impl of a user trait for a primitive reads `impl user/Foo for primitives/Int`. Stamping the writing module on a name whose home is elsewhere (`impl user/Display for user/Int`) is a defect — the qualifier is a fully-qualified name and MUST name the real home (the self-documenting-REPL principle; resolve each name's home once per Principle 24). [S113]
 
-A function definition MUST NOT display `<closure>` — the user defined a *named* function, not an anonymous closure. `<closure>` is reserved for anonymous function *values* (§1.2, §1.5).
+A function definition MUST NOT display `#closure` — the user defined a *named* function, not an anonymous closure. `#closure` is reserved for anonymous function *values* (§1.2, §1.5).
 
 | Requirement | Test |
 |---|---|
@@ -213,34 +213,35 @@ Values are runtime results and have no module scope. They are displayed bare.
 | Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::data_constructor_applied_dot_notation_display] |
 | Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested+Neg tests/repl_introspection::data_constructor_product_no_dot_notation_display] |
 
-| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `<closure>` | 1 | [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] | <!-- doc-check: literal reason="Illustrative language symbols" -->
-| Function value with no recoverable name | `<closure>` — a literal `(fn …)`, a captured closure, or a named function that has passed through computation and lost its binding (`(id double)`, `(let [f double] f)`) | 1 | [Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
+| Name-bearing function reference | its **fully-qualified name** (e.g. `primitives/vec-len`, `user/double`) — only when the *displayed expression is itself a name-bearing reference* (a bare/qualified symbol resolving to a named function); never `#closure` | 1 | [Uncovered S124 — was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] | <!-- doc-check: literal reason="Illustrative language symbols" -->
+| Function value with no recoverable name | `#closure` — a literal `(fn …)`, a captured closure, or a named function that has passed through computation and lost its binding (`(id double)`, `(let [f double] f)`) | 1 | [Uncovered S124 — was Tested tests/repl_introspection::closure_value_display_shows_closure_token] |
 | Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested tests/display_exact::display_exact_vec_value_lines, tests/repl_introspection::vec_value_display_shows_element_content] |
 | List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested tests/repl_introspection::display_user_list_value_shows_elements_and_nil, tests/display_exact::display_exact_user_list_recursive_form_whole_line] |
-| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang] |
+| Nested `IO` value | `#io` — an IO value inside a displayed value; top-level IO execution follows §1.2.1 | 4 | |
+| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h #closure)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Uncovered S124 — was Tested tests/repl_introspection::display_infinite_seq_value_does_not_hang] |
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
 
-**A name-bearing reference carries its qualified name; a value that lost its binding shows `<closure>` (S109 — 0572).**
+**A name-bearing reference carries its qualified name; a value that lost its binding shows `#closure` (S109 — 0572).**
 The qualified-name rule applies to a **name-bearing reference expression** — a bare or qualified
 symbol that resolves to a named function, evaluated as a value (e.g. entering `primitives/vec-len`
 or `user/double` bare at the prompt). When the *displayed expression is itself* such a reference, the <!-- doc-check: literal reason="Illustrative language symbols" -->
 value slot MUST show the value's **fully-qualified name** (`primitives/vec-len`), in the same
 qualified form every other name-bearing display uses (§1.4, the self-documenting-REPL rule that names
-are always fully qualified). The opaque token `<closure>` is a **placeholder for the absence of a
+are always fully qualified). The opaque token `#closure` is a **placeholder for the absence of a
 *recoverable* name**, and it is **correct — required** — for a function value that has no runtime name
 identity: a literal `(fn [x] …)`, a captured closure, or a **named function that has passed through
 computation and lost its binding** (`(id double)`, `(let [f double] f)` — the value genuinely has no
-recoverable name, so `<closure>` is the honest display). The distinction is about the *displayed
+recoverable name, so `#closure` is the honest display). The distinction is about the *displayed
 expression*, not the value's origin: a name-bearing reference shows the name; a value that arrived by
-computation shows `<closure>`. This is the value-display facet of the 0572 unification — a bare-symbol
+computation shows `#closure`. This is the value-display facet of the 0572 unification — a bare-symbol
 value lookup and a `/search`/`/info` row of the same function agree on the qualified name because they
-render through the one canonical envelope (§1.1). [Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] [S109]
+render through the one canonical envelope (§1.1). [Uncovered S124 — was Tested tests/repl_introspection::named_function_value_displays_fq_name_not_closure, tests/repl_introspection::fq_bare_display_parity_with_imported_introspection] [S109]
 
 > **Aspirational** (not currently required): A future revision MAY render `List` and `Seq` in surface form, as `(list elem1 elem2 ...)` and `(seq elem1 elem2 ...)`. The render never forces a lazy `Seq` tail: it shows the already-evaluated elements and writes `+more` in place of the first unforced tail (`(seq elem1 elem2 ... +more)`), so the `Seq` termination MUST above still holds. The compiler recognises the built-in `List` and `Seq` internally; the language has no render annotation for types to opt in with. No such mechanism exists today, so the generic ADT form is normative. These forms become MUST only once the mechanism ([display protocol](../../design/arch/display-protocol.md)) lands; the obligation is [FIXME 0050](../../design/arch/fixmes/0050-promote-list-seq-pretty-printer-aspirational.md).
 
 
-ADT fields MUST be recursively formatted according to this table.
+ADT fields MUST be recursively formatted according to this table. The `#io` and `#closure` markers are display-only and are rejected by the reader ([language §1.6](../../spec/01-lexical.md#16-reader-macros)).
 
 **Single-constructor, single-scalar-field ADT display.** A single-constructor ADT whose
 sole field is a scalar (`Int`, `Bool`, `Float`, or another such value) MUST render as the

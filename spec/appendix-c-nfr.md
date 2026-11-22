@@ -172,14 +172,14 @@ Generated code MUST NOT use global mutable state (static mutable variables, glob
 
 **Activation**: Always (structural invariant from Ring 0).
 
-### C.4.4 Concurrent Communication [S11]
+### C.4.4 Concurrent Communication [Uncovered S124 — was S11]
 
 The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Processes) concurrent channels as a stdlib capability. Channels would enable coordination between concurrent tasks, complementing the automatic parallelism provided by lenient evaluation (§C.3.1) and IO scheduling (§C.3.2).
 
 **Rationale**: Lenient evaluation and IO scheduling provide implicit parallelism (the compiler decides what runs in parallel). Channels provide explicit coordination (the user decides when to communicate). Both patterns are needed for a complete concurrency story. Channels enable producer-consumer patterns, fan-out/fan-in, and pipeline parallelism that cannot be expressed through `let` binding independence alone.
 
 **Design constraint**:
-1. The IO type and trampoline MUST be extensible with new effect kinds (channel operations are just new `Effect` node types) without modifying the trampoline's core dispatch logic.
+1. The IO type and trampoline MUST be extensible with new effect kinds without modifying the trampoline's core dispatch logic.
 2. The runtime task infrastructure built for lenient evaluation (§C.3.1) MUST be reusable for channel-based concurrency — the same lightweight task pool serves both.
 3. Channel types (e.g., `(Chan a)`) MUST be registerable as opaque types in the type system, parameterized by element type, with operations exposed as extern functions returning `IO`.
 4. Atomic RC (§C.4.1) and value immutability (§C.4.2) MUST be in place before channels are introduced, as values sent through channels are shared across concurrent tasks.

@@ -56,21 +56,15 @@ ADTs may be:
 - **Sum types** (multiple constructors): `(deftype (Option a) None (Some [:a val]))`
 - **Enum types** (all constructors nullary): `(deftype Color Red Green Blue)`
 
-### 3.2.3 IO Type [S10]
+### 3.2.3 IO Type [Uncovered S124 — was S10]
 
 ```
 IO(A)
 ```
 
-`IO` is a compiler-seeded algebraic data type representing an effectful computation that produces a value of type `A`:
+`IO` is an opaque built-in type representing an effectful computation that produces a value of type `A`. Its public operations and the prohibition on user construction and pattern matching are specified in [§10.1](10-io.md#101-io-type).
 
-```clojure
-(deftype (IO a) (IOVal [:a ioval]))
-```
-
-`IO` is defined in the `primitives` module and participates in the type system as an ordinary ADT. Functions that perform side effects (printing, reading input, etc.) MUST return `IO`. Pure functions MUST NOT return `IO`.
-
-Operations such as `pure` and `bind` can be defined as ordinary library functions to compose IO values (see [Section 10](10-io.md) for details).
+`IO` is defined in the `primitives` module and participates in standard Hindley-Milner inference. Functions that perform side effects (printing, reading input, etc.) MUST return `IO`. Pure functions MUST NOT return `IO`.
 
 ### 3.2.4 Trace Type [Tested crates/cranelisp-typecheck/src/builtins.rs::test_vec_primitives_registered]
 
@@ -213,7 +207,7 @@ If such a return-type-polymorphic form is left **unresolved** in a codegen-reach
 
 > **MUST (e) — an unresolved return-type polymorphism is the §3.11 ambiguity error.** A return-type-polymorphic form left unresolved in a codegen-reaching value position — no annotation, no disambiguating context — MUST be rejected as the [§3.11](#311-ambiguous-types) ambiguous-type error (the sibling disposition of an unpinned `[]`), NOT a codegen-level failure. A value-position constraint MUST NOT be treated as disambiguating; only a concrete type is. (Row 16 is the error; row 17 remains ambiguous.) [S109]
 
-### 3.3.4 Rank-1 polymorphic function values are returnable; only rank-2 use is unsupported [S109]
+### 3.3.4 Rank-1 polymorphic function values are returnable; only rank-2 use is unsupported [Uncovered S124 — was S109]
 
 A function may freely **return or contain** another function whose type is **rank-1 polymorphic** — every `∀` sits at the enclosing definition's own boundary (prenex; see [§3.10](#310-rank-1-hindley-milner)). `(defn mkid [] (fn [y] y))`, `const` / `(fn [y] x)`, `compose`, and their **written** twins `(defn mk [] (fn [:b y] y))` and `(defn weird [x] (fn [:b y] x))` are **all accepted**: a written `:b` on a returned lambda's parameter is **not** special — a written free type variable is identical to an inference-generated one (written ≡ unwritten, see [§3.3.1](#331-a-bare-type-variable-is-an-inference-variable-with-a-name)). `(defn mk [] (fn [:b y] y))` has type `∀a. (Fn [] (Fn [a] a))` and is **accepted**; each call `(mk)` instantiates `a` fresh, yielding a single monomorphic function instance (row 10). The MUSTs below are consolidated, alongside what the language does *not* support, in the boundary statement at [§3.5.5](#355-the-polymorphism-boundary).
 
@@ -235,7 +229,7 @@ Independent calls are accepted because each is resolved by its own use:
 
 ```clojure
 (defn main []
-  (Pure (add-i64 ((g) 5) ((g) "heap"))))
+  (primitives/pure (add-i64 ((g) 5) ((g) "heap"))))
 ```
 
 Using one returned function instance at incompatible types is rejected as a
@@ -243,7 +237,7 @@ unification conflict; the `let` binding does not generalize it:
 
 ```clojure
 (defn main []
-  (Pure
+  (primitives/pure
     (let [f (g)]
       (add-i64 (f 5) (f "heap")))))
 ```
@@ -252,7 +246,7 @@ A runtime result still containing an unresolved type variable is rejected as
 an ambiguity type error:
 
 ```clojure
-(defn main [] (Pure (g)))
+(defn main [] (primitives/pure (g)))
 ```
 
 In the final example, `g` remains an accepted polymorphic definition; the

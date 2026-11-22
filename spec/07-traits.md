@@ -126,7 +126,7 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
   (/ "Divide two values" [a b] self))
 ```
 
-### 7.1.5 Default Method Implementations [Tested+Neg tests/trait_method_tail_s116.rs::inferred_default_body_is_the_single_tail_and_dispatches, tests/trait_method_tail_s116.rs::annotated_default_body_is_one_structural_tail, tests/trait_method_tail_s116.rs::deleted_return_type_plus_body_spelling_rejected_neg, tests/trait_method_tail_s116.rs::reimpl_default_body_calls_replaced_sibling]
+### 7.1.5 Default Method Implementations [Uncovered S124 — was Tested+Neg tests/trait_method_tail_s116.rs::inferred_default_body_is_the_single_tail_and_dispatches, tests/trait_method_tail_s116.rs::annotated_default_body_is_one_structural_tail, tests/trait_method_tail_s116.rs::deleted_return_type_plus_body_spelling_rejected_neg, tests/trait_method_tail_s116.rs::reimpl_default_body_calls_replaced_sibling]
 
 A method signature whose trailing element is an **ordinary expression** (rather than a type expression, §7.1) is a **default method**, and that expression is its body. [S115]
 
@@ -170,6 +170,8 @@ An impl MAY override a default method by providing an explicit definition:
 ```
 
 **A default method is a per-impl template. [S115]** The default body is not type-checked once for the trait; it is **instantiated per impl**, against that impl's target type. An impl that supplies its own definition for the method **never instantiates the template** and is unaffected by anything the template would have required.
+
+An undefined name in a default method body MUST be reported when an `impl` inherits that default, not when the `deftrait` is declared. An impl that overrides the method does not trigger that error.
 
 **Compilation model:** Default bodies are stored as raw S-expressions on the trait declaration. When an `impl` block omits a method that has a default, a `Defn` is synthesized from the default body with the mangled name (e.g. `<=$MyType`). The synthesized defn is type-checked and compiled identically to an explicit impl method, with the dispatch parameter's type pre-unified with the impl target type.
 

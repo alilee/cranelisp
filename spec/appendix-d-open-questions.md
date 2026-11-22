@@ -159,34 +159,30 @@ ACT-1095 is resolved. Its claim was verified by opening §11.4, §9.7.0,
 `stdlib/core/syntax.cl`, and `stdlib/plan-stdlib.md` §6.5: the expander emits
 `macros/sconcat`, while `core.syntax` defines no `sconcat`.
 
-**Open remainder — S124-Q12-R1: user-callable concatenation helper.** The
-macro chapter's existing visibility rules cover library helpers and qualified
-compiler-seeded constructors; they do not decide whether the concatenation
-helper used by `~@` is itself a name users may call. Neither a callable name
-nor its public visibility is settled by this ruling.
+**Closed remainder — S124-Q12-R1, user ruling, 2026-11-22.** Put to
+the user: `macros/sconcat` is a public primitive at the type it has today,
+`(Fn [(SList Sexp) (SList Sexp)] (SList Sexp))`; §9.7.3 replaces its general
+signature with that type, and a library may offer a general concatenation
+under its own name. Answer, verbatim:
+
+> agreed retain as public primitive
+
+[§9.7.3](09-macros.md#973-sconcat) records the public primitive and type.
+The coordinator withdrew the SHOULD/MUST question about §8.8.3; the user's
+own wording there stands.
 
 ## S124-Q13: What are a trace root's name, parameters and children?
 
-**Open problem — ACT-1094's spec question.** Opened
-[§4.12.2](04-expressions.md#4122-semantics),
-[§4.12.4](04-expressions.md#4124-the-trace-adt), and
-[§4.12.8](04-expressions.md#4128-examples). §4.12.2 leaves `root_name` and
-`root_params` unspecified. §4.12.4 describes the name as the fully qualified
-name of the traced function. §4.12.8 shows `(trace (fact 5))` returning a root
-named `user/fact` with parameters `5` and recursive calls as children; the
-composed-call example likewise starts at the called function. QA reports a
-synthetic `::trace::` root with no parameters and the called function as its
-child. The examples do not settle the root for an arbitrary expression, such
-as `(trace 42)`. The root's formatted-result obligation is already explicit
-and is independent of this question.
+**Closed — user ruling, 2026-11-22.** Put to the user: a trace always
+has a synthetic root, named `::trace::`, with no parameters and every recorded
+call beneath it; the examples in §4.12.7 and §4.12.8 change. The follow-up was
+“A confirmed, and `::trace::` as the root's name?” Answer, verbatim:
 
-**Options / tradeoffs.** Always use a synthetic expression root with no
-parameters and all recorded calls beneath it: gives every expression one
-shape, but requires changing the examples and specifying the synthetic name.
-Use the called function as root for a direct-call expression, with a separate
-rule for other expressions: preserves the direct-call examples but gives
-consumers different shapes. The user must choose the root naming, parameters
-and tree shape; no example is changed pending that ruling.
+> 2 A
+
+[§4.12.2](04-expressions.md#4122-semantics) and
+[§4.12.4](04-expressions.md#4124-the-trace-adt) record the root and field
+meaning; §4.12.7–§4.12.8 show that shape.
 
 ## S124-Q14: Can a project file be a child of a library-resolved parent?
 
@@ -205,23 +201,14 @@ rule is unchanged. No normative remainder is identified.
 
 ## S124-Q15: When is an undefined name in a default method reported?
 
-**Open problem — ACT-1097's unclassified lead.** Opened
-[§7.1](07-traits.md#71-trait-declaration) and
-[§7.1.5](07-traits.md#715-default-method-implementations).
-§7.1.5 says “The default body is not type-checked once for the trait; it is
-instantiated per impl” and an overriding impl “never instantiates the template”.
-It also stores defaults as raw S-expressions and type-checks a synthesized
-method when an impl omits an override. This settles per-impl type checking
-and constraint discharge, but does not explicitly settle an earlier check
-for undefined names. QA's example is `(deftrait T (f [self] (nosuch self)))`
-with no implementing `impl`: must the declaration itself be refused?
+**Closed — user ruling, 2026-11-22.** Put as A: an undefined name in
+a default method body is reported when an `impl` inherits the default, not
+at the `deftrait`. Answer, verbatim:
 
-**Options / tradeoffs.** Resolve default-body names at the trait declaration:
-reports a missing function early, but rejects an unused template even when
-every impl would override it; it must remain distinct from the per-impl type
-check. Defer the undefined-name error until an impl instantiates the default:
-permits unused or overridden templates, but reports mistakes later. The user
-must decide the reporting point; the existing per-impl typing rule is unchanged.
+> 1 A
+
+[§7.1.5](07-traits.md#715-default-method-implementations) records the
+reporting point; an overriding impl does not instantiate the default.
 
 ## S124-Q16: Core/library classification and stage-two specification revision
 
@@ -261,8 +248,8 @@ prefixed REPL, A, B or C; the chapter map is in the [specification index](index.
 | CL03 | `derive`, `derive-Eq`, `derive-Ord`, `derive-Display` | §7.13.1–§7.13.5 | Prelude macro and per-trait helper macros; `Eq`, `Ord`, `Display` and their methods | **Library** — §7.13 explicitly says prelude macro, not special form. |
 | CL04 | `Num`, `Eq`, `Ord`, `Display`; arithmetic/comparison operators and `show` | §3.6–§3.7 examples; §7.1, §7.3, §7.6–§7.8, §7.13; §9.10; §12.9; B; REPL §1.1, §4.1, §17.19.2 | Library trait declarations and primitive-type impls according to §7.7, but the same subsection also calls them compiler-seeded infrastructure; bare operators and `show` throughout examples | **Needs determination** — which of these declarations, impls and methods require compiler provision, and which are expressible entirely in the specified language? §7.7 gives conflicting accounts. |
 | CL05 | `Functor`, `fmap` | §3.7; §7.2, §7.7.5, §7.8; B introduction | User/library higher-kinded trait and collection implementations | **Needs determination** — is the illustrated `Functor` declaration and each described `fmap` implementation expressible entirely in the specified type system? §7.7 labels them library content but is expressly non-normative. |
-| CL06 | `pure` | §3.2.3; §10.2, §10.3 examples, §10.5–§10.8; §12.4; B.12–B.13 | Ordinary wrapper around `Pure`; prelude supplies the bare name | **Library** — §10.2 explicitly says ordinary library function and gives its definition. |
-| CL07 | `bind` | §3.2.3; §9.10.5; §10.3–§10.5, §10.8, §10.12; §12.4; B introduction | §3.2.3 says library-definable; §10.3 requires an inline primitive constructing an internal `Bind` node | **Needs determination** — is `bind` expressible in the type system as specified, including its two result types and continuation, or does it require a built-in? The user's recollection is conditional, not a ruling on this fact. |
+| CL06 | `pure` | §3.2.3; §10.1–§10.2, §10.3 examples, §10.5–§10.8; §12.4; B.12–B.13 | Public interface to opaque built-in IO; no language constructor | **Language** — user ruling, 2026-11-22: `primitives/pure` is the public function; the constructor is private. |
+| CL07 | `bind` | §3.2.3; §9.10.5; §10.3–§10.5, §10.8, §10.12; §12.4; B introduction | Primitive IO composition in §10.3; the opaque-IO ruling removes §3.2.3's former library-definition claim | **Needs determination** — is `bind` expressible in the type system as specified, including its two result types and continuation, or does it require a built-in? The user's recollection is conditional, not a ruling on this fact. |
 | CL08 | `do` | §5.1.1; §9.10.4; §10.4, §10.5.3; §12.4–§12.5; B | Prelude macro and `do-build`; §9.10.4 shows nested `let`, §10.4 shows nested `bind` | **Library** — §10.4 explicitly says library macro, not language requirement. The two expansion accounts remain for stage two. |
 | CL09 | `bind!` sugar | §9.10.5; §10.5, §10.12; §12.4; B.4, B.13 | Prelude macro, `bind!-fold`, `bind` and `fn`; §10.12 additionally requires compiler analysis of its chains | **Library** — §10.5 explicitly says library macro, not language requirement. The scheduling dependency is separately inventoried in CL10. |
 | CL10 | Automatic scheduling, resource ordering and launch rules expressed over `bind!` / `do` chains | §10.12.1–§10.12.10; §12.4.1, §12.4.3–§12.4.4, §12.5; C.3.2 | Language obligations name library sugar as the analysis/sequencing surface | **Needs determination** — can all specified scheduling, source ordering, discarded-result and cancellation behavior be expressed over the core IO composition after user/library expansion, or is compiler recognition of some sugar required? |
@@ -274,7 +261,7 @@ prefixed REPL, A, B or C; the chapter map is in the [specification index](index.
 | CL16 | `vec` macro (distinct from bracket literal) | §2.3.9; §9.10.10; B introduction | Prelude macro producing `SexpBracket` | **Library** — §2.3.9 explicitly excludes `vec` from core syntax and reserved names. |
 | CL17 | `str` | §9.10.11; B introduction | Prelude macro, `str-fold`; `show` and `str-concat` | **Library** — §9.10 identifies it as a prelude macro. |
 | CL18 | `sfold`, `sreverse`, `sempty?` | §9.7.0–§9.7.4, §9.10.3 | Optional `core.syntax` helper functions or local equivalents | **Library** — §9.7 explicitly designates optional library helpers. |
-| CL19 | User-callable `sconcat` | §9.7.3; Q12-R1 | Library helper description beside compiler-provided splice concatenation | **Needs determination** — can the documented general `(SList a)` concatenation be supplied entirely by user/library code, separately from the compiler helper? Public callability of the compiler helper remains the user's Q12-R1 question. |
+| CL19 | User-callable `macros/sconcat` | §9.7.3; Q12-R1 | Public primitive at `(Fn [(SList Sexp) (SList Sexp)] (SList Sexp))` | **Language** — Q12-R1 user ruling, 2026-11-22. A library may supply general concatenation under its own name. |
 | CL20 | `slist` | §9.7.5, §9.10.3; B.6 | Convenience macro over compiler-seeded `SCons` / `SNil`; absent from §9.7.0's named helper list | **Needs determination** — can the full described `slist` convenience macro be supplied entirely by user/library code, or does it require any compiler-only facility? |
 | CL21 | Named macro-building helpers | §9.2.2, §9.10.2–§9.10.11 | `make-def-name`, `do-build`, `bind!-fold`, `thread-first-fold`, `thread-last-fold`, `cond-fold`, `case-fold`, `str-fold` are used but not defined there | **Needs determination** — can each helper required by these sample definitions be implemented using the specified macro/type system and primitives? Identify any missing language facility without making the helpers language requirements. |
 | CL22 | `List`, `Cons`, `Nil` | §3.2.2, §3.7 examples; §5–§7 examples; §9.10.3; §12.4.4, §12.9.3; B; REPL §1.5, §3.7, §9 | User-visible list ADT, prelude constructors and display examples | **Library** — §9.1.1 distinguishes the user/library `List` from compiler `SList`; §9.10.3 describes its library macro. |
@@ -287,7 +274,7 @@ prefixed REPL, A, B or C; the chapter map is in the [specification index](index.
 | CL29 | `quote-sexp`, Sexp / SList constructors | §8.9.2; §9.1, §9.5, §9.11.1; B.6 | Compiler provision, but bare constructor and helper names in samples require imports; qualified expansion references are already specified | **Language** — §8.9.2 and §9.1 explicitly provide compiler-seeded macro data; §9.11.1 identifies the primitive. |
 | CL30 | `trace-show-tree` | §4.12.8; §11.5 | `core.trace` display helpers over the compiler-seeded `Trace` ADT | **Library** — §4.12.8 explicitly identifies this as a stdlib display function; §11.5 describes it. The trace form itself is language-provided. |
 | CL31 | `timeout` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | A documented stdlib derivation from `race`, `sleep` and `Option`, while §12.4.4 calls it part of the language IO model | **Needs determination** — is the complete required timeout behavior implementable by a user/library derivation with the specified typing and cancellation, and which underlying facilities must be primitive? |
-| CL32 | `race`, `select`, `sleep` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | Runtime IO nodes and timer/first-completion support; ordinary-function signatures do not establish user implementability | **Needs determination** — which of these functions can user/library code express using the specified core IO facilities, and which require compiler/runtime provision? |
+| CL32 | `race`, `select`, `sleep` | §10.12.8–§10.12.10; §12.4.4; C.3.2 | IO first-completion composition and timer support | **Library** for `race` — user ruling, 2026-11-22: `(select [a b])`; removal of today's built-in is carried. **Needs determination** for `select` and `sleep` — which require compiler/runtime provision? |
 | CL33 | `discover-here`, `format-test-run`, `failures-only`, `test-passed?` | A.3; REPL §16.3, §16.5 | Optional testing library sugar and presentation functions over compiler discovery | **Library** — REPL §16 expressly makes these conveniences optional. |
 | CL34 | Library-based complete programs and transcripts | B.1–B.13; REPL §1, §3–§4, §8, §11, §17.19.2 | B explicitly assumes the reference prelude; other examples use bare operators, macros, `show`, constructors or fixed library module paths without establishing them locally | **Needs determination** — are the samples' required operations all expressible with the facilities classified above? Identify any additional compiler-only dependency; the user then confirms how stage two presents self-contained examples. |
 | CL35 | Prelude contents in `/mod` turn environments | REPL §3.9; language §8.8.1–§8.8.3, §8.9.1 | Parity contract lists bare operators, `show` and `Int` as in-scope through the prelude | **Needs determination** — does turn/file environment parity require any particular prelude content, or can the listed cases be expressed solely in terms of the names actually imported? No change to the parity obligation is made here. |
@@ -297,7 +284,7 @@ prefixed REPL, A, B or C; the chapter map is in the [specification index](index.
 
 ### Stage-two handoff
 
-`arch` returns determinations for CL04–CL05, CL07, CL10, CL19–CL21, CL24 and
+`arch` returns determinations for CL04–CL05, CL07, CL10, CL20–CL21, CL24 and
 CL31–CL38.
 The user confirms the resulting classification, including any reconciliation of
 conflicting normative carriers. `spec` then revises the inventoried passages;
@@ -305,44 +292,78 @@ conflicting normative carriers. `spec` then revises the inventoried passages;
 spec backlinks. This is one open stage-two item, not authorization to rewrite
 the chapters or implement compiler consequences now.
 
+### Closed rulings of 2026-11-22 affecting the inventory
+
+The authority for these rulings and Q12-R1, Q13, Q15, Q17 and Q18 is
+[Sprint 124 Notes](../sprints/SPRINT.md#notes), from “User ruling on `race`”
+through “User rulings of 2026-11-22 on the remaining questions”. Stage two
+remains open; these rulings do not confirm the rest of the classification.
+
+**`race`.** Put to the user: classify `race` as library now, since it is
+`(select [a b])`, and carry removal of the built-in as filed work outside
+S124. Answer, verbatim:
+
+> agreed carry
+
+CL32 and [§10.12.8](10-io.md#10128-structured-control-combinators--race--select--timeout)
+record the library classification; today's built-in provision and its carried
+removal remain distinguished in CL32.
+
+**Opaque `IO`.** Put as A: IO is an opaque built-in type; the language has
+`(IO a)` and no constructors for it. Values are made by `pure`, `bind`,
+`select`, `sleep` and platform operations and consumed only by the runtime;
+user code cannot match on IO. Node kinds, layout and the disposer are
+implementation detail and leave the specification. B was a sum type with
+private constructors. Answer, verbatim:
+
+> A
+
+On the spelling of `pure`, the user's words were:
+
+> the constructor is conceptually a module private thing. the public interface
+> is the `pure` function
+
+[§10.1](10-io.md#101-io-type) owns opacity and the public operations;
+[§10.2](10-io.md#102-pure) owns `primitives/pure`. CL06 reflects the ruling.
+Constructor definitions and runtime node details are removed from their
+other specification carriers; this does not implement the compiler migration.
+
+**Display markers.** Put to the user: an IO value nested inside a displayed
+value shows as `#io`; `<closure>` becomes `#closure`. Both markers are
+display-only and rejected by the reader. Answer, verbatim:
+
+> #io and #closure confirmed.
+
+[§12.9.1](12-runtime.md#1291-format-by-type) owns the canonical markers;
+[REPL §1.2 and §1.5](../repl/spec/01-display-format.md#12-expression-results)
+apply them to expression results and recursive display.
+
 ## S124-Q17: What result does a skipped trace form record?
 
-**Open problem — `arch`'s unclassified lead.** Opened
-[tracing §3.6, “A skipped form”](../design/arch/tracing.md#36-the-roots-result),
-[§4.12.2](04-expressions.md#4122-semantics), and
-[§4.12.6](04-expressions.md#4126-concurrency). §4.12.2 requires the
-expression's value to produce the root's formatted result string, without an
-exception for a skipped form. §4.12.6 says a thread that does not activate
-instrumentation evaluates its expression normally and returns a trace with
-no recorded children, but does not specify that root's result. `arch`
-reports that source returns an empty result string for a skipped form.
-Does the general formatted-result rule apply to this case?
+**Closed — user ruling, 2026-11-22.** Put to the user: use
+`::untraced::` as the name, and choose result A (the body's displayed value,
+as for any root) or B (an empty result string). Answer, verbatim:
 
-**Options / tradeoffs.** Require the evaluated expression's formatted value
-as the skipped root's result: retains §4.12.2's general rule and exposes the
-value even without recorded calls, but requires changing the reported
-behavior. Require an empty result string for a skipped form: retains that
-reported behavior, but needs an explicit exception to §4.12.2 and loses the
-value in the returned trace. The user must decide; neither requirement is
-changed pending a ruling.
+> 3 A
+
+The user had asked, verbatim:
+
+> is it `::untraced::`?
+
+The coordinator reads “3 A” as adopting that name; this is recorded as the
+coordinator's reading, stated back to the user, rather than an additional
+verbatim naming answer. The name has one normative definition in
+[§4.12.6](04-expressions.md#4126-concurrency), alongside the unrecorded
+root's result rule.
 
 ## S124-Q18: May a trace form be entered inside a skipped form on the same thread?
 
-**Open problem — `arch`'s unclassified lead.** Opened
-[tracing §6, “Open, with `spec`”](../design/arch/tracing.md#6-nested-trace-guard),
-[§4.12.5](04-expressions.md#4125-nested-trace), and
-[§4.12.6](04-expressions.md#4126-concurrency). §4.12.5 forbids entering
-a form while another form is “actively tracing on the same thread” and also
-requires a runtime error for a form entered during an enclosing trace body's
-evaluation. §4.12.6 permits a thread to evaluate a trace body without
-activating instrumentation. It is unresolved whether that skipped body's
-same-thread inner trace must raise the nested-trace error. `arch` reports
-that the guard permits entry and both forms return childless roots.
+**Closed — user ruling, 2026-11-22.** Put as A: a trace form entered
+inside a skipped form on the same thread raises no error and is itself
+skipped. Answer, verbatim:
 
-**Options / tradeoffs.** Reject entry inside any enclosing trace body,
-including a skipped one: gives nesting one rule independent of whether that
-thread acquired instrumentation, but rejects the reported behavior. Permit
-entry inside a skipped body: distinguishes tracing from ordinary evaluation
-under §4.12.6, but needs the enclosing-body prohibition in §4.12.5 narrowed.
-The user must decide; no nested-trace or concurrency requirement is changed
-pending a ruling.
+> 4 A
+
+[§4.12.5](04-expressions.md#4125-nested-trace) records that exception to
+the same-thread active-tracing error; [§4.12.6](04-expressions.md#4126-concurrency)
+owns the unrecorded root's shape and result.

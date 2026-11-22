@@ -833,7 +833,7 @@ Synthetic modules are registered by the runtime without corresponding `.cl` sour
 The `primitives` module contains:
 
 - **Builtin types**: `Int`, `Bool`, `String`, `Float`, `Vec`
-- **The IO ADT**: `(deftype (IO a) (IOVal [:a ioval]))` -- the compiler-seeded IO type
+- **The IO type**: opaque built-in `(IO a)`, with no language constructors (see [§10.1](10-io.md#101-io-type))
 - **Primitive functions**: The specific catalog of primitive functions is implementation-defined. See [Appendix A](appendix-a-builtins.md) for the reference implementation's catalog.
 
 All names in `primitives` -- both primitive types (`Int`, `Bool`, `Float`, `String`) and primitive functions (`add-i64`, `vec-len`, `vec-get`, etc.) -- are stored in qualified form only. They are NOT available as bare names unless brought into scope through:

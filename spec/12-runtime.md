@@ -168,7 +168,7 @@ Detached execution and cancellation retain their timing and value semantics (§1
 
 The explicit-control combinators — `race`, `select`, and the derived `timeout` ([§10.12.8](10-io.md#10128-structured-control-combinators--race--select--timeout)) — and the **structured cancellation** they rest on ([§10.12.9](10-io.md#10129-structured-cancellation)) are part of the language's IO model. This subsection pins their **typing** and **runtime semantics**; §10.12.8–§10.12.10 state the user-observable contract.
 
-**They are ordinary typed functions, not special forms and not platform effects.** Each combinator is a normal value with a normal type; it takes `IO` value(s) and returns a new `IO` value. Because an `IO a` is already a lazy *description* of an effect (§10.1–§10.3), no special evaluation rule is needed: the combinators sit at the same layer as the IO constructors (`Pure`, `Bind`, the compiler-inserted `Par` of §10.12.5), constructing an internal IO node that the trampoline interprets. They are **not** GOT-dispatched platform effects — the entire control vocabulary lives in the runtime, and a platform DLL never sees it (§12.8); this keeps the platform boundary thin even for the explicit surface. Their indicative types:
+**They are ordinary typed functions, not special forms and not platform effects.** Each combinator is a normal value with a normal type; it takes `IO` value(s) and returns a new `IO` value. Because an `IO a` is already a lazy *description* of an effect (§10.1–§10.3), no special evaluation rule is needed: the combinators compose opaque IO values that the runtime executes. They are **not** GOT-dispatched platform effects — the entire control vocabulary lives in the runtime, and a platform DLL never sees it (§12.8); this keeps the platform boundary thin even for the explicit surface. `race` is library composition over `select`, as described in §10.12.8. Their indicative types:
 
 ```
 sleep   : Int -> IO Int
@@ -181,7 +181,7 @@ timeout : forall a.   Int -> IO a -> IO (Option a)
 
 **Collection and duration units.** `select` takes a `Vec (IO a)` — the `[..]` literal of §10.12.8 is a `Vec`, not the `Nil`/`Cons` `List` ADT. Durations are plain `Int` **milliseconds**: `sleep : Int -> IO Int` parks for the given number of milliseconds and resumes with `0`, and `timeout`'s deadline is likewise an `Int` count of milliseconds (§10.12.8 "Duration unit"). The language has no dedicated `Duration` type. An **empty** `select` (`(select [])`) has no branch that can win; the runtime MUST raise a runtime panic (§12.7.2) — "select over empty collection" — rather than return a synthesised value, which at a heap-typed `a` would be an unsound null (§10.12.8 "Empty `select`"). The panic ends the process in every mode (§12.7; user ruling, 2026-11-15).
 
-**Construction is pure; the composed effect runs at the trampoline.** Applying a combinator builds an IO node and runs nothing — consistent with the laziness of `IO` everywhere (§10.3). The concurrent composition executes only when the resulting `IO` is sequenced into the program's effect (via `bind!` / `do`) and reaches the trampoline, which interprets the node by running the branches concurrently on the same execution substrate as `Par` (§10.12.5, §10.12.6) and resolving to the winner. The mechanism is implementation-internal and not prescribed (§10.12.5): a conforming implementation maps `race`/`select` onto its substrate's first-completion primitive and `timeout` onto a timer raced against the effect.
+**Construction is pure; the composed effect runs at the trampoline.** Applying a combinator builds an IO value and runs nothing — consistent with the laziness of `IO` everywhere (§10.3). The concurrent composition executes only when the resulting `IO` is sequenced into the program's effect (via `bind!` / `do`) and reaches the trampoline, which executes the composition by running the branches concurrently on the same execution substrate as automatic parallel composition (§10.12.5, §10.12.6) and resolving to the winner. The mechanism is implementation-internal and not prescribed (§10.12.5): a conforming implementation maps `race`/`select` onto its substrate's first-completion primitive and `timeout` onto a timer raced against the effect.
 
 **Cancellation follows the program's effect structure — it is not a user primitive.** There is no `cancel` function and no user-installable cancellation handler. An in-flight effect is cancelled exactly when the cancellation context it executes in is cancelled ([§10.12.9](10-io.md#10129-structured-cancellation)): because its `race`/`select` branch loses, because its `timeout` timer fires first, or because an enclosing context is cancelled. This includes every detached strand launched within that context ([§10.12.7](10-io.md#10127-launch-and-continue-detached-effects) item 5), independent of whether the runtime ran a given eligible effect detached, inline or on a worker. Function return and normal completion cancel nothing. The runtime realises cancellation by **dropping the in-flight effect's future**; that drop is what discharges the §10.12.9 obligations:
 
@@ -304,11 +304,11 @@ Implementations SHOULD include source location information (file and line) when 
 error: runtime panic: <file>:<line>: <message>
 ```
 
-### 12.7.6 Interaction with IO Model [Tested+Neg tests/platform_errors::platform_dispatch_fault_exits_repl, tests/platform_errors::dispatch_fault_during_io_surfaces_run, tests/platform_errors::platform_dispatch_error_exits_link, tests/platform_errors::platform_dispatch_non_faulting_controls_finish, tests/spec_10_io::auto_io_par_branch_panic_exits_neg — a dispatch fault ends the process in every mode with one FQ-named, unprefixed line carrying the fault text; a `Par` branch panic ends the process. The `--test` leg is unit-pinned (src/session_v4/test_runner/child/tests.rs::a_status_fail_names_the_final_stderr_line): no eligible test can force a platform effect. The platform-failure SHOULD has no committed evidence]
+### 12.7.6 Interaction with IO Model [Uncovered S124 — was Tested+Neg tests/platform_errors::platform_dispatch_fault_exits_repl, tests/platform_errors::dispatch_fault_during_io_surfaces_run, tests/platform_errors::platform_dispatch_error_exits_link, tests/platform_errors::platform_dispatch_non_faulting_controls_finish, tests/spec_10_io::auto_io_par_branch_panic_exits_neg — a dispatch fault ends the process in every mode with one FQ-named, unprefixed line carrying the fault text; a `Par` branch panic ends the process. The `--test` leg is unit-pinned (src/session_v4/test_runner/child/tests.rs::a_status_fail_names_the_final_stderr_line): no eligible test can force a platform effect. The platform-failure SHOULD has no committed evidence]
 
 Runtime panics and the IO model (§10) interact as follows:
 
-**Panics during IO trampoline execution**: When a runtime panic occurs inside an `Effect` thunk (i.e., during execution of a platform operation's closure), the process ends under §12.7.2 (user ruling, 2026-11-15).
+**Panics during IO trampoline execution**: When a runtime panic occurs during execution of a platform operation, the process ends under §12.7.2 (user ruling, 2026-11-15).
 
 **Platform dispatch faults (user ruling, 2026-11-15).** A fault during dispatch of a platform operation MUST end the process; it is not returned to a runner for recovery. The process MUST report the fault on one stderr line naming the fully qualified platform function and carrying the fault text, then exit with a non-zero status, not by signal. The report MUST NOT begin with `error: runtime panic: `. Connective wording is diagnostic, not fixed by this requirement. This records the [Phase 3 → 4 checkpoint ruling](../sprints/archive/sprint-123.md#user-rulings-at-the-phase-3--4-checkpoint-2026-11-15); the panic-report format of §12.7.5 does not apply to a dispatch fault.
 
@@ -327,7 +327,7 @@ Runtime panics and the IO model (§10) interact as follows:
 
 Platform operations MUST NOT panic for expected failure modes (file not found, permission denied, network timeout). Panics from platform code are reserved for **contract violations** (null pointers, corrupted state) that indicate programming errors rather than environmental conditions.
 
-**Panics during `Par` execution** (§10.12): A panic in any branch ends the process under §12.7.2 (user ruling, 2026-11-15).
+**Panics during parallel IO execution** (§10.12): A panic in any branch ends the process under §12.7.2 (user ruling, 2026-11-15).
 
 ### 12.7.7 No User-Exposed Panic Mechanism [S18]
 
@@ -361,11 +361,11 @@ Platform functions (loaded via `(platform name)`) use the C calling convention. 
 
 Platform DLLs are discovered via the platform DLL search order defined in §8.11.3. Every platform function MUST return `IO _` — unconditionally, because the compiler cannot verify the purity of foreign native code and must trust the declared signature (see §[8.9.3](08-modules.md#893-platform-modules) for the soundness rationale). The implementation MUST provide a mechanism for platform functions to allocate Cranelisp values (strings, IO wrappers) through a host callback interface. The specific details of the host callback interface are implementation-defined.
 
-## 12.9 Value Display Format [Tested tests/repl_introspection::display_int_result]
+## 12.9 Value Display Format [Uncovered S124 — was Tested tests/repl_introspection::display_int_result]
 
 This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results, by the `trace` special form for formatting traced arguments and return values, and by the `Display` trait's default implementations.
 
-### 12.9.1 Format by Type [Tested tests/repl_introspection::display_int_result, tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload]
+### 12.9.1 Format by Type [Uncovered S124 — was Tested tests/repl_introspection::display_int_result, tests/spec_10_io.rs::repl_pure_int_result_prints_io_notice_then_payload]
 
 Each type has a defined display representation:
 
@@ -378,9 +378,11 @@ Each type has a defined display representation:
 | Nullary ADT constructor | `Type.Constructor` using dot notation | `Color.Red`, `Option.None` |
 | Data ADT constructor | `(Type.Constructor field1 field2 ...)` — constructor in dot notation, fields formatted recursively, space-separated, wrapped in parentheses | `(Option.Some 42)`, `(Cons 1 (Cons 2 Nil))` |
 | `Vec` | `[elem1, elem2, ...]` — elements formatted recursively, comma-separated | `[1, 2, 3]`, `["a", "b"]` |
-| Closure / function value | `<closure>` | `<closure>` |
-| `IO` | Not displayed as a value by the REPL: the REPL executes an IO expression and displays the payload it returns under the payload's type ([REPL §1.2.1](../repl/spec/01-display-format.md#121-io-expression-results)) | `42` for `(Pure 42)` |
+| Closure / function value | `#closure` | `#closure` |
+| `IO` | An IO value nested inside a displayed value shows as `#io`. A top-level REPL IO expression is executed and its payload displayed under the payload's type ([REPL §1.2.1](../repl/spec/01-display-format.md#121-io-expression-results)). | `(Box #io)` for an IO value inside `Box` |
 | `Trace` | Displayed as the ADT value | `(Trace.TraceCall ...)` |
+
+`#io` and `#closure` are display-only markers, rejected by the reader under [§1.6](01-lexical.md#16-reader-macros).
 
 ### 12.9.2 Qualified Names in Display [Tested tests/repl_introspection::display_int_result]
 

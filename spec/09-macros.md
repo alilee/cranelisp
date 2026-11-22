@@ -458,7 +458,7 @@ cluster (§9.12.1).
 
 ## 9.7 SList Helper Functions [Uncovered S121]
 
-Macro authors typically need helper functions for `SList`. A standard library may provide functions such as the following; these optional library helpers are distinct from the compiler-provided concatenation used by unquote-splicing (§9.7.0).
+Macro authors typically need helper functions for `SList`. A standard library may provide functions such as the following; these optional library helpers are distinct from the public primitive `macros/sconcat` (§9.7.3), also used by unquote-splicing (§9.7.0).
 
 ### 9.7.0 Visibility
 
@@ -494,15 +494,16 @@ Reverse an SList.
 
 ### 9.7.3 `sconcat`
 
-```clojure
-sconcat :: (fn [(SList a) (SList a)] (SList a))
+```
+macros/sconcat :: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))
 ```
 
-Concatenate two SLists. All elements of the first list appear before all elements of the second.
+`macros/sconcat` is a public primitive. It concatenates two SLists of `Sexp`: all elements of the first list appear before all elements of the second. A library may offer a general SList concatenation function under its own name.
 
 ```clojure
-(sconcat (SCons 1 (SCons 2 SNil)) (SCons 3 (SCons 4 SNil)))
-;; -> (SCons 1 (SCons 2 (SCons 3 (SCons 4 SNil))))
+(macros/sconcat (macros/SCons (macros/SexpInt 1) macros/SNil)
+               (macros/SCons (macros/SexpInt 2) macros/SNil))
+;; -> (SCons (SexpInt 1) (SCons (SexpInt 2) SNil))
 ```
 
 ### 9.7.4 `sempty?`

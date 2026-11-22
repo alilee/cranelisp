@@ -16,7 +16,7 @@ The language guarantees the following regardless of which standard library (if a
 
 - **Special forms**: The structural special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) and `trace` are all **root special forms** — parser keywords with distinct syntax, always available without import and with no module path. `trace` produces a distinct trace node; the `Trace` / `TraceCall` types and the field accessors it returns ARE `primitives`-module entries that DO require import — the deliberate form/ADT asymmetry, mirroring `Sexp`-in-`macros` (see [Section 3.2.4](03-types.md#324-trace-type)).
 
-## 11.2 Compiler-Seeded Types [Tested+Neg tests/spec_04_expressions::trace_returns_trace_type, tests/spec_10_io::pure_int_unwraps_inline, tests/trace::trace_adt_names_are_importable_from_primitives, tests/trace::trace_adt_names_not_auto_imported_neg, tests/trace::trace_adt_names_reachable_via_qualified_path_without_import]
+## 11.2 Compiler-Seeded Types [Uncovered S124 — was Tested+Neg tests/spec_04_expressions::trace_returns_trace_type, tests/spec_10_io::pure_int_unwraps_inline, tests/trace::trace_adt_names_are_importable_from_primitives, tests/trace::trace_adt_names_not_auto_imported_neg, tests/trace::trace_adt_names_reachable_via_qualified_path_without_import]
 
 The following types are seeded by the compiler into synthetic modules. A standard library author does not need to define them — they are always present. They are language-level requirements normatively specified in [Section 3](03-types.md), [Section 8.9](08-modules.md#89-synthetic-modules), and [Section 9.1](09-macros.md#91-sexp-data-model):
 
@@ -24,7 +24,7 @@ The following types are seeded by the compiler into synthetic modules. A standar
 |---|---|---|
 | `primitives` | `Int`, `Bool`, `String`, `Float` | Primitive scalar types |
 | `primitives` | `(Vec a)` | Built-in resizable array |
-| `primitives` | `(IO a)` | Effectful computation (3-constructor ADT: `Pure`, `Effect`, `Bind`) |
+| `primitives` | `(IO a)` | Opaque built-in computation; no language constructors (§10.1) |
 | `primitives` | `Trace` | Execution trace tree (1-constructor ADT: `TraceCall`). NOT auto-imported. |
 | `macros` | `Sexp` | S-expression ADT for macro system |
 | `macros` | `(SList a)` | Cons-list for S-expression manipulation |

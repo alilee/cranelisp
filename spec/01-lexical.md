@@ -300,6 +300,8 @@ unquote          = '~' form
 anon_fn          = '#(' ws form* ws ')'
 ```
 
+`#io` and `#closure` are display-only markers (§12.9.1). The reader MUST reject them as input.
+
 Reader macros are syntactic sugar processed during parsing:
 
 - `'form` expands to `(quote form)` — produces an `Sexp` value at runtime [Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_quote]

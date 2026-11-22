@@ -23,7 +23,7 @@ Every styled span MUST be terminated by a reset (`\033[0m`) before any newline o
 
 Escape sequences MUST NOT appear inside the value portion of `:Type value` when that value is a String literal — the string content is user data and MUST be printed verbatim.
 
-### 10.3 Token/Element Styling Contract — The One Styling Authority [S108]
+### 10.3 Token/Element Styling Contract — The One Styling Authority [Uncovered S124 — was S108]
 
 This subsection is the **single normative authority** for the element → style-role mapping across **all token-styled REPL output**: result values (§1.2/§1.5), introspection lines (§4.1 — `/sig`, `/info`, bare-symbol lookup), pretty-printed code (§3.11 — `/sexp`, `/source`, and the agent ```lisp blocks §17.13.2 routes through the same printer), `/search` result rows (§17.19.2), and error/warning lines (§5). Every byte of token-styled output derives its style from **exactly one** role in the table below; a role is defined once here and applied once at render, so styling cannot drift between surfaces. The per-surface style descriptions that predate this table (§1.1/§1.5 value styling, §3.11 "colour on adds SGR spans", §4.1 introspection styling, and the §10.4 worked illustration) are **subordinate** to it and cross-reference it — **this table wins on any conflict.** There are no user-configurable themes; the defaults work on both light and dark backgrounds using the standard 16-colour ANSI palette. [S108]
 
@@ -47,7 +47,7 @@ This subsection is the **single normative authority** for the element → style-
 | R12 | Header | A slash-command **category header** — `Fns:`, `Types:`, `Traits:`, `Special forms:`, etc. (the one styling role the layout-family lists carry). | bold | `1` |
 | R13 | Prompt / Banner | The prompt line (timing + module + `>`, §2.1) and the startup banner (§6.2). | dim | `2` |
 | R14 | AgentGutter | The agent prose frame `▌` gutter (§17.2). Only **prose** is guttered; echoed agent-issued commands, their results, and agent-emitted ```lisp code blocks render un-guttered in their own roles (§17.2 item 3, §17.13.2, FIXME 0556). A probe is not rendered at all, so it takes no role here (§17.2.1). | bright magenta | `95` |
-| R15 | Name / Plain | **Everything else** — the non-prefix part of symbol names, constructor dot-names (`Color.Red`), `<closure>`, vec/list/bracket punctuation, whitespace, and layout padding. | default | — |
+| R15 | Name / Plain | **Everything else** — the non-prefix part of symbol names, constructor dot-names (`Color.Red`), `#closure`, vec/list/bracket punctuation, whitespace, and layout padding. | default | — |
 
 **Composite — the `agent>` input prompt (§17.12).** The `agent>` glyph shown when the agent "types" a line is a composite of R13 (Prompt, dim) over the line with the `agent` token in the R14 bright-magenta colour — expressed as R13 + R14-family spans over the same line. It marks who issued each echoed line (distinct from the dim human prompt §2.1 and the `▌` prose gutter); a probe is not echoed and carries no `agent>` line (§17.2.1). It degrades under colour-off to the plain token `agent>`. [S108]
 
@@ -65,7 +65,7 @@ Notes on specific choices:
 - **Bold for structural anchors only.** Bold (R1, R8/R10 keyword prefixes, R12) is reserved for the head of an apply form, error/warning keywords, and category headers. Using bold elsewhere dilutes its signal.
 - **No colour on user input.** The line editor controls input styling. The REPL MUST NOT emit escape sequences into the input buffer.
 
-### 10.4 Styled Universal Output Format — Worked Illustration [R4 S22]
+### 10.4 Styled Universal Output Format — Worked Illustration [Uncovered S124 — was R4 S22]
 
 This subsection **illustrates** the §10.3 contract applied to the universal output format (§1.1); **§10.3 is the authority** and wins on any conflict. Angle brackets show styled spans annotated with their §10.3 role; actual output uses SGR codes, not brackets.
 
@@ -99,7 +99,7 @@ This subsection **illustrates** the §10.3 contract applied to the universal out
   double area
 ```
 
-The reset between the R4 cyan type prefix and the value is the space character — no visible break, just a colour transition. The classification comment (everything from `; ` onward on the primary line) is a single R6 dim span. A string result value renders as one R3 green span; a constructor value (`Color.Red`) and a closure (`<closure>`) are R15 default.
+The reset between the R4 cyan type prefix and the value is the space character — no visible break, just a colour transition. The classification comment (everything from `; ` onward on the primary line) is a single R6 dim span. A string result value renders as one R3 green span; a constructor value (`Color.Red`) and a closure (`#closure`) are R15 default.
 
 ### 10.5 Batch Mode Output [R4 S22]
 
