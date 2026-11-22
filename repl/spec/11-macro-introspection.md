@@ -4,7 +4,13 @@
 
 Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
 
-### 11.1 `/expand` Command [Tested+Neg tests/repl_introspection::expand_user_defmacro]
+The library macro names in the examples are supplied bindings under the
+[example environment convention](index.md#example-environments); the same
+requirements apply to any user macro. For example, `cond` is explicitly
+imported or locally defined, not a required prelude macro. Its nested-`if`
+expansion is a non-normative library illustration.
+
+### 11.1 `/expand` Command [Uncovered S124 — was Tested+Neg tests/repl_introspection::expand_user_defmacro]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
 
