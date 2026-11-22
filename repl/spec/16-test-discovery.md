@@ -122,7 +122,7 @@ Returns one `(Pair name callable)` per eligible `test-*` function:
 
 **Library convenience (non-normative).** The reference standard library's `testing.runner` module provides optional sugar over the vector form, the `discover-here` macro: `(discover-here)` expands to `(primitives/discover-tests [])`, and `(discover-here "user.math")` or `(discover-here "a" "b")` collects the individual module arguments into the vector. `discover-here` is library code, not a shape of the primitive; a program that does not use it calls `discover-tests` with a vector.
 
-`Pair`, `Result` and `Option` remain primitives bootstrap types. `catch-runtime-error` is removed (user ruling, 2026-11-15; language §12.7).
+`Pair`, `Result` and `Option` are compiler-seeded `primitives` ADTs (language §3.2), used independently of any library. The bare names in this section require explicit imports; `discover-tests` and its result types have qualified access without a prelude. `catch-runtime-error` is removed (user ruling, 2026-11-15; language §12.7).
 
 `TestResult`, `TestPass`, `TestFail`, and `run-test` are **retired**: a test's outcome is its own `(Option String)` (`None` = pass, `Some reason` = fail); the FQ name lives in the discovered `Pair`; timing comes from `trace`'s nanos.
 
