@@ -334,7 +334,7 @@ Unqualified type names or an unqualified symbol name in `/sig` output are non-co
 |---|---|
 | `/sig` primary line is byte-identical to bare lookup's (FQ type + FQ name + drawer) | [Uncovered S121 — the prior guard used the retired broken-symbol state] |
 
-### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [S102]
+### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [Uncovered S124 — was S102]
 
 `/mod [name]` switches the active module namespace. The prompt changes to the new module and
 no confirmation is printed (§8 Scenario 1); bare `/mod` returns to the entry
@@ -358,26 +358,24 @@ followed by a `defn`/`deftype`/expression) MUST compile in the **same environmen
 `M`'s file body was compiled in**. Concretely, all of the following MUST be in scope for that
 turn exactly as they are when `M`'s `.cl` file is loaded:
 
-- the **implicit prelude values** — the prelude-provided operators and functions (`+`, `-`,
-  `show`, …) are available as bare names (spec `08-modules.md` §8.8.1's implicit
-  `(import [prelude [*]])`); [S102]
-- the **prelude type aliases** — a bare `:Int` annotation resolves to `:primitives/Int` in the
-  turn's forms exactly as in the file body (spec `08-modules.md` §8.9.1); [S102]
+- **the names actually supplied by the implicit prelude import**, if present
+  and not suppressed in `M` — including its re-exports of types or functions,
+  whatever they are (language §8.8.1). No operator, trait or type alias is
+  required to be provided by the prelude; an empty prelude contributes none; [Uncovered S124 — was S102]
 - **`M`'s own imports** — every name `M`'s file imports is in scope under the same binding it
-  has in the file body. [S102]
+  has in the file body. [Uncovered S124 — was S102]
 
 **Parity is install-path-independent (MUST).** The environment MUST match `M`'s file-body
 environment **regardless of how `M` was installed this session** — whether `M` was freshly
 typechecked, or **restored from the module cache**. A cache-restored module MUST NOT present a
-degraded namespace turn (e.g. a restored module whose session environment lacks the prelude, so
-`(+ x 1)` fails with `undefined variable: +`). This is the parity axis: fresh and
-cache-restored `/mod M` turns are indistinguishable to the user. [S102]
+degraded namespace turn (e.g. a restored module that loses a name the file body imported). This is the parity axis: fresh and
+cache-restored `/mod M` turns are indistinguishable to the user. [Uncovered S124 — was S102]
 
 | Requirement | Test |
 |---|---|
-| a `/mod M` turn using prelude operators compiles (fresh session) | [Tested tests/repl_mod_devloop.rs::devloop_fresh_prelude_using_mod_turn_compiles] |
-| the SAME turn compiles identically in a cache-restored session (parity axis) | [Tested tests/repl_mod_devloop.rs::devloop_cache_restored_prelude_using_mod_turn_compiles] |
-| a bare `:Int` type alias resolves in a `/mod M` defining turn | [Tested tests/repl_mod_devloop.rs::devloop_fresh_mod_turn_bare_type_alias_resolves] |
+| a `/mod M` turn using names supplied by its prelude compiles (fresh session) | [Uncovered S124 — was Tested tests/repl_mod_devloop.rs::devloop_fresh_prelude_using_mod_turn_compiles] |
+| the SAME turn compiles identically in a cache-restored session (parity axis) | [Uncovered S124 — was Tested tests/repl_mod_devloop.rs::devloop_cache_restored_prelude_using_mod_turn_compiles] |
+| a bare `:Int` resolves in a `/mod M` turn when imported in the file body | [Uncovered S124 — was Tested tests/repl_mod_devloop.rs::devloop_fresh_mod_turn_bare_type_alias_resolves] |
 
 ### 3.10 Module-Qualified Arguments to Introspection Commands [S102]
 
