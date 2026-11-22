@@ -137,11 +137,11 @@ Evidence currency, checked 2026-09-30 against later deliveries:
 
 | Package | Items | Class | Why carry | Minimum work when resumed | Gates | Deferral |
 |---|---|---|---|---|---|---|
-| K5 Names read by their written spelling | N1 [ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md): renamed import and export entries are rejected at parse, including the §8.3.5 self-rename (`module_extract.rs` still calls `expect_symbol`). N2 [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md) P-3: `impl_check.rs::resolve_impl_trait_ref` still maps `Ambiguous` to `unknown trait`, dropping the §8.6.5 alternatives. N3: P-2, [ACT-0985](../../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md), [ACT-0987](../../sprints/actions/ACT-0987-trait-dispatch-and-impl-rigidity-intake.md), [ACT-1003](../../sprints/actions/ACT-1003-contested-type-deftype-echo-intake.md) and `typecheck.md` §11 residuals | N1 D; N2 D (diagnostic only; the rejection is correct); N3 L | One mechanism (a reader resolves the written spelling) recurring four times in S122; N1 needs a public `ImportNames` change. No memory-safety face; renaming has a workaround | `test`: N1 and N2 REDs and one N3 probe basket. `design`(typecheck): converge readers on the canonical key. `arch`: the `ImportNames` packet, carrying the persistence impl-identity obligation | N1: inter-crate API user gate | First (filed S122); `typecheck.md` §11 residuals unknown |
+| K5 Names read by their written spelling | N1 ACT-0997 (closed): renamed import and export entries are rejected at parse, including the §8.3.5 self-rename (`module_extract.rs` still calls `expect_symbol`). N2 [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md) P-3: `impl_check.rs::resolve_impl_trait_ref` still maps `Ambiguous` to `unknown trait`, dropping the §8.6.5 alternatives. N3: P-2, [ACT-0985](../../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md), [ACT-0987](../../sprints/actions/ACT-0987-trait-dispatch-and-impl-rigidity-intake.md), [ACT-1003](../../sprints/actions/ACT-1003-contested-type-deftype-echo-intake.md) and `typecheck.md` §11 residuals | N1 D; N2 D (diagnostic only; the rejection is correct); N3 L | One mechanism (a reader resolves the written spelling) recurring four times in S122; N1 needs a public `ImportNames` change. No memory-safety face; renaming has a workaround | `test`: N1 and N2 REDs and one N3 probe basket. `design`(typecheck): converge readers on the canonical key. `arch`: the `ImportNames` packet, carrying the persistence impl-identity obligation | N1: inter-crate API user gate | First (filed S122); `typecheck.md` §11 residuals unknown |
 | K6 Platform admission | C2 ACT-0973 (closed S124; the requirement is in [the IO specification](../../spec/10-io.md)): a `platform` form in a non-entry module is skipped (`process_form/platform.rs` says "silently ignored per §10.9.1"; §10.9.1 requires a compile-time error). C3 [ACT-0979](../../sprints/actions/ACT-0979-platform-function-type-rejection.md) and [0933](../../design/arch/fixmes/0933-platform-sig-residual-type-var-must-refuse-at-mint.md): `require_io_return` checks only the `IO` return. C4 Q12: `got_data_symbol_name` collision between a module `platform-x` and a platform `hx` | S (C4 static only) | Reached only by platform or library authors; C3 needs a spec answer; C4 needs contrived names | `test`: REDs with entry and root-level controls. `dev`(src): one gate at the mint. `arch`: C4 falsifier fixture | C3: `spec` question (does "contain" extend through a named ADT's fields?). C4: user naming decision if a loader rule is chosen | ACT-0973, ACT-0979: first. 0933 (S119), Q12: unknown |
 | K7 Runtime concurrency | R1 ACT-0977: launched work is not cancelled with its launching context (§10.12.7 item 5; item 6 drain unevidenced). R4: ACT-0975 (closed S124 on fence F-0975), ACT-0981 (closed at S124; Git history). Any K2 non-memory-unsafe RED | R1 S; R4 L | R1 is an approved requirement whose realization needs `arch` and `design`(intrinsics) and a new completion witness; R4 faces are a rejected program or invisible lost parallelism | `test`: R1 RED on synthetic leaves with a winning-branch control and a completion witness, then `arch` → `design`(intrinsics) → `dev`. R4: probes against their falsifiers | R1: any public or schema change follows the API gate | First (filed S122) |
 | K8 Persistence leads | P6 (redefining one member of a shared `begin` keeps the old sibling), folded into ACT-1005's literal-cluster cases. P8 [ACT-0994](../../sprints/actions/ACT-0994-cached-load-claim-reregistration-intake.md) | L | Never observed; P6 shares ACT-1005's regeneration writer | Falsifiers: redefine one member and regenerate; edit during a cached load | None | First |
-| K9 Diagnostics and discovery | C5 [0915](../../design/arch/fixmes/0915-codegen-diagnostic-exposes-mangled-doubled-internal-subjects.md): doubled prefix, `0..0` span, mangled subject in codegen diagnostics. C6 [ACT-0986](../../sprints/actions/ACT-0986-test-discovery-contract-and-eligibility-intake.md) item 1: in-language `discover-tests` excludes a mistyped test without the warning REPL §16.1 requires (`discover_eligible_tests` discards it); the host runner warns | S | C5 has no public trigger after G-7 and ACT-0999. C6 needs an extern warning channel (`arch`/`design`) | C5: `design`(backend, int) with the falsifier "any public codegen error". C6: a RED, then the warning channel. The requirement stands; the user may instead narrow it through `spec` | C6 narrowing would be a requirement change | 0915 (S118): unknown. ACT-0986: first |
+| K9 Diagnostics and discovery | C5 [0915](../../design/arch/fixmes/0915-codegen-diagnostic-exposes-mangled-doubled-internal-subjects.md): doubled prefix, `0..0` span, mangled subject in codegen diagnostics. C6 ACT-0986 (closed) item 1: in-language `discover-tests` excludes a mistyped test without the warning REPL §16.1 requires (`discover_eligible_tests` discards it); the host runner warns | S | C5 has no public trigger after G-7 and ACT-0999. C6 needs an extern warning channel (`arch`/`design`) | C5: `design`(backend, int) with the falsifier "any public codegen error". C6: a RED, then the warning channel. The requirement stands; the user may instead narrow it through `spec` | C6 narrowing would be a requirement change | 0915 (S118): unknown. ACT-0986: first |
 | K10 Run-dependent residual | [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) Class II, Class III, the inverse-polarity member and the reactor panic | E | Attribution needs load-shaped experiments; no member has reproduced on the current source | Class II D2/D3 experiment at the publication boundary; captured isolation-versus-load runs for the rest | None | Unknown; open since S114. If `sprint`'s history shows two prior deferrals, METHOD §2.4.5 sign-off applies |
 | K11 Assurance maintenance | Evidence tails 0761, 0785, 0811, 0848, 0857, 0863, 0891, 0900, 0903, 0929, 0931, 0747, into [ACT-0962](../../sprints/actions/ACT-0962-coverage-assurance-and-shared-standard.md)'s deferred coverage increment. One public-API baseline batch through `arch`: ACT-0955 (approved format), ACT-0963 item 2, ACT-0971. QA's L-B1 corpus decision. Formatting drift and clippy warnings in the types and platform crates | E | No compiler acceptance authority; the baseline batch needs one user confirmation of a non-empty generated diff | Per filing | Baseline batch: non-empty-diff user confirmation | 0747, 0761, 0891: at least the second (each records an earlier deferral); ACT-0955: first (in S122 scope); others unknown. METHOD §2.4.5 sign-off applies where a count reaches three |
 
@@ -208,7 +208,7 @@ follow the rule above: "unknown" means no count was recorded.
 | Match-arm branch push reads +2 | L, ordinary leak | K7 | [ACT-1022](../../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) | `test` commits the `MarginalPair` the filing names; QA attributes | First |
 | Unreadable entry file | L | — | [ACT-1019](#act-1019--unreadable-entry-file-closed) | `spec` locates or asks for the requirement; `test` then reduces | First |
 | Dotted CLI entry target file mapping | L (requirements disagree) | — | ACT-1020, closed S123 | `spec` returns the user's answer; `test` then reduces | First |
-| Tail-argument ownership and alias shadowing, with leads L2–L7, L9 and L10 (`design/backend/ownership-codegen.md` §13.3) | ACT-1030 D, memory-unsafe (use-after-free); ACT-1029 and the leads L | — | [ACT-1031](../../sprints/actions/ACT-1031-resume-tail-ownership-and-alias-shadowing-investigation.md), over [ACT-1029](../../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md) and [ACT-1030](../../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md) | The [L6 and R1 cells](#act-1029-r1-probe--t0-control-fault-and-redesigned-delta-2026-09-30), halves observed separately; then the remaining leads against their falsifiers | First |
+| Tail-argument ownership and alias shadowing, with leads L2–L7, L9 and L10 (`design/backend/ownership-codegen.md` §13.3) | ACT-1030 D, memory-unsafe (use-after-free); ACT-1029 and the leads L | — | ACT-1031 (closed), over ACT-1029 (closed) and ACT-1030 (closed) | The [L6 and R1 cells](#act-1029-r1-probe--t0-control-fault-and-redesigned-delta-2026-09-30), halves observed separately; then the remaining leads against their falsifiers | First |
 | Test-cache directory isolation | E, maintenance | — | [ACT-1032](../../sprints/actions/ACT-1032-test-cache-directory-isolation.md) | `test` identifies every in-place writer and moves each to a fresh directory or `--no-cache` | First |
 
 - **ACT-1030 stays open and observed.** Its guard,
@@ -378,7 +378,7 @@ regression control. QA ran no Cargo command.
 
 - **`design`(backend) lead, panic sentinel: confirmed memory-unsafe defect,
   filed as
-  [ACT-1040](../../sprints/actions/ACT-1040-panic-sentinel-reaches-heap-consumer-intake.md).**
+  ACT-1040 (closed).**
   - A panic in a callee returns `0`, and a caller that uses the result as a
     heap value dereferences it. The process dies with SIGSEGV in the REPL,
     `--run` and `--link`, and inside `catch-runtime-error`.
@@ -390,7 +390,7 @@ regression control. QA ran no Cargo command.
     now and having `design`(backend) cost the propagation mechanism first.
   - New class `unpropagated-panic`.
 - **Found in ACT-1040's control, filed as
-  [ACT-1041](../../sprints/actions/ACT-1041-batch-runtime-panic-reported-as-codegen-error-intake.md).**
+  ACT-1041 (closed).**
   - `--run` reports an uncaught panic as `codegen error at 0..0` with a
     doubled `runtime panic:` prefix. It is a second reader of the panic slot.
   - §12.7.5 and REPL §10.3 R8 disagree on the prefix; that question goes to
@@ -490,7 +490,7 @@ dated record is in its filing.
 | ACT-0974 ([retained record](#retained-records-of-the-deleted-filings)) | **Double discharge, with a use-after-free face.** A closure wrapper for any of the six only-read String externs releases an argument the consuming shim already consumed. Direct-call and user-function-value controls pass. The one curried shape probed balances | **Returned to the user for a fix decision; not carried.** The user approved the fix on 2026-09-30 ([class delta](#act-0974-extern-entry-convention--prepared-evidence-delta-2026-09-30)). The proposed owner is `dev`(backend), realizing the already-designed repair in `non-concrete-release-contract.md` §7.6. No API change is expected. The REDs are `string_primitive_value_discharge`'s minimal and family cells |
 | [0907](../../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md) balance cell | Balanced: marginal +3/+3, residual 0 | Balance obligation retired. The filing stays open for its Phase 6a/6b text and introspection items |
 | FIXME 0934 (closed S124 on fence F-0934) | Unrun `Bind` balanced: marginal +6/+6, residual 0 | Unrun-`Bind` face retired. The filing narrows to the losing-branch cancellation face, which no package names. `sprint` asks the user: carry it (K7) or do it in S122 |
-| [ACT-0976](../../sprints/actions/ACT-0976-macro-runtime-error-residue-intake.md) | Ordinary leak: residual +2 (the argument tree), with no seam violation | RED retained and carried under K7, first deferral. It asserts §12.3.1, not a Rule 3 protocol regression |
+| ACT-0976 (closed) | Ordinary leak: residual +2 (the argument tree), with no seam violation | RED retained and carried under K7, first deferral. It asserts §12.3.1, not a Rule 3 protocol regression |
 | [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) Class I | Not reproduced in 600 loaded runs (620 in total) across unarmed, RC-dec-check and quarantine arms | Unattributed; absence neither attributes nor retires it. `sprint` asks the user to add it to the K10 carry |
 | ACT-1018 (from K3) | The exemplar's exact-balance cell reads 51 retained against a warm premise of 0, deterministic across two runs | New intake. RED retained and carried under K7 by the ordinary-leak rule, first deferral. `sprint` confirms this use of the rule with the user |
 
@@ -631,7 +631,7 @@ attribution:
 **Review dispositions.**
 
 - **R1: an unmeasured lead, filed as
-  [ACT-1029](../../sprints/actions/ACT-1029-alias-map-same-name-overwrite-lead.md).**
+  ACT-1029 (closed).**
   - **Mechanism, predicted.** The `binder-name-underkey` class, in the alias
     map of `compute_last_uses` (`crates/cranelisp-backend/src/heap.rs`). An
     alias binder that reuses a live alias's name overwrites its root. The
@@ -961,7 +961,7 @@ R1. Its "shared name alone" header and the `binder-name-underkey` class were
 premature. The shared context was not checked against the lead list.
 
 **The control's fault: intake
-[ACT-1030](../../sprints/actions/ACT-1030-let-wrapped-tail-forward-uaf-intake.md).**
+ACT-1030 (closed).**
 The fault is observed. Its mechanism is a source-read **hypothesis**:
 1. `compile_tail_self_call` arms `tail_arg_protect` only for a top-level `if`
    or `match` argument, not a `let`.
@@ -1803,7 +1803,7 @@ HEAD export `733c7335…`) show that the subject balances only by cancellation:
     §3 item 6), which is written failing first.
 
 **D1 — a join that forwards its own binder, consumed in the frame, leaks**
-([ACT-1026](../../sprints/actions/ACT-1026-binder-forwarding-join-consumed-in-frame-leak-intake.md)).
+(ACT-1026 (closed)).
 - **Class and scope.** `rc-miscount`, one block per evaluation. It is
   analysis-independent and not memory-unsafe. It needs neither COW nor
   `match`.
@@ -1912,7 +1912,7 @@ source-free).** Every cell is an armed `MarginalPair` asserting both exits.
 
 | ID | Change | Wrong outcome it discriminates | Before `dev` | After the fix | Class |
 |---|---|---|---|---|---|
-| D2-C | The control becomes the subject without its `match`: `(defn f [v] (let [w (vec-set v 0 5) n (vec-len v)] w))`, same `main`, exits 1 (probe `d2c_ctl`, which leaks 1 at both revisions and in both toggles). `assert_balanced` stays | The old control (the in-place path) differs in two respects. It balances, while the `let`-bound set without a `match` leaks one block ([ACT-1028](../../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md)). Against it, a correctly fixed subject would read +1, so the cell could not separate a repaired match seam from a leaking one | RED, `STALE RC DEC` | GREEN: marginal 0, no fault | Acceptance (ACT-1027) |
+| D2-C | The control becomes the subject without its `match`: `(defn f [v] (let [w (vec-set v 0 5) n (vec-len v)] w))`, same `main`, exits 1 (probe `d2c_ctl`, which leaks 1 at both revisions and in both toggles). `assert_balanced` stays | The old control (the in-place path) differs in two respects. It balances, while the `let`-bound set without a `match` leaks one block (ACT-1028 (closed)). Against it, a correctly fixed subject would read +1, so the cell could not separate a repaired match seam from a leaking one | RED, `STALE RC DEC` | GREEN: marginal 0, no fault | Acceptance (ACT-1027) |
 | W-M | `assert_balanced` becomes `assert_residual(1)`, the one block of ACT-1026. Programs, control and name are unchanged | **Marginal 0:** the missing increment again cancels ACT-1026's missing release, so the one-reference result is not delivered at a match-scrutinee site, or the D1 reading is wrong. **A fault:** a release remains on the forwarded value | RED, marginal 0 (the cancellation) | GREEN: exactly 1, both halves exit 2, no fault | Safety fence (match seam) |
 | L-CC | **Withdrawn at V1c** ([record](#act-1024--v1c-record-and-the-l-cc-disposition-2026-09-30)). Its control leaks the same block, so the pair reads 0 | — | Not committed | — | — |
 
@@ -2032,7 +2032,7 @@ replaces design §3 item 6's R3 bullet. Design §3 item 6's other cells stand.
   copy path, so `compile_vec_set` is not its locus.
 - **Attribution is unknown.** The R3 ruling does not claim the leak for
   ACT-1026. It is intake
-  [ACT-1028](../../sprints/actions/ACT-1028-let-bound-vec-set-returned-leak-intake.md),
+  ACT-1028 (closed),
   carried to S123 under the approved carry.
 - **Not material to the approved fix.** L-CC governed no ACT-1024 or ACT-1027
   condition. It existed only to keep the leak visible, and ACT-1028 now does
@@ -2437,7 +2437,7 @@ The source is `.local/s122-persistence-review-result.md`.
 
 | ID | Observed on both binaries unless stated | Classification | Disposition |
 |---|---|---|---|
-| F1 | The renamed import is rejected at parse (`expected symbol for import name`) before any impl exists. The unrenamed control persists the impl and `g`, and its cold restart gives 2 | **Not a regression; latent.** No rename reaches the compiler | Not blocking. PC-7 and PC-7m are retired as unconstructable. [ACT-0997](../../sprints/actions/ACT-0997-renamed-import-entries-rejected-intake.md) takes the intake, and design §12.3 records the premise |
+| F1 | The renamed import is rejected at parse (`expected symbol for import name`) before any impl exists. The unrenamed control persists the impl and `g`, and its cold restart gives 2 | **Not a regression; latent.** No rename reaches the compiler | Not blocking. PC-7 and PC-7m are retired as unconstructable. ACT-0997 (closed) takes the intake, and design §12.3 records the premise |
 | F2 | A REPL-turn `begin` is written twice. A file-loaded `begin` is written twice post-fix. Pre-fix, the file-loaded `begin` is lost and its cold restart fails (`undefined variable: show`). Every post-fix cold restart gives 41 and 1 | **Existing defect** against design §1.4's "emitted once". The repair extends it to a path that previously lost the form. §15.4 rule 1 held in every restart | Not blocking. The user chose to fix it; [corrected](#f2-correction--adequacy-2026-09-27) |
 | F3 | The watcher refuses the reload (`illegal callable origin/lifecycle pairing`), so the review's mechanism is never reached. The next definition turn then overwrites the external edit: pre-fix without `T`, post-fix with the old `T` | **Mechanism unobserved; not a regression.** The refusal and the overwrite are pre-existing defects outside this repair | [ACT-0998](#act-0998--failed-reload-edit-loss-closed) takes the intake. Design §2.4.4 needs a record correction. No cell here |
 | A1 | Both binaries reject `base`'s type change, naming `d1` and `d2` as blocking dependents. Warm and cold, `d1` and `d2` stay 1, and the file is identical | **No divergence** | Closed; no cell |
@@ -10890,7 +10890,7 @@ risk is allocated to it now.
 ### Intake
 
 - **(a) Scalar-result callee panics: filed as
-  [ACT-1042](../../sprints/actions/ACT-1042-callee-panic-with-scalar-result-resumes-caller-intake.md).**
+  ACT-1042 (closed).**
   - `design`(backend)'s Q1 (a loop driven by a panicking helper's `Int`
     result hangs the REPL) and Q2 (a later panic replaces the first message).
   - The mechanism is ACT-1040's, reached through a result whose `0` is a

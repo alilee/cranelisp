@@ -17,7 +17,7 @@
 > [test runner §6.5](../../design/int/test-runner.md#65-the-test-child),
 > [session transaction §2.5 and §5.2](../../design/int/session-transaction.md#52-no-symbol-is-left-broken),
 > [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
-> and the [API packet](../../sprints/s123-api-packet.md).
+> and the S123 API packet (retired; in Git history).
 > **Checkpoint:** HEAD `b35bfb87`, 2026-11-15; design citations verified
 > against the designs committed there. §3.2, §3.3 and M-2 were re-verified
 > against the W1 tree on 2026-11-15; §3.9 against the W2 U′ tree on
@@ -1342,7 +1342,7 @@ environment, which is the wrong implementation B-2 rejects and W3 removes.
   `dev`(backend). It does not block W2's commit. It predates the wave, is a
   leak, and was found after W2's first review round, so it carries to S124
   under the correction-loop stop rule unless the user pulls it in. Filing:
-  [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md).
+  ACT-1050 (closed).
   The cells are `tests/bind_unused_heap_argument.rs`: twelve subjects, one
   per mode, polarity and payload depth, and six control tests.
 
@@ -1592,10 +1592,10 @@ The user decides each of the three rows Phase 5 added to §5:
 
 | Item | Why it carries |
 |---|---|
-| [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md) | Unbounded leak in a loop, not memory-unsafe. It predates U′ and was found after W2's first review, so the correction-loop stop rule applies. Twelve REDs stand |
+| ACT-1050 (closed) | Unbounded leak in a loop, not memory-unsafe. It predates U′ and was found after W2's first review, so the correction-loop stop rule applies. Twelve REDs stand |
 | ACT-1049 (closed at S124) | A false positive of the armed release check that keeps NoEscape constructors out of armed halves. It narrows the safety signal, not the product. Principle 27 schedules stack placement's retirement in S124, which may remove the case; decide there |
 | ACT-1018 | The warm solve retains 2, one block per `print`. That is down from 51, and its attribution is recorded |
-| [ACT-1052](../../sprints/actions/ACT-1052-restored-entry-text-stale-dependent-slot-intake.md) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
+| ACT-1052 (closed) | Reproduced on `390201c3`: SIGSEGV in `--run`, `--link` and the REPL. K-6 is the committed RED. The correction needs `design`(int) to place it and may change the cache schema |
 | ACT-1038 (closed at S124; Git history), ACT-1039 (closed at S124; Git history) | The carry is planned in the sprint scope. ACT-1038's cells carry the same-child premise (§8.8); their REDs stand |
 | ACT-0973, ACT-0985, ACT-0997, ACT-1001, ACT-1016, ACT-1034, ACT-1036 | Planned carries (sprint scope K5, K6 and the ACT list). Their REDs stand |
 | §8.4 maintenance items | The projection-guard re-citation if S123 does not close it; the §17.4 combination cell |

@@ -99,7 +99,7 @@ seam (FIXME 0708); the requirement above is on the **located +
 self-documenting + no-silent-degradation** contract, which holds for every case,
 not on any single message's exact prose. [S115]
 
-### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [Uncovered S124 — was tests/spec_10_io::batch_main_non_io_return_refusal_is_located_at_main, which passes since `e294852f` with the arity, macro, macro-produced and overload legs of `s124_main_location_*`; still nonconforming: the batch `discover-tests` refusal is located at `0..0` (tests/test_runner::s124_discover_batch_location_run and `_link`, RED; ACT-1036), and FIXME 0915's subject face is open: `__expr` or an instance key is the rendered noun (its prefix, span and doubled-module faces are corrected in the backend, `36e64f27`)]
+### 5.5 Compiler-Stage Diagnostics Name User-Facing Subjects [S124 — partial. Tested tests/spec_10_io::batch_main_non_io_return_refusal_is_located_at_main, tests/test_runner::s124_discover_batch_location_run, tests/test_runner::s124_discover_batch_location_link — the batch refusals carry a location. A macro-produced function restored from cache that references `discover-tests` is reported at `0..0`, with no cell (ACT-1036). FIXME 0915's subject face is open: `__expr` or an instance key is the rendered noun]
 
 §5.4 carried the self-documenting contract *down* to the reader. This section
 carries it *up* to the stages a user never names: monomorphisation, code

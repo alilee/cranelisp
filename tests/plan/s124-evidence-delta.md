@@ -7,7 +7,7 @@
 > user's rulings of 2026-11-16 and 2026-11-17 (S124-Q1 to Q9, with Q7 as
 > re-ruled B and its depth-limit and reporting follow-up), recorded in its
 > Notes and scribed in the sections below; the
-> [API packet](../../sprints/s124-api-packet.md), every row approved;
+> S124 API packet (retired; in Git history), every row approved;
 > [METHOD §2.2](../../sprints/METHOD.md#22-phase-notes);
 > `spec/01-lexical.md` §1.4.2; `spec/03-types.md` §3.2.1 and §3.10;
 > `spec/04-expressions.md` §4.6; `spec/07-traits.md` §7.3.3; `spec/08-modules.md` §8.3.5, §8.3.11,
@@ -39,7 +39,7 @@ passed, 49 failed, 1 skipped (153 s).
 
 | Tests | Count | Class | Traces to |
 |---|---|---|---|
-| The filed guards | 44 | Acceptance evidence, intended RED | The set is identical to the S123 close set; `arch` mapped each guard to its filing in the [architecture review](../../sprints/s124-architecture-review.md#71-the-mapping-verified) §7.1. `qa` confirmed the set, not the per-guard mapping. |
+| The filed guards | 44 | Acceptance evidence, intended RED | The set is identical to the S123 close set; `arch` mapped each guard to its filing in the S124 architecture review (retired; in Git history) §7.1. `qa` confirmed the set, not the per-guard mapping. |
 | `citation_drift`, all three tests | 3 | Maintenance check | [S124 scope](../../sprints/SPRINT.md#included) item 6, owner `sprint`, wave W0. The converged checker exits 2 with `inventory.root_memory must be AGENTS.md`, so it inspects nothing. Until W0 lands, no claim rests on the document gate. |
 | `user_samples`, both tests | 2 | Maintenance check, run-dependent | ACT-1061 (closed S124), §5.1. |
 
@@ -970,7 +970,7 @@ span (`CheckState::expr_types`), so the three nodes share one entry and the
 - **Other faces.** A two-step chain leaks at both continuations (9 and 7).
   A nested payload leaks 2, a `String` 1.
 - The filing carries this attribution:
-  [ACT-1050](../../sprints/actions/ACT-1050-inline-bind-continuation-unused-heap-argument-leak-intake.md).
+  ACT-1050 (closed).
 
 ### 8.2 ACT-1062 — a match binds another parameter's type (memory-unsafe)
 
@@ -1510,6 +1510,18 @@ run. All probes are of `target/debug/cranelisp` in scratch directories.
 
 ## 14. The standing state
 
+**This is the closing state of S124** (Phase 7, approved by the user on
+2026-11-22). A next sprint scopes from §14.15, the defects carried by
+failing tests; §14.13, what the evidence does not cover; and the open
+actions under `sprints/actions/`.
+
+- **Carried by the user's decisions:** every defect of §14.15; `arch`'s
+  row B18 as ACT-1111, on which ACT-1110's correction waits; and the
+  compiler work for the opaque `IO`, the display markers and `race`.
+- **Row B17's public-API line was not confirmed by the user when the phase
+  closed.** The intrinsics baseline changed by that line at `ecae99c9`.
+- **No source has changed since the last full run,** at `128255fc`.
+
 **The full suite at `128255fc`: 8,109 run, 7,966 passed, 143 failed,
 1 skipped, in 265 s. Every failing test traces to a defect in the register
 (§14.15), or to the document gate.
@@ -1526,8 +1538,9 @@ its three exit clauses (§14.9).**
   the document gate, on 576 findings, none in a file `qa` owns (§14.1).
 - **Every cleared band is judged.** Of the 108 rows the specification's
   rewrite cleared, 21 are restored and 87 state why they are not
-  (§14.14). Seven older rows still await re-judgment.
-- **Nothing is with `test`.**
+  (§14.14). The seven older cleared rows are settled too (§14.12); no
+  row awaits re-judgment.
+- **Two notation items are with `test`** (§14.3).
 - **What the sprint's evidence does not cover** is §14.13.
 
 Open, by filing, worst first:
@@ -1667,7 +1680,7 @@ This section is the standing state under the
 |---|---|---|---|
 | ACT-1102, T-REFUSED-SAVE-CACHE | 1 | **Memory-unsafe.** After a refused save the next cached session restores a definition the backing file does not hold; calling it ends the process on signal 11 | `src/session_v4/lifecycle.rs`: the final persist rewrites the cache from the live table under the unchanged source hash. Read in source with controls. Predates S124 |
 | ACT-1101, T-SAVE-PRODUCT | 3 | **Data loss.** After a value of a parametric product type is constructed, every later save is refused with a warning and later definitions are absent at restart | `src/save.rs::generate_types` selects the product constructor's instance as a type declaration. Read in source with a control. Predates S124: the opening tree shows it |
-| ACT-1096, T-MOD-CHILD | 4 | Wrong value: a library's declared child is replaced by a same-path file earlier on the search path, in `--run`, linked, and after a cached launch. By the ruling on S124-Q14 the project file is not part of the program; it is also offered by `/search`, with no cell yet | `src/process_form/dependency.rs::enrol_declared_submodule`, read in source with a control. The index face is attributed to `src/`'s index feed by control only |
+| ACT-1096, T-MOD-CHILD | 4 | Wrong value: a library's declared child is replaced by a same-path file earlier on the search path, in `--run`, linked, and after a cached launch. By the ruling on S124-Q14 the project file is not part of the program; it is also offered by `/search`, with no cell yet | `src/process_form/dependency.rs::enrol_declared_submodule`, read in source with a control. The index face is `src/session_v4/index_worker.rs::enumerate_cl_modules_excluding`, read in source: it names a module from every `.cl` file's path under each root, the project root first, whether or not that root holds the module's parent |
 | ACT-1092, T-SEARCH-REACH | 2 | Wrong value: `/search` omits a module whose import names an unloaded module, and answers as from a complete index | `src/session_v4/index_worker.rs::checked_typecheck_module`, at the feed's own report |
 | ACT-1099, T-TYPE-MACRO | 1 | A legal query refused: `/type` of an expression that uses a macro | `src/repl/commands.rs::typecheck_only`, provisional: by control, not read in source |
 | ACT-1100, T-MACRO-SIBLING | 6 | A legal program refused: an expansion's reference to a macro of its own module is `undefined variable` under a selective import, at the REPL, under `--run` and linked | `src/process_form/macro_resolution.rs`: heads are recognised in the using module's scope and qualified to the defining module afterwards. Read in source with a control |
@@ -1872,10 +1885,14 @@ read; each cell passed or failed in the `f8c55626` run as its row states.
 
 ### 14.3 Allocated to `test`
 
-**One item is with `test`, and no cell:** remove the transient handoff
-file under `tests/fixtures/s124-handoff/`. No defect notation needs to
-change: each failing cell already carries its identifier, class, locus and
-owner. Every allocation in this section is committed and judged (§14.2); its conditions stay as the present-tense statement of
+**Two notation items are with `test`, and no cell.**
+
+1. The five `search::s124_child_index_*` subjects carry the seam name
+   `index-feed-module-enumeration` as their locus. The site is read:
+   `src/session_v4/index_worker.rs::enumerate_cl_modules_excluding`.
+2. Confirm that REPRO-1083's `// defect:` line carries its `fixed=` stamp.
+   The closed action for ACT-1083 said it did not, and `qa` could not find
+   the line by that number. Every allocation in this section is committed and judged (§14.2); its conditions stay as the present-tense statement of
 what each cell shows. ACT-1110 has no cell by a named residual.
 
 **T-TYPE-EXPR** (ACT-1089; REPL §3.1), a safety fence.
@@ -2965,12 +2982,10 @@ at `(Opt Int)`, because its call carries a resolved target keyed under
 
 **Can proceed now, in this order.**
 
-1. **`test`:** nothing is allocated. Remove the transient handoff file
-   under `tests/fixtures/s124-handoff/`. `qa` took its clause map into the
-   judgments table and its backlink walk into the last table of this
-   section.
-2. **`qa`:** the seven older cleared rows; the index feed's enumeration
-   site for ACT-1096.
+1. **`test`:** the two notation items of §14.3. Its transient handoff
+   file is removed (`52a472c7`); `qa` took its clause map into §14.2 and
+   its backlink walk into §14.14.
+2. **`qa`:** nothing is owed at the close.
 3. **`sprint`:**
    - the backend meets its three exit clauses at `128255fc` (§14.9);
    - **ACT-1101 predates S124** and is carried on three failing cells; it
@@ -3286,6 +3301,7 @@ more at `21101921` and both are restored below.
 | Spec §7.1.5 | Restored to its cells, with the S124-Q15 rule noted as holding by hand | T-DEFAULT-UNDEFINED is allocated |
 | Spec §8.8.3 and appendix C §C.2.4, `qa`'s own notes | They no longer call S124-Q16 unconfirmed | The classification is confirmed |
 | 108 further rows cleared by the stage-two rewrite | 21 restored to their cells; 87 marked with the reason they are not | `test`'s backlink walk, row by row in §14.14 |
+| The seven older cleared rows: spec §3.10, §4.12, §4.12.3 and its extern bullet; REPL §5.5; REPL §15.4's ordering rule and closing paragraph | Each settled at the close: partial with its named gaps, nonconforming on ACT-1005's cells for the ordering rule, tested for the `begin` paragraph, and "no cell" for the extern bullet | REPL §5.5's `discover-tests` cells pass, so the row no longer calls them failing |
 | Spec §8.11.2, cleared by `spec` for S124-Q14 | Partial: the search order restored to its four cells and the override control; the new rule nonconforming, naming three of T-MOD-CHILD's failing cells; the index clause without a cell | The project file is loaded and indexed (ACT-1096) |
 | Spec §2.2.3, §5.3.2, §9.7.0, §8.8.3 and appendix C §C.2.4 | They name the cells committed at `3904fae8` | T-TRAIT-ONE-PARAM, T-SPLICE-BARE, T-TRAIT-SPELLING and T-VEC-IMPL are committed |
 | Spec §2.2.3 and §5.3.2, cleared by `spec` for S124-Q11 | Restored to their cells, with the one-parameter cell added to §2.2.3 | The cells show a bare head, a one-parameter head and the binder refusals, none of which the ruling changed. The refusal of a second parameter holds by hand and has no cell: T-TRAIT-ONE-PARAM |
@@ -3330,7 +3346,7 @@ defect report; the defects are §14.1.
   not covered as now written (§14.14): 25 are library illustrations with
   no language witness, 32 are partly covered, 13 have no direct witness,
   10 are section rollups over uncovered children, and 7 name a cell that
-  does not show the row. Seven older rows still await re-judgment.
+  does not show the row.
 - **Memory-unsafe, on a failing test:** the session after a refused save
   restores a definition its file does not hold, and calling it ends the
   process (ACT-1102).
@@ -3524,9 +3540,17 @@ or `// defect:` line, or by the cells column.
 
 - **The full record of each** (observations, controls, routing) is the
   deleted action as it stood at `ff7f43be`: `git show ff7f43be:sprints/actions/<file>`.
-- **Kept as actions,** because no reproduction can carry them: ACT-1110
-  (an unrecorded trace root; no program selects the state) and the open
-  intake filings that have no failing cell in the run at `128255fc`.
+- **Kept as actions,** because no reproduction carries them: ACT-1110
+  (an unrecorded trace root; no program selects the state); and the
+  fifteen open or deferred actions addressed to `qa` that have no failing
+  cell in the run at `128255fc`: ACT-0962, 0978, 0979, 0982, 0985, 0987,
+  0994, 1001, 1003, 1004, 1015, 1022, 1036, 1081 and 1085. They are leads,
+  held legs, residuals or work that is not a defect; `qa` did not re-triage
+  each at the close.
+- **Fourteen resolved actions are deleted at the close:** ACT-0976, 0986,
+  0997, 1026, 1028, 1029, 1030, 1031, 1040, 1041, 1042, 1050, 1052 and
+  1083. Each was kept only for stamps since made or for other owners'
+  inbound links.
 - **Severity and attribution** are as last judged in §14.1 and §14.7.
 
 | Defect | What is wrong | Failing cells | Severity | Attribution and its basis | Refuted if | Former action file |
@@ -3549,7 +3573,7 @@ or `// defect:` line, or by the cells column.
 | ACT-1089 | `/type` given a definition form commits it to the live session without code and reports no error; the next call ends the process on a signal | 14 in `repl_introspection` | **Memory-unsafe.** A definition given to `/type` is committed with no code: signal 11 on the next call in three cells (two `defn`, one `impl`), a replaced signature in one, a stale printed type in one, a `deftype` and a `deftrait` left defined in two. No error is reported after an expression, in five (T-TYPE-ERR: `defn`, `deftype`, `deftrait`, `impl`, `defmacro`). The fifth cell requires the definition's type and reads the previous input's | `src/repl/commands.rs::typecheck_only`, read in source with a control. Carried past S124 by the user's ruling | the entry `/type` leaves holds compiled code | `ACT-1089-type-command-given-a-definition-commits-it-without-code-intake.md` |
 | ACT-1090 | Commit planning reads a covered member's table from before its publication, so a trace form compiled while a dependency of a restored module is still compiling omits that dependency's frames | `trace::s124_1090_mixed_restore_subject` | Wrong value, low harm, run-dependent: a launch that compiles a dependency of a restored module omits that dependency's frames (2 of 30 launches in this run) | `src/worker.rs::plan_staging_commit_inner`, read in source with a control. The order of the two reads is not observed at its seam | the frame is lost at a comparable rate with no bulk module, or in a launch whose planning waited for the member | `ACT-1090-commit-planning-validates-a-covered-member-against-a-table-copied-before-it-published-intake.md` |
 | ACT-1092 | The search index omits a valid module whose import names a module the session has not loaded, or is still compiling, and reports the index as complete | `search::s124_search_reach_transitive_unloaded_dependency`; `search::s124_search_reach_unloaded_dependency` | Wrong value: `/search` omits a module whose import names an unloaded module, and answers as from a complete index | `src/session_v4/index_worker.rs::checked_typecheck_module`, at the feed's own report | — | `ACT-1092-search-index-omits-a-module-whose-import-names-an-unloaded-or-compiling-module.md` |
-| ACT-1096 | A declared child of a library module is loaded from a same-path file earlier on the search path, not from beside its declaring file | 9 in `search`, `spec_08_modules` | Wrong value: a library's declared child is replaced by a same-path file earlier on the search path, in `--run`, linked, and after a cached launch. By the ruling on S124-Q14 the project file is not part of the program; it is also offered by `/search`, with no cell yet | `src/process_form/dependency.rs::enrol_declared_submodule`, read in source with a control. The index face is attributed to `src/`'s index feed by control only | a build that resolves the child from the declaring file's directory still gives 2 for the subject | `ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md` |
+| ACT-1096 | A declared child of a library module is loaded from a same-path file earlier on the search path, not from beside its declaring file | 9 in `search`, `spec_08_modules` | Wrong value: a library's declared child is replaced by a same-path file earlier on the search path, in `--run`, linked, and after a cached launch. By the ruling on S124-Q14 the project file is not part of the program; it is also offered by `/search`, with no cell yet | `src/process_form/dependency.rs::enrol_declared_submodule`, read in source with a control. The index face is `src/session_v4/index_worker.rs::enumerate_cl_modules_excluding`, read in source: it names a module from every `.cl` file's path under each root, the project root first, whether or not that root holds the module's parent | a build that resolves the child from the declaring file's directory still gives 2 for the subject | `ACT-1096-declared-child-of-a-library-module-is-replaced-by-a-file-earlier-on-the-search-path-intake.md` |
 | ACT-1097 | A trait method signature accepts a bare primitive type name the module has not imported | `spec_03_types::s124_trait_scalar_neg_unimported_higher_kinded_argument`; `spec_03_types::s124_trait_scalar_neg_unimported_parameter`; `spec_03_types::s124_trait_scalar_neg_unimported_return` | An illegal program accepted: an unimported bare `Int` in a trait signature | `crates/cranelisp-typecheck/src/resolve.rs::resolve_named`'s scalar fast path, read in source with controls | a build with the flag false in those contexts still exits 0 for the first row | `ACT-1097-trait-signature-accepts-a-bare-primitive-type-name-that-is-not-imported-intake.md` |
 | ACT-1099 | `/type` refuses an expression that uses a macro, as an undefined variable | `repl_introspection::s124_type_macro_expression` | A legal query refused: `/type` of an expression that uses a macro | `src/repl/commands.rs::typecheck_only`, provisional: by control, not read in source | `/type` of a macro call succeeds in some session shape | `ACT-1099-type-command-refuses-an-expression-that-uses-a-macro-intake.md` |
 | ACT-1100 | Selectively importing derive refuses expansions that work with its companion macros in scope | 6 in `spec_09_macros`, named `s124_macro_sibling_outer…` | A legal program refused: an expansion's reference to a macro of its own module is `undefined variable` under a selective import, at the REPL, under `--run` and linked | `src/process_form/macro_resolution.rs`: heads are recognised in the using module's scope and qualified to the defining module afterwards. Read in source with a control | a user-typed `(d/inner 2)` is refused in some session where the expansion's is | `ACT-1100-selective-derive-import-refusals-intake.md` |
