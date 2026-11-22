@@ -7,7 +7,7 @@
 > user's rulings of 2026-11-16 and 2026-11-17 (S124-Q1 to Q9, with Q7 as
 > re-ruled B and its depth-limit and reporting follow-up), recorded in its
 > Notes and scribed in the sections below; the
-> S124 API packet (retired; in Git history), every row approved;
+> S124 API packet (retired; recoverable at commit `d4e930a7` under `sprints/`), every row approved;
 > [METHOD §2.2](../../sprints/METHOD.md#22-phase-notes);
 > `spec/01-lexical.md` §1.4.2; `spec/03-types.md` §3.2.1 and §3.10;
 > `spec/04-expressions.md` §4.6; `spec/07-traits.md` §7.3.3; `spec/08-modules.md` §8.3.5, §8.3.11,
@@ -39,7 +39,7 @@ passed, 49 failed, 1 skipped (153 s).
 
 | Tests | Count | Class | Traces to |
 |---|---|---|---|
-| The filed guards | 44 | Acceptance evidence, intended RED | The set is identical to the S123 close set; `arch` mapped each guard to its filing in the S124 architecture review (retired; in Git history) §7.1. `qa` confirmed the set, not the per-guard mapping. |
+| The filed guards | 44 | Acceptance evidence, intended RED | The set is identical to the S123 close set; `arch` mapped each guard to its filing in the S124 architecture review (retired; recoverable at commit `d4e930a7` under `sprints/`) §7.1. `qa` confirmed the set, not the per-guard mapping. |
 | `citation_drift`, all three tests | 3 | Maintenance check | [S124 scope](../../sprints/SPRINT.md#included) item 6, owner `sprint`, wave W0. The converged checker exits 2 with `inventory.root_memory must be AGENTS.md`, so it inspects nothing. Until W0 lands, no claim rests on the document gate. |
 | `user_samples`, both tests | 2 | Maintenance check, run-dependent | ACT-1061 (closed S124), §5.1. |
 

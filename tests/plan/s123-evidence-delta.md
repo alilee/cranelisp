@@ -17,7 +17,7 @@
 > [test runner §6.5](../../design/int/test-runner.md#65-the-test-child),
 > [session transaction §2.5 and §5.2](../../design/int/session-transaction.md#52-no-symbol-is-left-broken),
 > [REPL lifecycle §1.2](../../design/int/repl-lifecycle.md#12-poll-and-reload),
-> and the S123 API packet (retired; in Git history).
+> and the S123 API packet (retired; recoverable at commit `d4e930a7` under `sprints/`).
 > **Checkpoint:** HEAD `b35bfb87`, 2026-11-15; design citations verified
 > against the designs committed there. §3.2, §3.3 and M-2 were re-verified
 > against the W1 tree on 2026-11-15; §3.9 against the W2 U′ tree on

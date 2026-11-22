@@ -369,7 +369,7 @@ permanent RED and its class are `test`'s and `qa`'s at intake.
 ## 7. Option-2 discriminator 1: the defect class under the toggle (2026-11-15)
 
 Answers the first discriminator in the
-S123 architecture review (retired; in Git history) §3.3, at the
+S123 architecture review (retired; recoverable at commit `d4e930a7` under `sprints/`) §3.3, at the
 user's direction ("do the pre-check"). It is a diagnostic observer for the
 option-2 reading choice (§3.1). It authorizes no Phase 3 work.
 
@@ -523,7 +523,7 @@ toggle changed at least one `user::` body.
 ## 8. Option-2 discriminator 2: in-place against copy updates (2026-11-15)
 
 Answers the second discriminator in the
-S123 architecture review (retired; in Git history) §3.3, at the
+S123 architecture review (retired; recoverable at commit `d4e930a7` under `sprints/`) §3.3, at the
 user's direction ("run the second pre-check"), for reading U′. It is a
 diagnostic observer for `design`(backend)'s U′ rule classification. It
 authorizes no Phase 3 work.
