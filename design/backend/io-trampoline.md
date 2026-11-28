@@ -19,8 +19,8 @@ tree iteratively with an explicit continuation stack (`spec/10-io.md` §10.8.2).
 **IO values are reusable** (`spec/10-io.md` §10.8.1). Forcing a `Pure` or
 `Effect` node moves no field out of it: the node keeps every reference it owns
 until its count reaches zero, and a force hands its consumer a new reference or
-a borrow. `Bind`, `Par` and `Select` are not mutated by a force. `Launch` still
-moves its sub-tree out on force (§15.5); no correction is approved for it. The
+a borrow. A `Launch` force likewise takes a new reference to its sub-tree for
+the strand (§15.5). `Bind`, `Par` and `Select` are not mutated by a force. The
 architectural rule and its per-node status are
 [total-concreteness.md](../arch/total-concreteness.md) §3.4 "Ownership on force".
 Nothing the backend emits may assume a `Pure` or `Effect` node is forced at most
@@ -36,8 +36,9 @@ node family is a layout contract governed by `cranelisp_platform::ABI_VERSION`
 
 ### 1.1 Pure Node (tag = 0)
 
-A completed value, created by the ordinary `Pure` data constructor. The layout
-is ruled at [total-concreteness.md](../arch/total-concreteness.md) §3.4 and
+A completed value. In compiled code it is built only by the inline lowering of
+`primitives/pure` (§2.1); a platform DLL builds one through `CLIO::pure`. `IO`
+has no language constructors (spec §10.1). The layout is ruled at [total-concreteness.md](../arch/total-concreteness.md) §3.4 and
 `design/arch/interfaces.md` §"IO Tag Constants".
 
 ```
@@ -58,7 +59,7 @@ is ruled at [total-concreteness.md](../arch/total-concreteness.md) §3.4 and
   §6.1).
 
 The backend initialises the word with an ordinary store while the node is
-unpublished, at exactly four sites: three that construct a `Pure` and the
+unpublished, at exactly two sites: the `Pure` node emitter (§2.1) and the
 platform-return adoption stamp (§7.1), which replaces the `0` a platform DLL
 writes through `CLIO::pure`. The rules for those sites are
 [non-concrete-release-contract.md](non-concrete-release-contract.md) §5.2, §5.3
@@ -103,15 +104,25 @@ the `bind` inline primitive (§2).
 - `input_disposer`: the canonical `drop<a>` address, or `0` when `a` owns no
   heap value — scalar metadata, never traversed by teardown (§5.1).
 
-`Bind` is internal: its `ConstructorInfo` is marked `internal`, so user code can
-neither construct nor match it.
+User code can neither construct nor match a `Bind`: `IO` has no constructor
+entries, so no spelling of one resolves (row IO-T,
+[interfaces](../arch/interfaces.md#opaque-io-row-io-t)).
 
 ### 1.4 Tag Constants
 
-The `IO_TAG_*` constants are defined in `cranelisp-platform`, shared by platform
-DLLs, the backend and the runtime, and match the constructor order of the
-compiler-seeded IO type: `Pure` 0, `Effect` 1, `Bind` 2, `Par` 3,
-`EffectPoll` 4, `Launch` 5, `Select` 6. The later tags are §12–§17.
+The `IO_TAG_*` constants are defined in `cranelisp-platform` and shared by
+platform DLLs, the backend and the runtime: `Pure` 0, `Effect` 1, `Bind` 2,
+`Par` 3, `EffectPoll` 4, `Launch` 5, `Select` 6. They are the only source of a
+node's tag; `IO` has no constructor table to order them. The later tags are
+§12–§17.
+
+### 1.5 `IO` in the platform schema
+
+`IO`'s layout is ABI: the node family is governed by `ABI_VERSION`, and
+platform code builds and reads it through `CLIO`. The platform schema walk
+therefore treats `IO` as it treats `Vec` (`crates/cranelisp-backend/src/schema.rs::abi_layout_args`): never
+a schema entry or a root, with its type argument walked, so an ADT reached
+through an `IO`-typed position is in the closure.
 
 ## 2. `bind` Codegen
 
@@ -133,6 +144,36 @@ its own reference, and a temporary transfers its existing reference. The node
 therefore owns exactly one reference to each of `l` and `r` with no increment
 inside the `bind` IR, and its teardown discharges both.
 
+### 2.1 `pure` Codegen
+
+`pure :: (Fn [a] (IO a))` is the fifth inline IO combinator
+(`apply::IoCombinator::Pure`), so it emits no call. Direct application
+(`compile_builtin_fn_call`) and the first-class wrapper (`lower_host_promised`,
+[compile-to-module.md](compile-to-module.md) §12.1) both reach the one emitter,
+`io_nodes::emit_pure_node`. It takes the owned payload and the payload's
+concrete type, the `a` of `(IO a)`:
+
+```
+glue = drop<a> or 0             // the derivation bind's disposer uses
+ptr  = emit_alloc(24)           // tag, payload, glue
+store 0       at ptr + 16
+store payload at ptr + 24
+store glue    at ptr + 32
+return ptr
+```
+
+Because the emitter takes a type rather than a word, no caller can supply a
+glue word that disagrees with the payload. It builds the node through
+`emit_adt_construct`, so the emission is the data-constructor emission the
+former `Pure` constructor produced. The node takes the payload under the same
+consuming convention as `bind`; the emitter emits no RC. The classification is
+load-bearing: an unclassified host-promised built-in would import a symbol
+named `pure`, which nothing defines.
+
+`pure`'s argument is not sparked. The apply-argument pre-pass excludes every
+inline IO combinator, and a one-argument call never meets its two-candidate
+gate in any case ([lenient-eval.md](lenient-eval.md) §2.4).
+
 ## 3. Teardown of IO Nodes
 
 IO nodes are released by the runtime, not by glue derived per constructor. The
@@ -148,8 +189,8 @@ selected by the tag and teardown disposition, then deallocates. An
 because a force never transfers them. The
 [per-tag ownership table](../intrinsics/ownership-and-disposal.md#6-the-io-family)
 owns the other cases, including `Bind`'s transferred fields. An unforced
-`Effect` thunk is discharged without running. A forced `Launch` carries the
-`0` sentinel its move left (§15.5).
+`Effect` thunk is discharged without running. A `Launch` sub-tree is
+discharged as an ordinary IO tree whether or not the node was forced (§15.5).
 
 ## 4. Effect Thunk Mechanics
 
@@ -268,12 +309,12 @@ boxed thunk keeps platform code in safe Rust behind `CLIO::effect*`.
 
 | Component | Responsibility |
 |---|---|
-| typecheck | Seeds the IO ADT in `primitives`; marks `Bind` internal; types `bind` as an inline primitive |
-| backend | IO node construction and `bind` codegen; the four `Pure` stamp sites and the `Effect` fn-name stamp; result-handoff disposers; `drop<IO T>` calling `runtime/free_io_node` |
+| typecheck | Types `bind` and `pure` from their schemes as host-promised built-ins |
+| backend | IO node construction, `bind` and `pure` codegen; the two `Pure` glue-word writers and the `Effect` fn-name stamp; result-handoff disposers; `drop<IO T>` calling `runtime/free_io_node`; `IO` as an ABI layout in the platform schema |
 | platform | `CLIO::effect*`/`CLIO::pure`, the thunk's representation, `call_effect_thunk`, `drop_effect_thunk`, tag and offset constants, `CLOwned<T>` |
 | intrinsics | The trampoline, its reference transitions, and `free_io_node` teardown |
-| int | Invokes the runtime at batch entry and REPL eval; loads platform DLLs |
-| stdlib | `pure`, and the `do`/`bind!` macros over `bind` |
+| int | Seeds the constructorless `IO`, `bind` and `pure` in `primitives`; invokes the runtime at batch entry and REPL eval; loads platform DLLs |
+| stdlib | Re-exports `primitives/pure`; the `do`/`bind!` macros over `bind` |
 
 ## 12. Poll-shape Effect node construction — the backend poll-construction arm (S94, effect-concurrency slice 2)
 
@@ -1019,67 +1060,52 @@ convention: the node owns exactly the one reference handed to it.
 `heap::emit_alloc` + `heap::heap_store` and adds **no** new helper, no new dispatch fork beyond the
 marker match (Principle 7 — same construction machinery, no parallel mechanism).
 
-### 15.5 RC sub-tree ownership transfer — the one new RC subtlety (the move-out + null-guarded drop glue)
+### 15.5 RC — the node owns its sub-tree; each force mints the strand's reference
 
-The detached sub-tree **outlives** the `IO_TAG_LAUNCH` node's interpretation: the main trampoline
+The detached sub-tree **outlives** the force of its `IO_TAG_LAUNCH` node: the main trampoline
 walks the launching tree to completion and returns on the **top** future, while the launched
-sub-tree runs concurrently on the reactor as a supervised strand and is `consume_io_tree`'d by
-**that strand** on completion (`design/intrinsics/reactor.md §2.11`–§2.12). So the sub-tree's single
-reference must travel cleanly from the `Launch` node to the strand — an **owned-field move**, not a
-copy and not a second owner. The discipline (consistent with the §2.9 RAII model and the
-Decision-24 single-consuming convention):
+sub-tree runs concurrently on the reactor as a supervised strand that releases its reference on
+completion or drop (`design/intrinsics/reactor.md §2.11`–§2.12). An IO value is reusable
+(`spec/10-io.md` §10.8.1; safety register R20), so the same `Launch` node may be forced again and
+must launch the sub-tree again. The node and each strand therefore hold **separate** counted
+references.
 
-**Construction (backend):** the sub-tree's one reference is transferred into `field_offset(0)` (no
-inc, §15.4). At this point the `Launch` node is the sole owner of that reference.
+**Construction (backend).** `compile_launch` transfers the sub-tree's one reference into
+`field_offset(0)` with no inc (§15.4). That reference belongs to the node for the node's whole
+life, and field 0 always holds a live sub-tree.
 
-**Detach (intrinsics, `design/intrinsics/reactor.md §2.11` — referenced, not authored here):** the
-`IO_TAG_LAUNCH` trampoline arm **moves** the reference out of the node into the supervised strand —
-it reads `field_offset(0)`, hands the sub-tree to `supervisor.spawn(sub_tree, …)`, and **writes the
-`0` sentinel back into `field_offset(0)`** so the reference now lives only in the strand. This is
-the move the intrinsics design names: *"the launch node releases its hold; the strand takes it …
-an owned-field move, not a double-free or a leak."* The strand `consume_io_tree`s the sub-tree on
-completion/drop — the single reference is consumed exactly once, by the strand.
+**Force (intrinsics).** The `IO_TAG_LAUNCH` arm reads field 0, takes one new counted reference
+through `rc_inc`, and hands that reference to the supervised strand. It writes nothing to the
+node. The rule, its ownership proof and its cost are
+[ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md) §6.3 and invariant 6.
 
-**Teardown is the runtime's.** Because the trampoline moves the reference out
-and writes `0` back, "the field holds a live sub-tree" is a runtime fact.
-`free_io_node`'s `Launch` row discharges field 0 only when it is non-zero;
-the backend emits no `Launch`-specific glue — `drop<IO T>` is the one body
-of §3. The `0` sentinel makes the move representable (Principle 20), and
-teardown is correct on both paths:
+**Teardown (intrinsics).** `free_io_node`'s `Launch` row always releases field 0 as an ordinary
+IO tree, whether the node was forced zero, one or many times. The backend emits no
+`Launch`-specific glue: `drop<IO T>` is the one body of §3.
 
-| Path | `field_offset(0)` at node-drop | Teardown action | Who frees the sub-tree |
-|---|---|---|---|
-| **Launch interpreted (detached)** | `0` (trampoline moved it out) | guarded dec → **no-op** | the supervised strand (`consume_io_tree` on completion/drop) |
-| **Launch never interpreted** (unchosen `if`/`match` arm — the node is dropped without the trampoline reaching it) | the live sub-tree ptr | guarded dec → **frees the sub-tree** | the runtime's `Launch` teardown row (no leak) |
+| Path | Node's reference | Each strand's reference |
+|---|---|---|
+| **Never forced** (for example an unchosen `if`/`match` arm) | released by node teardown | none exists |
+| **Forced `n` times** | released by node teardown | `n` minted references, each released once by its own strand, in any order relative to node teardown |
 
-The un-interpreted case needed no runtime thunk discharge, unlike the Effect node's thunk (§3): an
-unchosen `Launch` arm fully reclaims its sub-tree via standard cascading drop glue, because the
-sub-tree is a normal RC heap tree (unlike the Effect node's non-RC `Box` thunk). And there is **no
-double-free**: the move-out nulls the field, so the strand and the node-drop never both dec the
-same reference.
+No reference is released twice, because each owner holds its own. A zero in field 0 is not a
+state of this node (Principle 20).
 
-**Rejected alternative — inc-on-detach.** The strand could instead take a *fresh* owning reference
-(`rc_inc` the sub-tree at detach, leaving the `Launch` field-0 as an unconditional `AlwaysHeap`
-dec). This also balances (node-drop dec + strand `consume_io_tree` dec against construction-rc +
-detach-inc), but it (a) adds an **atomic `rc_inc`** on every launch — on the server hot path the
-accept loop fans out at volume — and (b) creates **two owners** of the sub-tree, contradicting the
-single-consuming move the intrinsics design specified. The move-out (one reference, transferred,
-exactly-once) is the chosen model; inc-on-detach is the documented fallback if a future shape needs
-the node to retain an independent reference past detach (none does).
-
-> **Cross-crate seam (backend ↔ intrinsics).** The backend constructs `Launch`
-> with the sub-tree's reference at field 0 and emits no teardown of its own:
-> release goes through `drop<IO T>` → `runtime/free_io_node` (§3). Intrinsics
-> moves the reference into the strand, writes `0` back before yielding, and
-> discharges field 0 only if non-zero during node teardown. The strand releases
-> its reference once. The sentinel prevents node teardown from releasing the
-> reference already transferred to the strand.
+> **Cross-crate seam (backend ↔ intrinsics).** The backend stores one owned
+> reference to the sub-tree in field 0 and the result disposer in field 1, and
+> reads no `Launch` field after construction. Intrinsics is the only reader of
+> those fields after construction and writes none of them. Release goes through
+> `drop<IO T>` → `runtime/free_io_node` (§3). This seam is outside the
+> inter-crate public-API gate
+> ([total-concreteness.md](../arch/total-concreteness.md) §3.4, the paragraph
+> under the per-node table); a read or write of a `Launch` field outside
+> intrinsics after construction returns it to `arch`.
 
 ### 15.6 Drop glue summary + RC of the launch node itself
 
 The `Launch` node is an IO allocation with one owning sub-tree field. It is
-released like every IO node by `runtime/free_io_node` (§3); the non-zero guard
-on field 0 is the runtime's (§15.5). The node participates in RC normally,
+released like every IO node by `runtime/free_io_node` (§3), which releases
+field 0 unconditionally (§15.5). The node participates in RC normally,
 including when held as the inner IO of a `Bind` (§2). No `drop_state` hook or
 state closure is involved: the node carries the sub-tree pointer.
 
@@ -1173,10 +1199,10 @@ single-launch site (small repro → small CLIF readable by eye):
 - **Ownership transfer, no inc at the field-0 store.** The launched sub-tree reaches the node at
   rc=1 and is stored with **no `rc_inc`** (constructor convention, like `par_bind.rs`). Assert there
   is no inc at the store site.
-- **Null-guarded field-0 drop glue.** The `Launch` node's generated drop glue loads `field_offset(0)`
-  and dec's **only if non-null** (the move-out guard, §15.5) — distinct from an unconditional
-  `AlwaysHeap` dec. Assert the guard (a null-compare + conditional dec), so an un-interpreted
-  `Launch` frees its sub-tree and a detached (nulled) one does not double-free.
+- **No `Launch` glue.** The backend emits no `Launch`-specific teardown; the node is released
+  through `drop<IO T>` → `runtime/free_io_node` (§3, §15.5). The reuse and balance properties of
+  a forced node are intrinsics evidence
+  ([ownership-and-disposal.md](../intrinsics/ownership-and-disposal.md) §6.3, §8).
 - **No-launch negative guard.** A program with no launch-eligible site constructs **no
   `IO_TAG_LAUNCH` node**; an ineligible `(do a b)` (result used, or tokens not disjoint) lowers as an
   ordinary `Bind` — the structural no-regression property (§15.7).
@@ -1350,7 +1376,7 @@ store result_disposer         at node + HeapAdt::field_offset(1)   ; scalar meta
 return node
 ```
 
-This is the launch-node bake shape (§15.4) minus the null-guard concern —
+This is the launch-node bake shape (§15.4) —
 `emit_alloc(payload_size(2))` + stores for the tag, branch carrier and disposer. No GOT load, no
 state-closure, no operand peel, no continuation. The `field_offset(0)` store is a **plain
 ownership transfer with no `rc_inc`** (the Decision-24 single-consuming convention — a `Var`
@@ -1360,16 +1386,15 @@ rc=1): the node owns exactly the one Vec reference handed to it, identical to ho
 ownership of their stored fields. `compile_select` reuses `heap::emit_alloc` +
 `heap::heap_store` and adds **no** new helper.
 
-### 16.5 RC — Vec-carrier ownership; NO null-guard, NO per-branch backend RC (the cancellation=drop seam)
+### 16.5 RC — Vec-carrier ownership; NO per-branch backend RC (the cancellation=drop seam)
 
 The Select node's RC is the **simplest of the IO-node family** — simpler than both `Par`
-(custom N-slot drop) and `Launch` (move-out + null-guard):
+(N inline branch slots) and `Launch` (a reference minted for each strand, §15.5):
 
 **The node owns the branch Vec for the whole tree lifetime.** Unlike `Launch`, the Select
 node does **not detach** anything: every branch is polled, won, or cancelled **within** the
-trampoline's processing of the Select node — there is **no sub-tree that outlives the node**.
-So there is **no move-out and NO null-guarded drop glue** (the §15.5 null-guard is the
-*contrast* case here, not the model). The node retains its field-0 list reference until the
+trampoline's processing of the Select node — there is **no sub-tree that outlives the node**,
+so a force takes no new reference to any branch. The node retains its field-0 list reference until the
 **whole launching tree** is freed (REPL cleanup / process exit, §6), exactly as `Par` retains
 its branch references.
 
@@ -1399,9 +1424,8 @@ RC; the tree stays live via the top reference).
 > "cancellation = drop" drops the **loser futures** (releasing permits + deregistering
 > interest), leaving the loser **heap** sub-trees for the node's drop glue (2) to reclaim
 > with the rest of the list. (1)+(2)+(4) make every branch — winner and loser — freed
-> **exactly once**, by the node drop glue, with **no move-out, no null-guard, and no new RC
-> subtlety on the backend side** (the opposite of §15.5). This is the clean contrast to
-> launch's detach.
+> **exactly once**, by the node's teardown, with **no reference taken on force and no new RC
+> subtlety on the backend side**. This is the clean contrast to launch's detach (§15.5).
 
 ### 16.6 How the winner's value threads back — via the surrounding `Bind`, no stored result
 
@@ -1431,10 +1455,10 @@ continuation popped from the surrounding `Bind` (§16.1) runs with it. So:
 ### 16.7 Drop glue — one heap field plus non-owning metadata
 
 The Select node has one heap field (field 0, the `Vec (IO a)`) and one scalar
-function-address field (field 1, the common result disposer). Its drop
-glue is generated by the existing `emit_inline_drop_glue` path (§3.4): field 0 is a plain
-**unconditional `AlwaysHeap` dec** (the Vec is always a heap pointer) — **no null-guard**
-(§16.5, contrast §15.5/§15.6), no per-branch walk. The Vec's own element drop glue cascades
+function-address field (field 1, the common result disposer). Like every IO
+node it is released by `runtime/free_io_node` (§3), whose `Select` row releases field 0
+**unconditionally** (the Vec is always a heap pointer), as the `Launch` row releases its
+field 0 (§15.6), with no per-branch walk. The Vec's own element drop glue cascades
 to dec each branch IO sub-tree. The node itself participates in RC normally: it is the
 `inner_io` of a `Bind`, transferred into that `Bind` like any inner IO (§2.1), and freed when
 the launching tree is freed (§6). No `drop_state` hook, no state-closure — the Select node
@@ -1474,10 +1498,9 @@ shrunk `(bind! [x (select branches)] x)` repro (small repro → small CLIF reada
   (rc=1) is stored with **no `rc_inc`** at the store site (consuming convention); a `Var`
   branch-list is inc'd **once** by `compile_consuming_arg_list` and not again. Assert there is
   no double-inc (the `bind`/`par_bind` RC balance).
-- **Unconditional (not null-guarded) field-0 drop glue.** The Select node's generated drop
-  glue dec's field 0 **unconditionally** (`AlwaysHeap`) — **distinct from the launch node's
-  null-guarded dec** (§15.5/§16.7). Assert there is no null-compare before the dec (the
-  contrast that proves the no-move-out model).
+- **No `Select` glue.** The backend emits no `Select`-specific teardown; the node is released
+  through `drop<IO T>` → `runtime/free_io_node` (§3), which releases field 0 unconditionally
+  (§16.7).
 - **No-combinator negative guard.** A program with no `race`/`select`/`timeout` call
   constructs **no `IO_TAG_SELECT` node** — the structural no-regression property (ordinary
   programs are unaffected; the recognition arm falls through to the unchanged `bind`/effect/

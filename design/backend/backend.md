@@ -351,8 +351,9 @@ end-to-end cells; their filings were deleted at `5995023c`.
   bytes at each site. The doubled `runtime panic:` prefix and the codegen
   category in `--run` come from the binary's two slot readers (ACT-1041), and
   the `0..0` location of the `main`-return refusal is raised in `src/exe.rs`
-  (ACT-1036); neither is a backend site. The backend's own `0..0` codegen
-  spans are FIXME 0915, which carries.
+  (ACT-1036); neither is a backend site. The backend's own registry errors
+  are located at the requesting frame
+  ([release contract](non-concrete-release-contract.md) §7.2.1, Rule 2).
 
 ## 8. Subordinate designs
 
@@ -373,7 +374,7 @@ end-to-end cells; their filings were deleted at `5995023c`.
 | Binding-indirection consume | `binding-indirection-consume.md` | Retired (S123 W2); a stub kept for cited section numbers until those citations move. |
 | S115 carrier and RC record | `s115-carrier-and-rc-sweep.md` | Retained S115 carrier-attribution and RC-leak evidence, the auto-curry emission totality table and the R4 mangle-family census. |
 | Failed-member attribution | `s117-failed-member-attribution.md` | Retired: anchors only; the contract is `compile-to-module.md` §15. |
-| IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery. |
+| IO trampoline / scheduling | `io-trampoline.md`, `io-scheduling.md` | The IO node and effect machinery, including `pure` codegen and `IO` as an ABI layout in the platform schema (`io-trampoline.md` §2.1, §1.5). |
 | Lenient evaluation | `lenient-eval.md` | Spark admission (M-static default), the create-gate budget and depth decline, the IVar runtime contract, emission and the error ferry; the S124 trace-extent decline (§2.3). Open depth/contention work is in `design/arch/backlog/performance.md`. |
 | Trace codegen | `trace-codegen.md` | The backend's interior decisions for `(trace …)`: the traced set fixed by slot claims over the modules a form covers, carried per target (built, rows B10 and B10-C2, §1.3), an instance frame's name by its template (built, row B16, §1.4), the backend's half of strict evaluation and allocation-free wrappers (built), constructor field types paired by declared parameter (built, row B14, §3), and the root's result (built, row B17, §4). |
 | IO trace contract | `archive/io-trampoline-trace.md` | The IO event taxonomy and its off-path performance bound — a live contract despite its location. |
@@ -386,7 +387,10 @@ and no open review finding. This section lists every S124 backend item still
 open, its design and what it waits on. A row leaves when its change lands.
 Verified against source at `bf630d9f` on 2026-11-22.
 
-No backend design item is open. Each row of this section landed and is
+No S124 backend design item is open. S125's opaque `IO` (row IO-T) is built
+in the W5 change-set; its rules live in [io-trampoline.md](io-trampoline.md)
+§1.5 and §2.1 and the [release contract](non-concrete-release-contract.md)
+§5.3. Each row of this section landed and is
 listed under *Landed in S124* below. The typed trace entries (ACT-1111, row
 B18) are carried to a later sprint with `arch`.
 
@@ -400,12 +404,14 @@ B17 (`3c5e41ca`) changed no backend public item.
 exit clauses ([evidence delta](../../tests/plan/s124-evidence-delta.md) §14,
 §14.9; the carried defects are §14.15).
 `match_field_parameter_order::s124_1062_e_subject_repl` is the binary's
-display reader (`src/display.rs::build_adt_subst`), carried with
-`dev`(`src/`). ACT-1067's stage is not attributed, and the backend is one of
+display reader, carried with `dev`(`src/`). S125 replaced that reader's own
+pairing with `cranelisp_types::ctor_field_types_at`
+([interfaces](../arch/interfaces.md) row D-1). ACT-1067's stage is not attributed, and the backend is one of
 its four candidate stages (§14.15).
 
 **FIXME 0915's backend half** is built: Rules 1–3 and row B15
-([release contract](non-concrete-release-contract.md) §7.2.1).
+([release contract](non-concrete-release-contract.md) §7.2.1). The filing
+was re-targeted to `arch` in S125 for the subject carrier.
 
 - **Landed in S124.** Each change-set that moved a golden carried its own
   scoped re-baseline.
@@ -454,8 +460,10 @@ its four candidate stages (§14.15).
   - Comments naming items that do not exist removed (`5a9c4f07`).
   - B17: a trace root's result is the body's value (`3c5e41ca`, ACT-1094;
     [trace codegen](trace-codegen.md) §4).
-- `CACHE_SCHEMA_VERSION` is 36 (read at `bf630d9f`). B8 took it from 34
-  (`07bb8e84`), and B17 to 36 (`3c5e41ca`). B13, B14, B10, B10-C2, the slot change and the frame name
+- `CACHE_SCHEMA_VERSION` is 37 (read in the S125 W5 tree). B8 took it from 34
+  (`07bb8e84`), B17 to 36 (`3c5e41ca`), and S125's IO-T cascade to 37, because
+  `CallableOrigin` is persisted and a pre-cascade sidecar describes `IO`
+  constructors that no longer exist. B13, B14, B10, B10-C2, the slot change and the frame name
   changed no persisted shape
   ([trace codegen](trace-codegen.md) §1.3, *Cache*).
 - `CachedModuleRef::dependency_hashes` (`cache/manifest.rs`) holds opaque

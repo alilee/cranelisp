@@ -383,8 +383,9 @@ because a traced function's scheme can still carry a residual variable.
 - **Readers.** The baker reads each constructor's scheme through
   `CompileContext::constructor_metas`. The schema walk already holds each
   constructor's scheme.
-- **No public item changed.** `src/display.rs::build_adt_subst` is the
-  binary's own copy of the same rule and is outside this design (below).
+- **No public item changed.** The binary's value display reads the same rule
+  from `cranelisp_types::ctor_field_types_at` (S125,
+  [interfaces](../arch/interfaces.md) row D-1) and is outside this design.
 
 **Platform layout hash.** The hash changes only for a schema type whose fields
 name its parameters out of declared order, or omit one. The only in-tree
@@ -402,11 +403,10 @@ instantiation whose arguments do not pair. End to end,
 `match_field_parameter_order::s124_1062_f_subject_run`, `_link` and `_repl`
 pass, with their ordered, scalar and untraced controls.
 
-`s124_1062_e_subject_repl` stays RED. Its locus is the binary's display
-reader `src/display.rs::build_adt_subst`, owned by `dev`(`src/`) and carried
-outside the focus module. The binary can keep its own copy of the rule, or
-`arch` can publish a type-level helper for both crates; that decision is
-`arch`'s, not the backend's.
+`s124_1062_e_subject_repl` stayed RED at S124 close. Its locus was the
+binary's display reader, owned by `dev`(`src/`). `arch` resolved it in S125
+by giving that reader the type-level rule `cranelisp_types::ctor_field_types_at`
+(row D-1); the backend is not party to it.
 
 ## 4. The root's result (row B17, ACT-1094)
 

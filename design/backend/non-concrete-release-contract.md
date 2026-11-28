@@ -297,23 +297,30 @@ afterwards: `0` (`Scalar` — the payload owes nothing) or the payload's canonic
   would add a second ownership channel to a word the reuse rule keeps immutable
   (§8 reject 10).
 
-### 5.3 The stamp — a closed set of four sites
+### 5.3 The stamp — a closed set of two writers
 
-Three sites construct the node — the inline concrete `ConstrADT` lowering, the
-resolved-constructor `Apply` path, and the value-position constructor wrapper
-body — and one adopts a node the platform constructed (§5.5). Two rules bind all
-four:
+`IO` has no constructors (row IO-T), so no constructor path builds a `Pure`.
+Two sites write the word: the `Pure` node emitter, `io_nodes::emit_pure_node`,
+which both the direct and the first-class lowering of `primitives/pure` reach
+([io-trampoline.md](io-trampoline.md) §2.1); and the adoption stamp on a node
+the platform constructed (§5.5). Two rules bind both:
 
-- **One derivation, never a per-site name test.** Whether a constructor carries
-  a hidden self-description field, and its value, is answered once beside the
-  keyed `ctor_meta_at` read; it answers non-`None` only for `primitives/IO.Pure`,
-  so every other constructor emits byte-identically. The adoption site keys on
-  the returned node's tag, the same rule applied to a value that already exists.
+- **The word is derived from a type, never passed in.** The emitter takes the
+  payload's `ConcreteType` and derives the word itself, so no caller can supply
+  one that disagrees with the payload. The adoption site takes the type from the
+  callee's concrete scheme and keys on the returned node's tag.
 - **The value comes from the registry.** The site asks
   `DropGlueRegistry::request_if_owning` for the payload's concrete type — the
-  same call every release site makes — and materialises `func_addr` of the
-  returned `FuncId`, or `iconst 0` when the request declines. The tag-and-fields
-  emitter is unchanged and never given a type; the stamp is one more field value.
+  same call every release site makes, and the derivation `bind`'s input disposer
+  uses — and materialises `func_addr` of the returned `FuncId`, or `iconst 0`
+  when the request declines. The node goes through the ordinary tag-and-fields
+  emitter, which is never given a type; the stamp is one more field value.
+
+**Grade.** Measured: `compiler/apply/io_stamp_tests.rs::pure_node_writes_have_exactly_the_emitter_and_the_adoption_stamp`
+censuses production sources for every `Pure` tag store and glue-word write, with
+its detection proof `pure_write_census_detects_a_planted_second_store`. The
+derivation is pinned by
+`compiler/apply/host_promised_tests.rs::pure_direct_and_wrapper_emit_one_pure_node_with_typed_glue`.
 
 Every `Pure` node is allocated on the RC heap. Stack placement and its
 stack-placed `Pure` refusal were deleted at S124 B1
@@ -440,28 +447,18 @@ tombstone conservation. Every arm diagnoses and recompiles as a `CacheStale`
 class inside the existing single per-entry loop in `cache/serialize.rs`; a
 parallel walk is a reject. None of these legality arms exists yet.
 
-### 7.2 The refusal frame (0915, open)
+### 7.2 The refusal frame
 
-R-4 must hold before §7.4 converts more sites to located refusals.
-
-- **One category prefix.** `CompilationError::CodegenFailed` carries a
-  pre-rendered cause that already embeds the inner located prefix, so the prefix
-  renders twice. Fix the structure at the wrapping construction, never by
-  re-parsing a rendered message.
-- **A real span.** The glue registry's error helper uses
-  `ErrorLocation::from_span(Span::SYNTHETIC)` (`drop_glue.rs`), the direct cause
-  of `0..0`. The registry is keyed by type alone, and most of its requesters
-  hold no span to pass: the typed release emitter, the capture-glue request,
-  the IO payload sites and the result-root pre-request, which has no reference
-  at all; a nested field's shape is built inside its parent's. Every registry
-  error, including the malformed-Vec refusal B4′ added (§7.4), carries the
-  requesting frame's span, or the reference's where the requester has one; the
-  spans are on the `MonoExpr` nodes. The declaration-level constructor read
-  (`constructor_metas`, §7.4 step 1) takes the same fix.
-- **A lookup-able subject.** `"codegen failed for {module}/{symbol}"`
-  (`cranelisp-backend/src/error.rs`) doubles an already-qualified monomorphised symbol. The backend
-  supplies correct data; the presentation projection (`__expr` → the entered
-  form, `f$T1+T2` → `f`) is int's, at [int.md](../int/int.md) §9.1.
+R-4 must hold before §7.4 converts more sites to located refusals. The
+backend's half is built (§7.2.1): one category prefix, fixed at the wrapping
+construction (Rule 1); a real span on every registry error (Rule 2); the
+subject named once, the module a separate noun, never re-composed over an
+already-qualified symbol (Rule 3); and a module-only failure as
+`ModuleFailed` (row B15). The backend supplies the subject as correct data.
+Presenting it as the name the user wrote (`__expr` → the entered form,
+`f$T1+T2` → `f`) is the binary's, at [int.md](../int/int.md) §9.1. That needs
+the subject to reach the binary's formatter as data, a carrier `arch` decides
+(FIXME 0915).
 
 The audience is the program author, so the permitted nouns are source-level.
 Mangles, `__expr`, doubled modules and `0..0` are the wrong nouns for that
@@ -973,8 +970,9 @@ In addition to [transitive-drop-glue.md](transitive-drop-glue.md) §11:
 8. **`#[ignore]` on a leak this contract knowingly leaves.**
 9. **A `_ =>` arm in the lifecycle disposition** (§7.1).
 10. **A backend write to, read of, or call through the `Pure` glue word outside
-    the four stamp sites**, a stamp that writes `1`, or a fifth stamp site (§5).
-11. **A per-site constructor-name test for the `Pure` stamp**, or a stamp store
+    the two writers**, a stamp that writes `1`, or a third writer (§5.3).
+11. **A glue word passed into the `Pure` emitter instead of derived from the
+    payload type**, a per-site name test for the `Pure` stamp, or a stamp store
     not dominated by its tag compare, or a platform-return stamp selected by the
     callee's `DefKind` (§5.3, §5.5).
 12. **A second backend offset expression for the glue word** — a bare `32` other

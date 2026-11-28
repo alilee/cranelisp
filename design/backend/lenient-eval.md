@@ -132,7 +132,11 @@ Both sites skip admission entirely when any of these hold:
 - **IO combinator callees (apply site only).** An apply whose resolved call is
   one of the inline IO combinators (`apply::IoCombinator`) never sparks its
   arguments; a combinator lowers to an IO node that takes over its operands,
-  so there is no evaluation to run in parallel.
+  so there is no evaluation to run in parallel. `pure` is one of them. Its
+  argument is a value, not an IO sub-tree, but as a one-argument call it never
+  meets the ≥2 gate, so the exclusion changes nothing. If single-argument
+  sparks are ever admitted, split the value-argument combinators (`pure`,
+  `sleep`) from the IO-sub-tree ones (`bind`, `race`, `select`) first.
 
 ### 2.5 Apply-argument sparkability
 

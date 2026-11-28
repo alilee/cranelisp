@@ -374,8 +374,8 @@ wrapper's captured arguments, are the forwarding template of
 ### 12.1 Host-promised primitives as values (ACT-1063, S124)
 
 Spec §3.2.1 makes every function a first-class value, and the host-promised
-primitives are functions: the IO combinators `bind`, `race`, `select` and
-`sleep`; the Trace field accessors; `sconcat`; and `discover-tests`. Each is a
+primitives are functions: the IO combinators `bind`, `race`, `select`,
+`sleep` and `pure`; the Trace field accessors; `sconcat`; and `discover-tests`. Each is a
 `RustPrimitive` entry whose life is `HostPromised`, which carries no GOT slot
 by construction ([BC §7](../arch/bounded-contexts.md#7-cross-crate-types--cratescranelisp-types),
 "callability is structural"). Direct application lowers each without a slot. The wrapper had no such rule, so a value use fell through to the GOT rule
@@ -442,7 +442,9 @@ and was refused.
   expression type. The fn-as-value wrapper reads the first parameter of the
   value site's concrete `Fn` type. The curry wrapper reads its first applied
   argument's type. All three are `ConcreteType`s already, so no derivation
-  meets a type variable.
+  meets a type variable. For `pure` that first operand type is the payload
+  type itself, and the same derivation gives the `Pure` node's glue word
+  ([io-trampoline.md](io-trampoline.md) §2.1).
 - **Counts unchanged.** Host-promised primitives consume every argument (BC §3
   invariant 2). An IO combinator's node takes its owned operands, and a race
   takes both through its branch Vec. The forwarding template therefore stays
