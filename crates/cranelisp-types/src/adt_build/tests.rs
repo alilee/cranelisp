@@ -20,9 +20,8 @@ fn sum_recipes_are_canonical_then_type_facet() {
                     ty: Type::Var(0),
                 }],
                 Some("just".into()),
-                false,
             ),
-            AdtCtorSpec::new(Symbol::from("Nothing"), Vec::new(), None, false),
+            AdtCtorSpec::new(Symbol::from("Nothing"), Vec::new(), None),
         ],
         Visibility::Public,
     );
@@ -87,7 +86,6 @@ fn product_recipe_carries_dual_type_facet_and_doc_fallback() {
                 },
             ],
             None,
-            false,
         )],
         Visibility::Private,
     );
@@ -126,7 +124,6 @@ fn generic_constructor_recipe_has_no_slot_or_lifecycle_state() {
                 ty: Type::Var(7),
             }],
             None,
-            false,
         )],
         Visibility::Public,
     );
@@ -156,8 +153,8 @@ fn non_unit_type_binding_recipe_installs_without_rewrapping() {
         &[],
         None,
         &[
-            AdtCtorSpec::new(Symbol::from("Just"), Vec::new(), None, false),
-            AdtCtorSpec::new(Symbol::from("Nothing"), Vec::new(), None, false),
+            AdtCtorSpec::new(Symbol::from("Just"), Vec::new(), None),
+            AdtCtorSpec::new(Symbol::from("Nothing"), Vec::new(), None),
         ],
         Visibility::Public,
     );

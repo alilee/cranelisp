@@ -252,8 +252,10 @@ Common re-entry trigger: contention-aware gate design OR the Phase-H RC/allocati
 - **Pinned analysis** — the S92 reshape parallelises the backtracking search **structurally**
   (divide-and-conquer over candidate digits via `first-success` + `solve-range`; slice-1 lenient eval
   auto-sparks the two independent recursive solves, zero `spark`/`par` in source), validated 40/40
-  green under both default-parallel and `NO_LENIENT`-serial (`solver/test-solve-parallel-equiv`, full
-  solution pinned). But parallel is **~10× SLOWER than serial** — a never-slower-than-serial **floor
+  green under both default-parallel and `NO_LENIENT`-serial. From S125 `solver/test-solve-parallel-equiv`
+  pins the full solution of a puzzle that needs search, and `solver/test-equiv-puzzle-needs-search`
+  asserts that propagation alone does not solve it; before S125 the pinned puzzle was solved by
+  propagation, so the 40/40 run did not cover parallel search. But parallel is **~10× SLOWER than serial** — a never-slower-than-serial **floor
   VIOLATION** (S94: ~20s parallel vs ~1.9s serial, **sys-time dominated** ~21s sys parallel vs ~0.05s
   serial; user ~43s = many cores spinning). Shape-independent (the S92 `solve-range` apply-arg shape
   and the S94 stdlib `par-map-reduce` shape measure identically ~19.5s/~1.7s). Mechanism (S94,
@@ -277,8 +279,8 @@ Common re-entry trigger: contention-aware gate design OR the Phase-H RC/allocati
 - **Re-entry trigger** — a non-copying grid representation (the actionable trigger now — the dominant
   fixable cause) + the Phase-H release/Tier-2 backend (for the headline numbers). Demo/showcase-quality
   perf, deliberately carried.
-- **Reversibility** — the equivalence guard (`test-solve-parallel-equiv`) + the 40/40 two-mode green
-  run protect the reshape while the perf carry is open; genuinely-hard puzzles still run minutes so
+- **Reversibility** — the equivalence guard (`test-solve-parallel-equiv` with its premise
+  `test-equiv-puzzle-needs-search`, passing in both modes) protects the reshape while the perf carry is open; genuinely-hard puzzles still run minutes so
   `solver/test-hard-puzzle` stays excluded from the runner. This is the **§3.1 floor-violation
   EXEMPLAR** — the concrete workload behind the `effect-concurrency.md` §3.1 contention-bounded floor
   scoping (former FIXME 0459).

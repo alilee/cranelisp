@@ -149,7 +149,7 @@ Each still reads as a plausible simplification; the reason it lost is kept.
 | Module-wide `defmacro` pre-pass (Clojure parity) | Reinstates a pre-pass the form-by-form pipeline rejects and leaves REPL and batch divergent. |
 | `defmacro` as a cluster boundary | Splits a file's non-macro forms into sub-clusters, breaking §5.13.1 mutual recursion across a `defmacro`. |
 | Best-effort use-before-def with on-demand callee compile (the original S76 recommendation) | The S76 concrete trace showed a clause's same-module `defn` callee had an empty GOT slot at expansion — regular codegen is deferred past body checking, clause codegen is not — and pre-compiling the callee closure (`block_for_macro_codegen`) would still break round-trip regeneration (§2). The dead path was deleted, not wired. |
-| One prepared transaction spanning Pass 1, dependency modules, macro execution, the HM cluster and presentation (S117) | Could fail after publication, reconstructed the entered form's subject by ambient scan and introduced a second lifecycle store. Superseded 2026-09-03 by durable source-order checkpoints (FIXME 0863 records the history). |
+| One prepared transaction spanning Pass 1, dependency modules, macro execution, the HM cluster and presentation (S117) | Could fail after publication, reconstructed the entered form's subject by ambient scan and introduced a second lifecycle store. Superseded 2026-09-03 by durable source-order checkpoints. |
 
 ## 8. Where the contract manifests
 
@@ -168,8 +168,6 @@ Each still reads as a plausible simplification; the reason it lost is kept.
 
 Distinct from the delivered behaviour above:
 
-- FIXME 0863 — int-interior reconciliation of the checkpoint model and its
-  focused failure/durability coverage list; open, target `dev`.
 - Spec §9.12.1 and the §9.3.6 same-spelled-candidates rule carry
   `[Uncovered S121]`; the traceability band is `qa`'s.
 - ACT-0970 — suspected macro-redefinition persistence gap in the backing

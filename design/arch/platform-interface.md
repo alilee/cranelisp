@@ -83,8 +83,6 @@ is the generated type-layout artifact.
 
 ### 2.1 Open points
 
-- **A platform signature with a residual type variable must refuse at mint** —
-  FIXME 0933 under [open filings](fixmes/).
 - **The layout-hash symbol is a Rust `&'static str`, not a C-ABI layout.** The
   host (`src/platform.rs::load_platform_dll`) and the startup check
   (`crates/cranelisp-intrinsics/src/layout.rs::cranelisp_check_layout_hash`)

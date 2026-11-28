@@ -4574,22 +4574,15 @@ fn same_publishable_origin(existing: &CallableOrigin, replacement: &CallableOrig
                 type_name: left_type,
                 tag: left_tag,
                 field_count: left_fields,
-                internal: left_internal,
                 ..
             },
             CallableOrigin::Ctor {
                 type_name: right_type,
                 tag: right_tag,
                 field_count: right_fields,
-                internal: right_internal,
                 ..
             },
-        ) => {
-            left_type == right_type
-                && left_tag == right_tag
-                && left_fields == right_fields
-                && left_internal == right_internal
-        }
+        ) => left_type == right_type && left_tag == right_tag && left_fields == right_fields,
         (
             CallableOrigin::Accessor {
                 type_name: left_type,

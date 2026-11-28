@@ -1,51 +1,39 @@
 ---
 number: 0929
-target: /design (int)
+target: /arch
 filed_by: /qa
 filed_at: 2026-07-27
 sprint_filed: 119
 refers_to: design/arch/safety-invariants.md §4;
-  design/backend/non-concrete-release-contract.md §7.4;
-  crates/cranelisp-backend/src/drop_glue.rs;
-  crates/cranelisp-backend/src/compiler/context.rs;
-  src/pipeline.rs;
-  src/repl/commands.rs;
-  tests/plan/s119-test-plan.md §3.7
+  design/arch/concrete-boundary-type.md §3.1.1;
+  crates/cranelisp-types/src/mono_expr.rs;
+  tests/scripts/concrete_boundary_check.py
 status: open
 ---
 
-# R18 fabrication census: the remaining discard-and-substitute sites
+# R18: the one remaining fabricated concrete default
 
-Safety-register row R18 (no fabricated concreteness) carries the per-site
-grades, owners and the two model refusal spellings
-(`crates/cranelisp-typecheck/src/program/support.rs` `ViewBuildError::NotConcrete`
-and `crates/cranelisp-types/src/heap.rs::ctor_field_concrete_types`). This
-filing is the citation anchor for the NC-2 fabrication census allow-list
-until each site is disposed.
+## Current state (verified 2026-11-27)
 
-`ConcreteType` variants stay public; enforcement is the NC-2 census (pinned
-allow-list, every entry citing an open filing, a new site RED in its own
-change-set), with R18's residual graded asserted-with-a-named-falsifier once
-the census lands with its detection proof (arch ruling, S119).
-
-## Site state (verified 2026-09-24; backend rows re-read by `qa` 2026-11-19; binary row by `design` (int) 2026-11-22)
-
-| Site | Current source | Disposition and owner |
-|---|---|---|
-| `crates/cranelisp-typecheck/src/ownership/fixpoint.rs` parameter seed | residual parameter frames publish no summary; pinned by `a_residual_parameter_frame_publishes_nothing_and_stays_in_the_keyed_set` | **done** (S122) |
-| `crates/cranelisp-backend/src/compiler/fn_compiler.rs` dead `variable_types` arm | absent | **done** |
-| `crates/cranelisp-backend/src/drop_glue.rs` Vec arm, `unwrap_or(ConcreteType::Int)` | absent at `f8c55626`; a refusal since `1d965ed5` | **done** (S124) |
-| `crates/cranelisp-backend/src/compiler/context.rs` constructor field read, `unwrap_or(Type::Int)` | absent at `f8c55626`; a refusal since `24c42430` (packet row D1) | **done** (S124) |
-| Binary/int display-type defaults, `src/pipeline.rs` and `src/repl/commands.rs` `unwrap_or(Type::Int)` | absent since `793af750` (re-read by `design` (int) 2026-11-22): `execute_compiled_expr` observes the check's display type, else the body's inferred type, else the arm's scheme result; `typecheck_only` reads the scheme result and returns a located error when `__expr` is absent. Pinned by the module rows `an_expr_with_no_display_or_inferred_type_takes_its_scheme_result`, `the_display_type_then_the_inferred_type_wins_over_the_scheme`, `type_reads_the_expression_scheme_result` and `type_with_no_expr_after_a_clean_check_is_a_located_error` | **done** (S124), as designed in [result owner §4.3.1](../../int/result-owner.md#431-the-observed-type-has-no-default) |
+- Safety-register row R18 (no fabricated concreteness) is graded
+  asserted-with-a-named-falsifier. Its detector is the source census
+  `tests/concrete_boundary_census.rs` (T-NC2), which passes with both
+  detection legs and a stale-entry leg.
+- One fabrication remains and is the census's single allow-list entry,
+  citing this filing:
+  `crates/cranelisp-types/src/mono_expr.rs::lenient_from_expr`,
+  `unwrap_or(ConcreteType::Int)` (`pub(crate)`).
+- Every other site this filing listed is absent from source or a refusal.
 
 ## Remaining obligation
 
-- Land the NC-2 census with both detection legs; no census test cites this
-  filing today. No production site in the listed rows fabricates a type: the
-  only `unwrap_or(Type::Int)` in the backend crate is in `test_support.rs`,
-  and none remains in `src/`.
+`arch` (types), with `dev`(backend) as the consumer, deletes the
+placeholder as ruled in
+[concrete boundary type](../concrete-boundary-type.md) §3.1.1. The same
+change-set removes the allow-list entry; the census's stale-entry leg
+fails if it stays.
 
 ## Closure
 
-No listed site fabricates a type, and R18 records the census's detection
-proof and residual grade.
+`lenient_from_expr` fabricates no type, the allow-list is empty, and R18
+no longer names an allowed site.

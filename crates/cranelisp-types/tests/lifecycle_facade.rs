@@ -221,7 +221,6 @@ fn external_consumer_can_author_lifecycle_records_and_instance_funnel() {
                 type_name: FQTypeName::new("consumer".into(), TypeName::from("Box")),
                 tag: 0,
                 field_count: 0,
-                internal: false,
                 type_def: None,
             },
             TemplateBody::Synth(synth),

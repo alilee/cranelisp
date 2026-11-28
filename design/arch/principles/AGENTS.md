@@ -33,6 +33,12 @@ Principles are added at sprint close (Phase 7 review), never mid-sprint. The fil
 
 Nothing else needs editing — reachability is the index.
 
+The wording states what the architecture must guarantee (user ruling, S110):
+
+- Do not check a proposed Principle's wording against the current implementation first.
+- An implementation that deviates is an instance of the defect class the Principle names, not evidence against its wording; the compliance sweep follows ratification.
+- At ratification, strengthen a proposed Principle by asking whether one valid instance of what it calls suspect can be named; where none can, widen it. Principle 24 widened from a backend rule to a compiler-wide one because no search for a compile-necessary identity survived that question.
+
 ## Editing a Principle
 
 Revise the body file and, when the statement changes, its index line, at sprint close; cite the motivating sprint in the body and in the sprint outcome report. Then sweep the canonical set for references the change touches (`design/arch/AGENTS.md` §Where a commitment manifests).

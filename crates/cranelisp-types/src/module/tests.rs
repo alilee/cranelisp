@@ -2937,7 +2937,6 @@ fn origins() -> Vec<CallableOrigin> {
             type_name: fq_type(),
             tag: 0,
             field_count: 0,
-            internal: false,
             type_def: None,
         },
         CallableOrigin::Accessor {
@@ -4089,7 +4088,6 @@ fn checked_body_rejects_synth_uniform_instance_and_foreign_realizations() {
                 type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Synth")),
                 tag: 0,
                 field_count: 0,
-                internal: false,
                 type_def: None,
             },
             TemplateBody::Synth(SynthSpec::new(ast())),
@@ -5004,7 +5002,6 @@ fn unpublished_synthesized_constructor_replacement_accepts_the_same_origin() {
                 type_name: type_name.clone(),
                 tag: 0,
                 field_count: 1,
-                internal: false,
                 type_def: None,
             },
             Realization::Body {
@@ -5027,7 +5024,6 @@ fn unpublished_synthesized_constructor_replacement_accepts_the_same_origin() {
                 type_name,
                 tag: 0,
                 field_count: 1,
-                internal: false,
                 type_def: None,
             },
             SynthSpec::new(ast()),
@@ -5559,7 +5555,6 @@ fn box_ctor_origin() -> CallableOrigin {
         type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("Box")),
         tag: 0,
         field_count: 1,
-        internal: false,
         type_def: None,
     }
 }

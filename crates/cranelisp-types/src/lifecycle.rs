@@ -893,8 +893,6 @@ pub enum CallableOrigin {
         tag: usize,
         /// Number of payload fields accepted by the constructor.
         field_count: usize,
-        /// Whether the constructor is excluded from user exhaustiveness.
-        internal: bool,
         /// Product-type facet when type and sole constructor share one key.
         type_def: Option<Box<TypeDefInfo>>,
     },

@@ -23,23 +23,15 @@ pub struct AdtCtorSpec {
     pub fields: Vec<FieldInfo>,
     /// Constructor documentation, if supplied independently of the ADT.
     pub docstring: Option<String>,
-    /// Whether the constructor is compiler-internal rather than user-authored.
-    pub internal: bool,
 }
 
 impl AdtCtorSpec {
     /// Create one constructor specification in declaration order.
-    pub fn new(
-        name: Symbol,
-        fields: Vec<FieldInfo>,
-        docstring: Option<String>,
-        internal: bool,
-    ) -> Self {
+    pub fn new(name: Symbol, fields: Vec<FieldInfo>, docstring: Option<String>) -> Self {
         Self {
             name,
             fields,
             docstring,
-            internal,
         }
     }
 }
@@ -146,7 +138,6 @@ pub fn build_adt_entries<C: crate::CodeStore>(
                 type_name: fqtn.clone(),
                 tag,
                 field_count: ctor.fields.len(),
-                internal: ctor.internal,
                 type_def: is_product.then(|| Box::new(type_def_info.clone())),
             },
             synth: SynthSpec { variant },

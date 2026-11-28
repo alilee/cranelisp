@@ -208,7 +208,7 @@ pub struct DisplayInfo {
 /// Information about a user-defined type.
 ///
 /// `constructors: Vec<Symbol>` carries only the constructor NAMES. The
-/// per-constructor metadata (tag, field count, type_name, internal flag)
+/// per-constructor metadata (tag, field count, type_name)
 /// lives uniquely on each constructor's own `CallableOrigin::Ctor`. Field
 /// names live on the callable's `param_names`; field types fold into its `scheme` (the constructor's
 /// polymorphic function-type signature, e.g., `Some : ∀a. a → Option a`).
@@ -272,7 +272,6 @@ pub struct TraitDeclInfo {
 //   - .fields[i].name → Callable.param_names[i]
 //   - .fields[i].ty   → folded into Callable.scheme
 //   - .docstring      → Callable.docstring
-//   - .internal       → CallableOrigin::Ctor.internal
 //
 // `FieldInfo` retained — consumed by `HeapCategory::classify` for heap-layout
 // determination. After consumer-cascade migration completes, heap classifier

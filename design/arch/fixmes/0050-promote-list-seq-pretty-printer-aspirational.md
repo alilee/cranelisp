@@ -7,7 +7,8 @@ sprint_filed: 64
 refers_to: repl/spec/01-display-format.md §1.5
 status: deferred
 deferred_at: 2026-06-13
-deferred_reason: design exists (design/arch/display-protocol.md, user rulings 2026-07-10); implementation unscheduled
+deferred_reason: design exists (design/arch/display-protocol.md, user rulings 2026-07-10); implementation unscheduled. Re-verified S125 2026-11-27 — no DescriptorKind::Collection (trace_format.rs stops at TypeVar = 7), no TypeDefInfo.render (check.rs), no collection arm in src/display.rs; §1.5 still aspirational. Not a Phase-H release item (release-llvm-backend.md NG2)
+deferred_trigger: a sprint scopes the display protocol; its first act is the arch public-API batch for TypeDefInfo.render + DescriptorKind::Collection (display-protocol.md §6, §9), then dev in sequence — types/intrinsics/backend/typecheck passthrough, then src/ (display.rs arm + bootstrap seed)
 target_sprint: TBD
 migrated_from_inline: true
 ---

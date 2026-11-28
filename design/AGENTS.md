@@ -52,6 +52,19 @@ Per-crate design docs describe *how* a surface solves problems — algorithms, d
 
 The content split (skill definition vs design doc vs `AGENTS.md`) is normative in `sprints/METHOD.md` §1.2.
 
+A design document under `design/`, including `design/arch/`, leads with its solution and reads as explanation, not as a decision log (user ruling, 2026-06-06). Order the sections that apply:
+
+1. The solution in overview, with a map of the document's topics.
+2. Open questions, short, immediately after the overview.
+3. The requirement: what the feature is for.
+4. The user experience: what a user writes and sees, with examples.
+5. The language constructs: surface forms, signatures, semantics.
+6. The implementation, mapped onto crates and components.
+7. Data structures, functions and sequence, with diagrams and walks.
+8. Change history last, compressed; ordinary history stays in Git ([retention](../sprints/METHOD.md#retention-and-maintenance)).
+
+Omit a section the document has no content for. Prefer explanatory paragraphs to reference-dense lists, and keep `file:line` and § grounding inside the section it supports.
+
 ## Architecture and delivery
 
 `design/arch/overview.md` introduces the current architecture; `design/arch/bounded-contexts.md` defines context ownership and boundaries. `sprints/METHOD.md` governs delivery, and `sprints/ROADMAP.md` tracks progress under `/sprint` ownership.

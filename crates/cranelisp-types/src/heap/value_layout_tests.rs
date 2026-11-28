@@ -76,7 +76,6 @@ fn ctor_entry_at(type_name: FQTypeName, field_tys: Vec<Type>, is_product: bool) 
             type_name,
             tag: 0,
             field_count: field_tys.len(),
-            internal: false,
             type_def,
         },
     }
@@ -565,7 +564,6 @@ fn generic_ctor_entry(
             type_name: fqtn(type_name),
             tag: 0,
             field_count: field_tys.len(),
-            internal: false,
             type_def: None,
         },
     }
@@ -666,7 +664,6 @@ fn ctor_field_types_at_instantiation_mismatch() {
             type_name: fqtn("P"),
             tag: 0,
             field_count: 1,
-            internal: false,
             type_def: None,
         },
     };

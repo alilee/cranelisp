@@ -138,6 +138,9 @@ they are not further criteria.
    - An added item serves a consumer in another crate that needs it now; a
      removed item has none
      ([Principle 02](principles/02-narrow-interfaces.md)).
+   - Each parameter of a method is data its receiver cannot already reach. A
+     parameter the question requires suggests the question belongs to another
+     receiver, such as the pair.
 2. **Simple API** — does the public API simply and clearly align with and
    express the module's intent, for example by one obvious path to each
    outcome?
@@ -148,6 +151,12 @@ they are not further criteria.
      [Principle 24](principles/24-resolve-once.md)).
    - A consumer uses what it is given without naming, wrapping, narrowing or
      discarding it.
+   - No field, accessor or layer is added that an existing receiver already
+     answers, for example a `param_names` list that the scheme's arity
+     already gives.
+   - The contract is derived from its read sites, not from a field name:
+     consumers reading `.len()` and `.is_empty()` want one arity answer, not
+     the collection.
    - Test-only access is off the default surface
      ([Principle 05](principles/05-testability-is-structural.md)).
 3. **Strongly typed** — do the definitions use type representation so that
@@ -174,6 +183,8 @@ states it exactly and approves that one. Where it would be a larger change,
 - A change that needs a specification change, or behaviour the specification
   does not already require, waits for the user's ruling
   ([root delivery rule](../../AGENTS.md#delivery)).
+- A language-level shape — an AST, type, pattern or declaration form — is
+  read from `spec/` before source or design.
 
 **Escalation.** `arch` sends a change to the user with a brief, and does not
 approve it, when:
@@ -221,10 +232,17 @@ Source rustdoc and BC statements replace retired facade-spec files.
 
 ## Baseline-diff discipline (Sprint 67 close)
 
-The seven guarded library baselines are enumerated by
-[the public-API guard](../../tests/public_api_relocations.rs). Root and
-`cranelisp-exe-bundle` lack these baselines. Their public changes take the same
-[gate](#public-api-discipline) with the source diff as the evidence.
+[The public-API guard](../../tests/public_api_relocations.rs) enumerates the
+guarded baselines: the seven library crates and `cranelisp-exe-bundle`.
+
+- Every committed `crates/<crate>/public-api.txt` is in the guard's list. A
+  baseline the guard does not compare is a defect: nothing reports its drift.
+- The exe-bundle baseline holds the bundle's link surface: the force-link
+  re-exports and the two `#[no_mangle]` startup hooks. A missing re-export
+  strips runtime symbols from the archive, which only a `--link` run shows.
+- The root crate has no baseline, because no other crate consumes it. Its
+  public changes take the same [gate](#public-api-discipline) with the source
+  diff as the evidence.
 
 Regenerate an affected baseline in the implementing change-set with the
 canonical command:

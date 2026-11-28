@@ -127,8 +127,9 @@ Reissue is sound only while Binary/int holds two obligations:
 - **Quiescent boundary.** A rebuild runs between completed REPL turns, after
   evaluation and IO finish and the result is released; a normal completion has
   already drained its detached strands (spec §10.12.7 item 6). Platform-held
-  function values are excluded by spec §10.10.1; its rejection is not yet
-  enforced ([ACT-0979](../../sprints/actions/ACT-0979-platform-function-type-rejection.md)).
+  function values are excluded by spec §10.10.1: platform load refuses a
+  function type in a parameter, result, type argument or ADT field, naming
+  the function (`src/platform.rs::refuse_function_types`).
 - **Complete invalidation.** Before evaluation resumes, every module whose
   compiled code references the rebuilt GOT is recompiled after it in the same
   plan or is in the error set (REPL spec §14.2 step 4, §14.4–§14.5).

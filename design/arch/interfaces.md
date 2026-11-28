@@ -674,11 +674,11 @@ single-constructor value classifies as a heap value. The binary's display walk
 - `HeapHeader` lives in `cranelisp-types` and is shared by every heap object. `HeapString`,
   `HeapAdt` and `HeapClosure` live in `cranelisp-intrinsics`; the ADT and closure layouts
   are `cranelisp_intrinsics::alloc` items. The Vec layout's offsets are
-  `cranelisp_intrinsics::vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`. The backend
-  and the binary read all of them from intrinsics and define none. Primitives' `marshal.rs`
-  still restates the ADT offsets; its edge to `alloc::HeapAdt` is approved (S124 packet row
-  R10-9) and not built. Offsets are associated constants beside each `#[repr(C)]` layout
-  ([Principle 14](principles/14-ffi-layout-discipline.md)).
+  `cranelisp_intrinsics::vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`. Offsets
+  are associated constants beside each `#[repr(C)]` layout
+  ([Principle 14](principles/14-ffi-layout-discipline.md)). Every other reader takes them
+  from the owner; the rule and its one open exception are
+  [BC §4b invariant 2](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics).
 - Spec §12.1 describes these layouts as the current reference representation, not as a
   mandate.
 
@@ -696,7 +696,8 @@ single-constructor value classifies as a heap value. The binary's display walk
   one transitively value-eligible field, within `VALUE_LAYOUT_MAX_WORDS`. Multiple
   constructors, heap collections, non-concrete stored field types and cycles are ineligible.
 - The walk performs no generic substitution; `ctor_field_types_at` is the distinct
-  substituting projection.
+  substituting projection. The binary's value display (`src/display.rs`) reads constructor
+  field types through it and pairs none itself (row D-1, S125).
 - `value_layout_with_lookup` takes the caller's coherent declaration lookup. Typecheck
   supplies a staging-first lookup in which a present staged binding wins even when
   ineligible; the backend uses the same algorithm over its codegen tables.
@@ -742,14 +743,54 @@ single-constructor value classifies as a heap value. The binary's display walk
 - Contract: [total concreteness](total-concreteness.md) (the payload-glue section) and
   [safety invariants](safety-invariants.md) rows R19 and R20.
 
+### Opaque `IO` (row IO-T)
+
+- **`IO` has no constructor entries, like `Vec`** (spec §10.1). The bootstrap installs
+  `IO` as `TypeRecord::Defined` with type parameter `a` and an empty constructor list. No
+  table holds an `IO.*` key or a bare `Pure`, `Effect` or `Bind` exposure, so every user
+  spelling of a constructor is undefined: bare, qualified, dotted, scrutinee-picked or
+  imported.
+- **`primitives/pure`** (spec §10.2) is the public lift: a host-promised `RustPrimitive`,
+  `∀a. (Fn [a] (IO a))`, installed with `install_host_promised` beside `bind`. Typecheck
+  types it from its scheme and resolves a call to `ResolvedCall::BuiltinFn`. It has no body
+  and mints no instances.
+- **The backend is the only producer of every compiler-built IO node.** `pure` lowers
+  inline, as `bind`, `race`, `select` and `sleep` do, through the one host-promised
+  lowering that direct application and the first-class wrapper share
+  (`crates/cranelisp-backend/src/compiler/apply.rs::lower_host_promised`). A
+  platform-built `Pure` node is stamped at the platform-return seam, as above.
+- **The platform schema walks `IO` as it walks `Vec`**
+  (`crates/cranelisp-backend/src/schema.rs::closure_walk`): no entry of its own, and its
+  argument is walked, because `IO`'s layout is ABI.
+- **A reader that renders or describes an `IO` value decides from `Type::is_io`** before
+  any constructor-table read; the table has nothing to give it.
+- **Grade: structural.** No binding exists to resolve, in any module's committed or staged
+  view, so no caller can forget a check. The residual is a bootstrap that seeds an `IO`
+  constructor again; `src/bootstrap.rs::io_is_seeded_with_no_constructor` measures it.
+- **Why not a private constructor.** A module-private `Pure` as `pure`'s typing carrier
+  needs a constructor-access mode and a member-resolving scope operation, moves the refusal
+  to checks at typecheck's call sites, and still lists `Pure` as a member of `IO` to
+  introspection. `pure` typed from a scheme, as `bind` is, needs no constructor.
+- **No member-level visibility for user types.** A `deftype`'s constructors carry the
+  type's visibility, and both member paths resolve the parent through the scope first,
+  which applies spec §8.7.3: the dotted path
+  (`crates/cranelisp-typecheck/src/checker.rs::dotted_member_identity`) and the
+  scrutinee-picked bare arm
+  (`crates/cranelisp-typecheck/src/infer.rs::check_constructor_pattern`). Grade: asserted
+  with a named falsifier. *Falsifier:* a form that gives a constructor or trait member
+  narrower visibility than its parent, or that makes a private parent resolvable by name
+  outside its subtree. Either returns this to `arch`.
+
 ---
 
 ## Approved changes not yet in source (S124)
 
 The public-API batch record ([discipline](AGENTS.md#public-api-discipline)). A row is a
 decided change that no phase checkpoint has reported yet, or an escalated one with the
-decision it waits on. The S124 checkpoints reported every other row and removed it. A
-reported row's contract is the source rustdoc and its baseline line. The S123 and S124
+decision it waits on. The S124 checkpoints reported every other row and removed it. The
+S125 integrated gate reported rows IO-T and D-1 against the regenerated baselines (types −2
+and one line changed, every other baseline +0), and they are removed; row TR-1 stays,
+approved and deferred by the user. A reported row's contract is the source rustdoc and its baseline line. The S123 and S124
 approval packets and architecture reviews were retired at the S124 close. They are in
 Git at commit `d4e930a7`, in the `sprints` directory. A design
 that needs a public change outside these rows stops and returns to `arch`.
@@ -757,7 +798,10 @@ that needs a public change outside these rows stops and returns to `arch`.
 | Row | Change | Owning surface | Other surfaces that change | Baseline | Decided | Contract |
 |---|---|---|---|---|---|---|
 | Gap module | `ResolutionGap::SymbolTypechecked` names the module resolution probed: the written qualifier after one alias substitution. No item changes | types (meaning); typecheck (producer) | the binary stops reading the module as a written qualifier | +0 | `arch`, 2026-11-19; not scheduled (ACT-1082) | [resolution gaps](#resolution-gaps) |
-| B18 | The two trace entries that take a value with its descriptor become one entry per representation: `cranelisp_collect_trace` and `cranelisp_trace_format` are each replaced by `_int`, `_float`, `_bool` and `_described` entries, and the backend emits the one the value's static type selects | intrinsics (the entries, the catalog rows) | backend selects the entry and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics −3, +12; every other baseline +0 | **Escalated to the user, 2026-11-22. Carried by the user as ACT-1111; the shape and its bounded-contexts sentence are not approved** | [typed trace value entries](#typed-trace-value-entries-row-b18) |
+| ADT layout edge | `crates/cranelisp-primitives/src/marshal.rs` reads the ADT tag and field offsets from `cranelisp_intrinsics::alloc::HeapAdt` in place of its own constants. A new consumer edge; no item changes | intrinsics (producer) | primitives | +0 | the user, 2026-11-17, as part of S124 packet row R10-9; the rest of that row is in source; not scheduled (ACT-1114) | [BC §4b invariant 2](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics) |
+| B18 | The two trace entries that take a value with its descriptor become one entry per representation: `cranelisp_collect_trace` and `cranelisp_trace_format` are each replaced by `_int`, `_float`, `_bool` and `_described` entries, and the backend emits the one the value's static type selects | intrinsics (the entries, the catalog rows) | backend selects the entry and bumps `CACHE_SCHEMA_VERSION`; no backend public item changes | intrinsics −3, +12; every other baseline +0 | **Escalated to the user, 2026-11-22. Carried by the user as ACT-1111; the shape and its bounded-contexts sentence are not approved.** S125 Phase 2: `arch` recommends it stay carried; no S125 row depends on it | [typed trace value entries](#typed-trace-value-entries-row-b18) |
+| TR-1 | `DescriptorKind::Io` added; a trace renders a nested `IO` value as `#io` and a function value as `#closure` | intrinsics | backend bakes `Io` for an `IO` type; `CACHE_SCHEMA_VERSION` +1 | intrinsics +2; every other baseline +0 | `arch`, 2026-11-26; deferred by the user the same day until the built-ins and primitives are the focus module | [display markers in a trace](#display-markers-in-a-trace-row-tr-1) |
+| TG-1 | Intrinsics would publish its trap guard for the binary's macro-clause call. No item changes now | intrinsics | binary | +0 | `arch`, 2026-11-28: approved, then **withdrawn the same day.** The binary installs no trap handler, so the item has no consumer. It reopens only if the user rules that a trap in a macro clause ends the process with a report | [one trap guard](#one-trap-guard-row-tg-1) |
 
 **Phase 5 checkpoints (2026-11-20).** Each used cargo-public-api 0.52.0 and the
 [canonical command](AGENTS.md#baseline-diff-discipline-sprint-67-close) of its format.
@@ -804,8 +848,8 @@ checkpoint.
   value went from 35 to 36 at `3c5e41ca`, as row B17 required. No consumer in another
   crate reads the number as a literal; the effect is that every cache written before
   the commit is refused and rebuilt.
-- **Surfaces without a baseline.** No file of the root crate or of
-  `cranelisp-exe-bundle` changed in the phase.
+- **Surfaces outside the guard at this checkpoint.** No file of the root crate
+  or of `cranelisp-exe-bundle` changed in the phase.
 - **Left in the record:** the gap-module row, which is not scheduled.
 - **Not confirmed by the user (2026-11-22).** The user did not confirm row B17's line
   and directed typed entries; row B18 is the response. The line stands in source and
@@ -814,6 +858,57 @@ checkpoint.
 **Phase 7 checkpoint (2026-11-22, read at `d4e930a7`).** No baseline line and no file
 under `crates/*/src` or `src/` changed after the Phase 6b checkpoint. Two rows stay in
 the record: the gap-module row, not scheduled, and row B18, carried.
+
+### Display markers in a trace (row TR-1)
+
+- **Need.** Spec §12.9.1 is one format for the REPL and for `trace`. A
+  trace renders a function value as `<closure>`, and bakes a nested `IO`
+  value as an ADT, and [`IO` has no constructor table](#opaque-io-row-io-t).
+- **Contract, intrinsics.** `DescriptorKind::Io = 8`: renders `#io`, no
+  children, no payload. `DescriptorKind::Fn` renders `#closure`. The
+  descriptor layout is unchanged.
+- **Backend.** A `Type::ADT` for which `Type::is_io` holds bakes `Io`, before
+  the `Vec` and ADT arms. `CACHE_SCHEMA_VERSION` +1, because cached objects
+  hold baked descriptors.
+- **Baseline.** The enum is listed at `trace::` and `trace_format::`: +2.
+- **The three questions.** *Bounded context:* yes; rendering stays in
+  intrinsics and baking in the backend. *Simple API:* yes; one kind per
+  marker, as `Fn` is. *Strongly typed:* yes; the runtime renders no node it
+  cannot describe.
+- **Independent of row B18.** Neither changes the other's shape.
+
+### One trap guard (row TG-1)
+
+- **The rule the row served stands without it.** The dispositions of `SIGFPE`,
+  `SIGILL`, `SIGBUS` and `SIGSEGV` are process state with one owner,
+  intrinsics ([BC §4b invariant 14](bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics)).
+  The binary installs no trap handler and calls a macro clause directly
+  ([binary design §8](../int/s125-binary-clean.md#8-the-macro-clause-runs-under-no-binary-trap-guard-f2)),
+  so it needs no intrinsics item.
+- **Why a second writer is excluded, even a careful one.** A guard that saves
+  and restores with `signal` around its own call re-installs intrinsics'
+  handler without `SA_SIGINFO` and `SA_ONSTACK`, and while its call is in
+  flight a platform trap on another thread reaches its handler and jumps
+  through a buffer that thread never armed.
+- **Withdrawn, not built.** The published guard has no consumer, and an item
+  with no consumer fails the
+  bounded-context question
+  ([Principle 02](principles/02-narrow-interfaces.md)).
+- **What reopens it.** The user ruling that a trap in a macro clause ends the
+  process with a report (binary design §8.5, option B; `spec` is framing the
+  question). The row would then return to `arch` with two constraints the
+  withdrawn shape did not meet:
+  - The binary needs a way to end the process through intrinsics' terminator
+    with a line that is not a panic report. The guard alone does not give it
+    one.
+  - The guard must not turn stack exhaustion into anything but the runtime
+    panic that spec §12.7.2.1 and §9.12 make it. Stack exhaustion arrives as
+    `SIGSEGV` or `SIGBUS`, so no consumer may recover from those two, and a
+    reported ending must still distinguish it from a defect.
+- **Declined in any case.** A second handler in the binary, including one
+  that follows the install-once rule; and recovery from a clause trap as an
+  expansion error at the call site, which abandons frames without their
+  destructors and contradicts spec §9.12.
 
 ### Typed trace value entries (row B18)
 

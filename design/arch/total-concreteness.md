@@ -142,9 +142,10 @@ types at a concrete instantiation for category and glue purposes.
   bootstrap seeds in `src/bootstrap.rs::register_synth_adt`.
 - Direct construction lowers inline at a concrete site. Value-position use and accessors are
   served by per-instantiation instances minted through the one canonical mangler.
-- `IO.Bind` is a template. Its scheme is existential (`b` in
-  `Bind { inner: IO b, cont: Fn [b] (IO a) }` is not recoverable from `IO a`), it is internal,
-  and no concrete instance can be demanded as a value. Its teardown is §3.4.
+- `IO` has no constructor entry ([opaque `IO`](interfaces.md#opaque-io-row-io-t)), so it is
+  in neither population: the backend builds every IO node inline at a concrete site. A `Bind`
+  node is existential (`b` in `Bind { inner: IO b, cont: Fn [b] (IO a) }` is not recoverable
+  from `IO a`); its teardown is §3.4.
 - A constructor instance body owes zero RC operations: fields transfer into the box at
   concrete types as they did in the template.
 - Evidence, as `qa` read it at `f8c55626`
@@ -214,9 +215,8 @@ is the architecture's standing pattern (closure `DROP_GLUE_PTR`, Decision 0011):
 I-FRAME every site that constructs an IO node is concrete post-mono, so the
 existential becomes a representation fact — no type-system residual and no
 header type-word (R15 stands: one glue pointer on one runtime-owned node
-family). The `Bind` *entry*'s existential scheme survives as a
-checking/introspection artefact; compiled code and slots are where polymorphism
-ends.
+family). No table entry carries the existential: `IO` has
+[no constructor entries](interfaces.md#opaque-io-row-io-t).
 
 #### Layout and stamp (produce side) — delivered S121
 
@@ -254,9 +254,26 @@ double discharge; choosing a move from the node's count or freshness is rejected
 |---|---|---|
 | `Pure` | Force reads the witness; `Owned(glue)` ⇒ one `rc_inc` of the payload for the consumer. Teardown discharges `Owned(glue)` under both dispositions. Private to intrinsics: no layout, stamp, public-API or ABI effect | Implemented in the working tree; reviewed with no blocking finding; **not accepted**. Sequential reuse and heap balance pass (IOR-1/IOR-2); the reserved-word cells and their detection proof pass. QA accepted the correction evidence; integration remains pending |
 | `Effect` | The node owns a repeatable, thread-safe thunk. Force borrows it; teardown destroys it once under both dispositions. Changes `cranelisp-platform`'s public API and ABI — approved delta below | Producer and consumer implemented and reviewed; generated baseline matches the approval; **user confirmed the generated diff on 2026-09-21**. Sequential reuse (IOR-4) and module lifetime tests pass. The corrected composed unforced-capture fence passes and is proven to detect omitted teardown |
-| `Launch` | Force still moves the sub-tree out through a non-atomic `0` sentinel | **No correction is approved or scheduled.** A second force is unmeasured; a measured fault enters through `qa` |
-| `EffectPoll` | Node untouched; one state closure is re-entered | Re-entry unmeasured; no change approved |
+| `Launch` | The node owns one reference to its sub-tree for its whole life. Force takes a new reference for the supervised strand and writes nothing to the node; teardown releases field 0 under both dispositions ([intrinsics design §6.3](../intrinsics/ownership-and-disposal.md#63-the-launch-sub-tree--minted-on-force)) | In source (S125). A second force of one launched step runs the sub-tree again: `tests/spec_10_io.rs::run_mode_reused_launched_poll_step_performs_each_force` |
+| `EffectPoll` | Node untouched; one state closure is re-entered, and nothing resets its state per force | **Confirmed defect (S125), open and carried.** A leaf that keeps its phase in the closure completes a second force at once, and two forces in flight together are not serialised on a capacity-1 token: `tests/spec_10_io.rs::run_mode_reused_poll_leaf_suspends_on_each_sequential_force`, `tests/spec_10_io.rs::run_mode_reused_poll_leaf_in_flight_capacity_one_serialises`. A leaf with no phase in the closure reuses correctly (`tests/spec_10_io.rs::run_mode_reused_read_line_reads_each_input_with_fresh_control`). No correction is designed |
 | `Bind`, `Par`, `Select` | No mutation on force | Inherit their leaves' behaviour |
+
+**The `Launch` rule is outside the public-API gate** (`arch`, 2026-11-28). It
+changes no item, layout, `ABI_VERSION` or cache schema, and no obligation of
+another crate:
+
+- The backend's obligation is unchanged: `compile_launch` stores one owned
+  reference in field 0 and emits no `Launch` glue.
+- The meaning that changes, field 0 after a force, has its only writer and its
+  only reader in intrinsics (`io.rs::launch_continue`, the `Launch` teardown row
+  in `drop.rs`). The backend reads no `Launch` field after construction, and the
+  platform crate publishes the tag and no constructor.
+- The cross-crate meaning of the node is R20's, which the user ruled on
+  2026-09-21; the rule makes source conform to it.
+
+*Falsifier:* a read or write of a `Launch` node's field outside intrinsics after
+construction, or a `Launch` constructor outside the backend. Either returns the
+rule to `arch`.
 
 Cost of the `Pure` rule is derived, not measured (intrinsics design §6.1): one
 atomic increment per heap-payload force and one glue call at teardown, replacing
@@ -321,14 +338,16 @@ zero decrement's fence, and a `Par` worker's reads are ordered before the root's
 teardown by the join its result already rides. These residuals are separate, and
 none is cured by the rules above:
 
-- **Severed join** (pre-existing; `qa` intake). A cancelled `Select` loser with a
-  rayon bridge in flight detaches its worker: the dropped `run_blocking_branch`
-  future abandons the `oneshot`, `pending_bridges` has no drop guard, and
-  `block_on_reactor` drains the supervisor but not bridges. The detached
-  worker's walk — now including a borrowed thunk call — can race the root's
-  `consume_io_tree`: a use-after-free window. Falsifier: a `select` whose losing
-  branch holds an in-flight blocking `Par` bridge at cancellation. The cure
-  restores the join; it must not add an ownership channel.
+- **The bridge join is a live count, not a type.** A cancelled `Select` loser
+  with a blocking bridge in flight keeps its worker joined: the worker owns a
+  lease, and root teardown stays closed while any lease is live
+  (`crates/cranelisp-intrinsics/src/reactor.rs`, `BridgeJoinState`), so the
+  worker's walk, including a borrowed thunk call, ends before the root is torn
+  down. The hold is measured, not structural: a bridge started without a lease
+  is not refused by any type. A worker blocked in a foreign call that cannot be
+  pre-empted delays teardown without bound, which is a liveness cost and not a
+  lifetime hazard. [Intrinsics design §6.1](../intrinsics/ownership-and-disposal.md#61-the-pure-payload-witness--retain-on-force)
+  owns the mechanism's statement. A repair must not add an ownership channel.
 - **Capture-destructor trap** (new with node-owned thunks; consciously
   unprotected). Teardown runs outside the signal guard, so a hardware trap
   inside a capture destructor is not contained. Known captures are `i64`s and
@@ -347,9 +366,9 @@ was observed before the change; both IOR-5 controls and IOR-2 now balance.
 | Property | Grade |
 |---|---|
 | `Pure` force retains; teardown discharges once | **Measured** at the module tier: the retain cells were observed failing on a force without the mint. The public heap-reuse balance observation also passes (IOR-2) |
-| No store to a published `Pure` or `Effect` node | **Asserted, with a falsifier** — a source fact read once at review, not structural. Falsifier: any non-construction store to such a node's field in intrinsics. The one known post-publication writer is the `Launch` sentinel |
+| No store to a published `Pure` or `Effect` node | **Asserted, with a falsifier** — a source fact read once at review, not structural. Falsifier: any non-construction store to such a node's field in intrinsics. No post-publication writer is known: the `Launch` sentinel, formerly the one, was removed in S125 |
 | Reuse-safe thunk across threads | **Structural**: the `Fn + Send + Sync` bound, pinned by the executing baseline guard |
-| One thunk discharge; no force overlaps discharge | Discharge-once is **measured** by the red-first intrinsics lifetime cells, including the shared-reference negative leg. Non-overlap is **asserted**; falsifier: the severed join |
+| One thunk discharge; no force overlaps discharge | Discharge-once is **measured** by the red-first intrinsics lifetime cells, including the shared-reference negative leg. Non-overlap is **measured** for the cross-thread case, a cancelled blocking branch: `crates/cranelisp-intrinsics/src/reactor/tests.rs::bridge_join_lifecycle_holds_root_until_cancelled_worker_exits` observes root teardown held until the worker exits, and `crates/cranelisp-intrinsics/src/reactor/tests.rs::bridge_join_early_lease_release_plant_detects_teardown_before_worker_exit` is its detection proof. It is not structural: the join is a live count |
 | One `rc_inc` is the exact inverse of one `drop<T>` for every stamped payload category | **Asserted, with a falsifier** (source analysis; module cells cover the shallow and bare-nullary shapes only): a category whose glue is not count-gated |
 
 #### The platform-return seam — stamps are tag-licensed (R19)
@@ -397,8 +416,9 @@ widening, 10→11 the `Effect` thunk contract.
 - A platform function is a C-ABI body, so a polymorphic platform signature is a declared
   contract nothing can check. The class is concrete by construction:
   `SymbolTable::install_platform` converts the manifest scheme before it claims the
-  descriptor-order slot, and `src/platform.rs` reports a refusal as a module error naming the
-  platform function. The error carries `Span::SYNTHETIC`, not a source location.
-- Open: FIXME 0933 also asked for a parse-side refusal naming the offending lowercase leaf.
-  The structural gate is delivered; the filing's disposition against source is
-  `design`(int)'s.
+  descriptor-order slot. `src/platform.rs::platform_install_error` reports its
+  `SlotMint(NotConcrete)` refusal as a load error naming the platform function and quoting the
+  written signature. The error carries `Span::SYNTHETIC`, not a source location.
+- There is no parse-side refusal: a lowercase manifest leaf parses to a type variable and the
+  mint gate refuses it, so a second check would test the same property twice
+  ([binary design](../int/s125-binary-clean.md) §7).

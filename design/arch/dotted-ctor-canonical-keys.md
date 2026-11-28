@@ -25,8 +25,8 @@ targets from source and tests; the gaps are intentional.
   type-name key. It has no dotted key and no bare exposure.
 - Every writer applies the rule through the shared types ADT builder: user
   `deftype` registration in typecheck, typecheck's fixture seeds, and the
-  binary's bootstrap seeds (`register_synth_adt` and the hand-appended `IO.Bind`
-  in [bootstrap](../../src/bootstrap.rs)). No writer may store a sum
+  binary's bootstrap seeds (`register_synth_adt` in
+  [bootstrap](../../src/bootstrap.rs)). No writer may store a sum
   constructor under its bare name.
 
 The bare-key fallback that readers keep (§3) serves the product facet only. It

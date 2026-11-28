@@ -502,11 +502,13 @@ entries take no counted heap argument.
    constants and writes no offset of its own. A layout with no outside reader
    stays private to its module. Backend otherwise reads layout through named
    externs. [Heap layout owners](../intrinsics/heap-layout.md) lists each
-   layout's owner and readers. **Not yet true of the ADT and closure
-   layouts:** the backend defines them again, as do primitives' marshalling
-   and the binary's test runner. S124 packet row R10-9 (approved, not in
-   source) publishes them from the allocator module and deletes the
-   backend's copies.
+   layout's owner and readers. **Not yet true of primitives' Sexp
+   marshaller:** `crates/cranelisp-primitives/src/marshal.rs` derives the ADT
+   tag and field offsets from the header size and does not read
+   `alloc::HeapAdt`. The layout census reads intrinsics' sources only, so no
+   check sees it, and a change to the ADT layout must change it by hand until
+   it converges
+   ([ACT-1114](../../sprints/actions/ACT-1114-primitives-marshal-derives-adt-layout-locally.md)).
 3. **Atomic reference counting.** Every increment and decrement is atomic, with
    an acquire fence on the free path before glue reads fields. Every Rust-path
    increment routes through `rc::rc_inc` (release ordering, the NFR floor)
@@ -604,6 +606,20 @@ entries take no counted heap argument.
     DLL-returned effect outcome and the effect name carried on the node, and
     reports a dispatch fault through invariant 13's terminator. The report is
     one unprefixed line naming the effect, in every mode (§5 invariant 9).
+    **The trap dispositions are process state with one owner, this crate.**
+    The guard installs its handler once per process, records the actions it
+    replaces and never restores them; a call changes only its own thread's
+    jump context, so one call's return cannot remove another thread's
+    protection. A trap on a thread with no context armed is forwarded to the
+    recorded action
+    ([process lifecycle §1.8](../intrinsics/process-lifecycle.md#18-the-trap-guard-one-disposition-armed-per-thread)).
+    No other workspace code writes these dispositions, and the binary
+    installs no trap handler: measured by the census
+    `src/expander/trap_dispositions_tests.rs::trap_dispositions_are_written_only_by_the_intrinsics_guard`.
+    Overlapping platform calls are measured by
+    `tests/platform_errors.rs::overlapping_platform_trap_reports_fault_without_signal_death`.
+    An out-of-tree platform library that installs a handler for these
+    signals is not seen by any check.
 15. **Argument lifetime across suspension is runtime-owned.** A reactor-deferred
     effect's baked arguments stay alive until the reactor resolves the effect
     by completion or cancellation, and the state closure is consumed exactly
@@ -763,7 +779,6 @@ referenced by qualified name.
    effect node; an unstamped node degrades to an unknown name. No
    `PlatformError` carries a dispatch fault.
 
-
 ---
 
 ## 6. Binary / int — `src/` + `crates/cranelisp-exe-bundle/`
@@ -911,7 +926,8 @@ and primitives (§4b, §4a); the platform ABI (§5).
   root library's session surface serves its own binary target and tests; it has
   no generated baseline, but a public change still takes the
   [public-API gate](AGENTS.md#public-api-discipline). The exe-bundle exposes a startup stub to the system
-  linker only.
+  linker only; its force-link re-exports and startup hooks are a
+  [guarded baseline](AGENTS.md#baseline-diff-discipline-sprint-67-close).
 - **Windows:** cadence-scoped and never exposed.
 
 ### Known architectural constraints

@@ -24,7 +24,6 @@ pub cranelisp_types::CallableOrigin::Accessor::field: cranelisp_types::Symbol
 pub cranelisp_types::CallableOrigin::Accessor::type_name: cranelisp_types::FQTypeName
 pub cranelisp_types::CallableOrigin::Ctor
 pub cranelisp_types::CallableOrigin::Ctor::field_count: usize
-pub cranelisp_types::CallableOrigin::Ctor::internal: bool
 pub cranelisp_types::CallableOrigin::Ctor::tag: usize
 pub cranelisp_types::CallableOrigin::Ctor::type_def: core::option::Option<alloc::boxed::Box<cranelisp_types::TypeDefInfo>>
 pub cranelisp_types::CallableOrigin::Ctor::type_name: cranelisp_types::FQTypeName
@@ -679,10 +678,9 @@ pub cranelisp_types::AdtCallableSpec::visibility: cranelisp_types::Visibility
 #[non_exhaustive] pub struct cranelisp_types::AdtCtorSpec
 pub cranelisp_types::AdtCtorSpec::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::AdtCtorSpec::fields: alloc::vec::Vec<cranelisp_types::FieldInfo>
-pub cranelisp_types::AdtCtorSpec::internal: bool
 pub cranelisp_types::AdtCtorSpec::name: cranelisp_types::Symbol
 impl cranelisp_types::AdtCtorSpec
-pub fn cranelisp_types::AdtCtorSpec::new(cranelisp_types::Symbol, alloc::vec::Vec<cranelisp_types::FieldInfo>, core::option::Option<alloc::string::String>, bool) -> Self
+pub fn cranelisp_types::AdtCtorSpec::new(cranelisp_types::Symbol, alloc::vec::Vec<cranelisp_types::FieldInfo>, core::option::Option<alloc::string::String>) -> Self
 #[non_exhaustive] pub struct cranelisp_types::Binding<C: cranelisp_types::CodeStore>
 pub cranelisp_types::Binding::declaration: cranelisp_types::Decl<C>
 pub cranelisp_types::Binding::visibility: cranelisp_types::Visibility

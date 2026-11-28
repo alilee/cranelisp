@@ -1,17 +1,47 @@
 ---
 number: 0915
-target: /design (backend)
+target: /arch
 filed_by: /repl
 filed_at: 2026-07-26
 sprint_filed: 118
 refers_to: crates/cranelisp-backend/src/error.rs;
-  crates/cranelisp-backend/src/drop_glue.rs;
-  design/backend/non-concrete-release-contract.md §3.4, §7.2;
+  src/main.rs;
+  design/backend/non-concrete-release-contract.md §7.2.1;
   design/int/int.md §9.1;
   repl/spec/05-error-presentation.md
 status: deferred
 ruled_at: design/backend/non-concrete-release-contract.md §3.4 (R-4), §7.2
 ---
+
+## S125 disposition (`design`(backend), 2026-11-27): re-targeted to `arch`
+
+Verified against source in the working tree:
+
+- **Backend half resolved.** `crates/cranelisp-backend/src/error.rs`:
+  `codegen_failed` and `module_failed` split the inner error into
+  `cause` and `location`, so the only located prefix is the one rendered
+  outward (Rule 1). `CodegenFailed` renders `codegen failed for {symbol} in
+  {module}`, with the module a separate noun and no `{module}/{symbol}`
+  composition (Rule 3). `crates/cranelisp-backend/src/drop_glue.rs` uses
+  `Span::SYNTHETIC` only inside its `#[cfg(test)]` modules (Rule 2). Landed
+  at `a9a8c0c6` and `36e64f27`, with row B15 at `9bee5930`
+  (release contract §7.2.1). Nothing remains for the backend.
+- **Open: the subject face (item 4).** The rendered noun is still
+  `__expr` or an instance key (`qa`, S124 evidence delta §14.8: `codegen
+  failed for __expr in user: …`). The int §9.1 ruling puts the projection
+  at the binary's formatter, but the subject reaches `src/` only as the
+  backend's rendered text through `From<CompilationError> for
+  CranelispError` (`error.rs`). A projection there would re-parse that
+  text, which §9.1 forbids. Realising it needs the subject to travel as data
+  on the outward error, a public change in types and the backend.
+- **Re-targeted to `arch`** to decide that carrier. `design`(int) then
+  designs the projection at the formatter. `dev`(`src/`) builds it with the
+  module row `qa` allocated (S124 evidence delta §14.8). Trigger:
+  scheduling of the binary's half. The falsifier is unchanged: a public
+  codegen error whose subject is `__expr` or an instance key.
+- Opened: `error.rs`, `drop_glue.rs` (its `Span::SYNTHETIC` sites and test
+  boundary), release contract §7.2–§7.2.1, int.md §9.1, S124 evidence delta
+  §14.8 and its backend row, S125 evidence delta.
 
 ## S122 disposition (user-approved 2026-09-30)
 

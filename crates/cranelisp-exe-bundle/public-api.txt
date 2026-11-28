@@ -8,6 +8,7 @@ pub use cranelisp_exe_bundle::ivar
 pub use cranelisp_exe_bundle::layout
 pub use cranelisp_exe_bundle::panic
 pub use cranelisp_exe_bundle::rc
+pub use cranelisp_exe_bundle::runtime_switches
 pub use cranelisp_exe_bundle::trace
 #[no_mangle] pub c fn cranelisp_exe_bundle::cranelisp_init_platform(i64)
 #[no_mangle] pub c fn cranelisp_exe_bundle::cranelisp_init_primitives()
