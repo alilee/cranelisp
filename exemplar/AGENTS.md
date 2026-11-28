@@ -17,7 +17,7 @@ surface. Its design, design decisions and open obligations are in
 
 | Path | Contents |
 |---|---|
-| `grid.cl`, `solver.cl`, `html.cl`, `form.cl` | The pure core; see [architecture](plan-exemplar.md#architecture) |
+| `grid.cl`, `solver.cl`, `html.cl`, `form.cl` | The core: no result type in it contains `IO`; see [architecture](plan-exemplar.md#architecture) |
 | `user.cl` | Headline stdio entry: form body → grid → solve → ASCII board, plus the rendered HTML page's size |
 | `smoke.cl` | Quick smoke-test entry that solves and prints a fixed puzzle |
 | `tests.cl` | Free-standing runner; exit code = number of passing tests |
@@ -26,7 +26,7 @@ surface. Its design, design decisions and open obligations are in
 
 ## Run
 
-Run from the repository root. The platform DLLs build into `target/debug`,
+Run from the repository root. The platform DLLs build into `target/debug`, <!-- doc-check: literal reason="cargo build output directory, not a tracked file" -->
 which is not a default platform search directory, so set
 `CRANELISP_PLATFORM_PATH`:
 
@@ -34,16 +34,17 @@ which is not a default platform search directory, so set
 export CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib
 cargo run -- --run exemplar/user.cl       # headline showcase, exit 0
 cargo run -- --run exemplar/smoke.cl      # solves a fixed puzzle, exit 0
-cargo run -- --run exemplar/tests.cl      # exit code 43 when all pass
-CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 43
+cargo run -- --run exemplar/tests.cl      # exit code 46 when all pass
+CRANELISP_NO_LENIENT=1 cargo run -- --run exemplar/tests.cl   # serial; also 46
 cargo run -- --run exemplar/main.cl       # serves HTTP until killed
 ```
 
-- A green `tests.cl` run exits 43 (15 grid, 7 solver, 12 html, 9 form).
-  Getting 43 under both the default parallel mode and
+- A green `tests.cl` run exits 46 (16 grid, 8 solver, 13 html, 9 form).
+  Getting 46 under both the default parallel mode and
   `CRANELISP_NO_LENIENT=1` is the parallel ≡ serial guard.
-  `solver/test-solve-parallel-equiv` pins a puzzle that requires
-  backtracking.
+  `solver/test-solve-parallel-equiv` pins the solution of a puzzle that
+  `solver/test-equiv-puzzle-needs-search` shows propagation alone cannot
+  solve, so the parallel search runs.
 - `solver/test-hard-puzzle` is deliberately excluded from the runner; see
   [copy-per-guess performance](plan-exemplar.md#copy-per-guess-performance).
 - Before `--link`, build the workspace coherently: run `cargo build`, then
@@ -75,10 +76,6 @@ State only what these tests show:
   `user` module adopts `./user.cl` as its backing file and shares the `user` <!-- doc-check: literal reason="REPL backing file in the working directory, not a tracked file" -->
   cache slot. It can rewrite the headline entry and poison the cache. Use a
   scratch directory with copies of the modules.
-- **Do not add a file under `exemplar/` at a library module's path** (for
-  example `collections/vec/test.cl`). The compiler loads it in place of that <!-- doc-check: literal reason="example of a forbidden path, not a tracked file" -->
-  library module's declared child: defect ACT-1096, carried on failing tests
-  ([register](../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).
 - **Hard-puzzle backtracking is quadratic.** This is performance, not
   correctness: see
   [copy-per-guess performance](plan-exemplar.md#copy-per-guess-performance)
@@ -89,17 +86,20 @@ State only what these tests show:
 ## Conventions
 
 - Use the prelude trait operators (`+ - * / = != < <= >`) for arithmetic and
-  comparison. Access Vecs through `count`/`get`/`assoc`/`conj` imported from
-  `collections.vec`. Import string primitives and `not` by name from
-  `primitives`.
+  comparison. Import Vec verbs (`count`, `get`, `assoc`, `conj`, `range`,
+  `vec-map`, `vec-reduce`) by name from `collections.vec`, and string
+  primitives and `not` by name from `primitives`.
 - Test functions are top-level `test-*` `defn`s returning `(Option String)`,
-  where `None` means pass (`repl/spec/16-test-discovery.md` §16.1). Add each new
+  where `None` means pass (`repl/spec/16-test-discovery.md` §16.1). Build them
+  from `testing.assertions` (`check`, `assert-eq`, `assert-true`,
+  `assert-false`), and assert the rendered fragment rather than a substring
+  the page's CSS may already contain. Add each new
   test to `tests.cl` and its expected count. `cranelisp --test exemplar/main.cl`
   discovers every `test-*` function, so a listing that differs from the runner's
   shows a test the runner omits.
 - Every batch `main` returns `(IO _)`; the inner Int is the process exit code.
 - Only an entry (`smoke.cl`, `user.cl`, `tests.cl`, `main.cl`) declares a
-  platform; the pure-core and helper modules import `platform.<name>` from the
+  platform; the core and helper modules import `platform.<name>` from the
   entry's declaration (`spec/10-io.md` §10.9.1).
 - A runtime panic ends the process, the web server included, so request
   handling has no fault recovery. Code that a request's input can reach must

@@ -11,7 +11,7 @@ this document does not restate it.
 The exemplar shows that Cranelisp handles a real multi-module program:
 
 - constraint propagation and backtracking search over domain ADTs
-- module decomposition around one pure core
+- module decomposition around one core whose result types contain no `IO`
 - server-side HTML and form parsing without JavaScript
 - an application-authored platform DLL (`platforms/web/`)
 - parallel search and concurrent serving that the compiler infers, with no
@@ -19,14 +19,15 @@ The exemplar shows that Cranelisp handles a real multi-module program:
 
 ## Architecture
 
-One pure core serves three IO entries: `user.cl` and `smoke.cl` on stdio, `main.cl` on the web.
-`tests.cl` is a fourth entry that runs the core's tests and performs no IO.
+One core serves three IO entries: `user.cl` and `smoke.cl` on stdio, `main.cl`
+on the web. No result type in the core contains `IO`. `tests.cl` is a fourth
+entry that runs the core's tests and performs no IO.
 
 | Module | Responsibility |
 |---|---|
 | `grid.cl` | Data model, candidate-bitmask adapters, index geometry, peers, `make-grid`, `is-solved` |
 | `solver.cl` | `eliminate`, `propagate`, MRV (`find-min-candidates`), `solve`, board formatting |
-| `html.cl` | Form, solution, error and not-found pages |
+| `html.cl` | Form, solution, error and not-found pages; HTML escaping |
 | `form.cl` | URL-encoded form body → 81-character puzzle string |
 | `user.cl` | Stdio entry (the headline showcase) |
 | `smoke.cl` | Stdio entry that solves and prints a fixed puzzle |
@@ -83,7 +84,8 @@ solution   --solution-page---->  HTML page
 - Routes: `GET /` form, `POST /solve` solution or error page, `GET /slow`
   a page served after a fixed delay for the fan-out demonstration. Any other
   path gets 404, and any other method gets 405.
-- `handle` is pure (`Request → Response`) and must not panic on any request:
+- `handle` (`Request → Response`) has no `IO` in its result type and must not
+  panic on any request:
   a runtime panic ends the server process
   ([runtime panics](../spec/12-runtime.md#1272-runtime-panics)). It holds by
   construction. `parse-form-body` bounds its only `get`s by `count` and always
@@ -92,6 +94,9 @@ solution   --solution-page---->  HTML page
   divides by constants and matches exhaustively.
   `form/test-malformed-body` pins the parser on input a browser would not
   send.
+- The platform passes the request target through raw, and the 404 page echoes
+  it, so `not-found-page` escapes `&`, `<`, `>` and `"` (`escape-html`).
+  Any page that echoes request input must escape it the same way.
 - No route answers 500. No request outcome is a fault that a response value
   could represent, so none is modelled.
 - **Concurrency is inferred, not written.** `serve-loop` binds the next
@@ -102,8 +107,9 @@ solution   --solution-page---->  HTML page
   ([effect concurrency](../design/arch/effect-concurrency.md) §4.1).
 - **Keep every effect position a direct leaf.** A user function that returns
   IO in the handler sub-tree has an opaque footprint. Eligibility analysis must
-  refuse it, so the server silently serialises. Pure helpers such as
-  `slow-ms` and `handle` may compute leaf arguments only.
+  refuse it, so the server silently serialises. Helpers whose result types
+  contain no `IO`, such as `slow-ms` and `handle`, may compute leaf arguments
+  only.
 - The `web` platform uses the mixed `declare_platform!` shape.
   `bind-listener` is `Sequential`. `accept-conn`, `read-conn` and `send-conn`
   are poll leaves. `web/Connection` is an opaque handle carrying only the
@@ -125,10 +131,15 @@ solution   --solution-page---->  HTML page
   arithmetic identity reads more clearly in `col-of` than a cross-module import.
 - **HTML is built with `str-concat`, not the `str` macro.** This keeps
   `show`-dispatch overhead out of production output. For the same reason, the
-  `Display Cell` implementation is a REPL and debug affordance that the
-  formatting path does not use.
+  `Display Cell` implementation serves the REPL, debug output and test
+  messages; the formatting path does not use it.
 - **Form parsing** splits on `&` and `=` with the `split` primitive, then
-  rebuilds the puzzle with `substring` and `str-concat`.
+  places each digit with `text.string/replace-at`.
+- **Index loops.** Rendering, board layout and test-grid builders iterate
+  `collections.vec/range` with `vec-reduce`/`vec-map`. The search and
+  propagation path keeps its hand-threaded `*-helper` recursion, and `peers`,
+  `make-grid` and `is-solved` stay multi-signature `defn`s
+  ([data model](#data-model)).
 - **Source is idiomatic, not defect-shaped.** Do not rewrite exemplar source
   around a compiler defect, for example by annotating to force inference or by
   removing the contradiction arm of `eliminate`. The exemplar is valuable
@@ -150,16 +161,7 @@ fast-test time. The analysis, proposed fix and re-entry trigger are in the
 
 ### Stdlib adoption
 
-The S87 adequacy review's stdlib verbs now exist. The exemplar has adopted
-`conj`, `num.bits`, `digit-to-char` and `repeat-str`, and it reuses
-`row-of`/`col-of`. It has not yet adopted three verbs:
-
-- `text.string/char-to-digit` for `form.cl` `parse-digit-char` and the
-  digit ladder in `grid.cl` `make-grid`
-- `text.string/replace-at` for `form.cl` `set-char-at`
-- `collections.vec/range` with `vec-reduce`/`vec-map` for the hand-threaded
-  0..9 and 0..81 index loops (`*-helper` functions) across the four pure
-  modules
-
-Adopt each verb only where it reads better. Do not reshape `eliminate` or the
-propagation path.
+- The nested `(if a true b)` disjunctions wait for the planned `control`
+  `and`/`or` (`stdlib/plan-stdlib.md`).
+- `smoke.cl` chains `bind` with a discarded result; it moves to the prelude's
+  `do` when defect ACT-1018, carried on that entry, is fixed.

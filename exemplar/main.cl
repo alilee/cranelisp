@@ -1,6 +1,6 @@
 ;; main.cl — Sudoku Solver: the web entry point.
 ;;
-;; Wires the pure Sudoku core to the `web` platform (exemplar/platforms/web/).
+;; Wires the Sudoku core to the `web` platform (exemplar/platforms/web/).
 ;;
 ;;   GET  /        →  form-page         (9×9 puzzle-entry grid)
 ;;   GET  /slow    →  ok-page after a fixed delay (the fan-out demonstration)
@@ -8,15 +8,16 @@
 ;;   <anything>    →  not-found-page    (404)
 ;;
 ;; Run with `--run exemplar/main.cl`, or `--link` it and run the binary; either
-;; serves until killed. The router `handle :: (Fn [Request] Response)` is pure.
+;; serves until killed. The router `handle :: (Fn [Request] Response)` performs
+;; no IO: its result type contains none.
 ;;
 ;; Concurrency is inferred, not written: the serve loop discards a
 ;; per-connection sub-tree of direct leaves (`read-conn` → `sleep` →
 ;; `send-conn`) whose footprint is disjoint from `listener`, so each connection
 ;; runs on its own supervised strand. Keep every effect position in that
 ;; sub-tree a direct leaf. A user function returning IO there is opaque to the
-;; analysis and silently serialises the server; pure helpers such as `slow-ms`
-;; and `handle` compute leaf arguments only (plan-exemplar.md, "Web server").
+;; analysis and silently serialises the server; helpers such as `slow-ms` and
+;; `handle`, whose result types contain no `IO`, compute leaf arguments only (plan-exemplar.md, "Web server").
 ;;
 ;; A runtime panic ends the server, so `handle` must not panic on any request.
 ;; Every value a request supplies reaches only total operations; bad input
@@ -32,16 +33,13 @@
 (import [platform.web [read-conn send-conn]])
 (import [web [Request Response]])
 
-;; The pure Sudoku core (shared verbatim with the stdio showcase).
+;; The Sudoku core, shared with the stdio entries.
 (import [form   [parse-form-body]])
-(import [grid   [make-grid SolveResult Success Unsolvable]])
+(import [grid   [make-grid Success Unsolvable]])
 (import [solver [solve]])
 (import [html   [form-page solution-page error-page not-found-page]])
 
-;; ── The pure router ──────────────────────────────────────────────────────
-;;
-;; `handle :: (Fn [Request] Response)` — pure. Maps method + path to a
-;; Response. No IO; trivially testable; safe to call from any thread.
+;; ── The router ───────────────────────────────────────────────────────────
 
 ;; POST /solve: parse the URL-encoded body into a puzzle string, build the
 ;; grid, solve, and render. A bad puzzle string or an unsolvable puzzle both
@@ -58,11 +56,8 @@
             Unsolvable
               (Response 200 "text/html" (error-page "No solution exists"))])])))
 
-;; The route table. Match on (method, path) via nested match on the Request
-;; fields (no accessor fns — fields come out of the constructor pattern).
-;; GET /slow is the fan-out demonstration endpoint: a plain 200 page whose
-;; concurrency-witness delay is supplied by `slow-ms` at the serve-loop's
-;; direct `sleep` leaf (NOT here — `handle` stays pure and instantaneous).
+;; Map method and path to a Response. GET /slow answers a plain page; its
+;; delay comes from `slow-ms` at the serve loop's `sleep` leaf, not from here.
 (defn handle [req]
   (match req
     [(Request method path body)
@@ -79,9 +74,9 @@
            (Response 405 "text/html"
              (error-page "Method not allowed"))))]))
 
-;; slow-ms : (Fn [Request] Int) — pure. The delay before responding: 100 ms for
-;; `/slow` (the fan-out witness), 0 for every other route. It computes the
-;; argument of the serve loop's `sleep` leaf and must not itself return IO.
+;; The delay before responding: 100 ms for `/slow` (the fan-out witness), 0 for
+;; every other route. It computes the argument of the serve loop's `sleep` leaf
+;; and must not itself return IO.
 (defn slow-ms [req]
   (match req
     [(Request method path body)

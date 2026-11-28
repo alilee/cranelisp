@@ -1,13 +1,7 @@
-//! `web` platform for cranelisp -- a hand-rolled HTTP/1.0 server cdylib.
+//! `web` platform for cranelisp: a hand-rolled HTTP/1.0 server cdylib.
 //!
-//! ## S96 Chunk B (Wave B4) — the poll-shape rewrite (FIXME 0465 resolution)
-//!
-//! Originally (Sprint 86 Wave E.1, FIXME 0405) a v6 single-stream BLOCKING
-//! `listen`/`accept`/`send` over a process-global `Mutex<ServerState>`. The S96
-//! single-ABI cutover (`design/arch/platform-interface.md` §6.8.0a) makes the
-//! reactor unconditional, so the connection lifecycle is now expressed as
-//! **poll-shape leaves over per-connection tokens**
-//! (`design/platform/poll-leaf-authoring.md` §3):
+//! The connection lifecycle is poll-shape leaves over per-connection tokens
+//! (`design/platform/poll-leaf-authoring.md` §3), with one blocking effect:
 //!
 //! | effect | shape | FQ signature | natural arguments |
 //! |---|---|---|---|
@@ -16,42 +10,32 @@
 //! | `read-conn` | poll `Consume` | `(Fn [web/Connection] (IO web/Request))` | `[connection]` |
 //! | `send-conn` | poll `Consume` | `(Fn [web/Connection web/Response] (IO Int))` | `[connection, response]` |
 //!
-//! `bind-listener` (blocking) and the three poll leaves coexist in one
-//! `declare_platform!` manifest — exactly the mixed shape stdio's
-//! `print`+`read-line` proved in Chunk A. The poll leaves are written against the
-//! extracted `poll_support` suite ([`PollEnv`] for the env, [`Reactor`] for
-//! fd-readiness, [`PollState`] for the first-poll/re-poll phase) — web is the
-//! **3rd `poll_support` consumer**, adding no new scaffold
-//! (`poll-leaf-authoring.md` §5). Two parts stay hand-written (what
-//! `poll_support` does not
-//! own"): the ADT construct/read on the ready phase (via `CLAdt` +
-//! `web.platform-schema`) and the syscall + line-buffering.
+//! The blocking effect and the poll leaves share one `declare_platform!`
+//! manifest. The poll leaves use the `poll_support` suite ([`PollEnv`] for the
+//! env, [`Reactor`] for fd readiness, [`PollState`] for the first-poll/re-poll
+//! phase) and add no scaffold of their own (`poll-leaf-authoring.md` §5). Two
+//! parts are hand-written: the ADT construct/read on the ready phase (via
+//! `CLAdt` and `web.platform-schema`) and the syscalls with their buffering.
 //!
-//! ### The connection-token model (`poll-leaf-authoring.md` §3)
+//! ## Connection tokens (`poll-leaf-authoring.md` §3)
 //!
-//! `accept-conn` mints a FRESH connection token (`token == conn fd`) on
-//! listener-readable, so distinct connections are concurrent by construction (the
-//! Chunk-B fan-out vehicle); `read-conn`/`send-conn` ride that token
-//! (`capacity == 1` ⇒ serial within one connection). The scheduling token is
-//! projected by the platform from the handle and passed with capacity 1 through
-//! `ctx.acquire`; the poll-fn reads only natural arguments from `PollEnv`.
+//! `accept-conn` mints a fresh `web/Connection` carrying the accepted socket
+//! fd, so distinct connections are concurrent by construction. `read-conn` and
+//! `send-conn` project a per-direction token from that fd and acquire it with
+//! capacity 1, so each direction is serial within one connection. A poll-fn
+//! reads only natural arguments from `PollEnv`; no scheduling state rides on
+//! the language value.
 //!
-//! ### Internal state: fd-keyed maps, NOT a process-global `Mutex<ServerState>`
+//! ## Internal state
 //!
-//! The v6 single-in-flight-stream `Mutex<ServerState>` is RETIRED. The OS
-//! resources live in fd-keyed internal maps ([`LISTENERS`] keeps the bound
-//! `TcpListener` alive so its fd stays valid; [`READBUFS`]/[`WRITEBUFS`] carry the
-//! per-connection read accumulation / pending write across `Pending` boundaries).
-//! Only the i64 fd/token/capacity cross the boundary (the standard fd-as-handle
-//! pattern; no `TcpStream` value in cranelisp) — the connection now threads
-//! through cranelisp (`web.cl`'s `Connection` ADT), not a hidden global.
+//! OS resources live in fd-keyed maps: `LISTENERS` keeps each bound
+//! `TcpListener` alive so its fd stays valid, and `READBUFS`/`WRITEBUFS`
+//! carry a connection's partial read or pending write across `Pending`
+//! boundaries. Only i64 fds cross the boundary; the connection itself threads
+//! through cranelisp as `web.cl`'s `Connection` ADT.
 //!
-//! The two pure halves -- the request **parser** ([`parse_http_request`]) and the
-//! response **formatter** ([`format_http_response`]) -- are unchanged and carry
-//! the unit tests.
-//!
-//! Uses the `cranelisp-platform` shared crate for ABI types, the `CLAdt<T>`
-//! ADT-marshaling wrapper, the `poll_support` suite, and `declare_platform!`.
+//! The request parser ([`parse_http_request`]) and response formatter
+//! ([`format_http_response`]) perform no IO and carry the unit tests.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -62,7 +46,7 @@ use std::sync::{LazyLock, Mutex};
 use cranelisp_platform::poll_support::{PollEnv, PollState, PollStep, Reactor};
 use cranelisp_platform::*;
 
-/// v9 token projection (`poll-leaf-authoring.md` §4): the platform computes a scheduling
+/// Token projection (`poll-leaf-authoring.md` §4): the platform computes a scheduling
 /// token from the connection fd it holds. Read and write project **distinct**
 /// per-direction tokens off one full-duplex handle, so `read`/`send` on a connection
 /// do not serialize against each other; across connections the fds differ ⇒ the tokens
@@ -77,7 +61,7 @@ fn write_tok(fd: i32) -> u64 {
 static HOST: HostContext = HostContext::new();
 
 // ---------------------------------------------------------------------
-// Pure HTTP parsing / formatting (the unit-tested core) -- UNCHANGED
+// HTTP parsing and formatting (no IO; the unit-tested core)
 // ---------------------------------------------------------------------
 
 /// A parsed HTTP request -- the three fields the Sudoku roundtrip needs.
@@ -94,7 +78,7 @@ pub struct ParsedRequest {
 
 /// Parse a raw HTTP/1.0 (or /1.1) request buffer into method / path / body.
 ///
-/// PURE: no IO, no globals. This is the riskiest hand-rolled part, so it is the
+/// Pure: no IO, no globals. This is the riskiest hand-rolled part, so it is the
 /// primary unit-test target. The grammar handled is the minimal subset the
 /// Sudoku GET-form / POST-solve roundtrip exercises:
 ///
@@ -158,7 +142,7 @@ pub fn parse_http_request(raw: &str) -> Option<ParsedRequest> {
 
 /// Format a status / content-type / body triple into a raw HTTP/1.0 response.
 ///
-/// PURE: no IO, no globals. The second unit-test target. Emits:
+/// Pure: no IO, no globals. The second unit-test target. Emits:
 ///
 /// ```text
 /// HTTP/1.0 <status> <reason>\r\n
@@ -170,9 +154,9 @@ pub fn parse_http_request(raw: &str) -> Option<ParsedRequest> {
 /// ```
 ///
 /// `Content-Length` is the body's **byte** length (not char count). The reason
-/// phrase is a small lookup over the codes the exemplar emits (200/400/404/500),
-/// falling back to `"Status"` for anything else -- the reason phrase is
-/// advisory, so an unknown code still produces a well-formed response.
+/// phrase is a small lookup over common codes, falling back to `"Status"` for
+/// anything else -- the reason phrase is advisory, so an unknown code still
+/// produces a well-formed response.
 pub fn format_http_response(status: i64, content_type: &str, body: &str) -> String {
     let reason = match status {
         200 => "OK",
@@ -195,7 +179,7 @@ pub fn format_http_response(status: i64, content_type: &str, body: &str) -> Stri
 
 /// Parse a header block for the `Content-Length` value (case-insensitive),
 /// defaulting to `0`. Shared by the poll-shape read accumulator below and the
-/// pure parser's body bounding.
+/// parser's body bounding.
 fn content_length_of(head: &str) -> usize {
     head.split('\n')
         .map(|l| l.trim_end_matches('\r'))
@@ -212,7 +196,7 @@ fn content_length_of(head: &str) -> usize {
 }
 
 // ---------------------------------------------------------------------
-// Connection state -- fd-keyed internal maps (NO process-global Mutex<ServerState>)
+// Connection state -- fd-keyed internal maps
 // ---------------------------------------------------------------------
 
 /// Bound listeners, keyed by their socket fd. Keeps the `TcpListener` alive so
@@ -266,8 +250,8 @@ fn errno_would_block() -> bool {
 
 /// Bind a `TcpListener` on `0.0.0.0:<port>` (all interfaces) and return a
 /// `web/Listener [fd, pool]`. BLOCKING (`SchedulingClass::Sequential`) — a bind
-/// is fast; no poll-fn. `n` is the Chunk-B in-flight-connection ceiling carried
-/// on the handle (inert under the serial serve loop).
+/// is fast; no poll-fn. `n` is the in-flight-connection ceiling carried on the
+/// handle.
 ///
 /// On bind failure the listener fd is `-1` (a subsequent `accept-conn` on `-1`
 /// errors gracefully into an empty connection); the showcase ignores it.
@@ -275,11 +259,9 @@ pub extern "C" fn bind_listener(port: CLInt, n: CLInt) -> CLIO<CLAdt<Listener>> 
     let port = i64::from(port);
     let n = i64::from(n);
     CLIO::effect(move || {
-        // `CRANELISP_PORT` override: cranelisp has no user-facing env accessor, so
-        // a port-parametrized fixture (the S96 C-fanout `web_fanout` e2e binds an
-        // ephemeral port to avoid the 8080 collision, Gap G4) supplies the port via
-        // this platform-side env read. Absent/unparseable ⇒ the source `port` arg
-        // (the exemplar's 8080) — backward-compatible with `exemplar_web.rs`.
+        // `CRANELISP_PORT` overrides the source `port` (cranelisp has no
+        // user-facing env accessor), so a test can bind an ephemeral port.
+        // Absent or unparseable ⇒ the source `port`.
         let port = std::env::var("CRANELISP_PORT")
             .ok()
             .and_then(|s| s.trim().parse::<i64>().ok())
@@ -304,8 +286,8 @@ pub extern "C" fn bind_listener(port: CLInt, n: CLInt) -> CLIO<CLAdt<Listener>> 
 }
 
 /// Forget a freshly-`construct`ed (RC=1) owned ADT and hand its base pointer to
-/// the caller (the producing side of the consuming convention, Decision 24 —
-/// `forget` suppresses the `CLOwned` dec so the caller adopts the RC=1 ref).
+/// the caller (`forget` suppresses the `CLOwned` dec so the caller adopts the
+/// RC=1 ref).
 fn adt_into_raw<T: CLAdtType>(owned: CLOwned<CLAdt<T>>) -> CLAdt<T> {
     let adt: CLAdt<T> = *owned;
     std::mem::forget(owned);
@@ -316,12 +298,12 @@ fn adt_into_raw<T: CLAdtType>(owned: CLOwned<CLAdt<T>>) -> CLAdt<T> {
 // accept-conn -- poll-shape: park on listener-readable, mint a fresh Connection
 // ---------------------------------------------------------------------
 
-/// `accept-conn` poll-fn — **v9 Produce** (`(Fn [web/Listener] (IO web/Connection))`).
+/// `accept-conn` poll-fn — **Produce** (`(Fn [web/Listener] (IO web/Connection))`).
 /// Leaf arg 0 (`state+8`) is the `web/Listener` ADT base ptr; the poll-fn reads its
-/// genuine `fd` field. `accept` is structurally serial in the serve loop, so role
+/// `fd` field. `accept` is structurally serial in the serve loop, so role
 /// Produce takes no listener-token acquire (`poll-leaf-authoring.md` §3) — it only
 /// registers listener-readable and accepts. On a connection it mints a FRESH opaque
-/// `Connection [conn_fd]` carrying the new `r` (`r == fd`), materialized at `Ready`.
+/// `Connection [conn_fd]` carrying the accepted fd, materialized at `Ready`.
 ///
 /// # Safety
 /// C-ABI poll-fn ([`PollFn`]): `state` is the host-built state-closure env base;
@@ -334,7 +316,6 @@ pub unsafe extern "C" fn accept_conn_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // v9: leaf arg 0 is the `web/Listener` ADT base ptr; read its genuine `fd` field.
     // SAFETY: leaf arg 0 is a live `web/Listener` base pointer (the effect declares it).
     let listener = CLAdt::<Listener>::from_raw(unsafe { env.arg(0) });
     let listener_fd: CLInt = listener.read_field("fd");
@@ -355,7 +336,7 @@ fn accept_step(listener_fd: i32, reactor: &Reactor) -> PollStep {
     }
     if cfd >= 0 {
         set_nonblocking(cfd);
-        // v9: opaque 1-field Connection carrying the fresh `r` (`r == fd`).
+        // Opaque 1-field Connection carrying the accepted fd.
         let fields = [cfd as i64];
         let adt = adt_into_raw(CLAdt::<Connection>::construct(0, &fields));
         if std::env::var("WEBDBG").is_ok() {
@@ -379,9 +360,9 @@ fn accept_step(listener_fd: i32, reactor: &Reactor) -> PollStep {
 // read-conn -- poll-shape: park on connection-readable, parse one Request
 // ---------------------------------------------------------------------
 
-/// `read-conn` poll-fn — **v9 Consume** (`(Fn [web/Connection] (IO web/Request))`).
+/// `read-conn` poll-fn — **Consume** (`(Fn [web/Connection] (IO web/Request))`).
 /// Leaf arg 0 (`state+8`) is the `web/Connection` ADT base ptr; the poll-fn reads its
-/// genuine `fd` field, projects `read_tok(fd)`, and calls `ctx.acquire` ITSELF
+/// `fd` field, projects `read_tok(fd)`, and calls `ctx.acquire` ITSELF
 /// (`poll-leaf-authoring.md` §4). On `Parked` ⇒ `Pending` (backpressure). Then reads
 /// (nonblocking) into the per-fd accumulation buffer until a complete request, parses
 /// it, and constructs a `web/Request`; parks on `EWOULDBLOCK`. The host releases the
@@ -397,7 +378,6 @@ pub unsafe extern "C" fn read_conn_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // v9: leaf arg 0 is the `web/Connection` ADT base ptr; read its genuine `fd` field.
     // SAFETY: leaf arg 0 is a live `web/Connection` base pointer.
     let conn = CLAdt::<Connection>::from_raw(unsafe { env.arg(0) });
     let conn_fd: CLInt = conn.read_field("fd");
@@ -443,13 +423,13 @@ fn read_step(conn_fd: i32, reactor: &Reactor) -> PollStep {
             }
             continue; // re-check for a complete request, then read again.
         } else if n == 0 {
-            // EOF: hand whatever arrived to the pure parser (which 400s on junk).
+            // EOF: parse whatever arrived; junk yields an empty request.
             return PollStep::Ready(build_request(&drain_all(conn_fd)));
         } else if errno_would_block() {
             reactor.wake_on_readable(conn_fd);
             return PollStep::Park;
         } else {
-            // Hard read error: surface an empty request (router answers 400).
+            // Hard read error: surface an empty request.
             return PollStep::Ready(build_request(""));
         }
     }
@@ -487,8 +467,8 @@ fn drain_all(conn_fd: i32) -> String {
 }
 
 /// Parse a raw request and construct a `web/Request` ADT, returning its base
-/// pointer (RC=1, caller adopts). A parse failure yields an empty triple so the
-/// cranelisp router answers 400 rather than the DLL panicking.
+/// pointer (RC=1, caller adopts). A parse failure yields an empty triple, which
+/// the cranelisp router answers with 405, rather than the DLL panicking.
 fn build_request(raw: &str) -> i64 {
     let parsed = parse_http_request(raw).unwrap_or(ParsedRequest {
         method: String::new(),
@@ -507,8 +487,8 @@ fn build_request(raw: &str) -> i64 {
 // send-conn -- poll-shape: park on connection-writable, write + close
 // ---------------------------------------------------------------------
 
-/// `send-conn` poll-fn — **v9 Consume** (`(Fn [web/Connection web/Response] (IO Int))`).
-/// Leaf arg 0 (`state+8`) is the `web/Connection` ADT base ptr (read its genuine `fd`
+/// `send-conn` poll-fn — **Consume** (`(Fn [web/Connection web/Response] (IO Int))`).
+/// Leaf arg 0 (`state+8`) is the `web/Connection` ADT base ptr (read its `fd`
 /// field); leaf arg 1 (`state+16`) is the `web/Response` base pointer (read-only — RC
 /// owned by the env's drop glue). Projects `write_tok(fd)` and calls `ctx.acquire`
 /// ITSELF; `Parked` ⇒ `Pending`. Formats the wire once into the per-fd write buffer,
@@ -526,7 +506,6 @@ pub unsafe extern "C" fn send_conn_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // v9: leaf arg 0 is the `web/Connection` ADT base ptr; read its genuine `fd` field.
     // SAFETY: leaf arg 0 is a live `web/Connection` base pointer.
     let conn = CLAdt::<Connection>::from_raw(unsafe { env.arg(0) });
     let conn_fd: CLInt = conn.read_field("fd");
@@ -643,7 +622,7 @@ fn finish_connection(conn_fd: i32) {
     }
 }
 
-/// v9 **Produce** descriptor for `accept-conn`: poll-shape (`blocking 0`), role
+/// **Produce** descriptor for `accept-conn`: poll-shape (`blocking 0`), role
 /// `Produce` (it mints a fresh resource handle). `token`/`cardinality` are the static
 /// defaults; the live scheduling is the platform poll-fn's `ctx` calls.
 const ACCEPT_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
@@ -655,7 +634,7 @@ const ACCEPT_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
     _reserved: [0; 2],
 };
 
-/// v9 **Consume** descriptor for `read-conn` / `send-conn`: poll-shape, role
+/// **Consume** descriptor for `read-conn` / `send-conn`: poll-shape, role
 /// `Consume` (each operates on a previously-produced `Connection`, projecting its
 /// per-direction token from the handle's `fd` field and acquiring it via `ctx`).
 const CONSUME_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
@@ -678,7 +657,7 @@ declare_platform! {
         /// is the in-flight connection ceiling.
         Listener => "web/Listener",
         /// Marker for the opaque `web/Connection` handle. The platform reads
-        /// its genuine `fd` field and projects distinct read/write tokens; no
+        /// its `fd` field and projects distinct read/write tokens; no
         /// scheduling token is stored on the language value.
         Connection => "web/Connection",
         /// Marker for the `web/Request` ADT constructed by `read-conn`.

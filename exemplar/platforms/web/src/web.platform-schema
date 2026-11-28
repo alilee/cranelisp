@@ -9,33 +9,13 @@
 ;; v8 `[token capacity fd]` shape is retired — scheduling state never rides on the
 ;; value). Closure: the generator walks the bind-listener/accept-conn/read-conn/
 ;; send-conn sigs. The roots `web/Listener`/`web/Connection`/`web/Request`/
-;; `web/Response` (all single-ctor products, tag 0) PLUS the `(primitives/IO _)`
-;; instantiations reached through the IO-returning sigs are all in the closed-over
-;; set. The header below is the FNV-1a digest of the canonical body -- the
+;; `web/Response` (all single-ctor products, tag 0) are the closed-over set:
+;; `primitives/IO` has no constructors, so like `primitives/Vec` it contributes no
+;; entry. The header below is the FNV-1a digest of the canonical body -- the
 ;; `extract_layout_hash` const fn exports it as `__cranelisp_layout_hash_web` for
 ;; the host's load/`--link` hash gate.
-;; layout-hash: 3582bc7f3ed7f6f4
+;; layout-hash: 6d54204dfada2e10
 (schema
-  ((primitives/IO _)
-    (Pure 0 ((ioval _)))
-    (Effect 1 ((thunk _)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
-  ((primitives/IO primitives/Int)
-    (Pure 0 ((ioval primitives/Int)))
-    (Effect 1 ((thunk primitives/Int)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
-  ((primitives/IO web/Connection)
-    (Pure 0 ((ioval web/Connection)))
-    (Effect 1 ((thunk web/Connection)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
-  ((primitives/IO web/Listener)
-    (Pure 0 ((ioval web/Listener)))
-    (Effect 1 ((thunk web/Listener)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
-  ((primitives/IO web/Request)
-    (Pure 0 ((ioval web/Request)))
-    (Effect 1 ((thunk web/Request)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
   (web/Connection
     (Connection 0 ((fd primitives/Int))))
   (web/Listener

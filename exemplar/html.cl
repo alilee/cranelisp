@@ -1,17 +1,15 @@
 ;; html.cl — HTML generation for the Sudoku solver web interface
 ;;
-;; All pure string manipulation — no IO. Generates:
+;; String construction only; no result type here contains `IO`. Generates:
 ;; - Form page: 9x9 grid of <input> fields for puzzle entry
 ;; - Solution page: solved grid as HTML table with given/solved styling
 ;; - Error page: error message with link back to form
 ;; - Not-found page: the unknown path with link back to form
-;;
-;; Depends on: grid.cl (Grid, Cell, Given, Solved, Candidates, cell-at, cell-value)
-;; Depends on: prelude (traits, operators, macros)
 
-(import [collections.vec [conj]])
-(import [primitives [str-concat int-to-string contains?]])
-(import [grid [Grid Cell Given Solved Candidates cell-at cell-value]])
+(import [collections.vec [range vec-map vec-reduce]])
+(import [primitives [str-concat int-to-string contains? replace]])
+(import [grid [Grid Given Solved cell-at cell-value]])
+(import [testing.assertions [check assert-eq assert-true assert-false]])
 
 ;; ── CSS ──────────────────────────────────────────────────────────────
 
@@ -66,23 +64,12 @@
       (str-concat "<td><input type=\"text\" name=\"" name)
       "\" maxlength=\"1\" size=\"1\"></td>")))
 
-;; Build one row of input fields (9 cells).
-(defn form-row-helper [row col acc]
-  (if (= col 9) acc
-    (form-row-helper row (+ col 1)
-      (str-concat acc (input-field row col)))))
-
-(defn form-row [row]
-  (wrap-tag "tr" (form-row-helper row 0 "")))
-
-;; Build all 9 rows of the input grid.
-(defn form-rows-helper [row acc]
-  (if (= row 9) acc
-    (form-rows-helper (+ row 1)
-      (str-concat acc (form-row row)))))
+;; Concatenate `(cell i)` for each i in [0, 9).
+(defn nine [cell]
+  (vec-reduce (fn [acc i] (str-concat acc (cell i))) "" (range 0 9)))
 
 (defn form-rows []
-  (form-rows-helper 0 ""))
+  (nine (fn [row] (wrap-tag "tr" (nine (fn [col] (input-field row col)))))))
 
 ;; Full HTML page with puzzle entry form.
 (defn form-page []
@@ -107,24 +94,11 @@
       [(Given _) (td "given" digit)
        _ (td "solved" digit)])))
 
-;; Build one row of the solution table (9 cells).
-(defn solution-row-helper [original solved row col acc]
-  (if (= col 9) acc
-    (let [idx (+ (* row 9) col)]
-      (solution-row-helper original solved row (+ col 1)
-        (str-concat acc (solution-cell original solved idx))))))
-
-(defn solution-row [original solved row]
-  (wrap-tag "tr" (solution-row-helper original solved row 0 "")))
-
-;; Build all 9 rows of the solution table.
-(defn solution-rows-helper [original solved row acc]
-  (if (= row 9) acc
-    (solution-rows-helper original solved (+ row 1)
-      (str-concat acc (solution-row original solved row)))))
-
 (defn solution-rows [original solved]
-  (solution-rows-helper original solved 0 ""))
+  (nine
+    (fn [row]
+      (wrap-tag "tr"
+        (nine (fn [col] (solution-cell original solved (+ (* row 9) col))))))))
 
 ;; Full HTML page displaying the solved grid.
 ;; solved: the completed grid.
@@ -150,15 +124,21 @@
             "</p><br><a href=\"/\">Try again</a></body></html>"))))))
 
 ;; ── Not-found page ───────────────────────────────────────────────────
-;;
-;; The 404 page for an unrecognised method/path. `path` is echoed so the
-;; caller sees which route missed; the link returns to the puzzle form.
+
+;; Escape text for an HTML element or a double-quoted attribute. `&` goes first
+;; so the entities the later replacements insert are not escaped again.
+(defn escape-html [text]
+  (replace (replace (replace (replace text "&" "&amp;") "<" "&lt;") ">" "&gt;")
+    "\"" "&quot;"))
+
+;; The 404 page for an unrecognised method/path. The request path is echoed,
+;; escaped, so the caller sees which route missed; the link returns to the form.
 (defn not-found-page [path]
   (str-concat "<!DOCTYPE html><html><head><style>"
     (str-concat (css)
       (str-concat "</style><title>Not Found</title></head><body>"
         (str-concat "<h1>404 Not Found</h1><p>No route for <code>"
-          (str-concat path
+          (str-concat (escape-html path)
             "</code></p><br><a href=\"/\">Back to the solver</a></body></html>"))))))
 
 ;; ── Tests ─────────────────────────────────────────────────────────────
@@ -167,91 +147,72 @@
 ;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
 ;; `cranelisp --test` discovers them.
 
-;; Test that form-page contains <input elements
 (defn test-form-page-has-inputs []
-  (if (contains? (form-page) "<input") None
-    (Some "form-page should contain <input elements")))
+  (assert-true (contains? (form-page) "<td><input type=\"text\" name=\"c88\"")))
 
-;; Test that form-page contains form action
 (defn test-form-page-has-action []
-  (if (contains? (form-page) "/solve") None
-    (Some "form-page should contain /solve action")))
+  (assert-true (contains? (form-page) "<form method=\"POST\" action=\"/solve\">")))
 
-;; Test that form-page contains the table
 (defn test-form-page-has-table []
-  (if (contains? (form-page) "<table") None
-    (Some "form-page should contain <table")))
+  (assert-true (contains? (form-page) "<table class=\"sudoku\">")))
 
-;; Test that wrap-tag works correctly
 (defn test-wrap-tag []
-  (if (= (wrap-tag "b" "hello") "<b>hello</b>") None
-    (Some "wrap-tag should produce <b>hello</b>")))
+  (assert-eq "<b>hello</b>" (wrap-tag "b" "hello")))
 
-;; Test that td produces a cell with class
 (defn test-td []
-  (let [result (td "given" "5")]
-    (if (contains? result "given")
-      (if (contains? result "5") None
-        (Some "td result should contain content '5'"))
-      (Some "td result should contain class 'given'"))))
+  (assert-eq "<td class=\"given\">5</td>" (td "given" "5")))
 
-;; Test that error-page contains the error message
 (defn test-error-page-has-message []
-  (if (contains? (error-page "No solution exists") "No solution exists") None
-    (Some "error-page should contain the supplied message")))
+  (assert-true (contains? (error-page "No solution exists") "<p>No solution exists</p>")))
 
-;; Test that error-page contains a link back
 (defn test-error-page-has-link []
-  (if (contains? (error-page "oops") "Try again") None
-    (Some "error-page should contain a 'Try again' link")))
+  (assert-true (contains? (error-page "oops") "<a href=\"/\">Try again</a>")))
 
-;; Test that not-found-page echoes the missed path
 (defn test-not-found-page-has-path []
-  (if (contains? (not-found-page "/nope") "/nope") None
-    (Some "not-found-page should echo the missed path")))
+  (assert-true (contains? (not-found-page "/nope") "<code>/nope</code>")))
 
-;; Test that not-found-page links back to the solver
+;; A raw client can send any request target, so the echoed path is escaped.
+(defn test-not-found-page-escapes-path []
+  (let [page (not-found-page "/<script>\"a&b\"</script>")]
+    (check
+      (assert-false (contains? page "<script>"))
+      (assert-true
+        (contains? page "/&lt;script&gt;&quot;a&amp;b&quot;&lt;/script&gt;")))))
+
 (defn test-not-found-page-has-link []
-  (if (contains? (not-found-page "/x") "Back to the solver") None
-    (Some "not-found-page should contain a back link")))
+  (assert-true (contains? (not-found-page "/x") "<a href=\"/\">Back to the solver</a>")))
 
-;; Helpers for hand-built grids (avoid `let`-recursion patterns).
-(defn build-all-ones-helper [v i]
-  (if (= i 81) v
-    (build-all-ones-helper (conj v (Given 1)) (+ i 1))))
+;; The page's inline CSS already names `given` and `solved` and contains
+;; digits, so these tests assert whole rendered cells.
 
 (defn make-all-ones-grid []
-  (Grid (build-all-ones-helper [] 0)))
+  (Grid (vec-map (fn [_] (Given 1)) (range 0 81))))
 
-;; Test that solution-page contains digit strings
-(defn test-solution-page-has-digits []
-  (let [g (make-all-ones-grid)]
-    (if (contains? (solution-page g g) "1") None
-      (Some "solution-page should contain digit '1'"))))
-
-;; Test that solution-page has given class for Given cells
-(defn test-solution-page-given-class []
-  (let [g (make-all-ones-grid)]
-    (if (contains? (solution-page g g) "given") None
-      (Some "solution-page should contain 'given' CSS class"))))
-
-;; Build a grid where cell 0 is Given(5), cell 1 is Solved(3), the rest are Given(1).
-(defn build-mixed-helper [v i]
-  (if (= i 81) v
-    (if (= i 0)
-      (build-mixed-helper (conj v (Given 5)) (+ i 1))
-      (if (= i 1)
-        (build-mixed-helper (conj v (Solved 3)) (+ i 1))
-        (build-mixed-helper (conj v (Given 1)) (+ i 1))))))
-
+;; Cell 0 is Given 5, cell 1 is Solved 3, the rest are Given 1.
 (defn make-mixed-grid []
-  (Grid (build-mixed-helper [] 0)))
+  (Grid
+    (vec-map
+      (fn [i] (if (= i 0) (Given 5) (if (= i 1) (Solved 3) (Given 1))))
+      (range 0 81))))
 
-;; Test that solution-page distinguishes Given vs Solved
+(defn test-solution-page-has-digits []
+  (let [g (make-mixed-grid)
+        page (solution-page g g)]
+    (check
+      (assert-true (contains? page ">5</td>"))
+      (assert-true (contains? page ">3</td>")))))
+
+(defn test-solution-page-given-class []
+  (let [g (make-all-ones-grid)
+        page (solution-page g g)]
+    (check
+      (assert-true (contains? page "<td class=\"given\">1</td>"))
+      (assert-false (contains? page "<td class=\"solved\">")))))
+
+;; The original grid decides the class; the solved grid supplies the digit.
 (defn test-solution-page-mixed []
   (let [g (make-mixed-grid)
         page (solution-page g g)]
-    (if (contains? page "given")
-      (if (contains? page "solved") None
-        (Some "solution-page should contain 'solved' CSS class"))
-      (Some "solution-page should contain 'given' CSS class"))))
+    (check
+      (assert-true (contains? page "<tr><td class=\"given\">5</td><td class=\"solved\">3</td>"))
+      (assert-true (contains? page "<td class=\"given\">1</td>")))))

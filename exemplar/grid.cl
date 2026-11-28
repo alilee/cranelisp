@@ -11,11 +11,13 @@
 ;; `peers`, `make-grid` and `is-solved` are each one multi-signature `defn`
 ;; whose short clause seeds the accumulator of the long one (spec §5.1.2).
 
-(import [collections.vec [count get assoc conj]])
-(import [primitives [char-at str-len str-concat not]])
+(import [collections.vec [count get assoc conj range vec-map]])
+(import [primitives [char-at str-len str-concat]])
+(import [text.string [char-to-digit]])
 ;; `num.bits/bit-clear` and `bit-set` are not imported: grid defines
 ;; digit-domain verbs of the same names.
 (import [num.bits [bit-shift-left bit-test bit-and bit-or bit-not popcount]])
+(import [testing.assertions [check assert-eq assert-true assert-false]])
 
 ;; ── Data Types ──────────────────────────────────────────────────────────
 
@@ -115,14 +117,18 @@
 
 ;; ── Grid construction ──────────────────────────────────────────────────
 
-;; Parse an 81-character string into a Grid.
-;; Digits '1'-'9' become Given cells.
-;; Dots '.' become Candidates with full-mask (all digits possible).
-;; Returns None if the string is not exactly 81 characters,
-;; or contains invalid characters.
-;;
-;; NOTE: This function depends on `char-at` (a string primitive).
-;; `char-at` returns a 1-char String, compared with `=` (Eq on String).
+;; One puzzle character as a cell: `.` and `0` are empty, `1`–`9` are givens,
+;; and anything else is invalid.
+(defn parse-cell [ch]
+  (let [d (char-to-digit ch)]
+    (cond
+      (= ch ".") (Some (Candidates (full-mask)))
+      (= d 0) (Some (Candidates (full-mask)))
+      (> d 0) (Some (Given d))
+      None)))
+
+;; Parse an 81-character puzzle string into a Grid, or None if its length or
+;; any character is invalid.
 (defn make-grid
   ([s]
    (if (= (str-len s) 81)
@@ -130,23 +136,9 @@
      None))
   ([s i cells]
    (if (= i 81) (Some (Grid cells))
-     (let [ch (char-at s i)]
-       (if (= ch ".")
-         (make-grid s (+ i 1) (conj cells (Candidates (full-mask))))
-         ;; Try to parse as a digit 1-9.
-         ;; We compare the character against digit strings.
-         (if (= ch "1") (make-grid s (+ i 1) (conj cells (Given 1)))
-         (if (= ch "2") (make-grid s (+ i 1) (conj cells (Given 2)))
-         (if (= ch "3") (make-grid s (+ i 1) (conj cells (Given 3)))
-         (if (= ch "4") (make-grid s (+ i 1) (conj cells (Given 4)))
-         (if (= ch "5") (make-grid s (+ i 1) (conj cells (Given 5)))
-         (if (= ch "6") (make-grid s (+ i 1) (conj cells (Given 6)))
-         (if (= ch "7") (make-grid s (+ i 1) (conj cells (Given 7)))
-         (if (= ch "8") (make-grid s (+ i 1) (conj cells (Given 8)))
-         (if (= ch "9") (make-grid s (+ i 1) (conj cells (Given 9)))
-         ;; '0' treated as empty (like '.')
-         (if (= ch "0") (make-grid s (+ i 1) (conj cells (Candidates (full-mask))))
-           None)))))))))))))))
+     (match (parse-cell (char-at s i))
+       [None None
+        (Some c) (make-grid s (+ i 1) (conj cells c))]))))
 
 ;; ── Grid solved check ──────────────────────────────────────────────────
 
@@ -177,8 +169,8 @@
      (Candidates _) false]))
 
 ;; ── Display Cell ─────────────────────────────────────────────────────────
-;; Renders a Cell at the REPL and in debug output, for example `(show (Given 5))`
-;; is "Given 5". The board formatters in `solver.cl` do not use it
+;; Renders a Cell at the REPL, in debug output and in test messages, for example
+;; `(show (Given 5))` is "Given 5". The board formatters in `solver.cl` do not use it
 ;; (plan-exemplar.md, "HTML is built with `str-concat`").
 (impl text.display/Display Cell
   (defn show [self]
@@ -196,153 +188,111 @@
 ;; --- Bitmask tests ---
 
 (defn test-full-mask []
-  (if (= (full-mask) 511) None (Some "full-mask should equal 511")))
+  (assert-eq 511 (full-mask)))
 
 (defn test-pow2 []
-  (if (= (pow2 0) 1)
-    (if (= (pow2 1) 2)
-      (if (= (pow2 3) 8)
-        (if (= (pow2 8) 256) None
-          (Some "pow2 8 should equal 256"))
-        (Some "pow2 3 should equal 8"))
-      (Some "pow2 1 should equal 2"))
-    (Some "pow2 0 should equal 1")))
+  (check
+    (assert-eq 1 (pow2 0))
+    (assert-eq 2 (pow2 1))
+    (assert-eq 8 (pow2 3))
+    (assert-eq 256 (pow2 8))))
 
 (defn test-bit-set? []
-  ;; full-mask has all bits set; 0 has no bits set
-  (if (bit-set? (full-mask) 1)
-    (if (bit-set? (full-mask) 5)
-      (if (bit-set? (full-mask) 9)
-        (if (not (bit-set? 0 1)) None
-          (Some "bit 1 should not be set in 0"))
-        (Some "bit 9 should be set in full-mask"))
-      (Some "bit 5 should be set in full-mask"))
-    (Some "bit 1 should be set in full-mask")))
+  (check
+    (assert-true (bit-set? (full-mask) 1))
+    (assert-true (bit-set? (full-mask) 5))
+    (assert-true (bit-set? (full-mask) 9))
+    (assert-false (bit-set? 0 1))))
 
 (defn test-bit-clear []
-  ;; Clear digit 5 from full mask: 511 - 16 = 495
   (let [cleared (bit-clear (full-mask) 5)]
-    (if (not (bit-set? cleared 5))
-      (if (bit-set? cleared 4) None
-        (Some "bit 4 should still be set after clearing 5"))
-      (Some "bit 5 should be cleared"))))
+    (check
+      (assert-false (bit-set? cleared 5))
+      (assert-true (bit-set? cleared 4))
+      (assert-eq 495 cleared))))
 
 (defn test-bit-count []
-  (if (= (bit-count (full-mask)) 9)
-    (if (= (bit-count 0) 0)
-      ;; single bit: digit 3 = bit 2 = value 4
-      (if (= (bit-count 4) 1) None
-        (Some "bit-count of 4 should be 1"))
-      (Some "bit-count of 0 should be 0"))
-    (Some "bit-count of full-mask should be 9")))
+  (check
+    (assert-eq 9 (bit-count (full-mask)))
+    (assert-eq 0 (bit-count 0))
+    (assert-eq 1 (bit-count 4))))
 
 (defn test-bit-lowest []
-  (if (= (bit-lowest (full-mask)) 1)
-    (if (= (bit-lowest 0) 0)
-      ;; mask with only digit 5 set: 2^4 = 16
-      (if (= (bit-lowest 16) 5) None
-        (Some "bit-lowest of 16 should be 5"))
-      (Some "bit-lowest of 0 should be 0"))
-    (Some "bit-lowest of full-mask should be 1")))
+  (check
+    (assert-eq 1 (bit-lowest (full-mask)))
+    (assert-eq 0 (bit-lowest 0))
+    (assert-eq 5 (bit-lowest 16))))
 
 ;; --- Index helpers ---
 
 (defn test-row-of []
-  (if (= (row-of 0) 0)
-    (if (= (row-of 8) 0)
-      (if (= (row-of 9) 1)
-        (if (= (row-of 80) 8) None
-          (Some "row-of 80 should be 8"))
-        (Some "row-of 9 should be 1"))
-      (Some "row-of 8 should be 0"))
-    (Some "row-of 0 should be 0")))
+  (check
+    (assert-eq 0 (row-of 0))
+    (assert-eq 0 (row-of 8))
+    (assert-eq 1 (row-of 9))
+    (assert-eq 8 (row-of 80))))
 
 (defn test-col-of []
-  (if (= (col-of 0) 0)
-    (if (= (col-of 8) 8)
-      (if (= (col-of 9) 0)
-        (if (= (col-of 80) 8) None
-          (Some "col-of 80 should be 8"))
-        (Some "col-of 9 should be 0"))
-      (Some "col-of 8 should be 8"))
-    (Some "col-of 0 should be 0")))
+  (check
+    (assert-eq 0 (col-of 0))
+    (assert-eq 8 (col-of 8))
+    (assert-eq 0 (col-of 9))
+    (assert-eq 8 (col-of 80))))
 
 (defn test-box-of []
-  (if (= (box-of 0) 0)
-    (if (= (box-of 2) 0)
-      (if (= (box-of 3) 1)
-        (if (= (box-of 27) 3)
-          (if (= (box-of 80) 8) None
-            (Some "box-of 80 should be 8"))
-          (Some "box-of 27 should be 3"))
-        (Some "box-of 3 should be 1"))
-      (Some "box-of 2 should be 0"))
-    (Some "box-of 0 should be 0")))
+  (check
+    (assert-eq 0 (box-of 0))
+    (assert-eq 0 (box-of 2))
+    (assert-eq 1 (box-of 3))
+    (assert-eq 3 (box-of 27))
+    (assert-eq 8 (box-of 80))))
 
 ;; --- Peers ---
 
 (defn test-peers-count []
-  ;; Every cell has exactly 20 peers
-  (if (= (count (peers 0)) 20)
-    (if (= (count (peers 40)) 20) None
-      (Some "cell 40 should have 20 peers"))
-    (Some "cell 0 should have 20 peers")))
+  (check
+    (assert-eq 20 (count (peers 0)))
+    (assert-eq 20 (count (peers 40)))))
 
 ;; --- Grid construction ---
 
 (defn test-make-grid-wrong-length []
-  ;; Too short — should return None
   (match (make-grid "12345")
     [None None
      _ (Some "make-grid should reject short strings")]))
 
-;; Helper for hand-building grids (no `let`-recursion shenanigans).
-(defn build-given-grid-helper [v i]
-  (if (= i 81) v
-    (build-given-grid-helper
-      (conj v (Given (+ (rem-i64 i 9) 1)))
-      (+ i 1))))
+(defn parsed-cell-name [ch]
+  (match (parse-cell ch)
+    [None "invalid"
+     (Some c) (show c)]))
 
+(defn test-parse-cell []
+  (check
+    (assert-eq "Given 5" (parsed-cell-name "5"))
+    (assert-eq "Candidates 511" (parsed-cell-name "."))
+    (assert-eq "Candidates 511" (parsed-cell-name "0"))
+    (assert-eq "invalid" (parsed-cell-name "x"))
+    (assert-eq "invalid" (parsed-cell-name "12"))))
+
+;; Every row of the hand-built grid holds the givens 1–9 in column order.
 (defn build-given-grid []
-  (Grid (build-given-grid-helper [] 0)))
+  (Grid (vec-map (fn [i] (Given (+ (col-of i) 1))) (range 0 81))))
 
-;; Verify cell-at, set-cell, is-solved with a hand-built grid
-(defn test-cell-at-and-set []
-  (let [g (build-given-grid)
-        c0 (cell-at g 0)]
-    (match c0
-      [(Given v) (if (= v 1) None
-                   (Some "cell 0 should be Given 1"))
-       _ (Some "cell 0 should be Given")])))
+(defn test-cell-at []
+  (let [g (build-given-grid)]
+    (check
+      (assert-eq 1 (cell-value (cell-at g 0)))
+      (assert-eq 9 (cell-value (cell-at g 80)))
+      (assert-true (cell-determined? (cell-at g 40))))))
 
 (defn test-is-solved-all-given []
-  ;; A grid of all Given cells is solved
-  (if (is-solved (build-given-grid)) None
-    (Some "all-Given grid should be solved")))
-
-(defn build-grid-with-candidates-helper [v i]
-  (if (= i 81) v
-    (if (= i 0)
-      (build-grid-with-candidates-helper (conj v (Candidates (full-mask))) (+ i 1))
-      (build-grid-with-candidates-helper (conj v (Given (+ (rem-i64 i 9) 1))) (+ i 1)))))
+  (assert-true (is-solved (build-given-grid))))
 
 (defn test-is-solved-with-candidates []
-  ;; A grid with a Candidates cell is not solved
-  (let [g (Grid (build-grid-with-candidates-helper [] 0))]
-    (if (is-solved g)
-      (Some "grid with Candidates cell should not be solved")
-      None)))
-
-(defn build-all-given-1-helper [v i]
-  (if (= i 81) v
-    (build-all-given-1-helper (conj v (Given 1)) (+ i 1))))
+  (assert-false (is-solved (set-cell (build-given-grid) 0 (Candidates (full-mask))))))
 
 (defn test-set-cell []
-  ;; set-cell should replace the cell at the given index
-  (let [g (Grid (build-all-given-1-helper [] 0))
-        g2 (set-cell g 5 (Solved 7))
-        c (cell-at g2 5)]
-    (match c
-      [(Solved v) (if (= v 7) None
-                    (Some "cell 5 should be Solved 7"))
+  (let [g (set-cell (build-given-grid) 5 (Solved 7))]
+    (match (cell-at g 5)
+      [(Solved v) (assert-eq 7 v)
        _ (Some "cell 5 should be Solved")])))

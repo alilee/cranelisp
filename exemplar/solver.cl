@@ -6,22 +6,19 @@
 ;; - find-min-candidates: MRV heuristic for backtracking
 ;; - solve: main solver combining propagation and backtracking
 ;;
-;; Depends on: grid.cl (Cell, Grid, SolveResult, bitmask ops, peers)
-;; Depends on: prelude (Option, traits, operators, macros)
-;;
 ;; The solver uses only Int and Vec operations; strings appear only in the board
-;; formatters and `build-output`. It is a library: it declares no platform and
-;; performs no IO, since only an entry may declare a platform (spec/10-io.md
-;; §10.9.1).
+;; formatters. No result type here contains `IO`, and the module declares no
+;; platform, since only an entry may declare one (spec/10-io.md §10.9.1).
 
-(import [collections.vec [count get assoc conj]])
+(import [collections.vec [count get conj range vec-map vec-reduce]])
 (import [collections.parallel [par-map-reduce]])
-(import [primitives [char-at str-concat str-len not Pure]])
+(import [primitives [char-at str-concat not]])
 (import [text.string [digit-to-char]])
+(import [testing.assertions [assert-eq assert-false]])
 
-(import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
+(import [grid [Grid Given Solved Candidates Success Unsolvable
                full-mask bit-set? bit-clear bit-count bit-lowest
-               cell-at set-cell peers is-solved cell-determined? cell-value make-grid]])
+               cell-at set-cell peers is-solved cell-value make-grid]])
 
 ;; ── Constraint Propagation ─────────────────────────────────────────────
 
@@ -153,7 +150,7 @@
 ;;           combiner (identity `Unsolvable`) that takes the first branch that
 ;;           solved.
 ;;
-;; The branches are independent and pure, so the search uses
+;; The branches are independent CPU computations, so the search uses
 ;; `collections.parallel/par-map-reduce`. It binds the two halves of the digit
 ;; Vec to independent `let` bindings, which lenient evaluation sparks onto the
 ;; thread pool; the spark budget runs an over-budget branch inline
@@ -180,7 +177,7 @@
 ;; The associative reduce combiner: pick the first branch that solved, else the
 ;; second. Identity is `Unsolvable` (a two-sided identity: it never wins over a
 ;; Success, and `first-success Unsolvable b == b`). Correct even when `b` was
-;; computed speculatively (pure branches — the loser is discarded).
+;; computed speculatively: a branch performs no IO, so the loser is discarded.
 (defn first-success [a b]
   (match a
     [(Success s) (Success s)
@@ -226,92 +223,53 @@
                    _ Unsolvable]))]))]))
 
 ;; ── Board Formatting ──────────────────────────────────────────────────
+;;
+;; A board prints one row per line, with a rule between the 3×3 boxes:
+;;   d d d | d d d | d d d
+;;   ...
+;;   ------+-------+------
+
+;; The text to put before column or row `i`: none before the first, `boundary`
+;; before the fourth and seventh, `plain` otherwise.
+(defn board-separator [i plain boundary]
+  (if (= i 0) ""
+    (if (if (= i 3) true (= i 6)) boundary plain)))
+
+(defn column-separator [col] (board-separator col " " " | "))
+
+(defn row-separator [row] (board-separator row "\n" "\n------+-------+------\n"))
 
 ;; Convert a cell value (1-9) to its string digit, or "." for 0.
 (defn digit-string [v]
   (if (= v 0) "." (digit-to-char v)))
 
-;; Format a puzzle string (81 chars) as a readable board.
-;; Works directly on the string, no Grid needed.
-;; Format:
-;;   d d d | d d d | d d d
-;;   ...
-;;   ------+-------+------
-;;   ...
+;; One puzzle-string character for display: `0` shows as `.`.
 (defn format-cell-char [s i]
-  ;; Convert a single character from the puzzle string to display form.
-  ;; '0' and '.' show as '.', digits show as themselves.
   (let [ch (char-at s i)]
     (if (= ch "0") "." ch)))
 
-(defn format-row-from-str [s row col acc]
-  (if (= col 9) acc
-    (let [idx (+ (* row 9) col)
-          ch (format-cell-char s idx)
-          sep (if (= col 0) ""
-                (if (if (= col 3) true (= col 6))
-                  " | "
-                  " "))]
-      (format-row-from-str s row (+ col 1) (str-concat acc (str-concat sep ch))))))
+;; Lay out `(cell-text idx)` for the 81 indices as a board.
+(defn format-board-with [cell-text]
+  (vec-reduce
+    (fn [board row]
+      (str-concat board
+        (str-concat (row-separator row)
+          (vec-reduce
+            (fn [line col]
+              (str-concat line
+                (str-concat (column-separator col) (cell-text (+ (* row 9) col)))))
+            ""
+            (range 0 9)))))
+    ""
+    (range 0 9)))
 
-(defn format-board-from-str [s row acc]
-  (if (= row 9) acc
-    (let [row-str (format-row-from-str s row 0 "")
-          sep (if (= row 0) ""
-                (if (if (= row 3) true (= row 6))
-                  "\n------+-------+------\n"
-                  "\n"))]
-      (format-board-from-str s (+ row 1) (str-concat acc (str-concat sep row-str))))))
-
+;; Format an 81-character puzzle string as a board.
 (defn format-board-str [s]
-  (format-board-from-str s 0 ""))
+  (format-board-with (fn [i] (format-cell-char s i))))
 
-;; Format a solved Grid as a board string.
-;; Extracts cell values and builds the display.
-(defn format-row-helper [g r col acc]
-  (if (= col 9) acc
-    (let [idx (+ (* r 9) col)
-          v (cell-value (cell-at g idx))
-          ds (digit-string v)
-          sep (if (= col 0) ""
-                (if (if (= col 3) true (= col 6))
-                  " | "
-                  " "))]
-      (format-row-helper g r (+ col 1) (str-concat acc (str-concat sep ds))))))
-
-(defn format-row [g r]
-  (format-row-helper g r 0 ""))
-
-(defn format-board-helper [g r acc]
-  (if (= r 9) acc
-    (let [row-str (format-row g r)
-          sep (if (= r 0) ""
-                (if (if (= r 3) true (= r 6))
-                  "\n------+-------+------\n"
-                  "\n"))]
-      (format-board-helper g (+ r 1) (str-concat acc (str-concat sep row-str))))))
-
+;; Format a Grid as a board; an undetermined cell shows as `.`.
 (defn format-board [g]
-  (format-board-helper g 0 ""))
-
-;; ── Output ───────────────────────────────────────────────────────────
-
-;; Build the output string for a puzzle: header, input board, solution.
-(defn build-output [puzzle-str]
-  (let [header "=== Sudoku Solver ==="
-        input-board (format-board-str puzzle-str)
-        solution-str (match (make-grid puzzle-str)
-                       [None "Error: invalid puzzle string"
-                        (Some g)
-                          (match (solve g)
-                            [(Success solution)
-                               (format-board solution)
-                             Unsolvable
-                               "No solution found"])])]
-    (str-concat header
-      (str-concat "\n\nPuzzle:\n"
-        (str-concat input-board
-          (str-concat "\n\nSolution:\n" solution-str))))))
+  (format-board-with (fn [i] (digit-string (cell-value (cell-at g i))))))
 
 ;; ── Tests ───────────────────────────────────────────────────────────────
 ;;
@@ -319,67 +277,32 @@
 ;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
 ;; `cranelisp --test` discovers them.
 
-;; --- Helper to count determined cells ---
+;; --- Elimination tests ---
 
-(defn count-determined-helper [g i acc]
-  (if (= i 81) acc
-    (if (cell-determined? (cell-at g i))
-      (count-determined-helper g (+ i 1) (+ acc 1))
-      (count-determined-helper g (+ i 1) acc))))
-
-(defn count-determined [g]
-  (count-determined-helper g 0 0))
-
-;; --- Test grid builders (no `let`-defined `build` recursion) ---
-
-;; Build a grid: cell 0 has the given mask as Candidates, the rest are Given 1.
-(defn build-mask-then-givens-helper [v i mask]
-  (if (= i 81) v
-    (if (= i 0)
-      (build-mask-then-givens-helper (conj v (Candidates mask)) (+ i 1) mask)
-      (build-mask-then-givens-helper (conj v (Given 1)) (+ i 1) mask))))
-
+;; Cell 0 holds `mask` as Candidates; the rest are Given 1.
 (defn make-test-grid-with-mask [mask]
-  (Grid (build-mask-then-givens-helper [] 0 mask)))
+  (Grid (vec-map (fn [i] (if (= i 0) (Candidates mask) (Given 1))) (range 0 81))))
 
-;; --- Elimination tests (don't need make-grid) ---
+;; Eliminate `d` at `idx` of the test grid whose cell 0 holds `mask`, and show
+;; the resulting cell, or "contradiction".
+(defn eliminated-cell [mask idx d]
+  (match (eliminate (make-test-grid-with-mask mask) idx d)
+    [None "contradiction"
+     (Some g) (show (cell-at g idx))]))
 
 (defn test-eliminate-removes-digit []
-  ;; Eliminate digit 5 from cell 0 (which has full-mask)
-  (let [g (make-test-grid-with-mask (full-mask))]
-    (match (eliminate g 0 5)
-      [(Some g2)
-         (match (cell-at g2 0)
-           [(Candidates m) (if (not (bit-set? m 5)) None
-                             (Some "bit 5 should be cleared in cell 0 candidates"))
-            _ (Some "cell 0 should still be Candidates")])
-       None (Some "eliminate should not return None for valid input")])))
+  (assert-eq "Candidates 495" (eliminated-cell (full-mask) 0 5)))
 
 (defn test-eliminate-no-effect-on-given []
-  ;; Eliminating from a Given cell should be a no-op (still Some)
-  (let [g (make-test-grid-with-mask (full-mask))]
-    (match (eliminate g 1 5)
-      [(Some _) None
-       None (Some "eliminate from Given cell should be a no-op (not None)")])))
+  (assert-eq "Given 1" (eliminated-cell (full-mask) 1 5)))
 
+;; {3, 7} is the mask 4 + 64 = 68.
 (defn test-eliminate-determines-cell []
-  ;; Start with only digits 3 and 7 as candidates (mask = 4 + 64 = 68).
-  ;; Eliminate 7 -> should determine cell as 3.
-  (let [g (make-test-grid-with-mask 68)]
-    (match (eliminate g 0 7)
-      [(Some g2)
-         (match (cell-at g2 0)
-           [(Solved v) (if (= v 3) None
-                         (Some "cell 0 should be Solved 3 after eliminating 7"))
-            _ (Some "cell 0 should be Solved after eliminating 7 from {3,7}")])
-       None (Some "eliminate of valid digit should not return None")])))
+  (assert-eq "Solved 3" (eliminated-cell 68 0 7)))
 
+;; {5} is the mask 16.
 (defn test-eliminate-contradiction []
-  ;; Cell with only digit 5 (mask = 16). Eliminate 5 -> contradiction (None).
-  (let [g (make-test-grid-with-mask 16)]
-    (match (eliminate g 0 5)
-      [None None
-       _ (Some "eliminating last candidate should produce contradiction (None)")])))
+  (assert-eq "contradiction" (eliminated-cell 16 0 5)))
 
 ;; --- Solver tests ---
 ;;
@@ -388,59 +311,61 @@
 ;; regression guard for that contract is self-contained:
 ;; `tests/exemplar.rs::t_s2_1_eliminate_contract_on_given_returns_none`.
 
-(defn test-easy-puzzle []
-  (match (make-grid "003020600900305001001806400008102900700000008006708200002609500800203009005010300")
-    [(Some g)
+;; Flatten a solved grid to its bare 81-digit string (no separators).
+(defn solution-digits [g]
+  (vec-reduce
+    (fn [acc i] (str-concat acc (digit-string (cell-value (cell-at g i)))))
+    ""
+    (range 0 81)))
+
+;; Solve `puzzle` and return its 81 solution digits, or why it was not solved.
+(defn solve-to-digits [puzzle]
+  (match (make-grid puzzle)
+    [None "make-grid rejected the puzzle"
+     (Some g)
        (match (solve g)
-         [(Success solution)
-            (if (= (count-determined solution) 81) None
-              (Some "easy puzzle should be fully determined"))
-          Unsolvable (Some "easy puzzle should be solvable")])
-     None (Some "make-grid should accept the easy puzzle string")]))
+         [(Success solution) (solution-digits solution)
+          Unsolvable "unsolvable"])]))
+
+;; The puzzle `user.cl` and `smoke.cl` print; propagation alone solves it.
+(defn test-easy-puzzle []
+  (assert-eq
+    "483921657967345821251876493548132976729564138136798245372689514814253769695417382"
+    (solve-to-digits
+      "003020600900305001001806400008102900700000008006708200002609500800203009005010300")))
 
 ;; --- Parallel-search equivalence ---
 ;;
 ;; A valid Sudoku has one solution, so the parallel and serial searches must
-;; return the same grid. `test-solve-parallel-equiv` pins the 81-digit solution
-;; of a puzzle that needs backtracking, so the `par-map-reduce` path runs;
-;; `tests.cl` passing in both modes is the parallel ≡ serial guard.
+;; return the same grid. `test-solve-parallel-equiv` pins the solution of a
+;; puzzle that propagation alone does not solve, so the `par-map-reduce` path
+;; runs; `tests.cl` passing in both modes is the parallel ≡ serial guard.
 
-;; Flatten a solved grid to its bare 81-digit string (no separators).
-(defn solution-digits-helper [g i acc]
-  (if (= i 81) acc
-    (solution-digits-helper g (+ i 1)
-      (str-concat acc (digit-string (cell-value (cell-at g i)))))))
+;; Propagation stalls on this puzzle.
+(defn equiv-puzzle []
+  "2...8.3...6..7..84.3.5..2.9...1.54.8.........4.27.6...3.1..7.4.72..4..6...4.1...3")
 
-(defn solution-digits [g]
-  (solution-digits-helper g 0 ""))
+(defn test-equiv-puzzle-needs-search []
+  (match (make-grid (equiv-puzzle))
+    [None (Some "make-grid should accept the equivalence puzzle")
+     (Some g)
+       (match (propagate g)
+         [None (Some "propagation should not contradict the equivalence puzzle")
+          (Some g2) (assert-false (is-solved g2))])]))
 
 (defn test-solve-parallel-equiv []
-  ;; Propagation alone stalls on this puzzle, so the search backtracks.
-  (match (make-grid "..3.2.6..9..3.5..1..18.64....81.29..7.......8..67.82....26.95..8..2.3..9..5.1.3..")
-    [(Some g)
-       (match (solve g)
-         [(Success solution)
-            (let [s (solution-digits solution)]
-              (if (= s "483921657967345821251876493548132976729564138136798245372689514814253769695417382")
-                None
-                (Some (str-concat "parallel solve produced an unexpected solution: " s))))
-          Unsolvable (Some "equivalence puzzle should be solvable")])
-     None (Some "make-grid should accept the equivalence puzzle")]))
+  (assert-eq
+    "245981376169273584837564219976125438513498627482736951391657842728349165654812793"
+    (solve-to-digits (equiv-puzzle))))
 
 (defn test-hard-puzzle []
-  (match (make-grid "800000000003600000070090200050007000000045700000100030001000068008500010090000400")
-    [(Some g)
-       (match (solve g)
-         [(Success solution)
-            (if (= (count-determined solution) 81) None
-              (Some "hard puzzle should be fully determined"))
-          Unsolvable (Some "hard puzzle should be solvable")])
-     None (Some "make-grid should accept the hard puzzle string")]))
+  (assert-eq
+    "812753649943682175675491283154237896369845721287169534521974368438526917796318452"
+    (solve-to-digits
+      "800000000003600000070090200050007000000045700000100030001000068008500010090000400")))
 
+;; Two 5s in row 0.
 (defn test-unsolvable []
-  (match (make-grid "550000000000000000000000000000000000000000000000000000000000000000000000000000000")
-    [(Some g)
-       (match (solve g)
-         [(Success _) (Some "puzzle with two 5s in row 0 should be unsolvable")
-          Unsolvable None])
-     None (Some "make-grid should accept the malformed puzzle string")]))
+  (assert-eq "unsolvable"
+    (solve-to-digits
+      "550000000000000000000000000000000000000000000000000000000000000000000000000000000")))

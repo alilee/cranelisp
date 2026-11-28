@@ -1,40 +1,18 @@
-;; web -- the connection-handle ADTs for the `web` HTTP platform DLL.
+;; web -- the language-side types of the `web` HTTP platform DLL
+;; (exemplar/platforms/web/src/lib.rs), whose effect signatures name them FQ.
+;; The DLL's `declare_platform! adts:` arm only validates these names against
+;; the generated `web.platform-schema` (`/platform-schema web` regenerates it
+;; from these deftypes).
 ;;
-;; Scheduling state never rides on a value (design/platform/poll-leaf-authoring.md
-;; §4; design/arch/effect-concurrency.md §4.1.1): `web/Connection` is an opaque
-;; handle whose `fd` field is the platform's `r`, from which the platform
-;; projects each direction's token.
+;; This module holds types only and must not import `platform.web`: loading the
+;; platform resolves the type modules its signatures reference, this one
+;; included, before registering the platform, so that import would be a load
+;; cycle. The wrappers live in `serve.cl` (poll-leaf-authoring.md §6).
 ;;
-;; Platforms do NOT declare language ADT layouts -- the four `web/*` types are
-;; ordinary `.cl` types. The DLL's `declare_platform! adts:` arm only emits Rust
-;; markers and validates those FQ names against the generated schema; it does
-;; not replace these definitions. The DLL
-;; (exemplar/platforms/web/src/lib.rs) references them FQ in the
-;; bind-listener/accept-conn/read-conn/send-conn sigs. The backend generates
-;; web.platform-schema by walking these deftypes (/platform-schema web).
-;;
-;; This module is ADTs ONLY -- it carries NO `(import [platform.web ...])` and NO
-;; wrappers. WHY: loading the `web` platform DLL pre-resolves the EXTERNAL .cl
-;; type-modules its sigs reference (platform-interface.md §7.2 /
-;; `src/platform.rs::referenced_sig_modules`) -- i.e. the `web` module -- BEFORE
-;; the platform is registered. So if `web` imported `platform.web` it would form a
-;; load cycle. The convenience wrappers therefore live in the sibling `serve.cl`
-;; module, loaded AFTER `(platform web)` (see serve.cl + main.cl). The general
-;; platform-authoring rule is poll-leaf-authoring.md §6 (model-independent).
-;;
-;; This module resolves on the ORDINARY .cl module path (project tree /
-;; CRANELISP_LIB), NOT on CRANELISP_PLATFORM_PATH (which locates the dylib).
-;;
-;; FQ identities:
-;;   web/Listener   (single-ctor product, tag 0)
-;;     fd   : primitives/Int   listener socket fd (accept reads it to poll/accept)
-;;     pool : primitives/Int   N, the in-flight-CONNECTION-COUNT ceiling consumed
-;;                             by the launch-and-continue fan-out (arch §16).
-;;   web/Connection (single-ctor product, tag 0) -- opaque handle
-;;     fd   : primitives/Int   connection socket fd = the platform's `r`; the
-;;                             platform reads it back + projects read_tok/write_tok.
-;;   web/Request    (single-ctor product, tag 0)  method/path/body : String
-;;   web/Response   (single-ctor product, tag 0)  status:Int content-type/body:String
+;; `Connection` is an opaque handle: its `fd` is the accepted socket, from
+;; which the platform projects each direction's scheduling token, so no
+;; scheduling state rides on the value (poll-leaf-authoring.md §4).
+;; `Listener`'s `pool` is the in-flight connection ceiling.
 
 (deftype Listener
   [:primitives/Int fd :primitives/Int pool])

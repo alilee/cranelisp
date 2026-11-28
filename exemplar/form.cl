@@ -6,12 +6,11 @@
 ;; or empty. Empty values become dots in the puzzle string.
 ;;
 ;; Example: "c00=5&c01=&c02=3&..." -> "5.3..."
-;;
-;; Depends on: prelude (traits, operators, the `cond` macro)
 
 (import [collections.vec [count get]])
 (import [primitives [char-at str-len str-concat substring split replace not]])
-(import [text.string [repeat-str]])
+(import [text.string [repeat-str char-to-digit replace-at]])
+(import [testing.assertions [check assert-eq]])
 
 ;; ── URL decoding ─────────────────────────────────────────────────────
 
@@ -28,27 +27,6 @@
 (defn make-dots []
   (repeat-str "." 81))
 
-;; Parse a digit character to its integer value (0-9), or -1 if not a digit.
-(defn parse-digit-char [ch]
-  (cond
-    (= ch "0") 0
-    (= ch "1") 1
-    (= ch "2") 2
-    (= ch "3") 3
-    (= ch "4") 4
-    (= ch "5") 5
-    (= ch "6") 6
-    (= ch "7") 7
-    (= ch "8") 8
-    (= ch "9") 9
-    -1))
-
-;; Set a character in an 81-char puzzle string at position idx.
-;; Rebuilds the string: prefix + ch + suffix.
-(defn set-char-at [s idx ch]
-  (str-concat (substring s 0 idx)
-    (str-concat ch (substring s (+ idx 1) (str-len s)))))
-
 ;; ── Form body parsing ────────────────────────────────────────────────
 
 ;; Extract row and column from a field name like "c35".
@@ -57,8 +35,8 @@
 (defn parse-field-index [name]
   (if (< (str-len name) 3) -1
     (if (not (= (char-at name 0) "c")) -1
-      (let [row (parse-digit-char (char-at name 1))
-            col (parse-digit-char (char-at name 2))]
+      (let [row (char-to-digit (char-at name 1))
+            col (char-to-digit (char-at name 2))]
         (if (< row 0) -1
           (if (< col 0) -1
             (if (> row 8) -1
@@ -78,10 +56,9 @@
             val (get parts 1)]
         (if (< idx 0) puzzle
           (if (= (str-len val) 0) puzzle
-            (let [ch (char-at val 0)
-                  d (parse-digit-char ch)]
-              (if (< d 1) puzzle
-                (set-char-at puzzle idx ch)))))))))
+            (let [ch (char-at val 0)]
+              (if (< (char-to-digit ch) 1) puzzle
+                (replace-at puzzle idx ch)))))))))
 
 ;; Process all key=value pairs from the split body.
 (defn process-pairs-helper [puzzle pairs i]
@@ -106,81 +83,47 @@
 ;; (repl/spec/16-test-discovery.md §16.1). `tests.cl` calls them, and
 ;; `cranelisp --test` discovers them.
 
-;; Test parsing a simple form body with a few digits
 (defn test-parse-simple []
-  (let [body "c00=5&c02=3"
-        result (parse-form-body body)]
-    ;; Position 0 should be '5', position 2 should be '3', rest dots
-    (if (= (char-at result 0) "5")
-      (if (= (char-at result 2) "3") None
-        (Some "position 2 should be '3'"))
-      (Some "position 0 should be '5'"))))
+  (let [result (parse-form-body "c00=5&c02=3")]
+    (check
+      (assert-eq "5" (char-at result 0))
+      (assert-eq "." (char-at result 1))
+      (assert-eq "3" (char-at result 2)))))
 
-;; Test that empty values produce dots
 (defn test-empty-values-produce-dots []
-  (let [body "c00=&c01=&c02="
-        result (parse-form-body body)]
-    (if (= (char-at result 0) ".")
-      (if (= (char-at result 1) ".")
-        (if (= (char-at result 2) ".") None
-          (Some "position 2 should be a dot"))
-        (Some "position 1 should be a dot"))
-      (Some "position 0 should be a dot"))))
+  (assert-eq "..." (substring (parse-form-body "c00=&c01=&c02=") 0 3)))
 
-;; Test result is exactly 81 characters
 (defn test-result-length []
-  (let [result (parse-form-body "c00=5")]
-    (if (= (str-len result) 81) None
-      (Some "parse-form-body result should be 81 chars long"))))
+  (assert-eq 81 (str-len (parse-form-body "c00=5"))))
 
-;; Test url-decode replaces + with space
 (defn test-url-decode []
-  (if (= (url-decode "hello+world") "hello world") None
-    (Some "url-decode should replace + with space")))
+  (assert-eq "hello world" (url-decode "hello+world")))
 
-;; Test parse-field-index with valid name
+;; c35 is row 3, column 5: index 32.
 (defn test-field-index-valid []
-  ;; c35 -> row 3, col 5 -> index 32
-  (if (= (parse-field-index "c35") 32) None
-    (Some "parse-field-index of 'c35' should be 32")))
+  (assert-eq 32 (parse-field-index "c35")))
 
-;; Test parse-field-index with invalid name
 (defn test-field-index-invalid []
-  (if (= (parse-field-index "x00") -1) None
-    (Some "parse-field-index of 'x00' should be -1")))
+  (check
+    (assert-eq -1 (parse-field-index "x00"))
+    (assert-eq -1 (parse-field-index "c9"))
+    (assert-eq -1 (parse-field-index "c90"))))
 
-;; Test that all 81 positions are addressable
+;; c88 is the last cell, index 80.
 (defn test-last-position []
-  (let [body "c88=7"
-        result (parse-form-body body)]
-    ;; Position 80 (row 8, col 8) should be '7'
-    (if (= (char-at result 80) "7") None
-      (Some "position 80 should be '7'"))))
+  (assert-eq "7" (char-at (parse-form-body "c88=7") 80)))
 
-;; Test with a more realistic body fragment
+;; c00 → 0, c01 → 1, c10 → 9, c11 (empty) → 10, c20 → 18.
 (defn test-multiple-digits []
-  (let [body "c00=5&c01=3&c10=6&c11=&c20=9"
-        result (parse-form-body body)]
-    ;; c00=5 -> idx 0, c01=3 -> idx 1, c10=6 -> idx 9,
-    ;; c11= -> idx 10 (dot), c20=9 -> idx 18
-    (if (= (char-at result 0) "5")
-      (if (= (char-at result 1) "3")
-        (if (= (char-at result 9) "6")
-          (if (= (char-at result 10) ".")
-            (if (= (char-at result 18) "9") None
-              (Some "idx 18 should be '9'"))
-            (Some "idx 10 should be '.'"))
-          (Some "idx 9 should be '6'"))
-        (Some "idx 1 should be '3'"))
-      (Some "idx 0 should be '5'"))))
+  (let [result (parse-form-body "c00=5&c01=3&c10=6&c11=&c20=9")]
+    (check
+      (assert-eq "53......." (substring result 0 9))
+      (assert-eq "6........9" (substring result 9 19)))))
 
 ;; A body a browser would never send must still parse without a panic: a bare
 ;; key, an empty pair, extra `=`, a field name out of range or too short, a
 ;; non-digit value, a multi-byte value. Only `c11=4=x` places a digit.
 (defn test-malformed-body []
-  (let [body "c00&=&==&c0=5&c99=1&c11=4=x&c22=x&c33=é&&c44"
-        result (parse-form-body body)]
-    (if (= result (str-concat (substring (make-dots) 0 10)
-                    (str-concat "4" (substring (make-dots) 0 70))))
-      None
-      (Some "a malformed body should place only the well-formed digit"))))
+  (assert-eq (str-concat (substring (make-dots) 0 10)
+               (str-concat "4" (substring (make-dots) 0 70)))
+    (parse-form-body "c00&=&==&c0=5&c99=1&c11=4=x&c22=x&c33=é&&c44")))
