@@ -60,10 +60,11 @@ impl From<cranelisp_types::CranelispError> for BatchError {
 // `session_v4::X` paths used by main.rs / eval.rs / repl.rs / worker.rs /
 // cluster.rs / platform.rs.
 pub(crate) use self::types::{
-    BuiltIdentity, FailedModule, FailureCause, ImplIdentities, ImplRecordMatch, TurnDefinitions,
-    dedup_platform_names_preserving_order, definition_identity, file_display_name, impl_identity,
-    intrinsic_type_from_name, is_comment_only, match_impl_record, parens_balanced,
-    resolve_priority_worker_count,
+    AuthoredPosition, BuiltIdentity, DefinitionOrigin, EntryKey, FailedModule, FailureCause,
+    ImplIdentities,
+    ImplRecordMatch, MacroCall, TurnDefinitions, dedup_platform_names_preserving_order,
+    definition_identity, file_display_name, impl_identity, intrinsic_type_from_name,
+    is_comment_only, match_impl_record, parens_balanced, resolve_priority_worker_count,
 };
 pub use self::types::{
     CommandResult, EvalResult, Introspection, ModuleIntroductionOutcome, RunMode, SessionSettings,
@@ -363,6 +364,10 @@ pub struct SharedState {
     /// `main` gate locates its refusals here.
     pub(crate) definition_origins: dashmap::DashMap<FQSymbol, cranelisp_types::Span>,
 
+    /// The entry sequence the next REPL-entered authored form takes
+    /// (`design/int/s125-binary-clean.md` §4.2).
+    pub(crate) entered_forms: std::sync::atomic::AtomicU64,
+
     /// Session-lifetime retention pool for superseded code
     /// (`design/int/session-transaction.md` §6). Append-only, never drained
     /// (the `kept_dlls` precedent): a publication pushes each displaced
@@ -585,3 +590,6 @@ mod list_classification_tests;
 
 #[cfg(test)]
 mod persistence_tests;
+
+#[cfg(test)]
+mod authored_record_tests;

@@ -5,6 +5,9 @@
 //! child transfers its owner to the parent, and reading uses a borrow tied to
 //! the live root.
 
+use std::collections::HashSet;
+
+use cranelisp_intrinsics::alloc::HeapAdt;
 use cranelisp_intrinsics::handle::{Borrowed, Owned};
 
 use cranelisp_types::{
@@ -16,15 +19,11 @@ use cranelisp_types::{
 /// NULLARY_TAG_THRESHOLD cast to i64 for comparison with runtime values.
 const NULLARY_THRESHOLD: i64 = NULLARY_TAG_THRESHOLD as i64;
 
-// Heap layout constants (from Decision 10):
-// Offset 0: alloc_size (i64)
-// Offset 8: rc (i64)
-// Offset 16+: payload (tag at 16, fields at 24, 32, ...)
-#[cfg(test)]
-const RC_OFFSET: usize = 8;
-const PAYLOAD_OFFSET: usize = 16;
-const FIELD0_OFFSET: usize = 24;
-const FIELD1_OFFSET: usize = 32;
+// Sexp and SList cells are data-constructor values; their layout is
+// `HeapAdt`'s (BC §4b invariant 2).
+const TAG_OFFSET: usize = HeapAdt::TAG_OFFSET as usize;
+const FIELD0_OFFSET: usize = HeapAdt::field_offset(0) as usize;
+const FIELD1_OFFSET: usize = HeapAdt::field_offset(1) as usize;
 
 // ---------------------------------------------------------------------------
 // Sexp -> Runtime ADT (heap allocation)
@@ -34,7 +33,92 @@ const FIELD1_OFFSET: usize = 32;
 ///
 /// Returns the unique owner of the allocated ADT cell. Nested allocations are
 /// transferred into their parent, so the returned root owns the complete tree.
+#[cfg(test)]
 pub fn sexp_to_runtime(sexp: &Sexp) -> Owned {
+    marshal(sexp, &mut |_| {})
+}
+
+/// One macro call's marshalled argument list, and a held reference on the
+/// name string of every argument symbol
+/// (`design/int/expansion-qualification-scope.md` §2.7).
+pub(crate) struct ClauseCall {
+    pub(crate) args: Owned,
+    pub(crate) held: HeldSymbolNames,
+}
+
+/// References the host holds on argument symbol names for one clause call. A
+/// held string's count is never one, so it is neither freed nor rewritten in
+/// place, and its address names it alone while the call lasts. It is released
+/// only by [`take_clause_result`].
+pub(crate) struct HeldSymbolNames(Vec<Owned>);
+
+impl HeldSymbolNames {
+    fn identities(&self) -> HashSet<i64> {
+        self.0.iter().map(Owned::raw_for_read).collect()
+    }
+
+    fn release(self) {
+        for name in self.0 {
+            cranelisp_intrinsics::rc::consume_shallow(name);
+        }
+    }
+}
+
+/// Marshal a macro call's arguments into one owned runtime list, holding a
+/// reference on each argument symbol's name.
+pub(crate) fn marshal_clause_call(args: &[Sexp]) -> ClauseCall {
+    let mut held = Vec::new();
+    let mut hold = |name: Borrowed<'_>| held.push(name.to_owned());
+    let marshalled = args.iter().map(|arg| marshal(arg, &mut hold)).collect();
+    ClauseCall {
+        args: build_runtime_slist(marshalled),
+        held: HeldSymbolNames(held),
+    }
+}
+
+/// A clause's result copied to a compiler `Sexp`, with fresh synthetic spans.
+/// `caller_text` holds the span of every symbol whose name is one of the call's
+/// held argument strings.
+pub(crate) struct Expansion {
+    pub(crate) sexp: Sexp,
+    pub(crate) caller_text: HashSet<Span>,
+}
+
+/// A clause returned a bare tag where a `Sexp` heap value is required.
+#[derive(Debug)]
+pub(crate) struct InvalidClauseResult(pub(crate) i64);
+
+/// Adopt a clause's result word, copy it, and release the result and the held
+/// argument names exactly once, on both outcomes.
+pub(crate) fn take_clause_result(
+    result_word: i64,
+    held: HeldSymbolNames,
+) -> Result<Expansion, InvalidClauseResult> {
+    // SAFETY: the macro-clause ABI transfers one owned Sexp result word to the
+    // host. Bare nullary tags are valid `Owned` values and consume as a no-op.
+    let result = unsafe { Owned::from_abi(result_word) };
+    let outcome = if result.is_nullary_tag() {
+        Err(InvalidClauseResult(result_word))
+    } else {
+        let mut reader = Unmarshal {
+            caller_names: held.identities(),
+            caller_text: HashSet::new(),
+            span: cranelisp_frontend::next_synthetic_span,
+        };
+        let sexp = reader.read(result.as_borrowed());
+        Ok(Expansion {
+            sexp,
+            caller_text: reader.caller_text,
+        })
+    };
+    cranelisp_intrinsics::drop::consume_sexp(result);
+    held.release();
+    outcome
+}
+
+/// Marshal `sexp`, offering each symbol's name string to `hold` before the
+/// string is stored in its cell.
+fn marshal(sexp: &Sexp, hold: &mut dyn FnMut(Borrowed<'_>)) -> Owned {
     match sexp {
         Sexp::Int(n, _) => alloc_sexp_cell(TAG_SEXP_INT, StoredField::Scalar(*n)),
         Sexp::Float(f, _) => {
@@ -47,14 +131,16 @@ pub fn sexp_to_runtime(sexp: &Sexp) -> Owned {
             alloc_sexp_cell(TAG_SEXP_STR, StoredField::Owned(alloc_runtime_string(s)))
         }
         Sexp::Symbol(s, _) => {
-            alloc_sexp_cell(TAG_SEXP_SYM, StoredField::Owned(alloc_runtime_string(s)))
+            let name = alloc_runtime_string(s);
+            hold(name.as_borrowed());
+            alloc_sexp_cell(TAG_SEXP_SYM, StoredField::Owned(name))
         }
         Sexp::List(children, _) => {
-            let slist = marshal_children_to_slist(children);
+            let slist = marshal_children_to_slist(children, hold);
             alloc_sexp_cell(TAG_SEXP_LIST, StoredField::Owned(slist))
         }
         Sexp::Bracket(children, _) => {
-            let slist = marshal_children_to_slist(children);
+            let slist = marshal_children_to_slist(children, hold);
             alloc_sexp_cell(TAG_SEXP_BRACKET, StoredField::Owned(slist))
         }
         Sexp::Annotated {
@@ -63,8 +149,8 @@ pub fn sexp_to_runtime(sexp: &Sexp) -> Owned {
             ..
         } => alloc_sexp_pair(
             TAG_SEXP_ANNOTATED,
-            sexp_to_runtime(annotation),
-            sexp_to_runtime(subject),
+            marshal(annotation, hold),
+            marshal(subject, hold),
         ),
         Sexp::Comment(_, _) => {
             unreachable!(
@@ -76,64 +162,112 @@ pub fn sexp_to_runtime(sexp: &Sexp) -> Owned {
 
 /// Convert a runtime Sexp ADT value back to a compiler `Sexp`.
 ///
-/// All output spans are `Span::SYNTHETIC`; the caller rewrites them
-/// to the macro call-site span.
+/// All output spans are `Span::SYNTHETIC`.
 ///
 /// # Preconditions
 ///
 /// `val` must be a valid runtime Sexp ADT value: a heap pointer returned by
 /// `sexp_to_runtime` or by a JIT-compiled macro function. The heap memory
 /// must still be live for the duration of this borrow.
+#[cfg(test)]
 pub fn runtime_to_sexp(val: Borrowed<'_>) -> Sexp {
-    let raw = val.raw_for_read();
-    debug_assert!(
-        raw >= NULLARY_THRESHOLD,
-        "runtime_to_sexp: expected heap pointer, got bare tag {raw}"
-    );
+    Unmarshal {
+        caller_names: HashSet::new(),
+        caller_text: HashSet::new(),
+        span: || Span::SYNTHETIC,
+    }
+    .read(val)
+}
 
-    // SAFETY: val is a heap pointer to a Sexp ADT cell allocated by
-    // sexp_to_runtime or by a JIT-compiled macro function. The cell
-    // has layout [header(16) | tag(8) | field0(8)].
-    let tag = unsafe { read_i64(raw, PAYLOAD_OFFSET) };
+/// One copy of a runtime Sexp tree. Each node takes a span from `span`; a
+/// symbol whose name string is one of `caller_names` records its span in
+/// `caller_text`.
+struct Unmarshal {
+    caller_names: HashSet<i64>,
+    caller_text: HashSet<Span>,
+    span: fn() -> Span,
+}
 
-    match tag {
-        TAG_SEXP_INT => Sexp::Int(unsafe { read_i64(raw, FIELD0_OFFSET) }, Span::SYNTHETIC),
-        TAG_SEXP_FLOAT => Sexp::Float(
-            f64::from_bits(unsafe { read_i64(raw, FIELD0_OFFSET) } as u64),
-            Span::SYNTHETIC,
-        ),
-        TAG_SEXP_BOOL => Sexp::Bool(
-            unsafe { read_i64(raw, FIELD0_OFFSET) } != 0,
-            Span::SYNTHETIC,
-        ),
-        TAG_SEXP_STR => {
-            let s = read_runtime_string(unsafe { borrowed_field(val, FIELD0_OFFSET) });
-            Sexp::Str(s, Span::SYNTHETIC)
+impl Unmarshal {
+    /// Copy the live runtime Sexp `val`, which must be a heap value allocated
+    /// by the marshaller or by compiled macro code.
+    fn read(&mut self, val: Borrowed<'_>) -> Sexp {
+        let raw = val.raw_for_read();
+        debug_assert!(
+            raw >= NULLARY_THRESHOLD,
+            "runtime_to_sexp: expected heap pointer, got bare tag {raw}"
+        );
+
+        // SAFETY: val is a heap pointer to a Sexp ADT cell allocated by
+        // sexp_to_runtime or by a JIT-compiled macro function. The cell
+        // has the `HeapAdt` layout [header | tag | field0 | ...].
+        let tag = unsafe { read_i64(raw, TAG_OFFSET) };
+
+        match tag {
+            TAG_SEXP_INT => Sexp::Int(unsafe { read_i64(raw, FIELD0_OFFSET) }, (self.span)()),
+            TAG_SEXP_FLOAT => Sexp::Float(
+                f64::from_bits(unsafe { read_i64(raw, FIELD0_OFFSET) } as u64),
+                (self.span)(),
+            ),
+            TAG_SEXP_BOOL => {
+                Sexp::Bool(unsafe { read_i64(raw, FIELD0_OFFSET) } != 0, (self.span)())
+            }
+            TAG_SEXP_STR => {
+                let s = read_runtime_string(unsafe { borrowed_field(val, FIELD0_OFFSET) });
+                Sexp::Str(s, (self.span)())
+            }
+            TAG_SEXP_SYM => {
+                let name = unsafe { borrowed_field(val, FIELD0_OFFSET) };
+                let span = (self.span)();
+                if self.caller_names.contains(&name.raw_for_read()) {
+                    self.caller_text.insert(span);
+                }
+                Sexp::Symbol(read_runtime_string(name), span)
+            }
+            TAG_SEXP_LIST => {
+                let children = self.read_slist(unsafe { borrowed_field(val, FIELD0_OFFSET) });
+                Sexp::List(children, (self.span)())
+            }
+            TAG_SEXP_BRACKET => {
+                let children = self.read_slist(unsafe { borrowed_field(val, FIELD0_OFFSET) });
+                Sexp::Bracket(children, (self.span)())
+            }
+            TAG_SEXP_ANNOTATED => Sexp::Annotated {
+                annotation: Box::new(self.read(unsafe { borrowed_field(val, FIELD0_OFFSET) })),
+                subject: Box::new(self.read(unsafe { borrowed_field(val, FIELD1_OFFSET) })),
+                span: (self.span)(),
+            },
+            _ => {
+                unreachable!("invariant: invalid Sexp tag {tag}")
+            }
         }
-        TAG_SEXP_SYM => {
-            let s = read_runtime_string(unsafe { borrowed_field(val, FIELD0_OFFSET) });
-            Sexp::Symbol(s, Span::SYNTHETIC)
+    }
+
+    /// Copy a runtime SList into a Vec of compiler Sexps.
+    fn read_slist(&mut self, mut slist: Borrowed<'_>) -> Vec<Sexp> {
+        let mut result = Vec::new();
+        loop {
+            if slist.raw_for_read() < NULLARY_THRESHOLD {
+                // SNil (bare tag 0) or other nullary — end of list
+                debug_assert_eq!(
+                    slist.raw_for_read(),
+                    TAG_SNIL,
+                    "expected SNil tag, got {}",
+                    slist.raw_for_read()
+                );
+                break;
+            }
+            // SCons: read tag, head, tail
+            // SAFETY: slist is a heap pointer to an SCons cell with layout
+            // [header | tag | head | tail].
+            let tag = unsafe { read_i64(slist.raw_for_read(), TAG_OFFSET) };
+            debug_assert_eq!(tag, TAG_SCONS, "expected SCons tag, got {tag}");
+            let head = unsafe { borrowed_field(slist, FIELD0_OFFSET) };
+            let tail = unsafe { borrowed_field(slist, FIELD1_OFFSET) };
+            result.push(self.read(head));
+            slist = tail;
         }
-        TAG_SEXP_LIST => {
-            let children = read_slist_to_vec(unsafe { borrowed_field(val, FIELD0_OFFSET) });
-            Sexp::List(children, Span::SYNTHETIC)
-        }
-        TAG_SEXP_BRACKET => {
-            let children = read_slist_to_vec(unsafe { borrowed_field(val, FIELD0_OFFSET) });
-            Sexp::Bracket(children, Span::SYNTHETIC)
-        }
-        TAG_SEXP_ANNOTATED => Sexp::Annotated {
-            annotation: Box::new(runtime_to_sexp(unsafe {
-                borrowed_field(val, FIELD0_OFFSET)
-            })),
-            subject: Box::new(runtime_to_sexp(unsafe {
-                borrowed_field(val, FIELD1_OFFSET)
-            })),
-            span: Span::SYNTHETIC,
-        },
-        _ => {
-            unreachable!("invariant: invalid Sexp tag {tag}")
-        }
+        result
     }
 }
 
@@ -144,7 +278,7 @@ pub fn runtime_to_sexp(val: Borrowed<'_>) -> Sexp {
 /// Build a runtime `(SList Sexp)` from a slice of already-marshalled i64 values.
 ///
 /// SNil = bare tag 0 (not a heap pointer).
-/// SCons = heap cell `[header(16) | tag=1(8) | head(8) | tail(8)]`.
+/// SCons = heap cell `[header | tag=1 | head | tail]`.
 pub fn build_runtime_slist(items: Vec<Owned>) -> Owned {
     // SAFETY: `TAG_SNIL` is the canonical produced nullary list value.
     let mut result = unsafe { Owned::from_abi(TAG_SNIL) };
@@ -155,36 +289,9 @@ pub fn build_runtime_slist(items: Vec<Owned>) -> Owned {
 }
 
 /// Marshal a slice of compiler Sexps into a runtime SList.
-fn marshal_children_to_slist(children: &[Sexp]) -> Owned {
-    let marshalled = children.iter().map(sexp_to_runtime).collect();
+fn marshal_children_to_slist(children: &[Sexp], hold: &mut dyn FnMut(Borrowed<'_>)) -> Owned {
+    let marshalled = children.iter().map(|child| marshal(child, hold)).collect();
     build_runtime_slist(marshalled)
-}
-
-/// Read a runtime SList into a Vec of compiler Sexps.
-fn read_slist_to_vec(mut slist: Borrowed<'_>) -> Vec<Sexp> {
-    let mut result = Vec::new();
-    loop {
-        if slist.raw_for_read() < NULLARY_THRESHOLD {
-            // SNil (bare tag 0) or other nullary — end of list
-            debug_assert_eq!(
-                slist.raw_for_read(),
-                TAG_SNIL,
-                "expected SNil tag, got {}",
-                slist.raw_for_read()
-            );
-            break;
-        }
-        // SCons: read tag, head, tail
-        // SAFETY: slist is a heap pointer to an SCons cell with layout
-        // [header(16) | tag(8) | head(8) | tail(8)].
-        let tag = unsafe { read_i64(slist.raw_for_read(), PAYLOAD_OFFSET) };
-        debug_assert_eq!(tag, TAG_SCONS, "expected SCons tag, got {tag}");
-        let head = unsafe { borrowed_field(slist, FIELD0_OFFSET) };
-        let tail = unsafe { borrowed_field(slist, FIELD1_OFFSET) };
-        result.push(runtime_to_sexp(head));
-        slist = tail;
-    }
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -197,15 +304,12 @@ enum StoredField {
 }
 
 /// Allocate a Sexp cell with one field: `[header | tag | field]`.
-///
-/// Total payload = 8 (tag) + 8 (field) = 16 bytes.
 fn alloc_sexp_cell(tag: i64, field: StoredField) -> Owned {
-    let payload_size = 16; // tag(8) + field(8)
-    let base = cranelisp_intrinsics::alloc::heap_alloc(payload_size);
-    // SAFETY: base is a valid heap pointer with 16 bytes of payload space.
-    // Tag at offset 16, field at offset 24.
+    let base = cranelisp_intrinsics::alloc::heap_alloc(HeapAdt::payload_size(1) as i64);
+    // SAFETY: base is a valid heap pointer with payload space for a tag and
+    // one field.
     unsafe {
-        write_i64(base, PAYLOAD_OFFSET, tag);
+        write_i64(base, TAG_OFFSET, tag);
         match field {
             StoredField::Scalar(value) => write_i64(base, FIELD0_OFFSET, value),
             StoredField::Owned(owner) => write_i64(base, FIELD0_OFFSET, owner.into_raw()),
@@ -217,11 +321,11 @@ fn alloc_sexp_cell(tag: i64, field: StoredField) -> Owned {
 
 /// Allocate a two-field Sexp cell: `[header | tag | field0 | field1]`.
 fn alloc_sexp_pair(tag: i64, field0: Owned, field1: Owned) -> Owned {
-    let payload_size = 24; // tag(8) + two fields(16)
-    let base = cranelisp_intrinsics::alloc::heap_alloc(payload_size);
-    // SAFETY: base is a valid heap pointer with 24 bytes of payload space.
+    let base = cranelisp_intrinsics::alloc::heap_alloc(HeapAdt::payload_size(2) as i64);
+    // SAFETY: base is a valid heap pointer with payload space for a tag and
+    // two fields.
     unsafe {
-        write_i64(base, PAYLOAD_OFFSET, tag);
+        write_i64(base, TAG_OFFSET, tag);
         write_i64(base, FIELD0_OFFSET, field0.into_raw());
         write_i64(base, FIELD1_OFFSET, field1.into_raw());
     }
@@ -230,15 +334,12 @@ fn alloc_sexp_pair(tag: i64, field0: Owned, field1: Owned) -> Owned {
 }
 
 /// Allocate an SCons cell: `[header | tag=1 | head | tail]`.
-///
-/// Total payload = 8 (tag) + 8 (head) + 8 (tail) = 24 bytes.
 fn alloc_scons(head: Owned, tail: Owned) -> Owned {
-    let payload_size = 24; // tag(8) + head(8) + tail(8)
-    let base = cranelisp_intrinsics::alloc::heap_alloc(payload_size);
-    // SAFETY: base is a valid heap pointer with 24 bytes of payload space.
-    // Tag at offset 16, head at offset 24, tail at offset 32.
+    let base = cranelisp_intrinsics::alloc::heap_alloc(HeapAdt::payload_size(2) as i64);
+    // SAFETY: base is a valid heap pointer with payload space for a tag, the
+    // head and the tail.
     unsafe {
-        write_i64(base, PAYLOAD_OFFSET, TAG_SCONS);
+        write_i64(base, TAG_OFFSET, TAG_SCONS);
         write_i64(base, FIELD0_OFFSET, head.into_raw());
         write_i64(base, FIELD1_OFFSET, tail.into_raw());
     }
@@ -321,61 +422,60 @@ unsafe fn borrowed_field<'a>(parent: Borrowed<'a>, offset: usize) -> Borrowed<'a
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_slist_to_vec(slist: Borrowed<'_>) -> Vec<Sexp> {
+        Unmarshal {
+            caller_names: HashSet::new(),
+            caller_text: HashSet::new(),
+            span: || Span::SYNTHETIC,
+        }
+        .read_slist(slist)
+    }
     use cranelisp_types::HeapHeader;
 
-    // --- Byte-layout drift-guard (FIXME 0498) --------------------------------
-    //
-    // The offset constants in this file (`RC_OFFSET`/`PAYLOAD_OFFSET`/
-    // `FIELD0_OFFSET`/`FIELD1_OFFSET`) are hardcoded literals whose rustdoc
-    // *claims* they follow the `HeapHeader` base-pointer layout (Decision 10)
-    // and stay byte-synced with the runtime-side marshaller
-    // (`cranelisp-primitives/src/marshal.rs`, which derives the same offsets
-    // from `HeapHeader::SIZE`). That was a guarding comment with no guard — the
-    // "true statement that rots silently" shape the S101 `kept_jits` finding
-    // flagged. These asserts turn the comment into a guard: a `HeapHeader`
-    // layout change (or a careless renumber here) now trips a test instead of
-    // silently corrupting the raw `read_i64`/`write_i64` accesses that read
-    // these offsets.
-
-    // spec: design/arch/fixmes/0498 — payload/tag sits immediately after the header
+    // spec: design/arch/bounded-contexts.md §4b invariant 2 — the marshaller
+    // reads and writes Sexp cells at the layout owner's offsets
     #[test]
-    fn payload_offset_tracks_heap_header_size() {
-        assert_eq!(
-            PAYLOAD_OFFSET,
-            HeapHeader::SIZE,
-            "ADT payload (tag) must sit at the first slot past the heap header; \
-             a HeapHeader size change must be mirrored here"
-        );
+    fn cell_offsets_are_the_heap_adt_layout() {
+        assert_eq!(TAG_OFFSET, HeapAdt::TAG_OFFSET as usize);
+        assert_eq!(FIELD0_OFFSET, HeapAdt::field_offset(0) as usize);
+        assert_eq!(FIELD1_OFFSET, HeapAdt::field_offset(1) as usize);
     }
 
-    // spec: design/arch/fixmes/0498 — RC field offset matches the shared header layout
+    // spec: design/arch/bounded-contexts.md §4b invariant 2 — a marshalled
+    // cell, read through the owner's layout alone, carries its size, tag and
+    // fields where `HeapAdt` places them
     #[test]
-    fn rc_offset_matches_heap_header() {
-        assert_eq!(
-            RC_OFFSET as i32,
-            HeapHeader::RC_OFFSET,
-            "RC offset must match cranelisp_types::HeapHeader::RC_OFFSET (single source of truth)"
-        );
-    }
+    fn marshalled_cells_have_the_heap_adt_layout() {
+        let word = |base: i64, offset: i32| unsafe { read_i64(base, offset as usize) };
+        let alloc_size = |base: i64| word(base, HeapHeader::ALLOC_SIZE_OFFSET);
 
-    // spec: design/arch/fixmes/0498 — ADT fields are i64-strided past the tag,
-    // identical to the runtime-side marshaller's derived offsets.
-    #[test]
-    fn field_offsets_are_i64_strided_past_the_tag() {
-        const STRIDE: usize = core::mem::size_of::<i64>(); // 8
+        let int = sexp_to_runtime(&Sexp::Int(42, Span::SYNTHETIC));
+        let base = int.as_borrowed().raw_for_read();
         assert_eq!(
-            FIELD0_OFFSET,
-            PAYLOAD_OFFSET + STRIDE,
-            "field 0 is one i64 past the tag"
+            alloc_size(base),
+            (HeapHeader::SIZE + HeapAdt::payload_size(1)) as i64
         );
+        assert_eq!(word(base, HeapAdt::TAG_OFFSET), TAG_SEXP_INT);
+        assert_eq!(word(base, HeapAdt::field_offset(0)), 42);
+        cranelisp_intrinsics::drop::consume_sexp(int);
+
+        let list = sexp_to_runtime(&Sexp::List(
+            vec![Sexp::Int(7, Span::SYNTHETIC)],
+            Span::SYNTHETIC,
+        ));
+        let base = list.as_borrowed().raw_for_read();
+        assert_eq!(word(base, HeapAdt::TAG_OFFSET), TAG_SEXP_LIST);
+        let scons = word(base, HeapAdt::field_offset(0));
         assert_eq!(
-            FIELD1_OFFSET,
-            PAYLOAD_OFFSET + 2 * STRIDE,
-            "field 1 is two i64s past the tag"
+            alloc_size(scons),
+            (HeapHeader::SIZE + HeapAdt::payload_size(2)) as i64
         );
-        // Pin the concrete post-header values the raw accessors were written for
-        // (mirrors the `const _` asserts on the primitives side).
-        assert_eq!((PAYLOAD_OFFSET, FIELD0_OFFSET, FIELD1_OFFSET), (16, 24, 32));
+        assert_eq!(word(scons, HeapAdt::TAG_OFFSET), TAG_SCONS);
+        let head = word(scons, HeapAdt::field_offset(0));
+        assert_eq!(word(head, HeapAdt::field_offset(0)), 7);
+        assert_eq!(word(scons, HeapAdt::field_offset(1)), TAG_SNIL);
+        cranelisp_intrinsics::drop::consume_sexp(list);
     }
 
     // spec: design/arch/fixmes/0498 — the tag constants this file imports carry
@@ -580,7 +680,7 @@ mod tests {
 
     fn cell_rc(base: i64) -> i64 {
         // SAFETY: `base` is a live heap cell allocated by the marshaller.
-        unsafe { read_i64(base, RC_OFFSET) }
+        unsafe { read_i64(base, HeapHeader::RC_OFFSET as usize) }
     }
 
     /// Collect the RC of every heap cell reachable in a marshalled runtime Sexp
@@ -592,8 +692,8 @@ mod tests {
             return; // bare nullary tag (SNil) — not a heap cell
         }
         out.push(("cell", cell_rc(base)));
-        // SAFETY: `base` is a live Sexp cell: tag@16, field0@24.
-        let tag = unsafe { read_i64(base, PAYLOAD_OFFSET) };
+        // SAFETY: `base` is a live Sexp cell with a tag and field 0.
+        let tag = unsafe { read_i64(base, TAG_OFFSET) };
         let field0 = unsafe { read_i64(base, FIELD0_OFFSET) };
         match tag {
             TAG_SEXP_STR | TAG_SEXP_SYM => {
@@ -614,7 +714,7 @@ mod tests {
     fn collect_slist_rcs(mut slist: i64, out: &mut Vec<(&'static str, i64)>) {
         while slist >= NULLARY_THRESHOLD {
             out.push(("scons", cell_rc(slist)));
-            // SAFETY: SCons cell: head@24, tail@32.
+            // SAFETY: SCons cell with a head and a tail.
             let head = unsafe { read_i64(slist, FIELD0_OFFSET) };
             let tail = unsafe { read_i64(slist, FIELD1_OFFSET) };
             collect_cell_rcs(head, out);
@@ -758,5 +858,88 @@ mod tests {
     #[should_panic(expected = "LEAKED Owned heap handle")]
     fn undisposed_marshaled_root_triggers_the_drop_bomb() {
         let _owner = sexp_to_runtime(&Sexp::Int(1, Span::SYNTHETIC));
+    }
+
+    // --- E6: the held argument names (expansion-qualification-scope.md §2.7) ---
+
+    fn sym(name: &str) -> Sexp {
+        Sexp::Symbol(name.to_string(), Span::SYNTHETIC)
+    }
+
+    /// Marshal `(x)` and `(y 1)`-shaped arguments, take a probe reference on
+    /// each held name so it stays observable after the turn, and return the
+    /// call, the names and their probes.
+    fn held_call() -> (ClauseCall, Vec<i64>, Vec<Owned>) {
+        let args = [
+            sym("x"),
+            Sexp::List(
+                vec![sym("y"), Sexp::Int(1, Span::SYNTHETIC)],
+                Span::SYNTHETIC,
+            ),
+        ];
+        let call = marshal_clause_call(&args);
+        let names: Vec<i64> = call.held.0.iter().map(Owned::raw_for_read).collect();
+        // SAFETY: each name is live: the argument tree and the hold own it.
+        let probes = names
+            .iter()
+            .map(|&name| unsafe { Borrowed::from_abi(name) }.to_owned())
+            .collect();
+        (call, names, probes)
+    }
+
+    fn release_probes(probes: Vec<Owned>) {
+        for probe in probes {
+            cranelisp_intrinsics::rc::consume_shallow(probe);
+        }
+    }
+
+    // spec: design/int/expansion-qualification-scope.md §2.7 E6 — a clause that
+    // returns its first argument: during the turn each argument name carries
+    // the tree's, the hold's and the probe's references; after it, only the
+    // probe's, and the returned name is recorded as caller text.
+    #[test]
+    fn held_argument_names_are_released_once_on_success() {
+        let (call, names, probes) = held_call();
+        assert_eq!(names.len(), 2);
+        assert_eq!(
+            names.iter().map(|&n| cell_rc(n)).collect::<Vec<_>>(),
+            [3, 3]
+        );
+
+        // The clause: keep the first argument, consume the list.
+        // SAFETY: `call.args` is a live SCons whose head is the first argument.
+        let first =
+            unsafe { Borrowed::from_abi(read_i64(call.args.raw_for_read(), FIELD0_OFFSET)) }
+                .to_owned();
+        cranelisp_intrinsics::drop::consume_slist(call.args);
+        let expansion = take_clause_result(first.into_raw(), call.held).unwrap();
+
+        assert!(matches!(&expansion.sexp, Sexp::Symbol(name, _) if name == "x"));
+        let Sexp::Symbol(_, span) = &expansion.sexp else {
+            unreachable!("invariant: checked above")
+        };
+        assert_eq!(expansion.caller_text, HashSet::from([*span]));
+        assert_eq!(
+            names.iter().map(|&n| cell_rc(n)).collect::<Vec<_>>(),
+            [1, 1]
+        );
+        release_probes(probes);
+    }
+
+    // spec: design/int/expansion-qualification-scope.md §2.7 E6 — an invalid
+    // result releases the held names too.
+    #[test]
+    fn held_argument_names_are_released_once_on_an_invalid_result() {
+        let (call, names, probes) = held_call();
+        cranelisp_intrinsics::drop::consume_slist(call.args);
+
+        let outcome = take_clause_result(TAG_SNIL, call.held);
+
+        assert!(matches!(outcome, Err(InvalidClauseResult(TAG_SNIL))));
+        assert_eq!(
+            names.iter().map(|&n| cell_rc(n)).collect::<Vec<_>>(),
+            [1, 1]
+        );
+        release_probes(probes);
     }
 }

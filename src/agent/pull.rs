@@ -1145,6 +1145,7 @@ mod tests {
                     ast: None,
                     clif_ir: None,
                     code_size: None,
+                    ..Default::default()
                 },
             );
         }
@@ -1893,7 +1894,7 @@ mod tests {
 
     // S2 (honesty) — `set-doc` on a non-`UserFn` `Def` (here a `PrimitiveExtern`)
     // is REFUSED: its docstring would show in-session but VANISH on restart
-    // (`generate_fns_and_macros` only persists UserFn docstrings), so claiming
+    // (regeneration persists only function docstrings), so claiming
     // "recorded" would be dishonest. The live field is left unset.
     #[test]
     fn set_doc_non_userfn_refused_not_recorded() {

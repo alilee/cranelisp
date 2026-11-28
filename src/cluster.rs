@@ -146,11 +146,15 @@ impl ProcessedCluster {
             return;
         };
         for (key, staged) in records {
-            let mut record = introspection.entry(key).or_default();
-            record.source = staged.source;
-            record.sexp = staged.sexp;
-            record.expanded = staged.expanded;
-            record.ast = staged.ast;
+            let latest_macro_used = staged
+                .macros_used
+                .iter()
+                .filter_map(|used| introspection.get(used).and_then(|record| record.position))
+                .max();
+            introspection
+                .entry(key)
+                .or_default()
+                .install_authored(staged, latest_macro_used);
         }
     }
 

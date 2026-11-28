@@ -264,43 +264,39 @@ impl CompilerSession {
     /// Shows `:module/TypeName ; deftype` with `; match:` and `; impl:` sections.
     #[cfg(test)]
     pub(crate) fn format_type_display(&self, type_name: &str, module: &ModuleFullPath) -> String {
-        render(&self.format_type_display_doc(type_name, module))
+        let entry = self.entry_at(&FQSymbol {
+            module: module.clone(),
+            symbol: Symbol::from(type_name),
+        });
+        let info = entry.as_ref().and_then(|entry| entry.type_def_info());
+        render(&self.format_type_display_doc(type_name, info, module))
     }
 
     /// The `:module/TypeName ; deftype` type-display `StyledDoc` (spec §4.1.3) —
     /// the whole `:module/Type` is one R4 span (no `module/` decomposition inside
     /// a type annotation, §10.3 R4); `; deftype` and the `; match:`/`; impl:`
     /// drawers are R6 metadata.
+    ///
+    /// `info` is the definition read from the type's own binding at `module`,
+    /// its home. The constructor roster is never re-resolved from the bare
+    /// spelling: another type's constructor may share it (Principle 24).
     pub(crate) fn format_type_display_doc(
         &self,
         type_name: &str,
+        info: Option<&cranelisp_types::TypeDefInfo>,
         module: &ModuleFullPath,
     ) -> StyledDoc {
         let mut result = StyledDoc::new();
         push_type_annotation(&mut result, &format!("{module}/{type_name}"));
         result.plain(" ");
         push_metadata(&mut result, "; deftype");
-        let tn = TypeName::from(type_name);
-        // FIXME 0192 method 2: `get_type_constructors` deleted; inline the
-        // 1-line wrapper over the relocated `lookup_type_def_chain`.
-        //
-        // D1 (S108): root the constructor chain-lookup at the type's already-
-        // RESOLVED HOME `module` (the fn already holds it), NOT
-        // `current_module_path()`. At the home the TypeDef is local, so the
-        // chain terminates at depth 0 and the implicit-prelude outer-scope hop
-        // never arises — a seeded ADT (Option/Result/IO) reached via the
-        // prelude glob keeps its `; match:` section (spec §4.1.3), same as a
-        // user deftype (which worked only incidentally when scope == home).
-        if let Some(info) =
-            cranelisp_types::lookup_type_def_chain(&self.shared.symbol_tables, module, &tn)
+        if let Some(info) = info
             && !info.constructors.is_empty()
         {
-            // `TypeDefInfo.constructors` is now `Vec<Symbol>` (S70 — the
-            // `ConstructorInfo` struct retired; ctor metadata lives on each
-            // ctor's `DefKind::Constructor` entry).
             let names: Vec<&str> = info.constructors.iter().map(|c| c.as_ref()).collect();
             result.extend(format_related_section_doc("match", &names));
         }
+        let tn = TypeName::from(type_name);
         // The `; impl:` view is a Decision-45 Pattern-B VIEW question ("which
         // traits does this type implement, as visible from HERE") — scope-rooted
         // by semantics. E8 (S108, resolve-home-enumeration.md §5a): the asking
@@ -1085,6 +1081,90 @@ mod fq_arg_format_type_tests {
         assert!(
             !out.contains("; impl:"),
             "an empty `; impl:` section MUST be omitted for a type (§4.1.3); got: {out}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod contested_type_name_tests {
+    use super::*;
+
+    use crate::repl::test_support::*;
+
+    use cranelisp_types::{FQSymbol, Symbol};
+
+    /// The `; match:` body rows of the first `deftype` display in `rendered`.
+    fn match_rows(rendered: &str) -> String {
+        rendered
+            .lines()
+            .skip_while(|l| l.trim() != "; match:")
+            .skip(1)
+            .take_while(|l| l.trim_start().starts_with(';'))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn type_display_after(forms: &[&str], type_name: &str) -> String {
+        let mut s = session();
+        for form in forms {
+            s.eval(form)
+                .unwrap_or_else(|e| panic!("fixture form `{form}` must compile: {e}"));
+        }
+        let symbol = FQSymbol {
+            module: s.current_module_path(),
+            symbol: Symbol::from(type_name),
+        };
+        render(&s.format_definition_symbol_doc(&symbol))
+    }
+
+    // spec: repl/spec.md §4.1.3 — 1003: a type's `; match:` listing names its
+    // own constructors when another type has a constructor spelled like it.
+    #[test]
+    fn type_listing_survives_a_later_constructor_of_its_name() {
+        let out = type_display_after(
+            &[
+                "(deftype Qtok Qa Qb)",
+                "(deftype Qwrap (Qtok [:primitives/Int n]))",
+            ],
+            "Qtok",
+        );
+        assert!(out.starts_with(":user/Qtok ; deftype"), "got: {out}");
+        assert_eq!(
+            match_rows(&out).split_whitespace().collect::<Vec<_>>(),
+            [";", "Qa", "Qb"]
+        );
+    }
+
+    // spec: repl/spec.md §4.1.3 — 1003, the constructor declared first.
+    #[test]
+    fn type_listing_survives_an_earlier_constructor_of_its_name() {
+        let out = type_display_after(
+            &[
+                "(deftype Qwrap (Qtok [:primitives/Int n]))",
+                "(deftype Qtok Qa Qb)",
+            ],
+            "Qtok",
+        );
+        assert_eq!(
+            match_rows(&out).split_whitespace().collect::<Vec<_>>(),
+            [";", "Qa", "Qb"]
+        );
+    }
+
+    // spec: repl/spec.md §4.1.3 — the type owning the contested constructor
+    // lists only its own constructor, not the other type's.
+    #[test]
+    fn owning_type_lists_only_its_own_constructor() {
+        let out = type_display_after(
+            &[
+                "(deftype Qtok Qa Qb)",
+                "(deftype Qwrap (Qtok [:primitives/Int n]))",
+            ],
+            "Qwrap",
+        );
+        assert_eq!(
+            match_rows(&out).split_whitespace().collect::<Vec<_>>(),
+            [";", "Qtok"]
         );
     }
 }

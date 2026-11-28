@@ -9,9 +9,10 @@
 //!
 //! The binding protocol (§1):
 //!
-//! 1. the driver has already transferred the `Pure` payload and unwrapped
-//!    `IO a` → `a`; this module refuses an `IO a` type outright so no caller
-//!    can select `IO a` glue;
+//! 1. the owner takes the program's static type and takes the one `IO a` →
+//!    `a` hop itself, matching the driver's forcing of the outer `IO`. The
+//!    payload `a` may itself be an `IO` node, released like any owning
+//!    result;
 //! 2. the type is narrowed once with [`ConcreteType::from_type`] and then
 //!    classified with backend's **public** [`HeapCategory::classify`] — the
 //!    same predicate `request_if_owning` uses to decide whether an artifact row
@@ -125,8 +126,8 @@ pub(crate) trait ResultGlueResolver {
 
 /// A successful program result, owned end-to-end.
 ///
-/// Construction consumes the clean driver outcome and its (already
-/// IO-unwrapped) static type; observation borrows the value; finalization
+/// Construction consumes the clean driver outcome and its program's static
+/// type; observation borrows the value; finalization
 /// consumes the owner. There is exactly one finalization chokepoint
 /// ([`OwnedProgramResult::finalize`]), shared by the explicit release and the
 /// defensive `Drop` backstop, so the glue can never run twice.
@@ -142,11 +143,9 @@ pub struct OwnedProgramResult {
 impl OwnedProgramResult {
     /// Construct the owner for a clean result.
     ///
-    /// `ty` is the **transferred payload type** — the driver boundary
-    /// (`pipeline::program_outcome_to_result`, `CompilerSession::trampoline`'s
-    /// clean arm) performs the single `IO a` → `a` unwrap before this point.
-    /// An `IO a` reaching here is an int invariant failure, not a licence to
-    /// select `IO a` glue.
+    /// `static_ty` is the program's **static** result type, never one the
+    /// caller has unwrapped: the owner takes the single `IO a` → `a` hop for
+    /// the word the driver returns.
     ///
     /// `module` is the **emitting** module — the module whose
     /// `compile_to_module` produced the glue, i.e. the module that owns `main`
@@ -154,7 +153,7 @@ impl OwnedProgramResult {
     /// recently compiled function's.
     pub(crate) fn new<C, L>(
         value: i64,
-        ty: Type,
+        static_ty: Type,
         codegen_result_ty: Option<ConcreteType>,
         module: &ModuleFullPath,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
@@ -164,7 +163,14 @@ impl OwnedProgramResult {
         C: CodeStore,
         L: LinkerStore,
     {
-        Ok(ReleasePlan::new(ty, codegen_result_ty, module, symbol_tables, resolver)?.own(value))
+        Ok(ReleasePlan::new(
+            static_ty,
+            codegen_result_ty,
+            module,
+            symbol_tables,
+            resolver,
+        )?
+        .own(value))
     }
 
     /// An INERT owner over a plain word — no release target, so finalization
@@ -188,7 +194,7 @@ impl OwnedProgramResult {
         self.value
     }
 
-    /// The result's static (IO-unwrapped) type.
+    /// The type of the returned word: the static type, one `IO` hop in.
     pub fn ty(&self) -> &Type {
         &self.ty
     }
@@ -283,11 +289,11 @@ pub(crate) struct ReleasePlan {
 }
 
 impl ReleasePlan {
-    /// Plan the release of a clean result of `ty` produced by code homed in
+    /// Plan the release of a clean result of static type `static_ty` produced by code homed in
     /// `module`. The arguments and errors are those of
     /// [`OwnedProgramResult::new`].
     pub(crate) fn new<C, L>(
-        ty: Type,
+        static_ty: Type,
         codegen_result_ty: Option<ConcreteType>,
         module: &ModuleFullPath,
         symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
@@ -297,13 +303,10 @@ impl ReleasePlan {
         C: CodeStore,
         L: LinkerStore,
     {
-        if ty.is_io() {
-            return Err(OwnedProgramResult::invariant(format!(
-                "program result reached the result owner still wrapped in `{ty}` — the driver \
-                 boundary must transfer the `Pure` payload and unwrap `IO a` exactly once; \
-                 result glue is selected for the INNER type, never for `IO a`"
-            )));
-        }
+        // The one hop, taken side by side for both projections: the observed
+        // payload type from the static type, the release key from the codegen
+        // type's `result_root()`.
+        let ty = driver_result_type(static_ty);
         // (1) the release key.
         let concrete = release_key(codegen_result_ty, &ty, module)?;
         // (2) classify with the SAME predicate backend's `request_if_owning`
@@ -392,6 +395,18 @@ fn release_key(
              view to key on; the result cannot be released type-directedly"
         ))
     })
+}
+
+/// The type of the word `cranelisp_run_program` returns for a program of
+/// static type `ty`: the driver forces an outer `IO a` and returns its `a`,
+/// which may itself be an unforced `IO` node. This is the one hop; no caller
+/// unwraps before the owner.
+fn driver_result_type(ty: Type) -> Type {
+    if ty.is_io() {
+        ty.unwrap_io().clone()
+    } else {
+        ty
+    }
 }
 
 /// Whether the result word IS the process exit code (§1 step 3): an `Int`
@@ -811,7 +826,6 @@ pub(crate) mod test_support {
                         type_name: fqtn.clone(),
                         tag,
                         field_count: *field_count,
-                        internal: false,
                         type_def: None,
                     },
                     Realization::Body { view, code: None },
@@ -1052,28 +1066,111 @@ mod tests {
         assert!(!owner.is_armed());
     }
 
-    // spec: design/int/result-owner.md §4.4 — the owner selects glue for the
-    // INNER type `a`, never for `IO a`. The driver boundary owns the single
-    // unwrap; an `IO a` arriving here is an invariant failure, not a licence.
+    fn concrete_io_of(inner: ConcreteType) -> ConcreteType {
+        ConcreteType::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+            vec![inner],
+        )
+    }
+
+    // spec: design/int/s125-binary-clean.md §3.3 — a program of static type
+    // `(IO (IO Int))` yields the inner, unforced `(IO Int)` node: the owner
+    // observes it at `(IO Int)` and releases it through the glue keyed by
+    // `(IO Int)`, like any other owning result.
     #[test]
-    fn io_type_is_rejected_and_never_selects_io_glue() {
+    fn static_io_of_io_plans_its_io_payload() {
+        let _ = take_events();
         let resolver = RecordingResolver::new();
-        let err = OwnedProgramResult::new(
-            1,
-            io_of(Type::String),
-            None,
+        let io_io_int = concrete_io_of(concrete_io_of(ConcreteType::Int));
+        let owner = OwnedProgramResult::new(
+            0x10,
+            io_of(io_of(Type::Int)),
+            Some(io_io_int),
             &user(),
             &empty_tables(),
             &resolver,
         )
-        .expect_err("an un-transferred IO result is an invariant failure");
-        assert!(
-            err.to_string().contains("never for `IO a`"),
-            "the diagnostic must name the rule: {err}"
+        .expect("an IO payload is a legal program result");
+        assert_eq!(owner.ty(), &io_of(Type::Int), "observed one hop in");
+        let io_int = concrete_io_of(ConcreteType::Int);
+        assert_eq!(
+            &*resolver.keys.lock().unwrap(),
+            &[(user(), io_int.clone())],
+            "the payload's own glue is the key"
         );
-        assert!(
-            resolver.keys.lock().unwrap().is_empty(),
-            "no glue may be keyed for `IO a`"
+        assert_eq!(
+            owner
+                .target()
+                .expect("an IO node is owning")
+                .symbol()
+                .as_ref(),
+            cranelisp_types::drop_glue_symbol_name(&user(), &io_int).as_ref()
+        );
+        owner.release();
+        assert_eq!(take_events(), vec!["glue(16)".to_string()]);
+    }
+
+    // spec: design/int/s125-binary-clean.md §3.3 — the control: a static
+    // `(IO String)` is observed and keyed at `String`.
+    #[test]
+    fn static_io_string_plans_string() {
+        let _ = take_events();
+        let resolver = RecordingResolver::new();
+        let owner = OwnedProgramResult::new(
+            3,
+            io_of(Type::String),
+            Some(concrete_io_of(ConcreteType::String)),
+            &user(),
+            &empty_tables(),
+            &resolver,
+        )
+        .expect("IO String plans String");
+        assert_eq!(owner.ty(), &Type::String);
+        assert_eq!(
+            &*resolver.keys.lock().unwrap(),
+            &[(user(), ConcreteType::String)]
+        );
+        owner.release();
+        assert_eq!(take_events(), vec!["glue(3)".to_string()]);
+    }
+
+    // spec: design/int/s125-binary-clean.md §3.3 — the negative: a static
+    // `(IO Int)` keys `Int`, never `(IO Int)`, on both the codegen-view key and
+    // the observed-type fallback. `PoisonResolver` panics on any keyed lookup,
+    // which an `(IO Int)` key (an owning ADT) would make.
+    #[test]
+    fn static_io_int_keys_int_never_io_int() {
+        for codegen in [None, Some(concrete_io_of(ConcreteType::Int))] {
+            let owner = OwnedProgramResult::new(
+                4,
+                io_of(Type::Int),
+                codegen,
+                &user(),
+                &empty_tables(),
+                &PoisonResolver,
+            )
+            .expect("IO Int plans Int");
+            assert_eq!(owner.ty(), &Type::Int, "one hop, taken once");
+            assert!(!owner.is_armed(), "Int needs no release target");
+            assert_eq!(owner.exit_code(), 4);
+        }
+    }
+
+    // spec: design/int/result-owner.md §4.4 — a non-IO program's word has the
+    // program's own type.
+    #[test]
+    fn driver_result_type_keeps_a_non_io_type() {
+        assert_eq!(driver_result_type(Type::Int), Type::Int);
+    }
+
+    // spec: design/int/result-owner.md §4.4 — the driver forces `IO a`, so its
+    // word is the inner `a`.
+    #[test]
+    fn driver_result_type_unwraps_io_once() {
+        assert_eq!(driver_result_type(io_of(Type::Int)), Type::Int);
+        assert_eq!(
+            driver_result_type(io_of(io_of(Type::Int))),
+            io_of(Type::Int)
         );
     }
 

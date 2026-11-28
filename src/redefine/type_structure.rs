@@ -56,7 +56,6 @@ struct CtorShape {
 struct CtorOrigin {
     tag: usize,
     field_count: usize,
-    internal: bool,
 }
 
 /// Compare the type declared under `name` in `live` and `staging`. Only a key
@@ -108,15 +107,8 @@ fn ctor_shape(name: &Symbol, binding: Option<&Binding<Code>>, product: bool) -> 
     let callable = binding.and_then(Binding::callable);
     let origin = callable.and_then(|callable| match callable.origin {
         CallableOrigin::Ctor {
-            tag,
-            field_count,
-            internal,
-            ..
-        } => Some(CtorOrigin {
-            tag,
-            field_count,
-            internal,
-        }),
+            tag, field_count, ..
+        } => Some(CtorOrigin { tag, field_count }),
         _ => None,
     });
     CtorShape {

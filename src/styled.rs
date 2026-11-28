@@ -64,7 +64,7 @@ pub(crate) enum Role {
     Prompt,
     /// R14 — the agent prose-frame `▌` gutter; bright magenta.
     AgentGutter,
-    /// R15 — everything else (non-prefix name parts, ctor dot-names, `<closure>`,
+    /// R15 — everything else (non-prefix name parts, ctor dot-names, `#closure`, `#io`,
     /// bracket/paren punctuation, whitespace, layout padding); default (unstyled).
     Plain,
 }

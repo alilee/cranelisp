@@ -402,12 +402,15 @@ pub(super) fn block_dep(
     }
 }
 
+/// Drive `dep` (described above `block_dep`) and return the module actually
+/// driven: `dep`, or the owner of a path through an export mount, which the
+/// caller waits on before it retries.
 pub(crate) fn drive_module_dep(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     dep: &ModuleFullPath,
     span: Span,
-) -> Result<(), CranelispError> {
+) -> Result<ModuleFullPath, CranelispError> {
     // Already loaded — block-then-unblock to re-queue the referencing module
     // without a file load (no future notify sweep would fire). On the eval path
     // the eval thread retries itself, so no requeue is needed and the entry is
@@ -418,24 +421,39 @@ pub(crate) fn drive_module_dep(
                 .block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
             ctx.scheduler.unblock_module(module);
         }
-        return Ok(());
+        return Ok(dep.clone());
     }
     // In flight with a table: wait on it, as a Pass-0 declaration does
     // (`design/int/int.md` §6.11, Declaration readiness).
     refuse_failed_table(ctx, module, dep, span)?;
     if wait_on_in_flight(ctx, module, dep, span)?.is_some() {
-        return Ok(());
+        return Ok(dep.clone());
     }
 
-    // Resolve the file — same rules as import (no new search semantics).
-    let dep_file = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
-        .ok_or_else(|| CranelispError::ModuleError {
+    // Resolve the file — same rules as import (no new search semantics). A
+    // path that names no file is reached through a mount: load its owner, and
+    // the retry substitutes through the owner's mounts (`design/int/int.md`
+    // §6.13). A loaded owner, or none, refuses: each retry loads a module not
+    // loaded before, so the retry terminates. The referrer and its ancestors
+    // have installed their mounts before this reference, so an owner among
+    // them refuses too, rather than waiting on itself as a cycle.
+    let Some(dep_file) = crate::pipeline::resolve_module_file(dep, ctx.project_root, ctx.lib_dirs)
+    else {
+        if let Some(owner) = owning_module_file(dep, &|path| {
+            crate::pipeline::resolve_module_file(path, ctx.project_root, ctx.lib_dirs).is_some()
+        }) && !fq_module_is_loaded(ctx, &owner)
+            && !path_in_subtree(module, &owner)
+        {
+            return drive_module_dep(ctx, module, &owner, span);
+        }
+        return Err(CranelispError::ModuleError {
             message: format!(
                 "module '{}' referenced by '{}/...' not found (referenced by '{}')",
                 dep, dep, module
             ),
             location: ErrorLocation::from_span_file(span, None),
-        })?;
+        });
+    };
 
     // Populate file_to_module mapping for the file watcher (parity with import).
     if let Some(shared) = ctx.shared_state
@@ -457,7 +475,7 @@ pub(crate) fn drive_module_dep(
                 .block_for_typecheck(module, dep, &Symbol::from("*"), span)?;
             ctx.scheduler.unblock_module(module);
         }
-        return Ok(());
+        return Ok(dep.clone());
     }
 
     // Read + parse dep sexps (shared per-dep prologue).
@@ -482,7 +500,7 @@ pub(crate) fn drive_module_dep(
     ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
     block_dep(ctx, module, dep, span)?;
 
-    Ok(())
+    Ok(dep.clone())
 }
 
 /// The module a `ResolutionGap` names as needing to be loaded, if any.
@@ -511,6 +529,16 @@ pub(crate) fn gap_member(gap: &cranelisp_types::ResolutionGap) -> String {
         ResolutionGap::Type(fqt) => fqt.name.to_string(),
         _ => String::new(),
     }
+}
+
+/// The user-facing message for a dependency gap no load can close, naming
+/// the reference as written (`module/member`).
+pub(crate) fn unresolved_reference_message(gap: &cranelisp_types::ResolutionGap) -> String {
+    let reference = match gap_target_module(gap) {
+        Some(module) => format!("{module}/{}", gap_member(gap)),
+        None => format!("{gap:?}"),
+    };
+    format!("unresolved cross-module reference: {reference}")
 }
 
 /// Run the per-dep prologue that every structural form handler
@@ -1264,8 +1292,10 @@ impl<'c> WalkedQualifiers<'c> {
         edges
     }
 
-    /// The pending qualifiers that the aliases added since name a module
-    /// file, as `(writer, module)` edges.
+    /// The pending qualifiers re-substituted through the aliases added since,
+    /// as `(writer, module)` edges: the module a qualifier now names, or the
+    /// owner of one still pending, which a later substitution may reveal (the
+    /// walk drops an edge it has already followed).
     fn resolve_pending(&mut self) -> Vec<(ModuleFullPath, ModuleFullPath)> {
         let mut resolved = Vec::new();
         let mut pending = std::mem::take(&mut self.pending);
@@ -1274,12 +1304,21 @@ impl<'c> WalkedQualifiers<'c> {
             let names_module = self.is_module_file(&named);
             if names_module {
                 resolved.push((writer.clone(), named));
+            } else if let Some(owner) =
+                owning_module_file(&named, &|path: &ModuleFullPath| self.is_module_file(path))
+            {
+                resolved.push((writer.clone(), owner));
             }
             !names_module
         });
         self.pending = pending;
         resolved
     }
+}
+
+/// Whether `module` is `ancestor` or one of its dotted descendants.
+fn path_in_subtree(module: &ModuleFullPath, ancestor: &ModuleFullPath) -> bool {
+    module == ancestor || module.as_ref().starts_with(&format!("{ancestor}."))
 }
 
 /// The longest proper prefix of `path` that names a module file: the module
@@ -1654,8 +1693,11 @@ pub(super) fn enrol_declared_submodule(
     let dep_file = crate::pipeline::resolve_module_file(&sub_path, ctx.project_root, ctx.lib_dirs)
         .ok_or_else(|| CranelispError::ModuleError {
             message: format!(
-                "submodule '{}' not found (declared by '{}')",
-                sub_path, module
+                "submodule '{}' not found (declared by '{}'): expected at '{}'",
+                sub_path,
+                module,
+                crate::pipeline::expected_module_file(&sub_path, ctx.project_root, ctx.lib_dirs)
+                    .display()
             ),
             location: ErrorLocation::from_span_file(decl.span, None),
         })?;
@@ -1791,16 +1833,12 @@ pub(super) fn drive_submodules(
 /// Write an inline mod body to disk as `{parent_dir}/{stem}/{name}.cl`
 /// (§8.2.2 extraction step / §8.2.5 nested-child path).
 ///
-/// FIXME 0423 — the backing file MUST be resolved against the **parent
-/// module's own on-disk directory** (the lib-dir for a lib-dir module), NEVER
-/// the process CWD. The old code joined `project_root` (the CWD for a
-/// run-from-elsewhere invocation) to the dotted module path, producing stray
-/// `<cwd>/<module>/<name>.cl` trees outside the lib-dir. We instead locate the
-/// parent module's real file via the same `resolve_module_file` rules the
-/// loader uses (project-root, then lib-dirs) and write the backing file next to
-/// it — `<parent_file_dir>/<stem>/<name>.cl`. If the parent file cannot be
-/// located (it should always exist — it is what declared this `(mod …)`), we
-/// fall back to the `project_root`-relative path so the run is not blocked.
+/// FIXME 0423 — the backing file is resolved against the **parent module's own
+/// on-disk directory** (the lib-dir for a lib-dir module), never the process
+/// CWD. The path is `pipeline::module_file_target` of the child, the same
+/// anchored path the loader reads it from. If the parent has no file (it should
+/// always exist — it declared this `(mod …)`), we fall back to the
+/// `project_root`-relative path so the run is not blocked.
 ///
 /// If an extraction-stable backing file already exists at the target path, we
 /// PREFER recognizing it (no re-emit) — the hand-authored / previously-extracted
@@ -1812,29 +1850,16 @@ pub(crate) fn write_inline_mod_to_disk(
     project_root: &Path,
     lib_dirs: &[PathBuf],
 ) -> Result<(), CranelispError> {
-    // Resolve the backing-file directory against the PARENT module's own
-    // on-disk location (lib-dir-relative, FIXME 0423), not the process CWD.
-    let mod_dir = match crate::pipeline::resolve_module_file(parent_module, project_root, lib_dirs)
-    {
-        // Parent file found (e.g. `lib/accum.cl`): backing dir is the parent's
-        // own directory joined with the parent's stem — `lib/accum/`.
-        Some(parent_file) => {
-            let parent_dir = parent_file
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| project_root.to_path_buf());
-            let stem = parent_module
-                .as_ref()
-                .rsplit('.')
-                .next()
-                .unwrap_or(parent_module.as_ref());
-            parent_dir.join(stem)
-        }
-        // Fallback (parent file not yet on disk — should not happen for a
-        // module that declared this inline `(mod …)`): project-root-relative.
-        None => project_root.join(parent_module.as_ref().replace('.', "/")),
-    };
-    let file_path = mod_dir.join(format!("{}.cl", name));
+    // The backing file is the path the resolver reads the child from, beside
+    // the parent's own file (lib-dir-relative, FIXME 0423), not the CWD.
+    let child = ModuleFullPath::from(format!("{parent_module}.{name}"));
+    // The parent declared this inline `(mod …)`, so it has a file; with none
+    // on disk, the path is the project-root one.
+    let file_path = crate::pipeline::expected_module_file(&child, project_root, lib_dirs);
+    let mod_dir = file_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project_root.to_path_buf());
 
     // Prefer recognizing an existing extraction-stable backing file over
     // re-emitting it (FIXME 0423 point 2): the canonical copy already on disk
@@ -2329,6 +2354,25 @@ mod bare_module_name_tests {
                 "the error names the declared child: {message}"
             ),
             other => panic!("expected the declared child `a.q` to be missing, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.2.5 — the refusal of a missing declared
+    // child names the file it was expected in, beside the declaring file.
+    #[test]
+    fn missing_declared_child_refusal_names_the_expected_file() {
+        let project = Project::new(&[("a.cl", "(mod q)\n"), ("lib/a/q.cl", "(defn g [] 1)\n")]);
+        let parent = module("a");
+        project.record_declaration(&parent, "q");
+        match drive_submodules(&mut project.ctx(&parent), &parent) {
+            Err(CranelispError::ModuleError { message, .. }) => {
+                let expected = project.dir.path().join("a").join("q.cl");
+                assert!(
+                    message.contains(&expected.display().to_string()),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the declared child to be refused, got {other:?}"),
         }
     }
 
@@ -2981,6 +3025,144 @@ mod bare_module_name_tests {
             project.scheduler.module_pool(&referrer),
             Some(crate::scheduler::ModulePool::TypecheckBlocked),
             "its publication releases the referrer"
+        );
+    }
+
+    /// `p` mounts `q` at `s`, and `q` mounts `x` at `t` (REPRO-1079).
+    fn mount_chain() -> Project {
+        Project::new(&[
+            ("p.cl", "(export [(q s) []])\n(defn f [] 1)\n"),
+            ("q.cl", "(export [(x t) []])\n(defn g [] 5)\n"),
+            ("x.cl", "(defn y [] 37)\n"),
+        ])
+    }
+
+    // spec: spec/08-modules.md §8.5.4, §8.6.6 — a qualified path that names no
+    // file loads its owner, whose mount the retry substitutes through; the
+    // driver reports the owner, so the retry waits on it.
+    #[test]
+    fn driver_loads_the_owner_of_a_path_that_names_no_file() {
+        let project = mount_chain();
+        let app = module("app");
+        let driven = drive_module_dep(
+            &mut project.ctx(&app),
+            &app,
+            &module("p.s"),
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        assert_eq!(driven, module("p"));
+        assert!(
+            project.scheduler.is_registered(&module("p")),
+            "the owner is loaded"
+        );
+        assert!(!project.scheduler.is_registered(&module("p.s")));
+    }
+
+    // spec: spec/08-modules.md §8.6.6 rule 2 — once the owner's mount is
+    // installed the gap names the mount's target, which the driver loads.
+    #[test]
+    fn driver_loads_the_target_a_mount_names() {
+        let project = mount_chain();
+        let app = module("app");
+        let driven =
+            drive_module_dep(&mut project.ctx(&app), &app, &module("q"), Span::SYNTHETIC).unwrap();
+        assert_eq!(driven, module("q"));
+    }
+
+    // spec: spec/08-modules.md §8.5.4 — when the owner is loaded and mounts
+    // nothing at the next segment, the located "not found" stands: each retry
+    // loads a module not loaded before, so the retry terminates.
+    #[test]
+    fn driver_refuses_a_path_whose_loaded_owner_mounts_nothing_there() {
+        let project = mount_chain();
+        let owner = module("q");
+        cranelisp_types::ensure_module_exists(&project.tables, &owner);
+        project
+            .scheduler
+            .register_module(owner.clone(), std::sync::Arc::from(Vec::new()), false);
+        project.scheduler.force_typecheck_working_for_test(&owner);
+        project.scheduler.notify_typecheck_done(&owner);
+        let app = module("app");
+        match drive_module_dep(
+            &mut project.ctx(&app),
+            &app,
+            &module("q.absent"),
+            Span::SYNTHETIC,
+        ) {
+            Err(CranelispError::ModuleError { message, .. }) => {
+                assert!(message.contains("'q.absent'"), "{message}")
+            }
+            other => panic!("expected the path to be refused, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.2.5, §8.5.4 — a path whose owner is the
+    // referring module, or one of its ancestors, has had that owner's mounts
+    // installed already: it is refused as not found, never driven as a cycle
+    // back to the referrer.
+    #[test]
+    fn driver_refuses_a_missing_path_owned_by_the_referrer_or_its_ancestor() {
+        let project = Project::new(&[("main.cl", "(mod child)\n")]);
+        for referrer in ["main", "main.other"] {
+            let referrer = in_flight(&project, referrer);
+            match drive_module_dep(
+                &mut project.ctx(&referrer),
+                &referrer,
+                &module("main.child"),
+                Span::SYNTHETIC,
+            ) {
+                Err(CranelispError::ModuleError { message, .. }) => {
+                    assert!(message.contains("'main.child'"), "{message}")
+                }
+                other => panic!("expected `main.child` not found, got {other:?}"),
+            }
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5.4, §8.6.6 — a path with no owner file is
+    // refused as before.
+    #[test]
+    fn driver_refuses_a_path_with_no_owner_file() {
+        let project = mount_chain();
+        let app = module("app");
+        assert!(matches!(
+            drive_module_dep(
+                &mut project.ctx(&app),
+                &app,
+                &module("w.s"),
+                Span::SYNTHETIC
+            ),
+            Err(CranelispError::ModuleError { .. })
+        ));
+    }
+
+    // spec: spec/08-modules.md §8.5.4 item 6 — the reach walk follows an owner
+    // that a later substitution reveals (`p.s.t` becomes `q.t`, owned by `q`).
+    #[test]
+    fn walked_qualifiers_emit_an_owner_revealed_by_a_later_substitution() {
+        let project = Project::new(&[
+            ("app.cl", "(defn r [] (p.s.t/y))\n"),
+            ("p.cl", "(export [(q s) []])\n(defn f [] 1)\n"),
+            ("q.cl", "(export [(x t) []])\n(defn g [] 5)\n"),
+            ("x.cl", "(defn y [] 37)\n"),
+        ]);
+        let app = module("app");
+        let ctx = project.ctx(&app);
+        let mut qualifiers = WalkedQualifiers::new(&ctx);
+        let parse = |m: &ModuleFullPath| parse_module_file(&ctx, m).unwrap();
+        let visit = |q: &mut WalkedQualifiers, m: &ModuleFullPath| {
+            let parsed = parse(m);
+            let submodules = mod_declarations(&parsed, m);
+            q.visit(m, &parsed, &submodules)
+        };
+        assert_eq!(visit(&mut qualifiers, &app), vec![module("p")]);
+        assert!(visit(&mut qualifiers, &module("p")).is_empty());
+        assert!(
+            qualifiers
+                .resolve_pending()
+                .contains(&(app.clone(), module("q"))),
+            "the owner of `q.t` is emitted"
         );
     }
 

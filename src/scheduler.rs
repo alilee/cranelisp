@@ -441,6 +441,16 @@ impl ModuleState {
     }
 }
 
+/// The scheduler's publication state at one instant
+/// ([`CompileScheduler::publication_read`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PublicationRead {
+    /// Each registered module's pool.
+    pub(crate) pools: std::collections::HashMap<ModuleFullPath, ModulePool>,
+    /// The modules that have reached a terminal typecheck pool this session.
+    pub(crate) ever_terminal: HashSet<ModuleFullPath>,
+}
+
 /// Ownership of a module's cached-object load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CachedObjectLoad {
@@ -1737,22 +1747,31 @@ impl CompileScheduler {
     /// also waits out `TypecheckBlocked`. In-memory completion already implies
     /// a terminal pool (`design/int/int.md` §6.1.2), so a caller that waited
     /// for it finds the module settled.
+    ///
+    /// It also waits out the module's cached load while it is held, claimable
+    /// or claimed (*A reload waits out the cached load*, §7.1), so no stale
+    /// load can publish into the table a reload installs next. The caller must
+    /// hold no symbol-table guard or check-state lock: the load takes them.
     pub fn wait_module_typecheck_settled(&self, module: &ModuleFullPath) {
         let mut state = self.lock();
         loop {
             if state.shutdown {
                 return;
             }
-            match state.modules.get(module).map(|ms| ms.pool) {
-                None => return, // Unknown module — nothing to wait on.
-                Some(ModulePool::TypecheckWorking) | Some(ModulePool::TypecheckBlocked) => {
-                    state = self
-                        .completion
-                        .wait(state)
-                        .unwrap_or_else(|e| e.into_inner());
-                }
-                Some(_) => return, // Settled (queued or terminal).
+            let Some(ms) = state.modules.get(module) else {
+                return; // Unknown module — nothing to wait on.
+            };
+            let mid_pass = matches!(
+                ms.pool,
+                ModulePool::TypecheckWorking | ModulePool::TypecheckBlocked
+            );
+            if !mid_pass && !ms.cached_load_state().is_outstanding() {
+                return; // Settled (queued or terminal, no load outstanding).
             }
+            state = self
+                .completion
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
         }
     }
 
@@ -1787,19 +1806,28 @@ impl CompileScheduler {
     /// Batch-mark multiple symbols as inmem-codegenned: a cached object load
     /// completed ([`CachedLoadClaim::complete_loaded`]). The claim ends in
     /// the same step that sets `inmem_done`.
+    ///
+    /// The completion acts only while the module is still claimed
+    /// (`design/int/int.md` §7.1, *A claim ends inside its registration*): a
+    /// re-registration or a failure has left it with no claim, so a load that
+    /// ends afterwards marks nothing in memory and touches no reservation.
     fn notify_inmem_codegen_batch_complete(&self, module: &ModuleFullPath, symbols: &[Symbol]) {
         let mut state = self.lock();
-        if let Some(ms) = state.modules.get_mut(module) {
-            for sym in symbols {
-                ms.jit_reserved.remove(sym);
-            }
-            // Neither a restored parent still waiting on its children nor
-            // one a child refused is complete in memory (§6.1.2).
-            ms.inmem_done = ms.pool.is_terminal_typecheck();
-            if ms.cached_object_load == CachedObjectLoad::Claimed {
-                ms.cached_object_load = CachedObjectLoad::Loaded;
-            }
+        let Some(ms) = state.modules.get_mut(module) else {
+            return;
+        };
+        if ms.cached_load_state() != CachedLoadState::Claimed {
+            drop(state);
+            self.completion.notify_all();
+            return;
         }
+        for sym in symbols {
+            ms.jit_reserved.remove(sym);
+        }
+        // Neither a restored parent still waiting on its children nor one a
+        // child refused is complete in memory (§6.1.2).
+        ms.inmem_done = ms.pool.is_terminal_typecheck();
+        ms.cached_object_load = CachedObjectLoad::Loaded;
         // Evaluate waiter satisfaction for codegen waiters. This may requeue
         // blocked waiter modules into the typecheck queues via
         // `try_unblock_locked` (priority work), so `priority_work_available`
@@ -2376,6 +2404,23 @@ impl CompileScheduler {
     /// confused with a fresh dep that never completed (0571.3).
     pub fn was_ever_terminal(&self, module: &ModuleFullPath) -> bool {
         self.lock().ever_terminal.contains(module)
+    }
+
+    /// Every registered module's pool and the modules ever terminal, read
+    /// under one lock. A reader that takes this before it reads the symbol
+    /// tables finds every module this read shows published complete in them,
+    /// because a terminal transition happens after its definitions are
+    /// installed (`design/int/s125-binary-clean.md` §6.1).
+    pub(crate) fn publication_read(&self) -> PublicationRead {
+        let state = self.lock();
+        PublicationRead {
+            pools: state
+                .modules
+                .iter()
+                .map(|(module, ms)| (module.clone(), ms.pool))
+                .collect(),
+            ever_terminal: state.ever_terminal.clone(),
+        }
     }
 
     /// Check whether a module's typecheck is complete — i.e., its SymbolTable

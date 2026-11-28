@@ -51,12 +51,19 @@ impl From<FailedLoad> for CranelispError {
 /// regeneration emits — coordinate any change with that seam (same authorship
 /// invariant).
 ///
+/// A definition's record keeps its own authored entry's text: a member of a
+/// `begin` turn records its own slice of the turn, not the whole `begin`
+/// (`design/int/s125-binary-clean.md` §4.2). `turn_start` is the offset of
+/// `src` in the input its forms' spans count from; a record whose form does
+/// not slice consistently out of `src` takes the whole turn.
+///
 /// `introspection` is `Some` only under `RunMode::Repl` (D1b ctor gate) —
 /// `None` in batch, no second discriminator to drift.
 pub(crate) fn record_defining_turn_source(
     introspection: Option<&dashmap::DashMap<FQSymbol, Introspection>>,
     result: &EvalResult,
     src: &str,
+    turn_start: u32,
 ) {
     let EvalResult::Definitions { symbols, .. } = result else {
         return;
@@ -67,9 +74,24 @@ pub(crate) fn record_defining_turn_source(
                 module: symbol.module.clone(),
                 symbol: symbol.symbol.clone(),
             };
-            m.entry(fq).or_default().source = Some(src.to_string());
+            let mut record = m.entry(fq).or_default();
+            let own = record
+                .sexp
+                .as_ref()
+                .and_then(|form| entry_text(form, src, turn_start));
+            record.source = Some(own.unwrap_or_else(|| src.to_string()));
         }
     }
+}
+
+/// `form`'s own text out of the turn `src`, which starts at `turn_start`,
+/// when the slice re-parses to exactly `form`.
+fn entry_text(form: &Sexp, src: &str, turn_start: u32) -> Option<String> {
+    let span = form.span();
+    let start = span.start.checked_sub(turn_start)? as usize;
+    let end = span.end.checked_sub(turn_start)? as usize;
+    let slice = src.get(start..end)?;
+    crate::save::sexp_matches_source(form, slice).then(|| slice.to_string())
 }
 
 /// How far the eval thread waits on a dependency it drove.
@@ -271,16 +293,18 @@ impl CompilerSession {
                     // original input using the cluster's span.
                     {
                         let span = cluster_span;
-                        let src = if span.start < span.end && (span.end as usize) <= source.len() {
-                            &source[span.start as usize..span.end as usize]
-                        } else {
-                            source.trim()
-                        };
+                        let (src, turn_start) =
+                            if span.start < span.end && (span.end as usize) <= source.len() {
+                                (&source[span.start as usize..span.end as usize], span.start)
+                            } else {
+                                (source.trim(), 0)
+                            };
                         // D1b: the store is REPL-only; absent in batch.
                         record_defining_turn_source(
                             self.shared.introspection.as_ref(),
                             &result,
                             src,
+                            turn_start,
                         );
                     }
                     all_warnings.extend(result.warnings().iter().cloned());
@@ -810,6 +834,7 @@ mod tests {
             Some(&m),
             &defining_turn("user", "solo"),
             "(defn solo [x] (mul-i64 x 3))",
+            0,
         );
         assert_eq!(
             m.get(&solo).unwrap().source.as_deref(),
@@ -820,12 +845,41 @@ mod tests {
             Some(&m),
             &defining_turn("user", "solo"),
             "(defn solo [x] (mul-i64 x 4))",
+            0,
         );
         assert_eq!(
             m.get(&solo).unwrap().source.as_deref(),
             Some("(defn solo [x] (mul-i64 x 4))"),
             "redefinition turn updates the record"
         );
+    }
+
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 1;
+    // design/int/s125-binary-clean.md §4.2 — a `begin` turn's members each keep
+    // their own slice of the turn, wherever the turn starts in its input; a
+    // record whose form does not slice out of the turn takes the whole turn.
+    #[test]
+    fn a_begin_turn_records_each_members_own_text() {
+        let input = "  (begin (defn f [] 1)  (defn g [] 10))";
+        let begin = cranelisp_frontend::parse(input).unwrap().remove(0);
+        let members = cranelisp_frontend::flatten_begin(begin.clone());
+        let m: dashmap::DashMap<FQSymbol, Introspection> = dashmap::DashMap::new();
+        m.entry(fq("user", "f")).or_default().sexp = Some(members[0].clone());
+        m.entry(fq("user", "g")).or_default().sexp = Some(members[1].clone());
+        m.entry(fq("user", "h")).or_default().sexp = Some(
+            cranelisp_frontend::parse("(defn h [] 3)").unwrap().remove(0),
+        );
+        let turn = EvalResult::Definitions {
+            symbols: vec![fq("user", "f"), fq("user", "g"), fq("user", "h")],
+            warnings: Vec::new(),
+        };
+        let start = begin.span().start;
+        let src = &input[start as usize..];
+        record_defining_turn_source(Some(&m), &turn, src, start);
+        let source = |name: &str| m.get(&fq("user", name)).unwrap().source.clone();
+        assert_eq!(source("f").as_deref(), Some("(defn f [] 1)"));
+        assert_eq!(source("g").as_deref(), Some("(defn g [] 10)"));
+        assert_eq!(source("h").as_deref(), Some(src), "no consistent slice");
     }
 
     // spec: repl/spec.md §3.6 + §18.4 (FIXME 0486) — Matrix E negative cells:
@@ -837,7 +891,7 @@ mod tests {
         let solo = fq("user", "solo");
         let m = store_with(&solo, "(defn solo [x] (mul-i64 x 3))");
         // The corrupting shape: the bare-lookup turn's text is the bare name.
-        record_defining_turn_source(Some(&m), &lookup_turn("user", "solo"), "solo");
+        record_defining_turn_source(Some(&m), &lookup_turn("user", "solo"), "solo", 0);
         assert_eq!(
             m.get(&solo).unwrap().source.as_deref(),
             Some("(defn solo [x] (mul-i64 x 3))"),
@@ -845,7 +899,12 @@ mod tests {
         );
         // No record → no creation either (e.g. bare lookup of a prelude name
         // must not seed a bogus record under the resolved primitive's FQ).
-        record_defining_turn_source(Some(&m), &lookup_turn("primitives", "add-i64"), "add-i64");
+        record_defining_turn_source(
+            Some(&m),
+            &lookup_turn("primitives", "add-i64"),
+            "add-i64",
+            0,
+        );
         assert!(
             !m.contains_key(&fq("primitives", "add-i64")),
             "a lookup turn must NOT create a record"
@@ -858,10 +917,16 @@ mod tests {
                 warnings: Vec::new(),
             },
             "(solo 2)",
+            0,
         );
         assert_eq!(m.len(), 1, "Val results never write");
         // Batch mode (store absent): a defining result is a silent no-op.
-        record_defining_turn_source(None, &defining_turn("user", "solo"), "(defn solo [x] x)");
+        record_defining_turn_source(
+            None,
+            &defining_turn("user", "solo"),
+            "(defn solo [x] x)",
+            0,
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -912,7 +977,6 @@ mod tests {
             type_name: fqtn,
             tag: 0,
             field_count: 0,
-            internal: false,
             type_def: None,
         };
         let variant = DefnVariant {

@@ -138,8 +138,8 @@ pub(super) fn handle_platform(
     // and finds the now-loaded module, so the sigs resolve.
     for dep in crate::platform::referenced_sig_modules(&platform.descriptors) {
         if !fq_module_is_loaded(ctx, &dep) {
-            drive_module_dep(ctx, module, &dep, spec.span)?;
-            return Ok(BlockAction::Block { dep_module: dep });
+            let driven = drive_module_dep(ctx, module, &dep, spec.span)?;
+            return Ok(BlockAction::Block { dep_module: driven });
         }
     }
 

@@ -668,6 +668,7 @@ mod tests {
                     ast: None,
                     clif_ir: None,
                     code_size: None,
+                    ..Default::default()
                 },
             );
         }
@@ -1144,6 +1145,7 @@ mod tests {
                     ast: None,
                     clif_ir: None,
                     code_size: None,
+                    ..Default::default()
                 },
             );
         }

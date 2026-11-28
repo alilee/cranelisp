@@ -36,6 +36,10 @@ impl crate::expander::MacroResolver for ReadOnlyMacroResolver<'_> {
         self.symbol_tables
     }
 
+    fn current_module(&self) -> &ModuleFullPath {
+        &self.current_module
+    }
+
     fn recognize(&mut self, name: &str, span: Span) -> Result<Option<FQSymbol>, CranelispError> {
         // RECOGNITION via the LOCKED types primitive (committed `View`,
         // `macro-availability-model.md` §5) — same path as the live

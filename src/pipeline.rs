@@ -12,16 +12,71 @@ use cranelisp_types::{CranelispError, ErrorLocation, ModuleFullPath, Span, Type}
 // Module file resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve a module name to a `.cl` file path.
+/// Resolve a module name to its `.cl` file, or `None` when it has none.
 ///
-/// Search order per spec §8.11.2:
-/// 1. Project root — `{project_root}/{name}.cl`
-/// 2. Lib directories — `{lib_dir}/{name}.cl` for each lib dir, in order
-///
-/// Tier 1 (submodule of current module) is handled by the caller — submodules
-/// are already registered in the TypeChecker via `(mod name)` and don't need
-/// file search.
+/// A module with an ancestor file resolves only beside that file
+/// ([`module_file_target`], spec §8.2.5). Otherwise the tier search of spec
+/// §8.11.2 applies: the project root, `{project_root}/{name}.cl`, then each
+/// lib directory in order. Every module-file question asks this one resolver.
 pub fn resolve_module_file(
+    module: &ModuleFullPath,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    match module_file_target(module, project_root, lib_dirs) {
+        ModuleFileTarget::Anchored(path) => path.is_file().then_some(path),
+        ModuleFileTarget::Searched => tier_search(module, project_root, lib_dirs),
+    }
+}
+
+/// Where a module's file must be, before asking whether it exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModuleFileTarget {
+    /// An ancestor has a file, so the module's file is this path beside it.
+    Anchored(PathBuf),
+    /// No ancestor has a file: the module is found by the tier search.
+    Searched,
+}
+
+/// The file `module` must be read from (spec §8.2.5, applied recursively):
+/// the topmost ancestor the tier search finds anchors it, and the module's
+/// file is that ancestor file's directory joined with the remaining segments.
+/// A module with no ancestor file, such as a root module, is searched.
+pub(crate) fn module_file_target(
+    module: &ModuleFullPath,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+) -> ModuleFileTarget {
+    let segments: Vec<&str> = module.as_ref().split('.').collect();
+    for depth in 1..segments.len() {
+        let ancestor = ModuleFullPath::from(segments[..depth].join("."));
+        if let Some(ancestor_file) = tier_search(&ancestor, project_root, lib_dirs) {
+            let ancestor_dir = ancestor_file
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let remaining = segments[depth - 1..].join("/");
+            return ModuleFileTarget::Anchored(ancestor_dir.join(format!("{remaining}.cl")));
+        }
+    }
+    ModuleFileTarget::Searched
+}
+
+/// The file `module` is read from, or would be: its anchored path, else the
+/// project-root path the tier search tries first. A refusal names it, and the
+/// inline-mod writer writes it.
+pub(crate) fn expected_module_file(
+    module: &ModuleFullPath,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+) -> PathBuf {
+    match module_file_target(module, project_root, lib_dirs) {
+        ModuleFileTarget::Anchored(path) => path,
+        ModuleFileTarget::Searched => project_root_candidate(module, project_root),
+    }
+}
+
+fn tier_search(
     module: &ModuleFullPath,
     project_root: &Path,
     lib_dirs: &[PathBuf],
@@ -176,7 +231,7 @@ pub fn execute_compiled_expr(
     );
     crate::result_owner::OwnedProgramResult::new(
         value,
-        driver_result_type(ty),
+        ty,
         codegen_result_ty,
         current_module,
         symbol_tables,
@@ -205,17 +260,6 @@ pub(crate) fn zero_arg_result(scheme: &Type) -> &Type {
     match scheme {
         Type::Fn(_, ret) => ret,
         other => other,
-    }
-}
-
-/// The type of the word `cranelisp_run_program` returns for a program of type
-/// `ty`: the driver forces an `IO a` and returns its `a`. This is the one
-/// `IO a` → `a` unwrap; the result owner refuses an `IO a` type.
-pub(crate) fn driver_result_type(ty: Type) -> Type {
-    if ty.is_io() {
-        ty.unwrap_io().clone()
-    } else {
-        ty
     }
 }
 
@@ -274,20 +318,6 @@ mod tests {
         );
     }
 
-    // spec: design/int/result-owner.md §4.4 — a non-IO program's word has the
-    // program's own type.
-    #[test]
-    fn driver_result_type_keeps_a_non_io_type() {
-        assert_eq!(driver_result_type(Type::Int), Type::Int);
-    }
-
-    // spec: design/int/result-owner.md §4.4 — the driver forces `IO a`, so its
-    // word is the inner `a`; the owner never sees `IO a`.
-    #[test]
-    fn driver_result_type_unwraps_io_once() {
-        assert_eq!(driver_result_type(io_int_type()), Type::Int);
-    }
-
     /// Records whether a flush followed the last write, so a notice left in a
     /// buffer (and therefore printed after the effects) is observable.
     #[derive(Default)]
@@ -329,5 +359,112 @@ mod tests {
         let mut out = FlushProbe::default();
         write_io_execution_notice(false, &mut out).unwrap();
         assert!(out.bytes.is_empty());
+    }
+
+    /// A temporary tree holding a project root and library directories.
+    struct SearchTree {
+        dir: tempfile::TempDir,
+    }
+
+    impl SearchTree {
+        fn new(files: &[&str]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            for file in files {
+                let path = dir.path().join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, "").unwrap();
+            }
+            Self { dir }
+        }
+
+        fn path(&self, relative: &str) -> PathBuf {
+            self.dir.path().join(relative)
+        }
+
+        fn resolve(&self, module: &str, libs: &[&str]) -> Option<PathBuf> {
+            let libs: Vec<PathBuf> = libs.iter().map(|l| self.path(l)).collect();
+            resolve_module_file(&ModuleFullPath::from(module), &self.path("proj"), &libs)
+        }
+    }
+
+    // spec: spec/08-modules.md §8.2.5 — a child resolves beside its
+    // ancestor's file, so a project file never replaces a library child.
+    #[test]
+    fn library_ancestor_anchors_its_child_over_a_project_file() {
+        let tree = SearchTree::new(&["lib/m.cl", "lib/m/t.cl", "proj/m/t.cl"]);
+        assert_eq!(tree.resolve("m.t", &["lib"]), Some(tree.path("lib/m/t.cl")));
+    }
+
+    // spec: spec/08-modules.md §8.11.2 — a project ancestor takes its child
+    // from the project root.
+    #[test]
+    fn project_ancestor_anchors_its_child_in_the_project() {
+        let tree = SearchTree::new(&["proj/m.cl", "proj/m/t.cl", "lib/m.cl", "lib/m/t.cl"]);
+        assert_eq!(
+            tree.resolve("m.t", &["lib"]),
+            Some(tree.path("proj/m/t.cl"))
+        );
+    }
+
+    // spec: spec/08-modules.md §8.11.2 — a dotted module with no ancestor file
+    // takes the full-path tier search.
+    #[test]
+    fn module_with_no_ancestor_file_takes_the_tier_search() {
+        let tree = SearchTree::new(&["lib/core/str.cl"]);
+        assert_eq!(
+            tree.resolve("core.str", &["lib"]),
+            Some(tree.path("lib/core/str.cl"))
+        );
+        let tree = SearchTree::new(&["proj/core/str.cl", "lib/core/str.cl"]);
+        assert_eq!(
+            tree.resolve("core.str", &["lib"]),
+            Some(tree.path("proj/core/str.cl"))
+        );
+    }
+
+    // spec: spec/08-modules.md §8.2.5 — an earlier library holding only the
+    // child does not replace the child beside the ancestor's file.
+    #[test]
+    fn earlier_library_holding_only_the_child_is_not_used() {
+        let tree = SearchTree::new(&["early/m/t.cl", "lib/m.cl", "lib/m/t.cl"]);
+        assert_eq!(
+            tree.resolve("m.t", &["early", "lib"]),
+            Some(tree.path("lib/m/t.cl"))
+        );
+    }
+
+    // spec: spec/08-modules.md §8.2.5 — a project ancestor whose child exists
+    // only in a library has no child file.
+    #[test]
+    fn project_ancestor_with_a_library_only_child_is_refused() {
+        let tree = SearchTree::new(&["proj/m.cl", "lib/m/t.cl"]);
+        assert_eq!(tree.resolve("m.t", &["lib"]), None);
+    }
+
+    // spec: spec/08-modules.md §8.2.5 — the anchor is the topmost ancestor
+    // with a file, applied recursively through deeper descendants.
+    #[test]
+    fn grandchild_anchors_at_the_topmost_ancestor_file() {
+        let tree = SearchTree::new(&["lib/a.cl", "lib/a/b/c.cl", "proj/a/b.cl", "proj/a/b/c.cl"]);
+        assert_eq!(
+            tree.resolve("a.b.c", &["lib"]),
+            Some(tree.path("lib/a/b/c.cl"))
+        );
+    }
+
+    // spec: spec/08-modules.md §8.2.5 — the child file the writer extracts an
+    // inline `mod` to is the path the resolver later reads.
+    #[test]
+    fn child_target_is_the_resolved_path_before_the_file_exists() {
+        let tree = SearchTree::new(&["lib/m.cl", "proj/m/t.cl"]);
+        let libs = vec![tree.path("lib")];
+        assert_eq!(
+            module_file_target(&ModuleFullPath::from("m.t"), &tree.path("proj"), &libs),
+            ModuleFileTarget::Anchored(tree.path("lib/m/t.cl"))
+        );
+        assert_eq!(
+            module_file_target(&ModuleFullPath::from("m"), &tree.path("proj"), &libs),
+            ModuleFileTarget::Searched
+        );
     }
 }

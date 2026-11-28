@@ -117,6 +117,10 @@ struct IndicesInner {
     /// LOADED private submodule (`user.test`) bypassed the arm-time file-worklist
     /// drop and leaked to an outside-subtree searcher.
     private_roots: HashSet<ModuleFullPath>,
+    /// Modules held pending on a dependency still compiling, by dependency
+    /// (§17.19 R10). A held module is not `indexed`, so it keeps the pending
+    /// count above zero until its dependency settles and it is indexed.
+    deferred: std::collections::HashMap<ModuleFullPath, Vec<ModuleFullPath>>,
 }
 
 impl IndicesInner {
@@ -293,6 +297,26 @@ impl ImportableIndices {
     fn take_index_task(&self) -> Option<ModuleFullPath> {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.worklist.pop_front()
+    }
+
+    /// Hold `module` pending on `dependency` until the dependency settles.
+    fn defer_on(&self, module: &ModuleFullPath, dependency: &ModuleFullPath) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let held = g.deferred.entry(dependency.clone()).or_default();
+        if !held.contains(module) {
+            held.push(module.clone());
+        }
+    }
+
+    /// Return every module held on `dependency` to the worklist, exactly once;
+    /// `true` when any was held.
+    fn release_deferred(&self, dependency: &ModuleFullPath) -> bool {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(held) = g.deferred.remove(dependency) else {
+            return false;
+        };
+        g.worklist.extend(held);
+        true
     }
 
     /// Mark a module as indexed with no entries (branch a SKIP, or a CF.2 /
@@ -537,30 +561,7 @@ pub(crate) fn arm_burndown(shared: &SharedState) {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
 
-    let mut modules: Vec<ModuleFullPath> = Vec::new();
-    let mut seen: HashSet<ModuleFullPath> = HashSet::new();
-    // A directory that is itself a lib-dir is NOT walked as part of the project
-    // root: a file `lib/mathx.cl` on a lib-dir resolves to module `mathx` (the
-    // lib-dir is a search ROOT), not `lib.mathx` (which would be the project-root
-    // relative path). Excluding lib-dirs from the project-root walk makes the
-    // discovered module names match `resolve_module_file`'s `module → path`
-    // mapping exactly (§25.1 — same search semantics, no double-listing).
-    let canonical_lib_dirs: HashSet<std::path::PathBuf> = lib_dirs
-        .iter()
-        .filter_map(|d| std::fs::canonicalize(d).ok())
-        .collect();
-    // Project root is searched FIRST (import precedence, §8.11.2) — but skipping
-    // any subtree that is a lib-dir — then the lib dirs as their own roots.
-    enumerate_cl_modules_excluding(
-        &shared.project_root,
-        &shared.project_root,
-        &canonical_lib_dirs,
-        &mut modules,
-        &mut seen,
-    );
-    for dir in &lib_dirs {
-        enumerate_cl_modules(dir, dir, &mut modules, &mut seen);
-    }
+    let mut modules = reachable_modules(&shared.project_root, &lib_dirs);
 
     // §8.2.3 (0570): a `(mod- X)` PRIVATE submodule — and its whole subtree — is
     // NOT importable from outside its parent, so its symbols MUST NOT enter the
@@ -669,6 +670,7 @@ pub(crate) fn on_module_published(shared: &SharedState, module: &ModuleFullPath)
     if !shared.importable_indices.is_armed() {
         return;
     }
+    release_deferred(shared, module);
     if module.as_ref() == "prelude"
         || crate::bootstrap::seeded_importable_modules().contains(module)
     {
@@ -697,6 +699,7 @@ pub(crate) fn on_module_failed(shared: &SharedState, module: &ModuleFullPath) {
     if !shared.importable_indices.is_armed() {
         return;
     }
+    release_deferred(shared, module);
     if module.as_ref() == "prelude"
         || crate::bootstrap::seeded_importable_modules().contains(module)
     {
@@ -774,30 +777,55 @@ fn private_submodule_paths(
     private_roots
 }
 
-/// Recursively enumerate `.cl` files under `dir` as dotted module paths relative
-/// to `root` (mirroring `resolve_module_file`'s `module → path` mapping inverse:
-/// `a/b.cl` ⇒ module `a.b`). Skips the cache directory and hidden dirs. First
-/// occurrence wins (project-root precedence). `prelude.cl` is skipped (it is the
-/// implicit outer scope, not an importable module).
+/// The reachable module set (R10): every `.cl` file under the project root and
+/// each lib dir, named by its path relative to that root, admitted only when
+/// the resolver maps that name to that file (spec §8.11.2). A file the
+/// resolver never reads, such as a project file at a library child's path,
+/// is not a module and is not offered.
+fn reachable_modules(
+    project_root: &std::path::Path,
+    lib_dirs: &[std::path::PathBuf],
+) -> Vec<ModuleFullPath> {
+    let mut candidates: Vec<(ModuleFullPath, std::path::PathBuf)> = Vec::new();
+    // A directory that is itself a lib-dir is NOT walked as part of the project
+    // root: a file `lib/mathx.cl` on a lib-dir is named `mathx` (the lib-dir is
+    // a search ROOT), not `lib.mathx`.
+    let canonical_lib_dirs: HashSet<std::path::PathBuf> = lib_dirs
+        .iter()
+        .filter_map(|d| std::fs::canonicalize(d).ok())
+        .collect();
+    enumerate_cl_modules(
+        project_root,
+        project_root,
+        &canonical_lib_dirs,
+        &mut candidates,
+    );
+    for dir in lib_dirs {
+        enumerate_cl_modules(dir, dir, &HashSet::new(), &mut candidates);
+    }
+    // The resolver is a function of the name, so at most one file is admitted
+    // per module; `seen` only drops a root walked twice.
+    let mut seen: HashSet<ModuleFullPath> = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|(module, file)| {
+            crate::pipeline::resolve_module_file(module, project_root, lib_dirs).as_ref()
+                == Some(file)
+        })
+        .filter_map(|(module, _)| seen.insert(module.clone()).then_some(module))
+        .collect()
+}
+
+/// Recursively enumerate `.cl` files under `dir` as `(module, file)` pairs, the
+/// module named by the file's dotted path relative to `root` (`a/b.cl` ⇒
+/// `a.b`). Skips hidden dirs (the cache directory among them) and any
+/// subdirectory whose canonical path is in `exclude`. `prelude.cl` is skipped
+/// (it is the implicit outer scope, not an importable module).
 fn enumerate_cl_modules(
     root: &std::path::Path,
     dir: &std::path::Path,
-    out: &mut Vec<ModuleFullPath>,
-    seen: &mut HashSet<ModuleFullPath>,
-) {
-    let no_exclude = HashSet::new();
-    enumerate_cl_modules_excluding(root, dir, &no_exclude, out, seen);
-}
-
-/// As [`enumerate_cl_modules`] but skips any subdirectory whose canonical path is
-/// in `exclude` (used to keep lib-dir subtrees out of the project-root walk so a
-/// `lib/mathx.cl` resolves to module `mathx`, not `lib.mathx`).
-fn enumerate_cl_modules_excluding(
-    root: &std::path::Path,
-    dir: &std::path::Path,
     exclude: &HashSet<std::path::PathBuf>,
-    out: &mut Vec<ModuleFullPath>,
-    seen: &mut HashSet<ModuleFullPath>,
+    out: &mut Vec<(ModuleFullPath, std::path::PathBuf)>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -816,7 +844,7 @@ fn enumerate_cl_modules_excluding(
             {
                 continue;
             }
-            enumerate_cl_modules_excluding(root, &path, exclude, out, seen);
+            enumerate_cl_modules(root, &path, exclude, out);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("cl") {
@@ -825,7 +853,6 @@ fn enumerate_cl_modules_excluding(
         let Ok(rel) = path.strip_prefix(root) else {
             continue;
         };
-        // `a/b.cl` → `a.b`; `foo.cl` → `foo`.
         let rel_str = rel.with_extension("");
         let dotted = rel_str
             .to_string_lossy()
@@ -833,10 +860,7 @@ fn enumerate_cl_modules_excluding(
         if dotted == "prelude" || dotted.is_empty() {
             continue;
         }
-        let module = ModuleFullPath::from(dotted.as_str());
-        if seen.insert(module.clone()) {
-            out.push(module);
-        }
+        out.push((ModuleFullPath::from(dotted.as_str()), path));
     }
 }
 
@@ -988,12 +1012,22 @@ fn try_branch_b(
 /// burn-down — never a crash, never a killed worker.
 fn index_branch_c(shared: &SharedState, module: &ModuleFullPath, file: &std::path::Path) {
     match checked_typecheck_module(shared, module, file) {
-        Ok(Some(entries)) => {
+        Ok(PrivateIndex::Indexed(Some(entries))) => {
             shared.importable_indices.record_triples(module, entries);
         }
-        Ok(None) => {
+        Ok(PrivateIndex::Indexed(None)) => {
             // No checkable forms (empty module) — mark indexed, nothing to add.
             shared.importable_indices.mark_skipped(module);
+        }
+        Ok(PrivateIndex::Deferred { on }) => {
+            // Pending on a dependency still compiling: its publication or
+            // failure hook returns the module to the worklist. Re-checking
+            // after the deferral is held closes the window in which the
+            // dependency settled before it was.
+            shared.importable_indices.defer_on(module, &on);
+            if dependency_settled(shared, &on) {
+                release_deferred(shared, &on);
+            }
         }
         Err(reason) => {
             // CF.2 / typecheck Err: per-module index-skip. The module is simply
@@ -1006,14 +1040,38 @@ fn index_branch_c(shared: &SharedState, module: &ModuleFullPath, file: &std::pat
     }
 }
 
+/// Whether `module` has reached a state a deferred dependent can be indexed
+/// against: published (its live table), or failed (indexed from source).
+fn dependency_settled(shared: &SharedState, module: &ModuleFullPath) -> bool {
+    shared
+        .scheduler
+        .module_pool(module)
+        .is_some_and(|pool| pool.is_terminal_typecheck() || matches!(pool, ModulePool::Failed))
+}
+
+/// Return every module deferred on `dependency` to the worklist, and wake the
+/// nice workers when any was.
+fn release_deferred(shared: &SharedState, dependency: &ModuleFullPath) {
+    if shared.importable_indices.release_deferred(dependency) {
+        shared.scheduler.wake_object_workers();
+    }
+}
+
+/// The outcome of a private index pass over one module.
+enum PrivateIndex {
+    /// The module's typed public entries; `None` for no checkable forms.
+    Indexed(Option<Vec<(Symbol, Type, Binding<crate::code::Code>)>>),
+    /// A dependency is registered and still compiling: the module stays
+    /// pending on it.
+    Deferred { on: ModuleFullPath },
+}
+
 /// Run the real import-installing + typecheck path for `module` over its source
 /// against a **function-local, isolated private substrate**, wrapped in CF.2
 /// `catch_unwind` (§25.4 — the nice-worker catch, NOT inherited from the
 /// priority worker), then read its typed public entries out of that private
-/// substrate (dropped at function return). Returns:
-///   `Ok(Some(entries))` — clean check; entries are `(name, scheme.ty, entry)`.
-///   `Ok(None)`          — no checkable forms.
-///   `Err(reason)`       — a typecheck error/gap OR a caught panic (0432-shaped).
+/// substrate (dropped at function return). `Err(reason)` is a typecheck error,
+/// a dependency that cannot be indexed, or a caught panic (0432-shaped).
 ///
 /// INDEX-ISOLATION (S110, `index-worker-isolation.md` §2/§3): the module is
 /// NEVER `register_module`'d, and NONE of the live `SharedState` substrate is
@@ -1022,48 +1080,18 @@ fn index_branch_c(shared: &SharedState, module: &ModuleFullPath, file: &std::pat
 /// construction, not by undo**: there is no residue to remove because there is
 /// no live write to make (the retired "typecheck-into-live then REMOVE the
 /// residue (R13)" model). Every intermediate the index typecheck needs is a
-/// private snapshot dropped at function end.
-#[allow(clippy::type_complexity)]
+/// private snapshot dropped at function end, the dependencies it indexes from
+/// source included.
 fn checked_typecheck_module(
     shared: &SharedState,
     module: &ModuleFullPath,
     file: &std::path::Path,
-) -> Result<Option<Vec<(Symbol, Type, Binding<crate::code::Code>)>>, String> {
+) -> Result<PrivateIndex, String> {
     let source = std::fs::read_to_string(file).map_err(|e| format!("read error: {e}"))?;
     let sexps = cranelisp_frontend::parse(&source).map_err(|e| format!("parse error: {e}"))?;
-
-    // ZERO shared-state mutation (INDEX-ISOLATION by construction; race-free
-    // against the eval thread). The indexer runs the import-install + typecheck
-    // against a PRIVATE, isolated symbol-tables map — a deep snapshot of the live
-    // tables for dependency reads (`primitives`, `prelude`, …) plus a fresh entry
-    // for the indexed module. The live `SharedState` maps are NEVER written, so
-    // there is no residue and no TOCTOU race with a concurrent real `(import …)`
-    // of the same module on the eval thread. All writes land in the private map,
-    // dropped at function end.
-    let private_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-        dashmap::DashMap::new();
-    for entry in shared.symbol_tables.iter() {
-        private_tables.insert(entry.key().clone(), entry.value().clone());
-    }
-    // The indexed module starts FRESH in the private map (Replace semantics —
-    // an `import`-only or stale live entry must not shadow the source).
-    private_tables.insert(
-        module.clone(),
-        cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone()),
-    );
-    let private_aliases = cranelisp_types::ModuleAliases::default();
-    // §3.2 — snapshot the prelude-fallback bits into a PRIVATE clone. The index
-    // typecheck's installers/`check_forms` only READ the fallback today, but a
-    // live `&shared.prelude_fallback` handle threaded into an install/typecheck
-    // call is a standing invitation for a future write leak and defeats the §5
-    // reviewer grep ("no live `&shared.*` map into an install/typecheck/register
-    // call"). Reading a consistent private snapshot makes the isolation total by
-    // construction (the fallback bits are session-stable, so the snapshot is a
-    // faithful read view). Same clone shape as `private_tables`.
-    let private_prelude_fallback: cranelisp_typecheck::PreludeFallback =
-        shared.prelude_fallback.clone();
-
-    let module_cl = module.clone();
+    let mut substrate = PrivateSubstrate::new(shared);
+    #[cfg(test)]
+    run_after_publication_read(shared);
 
     // CF.2: wrap the whole import+typecheck pass in `catch_unwind` (§25.4 — the
     // nice-worker catch, NOT inherited from the priority worker). A 0432-shaped
@@ -1071,55 +1099,270 @@ fn checked_typecheck_module(
     // `debug_assert!`) would otherwise kill the nice worker. A caught unwind
     // becomes a clean per-module skip; the worker survives.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        index_typecheck_into_private(
-            &private_tables,
-            &private_aliases,
-            &private_prelude_fallback,
-            &module_cl,
-            &sexps,
-        )
+        substrate.index_from_source(module, &sexps)
     }));
 
     match outcome {
-        Ok(Ok(())) => {
-            // Read the typed public entries OUT of the PRIVATE module table.
-            Ok(private_tables
+        Ok(Ok(Readiness::Ready)) => Ok(PrivateIndex::Indexed(
+            substrate
+                .tables
                 .get(module)
                 .map(|table| public_entries_with_entry(&table))
-                .filter(|entries| !entries.is_empty()))
-        }
+                .filter(|entries| !entries.is_empty()),
+        )),
+        Ok(Ok(Readiness::Compiling(on))) => Ok(PrivateIndex::Deferred { on }),
         Ok(Err(reason)) => Err(reason),
         Err(_panic) => Err("typecheck panicked (skipped)".to_string()),
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's injection at the seam after the substrate has read the
+    /// session's publication state and tables (review F1).
+    static AFTER_PUBLICATION_READ: std::cell::Cell<Option<fn(&SharedState)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn run_after_publication_read(shared: &SharedState) {
+    if let Some(hook) = AFTER_PUBLICATION_READ.with(std::cell::Cell::take) {
+        hook(shared);
+    }
+}
+
+/// Whether a module is present in the private substrate.
+enum Readiness {
+    Ready,
+    /// The named dependency is registered and not yet settled.
+    Compiling(ModuleFullPath),
+}
+
+/// The indexer's private substrate (`index-worker-isolation.md` §3.1): a deep
+/// snapshot of the live tables, fresh aliases and a snapshot of the
+/// prelude-fallback bits. Before a module's imports are installed, every module
+/// they name is made present: a published module by its live table, an
+/// unloaded or failed one by indexing it privately from source, depth first.
+struct PrivateSubstrate<'s> {
+    shared: &'s SharedState,
+    lib_dirs: Vec<std::path::PathBuf>,
+    /// The publication state, read before `tables` (review F1): a module it
+    /// shows published is complete in the snapshot, and one it shows still
+    /// compiling defers the dependent even if it has published since.
+    publication: crate::scheduler::PublicationRead,
+    tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    aliases: cranelisp_types::ModuleAliases,
+    prelude_fallback: cranelisp_typecheck::PreludeFallback,
+    /// Modules already present: published, seeded or indexed here.
+    present: HashSet<ModuleFullPath>,
+    /// Modules being indexed from source: the cycle guard.
+    visiting: HashSet<ModuleFullPath>,
+    /// The macros each module indexed from source defines. Macros are not
+    /// indexed, so an import of one installs nothing (ACT-0952).
+    source_macros: std::collections::HashMap<ModuleFullPath, HashSet<Symbol>>,
+}
+
+impl<'s> PrivateSubstrate<'s> {
+    fn new(shared: &'s SharedState) -> Self {
+        let publication = shared.scheduler.publication_read();
+        let tables = dashmap::DashMap::new();
+        for entry in shared.symbol_tables.iter() {
+            tables.insert(entry.key().clone(), entry.value().clone());
+        }
+        // §3.2 — a PRIVATE clone of the prelude-fallback bits: no live map is
+        // threaded into an install or typecheck call.
+        PrivateSubstrate {
+            shared,
+            lib_dirs: shared
+                .lib_dirs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            publication,
+            tables,
+            aliases: cranelisp_types::ModuleAliases::default(),
+            prelude_fallback: shared.prelude_fallback.clone(),
+            present: HashSet::new(),
+            visiting: HashSet::new(),
+            source_macros: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Make `module` present in the substrate.
+    fn provide(&mut self, module: &ModuleFullPath) -> Result<Readiness, String> {
+        if self.present.contains(module) {
+            return Ok(Readiness::Ready);
+        }
+        if self.visiting.contains(module) {
+            return Err(format!("import cycle through '{module}'"));
+        }
+        let live = match self.publication.pools.get(module) {
+            Some(pool) if pool.is_terminal_typecheck() => true,
+            Some(ModulePool::Failed) => false,
+            Some(_) => return Ok(Readiness::Compiling(module.clone())),
+            None => {
+                self.tables.contains_key(module)
+                    && (self.publication.ever_terminal.contains(module)
+                        || crate::bootstrap::seeded_importable_modules().contains(module))
+            }
+        };
+        if !live {
+            let file = crate::pipeline::resolve_module_file(
+                module,
+                &self.shared.project_root,
+                &self.lib_dirs,
+            )
+            .ok_or_else(|| format!("module '{module}' not found"))?;
+            let source = std::fs::read_to_string(&file)
+                .map_err(|e| format!("read error in '{module}': {e}"))?;
+            let sexps = cranelisp_frontend::parse(&source)
+                .map_err(|e| format!("parse error in '{module}': {e}"))?;
+            if let Readiness::Compiling(on) = self.index_from_source(module, &sexps)? {
+                return Ok(Readiness::Compiling(on));
+            }
+        }
+        self.present.insert(module.clone());
+        Ok(Readiness::Ready)
+    }
+
+    /// Index `module` from `sexps` into the substrate, after providing every
+    /// module its imports and exports name.
+    fn index_from_source(
+        &mut self,
+        module: &ModuleFullPath,
+        sexps: &[cranelisp_types::Sexp],
+    ) -> Result<Readiness, String> {
+        let (decls, remaining) = cranelisp_frontend::extract_module_declarations(module, sexps)
+            .map_err(|e| format!("structural peel error: {e}"))?;
+        let declared = crate::imports::DeclaredChildren::of(module, &decls.mod_decls);
+        // A declaration with an empty names list loads nothing (spec §8.3.7),
+        // so its module is not provided (review F2).
+        let named: Vec<ModuleFullPath> = decls
+            .import_specs
+            .iter()
+            .filter(|spec| crate::imports::names_load(&spec.names))
+            .map(|spec| declared.resolve_import(spec).module().clone())
+            .chain(
+                decls
+                    .export_specs
+                    .iter()
+                    .filter(|spec| crate::imports::names_load(&spec.names))
+                    .map(|spec| declared.resolve_export(spec).module().clone()),
+            )
+            .collect();
+        self.visiting.insert(module.clone());
+        for dependency in &named {
+            if let Readiness::Compiling(on) = self.provide(dependency)? {
+                self.visiting.remove(module);
+                return Ok(Readiness::Compiling(on));
+            }
+        }
+        self.visiting.remove(module);
+
+        self.source_macros.insert(
+            module.clone(),
+            remaining
+                .iter()
+                .cloned()
+                .flat_map(cranelisp_frontend::flatten_begin)
+                .filter_map(|form| defmacro_name(&form))
+                .collect(),
+        );
+        let import_specs: Vec<cranelisp_types::ImportSpec> = decls
+            .import_specs
+            .iter()
+            .map(|spec| self.without_source_macros(&declared, spec))
+            .collect();
+        // The indexed module starts FRESH (Replace semantics — an
+        // `import`-only or stale entry must not shadow the source).
+        self.tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        index_typecheck_into_private(
+            &PrivateModule {
+                tables: &self.tables,
+                aliases: &self.aliases,
+                prelude_fallback: &self.prelude_fallback,
+                module,
+                declared: &declared,
+            },
+            &import_specs,
+            &decls.export_specs,
+            remaining,
+        )?;
+        Ok(Readiness::Ready)
+    }
+
+    /// `spec` without the names that are macros of a module indexed from
+    /// source here.
+    fn without_source_macros(
+        &self,
+        declared: &crate::imports::DeclaredChildren,
+        spec: &cranelisp_types::ImportSpec,
+    ) -> cranelisp_types::ImportSpec {
+        let target = declared.resolve_import(spec).module().clone();
+        let mut spec = spec.clone();
+        if let (Some(macros), cranelisp_types::ImportNames::Specific(entries)) =
+            (self.source_macros.get(&target), &mut spec.names)
+        {
+            entries.retain(|entry| match entry {
+                cranelisp_types::ImportEntry::Name { source, .. } => !macros.contains(source),
+                _ => true,
+            });
+        }
+        spec
+    }
+}
+
+/// The name a direct `(defmacro name …)` form defines.
+fn defmacro_name(form: &cranelisp_types::Sexp) -> Option<Symbol> {
+    use cranelisp_types::Sexp;
+    if !cranelisp_frontend::is_defmacro(form) {
+        return None;
+    }
+    match form {
+        Sexp::List(children, _) => match children.get(1) {
+            Some(Sexp::Symbol(name, _)) => Some(Symbol::from(name.as_str())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The private maps one module's index typecheck runs against.
+struct PrivateModule<'a> {
+    tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    aliases: &'a cranelisp_types::ModuleAliases,
+    prelude_fallback: &'a cranelisp_typecheck::PreludeFallback,
+    module: &'a ModuleFullPath,
+    declared: &'a crate::imports::DeclaredChildren,
+}
+
 /// Install the module's own `(import …)` decls into the PRIVATE table, then run
 /// `check_forms` over the private tables (staging-mode, so the typed defns land
-/// in the private module table). Pure with respect to live state — `priv_tables`
-/// is the indexer's isolated copy; `prelude_fallback` is read-only.
+/// in the private module table). Pure with respect to live state — the tables
+/// are the indexer's isolated copy; `prelude_fallback` is read-only.
 fn index_typecheck_into_private(
-    priv_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    priv_aliases: &cranelisp_types::ModuleAliases,
-    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
-    module: &ModuleFullPath,
-    sexps: &[cranelisp_types::Sexp],
+    private: &PrivateModule<'_>,
+    import_specs: &[cranelisp_types::ImportSpec],
+    export_specs: &[cranelisp_types::ExportSpec],
+    remaining: Vec<cranelisp_types::Sexp>,
 ) -> Result<(), String> {
     use cranelisp_typecheck::SymbolTableAccess;
+    let PrivateModule {
+        tables: priv_tables,
+        aliases: priv_aliases,
+        prelude_fallback,
+        module,
+        declared,
+    } = *private;
 
-    // Pass-0 structural peel: extract the module's own import/export decls and
-    // install them into the PRIVATE module table (so the body's bare refs
-    // resolve). `super` is resolved at the frontend boundary.
-    let (decls, remaining) = cranelisp_frontend::extract_module_declarations(module, sexps)
-        .map_err(|e| format!("structural peel error: {e}"))?;
-
-    let declared = crate::imports::DeclaredChildren::of(module, &decls.mod_decls);
-    let imports: Vec<_> = decls
-        .import_specs
+    let imports: Vec<_> = import_specs
         .iter()
         .map(|spec| declared.resolve_import(spec))
         .collect();
-    let exports: Vec<_> = decls
-        .export_specs
+    let exports: Vec<_> = export_specs
         .iter()
         .map(|spec| declared.resolve_export(spec))
         .collect();
@@ -1178,7 +1421,10 @@ fn index_typecheck_into_private(
                 .map_err(|error| format!("private index publication error: {error}"))?;
             Ok(())
         }
-        Err(e) => Err(format!("typecheck error: {e:?}")),
+        Err(e) => Err(format!(
+            "typecheck error: {}",
+            crate::worker::check_error_to_cranelisp_error(e)
+        )),
     }
 }
 
@@ -1305,6 +1551,37 @@ mod tests {
 
         assert!(public_entries_with_entry(&table).is_empty());
         assert!(public_entries_from_table(&table).is_empty());
+    }
+
+    // spec: spec/08-modules.md §8.11.2 — the index admits an enumerated file
+    // only when the resolver maps its module name to that file: a project file
+    // at a library child's path, or an earlier library holding only the child,
+    // offers nothing; a root module and an anchored child are offered once.
+    #[test]
+    fn reachable_modules_admit_only_files_the_resolver_maps_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = |rel: &str| tmp.path().join(rel);
+        for file in [
+            "proj/main.cl",
+            "proj/m/t.cl",
+            "proj/m/projonly.cl",
+            "early/m/t.cl",
+            "lib/m.cl",
+            "lib/m/t.cl",
+            "lib/core/str.cl",
+        ] {
+            std::fs::create_dir_all(path(file).parent().unwrap()).unwrap();
+            std::fs::write(path(file), "").unwrap();
+        }
+        let lib_dirs = vec![path("early"), path("lib")];
+        let modules = reachable_modules(&path("proj"), &lib_dirs);
+        let names: HashSet<&str> = modules.iter().map(|m| m.as_ref()).collect();
+        assert_eq!(
+            names,
+            HashSet::from(["main", "m", "m.t", "core.str"]),
+            "{modules:?}"
+        );
+        assert_eq!(modules.len(), names.len(), "each module once: {modules:?}");
     }
 
     // spec: spec/08-modules.md §8.2.3 (0570) — `private_submodule_paths` reads the
@@ -1964,6 +2241,7 @@ mod tests {
             run_mode: crate::session_v4::RunMode::Repl,
             entry_module: cranelisp_types::ModuleFullPath::from("user"),
             definition_origins: dashmap::DashMap::new(),
+            entered_forms: std::sync::atomic::AtomicU64::new(0),
             test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
         }
     }
@@ -2044,6 +2322,209 @@ mod tests {
             "ISOLATION §3.2: the index typecheck must not mutate the live \
              prelude_fallback (it reads a private snapshot)"
         );
+    }
+
+    /// A session over a project root holding `files`, armed with `modules`.
+    fn armed_project(files: &[(&str, &str)], modules: &[&str]) -> (tempfile::TempDir, SharedState) {
+        let tmp = tempfile::tempdir().unwrap();
+        for (path, source) in files {
+            std::fs::write(tmp.path().join(path), source).unwrap();
+        }
+        let mut shared = test_shared_state();
+        shared.project_root = tmp.path().to_path_buf();
+        shared
+            .importable_indices
+            .arm(modules.iter().map(|name| m(name)).collect());
+        (tmp, shared)
+    }
+
+    fn has_row(shared: &SharedState, name: &str) -> bool {
+        shared
+            .importable_indices
+            .search_by_name(name)
+            .iter()
+            .any(|hit| hit.name.as_ref() == name)
+    }
+
+    const P_SOURCE: (&str, &str) = ("p.cl", "(defn pf [n] n)\n");
+    const M_SOURCE: (&str, &str) = ("m.cl", "(import [p [pf]])\n(defn mf [n] (pf n))\n");
+
+    // spec: repl/spec/17a-agent-language-awareness.md §17.19 R10 — a module
+    // whose import names an unloaded module is indexed: the dependency, and
+    // its own dependencies, are indexed privately from source first. Nothing
+    // live is written.
+    #[test]
+    fn an_unloaded_dependency_chain_is_indexed_privately_from_source() {
+        let (_tmp, shared) = armed_project(
+            &[
+                P_SOURCE,
+                M_SOURCE,
+                ("t.cl", "(import [m [mf]])\n(defn tf [n] (mf n))\n"),
+            ],
+            &["m", "t"],
+        );
+        while run_one_index_task(&shared) {}
+        assert!(has_row(&shared, "mf"), "m is indexed");
+        assert!(has_row(&shared, "tf"), "t is indexed through m and p");
+        assert_eq!(shared.importable_indices.pending_count(), 0);
+        assert!(shared.symbol_tables.is_empty(), "no live table is written");
+    }
+
+    // spec: repl/spec/17a-agent-language-awareness.md §17.19 R10 — a module
+    // whose dependency is registered and still compiling stays pending on it,
+    // and is indexed when the dependency publishes.
+    #[test]
+    fn a_dependency_still_compiling_defers_the_module_until_it_publishes() {
+        let (_tmp, shared) = armed_project(&[P_SOURCE, M_SOURCE], &["m"]);
+        let p = m("p");
+        shared
+            .scheduler
+            .register_module(p.clone(), std::sync::Arc::from(Vec::new()), false);
+        shared.scheduler.force_typecheck_working_for_test(&p);
+        shared.symbol_tables.insert(
+            p.clone(),
+            crate::code::SessionSymbolTable::new_with_params(p.clone()),
+        );
+
+        assert!(run_one_index_task(&shared));
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            1,
+            "the deferred module stays pending"
+        );
+        assert!(!has_row(&shared, "mf"));
+        assert!(!run_one_index_task(&shared), "nothing is retried early");
+
+        shared.symbol_tables.insert(
+            p.clone(),
+            public_def_table("p", "pf", Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+        );
+        shared.scheduler.notify_typecheck_done(&p);
+        on_module_published(&shared, &p);
+        while run_one_index_task(&shared) {}
+        assert!(
+            has_row(&shared, "mf"),
+            "indexed after its dependency published"
+        );
+        assert_eq!(shared.importable_indices.pending_count(), 0);
+    }
+
+    // spec: repl/spec/17a-agent-language-awareness.md §17.19 R10 — review F1
+    // (`lost-wakeup`): a dependency that publishes after the index read its
+    // publication state leaves the dependent pending, never indexed with no
+    // rows, and the dependent is indexed once the publication hook runs.
+    #[test]
+    fn a_dependency_publishing_after_the_publication_read_keeps_the_dependent_pending() {
+        let (_tmp, shared) = armed_project(&[P_SOURCE, M_SOURCE], &["m"]);
+        let p = m("p");
+        shared
+            .scheduler
+            .register_module(p.clone(), std::sync::Arc::from(Vec::new()), false);
+        shared.scheduler.force_typecheck_working_for_test(&p);
+        shared.symbol_tables.insert(
+            p.clone(),
+            crate::code::SessionSymbolTable::new_with_params(p.clone()),
+        );
+        fn publish_p(shared: &SharedState) {
+            let p = m("p");
+            shared.symbol_tables.insert(
+                p.clone(),
+                public_def_table("p", "pf", Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+            );
+            shared.scheduler.notify_typecheck_done(&p);
+        }
+        AFTER_PUBLICATION_READ.with(|hook| hook.set(Some(publish_p)));
+
+        assert!(run_one_index_task(&shared));
+        assert!(
+            !has_row(&shared, "mf"),
+            "not indexed against the stale table"
+        );
+        assert_eq!(
+            shared.importable_indices.pending_count(),
+            1,
+            "the dependent stays pending"
+        );
+        on_module_published(&shared, &p);
+        while run_one_index_task(&shared) {}
+        assert!(has_row(&shared, "mf"), "indexed after the publication hook");
+        assert_eq!(shared.importable_indices.pending_count(), 0);
+    }
+
+    // spec: spec/08-modules.md §8.3.7; repl §17.19 R10 — review F2: an
+    // empty import loads nothing, so the index provides no module for it and
+    // the importing module is indexed.
+    #[test]
+    fn an_empty_import_of_a_missing_module_is_not_provided() {
+        let (_tmp, shared) = armed_project(
+            &[(
+                "n.cl",
+                "(import [does-not-exist []])\n(defn null-marker [x] x)\n",
+            )],
+            &["n"],
+        );
+        while run_one_index_task(&shared) {}
+        assert!(has_row(&shared, "null-marker"));
+    }
+
+    // spec: repl/spec/17a-agent-language-awareness.md §17.19 R10 — a failed
+    // dependency is indexed from source; a deferred module is returned to the
+    // worklist by the dependency's failure.
+    #[test]
+    fn a_failed_dependency_is_indexed_from_source() {
+        let (_tmp, shared) = armed_project(&[P_SOURCE, M_SOURCE], &["m"]);
+        let p = m("p");
+        shared
+            .scheduler
+            .register_module(p.clone(), std::sync::Arc::from(Vec::new()), false);
+        shared.scheduler.force_typecheck_working_for_test(&p);
+        assert!(run_one_index_task(&shared));
+        assert_eq!(shared.importable_indices.pending_count(), 1, "deferred");
+
+        shared.scheduler.notify_module_failed(
+            &p,
+            cranelisp_types::CranelispError::ModuleError {
+                message: "p failed".to_string(),
+                location: cranelisp_types::ErrorLocation::from_span_file(
+                    cranelisp_types::Span::SYNTHETIC,
+                    None,
+                ),
+            },
+        );
+        on_module_failed(&shared, &p);
+        while run_one_index_task(&shared) {}
+        assert!(has_row(&shared, "mf"));
+        assert_eq!(shared.importable_indices.pending_count(), 0);
+    }
+
+    // spec: repl/spec/17a-agent-language-awareness.md §17.19 R10 — a module
+    // whose dependency has no file is unindexable in every session: no row,
+    // and the burn-down completes.
+    #[test]
+    fn a_missing_dependency_leaves_no_row_and_completes() {
+        let (_tmp, shared) = armed_project(&[M_SOURCE], &["m"]);
+        while run_one_index_task(&shared) {}
+        assert!(!has_row(&shared, "mf"));
+        assert_eq!(shared.importable_indices.pending_count(), 0);
+    }
+
+    // spec: repl/spec/17a-agent-language-awareness.md §17.19 R10 — a module
+    // that imports a macro by name from an unloaded module keeps its ordinary
+    // definitions indexed (indexing through macros is ACT-0952's).
+    #[test]
+    fn a_macro_imported_from_an_unloaded_module_keeps_ordinary_definitions() {
+        let (_tmp, shared) = armed_project(
+            &[
+                ("mac.cl", "(defmacro identity [x] x)\n(defn helper [n] n)\n"),
+                (
+                    "u.cl",
+                    "(import [mac [identity helper]])\n(defn uf [n] (helper n))\n",
+                ),
+            ],
+            &["u"],
+        );
+        while run_one_index_task(&shared) {}
+        assert!(has_row(&shared, "uf"));
     }
 
     // spec: design/int/index-worker-isolation.md §3.3 — M-1083. An index pass

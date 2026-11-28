@@ -13,6 +13,7 @@ use cranelisp_types::{
     PlatformSpec, Sexp, Span, Symbol, TopLevel,
 };
 
+use crate::session_v4::{AuthoredPosition, DefinitionOrigin, EntryKey};
 use crate::worker::ModuleCompiler;
 
 // ---------------------------------------------------------------------------
@@ -173,7 +174,7 @@ pub(crate) fn classify_form(
 /// defmacro form itself (same as `sexp`); for a macro-expansion-produced
 /// defmacro (a macro-defining macro like stdlib `def`) it is the outer call
 /// form (e.g. `(mdef x 1)`), so ALL introspection records created by one turn
-/// carry the SAME authored sexp and `save::generate_fns_and_macros` can dedup
+/// carry the SAME authored sexp and `save::generate_definitions` can dedup
 /// to a single emission. The expanded `(defmacro …)` artifact stays on
 /// `.expanded` (introspection) and on the entry's `macro_sexp` (the
 /// clause-recompile authority — that role is unchanged); persisting it as
@@ -193,19 +194,52 @@ pub(crate) fn record_macro_introspection(
     sexp: &Sexp,
     authored: &Sexp,
     authored_source: Option<String>,
+    facts: AuthoredFacts,
 ) {
-    // `introspection` is `Some` only in REPL mode. Expansion output carries
-    // synthetic rewritten spans, so a span difference marks an expansion.
+    // `introspection` is `Some` only in REPL mode. The expansion is kept when
+    // the expander recognised the authored form as a macro call: the origin
+    // records that fact (`design/int/s125-binary-clean.md` §4.4).
     if let Some(intr_map) = introspection {
         let fq = FQSymbol {
             module: module.clone(),
             symbol: name.clone(),
         };
+        let generated = matches!(facts.origin, DefinitionOrigin::Generated(_));
+        let staged = crate::session_v4::Introspection {
+            sexp: Some(authored.clone()),
+            expanded: generated.then(|| sexp.clone()),
+            source: Some(
+                authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)),
+            ),
+            position: Some(facts.position),
+            origin: facts.origin,
+            entry_keys: facts.entry_keys,
+            ..Default::default()
+        };
         let mut entry = intr_map.entry(fq).or_default();
-        entry.sexp = Some(authored.clone());
-        entry.expanded = (authored.span() != sexp.span()).then(|| sexp.clone());
-        entry.source =
-            Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print_plain(authored)));
+        let ast = entry.ast.take();
+        entry.install_authored(staged, None);
+        entry.ast = ast;
+    }
+}
+
+/// What the expander and the turn know about one authored form when its
+/// record is written: where it stands, whether a macro call produced it, and
+/// for a call, every key its expansion defines.
+pub(crate) struct AuthoredFacts {
+    pub(crate) position: AuthoredPosition,
+    pub(crate) origin: DefinitionOrigin,
+    pub(crate) entry_keys: Vec<EntryKey>,
+}
+
+impl AuthoredFacts {
+    /// The facts of a written form at `position`.
+    pub(crate) fn written(position: AuthoredPosition) -> Self {
+        AuthoredFacts {
+            position,
+            origin: DefinitionOrigin::Written,
+            entry_keys: Vec::new(),
+        }
     }
 }
 

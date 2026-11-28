@@ -36,10 +36,10 @@ fn cache_preloaded_sum_projection_recheck_preserves_ownership() {
     )
     .unwrap();
     session.set_lib_dirs(Vec::new());
-    let source = "(import [primitives [Int Pure]])
+    let source = "(import [primitives [Int pure]])
         (deftype Customer (Addr [:Int a]))
         (defn r-cust [c] (match c [(Customer.Addr a) a]))
-        (defn main [] (Pure (r-cust (Customer.Addr 40))))";
+        (defn main [] (pure (r-cust (Customer.Addr 40))))";
     session
         .register_module_with_source("main", source, &root.path().join("main.cl"))
         .unwrap();
@@ -2206,7 +2206,6 @@ fn derive_codegen_batch_includes_synthesised_constructors() {
             type_name: FQTypeName::new(module.clone(), cranelisp_types::TypeName::from("Option")),
             tag: 1,
             field_count: 1,
-            internal: false,
             type_def: None,
         },
         Some(trivial_variant()),
@@ -3291,6 +3290,7 @@ fn test_shared_state() -> crate::session_v4::SharedState {
         run_mode: crate::session_v4::RunMode::Repl,
         entry_module: ModuleFullPath::from("user"),
         definition_origins: dashmap::DashMap::new(),
+        entered_forms: std::sync::atomic::AtomicU64::new(0),
         test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
     }
 }
@@ -3893,7 +3893,6 @@ fn classify_listing_entry_buckets_every_category() {
             type_name: FQTypeName::new(module.clone(), TypeName::from("Option")),
             tag: 1,
             field_count: 1,
-            internal: false,
             type_def: None,
         },
         Some(trivial_variant()),
@@ -4022,6 +4021,7 @@ fn seed_expanded_record(shared: &crate::session_v4::SharedState) {
             ast: None,
             clif_ir: Some("seeded clif".to_string()),
             code_size: Some(7),
+            ..Default::default()
         },
     );
 }
@@ -4037,6 +4037,7 @@ fn staged_direct_replacement() -> Vec<(FQSymbol, crate::session_v4::Introspectio
             ast: None,
             clif_ir: None,
             code_size: None,
+            ..Default::default()
         },
     )]
 }
@@ -4985,4 +4986,228 @@ mod covered_set_at_planning {
             );
         }
     }
+}
+
+/// Bootstrapped tables plus one host-promised fixture the host cannot supply.
+fn host_extern_tables() -> dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+    let tables = dashmap::DashMap::new();
+    let next_type_id = std::sync::atomic::AtomicU32::new(0);
+    crate::bootstrap::mount_synthetic_modules(&tables, &next_type_id).expect("bootstrap mount");
+    let user = ModuleFullPath::from("user");
+    let mut table = crate::code::SessionSymbolTable::new_with_params(user.clone());
+    table
+        .install_host_promised(
+            Symbol::from("__cranelisp_unsupplied_host_extern__"),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            },
+            vec![Symbol::from("x")],
+            None,
+            0,
+            Visibility::Public,
+        )
+        .expect("fixture installs");
+    tables.insert(user, table);
+    tables
+}
+
+// spec: design/int/s125-binary-clean.md §7 (ACT-0965 item 3) — one resolver
+// supplies the binary-exported externs and the dev-session bodies that both
+// the session JIT and the cache-restore Linker register.
+#[test]
+fn host_extern_addresses_supply_exports_and_session_bodies() {
+    let addresses = host_extern_addresses(&host_extern_tables());
+    assert_supplies_host_export(&addresses, "sconcat");
+    assert_eq!(
+        addresses.get(&Symbol::from("discover-tests")).copied(),
+        Some(crate::session_v4::discover_tests_extern as *const u8),
+        "a dev-session-only extern resolves to its live-session body"
+    );
+}
+
+// spec: design/int/s125-binary-clean.md §7 — a host-promised name the host
+// cannot supply is absent, and a non-host-promised callable is never offered.
+#[test]
+fn host_extern_addresses_omit_unsupplied_and_non_host_names() {
+    let addresses = host_extern_addresses(&host_extern_tables());
+    assert!(!addresses.contains_key(&Symbol::from("__cranelisp_unsupplied_host_extern__")));
+    assert!(
+        !addresses.contains_key(&Symbol::from("add-i64")),
+        "a GOT-slotted primitive is not a host-promised extern"
+    );
+}
+
+// spec: design/int/s125-binary-clean.md §7 — every dev-session-only extern has
+// a live-session body, so none falls through to the host's exports.
+#[test]
+fn every_dev_session_only_extern_has_a_body() {
+    for name in DEV_SESSION_ONLY_EXTERNS {
+        assert!(
+            dev_session_extern_body(name).is_some(),
+            "{name} has no body"
+        );
+    }
+}
+
+/// Assert `name` is a host export and the resolver supplies exactly it. The
+/// export must exist: two absences must not compare equal.
+fn assert_supplies_host_export(
+    addresses: &std::collections::BTreeMap<Symbol, *const u8>,
+    name: &str,
+) {
+    let expected = dlsym_host_symbol(name)
+        .filter(|ptr| !ptr.is_null())
+        .unwrap_or_else(|| panic!("`{name}` must be exported by the host binary"));
+    assert_eq!(
+        addresses.get(&Symbol::from(name)).copied(),
+        Some(expected),
+        "a binary-exported extern resolves to the host's exported symbol"
+    );
+}
+
+// spec: design/int/s125-binary-clean.md §7 — detection proof for the helper
+// above: a host-promised name the host does not export fails it, rather than
+// passing as two equal absences.
+#[test]
+#[should_panic(expected = "must be exported by the host binary")]
+fn host_export_assertion_detects_an_absent_export() {
+    let addresses = host_extern_addresses(&host_extern_tables());
+    assert_supplies_host_export(&addresses, "__cranelisp_unsupplied_host_extern__");
+}
+
+fn user_target(name: &str) -> CallableTarget {
+    CallableTarget::Binding(FQSymbol {
+        module: ModuleFullPath::from("user"),
+        symbol: Symbol::from(name),
+    })
+}
+
+// spec: design/int/s125-binary-clean.md §7.1 step 2 — the session's linker
+// symbol set holds an intrinsic, a host extern, a platform effect and every
+// module's GOT data symbol.
+#[test]
+fn session_linker_holds_every_symbol_group() {
+    let tables = host_extern_tables();
+    let platform = ModuleFullPath::from("platform.fixture");
+    let mut table = crate::code::SessionSymbolTable::new_with_params(platform.clone());
+    table
+        .install_platform(
+            Symbol::from("effect"),
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![], Box::new(Type::Int)),
+            },
+            vec![],
+            None,
+            0,
+            cranelisp_types::SchedulingClass::Sequential,
+            false,
+            3,
+            Visibility::Public,
+        )
+        .expect("platform fixture installs");
+    let effect_ptr = dlsym_host_symbol as *const u8;
+    table.got.store_slot(3, effect_ptr);
+    tables.insert(platform.clone(), table);
+
+    let linker = session_linker(&tables).expect("linker builds");
+    let intrinsic = &cranelisp_intrinsics::intrinsics_table()[0];
+    assert_eq!(linker.get_symbol(intrinsic.name).ok(), Some(intrinsic.ptr));
+    assert_eq!(
+        linker.get_symbol("sconcat").ok(),
+        dlsym_host_symbol("sconcat")
+    );
+    assert!(linker.get_symbol("sconcat").is_ok_and(|ptr| !ptr.is_null()));
+    assert_eq!(linker.get_symbol("effect").ok(), Some(effect_ptr));
+    let got_name = cranelisp_types::got_data_symbol_name(&platform);
+    assert_eq!(
+        linker.get_symbol(&got_name).ok(),
+        Some(tables.get(&platform).unwrap().got.base_ptr())
+    );
+    assert!(
+        linker
+            .get_symbol("__cranelisp_unsupplied_host_extern__")
+            .is_err(),
+        "a name the host cannot supply is absent"
+    );
+}
+
+// spec: design/int/s125-binary-clean.md §7.1 step 3 — a target the object did
+// not define is a hard error, and no slot is written.
+#[test]
+fn wire_slots_refuses_a_missing_target_before_writing_any_slot() {
+    let got = cranelisp_types::GotTable::new();
+    let present = dlsym_host_symbol as *const u8;
+    let fn_addrs = HashMap::from([(user_target("present"), present)]);
+    let wanted = vec![(user_target("present"), 1), (user_target("missing"), 2)];
+    let result = wire_slots(&ModuleFullPath::from("user"), wanted, &fn_addrs, &got);
+    let Err(CranelispError::ModuleError { message, .. }) = result else {
+        panic!("a missing target must be a hard error");
+    };
+    assert!(message.contains("missing"), "names the target: {message}");
+    assert!(
+        got.load_slot(1).is_null() && got.load_slot(2).is_null(),
+        "no slot written"
+    );
+
+    let wanted = vec![(user_target("present"), 1)];
+    let wired = wire_slots(&ModuleFullPath::from("user"), wanted, &fn_addrs, &got)
+        .expect("a defined target wires");
+    assert_eq!(wired, vec![user_target("present")]);
+    assert_eq!(got.load_slot(1), present);
+}
+
+// spec: design/int/s125-binary-clean.md §7.1 step 4 — every loaded target ends
+// with a `Code::Linker` owner, all sharing one `Arc`.
+#[test]
+fn publish_linker_owners_share_one_linker() {
+    let mut s = crate::repl::test_support::session();
+    for form in ["(defn first-owner [] 1)", "(defn second-owner [] 2)"] {
+        s.eval(form)
+            .unwrap_or_else(|e| panic!("fixture form `{form}` must compile: {e}"));
+    }
+    let targets = vec![user_target("first-owner"), user_target("second-owner")];
+    let loaded = LoadedObject {
+        linker: cranelisp_backend::cache::linker::Linker::new().expect("linker"),
+        targets: targets.clone(),
+    };
+    let published = publish_linker_owners(
+        &ModuleFullPath::from("user"),
+        &s.shared.symbol_tables,
+        loaded,
+    )
+    .expect("owners publish");
+    assert_eq!(published, targets);
+    let table = s
+        .shared
+        .symbol_tables
+        .get(&ModuleFullPath::from("user"))
+        .unwrap();
+    let owners: Vec<_> = ["first-owner", "second-owner"]
+        .iter()
+        .map(|name| {
+            match table
+                .get(name)
+                .and_then(|b| b.callable())
+                .map(|c| &c.arm.life)
+            {
+                Some(Life::Concrete {
+                    realization:
+                        Realization::Body {
+                            code: Some(crate::code::Code::Linker(linker)),
+                            ..
+                        },
+                    ..
+                }) => std::sync::Arc::clone(linker),
+                other => panic!("{name} must own a Code::Linker, got {other:?}"),
+            }
+        })
+        .collect();
+    assert!(
+        std::sync::Arc::ptr_eq(&owners[0], &owners[1]),
+        "one shared Arc"
+    );
 }

@@ -31,7 +31,7 @@ use std::sync::Mutex;
 
 use cranelisp_types::ModuleFullPath;
 
-use crate::session_setup::{CacheState, CacheValidity};
+use crate::session_setup::{CacheState, CacheValidity, FileAgreement};
 
 pub(crate) mod dependency_record;
 
@@ -80,6 +80,95 @@ pub struct ObjectCache {
     /// Each module whose latest object pass stopped without publishing its
     /// object (`design/int/int.md` §7.7). `--link` refuses while any stands.
     stopped_passes: Mutex<BTreeMap<ModuleFullPath, StoppedPass>>,
+
+    /// The session's hold on `dir`: the project directory's owner lock, or the
+    /// private directory it removes at its end. `None` for a cache built
+    /// without a session's directory decision.
+    directory: Mutex<Option<CacheDirectory>>,
+}
+
+/// The lock file whose exclusive advisory lock makes a session the owner of
+/// its project's cache directory.
+const OWNER_LOCK_FILE: &str = "owner.lock";
+
+/// The directory a session's cache reads and writes (`design/int/int.md` §7.7,
+/// *One cache owner per project directory*).
+#[derive(Debug)]
+pub(crate) enum CacheDirectory {
+    /// The project's cache directory, held under its owner lock for the
+    /// session's life. The operating system releases the lock when the
+    /// process ends, a panic or a kill included.
+    Owned { dir: PathBuf, _lock: std::fs::File },
+    /// A private directory outside the project, used because the project's
+    /// cache has another owner or cannot be locked. Removed at the session's
+    /// end; nothing in the project's cache is read or written.
+    Private { dir: PathBuf },
+}
+
+impl CacheDirectory {
+    /// Take ownership of `project_cache`, never waiting; fall back to a fresh
+    /// private directory when the lock is not taken, for any reason.
+    pub(crate) fn open(project_cache: &Path) -> Self {
+        match Self::take_owner_lock(project_cache) {
+            Ok(lock) => CacheDirectory::Owned {
+                dir: project_cache.to_path_buf(),
+                _lock: lock,
+            },
+            Err(cause) => {
+                let dir = Self::fresh_private_dir();
+                if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+                    eprintln!(
+                        "cache: '{}' is not owned by this session ({cause}); using private '{}'",
+                        project_cache.display(),
+                        dir.display()
+                    );
+                }
+                CacheDirectory::Private { dir }
+            }
+        }
+    }
+
+    fn take_owner_lock(project_cache: &Path) -> Result<std::fs::File, String> {
+        std::fs::create_dir_all(project_cache).map_err(|e| format!("create: {e}"))?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(project_cache.join(OWNER_LOCK_FILE))
+            .map_err(|e| format!("open lock file: {e}"))?;
+        lock.try_lock().map_err(|e| format!("lock: {e}"))?;
+        Ok(lock)
+    }
+
+    /// A new, empty directory under the system temporary directory.
+    fn fresh_private_dir() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let base = std::env::temp_dir();
+        loop {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = base.join(format!("cranelisp-cache-{}-{n}", std::process::id()));
+            match std::fs::create_dir(&dir) {
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                // A directory that cannot be created leaves every cache write
+                // to fail as a stopped pass, never in the project's cache.
+                _ => return dir,
+            }
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            CacheDirectory::Owned { dir, .. } | CacheDirectory::Private { dir } => dir,
+        }
+    }
+}
+
+impl Drop for CacheDirectory {
+    fn drop(&mut self) {
+        if let CacheDirectory::Private { dir } = self {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 /// Where an object pass stopped.
@@ -174,6 +263,16 @@ fn cache_write_error(message: String) -> cranelisp_types::CranelispError {
     }
 }
 
+/// What a `.meta` write did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaWrite {
+    /// The `.meta` now holds the table, its earlier object retired.
+    Written,
+    /// Nothing was written: the module's table is ahead of its file
+    /// (`design/int/s125-binary-clean.md` §4.3).
+    Diverged,
+}
+
 /// A decoded stored `.meta` and the authored slot layout read from it.
 struct StoredMeta {
     layout: AuthoredSlotLayout,
@@ -196,7 +295,29 @@ impl ObjectCache {
             compiled_o_paths: Mutex::new(Vec::new()),
             stored: dashmap::DashMap::new(),
             stopped_passes: Mutex::new(BTreeMap::new()),
+            directory: Mutex::new(None),
         }
+    }
+
+    /// The session's cache over `directory` (`None` under `--no-cache`): the
+    /// one construction that decides which directory a session reads and
+    /// writes (`design/int/int.md` §7.7, *One cache owner*).
+    pub(crate) fn for_session(directory: Option<CacheDirectory>) -> Self {
+        let dir = directory.as_ref().map(|d| d.path().to_path_buf());
+        let state = dir.clone().map(CacheState::new);
+        let cache = Self::new(dir, state);
+        *cache.directory.lock().unwrap_or_else(|e| e.into_inner()) = directory;
+        cache
+    }
+
+    /// End the session's hold on its directory: release the owner lock, or
+    /// remove the private directory. Called once the session's workers have
+    /// stopped writing.
+    pub(crate) fn end_session(&self) {
+        self.directory
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
     }
 
     /// The authored slot layout of `module`'s stored `.meta`; `None` when
@@ -250,16 +371,28 @@ impl ObjectCache {
     /// stands beside an object built from another table (`design/int/int.md`
     /// §7.7). If the object cannot be removed, nothing is written and the
     /// earlier pair stands; the caller must then record no manifest entry.
+    ///
+    /// While the module's table is ahead of its file nothing is written
+    /// (`design/int/s125-binary-clean.md` §4.3). The agreement is read under
+    /// the lock a divergence retires the module's files under, so a `.meta`
+    /// is never written after its retirement.
     pub(crate) fn write_meta(
         &self,
         module: &ModuleFullPath,
         table: &crate::code::SessionSymbolTable,
-    ) -> Result<(), cranelisp_types::CranelispError> {
+    ) -> Result<MetaWrite, cranelisp_types::CranelispError> {
         let Some(dir) = self.dir.as_deref() else {
             return Err(cache_write_error(format!(
                 "cannot write cache metadata for {module}: caching is disabled"
             )));
         };
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state
+            .as_ref()
+            .is_some_and(|cs| cs.agreement(module) == FileAgreement::Diverged)
+        {
+            return Ok(MetaWrite::Diverged);
+        }
         let (meta_path, object_path) = cranelisp_backend::cache::module_cache_path(dir, module);
         let held = self.stored.entry(module.clone());
         match std::fs::remove_file(&object_path) {
@@ -280,7 +413,48 @@ impl ObjectCache {
         if let dashmap::Entry::Occupied(decoded) = held {
             decoded.remove();
         }
-        written
+        drop(state);
+        written.map(|()| MetaWrite::Written)
+    }
+
+    /// Record that `module`'s live table is ahead of its source file: a
+    /// definition turn's regeneration did not write it
+    /// (`design/int/s125-binary-clean.md` §4.3). The module's `.o` and `.meta`
+    /// are retired, so the next session cannot restore a definition the file
+    /// lacks, and no cache entry is written for it until a load, reload or
+    /// regeneration makes the file agree again.
+    pub(crate) fn record_divergence(&self, module: &ModuleFullPath) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(cs) = state.as_mut() else {
+            return;
+        };
+        cs.record_divergence(module);
+        self.stored.remove(module);
+        let Some(dir) = self.dir.as_deref() else {
+            return;
+        };
+        let (meta_path, object_path) = cranelisp_backend::cache::module_cache_path(dir, module);
+        for path in [&object_path, &meta_path] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => eprintln!(
+                    "Warning: cannot retire cached {} of {module}, whose session holds \
+                     definitions its file lacks: {error}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
+    /// Whether `module`'s table agrees with its file; it agrees when caching
+    /// is disabled.
+    #[cfg(test)]
+    pub(crate) fn agreement(&self, module: &ModuleFullPath) -> FileAgreement {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .as_ref()
+            .map_or(FileAgreement::Agrees, |cs| cs.agreement(module))
     }
 
     /// Whether caching is enabled for this session.
@@ -555,6 +729,70 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["lib.o"]);
+    }
+
+    // ---------------------------------------------------------------------
+    // S125 §4.3 — the cache is never ahead of the file (ACT-1102)
+    // ---------------------------------------------------------------------
+
+    /// A cache over `dir` holding a written `.meta` and `.o` for `m`.
+    fn cache_with_generation(dir: &Path, m: &ModuleFullPath) -> ObjectCache {
+        let cache = ObjectCache::new(Some(dir.to_path_buf()), Some(cache_state_for(dir)));
+        cache.record_source_hash(m, "loaded".to_string());
+        let table = crate::code::SessionSymbolTable::new_with_params(m.clone());
+        assert_eq!(cache.write_meta(m, &table).unwrap(), MetaWrite::Written);
+        let (_, object) = cranelisp_backend::cache::module_cache_path(dir, m);
+        std::fs::write(object, b"object").unwrap();
+        cache
+    }
+
+    // spec: design/int/s125-binary-clean.md §4.3 — a divergence retires the
+    // module's `.o` and `.meta` and refuses every write until the file agrees.
+    #[test]
+    fn a_divergence_retires_the_generation_and_refuses_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = ModuleFullPath::from("user");
+        let cache = cache_with_generation(tmp.path(), &m);
+        let (meta, object) = cranelisp_backend::cache::module_cache_path(tmp.path(), &m);
+
+        cache.record_divergence(&m);
+
+        assert_eq!(cache.agreement(&m), FileAgreement::Diverged);
+        assert!(
+            !meta.exists() && !object.exists(),
+            "the generation is retired"
+        );
+        let table = crate::code::SessionSymbolTable::new_with_params(m.clone());
+        assert_eq!(cache.write_meta(&m, &table).unwrap(), MetaWrite::Diverged);
+        assert!(!meta.exists(), "no `.meta` is written while diverged");
+        cache.record_compiled(&m, "loaded".to_string(), DependencyRecord::default());
+        let guard = cache.state.lock().unwrap();
+        let cs = guard.as_ref().unwrap();
+        assert!(
+            cs.manifest_entry(&m).is_none(),
+            "no manifest entry is written while diverged"
+        );
+    }
+
+    // spec: design/int/s125-binary-clean.md §4.3 — a read or written file
+    // (the recorded source hash) makes the table agree again, and writes
+    // resume; a cache hit agrees too. Control: an agreeing module writes.
+    #[test]
+    fn a_recorded_source_ends_the_divergence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = ModuleFullPath::from("user");
+        let cache = cache_with_generation(tmp.path(), &m);
+        assert_eq!(cache.agreement(&m), FileAgreement::Agrees);
+
+        cache.record_divergence(&m);
+        cache.record_source_hash(&m, "written".to_string());
+        assert_eq!(cache.agreement(&m), FileAgreement::Agrees);
+        let table = crate::code::SessionSymbolTable::new_with_params(m.clone());
+        assert_eq!(cache.write_meta(&m, &table).unwrap(), MetaWrite::Written);
+
+        cache.record_divergence(&m);
+        cache.record_cache_hit(&m, "restored".to_string(), DependencyRecord::default());
+        assert_eq!(cache.agreement(&m), FileAgreement::Agrees);
     }
 
     #[test]

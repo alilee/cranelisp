@@ -323,6 +323,7 @@ fn nice_worker_lifecycle_spawn_and_shutdown() {
         run_mode: crate::session_v4::RunMode::Repl,
         entry_module: cranelisp_types::ModuleFullPath::from("user"),
         definition_origins: dashmap::DashMap::new(),
+        entered_forms: std::sync::atomic::AtomicU64::new(0),
         // Sprint 66 Wave 3a-γ: TestRunnerState stub for the scheduler
         // unit test. The test exercises the nice-worker lifecycle, not
         // test/trace intrinsics — a default state with empty/null
@@ -3485,4 +3486,94 @@ mod held_object_pass {
             ObjectHold::Held
         );
     }
+}
+
+// spec: design/int/int.md §7.1, *A claim ends inside its registration*
+// (ACT-0994) — a loaded completion acts only while its module is still
+// claimed: after a re-registration it marks nothing in memory and leaves the
+// fresh registration's typecheck work queued.
+#[test]
+fn loaded_completion_after_re_registration_marks_nothing_in_memory() {
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    let claim = claimed_cached_module(&sched, &cached);
+    assert!(sched.re_register_module(&cached, no_sexps()));
+    {
+        let state = sched.lock();
+        assert!(
+            matches!(
+                state.modules[&cached].pool,
+                ModulePool::TypecheckFirst | ModulePool::TypecheckNext
+            ),
+            "the fresh registration's typecheck work is queued"
+        );
+    }
+    // The fresh registration publishes its signatures before its code is
+    // compiled; the stale load's completion then arrives.
+    sched.force_typecheck_working_for_test(&cached);
+    sched.notify_typecheck_done(&cached);
+    sched
+        .lock()
+        .modules
+        .get_mut(&cached)
+        .unwrap()
+        .jit_reserved
+        .insert(Symbol::from("f"));
+    claim.complete_loaded(&[Symbol::from("f")]);
+    let state = sched.lock();
+    let ms = &state.modules[&cached];
+    assert!(!ms.inmem_done, "the fresh registration is not in memory");
+    assert!(
+        ms.jit_reserved.contains(&Symbol::from("f")),
+        "its reservations are untouched"
+    );
+    assert_eq!(ms.cached_object_load, CachedObjectLoad::Absent);
+}
+
+/// Whether `wait_module_typecheck_settled(module)` returns within a short
+/// window, before `release` runs; the wait must return after it.
+fn settle_wait_outcome(
+    sched: &CompileScheduler,
+    module: &ModuleFullPath,
+    release: impl FnOnce(),
+) -> bool {
+    let returned = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            sched.wait_module_typecheck_settled(module);
+            returned.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let returned_early = returned.load(std::sync::atomic::Ordering::SeqCst);
+        release();
+        waiter.join().unwrap();
+        returned_early
+    })
+}
+
+// spec: design/int/int.md §7.1, *A reload waits out the cached load*
+// (ACT-0994) — with a claim outstanding the settle wait does not return; it
+// returns once the claim completes.
+#[test]
+fn settle_wait_holds_while_a_cached_load_is_claimed() {
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    let claim = claimed_cached_module(&sched, &cached);
+    let returned_early = settle_wait_outcome(&sched, &cached, || claim.complete_loaded(&[]));
+    assert!(!returned_early, "the wait holds while the load is claimed");
+}
+
+// spec: design/int/int.md §7.1 (ACT-0994) — negative legs: a fresh
+// registration and a module whose load has ended settle at once.
+#[test]
+fn settle_wait_returns_at_once_for_a_fresh_module_or_an_ended_load() {
+    let sched = CompileScheduler::new();
+    let fresh = mod_path("fresh");
+    sched.register_module(fresh.clone(), no_sexps(), false);
+    assert!(settle_wait_outcome(&sched, &fresh, || {}));
+
+    let sched = CompileScheduler::new();
+    let cached = mod_path("a");
+    claimed_cached_module(&sched, &cached).complete_loaded(&[]);
+    assert!(settle_wait_outcome(&sched, &cached, || {}));
 }

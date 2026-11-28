@@ -50,6 +50,7 @@ pub(crate) mod form_dispatch;
 mod macro_clause;
 mod macro_resolution;
 mod platform;
+mod type_query;
 
 pub(crate) use self::dependency::drive_module_dep;
 use self::dependency::{
@@ -61,15 +62,15 @@ use self::platform::handle_platform;
 // reaches it via `super::register_dep`, so it must be in the parent's scope.
 use self::dependency::register_dep;
 use self::form_dispatch::{
-    FormKind, classify_form, record_exports_on_symbol_table, record_macro_introspection,
-    record_platform_on_symbol_table, wrap_exprs_as_defns,
+    AuthoredFacts, FormKind, classify_form, record_exports_on_symbol_table,
+    record_macro_introspection, record_platform_on_symbol_table, wrap_exprs_as_defns,
 };
 use self::macro_resolution::{ExpandOutcome, compile_macro_if_needed, try_expand_sexp};
 
 // Re-export externally-cited items so `crate::process_form::X` paths stay stable
 // (the compatibility membrane, S87 §1.2 / §5).
 use self::dependency::gap_member;
-pub(crate) use self::dependency::gap_target_module;
+pub(crate) use self::dependency::{gap_target_module, unresolved_reference_message};
 pub(crate) use self::form_dispatch::{
     record_imports_on_symbol_table, record_submodule_on_symbol_table,
 };
@@ -85,6 +86,7 @@ pub(crate) use self::dependency::{
 // parent path (test-only, gated to avoid a lib-build unused-import warning).
 #[cfg(test)]
 pub(crate) use self::platform::{LayoutHashGate, layout_hash_gate};
+pub(crate) use self::type_query::type_of_expression;
 // Private re-export of the resolver struct the sibling `tests` module constructs
 // via `use super::*` (visible to descendants of the parent, not beyond — S87 §1.3).
 #[cfg(test)]
@@ -282,11 +284,50 @@ struct BuiltProgram {
     /// The authored top-level form's span for every built definition, in
     /// every mode; installed with the generation's publication.
     origins: Vec<(BuiltIdentity, Span)>,
+    /// The position each authored form of this attempt was given, by span, so
+    /// every definition one form produces shares it.
+    positions: Vec<(Span, crate::session_v4::AuthoredPosition)>,
 }
 
 impl BuiltProgram {
+    /// The authorship position of `authored` (`design/int/s125-binary-clean.md`
+    /// §4.2): a form the REPL entered takes the session's next entry
+    /// sequence, after every file position; a form read from the module's
+    /// file takes its byte offset there.
+    fn position_of(
+        &mut self,
+        ctx: &ModuleCompiler,
+        authored: &Sexp,
+    ) -> crate::session_v4::AuthoredPosition {
+        use crate::session_v4::AuthoredPosition;
+        let span = authored.span();
+        if let Some((_, position)) = self.positions.iter().find(|(seen, _)| *seen == span) {
+            return *position;
+        }
+        let position = if ctx.eval_driven {
+            let sequence = ctx.shared_state.map_or(0, |shared| {
+                shared
+                    .entered_forms
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            });
+            AuthoredPosition::entered(sequence)
+        } else {
+            AuthoredPosition::in_file(span.start)
+        };
+        self.positions.push((span, position));
+        position
+    }
+
+    /// Give `authored` the position of the live entry it re-enters, before
+    /// any of its definitions asks for one.
+    fn inherit_position(&mut self, authored: &Sexp, position: crate::session_v4::AuthoredPosition) {
+        let span = authored.span();
+        self.positions.retain(|(seen, _)| *seen != span);
+        self.positions.push((span, position));
+    }
+
     /// Append `built`, staging one record per definition when the session
-    /// keeps introspection. Every member takes the authored top-level form.
+    /// keeps introspection. Every definition takes its authored entry's form.
     fn extend(&mut self, ctx: &ModuleCompiler, module: &ModuleFullPath, built: Built<'_>) {
         let origin = built.authored_origin.span();
         self.origins.extend(
@@ -297,6 +338,7 @@ impl BuiltProgram {
                 .map(|identity| (identity, origin)),
         );
         if ctx.introspection.is_some() {
+            let position = self.position_of(ctx, built.authored_origin);
             let source = verbatim_source_slice(ctx, module, built.authored_origin)
                 .unwrap_or_else(|| crate::pretty::pretty_print_plain(built.authored_origin));
             for top in &built.forms {
@@ -314,8 +356,11 @@ impl BuiltProgram {
                         sexp: Some(built.authored_origin.clone()),
                         expanded: built.expanded.cloned(),
                         ast,
-                        clif_ir: None,
-                        code_size: None,
+                        position: Some(position),
+                        origin: built.origin.clone(),
+                        macros_used: built.macros_used.to_vec(),
+                        entry_keys: built.entry_keys.to_vec(),
+                        ..Default::default()
                     },
                 ));
             }
@@ -350,11 +395,17 @@ struct StagedRecords {
     origins: Vec<(BuiltIdentity, Span)>,
 }
 
-/// One authored form's build: its top-level definitions and the expansion
-/// they were built from, if any.
+/// One authored form's build: its top-level definitions, the expansion
+/// they were built from, if any, and what the expander recognised.
 struct Built<'a> {
     authored_origin: &'a Sexp,
     expanded: Option<&'a Sexp>,
+    /// Whether the built forms are written, or a macro call's products.
+    origin: crate::session_v4::DefinitionOrigin,
+    /// For a macro call, every key its expansion defines.
+    entry_keys: &'a [crate::session_v4::EntryKey],
+    /// The form's own module's macros its expansion recognised.
+    macros_used: &'a [FQSymbol],
     forms: Vec<TopLevel>,
 }
 
@@ -376,6 +427,12 @@ pub(super) struct AttemptFacts {
 }
 
 impl AttemptFacts {
+    /// Whether the attempt is a whole-file rebuild, which replaces the
+    /// module's authored records rather than redefining them.
+    pub(super) fn replaces_module_records(&self) -> bool {
+        matches!(self.provenance, SourceProvenance::WholeSource { .. })
+    }
+
     /// The members a whole-file rebuild's reload pass rebuilds after this
     /// module; `None` for any other attempt.
     pub(super) fn later_members(&self) -> Option<&BTreeSet<ModuleFullPath>> {
@@ -584,6 +641,7 @@ fn finish_pass2(
         forms: expanded_program,
         records,
         origins,
+        positions: _,
     } = built;
     let expanded_program = expanded_program.as_slice();
     match pass2_result {
@@ -672,9 +730,9 @@ fn finish_pass2(
                 })
                 .unwrap_or(checkpoint_span);
             store_pool_continuation(ctx, module, &continuation, true);
-            drive_module_dep(ctx, module, &dep_module, ref_span)?;
+            let driven = drive_module_dep(ctx, module, &dep_module, ref_span)?;
             Ok(ClusterOnce::Gap {
-                dep: dep_module,
+                dep: driven,
                 continuation,
                 generation_started: true,
             })
@@ -698,9 +756,9 @@ fn await_unpublished_member(
         .map_or(Span::SYNTHETIC, |sexp| sexp.span());
     let continuation = prefix.continuation_with([]);
     store_pool_continuation(ctx, module, &continuation, true);
-    drive_module_dep(ctx, module, &member, head)?;
+    let driven = drive_module_dep(ctx, module, &member, head)?;
     Ok(Finalized::unpublished(ClusterOnce::Gap {
-        dep: member,
+        dep: driven,
         continuation,
         generation_started: true,
     }))
@@ -758,7 +816,7 @@ fn finalize_cluster(
     // application site of the SAME re-anchor transform the W4 build path uses.
     // A `def`/`const` (stdlib macros) whose EXPANSION typechecks with an error
     // surfaces it here carrying the macro output's SYNTHETIC span (marshal
-    // `Span::SYNTHETIC` / `rewrite_spans_unique`'s ≥1M band), anchored at no
+    // `Span::SYNTHETIC` / the macro result copy's ≥1M band), anchored at no
     // source byte with no `in expansion of …` provenance. Re-anchor a
     // synthetic-located finalize error to the origin form int holds. Keyed on
     // the SYNTHETIC-LOCATION predicate (outside EVERY origin form's real extent),
@@ -793,7 +851,7 @@ fn finalize_cluster(
                 prepared = Some(turn);
                 (None, check.warnings, check.unresolved_dispatch)
             }
-            Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+            Err(error) => return Err(reanchor_finalize_error(error, &prefix.forms)),
         }
     } else {
         match check_program_compat(
@@ -805,7 +863,7 @@ fn finalize_cluster(
             None,
         ) {
             Ok(result) => result,
-            Err(error) => return Err(reanchor_finalize_error(error, origin_sexps)),
+            Err(error) => return Err(reanchor_finalize_error(error, &prefix.forms)),
         }
     };
     if let Some(gap) = maybe_gap {
@@ -861,9 +919,9 @@ fn finalize_cluster(
             // "module not found" at the reference span (AL-3).
             let continuation = prefix.continuation_with([]);
             store_pool_continuation(ctx, module, &continuation, true);
-            drive_module_dep(ctx, module, &dep, ref_span)?;
+            let driven = drive_module_dep(ctx, module, &dep, ref_span)?;
             return Ok(Finalized::unpublished(ClusterOnce::Gap {
-                dep,
+                dep: driven,
                 continuation,
                 generation_started: true,
             }));
@@ -871,7 +929,7 @@ fn finalize_cluster(
         // Not an FQ-module gap we can act on — surface a hard error so the
         // failure is not silently swallowed.
         return Err(CranelispError::TypeError {
-            message: format!("unresolved cross-module reference: {gap:?}"),
+            message: unresolved_reference_message(&gap),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }
@@ -899,6 +957,16 @@ fn finalize_cluster(
         .into_iter()
         .map(|(identity, span)| Ok((impl_identities.key_of(&identity)?, span)))
         .collect::<Result<Vec<_>, CranelispError>>()?;
+    for (key, record) in &records {
+        let span = record.sexp.as_ref().map_or(Span::SYNTHETIC, Sexp::span);
+        refuse_generated_redefinition(
+            ctx.introspection,
+            &prefix.attempt,
+            key,
+            &record.origin,
+            span,
+        )?;
+    }
 
     // Cluster-level metadata. The per-symbol staging entries already committed
     // to live inside `check_program_compat`; the typecheck warning channel
@@ -925,6 +993,56 @@ fn finalize_cluster(
         outcome: ClusterOnce::Done { processed, program },
         impl_identities,
     })
+}
+
+/// Refuse staging `key` with the `staged` origin when the live definition
+/// under that key was generated by a macro call, unless the turn re-enters
+/// that same call (`spec/09-macros.md` §9.6.1;
+/// `design/int/s125-binary-clean.md` §4.4, §4.6 R2). Both publication points
+/// ask it before anything for the key publishes: the macro checkpoint and the
+/// cluster's finalisation. The refusal is located at the redefining form, so
+/// the live definition and the backing file stand. A whole-file rebuild
+/// replaces the module's records, so it redefines nothing.
+fn refuse_generated_redefinition(
+    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
+    attempt: &AttemptFacts,
+    key: &FQSymbol,
+    staged: &crate::session_v4::DefinitionOrigin,
+    span: Span,
+) -> Result<(), CranelispError> {
+    if attempt.replaces_module_records() {
+        return Ok(());
+    }
+    let Some(call) = introspection
+        .and_then(|live| live.get(key))
+        .and_then(|live| match &live.origin {
+            crate::session_v4::DefinitionOrigin::Generated(call) => Some(call.clone()),
+            crate::session_v4::DefinitionOrigin::Written => None,
+        })
+    else {
+        return Ok(());
+    };
+    if staged.is_generated_by(&call) {
+        return Ok(());
+    }
+    Err(generated_redefinition_error(key, &call, span))
+}
+
+/// The §9.6.1 refusal of a redefinition of `key`, which `call` generated.
+fn generated_redefinition_error(
+    key: &FQSymbol,
+    call: &crate::session_v4::MacroCall,
+    span: Span,
+) -> CranelispError {
+    CranelispError::TypeError {
+        message: format!(
+            "cannot redefine `{}`: it is a macro-generated definition of a call of `{}`; \
+             only the same macro call may replace it (spec §9.6.1)",
+            key.symbol,
+            call.macro_name()
+        ),
+        location: ErrorLocation::from_span(span),
+    }
 }
 
 /// A finalized cluster attempt: its outcome, and the identities its `impl`
@@ -1203,11 +1321,14 @@ enum Pass2Result {
     },
 }
 
+/// What processing one regular form left: the forms it expanded, or, when it
+/// waits on a dependency, the forms to resume from. Each form carries the
+/// authored entry it came from.
 enum RegularFormResult {
-    Complete(Vec<Sexp>),
+    Complete(Vec<OriginatedForm>),
     Blocked {
         dep_module: ModuleFullPath,
-        continuation: Vec<Sexp>,
+        continuation: Vec<OriginatedForm>,
         ref_span: Span,
     },
 }
@@ -1305,8 +1426,10 @@ fn pass2_check_bodies_with_expansion(
             }
             FormKind::Defmacro => {
                 let info = cranelisp_frontend::parse_defmacro(sexp)?;
+                let origin = continuation.authored_origin(idx);
+                let facts = AuthoredFacts::written(expanded_program.position_of(ctx, origin));
                 if let Some(dep_module) =
-                    compile_macro_if_needed(ctx, module, &info, sexp, &prefix.attempt)?
+                    publish_defmacro(ctx, module, &info, sexp, origin, facts, &prefix.attempt)?
                 {
                     return Ok(Pass2Result::BlockedOnFqModule {
                         dep_module,
@@ -1314,17 +1437,6 @@ fn pass2_check_bodies_with_expansion(
                         ref_span: sexp.span(),
                     });
                 }
-                let origin = continuation.authored_origin(idx);
-                let authored_source = verbatim_source_slice(ctx, module, origin);
-                record_macro_introspection(
-                    ctx.introspection,
-                    module,
-                    &info.name,
-                    sexp,
-                    origin,
-                    authored_source,
-                );
-                record_macro_origin(ctx, module, &info.name, origin);
                 record_turn_definition(
                     turn_definitions,
                     BuiltIdentity::Keyed(FQSymbol {
@@ -1363,15 +1475,14 @@ fn pass2_check_bodies_with_expansion(
                     turn_definitions,
                 )? {
                     RegularFormResult::Complete(forms) => {
-                        prefix.forms.extend(originated(forms, origin));
+                        prefix.forms.extend(forms);
                     }
                     RegularFormResult::Blocked {
                         dep_module,
                         continuation: local,
                         ref_span,
                     } => {
-                        let rest =
-                            originated(local, origin).chain(continuation.originated_from(next));
+                        let rest = local.into_iter().chain(continuation.originated_from(next));
                         return Ok(Pass2Result::BlockedOnFqModule {
                             dep_module,
                             continuation: prefix.continuation_with(rest),
@@ -1392,12 +1503,12 @@ pub(super) fn macro_checkpoint_gap_target(
     span: Span,
 ) -> Result<ModuleFullPath, CranelispError> {
     let dep = gap_target_module(gap).ok_or_else(|| CranelispError::TypeError {
-        message: format!("unresolved cross-module reference: {gap:?}"),
+        message: unresolved_reference_message(gap),
         location: ErrorLocation::from_span(span),
     })?;
     if dependency::fq_module_is_loaded(ctx, &dep) {
         return Err(CranelispError::TypeError {
-            message: format!("unresolved cross-module reference: {gap:?}"),
+            message: unresolved_reference_message(gap),
             location: ErrorLocation::from_span(span),
         });
     }
@@ -1441,7 +1552,7 @@ fn verbatim_source_slice(
 /// diagnostic location; a real span WITHIN the origin form's extent passes the
 /// predicate and is left untouched. Structural, NOT classificatory — it catches
 /// BOTH synthetic flavours (`Span::SYNTHETIC` = `(0,0)`, and the
-/// `rewrite_spans_unique` ≥1M band) without hard-coding the 1M constant: any
+/// macro result copy's ≥1M band) without hard-coding the 1M constant: any
 /// zero/negative-width span, or one starting before / ending after the origin's
 /// `[start,end)`, is outside the extent.
 fn location_outside_extent(loc: Span, origin: Span) -> bool {
@@ -1482,34 +1593,50 @@ fn reanchor_expansion_diagnostic(
     rebuild_error_with(err, message, location)
 }
 
-/// Re-anchor a SYNTHETIC-located FINALIZE-path (typecheck) diagnostic to its
-/// origin form (FIXME 0650 §2.1 — the `check_program_compat` application site of
-/// the existing pure transform). The finalize check runs over the fully-expanded
-/// cluster; an error whose `location` is SYNTHETIC (outside EVERY origin form's
-/// real byte extent) came from macro-expansion output and is re-anchored to the
-/// origin form int holds. An error located WITHIN some origin form's extent is a
-/// native diagnostic — returned unchanged (the predicate must not touch located
-/// diagnostics).
+/// Re-anchor a SYNTHETIC-located FINALIZE-path (typecheck) diagnostic to the
+/// written form whose expansion produced it (FIXME 0650 §2.1, §2.2 of
+/// `macro-diagnostic-reanchoring.md`). An error located WITHIN some written
+/// form's extent is a native diagnostic and is returned unchanged.
 ///
-/// Origin attribution: a `def`/`const` cluster is a SINGLE origin form, so the
-/// lone form is the exact anchor. For a rare multi-form cluster whose synthetic
-/// node cannot be attributed to one form, fall back to the FIRST origin form (a
-/// real, if coarse, location always beats a no-source-byte location, §2.1).
-fn reanchor_finalize_error(err: CranelispError, origin_sexps: &[Sexp]) -> CranelispError {
+/// Each synthetic start value is allocated once, so the form whose expansion
+/// holds a node starting at the error's start is the one that produced it. An
+/// error at a span allocated after expansion matches no node; it is anchored to
+/// the first form that expanded, never to one that expanded nothing (the named
+/// coarse residual of §2.2), and to the first form only when none expanded.
+fn reanchor_finalize_error(err: CranelispError, forms: &[OriginatedForm]) -> CranelispError {
     let loc = err.span();
-    // Native: the error's span falls WITHIN some origin form's real extent — the
-    // diagnostic is already located; leave it verbatim.
-    if origin_sexps
+    if forms
         .iter()
-        .any(|s| !location_outside_extent(loc, s.span()))
+        .any(|pair| !location_outside_extent(loc, pair.authored.span()))
     {
         return err;
     }
-    // Synthetic (outside every origin form) — it came from expansion output.
-    // Re-anchor to the origin form (single-form cluster → that form; else first).
-    match origin_sexps.first() {
-        Some(origin) => reanchor_expansion_diagnostic(err, origin.span(), origin),
+    let anchor = forms
+        .iter()
+        .find(|pair| has_node_starting_at(&pair.form, loc.start))
+        .or_else(|| forms.iter().find(|pair| pair.form != pair.authored))
+        .or_else(|| forms.first());
+    match anchor {
+        Some(pair) => reanchor_expansion_diagnostic(err, pair.authored.span(), &pair.authored),
         None => err,
+    }
+}
+
+/// Whether `sexp` or any node inside it has a span starting at `start`.
+fn has_node_starting_at(sexp: &Sexp, start: u32) -> bool {
+    if sexp.span().start == start {
+        return true;
+    }
+    match sexp {
+        Sexp::List(children, _) | Sexp::Bracket(children, _) => children
+            .iter()
+            .any(|child| has_node_starting_at(child, start)),
+        Sexp::Annotated {
+            annotation,
+            subject,
+            ..
+        } => has_node_starting_at(annotation, start) || has_node_starting_at(subject, start),
+        _ => false,
     }
 }
 
@@ -1554,10 +1681,10 @@ fn rebuild_error_with(
 /// the body. New macros from expansion (e.g. const/def) are registered in
 /// the symbol table and become visible to the resolver for subsequent forms.
 ///
-/// `authored_origin` is the written top-level form `sexp` came from, which
-/// every definition it builds is attributed to. Returns `Blocked` when
-/// expansion encountered an FQ macro head whose module is not loaded — the
-/// caller loads `dep_module` and resumes this form (FIXME 0268).
+/// `authored_origin` is the authored entry `sexp` came from, which every
+/// definition it builds is attributed to. Returns `Blocked` when expansion
+/// encountered an FQ macro head whose module is not loaded — the caller loads
+/// `dep_module` and resumes this form (FIXME 0268).
 #[allow(clippy::too_many_arguments)] // within the src/ eight-parameter budget
 fn process_regular_form(
     ctx: &mut ModuleCompiler,
@@ -1569,75 +1696,15 @@ fn process_regular_form(
     attempt: &mut AttemptFacts,
     turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
 ) -> Result<RegularFormResult, CranelispError> {
-    // A literal top-level `begin` is itself an ordinary syntactic form, but
-    // its members are separate source-order checkpoint positions. Expanding
-    // the whole list before walking its members would resolve later calls
-    // against the pre-begin table and miss a defmacro committed by an earlier
-    // member. Walk the recursively-flattened members here instead, retaining
-    // the outer begin as their single persistence authority.
     if annotation_prefix.is_empty() && cranelisp_frontend::is_begin(sexp) {
-        let forms = cranelisp_frontend::flatten_begin(sexp.clone());
-        let mut ordinary = Vec::new();
-        for (index, form) in forms.iter().enumerate() {
-            if cranelisp_frontend::is_defmacro(form) {
-                let info = cranelisp_frontend::parse_defmacro(form)?;
-                if let Some(dep_module) =
-                    compile_macro_if_needed(ctx, module, &info, form, attempt)?
-                {
-                    let mut continuation = ordinary;
-                    continuation.extend_from_slice(&forms[index..]);
-                    return Ok(RegularFormResult::Blocked {
-                        dep_module,
-                        continuation,
-                        ref_span: form.span(),
-                    });
-                }
-                record_macro_introspection(
-                    ctx.introspection,
-                    module,
-                    &info.name,
-                    form,
-                    authored_origin,
-                    verbatim_source_slice(ctx, module, authored_origin),
-                );
-                record_macro_origin(ctx, module, &info.name, authored_origin);
-                record_turn_definition(
-                    turn_definitions,
-                    BuiltIdentity::Keyed(FQSymbol {
-                        module: module.clone(),
-                        symbol: info.name,
-                    }),
-                    true,
-                );
-                continue;
-            }
-            match process_regular_form(
-                ctx,
-                module,
-                &[],
-                form,
-                authored_origin,
-                expanded_program,
-                attempt,
-                turn_definitions,
-            )? {
-                RegularFormResult::Complete(forms) => ordinary.extend(forms),
-                RegularFormResult::Blocked {
-                    dep_module,
-                    continuation: local,
-                    ref_span,
-                } => {
-                    ordinary.extend(local);
-                    ordinary.extend_from_slice(&forms[index + 1..]);
-                    return Ok(RegularFormResult::Blocked {
-                        dep_module,
-                        continuation: ordinary,
-                        ref_span,
-                    });
-                }
-            }
-        }
-        return Ok(RegularFormResult::Complete(ordinary));
+        return process_literal_begin(
+            ctx,
+            module,
+            sexp,
+            expanded_program,
+            attempt,
+            turn_definitions,
+        );
     }
 
     // `deftype` and `deftrait` contain declaration binders and type syntax,
@@ -1655,24 +1722,30 @@ fn process_regular_form(
     // macro head — it is the `:Type` token that binds this form per BC §1
     // invariant 9, and is prepended below so the frontend's `build_forms`
     // performs the `Expr::Annotate` pairing).
-    let effective_sexp = match try_expand_sexp(ctx, module, sexp)? {
+    let (effective_sexp, call, macros_used) = match try_expand_sexp(ctx, module, sexp)? {
         ExpandOutcome::Expanded {
             sexp: expanded,
             macro_lookup_dependencies: recognised,
+            call,
+            same_module_macros,
         } => {
             attempt.macro_lookup_dependencies.extend(recognised);
-            expanded
+            (expanded, call, same_module_macros)
         }
         ExpandOutcome::BlockedOnFqModule(dep) => {
             // Nothing has been appended to `expanded_program` for this form —
             // the caller will resume it after loading `dep`.
             return Ok(RegularFormResult::Blocked {
                 dep_module: dep,
-                continuation: annotation_prefix
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(sexp.clone()))
-                    .collect(),
+                continuation: originated(
+                    annotation_prefix
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(sexp.clone()))
+                        .collect(),
+                    authored_origin,
+                )
+                .collect(),
                 ref_span: sexp.span(),
             });
         }
@@ -1681,6 +1754,30 @@ fn process_regular_form(
     let sexp_to_build = match &effective_sexp {
         Some(expanded) => expanded,
         None => sexp,
+    };
+    let entry_keys = match &call {
+        Some(call) if ctx.introspection.is_some() => {
+            let keys: Vec<crate::session_v4::EntryKey> =
+                crate::save::entry_keys(sexp_to_build, module)
+                    .into_iter()
+                    .map(|(_, key)| key)
+                    .collect();
+            enter_macro_call(
+                ctx,
+                module,
+                call,
+                &keys,
+                authored_origin,
+                expanded_program,
+                attempt,
+            )?;
+            keys
+        }
+        _ => Vec::new(),
+    };
+    let origin = match &call {
+        Some(call) => crate::session_v4::DefinitionOrigin::Generated(call.clone()),
+        None => crate::session_v4::DefinitionOrigin::Written,
     };
 
     let flattened = cranelisp_frontend::flatten_begin(sexp_to_build.clone());
@@ -1694,17 +1791,20 @@ fn process_regular_form(
     let mut regular_sexps: Vec<Sexp> = annotation_prefix.to_vec();
     let mut emission_markers = Vec::new();
     for (form_index, form) in flattened.iter().enumerate() {
-        if cranelisp_frontend::is_defmacro(&form) {
-            let info = cranelisp_frontend::parse_defmacro(&form)?;
-            let intr = ctx.introspection;
-            // S102 CS-D1 (origin-uniform recording): a defmacro reaching this
-            // loop is never the whole top-level form (direct defmacros route
-            // through Pass 1's `separate_macros`) — it is an expansion product
-            // or a literal-`begin` member. The regen authority is therefore
-            // the ORIGINAL outer form `sexp`, exactly what the sibling defn
-            // records below — one turn, one authored form, one emission.
-            let authored_source = verbatim_source_slice(ctx, module, authored_origin);
-            if let Some(dep_module) = compile_macro_if_needed(ctx, module, &info, form, attempt)? {
+        if cranelisp_frontend::is_defmacro(form) {
+            let info = cranelisp_frontend::parse_defmacro(form)?;
+            // A defmacro reaching this loop is an expansion product, never
+            // the whole top-level form (direct defmacros route through Pass
+            // 2's `Defmacro` arm): it belongs to the macro-call entry, so its
+            // record takes the authored call, as the sibling definitions do.
+            let facts = AuthoredFacts {
+                position: expanded_program.position_of(ctx, authored_origin),
+                origin: origin.clone(),
+                entry_keys: entry_keys.clone(),
+            };
+            if let Some(dep_module) =
+                publish_defmacro(ctx, module, &info, form, authored_origin, facts, attempt)?
+            {
                 let built_prefix = if emission_markers
                     .iter()
                     .any(|marker| matches!(marker, DefinitionEmissionMarker::Ordinary))
@@ -1723,19 +1823,10 @@ fn process_regular_form(
                 continuation.extend_from_slice(&flattened[form_index..]);
                 return Ok(RegularFormResult::Blocked {
                     dep_module,
-                    continuation,
+                    continuation: originated(continuation, authored_origin).collect(),
                     ref_span: form.span(),
                 });
             }
-            record_macro_introspection(
-                intr,
-                module,
-                &info.name,
-                form,
-                authored_origin,
-                authored_source,
-            );
-            record_macro_origin(ctx, module, &info.name, authored_origin);
             emission_markers.push(DefinitionEmissionMarker::PublishedMacro(FQSymbol {
                 module: module.clone(),
                 symbol: info.name,
@@ -1757,7 +1848,7 @@ fn process_regular_form(
     // FIXME 0650 (macro-diagnostic-reanchoring.md) — the int-side re-anchoring
     // seam. When this build is over MACRO-EXPANSION OUTPUT (`effective_sexp` is
     // `Some`), every sexp carries a SYNTHETIC span (marshal `Span::SYNTHETIC` +
-    // `rewrite_spans_unique`'s ≥1M band), so a frontend fold reject (e.g. the W3
+    // the macro result copy's ≥1M band), so a frontend fold reject (e.g. the W3
     // qualified-binder-head reject on `(defn fmt/x-def …)`) surfaces a diagnostic
     // whose `location` maps to no source byte. Re-anchor it to the ORIGIN form's
     // real span (`sexp`, the pre-expansion form int holds) and APPEND expansion
@@ -1779,10 +1870,189 @@ fn process_regular_form(
         Built {
             authored_origin,
             expanded: effective_sexp.as_ref(),
+            origin,
+            entry_keys: &entry_keys,
+            macros_used: &macros_used,
             forms: built,
         },
     );
-    Ok(RegularFormResult::Complete(regular_sexps))
+    Ok(RegularFormResult::Complete(
+        originated(regular_sexps, authored_origin).collect(),
+    ))
+}
+
+/// Walk a literal top-level `begin` member by member. It is not an entry: it
+/// dissolves into its members, recursively, and each member is its own
+/// authored entry at its own position (`design/int/s125-binary-clean.md`
+/// §4.2). The turn still compiles and publishes as one cluster. Each member is
+/// also its own source-order checkpoint position: expanding the whole list
+/// first would resolve later calls against the pre-`begin` table and miss a
+/// `defmacro` an earlier member committed.
+fn process_literal_begin(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    sexp: &Sexp,
+    expanded_program: &mut BuiltProgram,
+    attempt: &mut AttemptFacts,
+    turn_definitions: &mut Option<&mut crate::session_v4::TurnDefinitions>,
+) -> Result<RegularFormResult, CranelispError> {
+    let members = cranelisp_frontend::flatten_begin(sexp.clone());
+    let own_origins = |from: usize| {
+        members[from..].iter().map(|member| OriginatedForm {
+            form: member.clone(),
+            authored: member.clone(),
+        })
+    };
+    let mut done = Vec::new();
+    for (index, member) in members.iter().enumerate() {
+        if cranelisp_frontend::is_defmacro(member) {
+            let info = cranelisp_frontend::parse_defmacro(member)?;
+            let facts = AuthoredFacts::written(expanded_program.position_of(ctx, member));
+            if let Some(dep_module) =
+                publish_defmacro(ctx, module, &info, member, member, facts, attempt)?
+            {
+                done.extend(own_origins(index));
+                return Ok(RegularFormResult::Blocked {
+                    dep_module,
+                    continuation: done,
+                    ref_span: member.span(),
+                });
+            }
+            record_turn_definition(
+                turn_definitions,
+                BuiltIdentity::Keyed(FQSymbol {
+                    module: module.clone(),
+                    symbol: info.name,
+                }),
+                true,
+            );
+            continue;
+        }
+        match process_regular_form(
+            ctx,
+            module,
+            &[],
+            member,
+            member,
+            expanded_program,
+            attempt,
+            turn_definitions,
+        )? {
+            RegularFormResult::Complete(forms) => done.extend(forms),
+            RegularFormResult::Blocked {
+                dep_module,
+                continuation,
+                ref_span,
+            } => {
+                done.extend(continuation);
+                done.extend(own_origins(index + 1));
+                return Ok(RegularFormResult::Blocked {
+                    dep_module,
+                    continuation: done,
+                    ref_span,
+                });
+            }
+        }
+    }
+    Ok(RegularFormResult::Complete(done))
+}
+
+/// Publish one `defmacro` checkpoint of the turn, refused first when it would
+/// redefine a live macro-generated definition, and record it under `facts`.
+/// `Some(dep)` when the checkpoint waits on a dependency; nothing is recorded
+/// then.
+fn publish_defmacro(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    info: &cranelisp_frontend::DefmacroInfo,
+    form: &Sexp,
+    authored: &Sexp,
+    facts: AuthoredFacts,
+    attempt: &AttemptFacts,
+) -> Result<Option<ModuleFullPath>, CranelispError> {
+    if let Some(dep_module) = compile_macro_if_needed(ctx, module, info, form, &facts, attempt)? {
+        return Ok(Some(dep_module));
+    }
+    let authored_source = verbatim_source_slice(ctx, module, authored);
+    record_macro_introspection(
+        ctx.introspection,
+        module,
+        &info.name,
+        form,
+        authored,
+        authored_source,
+        facts,
+    );
+    record_macro_origin(ctx, module, &info.name, authored);
+    Ok(None)
+}
+
+/// Enter one macro call: when the call re-enters a live entry of the same
+/// call, refuse it if its expansion no longer defines a key the entry owns,
+/// and otherwise give it the entry's position, so the entry is replaced in
+/// place (`design/int/s125-binary-clean.md` §4.2, §4.4). Runs once per entry,
+/// before any of its definitions reaches a publication point. A whole-file
+/// rebuild replaces the module's records, so it re-enters nothing.
+fn enter_macro_call(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    call: &crate::session_v4::MacroCall,
+    keys: &[crate::session_v4::EntryKey],
+    authored: &Sexp,
+    expanded_program: &mut BuiltProgram,
+    attempt: &AttemptFacts,
+) -> Result<(), CranelispError> {
+    if attempt.replaces_module_records() {
+        return Ok(());
+    }
+    let Some(entry) = live_macro_call_entry(ctx.introspection, module, call) else {
+        return Ok(());
+    };
+    let dropped: Vec<String> = entry
+        .keys
+        .iter()
+        .filter(|key| !keys.contains(key))
+        .map(|key| format!("`{key}`"))
+        .collect();
+    if !dropped.is_empty() {
+        return Err(CranelispError::TypeError {
+            message: format!(
+                "cannot re-enter this call of `{}`: its expansion no longer defines {}, \
+                 which the call generated; only an expansion that keeps every generated \
+                 definition may replace them (spec §9.6.1)",
+                call.macro_name(),
+                dropped.join(", ")
+            ),
+            location: ErrorLocation::from_span(authored.span()),
+        });
+    }
+    if let Some(position) = entry.position {
+        expanded_program.inherit_position(authored, position);
+    }
+    Ok(())
+}
+
+/// A live macro-call entry: where it stands and the keys it owns.
+struct MacroCallEntry {
+    position: Option<crate::session_v4::AuthoredPosition>,
+    keys: Vec<crate::session_v4::EntryKey>,
+}
+
+/// The live entry `call` generated in `module`, if any. Every record of one
+/// entry carries its call, its position and its keys.
+fn live_macro_call_entry(
+    introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
+    module: &ModuleFullPath,
+    call: &crate::session_v4::MacroCall,
+) -> Option<MacroCallEntry> {
+    introspection?.iter().find_map(|record| {
+        (record.key().module == *module && record.origin.is_generated_by(call)).then(|| {
+            MacroCallEntry {
+                position: record.position,
+                keys: record.entry_keys.clone(),
+            }
+        })
+    })
 }
 
 /// Declaration forms whose binder/type slots must be validated before the

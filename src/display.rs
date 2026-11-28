@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    FQTypeName, ModuleFullPath, NULLARY_TAG_THRESHOLD, PrimitiveNaming, Scheme, Symbol,
-    SymbolTable, Type, TypeDefInfo, TypeId, VarNaming, render_type,
+    ConcreteType, FQTypeName, ModuleFullPath, NULLARY_TAG_THRESHOLD, PrimitiveNaming, Scheme,
+    Symbol, SymbolTable, Type, TypeDefInfo, TypeId, VarNaming, render_type,
 };
 
 use cranelisp_intrinsics::alloc::HeapAdt;
@@ -34,7 +34,8 @@ use crate::styled::{Role, StyledDoc, render};
 ///   Bool   → "true" / "false"
 ///   Float  → decimal with mandatory ".0" suffix: "3.14", "1.0"
 ///   String → quoted contents: "\"hello\""
-///   Fn     → "<closure>"
+///   Fn     → "#closure"
+///   IO     → "#io"
 ///   ADT    → constructor dot notation (see below)
 ///   Vec    → "[elem1 elem2 ...]"
 ///
@@ -74,8 +75,9 @@ where
     render(&result_value_doc(value, ty, symbol_tables))
 }
 
-/// Build the `:Type value` result-value `StyledDoc` — R4 type annotation, then
-/// the value literal as R2 (num/bool) / R3 (string) / R15 (closure, ctor, vec).
+/// Build the `:Type value` result-value `StyledDoc`: the R4 type annotation,
+/// then the value spans `push_field_value` builds, so a top-level value and a
+/// field value cannot render differently.
 pub(crate) fn result_value_doc<C, L>(
     value: i64,
     ty: &Type,
@@ -86,56 +88,9 @@ where
     L: cranelisp_types::LinkerStore,
 {
     let mut doc = StyledDoc::new();
-    match ty {
-        Type::Bool => {
-            let display_val = if value != 0 { "true" } else { "false" };
-            envelope(&mut doc, ":primitives/Bool", |d| {
-                d.push(Role::LitNumBool, display_val)
-            });
-        }
-        Type::Float => {
-            let f = f64::from_bits(value as u64);
-            let s = format!("{f}");
-            let s = if s.contains('.') { s } else { format!("{s}.0") };
-            envelope(&mut doc, ":primitives/Float", |d| {
-                d.push(Role::LitNumBool, s)
-            });
-        }
-        Type::Int => {
-            envelope(&mut doc, ":primitives/Int", |d| {
-                d.push(Role::LitNumBool, value.to_string())
-            });
-        }
-        Type::String => {
-            if value == 0 || (value as usize) < NULLARY_TAG_THRESHOLD {
-                envelope(&mut doc, ":primitives/String", |d| {
-                    d.plain(format!("<invalid:{value}>"))
-                });
-            } else {
-                // SAFETY: value is a heap pointer to a valid HeapString.
-                let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(value) };
-                envelope(&mut doc, ":primitives/String", |d| {
-                    d.push(Role::LitStr, format!("\"{s}\""))
-                });
-            }
-        }
-        Type::Fn(_, _) => {
-            let type_str = format_type_qualified(ty);
-            envelope(&mut doc, &format!(":{type_str}"), |d| d.plain("<closure>"));
-        }
-        Type::ADT(fqtn, type_args) => {
-            let type_display = format_adt_type_qualified(fqtn, type_args);
-            doc.push(Role::TypeAnnotation, format!(":{type_display}"));
-            doc.plain(" ");
-            push_adt_value_form(value, fqtn, type_args, symbol_tables, &mut doc);
-        }
-        other => {
-            let type_str = format_type_qualified(other);
-            envelope(&mut doc, &format!(":{type_str}"), |d| {
-                d.plain(value.to_string())
-            });
-        }
-    }
+    envelope(&mut doc, &format!(":{}", format_type_qualified(ty)), |d| {
+        push_field_value(value, ty, symbol_tables, d)
+    });
     doc
 }
 
@@ -382,8 +337,7 @@ fn push_adt_value_form<C, L>(
 {
     let type_name_str = fqtn.name.as_ref();
 
-    // Vec is a built-in type, not in type_defs -- handle it specially.
-    if type_name_str == "Vec" {
+    if is_builtin_vec(fqtn) {
         push_vec_elements(value, type_args.first(), symbol_tables, doc);
         return;
     }
@@ -413,16 +367,10 @@ fn push_adt_value_form<C, L>(
     }
 }
 
-/// Format the type portion of an ADT display with qualification (spec §1.4).
-/// Simple types: `user/Color`. Parameterized: `(user/Option primitives/Int)`.
-pub fn format_adt_type_qualified(fqtn: &FQTypeName, type_args: &[Type]) -> String {
-    let qname = format!("{}/{}", fqtn.module, fqtn.name);
-    if type_args.is_empty() {
-        qname
-    } else {
-        let arg_strs: Vec<String> = type_args.iter().map(format_type_qualified).collect();
-        format!("({qname} {})", arg_strs.join(" "))
-    }
+/// The built-in vector, by its canonical home: a user type named `Vec` is an
+/// ordinary ADT and displays its own constructors.
+fn is_builtin_vec(fqtn: &FQTypeName) -> bool {
+    fqtn.module.as_ref() == "primitives" && fqtn.name.as_ref() == "Vec"
 }
 
 /// Find a constructor name by tag, or return a fallback string.
@@ -438,68 +386,103 @@ fn find_constructor_by_tag(type_info: &TypeDefInfo, tag: usize) -> String {
         .unwrap_or_else(|| format!("<tag:{tag}>"))
 }
 
-/// Look up a constructor's field types by reading its scheme.
-///
-/// A data constructor's scheme is `forall [vars]. (Fn [field-tys] ADT)`; the
-/// `Fn` param types ARE the field types in declaration order. A nullary
-/// constructor has a non-`Fn` scheme (bare ADT) → no fields.
-///
-/// Single storage shape (S79 Option 3a, FIXME 0319): every constructor — sum,
-/// enum, AND single-ctor product — is a got-slotted `ModuleEntry::Def { kind:
-/// Constructor }` keyed by the ctor name, carrying the field types on its own
-/// `scheme`. A single-ctor product where ctor name == type name (e.g.
-/// `(deftype Point [:Int x :Int y])`) is the SAME `Def` (it additionally carries
-/// a `type_def: Some(..)` type facet), so the `Def` arm matches it too. The old
-/// `ModuleEntry::TypeDef.constructor_scheme` product-fallback leg (FIXME 0302) is
-/// retired — there is no separate `TypeDef` entry under a product's name.
-///
-/// S70: replaces the retired `ConstructorInfo.fields` lookup.
-fn ctor_field_types<C, L>(
+/// The storage key of `ctor_name`'s `Def`: the canonical `Type.Ctor` member
+/// key of a sum constructor, else the bare key a single-constructor product
+/// keeps.
+pub(crate) fn ctor_storage_key<C, L>(
+    table: &SymbolTable<C, L>,
     fqtn: &FQTypeName,
     ctor_name: &str,
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> Vec<Type>
+) -> Symbol
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    let Some(table) = symbol_tables.get(&fqtn.module) else {
-        return Vec::new();
-    };
-    // Probe the canonical `member_key(Type, Ctor)` key FIRST (S109 W1 — a sum
-    // ctor's real `Def` lives under `Maybe.Some`, the bare name being a poison-able
-    // `Import` alias that carries no `scheme`), falling back to the bare key for
-    // the product dual-facet (kept at the type-name key) and for pre-flip bare
-    // keying (commit 1 — behaviour-invariant, the canonical key does not yet
-    // exist so the bare fallback serves). Without the canonical probe a data ctor
-    // renders with its fields dropped (`(Cons 2 …)` → `Lst.Cons`).
     let canonical = cranelisp_types::member_key(&fqtn.name, ctor_name);
-    let scheme_ty = match table
-        .get(canonical.as_ref())
-        .or_else(|| table.get(ctor_name))
-    {
-        // Every constructor — sum, enum, and single-ctor product — is now a
-        // got-slotted `Def`; field types come off its `scheme`.
-        Some(binding) => binding.callable().map(|callable| &callable.arm.scheme.ty),
-        _ => None,
-    };
-    match scheme_ty {
-        Some(Type::Fn(params, _)) => params.clone(),
-        _ => Vec::new(),
+    if table.get(canonical.as_ref()).is_some() {
+        canonical
+    } else {
+        Symbol::from(ctor_name)
     }
 }
 
+/// The field types of `ctor_name` at the value's type arguments, from the one
+/// instantiation rule `cranelisp_types::ctor_field_types_at` (row D-1).
+fn ctor_field_types<C, L>(
+    fqtn: &FQTypeName,
+    ctor_name: &str,
+    type_args: &[Type],
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Result<Vec<ConcreteType>, FieldTypesUnavailable>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    let table = symbol_tables
+        .get(&fqtn.module)
+        .ok_or_else(|| FieldTypesUnavailable(format!("no table for module {}", fqtn.module)))?;
+    let key = ctor_storage_key(&table, fqtn, ctor_name);
+    let fields_at = |placeholder: &Type| {
+        let args = residual_args_at(type_args, placeholder)?;
+        cranelisp_types::ctor_field_types_at(&table, &key, &args)
+            .map_err(|refusal| FieldTypesUnavailable(refusal.to_string()))
+    };
+
+    // A residual argument has no representation, but a field whose type does
+    // not mention it is still readable. Instantiating every residual at two
+    // distinct placeholders through the one rule tells the two apart: a field
+    // that differs between them has a residual type.
+    let fields = fields_at(&Type::Int)?;
+    let residual: Vec<_> = type_args
+        .iter()
+        .flat_map(cranelisp_types::free_vars)
+        .collect();
+    if !residual.is_empty() && fields != fields_at(&Type::Bool)? {
+        let mut residual = residual;
+        residual.sort_unstable();
+        return Err(FieldTypesUnavailable(format!(
+            "a field has a residual type ({})",
+            residual
+                .iter()
+                .map(|id| format!("{:?}", Type::Var(*id)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(fields)
+}
+
+/// The type arguments with every residual variable instantiated at
+/// `placeholder`, as concrete types.
+fn residual_args_at(
+    type_args: &[Type],
+    placeholder: &Type,
+) -> Result<Vec<ConcreteType>, FieldTypesUnavailable> {
+    type_args
+        .iter()
+        .map(|arg| {
+            let subst: cranelisp_types::Subst = cranelisp_types::free_vars(arg)
+                .into_iter()
+                .map(|id| (id, placeholder.clone()))
+                .collect();
+            ConcreteType::from_type(&cranelisp_types::apply(&subst, arg))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|residual| FieldTypesUnavailable(format!("residual type argument {residual:?}")))
+}
+
+/// Why a constructor's field types could not be read; rendered as an explicit
+/// marker in place of the fields, never as a guessed type.
+#[derive(Debug)]
+struct FieldTypesUnavailable(String);
+
 /// Format a heap-allocated ADT value (data constructor with fields).
 ///
-/// Reads the tag at `HeapAdt::TAG_OFFSET` and field `i` at `HeapAdt::field_offset(i)`.
-/// Recursively formats field values using their declared types.
+/// Reads the tag at `HeapAdt::TAG_OFFSET` and field `i` at `HeapAdt::field_offset(i)`,
+/// and formats each field at its type under the value's type arguments.
 /// Uses `Type.Constructor` dot notation per spec §1.5, suppressing the `Type.`
 /// prefix for single-constructor product types where the constructor name matches
 /// the type name.
-///
-/// For polymorphic ADTs (e.g., `(Option Int)`), substitutes the concrete type_args
-/// into field types before formatting. Without this, fields with type variables
-/// would display as raw values instead of properly formatted values.
 fn push_adt_heap_value<C, L>(
     value: i64,
     type_name: &str,
@@ -515,98 +498,40 @@ fn push_adt_heap_value<C, L>(
     let base = value as *const u8;
     let tag = unsafe { *(base.add(HeapAdt::TAG_OFFSET as usize) as *const i64) } as usize;
 
-    // S70: tag is the index into `constructors: Vec<Symbol>`; field types come
-    // from the ctor Def's scheme.
     let Some(ctor_name) = type_info.constructors.get(tag).map(|s| s.to_string()) else {
         doc.plain(format!("<unknown-tag:{tag}>"));
         return;
     };
-    let fqtn = &type_info.name;
-    let field_types = ctor_field_types(fqtn, &ctor_name, symbol_tables);
+    let ctor_display = format_ctor_display(type_name, &ctor_name, type_info);
+    let field_types = match ctor_field_types(&type_info.name, &ctor_name, type_args, symbol_tables)
+    {
+        Ok(field_types) => field_types,
+        Err(FieldTypesUnavailable(reason)) => {
+            doc.plain(format!(
+                "({ctor_display} <field types unavailable: {reason}>)"
+            ));
+            return;
+        }
+    };
 
     if field_types.is_empty() {
         // Nullary constructor stored on heap (shouldn't happen, but handle gracefully).
-        doc.plain(format_ctor_display(type_name, &ctor_name, type_info));
+        doc.plain(ctor_display);
         return;
     }
-
-    // Build substitution from type_params to type_args for polymorphic ADTs.
-    let subst = build_adt_subst(type_info, type_args, symbol_tables);
 
     // `(Ctor field1 field2)` — the ctor dot-name and punctuation are R15 Plain;
     // scalar field literals recurse to R2/R3.
     doc.plain("(");
-    doc.plain(format_ctor_display(type_name, &ctor_name, type_info));
+    doc.plain(ctor_display);
     for (i, field_ty) in field_types.iter().enumerate() {
         let field_offset = HeapAdt::field_offset(i) as usize;
+        // SAFETY: field `i` of the constructor the tag names is in the object.
         let field_val = unsafe { *(base.add(field_offset) as *const i64) };
-        // Substitute type args into field type before formatting.
-        let field_ty = substitute_field_type(field_ty, &subst);
         doc.plain(" ");
-        push_field_value(field_val, &field_ty, symbol_tables, doc);
+        push_field_value(field_val, &field_ty.to_type(), symbol_tables, doc);
     }
     doc.plain(")");
-}
-
-/// Build a type substitution from a TypeDefInfo's type_params and concrete type_args.
-///
-/// The type_params are Symbol names (e.g., "a", "b") but the field types use
-/// Type::Var(TypeId). We need to map from the Var ids used in field types
-/// to the concrete types in type_args.
-fn build_adt_subst<C, L>(
-    type_info: &TypeDefInfo,
-    type_args: &[Type],
-    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
-) -> HashMap<TypeId, Type>
-where
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    let mut subst = HashMap::new();
-    // Collect all Var ids used in constructor fields, in order. S70: field
-    // types are read from each ctor Def's scheme rather than a pre-built
-    // `ConstructorInfo.fields` vector.
-    let mut var_ids = Vec::new();
-    for ctor in &type_info.constructors {
-        for field_ty in ctor_field_types(&type_info.name, ctor.as_ref(), symbol_tables) {
-            collect_var_ids(&field_ty, &mut var_ids);
-        }
-    }
-    // Map each unique Var id to the corresponding type arg.
-    for (i, &id) in var_ids.iter().enumerate() {
-        if i < type_args.len() {
-            subst.insert(id, type_args[i].clone());
-        }
-    }
-    subst
-}
-
-/// Collect unique Var ids from a type in order of first occurrence.
-fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
-    match ty {
-        Type::Var(id) => {
-            if !ids.contains(id) {
-                ids.push(*id);
-            }
-        }
-        Type::Fn(params, ret) => {
-            for p in params {
-                collect_var_ids(p, ids);
-            }
-            collect_var_ids(ret, ids);
-        }
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
-            for a in args {
-                collect_var_ids(a, ids);
-            }
-        }
-        Type::Int | Type::Bool | Type::String | Type::Float => {}
-    }
-}
-
-/// Substitute type variables in a field type using the given substitution.
-fn substitute_field_type(ty: &Type, subst: &HashMap<TypeId, Type>) -> Type {
-    cranelisp_types::apply(subst, ty)
 }
 
 /// Format Vec elements by reading the heap layout.
@@ -675,9 +600,11 @@ where
 
 /// Push a single field value's VALUE spans based on its type (spec §1.5).
 ///
+/// The one per-value classifier, for a top-level value and a field alike.
 /// Scalars carry their literal role (R2 num/bool, R3 string); ADT ctor
-/// dot-names, `<closure>`, and structural punctuation are R15 `Plain`. Field
-/// values use `Type.Constructor` dot notation for ADT constructors.
+/// dot-names, the `#io` and `#closure` markers, and structural punctuation are
+/// R15 `Plain`. An `IO` value is `#io` from its type alone: the word is not
+/// read and no constructor table is consulted.
 fn push_field_value<C, L>(
     value: i64,
     ty: &Type,
@@ -687,6 +614,10 @@ fn push_field_value<C, L>(
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    if ty.is_io() {
+        doc.plain("#io");
+        return;
+    }
     match ty {
         Type::Int => doc.push(Role::LitNumBool, format!("{value}")),
         Type::Bool => {
@@ -708,7 +639,7 @@ fn push_field_value<C, L>(
                 doc.push(Role::LitStr, format!("\"{s}\""));
             }
         }
-        Type::Fn(_, _) => doc.plain("<closure>"),
+        Type::Fn(_, _) => doc.plain("#closure"),
         Type::ADT(fqtn, args) => {
             // The value-only ADT renderer handles Vec / value-layout / nullary /
             // heap uniformly (single-sourced with the top-level result value).
@@ -947,14 +878,6 @@ mod tests {
         assert!(v.ends_with(".0"), "whole float should end with .0: {v}");
     }
 
-    #[test]
-    fn format_value_fn_displays_closure() {
-        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let v = format_value(0, &ty, &empty);
-        assert_eq!(v, "<closure>");
-    }
-
     // --- format_type_qualified: primitive types ---
 
     #[test]
@@ -1017,14 +940,6 @@ mod tests {
         let bits = 2.5_f64.to_bits() as i64;
         let s = format_result_value(bits, &Type::Float, &empty);
         assert_eq!(s, ":primitives/Float 2.5");
-    }
-
-    #[test]
-    fn format_result_value_fn() {
-        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let s = format_result_value(0, &ty, &empty);
-        assert_eq!(s, ":(Fn [primitives/Int] primitives/Int) <closure>");
     }
 
     // --- format_scheme_display: constrained types ---
@@ -1140,7 +1055,6 @@ mod tests {
                     type_name,
                     tag: 0,
                     field_count,
-                    internal: false,
                     type_def,
                 },
                 Realization::Body { view, code: None },
@@ -1201,10 +1115,10 @@ mod tests {
     #[test]
     fn ctor_field_types_reads_single_ctor_product_def_scheme() {
         let tables = point_product_tables();
-        let fields = ctor_field_types(&point_fqtn(), "Point", &tables);
+        let fields = ctor_field_types(&point_fqtn(), "Point", &[], &tables).unwrap();
         assert_eq!(
             fields,
-            vec![Type::Int, Type::Int],
+            vec![ConcreteType::Int, ConcreteType::Int],
             "single-ctor product field types come off the product ctor Def's scheme"
         );
     }
@@ -1239,8 +1153,8 @@ mod tests {
             Vec::new(),
         );
         tables.insert(ModuleFullPath::from("user"), table);
-        let fields = ctor_field_types(&fqtn, "Circle", &tables);
-        assert_eq!(fields, vec![Type::Float]);
+        let fields = ctor_field_types(&fqtn, "Circle", &[], &tables).unwrap();
+        assert_eq!(fields, vec![ConcreteType::Float]);
     }
 
     // --- Root C (FIXME 0321): product-ctor value display ---
@@ -1361,5 +1275,266 @@ mod tests {
         let object = one_field_heap_object(5);
         let s = format_field_value(object.as_ptr() as i64, &adt_ty("Box"), &tables);
         assert_eq!(s, "(Box 5)");
+    }
+
+    // --- Field types follow declared parameters (defect 1062, row D-1) ---
+
+    const PARAM_A: TypeId = 7001;
+    const PARAM_B: TypeId = 7002;
+
+    fn user_fqtn(name: &str) -> FQTypeName {
+        FQTypeName::new(
+            ModuleFullPath::from("user"),
+            cranelisp_types::TypeName::from(name),
+        )
+    }
+
+    fn install_type(table: &mut SymbolTable, name: &str, ctors: &[&str]) {
+        table
+            .install_binding(
+                Symbol::from(name),
+                cranelisp_types::Binding::new(
+                    cranelisp_types::Decl::Type(cranelisp_types::TypeRecord::Defined {
+                        info: TypeDefInfo {
+                            name: user_fqtn(name),
+                            type_params: vec![Symbol::from("a"), Symbol::from("b")],
+                            constructors: ctors.iter().map(|c| Symbol::from(*c)).collect(),
+                        },
+                        docstring: None,
+                    }),
+                    Visibility::Private,
+                ),
+            )
+            .expect("type fixture installs");
+    }
+
+    /// `(deftype (name a b) (ctor [fields…]))` in `user`, registered through
+    /// the one ADT derivation (`build_adt_entries`), with its fields typed over
+    /// the declared parameters `a` and `b`.
+    fn two_param_tables(
+        name: &str,
+        ctor: &str,
+        fields: Vec<Type>,
+    ) -> DashMap<ModuleFullPath, SymbolTable> {
+        let spec = cranelisp_types::AdtCtorSpec::new(
+            Symbol::from(ctor),
+            fields
+                .into_iter()
+                .enumerate()
+                .map(|(i, ty)| cranelisp_types::FieldInfo {
+                    name: Symbol::from(format!("f{i}").as_str()),
+                    ty,
+                })
+                .collect(),
+            None,
+        );
+        let entries = cranelisp_types::build_adt_entries::<()>(
+            &user_fqtn(name),
+            &[Symbol::from("a"), Symbol::from("b")],
+            &[PARAM_A, PARAM_B],
+            None,
+            &[spec],
+            Visibility::Private,
+        );
+        let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+        for (key, entry) in entries {
+            match entry {
+                cranelisp_types::AdtEntrySpec::Binding(binding) => {
+                    table.install_binding(key, binding).expect("type installs");
+                }
+                cranelisp_types::AdtEntrySpec::Callable(spec) => table
+                    .install_template(
+                        key,
+                        spec.scheme,
+                        spec.param_names,
+                        spec.docstring,
+                        0,
+                        spec.origin,
+                        cranelisp_types::TemplateBody::Synth(spec.synth),
+                        cranelisp_types::TemplateKind::Parametric,
+                        Vec::new(),
+                        spec.visibility,
+                    )
+                    .expect("generic constructor installs"),
+            }
+        }
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        tables.insert(ModuleFullPath::from("user"), table);
+        tables
+    }
+
+    fn heap_object(fields: &[i64]) -> Vec<i64> {
+        let word = std::mem::size_of::<i64>();
+        let mut object = vec![0_i64; HeapAdt::field_offset(fields.len()) as usize / word];
+        for (i, field) in fields.iter().enumerate() {
+            object[HeapAdt::field_offset(i) as usize / word] = *field;
+        }
+        object
+    }
+
+    // spec: spec/12-runtime.md §12.9.1 — `(deftype (P a b) (MkP [:b y :a x]))`
+    // at `(P Int Bool)`: the first field is a `Bool` and the second an `Int`.
+    // Pairing arguments by first appearance in the fields would render
+    // `(P.MkP 1 true)`.
+    #[test]
+    fn heap_value_fields_follow_declared_parameter_order() {
+        let tables = two_param_tables("P", "MkP", vec![Type::Var(PARAM_B), Type::Var(PARAM_A)]);
+        let object = heap_object(&[1, 2000]);
+        let ty = Type::ADT(user_fqtn("P"), vec![Type::Int, Type::Bool]);
+        assert_eq!(
+            format_value(object.as_ptr() as i64, &ty, &tables),
+            "(P.MkP true 2000)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.9.1 — a parameter no field mentions:
+    // `(deftype (Ph a b) (Mk [:b v]))` at `(Ph String Int)` has an `Int` field.
+    // First-appearance pairing reads it as a `String`.
+    #[test]
+    fn heap_value_field_of_second_parameter_when_first_is_unused() {
+        let tables = two_param_tables("Ph", "Mk", vec![Type::Var(PARAM_B)]);
+        let object = heap_object(&[42]);
+        let ty = Type::ADT(user_fqtn("Ph"), vec![Type::String, Type::Int]);
+        assert_eq!(
+            format_value(object.as_ptr() as i64, &ty, &tables),
+            "(Ph.Mk 42)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.9.1 — the in-order control.
+    #[test]
+    fn heap_value_fields_in_declared_order_control() {
+        let tables = two_param_tables("Q", "MkQ", vec![Type::Var(PARAM_A), Type::Var(PARAM_B)]);
+        let object = heap_object(&[2000, 0]);
+        let ty = Type::ADT(user_fqtn("Q"), vec![Type::Int, Type::Bool]);
+        assert_eq!(
+            format_value(object.as_ptr() as i64, &ty, &tables),
+            "(Q.MkQ 2000 false)"
+        );
+    }
+
+    // A residual type argument has no field types: the display names the
+    // refusal and never guesses a field type.
+    #[test]
+    fn heap_value_with_residual_type_argument_renders_refusal_marker() {
+        let tables = two_param_tables("P", "MkP", vec![Type::Var(PARAM_B)]);
+        let object = heap_object(&[42]);
+        let ty = Type::ADT(user_fqtn("P"), vec![Type::Int, Type::Var(99)]);
+        let shown = format_value(object.as_ptr() as i64, &ty, &tables);
+        assert!(
+            shown.starts_with("(P.MkP <field types unavailable:") && !shown.contains("42"),
+            "{shown}"
+        );
+    }
+
+    // spec: repl/spec.md §1.5, §1.5.1 — a residual argument the constructor's
+    // fields do not mention leaves them readable: `(P Int b)` with an `a`
+    // field shows its `Int`.
+    #[test]
+    fn heap_value_field_of_concrete_parameter_beside_residual_one_is_read() {
+        let tables = two_param_tables("P", "MkP", vec![Type::Var(PARAM_A)]);
+        let object = heap_object(&[42]);
+        let ty = Type::ADT(user_fqtn("P"), vec![Type::Int, Type::Var(99)]);
+        assert_eq!(
+            format_value(object.as_ptr() as i64, &ty, &tables),
+            "(P.MkP 42)"
+        );
+    }
+
+    // spec: spec/03-types.md §3.11 — a field whose own type holds a residual,
+    // nested inside an argument, is still refused, never guessed.
+    #[test]
+    fn heap_value_field_with_nested_residual_type_renders_refusal_marker() {
+        let tables = two_param_tables("P", "MkP", vec![Type::Var(PARAM_A)]);
+        let object = heap_object(&[0]);
+        let vec_of_residual = Type::ADT(
+            FQTypeName::new(
+                ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("Vec"),
+            ),
+            vec![Type::Var(99)],
+        );
+        let ty = Type::ADT(user_fqtn("P"), vec![vec_of_residual, Type::Int]);
+        let shown = format_value(object.as_ptr() as i64, &ty, &tables);
+        assert!(
+            shown.starts_with("(P.MkP <field types unavailable:") && !shown.contains("[]"),
+            "{shown}"
+        );
+    }
+
+    // --- Display markers (defect 1109) ---
+
+    fn io_ty() -> Type {
+        Type::ADT(
+            FQTypeName::new(
+                ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("IO"),
+            ),
+            vec![Type::Int],
+        )
+    }
+
+    // spec: spec/12-runtime.md §12.9.1 — a function value is `#closure`,
+    // at the top level and as a field.
+    #[test]
+    fn function_value_displays_closure_marker() {
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+        assert_eq!(format_value(0, &ty, &empty), "#closure");
+        assert_eq!(
+            format_result_value(0, &ty, &empty),
+            ":(Fn [primitives/Int] primitives/Int) #closure"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.9.1 — a nested `IO` value is `#io`, decided
+    // from its type before any constructor-table read: the word is not read.
+    #[test]
+    fn io_value_displays_io_marker_without_reading_the_word() {
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        assert_eq!(format_value(0x1234, &io_ty(), &empty), "#io");
+    }
+
+    // spec: spec/12-runtime.md §12.9.1 — the marker holds inside a field, and
+    // the top-level document takes its value from the same classifier.
+    #[test]
+    fn io_field_and_top_level_share_the_marker() {
+        let tables = two_param_tables("P", "MkP", vec![Type::Var(PARAM_A)]);
+        let object = heap_object(&[0x1234]);
+        let ty = Type::ADT(user_fqtn("P"), vec![io_ty(), Type::Int]);
+        assert_eq!(
+            format_result_value(object.as_ptr() as i64, &ty, &tables),
+            ":(user/P (primitives/IO primitives/Int) primitives/Int) (P.MkP #io)"
+        );
+    }
+
+    // --- A user type named `Vec` is not the built-in vector (D-3) ---
+
+    // spec: repl/spec.md §1.5 — `(deftype Vec Empty Full)`: a user type whose
+    // name is `Vec` displays its own constructors.
+    #[test]
+    fn user_type_named_vec_displays_its_constructor() {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+        install_type(&mut table, "Vec", &["Empty", "Full"]);
+        tables.insert(ModuleFullPath::from("user"), table);
+        assert_eq!(
+            format_value(1, &Type::ADT(user_fqtn("Vec"), Vec::new()), &tables),
+            "Vec.Full"
+        );
+    }
+
+    // Control: the built-in `primitives/Vec` still renders as a vector.
+    #[test]
+    fn builtin_vec_displays_as_vector() {
+        let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let ty = Type::ADT(
+            FQTypeName::new(
+                ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("Vec"),
+            ),
+            vec![Type::Int],
+        );
+        assert_eq!(format_value(0, &ty, &empty), "[]");
     }
 }

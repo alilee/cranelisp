@@ -58,6 +58,13 @@ const SHUTDOWN_INDEX_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::
 /// Poll interval while waiting on the shutdown burn-down settle.
 const SHUTDOWN_INDEX_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// Whether a regeneration wrote the module's backing file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackingWrite {
+    Written,
+    NotWritten,
+}
+
 impl CompilerSession {
     /// Create a new compiler session (pipeline-v4.md §5).
     ///
@@ -198,21 +205,18 @@ impl CompilerSession {
     /// the `ObjectCache` facade. `Some(_)` when caching is enabled; `None`
     /// under `--no-cache`. The directory is created eagerly because the worker
     /// writes happen on the hot path.
+    ///
+    /// The session takes the project's cache directory only as its owner;
+    /// otherwise it uses a private directory (`design/int/int.md` §7.7, *One
+    /// cache owner per project directory*). The decision precedes the manifest
+    /// read.
     fn build_object_cache(
         settings: &SessionSettings,
         project_root: &Path,
     ) -> std::sync::Arc<crate::cache::ObjectCache> {
-        let cache_dir_opt = if settings.no_cache {
-            None
-        } else {
-            let dir = project_root.join(".cranelisp-cache");
-            let _ = std::fs::create_dir_all(&dir);
-            Some(dir)
-        };
-        let cache_state = cache_dir_opt
-            .as_ref()
-            .map(|d| crate::session_setup::CacheState::new(d.clone()));
-        std::sync::Arc::new(crate::cache::ObjectCache::new(cache_dir_opt, cache_state))
+        let directory = (!settings.no_cache)
+            .then(|| crate::cache::CacheDirectory::open(&project_root.join(".cranelisp-cache")));
+        std::sync::Arc::new(crate::cache::ObjectCache::for_session(directory))
     }
 
     /// `new` phase (S87 §3.2): construct + seed the session's per-module symbol
@@ -363,6 +367,7 @@ impl CompilerSession {
             run_mode,
             entry_module: entry_module.clone(),
             definition_origins: dashmap::DashMap::new(),
+            entered_forms: std::sync::atomic::AtomicU64::new(0),
             test_runner_state,
         });
 
@@ -2054,9 +2059,6 @@ impl CompilerSession {
         }
         let module = self.current_module_path();
 
-        // Get the backing file path (typecheck-product-recorded, else default).
-        let file_path = self.backing_file_path_for(&module);
-
         // Read the symbol table for this module. Sprint 58 Step 5a: structural
         // decls (imports/exports/platforms/submodules) are now fields on the
         // SymbolTable itself; no separate read is needed.
@@ -2065,21 +2067,41 @@ impl CompilerSession {
             None => return, // No symbol table — nothing to save.
         };
 
+        // A table the file does not receive is ahead of it: the module's cache
+        // generation is retired and none is written until the file agrees
+        // (`design/int/s125-binary-clean.md` §4.3). Every return short of the
+        // write reaches this.
+        if self.write_backing_file(&module, &st) == BackingWrite::NotWritten {
+            self.shared.cache.record_divergence(&module);
+        }
+    }
+
+    /// Write `module`'s backing file from its table `st`, unless the inline
+    /// `mod` guard, an unseen save, a refused render, empty source or a write
+    /// failure stops it.
+    fn write_backing_file(
+        &mut self,
+        module: &ModuleFullPath,
+        st: &SessionSymbolTable,
+    ) -> BackingWrite {
+        // Get the backing file path (typecheck-product-recorded, else default).
+        let file_path = self.backing_file_path_for(module);
+
         // FIXME 0343: submodule-body-preservation guard. A module whose backing
         // file holds an authored inline `(mod child form…)` block (the ModDecl
         // still carries `inline_body`) MUST NOT be regenerated from the parent's
         // table alone — the child's defns live in the child's table, so regen
         // would emit a bare `(mod child)` and DROP the body from disk (data
         // corruption). Preserve the file verbatim in that case.
-        if !crate::save::should_regenerate(&st) {
-            return;
+        if !crate::save::should_regenerate(st) {
+            return BackingWrite::NotWritten;
         }
 
         // The one read of the backing file serves the unseen-save check and
         // rehydration.
         let on_disk = std::fs::read_to_string(&file_path);
         if self.backing_file_changed_unseen(&file_path, &on_disk) {
-            return;
+            return BackingWrite::NotWritten;
         }
 
         // Entries installed from the backing file (cache restore, or a fresh
@@ -2088,14 +2110,14 @@ impl CompilerSession {
         if let Some(intro) = self.shared.introspection.as_ref()
             && let Ok(backing_source) = &on_disk
         {
-            crate::save::rehydrate_introspection_from_source(&st, intro, &module, backing_source);
+            crate::save::rehydrate_introspection_from_source(st, intro, module, backing_source);
         }
 
         // Generate source text.
         let source = match crate::save::generate_module_source(
-            &st,
+            st,
             self.shared.introspection.as_ref(),
-            &module,
+            module,
         ) {
             Ok(source) => source,
             Err(unrendered) => {
@@ -2104,13 +2126,13 @@ impl CompilerSession {
                      the file keeps its previous content",
                     file_path.display()
                 );
-                return;
+                return BackingWrite::NotWritten;
             }
         };
 
         // Skip writing empty source (no user-defined content).
         if source.trim().is_empty() {
-            return;
+            return BackingWrite::NotWritten;
         }
 
         // Compute content hash for watcher suppression.
@@ -2119,7 +2141,7 @@ impl CompilerSession {
         // Atomic write.
         if let Err(e) = crate::save::atomic_write(&file_path, &source) {
             eprintln!("Warning: failed to save {}: {e}", file_path.display());
-            return;
+            return BackingWrite::NotWritten;
         }
 
         // Record the written state: the watcher compares with it, so the
@@ -2147,8 +2169,8 @@ impl CompilerSession {
         //     pair is rewritten from the current live table; `/quit`'s
         //     `wait_object_complete` drains this deterministically instead of
         //     abandoning the last defining turns at shutdown.
-        self.shared.cache.record_source_hash(&module, hash.clone());
-        self.shared.scheduler.mark_object_stale(&module);
+        self.shared.cache.record_source_hash(module, hash.clone());
+        self.shared.scheduler.mark_object_stale(module);
 
         // S78: the former `module_sexps[module]` republish is gone — there is
         // no shared sexps map to keep current. A persistent worker only
@@ -2157,6 +2179,7 @@ impl CompilerSession {
         // re-derives from the form it is processing; neither reads a shared
         // map. The H5 "no parsed sexps for module" residue this republish
         // guarded cannot occur (the map it republished into is deleted).
+        BackingWrite::Written
     }
 
     /// Rebuild `module_path` from its saved file: a whole-file rebuild whose
@@ -2604,7 +2627,7 @@ impl CompilerSession {
         );
         Ok(crate::result_owner::OwnedProgramResult::new(
             value,
-            crate::pipeline::driver_result_type(result_type),
+            result_type,
             main.codegen_result_ty,
             &ModuleFullPath::from(module_name),
             &self.shared.symbol_tables,
@@ -2864,6 +2887,9 @@ impl CompilerSession {
         // is the load-bearing entry point — S68 may reshape internals
         // freely without changing this call site.
         self.worker_pool.shutdown();
+        // No worker writes the cache any more: end the session's hold on its
+        // directory (§7.7, *One cache owner*).
+        self.shared.cache.end_session();
     }
 
     /// Scaffold a default `{project_root}/Cranelisp.toml` if one does not
@@ -4235,7 +4261,7 @@ mod entry_registration_tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
             root.path().join("user.cl"),
-            "(import [primitives [Pure]])\n(defn main [] (Pure 6))\n",
+            "(import [primitives [pure]])\n(defn ident [x] x)\n(defn main [] (pure (ident 6)))\n",
         )
         .unwrap();
         let mut table = cached_launch(root.path());
@@ -4248,7 +4274,7 @@ mod entry_registration_tests {
         };
         assert!(
             !minted(&table).is_empty(),
-            "precondition: `(Pure 6)` mints an instance in the entry table"
+            "precondition: `(ident 6)` mints an instance in the entry table"
         );
         let main_slot = table
             .get("main")
@@ -4448,7 +4474,7 @@ mod entry_registration_tests {
         unsafe { std::env::set_var("CRANELISP_BUNDLE_PATH", bundle) };
         std::fs::write(
             root.join("user.cl"),
-            "(import [primitives [Pure]]) (defn main [] (Pure 0))\n",
+            "(import [primitives [pure]]) (defn main [] (pure 0))\n",
         )
         .unwrap();
         let mut s = CompilerSession::new(
@@ -4626,4 +4652,101 @@ fn is_minted_instance<C: cranelisp_types::CodeStore>(
             }
         )
     })
+}
+
+#[cfg(test)]
+mod cache_owner_tests {
+    use super::*;
+    use crate::session_v4::RunMode;
+    use cranelisp_types::CodegenBehaviour;
+    use std::collections::BTreeMap;
+
+    fn session(root: &Path) -> CompilerSession {
+        let mut s = CompilerSession::new(
+            SessionSettings {
+                no_color: true,
+                no_cache: false,
+                codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+                priority_workers: 1,
+                nice_workers: 1,
+                run_mode: RunMode::Run,
+            },
+            root.to_path_buf(),
+            "user",
+        )
+        .expect("test session bootstrap");
+        s.set_lib_dirs(Vec::new());
+        s
+    }
+
+    /// Every file under `dir`, by relative path, with its bytes.
+    fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(base, &path, out);
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    out.insert(path.strip_prefix(base).unwrap().to_path_buf(), bytes);
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    // spec: design/int/int.md §7.7, *One cache owner per project directory*
+    // (ACT-1085) — while one session owns a project's cache, a second session
+    // on the same root compiles into a private directory outside the project,
+    // removed when it ends, and leaves the project's cache byte for byte as
+    // it was. After the owner ends, a new session owns the project's cache.
+    #[test]
+    fn a_second_session_on_an_owned_project_uses_a_private_cache() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("user.cl"), "(defn main [] 41)\n").unwrap();
+        let project_cache = root.path().join(".cranelisp-cache");
+
+        let mut owner = session(root.path());
+        assert_eq!(owner.shared.cache.cache_dir(), Some(project_cache.clone()));
+        let before = snapshot(&project_cache);
+
+        let mut contender = session(root.path());
+        let private = contender.shared.cache.cache_dir().expect("cache enabled");
+        assert!(
+            !private.starts_with(root.path()),
+            "the contender's cache is outside the project: {}",
+            private.display()
+        );
+        contender.register_module("user").unwrap();
+        contender.wait_object_complete().unwrap();
+        assert!(
+            private.join("user.o").is_file(),
+            "the contender compiled into its private directory"
+        );
+        contender.shutdown();
+        drop(contender);
+        assert!(
+            !private.exists(),
+            "the private directory is removed at its end"
+        );
+        assert_eq!(
+            snapshot(&project_cache),
+            before,
+            "the project's cache is unchanged"
+        );
+
+        owner.shutdown();
+        drop(owner);
+        let next = session(root.path());
+        assert_eq!(
+            next.shared.cache.cache_dir(),
+            Some(project_cache),
+            "the owner's lock ends with it"
+        );
+    }
 }

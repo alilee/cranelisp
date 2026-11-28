@@ -828,7 +828,7 @@ pub struct TypecheckProduct {
     /// finalize for THIS module (`design/typecheck/return-poly-dispatch-signal.md`;
     /// carrier (A), `design/arch/bounded-contexts.md` §2). EMPTY for every valid
     /// module. `src/exe.rs::validate_main` reads it for the entry module (the
-    /// `--run`/`--link` leg of class (b), Principle 19): a `(defn main [] (Pure
+    /// `--run`/`--link` leg of class (b), Principle 19): a `(defn main [] (pure
     /// (zed)))` whose IO payload never resolved dies with the §3.11 ambiguity
     /// instead of leaking `main has no GOT slot`. Written at the cluster commit
     /// seam (`worker::process_cluster_with_staging`), overwritten per re-check.
@@ -851,6 +851,167 @@ pub struct Introspection {
     pub ast: Option<cranelisp_types::Defn>,
     pub clif_ir: Option<String>,
     pub code_size: Option<usize>,
+    /// Where the authored form stands in its module's authorship order
+    /// (repl §15.4 rule 2; `design/int/s125-binary-clean.md` §4.2). `None`
+    /// for an entry with no authored form recorded.
+    pub(crate) position: Option<AuthoredPosition>,
+    /// Whether the definition is its own written form or the product of a
+    /// macro call (`spec/09-macros.md` §9.6.1; binary clean §4.4).
+    pub(crate) origin: DefinitionOrigin,
+    /// The same-module macros recognised while expanding the authored form,
+    /// recorded at recognition (binary clean §4.2, macro-before-use).
+    pub(crate) macros_used: Vec<FQSymbol>,
+    /// For a definition a macro call generated, every key that call's
+    /// expansion defined, before `impl` identities settle (binary clean §4.4,
+    /// a re-entry that drops a definition). Empty for a written definition.
+    pub(crate) entry_keys: Vec<EntryKey>,
+}
+
+impl Introspection {
+    /// Install a published turn's `staged` record over this one. The authored
+    /// carriers are replaced; the codegen facts publication wrote stay. A
+    /// redefinition within the same entry keeps the position of the record it
+    /// replaces, moved just after `latest_macro_used` when that macro now
+    /// follows it (repl §15.4 rule 2). A macro call that generates a key
+    /// another entry owned becomes its owning entry, so the key takes the
+    /// call's position and the replaced entry is retired
+    /// (`tests/plan/s125-evidence-delta.md` §19.4).
+    pub(crate) fn install_authored(
+        &mut self,
+        staged: Introspection,
+        latest_macro_used: Option<AuthoredPosition>,
+    ) {
+        let joins_another_entry = match &staged.origin {
+            DefinitionOrigin::Generated(call) => !self.origin.is_generated_by(call),
+            DefinitionOrigin::Written => false,
+        };
+        let position = if joins_another_entry {
+            staged.position.or(self.position)
+        } else {
+            self.position.or(staged.position)
+        };
+        self.position = match (position, latest_macro_used) {
+            (Some(own), Some(fence)) if fence >= own => Some(fence.just_after()),
+            _ => position,
+        };
+        self.source = staged.source;
+        self.sexp = staged.sexp;
+        self.expanded = staged.expanded;
+        self.ast = staged.ast;
+        self.origin = staged.origin;
+        self.macros_used = staged.macros_used;
+        self.entry_keys = staged.entry_keys;
+    }
+}
+
+/// The identity one authored top-level definition form records under before
+/// the cluster's `impl` identities settle (`design/int/s125-binary-clean.md`
+/// §4.4): a name-slot definition by its name, an `impl` by its authored label.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum EntryKey {
+    Name(Symbol),
+    Impl(Symbol),
+}
+
+impl std::fmt::Display for EntryKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntryKey::Name(name) => write!(f, "{name}"),
+            EntryKey::Impl(label) => write!(f, "impl {label}"),
+        }
+    }
+}
+
+/// A position in a module's authorship order (repl §15.4 rule 2). Every form
+/// read from the module's file stands before every form entered at the REPL;
+/// within each, the file's byte order or the entry order decides. `after`
+/// orders a record moved just after another (the macro-before-use exception).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct AuthoredPosition {
+    base: PositionBase,
+    after: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PositionBase {
+    /// The byte offset of the top-level form in the module's file.
+    File(u32),
+    /// The REPL entry sequence of the form, within this session.
+    Entered(u64),
+}
+
+impl AuthoredPosition {
+    /// The position of a top-level form read from the module's file.
+    pub(crate) fn in_file(offset: u32) -> Self {
+        AuthoredPosition {
+            base: PositionBase::File(offset),
+            after: 0,
+        }
+    }
+
+    /// The position of the `sequence`-th form entered at the REPL.
+    pub(crate) fn entered(sequence: u64) -> Self {
+        AuthoredPosition {
+            base: PositionBase::Entered(sequence),
+            after: 0,
+        }
+    }
+
+    /// The position immediately after this one, before any later form.
+    pub(crate) fn just_after(self) -> Self {
+        AuthoredPosition {
+            base: self.base,
+            after: self.after.saturating_add(1),
+        }
+    }
+}
+
+/// Whether a definition was written or generated by a macro call
+/// (`spec/09-macros.md` §9.6.1; binary clean §4.4). Set where the expander
+/// recognised the authored form as a macro call; never inferred.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum DefinitionOrigin {
+    /// Its own authored form, or a literal `begin` member.
+    #[default]
+    Written,
+    /// A product of the macro call it names.
+    Generated(MacroCall),
+}
+
+impl DefinitionOrigin {
+    /// Whether this origin is generated by exactly `call`.
+    pub(crate) fn is_generated_by(&self, call: &MacroCall) -> bool {
+        matches!(self, DefinitionOrigin::Generated(own) if own == call)
+    }
+}
+
+/// The identity of one macro call (binary clean §4.4): the canonical macro its
+/// head resolved to, and its arguments by value with spans ignored. Two
+/// spellings of one macro are one macro, and position is no part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MacroCall {
+    macro_name: FQSymbol,
+    arguments: Vec<String>,
+}
+
+impl MacroCall {
+    /// The call `form` makes of the macro its head resolved to. A bare-symbol
+    /// call has no arguments.
+    pub(crate) fn of(macro_name: FQSymbol, form: &Sexp) -> Self {
+        let arguments = match form {
+            Sexp::List(children, _) => children.iter().skip(1).map(Sexp::format_flat).collect(),
+            _ => Vec::new(),
+        };
+        MacroCall {
+            macro_name,
+            arguments,
+        }
+    }
+
+    /// The canonical macro the call resolved to.
+    pub(crate) fn macro_name(&self) -> &FQSymbol {
+        &self.macro_name
+    }
 }
 
 /// Why a module stands failed (`design/int/repl-lifecycle.md` §1.3.1). Each

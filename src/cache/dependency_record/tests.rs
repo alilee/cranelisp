@@ -190,6 +190,7 @@ impl Session {
             run_mode: crate::session_v4::RunMode::Run,
             entry_module: cranelisp_types::ModuleFullPath::from("user"),
             definition_origins: dashmap::DashMap::new(),
+            entered_forms: std::sync::atomic::AtomicU64::new(0),
             test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
         };
         Session {

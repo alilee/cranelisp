@@ -222,8 +222,13 @@ fn object_pass(
     let (meta_path, o_path) = cache::module_cache_path(cache_dir, module);
 
     // Phase 1: write `.meta.json` (typecheck-driven; ensures the parent dir;
-    // retires the earlier `.o`). A failure stops the whole pass.
-    write_module_meta(shared, module, &meta_path)?;
+    // retires the earlier `.o`). A failure stops the whole pass. A module
+    // whose table is ahead of its file writes nothing: its files were
+    // retired, and no entry is recorded (`design/int/s125-binary-clean.md`
+    // §4.3).
+    if write_module_meta(shared, module, &meta_path)? == crate::cache::MetaWrite::Diverged {
+        return Ok(());
+    }
 
     // Phase 2: enumerate codegen-compilable symbols. A generic-only,
     // types-only or imports-only module emits no `.o` but is still recorded in
@@ -262,7 +267,7 @@ fn write_module_meta(
     shared: &SharedState,
     module: &ModuleFullPath,
     meta_path: &Path,
-) -> Result<(), StoppedPass> {
+) -> Result<crate::cache::MetaWrite, StoppedPass> {
     // Ensure parent directory exists (used by both the `.meta.json` and `.o`
     // writes below).
     if let Some(parent) = meta_path.parent()

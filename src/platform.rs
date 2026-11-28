@@ -338,74 +338,138 @@ pub fn register_platform_in_tc(
     }
 
     for (slot, desc) in platform.descriptors.iter().enumerate() {
-        // Parse + typecheck the FQ signature through the shared frontend +
-        // typecheck surface. `parse_type_expr` lowers the one S-expr type form
-        // to a `TypeExpr`; `check_type_expr` resolves its FQ leaf names
-        // (`primitives/Int`, `shapes/Rectangle`) directly against the named
-        // modules (auto-loaded per FIXME 0268) — NO injected imports (§5.3).
-        let ty = parse_and_check_platform_type_sig(
+        install_platform_fn(
             symbol_tables,
             module_aliases,
             &module_path,
-            &desc.type_sig,
-            &desc.name,
+            &platform.name,
+            slot,
+            &PlatformFnSpec::of(desc),
         )?;
+    }
+    Ok(())
+}
 
-        // FIXME 0318 / spec §8.11: a platform fn MUST return `IO _`. Foreign
-        // native code's purity is unverifiable — the compiler can only trust the
-        // declared signature — so a platform fn typed pure would be memoized /
-        // reordered / elided / sparked under lenient eval while the host does
-        // arbitrary effects: unsound. The only sound treatment of foreign code is
-        // to sequence its effects, which the `IO` return type forces.
-        require_io_return(&ty, &platform.name, &desc.name)?;
+/// The manifest facts `install_platform_fn` reads from one descriptor.
+struct PlatformFnSpec<'a> {
+    name: &'a str,
+    type_sig: &'a str,
+    docstring: &'a str,
+    param_names: &'a [String],
+    scheduling_class: cranelisp_types::SchedulingClass,
+    /// `concurrency.blocking == 0`: a poll-shape async leaf (§6.8.0).
+    poll_shape: bool,
+}
 
-        let scheme = Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty,
-        };
-
-        let param_names: Vec<Symbol> = desc
-            .param_names
-            .iter()
-            .map(|n| Symbol::from(n.as_str()))
-            .collect();
-
-        // Insert directly into the module's symbol table with the GOT slot =
-        // manifest index (§5.3). The slot now rides on the `PlatformEffect`
-        // variant (S83 reshape, FIXME 0358 — PlatformEffect IS GOT-callable);
-        // the GOT-indirect dispatch arm in backend (`apply.rs`) activates on
-        // the variant's `got_slot`.
-        if let Some(mut table) = symbol_tables.get_mut(&module_path) {
-            // Single-ABI cutover (§6.8.0): the poll-shape dispatch axis is read
-            // unconditionally off the unified per-effect descriptor —
-            // `concurrency.blocking == 0` ⇒ a poll-shape async leaf ⇒ the
-            // backend's poll-construction arm; `== 1` ⇒ a blocking effect.
-            let poll_shape = desc.concurrency.blocking == 0;
-
-            table
-                .install_platform(
-                    Symbol::from(desc.name.as_str()),
-                    scheme,
-                    param_names,
-                    (!desc.docstring.is_empty()).then(|| desc.docstring.clone()),
-                    slot as u64,
-                    desc.scheduling_class,
-                    poll_shape,
-                    slot,
-                    Visibility::Public,
-                )
-                .map_err(|error| CranelispError::ModuleError {
-                    message: format!(
-                        "could not register platform effect '{module_path}/{}': {error}",
-                        desc.name
-                    ),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })?;
+impl<'a> PlatformFnSpec<'a> {
+    fn of(desc: &'a cranelisp_platform::OwnedPlatformFnDescriptor) -> Self {
+        Self {
+            name: &desc.name,
+            type_sig: &desc.type_sig,
+            docstring: &desc.docstring,
+            param_names: &desc.param_names,
+            scheduling_class: desc.scheduling_class,
+            poll_shape: desc.concurrency.blocking == 0,
         }
     }
+}
 
+/// Check one manifest function's signature and install it as a platform
+/// effect at GOT slot `slot` of `module_path`.
+fn install_platform_fn(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    module_path: &ModuleFullPath,
+    platform_name: &str,
+    slot: usize,
+    desc: &PlatformFnSpec<'_>,
+) -> Result<(), CranelispError> {
+    // Parse + typecheck the FQ signature through the shared frontend +
+    // typecheck surface. `parse_type_expr` lowers the one S-expr type form
+    // to a `TypeExpr`; `check_type_expr` resolves its FQ leaf names
+    // (`primitives/Int`, `shapes/Rectangle`) directly against the named
+    // modules (auto-loaded per FIXME 0268) — NO injected imports (§5.3).
+    let ty = parse_and_check_platform_type_sig(
+        symbol_tables,
+        module_aliases,
+        module_path,
+        desc.type_sig,
+        desc.name,
+    )?;
+
+    // Spec §8.9.3: a platform fn MUST return `IO _`. Foreign
+    // native code's purity is unverifiable — the compiler can only trust the
+    // declared signature — so a platform fn typed pure would be memoized /
+    // reordered / elided / sparked under lenient eval while the host does
+    // arbitrary effects: unsound. The only sound treatment of foreign code is
+    // to sequence its effects, which the `IO` return type forces.
+    require_io_return(&ty, platform_name, desc.name)?;
+    refuse_function_types(&ty, symbol_tables, platform_name, desc.name)?;
+
+    let scheme = Scheme {
+        type_vars: vec![],
+        constraints: std::collections::HashMap::new(),
+        ty,
+    };
+
+    let param_names: Vec<Symbol> = desc
+        .param_names
+        .iter()
+        .map(|n| Symbol::from(n.as_str()))
+        .collect();
+
+    // Insert directly into the module's symbol table with the GOT slot =
+    // manifest index (§5.3). The slot now rides on the `PlatformEffect`
+    // variant (S83 reshape, FIXME 0358 — PlatformEffect IS GOT-callable);
+    // the GOT-indirect dispatch arm in backend (`apply.rs`) activates on
+    // the variant's `got_slot`.
+    if let Some(mut table) = symbol_tables.get_mut(module_path) {
+        table
+            .install_platform(
+                Symbol::from(desc.name),
+                scheme,
+                param_names,
+                (!desc.docstring.is_empty()).then(|| desc.docstring.to_string()),
+                slot as u64,
+                desc.scheduling_class,
+                desc.poll_shape,
+                slot,
+                Visibility::Public,
+            )
+            .map_err(|error| platform_install_error(error, module_path, platform_name, desc))?;
+    }
     Ok(())
+}
+
+/// The load error for a refused platform-effect install. A residual type
+/// variable is reported against the written signature, not the internal
+/// variable (`design/arch/total-concreteness.md` §3.5).
+fn platform_install_error(
+    error: cranelisp_types::LifecycleError,
+    module_path: &ModuleFullPath,
+    platform_name: &str,
+    desc: &PlatformFnSpec<'_>,
+) -> CranelispError {
+    let message = match error {
+        cranelisp_types::LifecycleError::SlotMint(cranelisp_types::SlotMintError::NotConcrete(
+            _,
+        )) => {
+            format!(
+                "platform function '{platform_name}/{}' has signature '{}', which contains \
+                 a type variable; a platform signature must be fully concrete \
+                 (design/arch/total-concreteness.md §3.5)",
+                desc.name, desc.type_sig
+            )
+        }
+        other => format!(
+            "could not register platform effect '{module_path}/{}': {other}",
+            desc.name
+        ),
+    };
+    CranelispError::ModuleError {
+        message,
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
 }
 
 /// Inject `(import [primitives [*]])` into the synthetic `platform.<name>`
@@ -551,8 +615,8 @@ fn parse_and_check_platform_type_sig(
     })
 }
 
-/// Enforce that a platform fn's checked type returns `IO _` (FIXME 0318 / spec
-/// §8.11 — "Platform functions MUST return `IO _`").
+/// Enforce that a platform fn's checked type returns `IO _` (spec §8.9.3,
+/// §10.10.2).
 ///
 /// `ty` is the platform fn's resolved type. The acceptable shape is a function
 /// whose return type is the `IO` ADT (`(Fn [..] (IO a))`); a zero-param IO value
@@ -560,10 +624,9 @@ fn parse_and_check_platform_type_sig(
 /// a pure return (`(Fn [..] Int)`), or a non-`IO` ADT return — is rejected with a
 /// diagnostic naming the platform, the function, and the requirement.
 ///
-/// Rationale (FIXME 0318): foreign native code's purity is unverifiable, so the
+/// Rationale (spec §8.9.3): foreign native code's purity is unverifiable, so the
 /// compiler must trust the declared signature; the only sound treatment of a
-/// foreign effect is to sequence it, which `IO` forces. Every existing platform
-/// (`stdio`, `test-capture`) already returns `IO _`, so this is low-ripple.
+/// foreign effect is to sequence it, which `IO` forces.
 fn require_io_return(ty: &Type, platform_name: &str, fn_name: &str) -> Result<(), CranelispError> {
     let ret = match ty {
         Type::Fn(_, ret) => ret.as_ref(),
@@ -584,6 +647,127 @@ fn require_io_return(ty: &Type, platform_name: &str, fn_name: &str) -> Result<()
         ),
         location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
     })
+}
+
+/// Refuse a platform signature whose parameter or result types contain a
+/// function type (spec §10.10.1): no function value crosses the platform
+/// boundary. Containment follows type arguments and the declared field types
+/// of each named ADT, transitively. The diagnostic names the platform
+/// function and the site of the first function type found.
+fn refuse_function_types(
+    ty: &Type,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    platform_name: &str,
+    fn_name: &str,
+) -> Result<(), CranelispError> {
+    let (params, ret): (&[Type], &Type) = match ty {
+        Type::Fn(params, ret) => (params, ret),
+        other => (&[], other),
+    };
+    let mut expanded = std::collections::HashSet::new();
+    let site = params
+        .iter()
+        .enumerate()
+        .find_map(|(index, param)| {
+            function_type_within(param, symbol_tables, &mut expanded)
+                .map(|within| format!("parameter {}{within}", index + 1))
+        })
+        .or_else(|| {
+            function_type_within(ret, symbol_tables, &mut expanded)
+                .map(|within| format!("result{within}"))
+        });
+    let Some(site) = site else {
+        return Ok(());
+    };
+    Err(CranelispError::ModuleError {
+        message: format!(
+            "platform function '{platform_name}/{fn_name}' has a function type in its \
+             {site}; no function value crosses the platform boundary, so a platform \
+             signature must not contain a function type (spec §10.10.1)"
+        ),
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    })
+}
+
+/// The site of the first function type inside `ty`, as a suffix of the
+/// enclosing site's description, or `None` when `ty` is function-free.
+///
+/// A named ADT's declared fields are walked once per type (`expanded`): its
+/// type arguments are checked at every use, so a field typed by a parameter is
+/// covered there, and a recursive type terminates.
+fn function_type_within(
+    ty: &Type,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    expanded: &mut std::collections::HashSet<cranelisp_types::FQTypeName>,
+) -> Option<String> {
+    let args = match ty {
+        Type::Fn(..) => return Some(String::new()),
+        Type::ADT(_, args) | Type::TyConApp(_, args) => args,
+        Type::Int | Type::Bool | Type::String | Type::Float | Type::Var(_) => return None,
+    };
+    let owner = match ty {
+        Type::ADT(name, _) => Some(name),
+        _ => None,
+    };
+    let describe = |what: String| match owner {
+        Some(name) => format!(", {what} of {name}"),
+        None => format!(", {what}"),
+    };
+    for (index, arg) in args.iter().enumerate() {
+        if let Some(within) = function_type_within(arg, symbol_tables, expanded) {
+            return Some(format!(
+                "{}{within}",
+                describe(format!("type argument {}", index + 1))
+            ));
+        }
+    }
+    let name = owner?;
+    if !expanded.insert(name.clone()) {
+        return None;
+    }
+    for (ctor, fields) in declared_ctor_fields(name, symbol_tables) {
+        for (index, field) in fields.iter().enumerate() {
+            if let Some(within) = function_type_within(field, symbol_tables, expanded) {
+                return Some(format!(
+                    ", field {} of constructor {ctor} of {name}{within}",
+                    index + 1
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Each constructor of `name` with its declared field types, read from the
+/// type's home table. An intrinsic or opaque type has no constructors.
+fn declared_ctor_fields(
+    name: &cranelisp_types::FQTypeName,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+) -> Vec<(Symbol, Vec<Type>)> {
+    let Some(table) = symbol_tables.get(&name.module) else {
+        return Vec::new();
+    };
+    let Some(info) = table
+        .get(name.name.as_ref())
+        .and_then(|binding| binding.type_def_info())
+    else {
+        return Vec::new();
+    };
+    info.constructors
+        .iter()
+        .map(|ctor| {
+            let key = crate::display::ctor_storage_key(&table, name, ctor.as_ref());
+            let fields = match table
+                .get(key.as_ref())
+                .and_then(|binding| binding.callable())
+                .map(|callable| &callable.arm.scheme.ty)
+            {
+                Some(Type::Fn(fields, _)) => fields.clone(),
+                _ => Vec::new(),
+            };
+            (ctor.clone(), fields)
+        })
+        .collect()
 }
 
 /// Check if a Sexp is a `(platform name)` form.

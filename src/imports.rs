@@ -327,8 +327,8 @@ pub(crate) fn install_exports(
 // any worker is spawned — it is outside the foreground concurrent-compile path
 // entirely — and it seeds only (a) own definitions (special forms at root,
 // intrinsic types / TypeDefs / synthetic ADT ctors + Defs in `primitives`, the
-// `macros` ADTs) and (b) ONE intra-module public self-alias
-// (`primitives/Bind → primitives/IO.Bind`, `bootstrap.rs` step 5). The four
+// `macros` ADTs) and (b) same-module public bare-constructor aliases
+// (`primitives/Some → primitives/Option.Some`, `register_synth_adt`). The four
 // `macros`-module edges to `primitives` (`Int`/`Bool`/`Float`/`String`) are
 // `Visibility::Private`, so they are not public writes at all. Making the whole
 // init path fallible to route an unreachable rejection would buy no soundness

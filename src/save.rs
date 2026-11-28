@@ -10,18 +10,17 @@
 // `SharedState.module_structures` dissolves; this module reads everything
 // from `SymbolTable`.
 
-use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
 use cranelisp_types::{
     Binding, CallableOrigin, Decl, ExportSpec, FQSymbol, ImportEntry, ImportNames, ImportSpec,
-    ModDecl, ModuleFullPath, ModuleName, PlatformSpec, Sexp, Span,
+    ModDecl, ModuleFullPath, ModuleName, PlatformSpec, Sexp, TypeRecord,
 };
 
 use dashmap::DashMap;
 
-use crate::session_v4::Introspection;
+use crate::session_v4::{AuthoredPosition, EntryKey, Introspection};
 
 // ---------------------------------------------------------------------------
 // Regeneration role gate (FIXME 0343)
@@ -63,16 +62,10 @@ pub(crate) fn should_regenerate(symbol_table: &crate::code::SessionSymbolTable) 
 ///
 /// Pure function: reads data, returns source text, or refuses with every
 /// selected entry that has no recorded authored form (§2.4.3) rather than
-/// omit it. Sections appear in the order specified by
-/// design/int/session-persistence.md §1.3:
-///   1. mod decls
-///   2. platform decls
-///   3. imports (merged, prelude filtered)
-///   4. exports (merged)
-///   5. traits (alphabetical)
-///   6. types (alphabetical)
-///   7. impls (from TraitImpl entries)
-///   8. fns and macros (dependency-sorted)
+/// omit it. After the preamble, the structural sections follow repl §15.4
+/// rule 4 (platforms, submodules, exports, imports), and the definitions
+/// follow in one sequence in authorship order (rule 2;
+/// `design/int/s125-binary-clean.md` §4.2).
 ///
 /// Sprint 58 Step 5a: structural decls read directly from
 /// `symbol_table.{submodules, platforms, imports, exports}`. The implicit
@@ -102,71 +95,22 @@ pub(crate) fn generate_module_source(
         }
     }
 
-    // 1. Module declarations
-    let mod_section = generate_mod_decls(&symbol_table.submodules);
-    if !mod_section.is_empty() {
-        sections.push(mod_section);
+    // Structural sections, in repl §15.4 rule 4's order: platforms,
+    // submodules, exports, imports.
+    let structural = [
+        generate_platforms(&symbol_table.platforms),
+        generate_mod_decls(&symbol_table.submodules),
+        generate_exports(&symbol_table.exports),
+        generate_imports(&symbol_table.imports),
+    ];
+    sections.extend(structural.into_iter().filter(|section| !section.is_empty()));
+
+    // Definitions, one sequence in authorship order (rule 2).
+    let definitions = generate_definitions(symbol_table, introspection, module_path)?;
+    if !definitions.is_empty() {
+        sections.push(definitions);
     }
 
-    // 2. Platform declarations
-    let platform_section = generate_platforms(&symbol_table.platforms);
-    if !platform_section.is_empty() {
-        sections.push(platform_section);
-    }
-
-    // 3. Imports (merged, prelude filtered)
-    let import_section = generate_imports(&symbol_table.imports);
-    if !import_section.is_empty() {
-        sections.push(import_section);
-    }
-
-    // 4. Exports (merged)
-    let export_section = generate_exports(&symbol_table.exports);
-    if !export_section.is_empty() {
-        sections.push(export_section);
-    }
-
-    // Sections 5–8 share one ledger, in this order.
-    let mut ledger = SectionLedger::default();
-
-    // 5. Trait declarations (alphabetical)
-    let trait_section = generate_traits(symbol_table, introspection, module_path, &mut ledger);
-    if !trait_section.is_empty() {
-        sections.push(trait_section);
-    }
-
-    // 6. Type definitions (alphabetical)
-    let type_section = generate_types(symbol_table, introspection, module_path, &mut ledger);
-    if !type_section.is_empty() {
-        sections.push(type_section);
-    }
-
-    // 7. Trait implementations
-    let impl_section = generate_impls(symbol_table, introspection, module_path, &mut ledger);
-    if !impl_section.is_empty() {
-        sections.push(impl_section);
-    }
-
-    // 8. Functions and macros (dependency-sorted)
-    let fn_section = generate_fns_and_macros(symbol_table, introspection, module_path, &mut ledger);
-    if !fn_section.is_empty() {
-        sections.push(fn_section);
-    }
-
-    // §12.3.1 completeness guard (arch-directed, Principle 18): the RT-4 stub hid
-    // a whole kind (`impl`) SILENTLY. The PRIMARY guard is now compile-time — both
-    // `ModuleEntry` and `DefKind` are matched exhaustively in
-    // `section_entry_claimed_or_excluded` (no `_` arm), so a NEW persisted kind is
-    // a compile error there until its author classifies it. This runtime sweep is
-    // the documented seam + `MODULE_TRACE` hook: with the current variant set every
-    // classification is claimed-or-excluded (so it does not fire today), but it
-    // trips loudly if a future edit sets a classification to `false` — a
-    // persisted-content kind left unclaimed.
-    assert_section_completeness(symbol_table, module_path);
-
-    if !ledger.unrendered.is_empty() {
-        return Err(UnrenderedEntries(ledger.unrendered));
-    }
     let mut result = sections.join("\n\n");
     if !result.is_empty() {
         result.push('\n');
@@ -208,36 +152,6 @@ impl std::fmt::Display for UnrenderedEntries {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let names: Vec<String> = self.0.iter().map(Unrendered::to_string).collect();
         f.write_str(&names.join(", "))
-    }
-}
-
-/// What sections 5–8 have produced so far in one regeneration.
-///
-/// Records that share one authored form — a macro expansion or a literal
-/// `begin`, whose members may fall in different sections — emit it once, at
-/// its first position (`design/int/session-persistence.md` §1.4). A record
-/// whose form was already emitted is rendered, not unrendered (§2.4.3).
-#[derive(Default)]
-struct SectionLedger {
-    /// Emitted authored forms by flat rendering, each with the span it was
-    /// authored at. A REPL declaration's record holds text only, so its form
-    /// has no known span (`None`) and matches any form with the same text.
-    emitted: HashMap<String, Vec<Option<Span>>>,
-    unrendered: Vec<Unrendered>,
-}
-
-impl SectionLedger {
-    /// `true` the first time the authored form is offered; its text is then
-    /// emitted.
-    fn first_emission(&mut self, form: &Sexp, authored_at: Option<Span>) -> bool {
-        let spans = self.emitted.entry(form.format_flat()).or_default();
-        let seen = spans
-            .iter()
-            .any(|span| span.is_none() || authored_at.is_none() || *span == authored_at);
-        if !seen {
-            spans.push(authored_at);
-        }
-        !seen
     }
 }
 
@@ -520,84 +434,33 @@ fn generate_mod_decls(decls: &[ModDecl]) -> String {
         .join("\n")
 }
 
+/// One `(platform …)` form per platform, in the table's order, which is the
+/// order they were entered (repl §15.4 rule 4).
 fn generate_platforms(specs: &[PlatformSpec]) -> String {
-    let mut platforms: Vec<String> = specs
-        .iter()
-        .map(|spec| format!("(platform {})", spec.name))
-        .collect();
-    platforms.sort();
-    platforms.dedup();
-    platforms.join("\n")
+    first_occurrences(specs.iter().map(|spec| format!("(platform {})", spec.name))).join("\n")
 }
 
-/// Merge and generate a single `(import [...])` form.
-/// Filters out the implicit prelude import.
-///
-/// Each module and alias gets at most one glob pair and at most one list
-/// pair, rendered in first-appearance order: a glob cannot absorb a list,
-/// since a rename binds a local name the glob does not. A list's entries
-/// concatenate with equal entries removed, and a name-less spec renders only
-/// when nothing else names its module and alias (`design/int/int.md` §6.13).
+/// One `(import [...])` form per module spec, in the table's order (repl
+/// §15.4 rule 4; `design/int/s125-binary-clean.md` §4.6, R4): a multi-module
+/// `import` contributes one entry per spec, and an exact repeat of an earlier
+/// spec is written once. The implicit prelude import is filtered.
 fn generate_imports(specs: &[ImportSpec]) -> String {
-    let mut groups: Vec<(&ModuleFullPath, Option<&ModuleName>, ImportNames)> = Vec::new();
     let user_authored = specs.iter().filter(|s| {
         !(s.module_path == "prelude" && s.names == ImportNames::Glob && s.alias.is_none())
     });
-    for spec in user_authored {
-        let alias = spec.alias.as_ref();
-        let same_route = |path: &ModuleFullPath, group_alias: Option<&ModuleName>| {
-            *path == spec.module_path && group_alias == alias
-        };
-        let is_glob = |names: &ImportNames| *names == ImportNames::Glob;
-        let route_named = groups
-            .iter()
-            .any(|(path, group_alias, _)| same_route(path, *group_alias));
-        let existing = groups.iter().position(|(path, group_alias, names)| {
-            same_route(path, *group_alias) && is_glob(names) == is_glob(&spec.names)
-        });
-        match (existing, &spec.names) {
-            (Some(_), ImportNames::Glob) => {}
-            (Some(index), incoming) => merge_list(&mut groups[index].2, incoming),
-            (None, ImportNames::None) if route_named => {}
-            (None, names) => groups.push((&spec.module_path, alias, names.clone())),
-        }
-    }
-    // A name-less pair that a later glob joined adds nothing to it.
-    let globbed: Vec<(&ModuleFullPath, Option<&ModuleName>)> = groups
-        .iter()
-        .filter(|(_, _, names)| *names == ImportNames::Glob)
-        .map(|(path, alias, _)| (*path, *alias))
-        .collect();
-    groups.retain(|(path, alias, names)| {
-        !(*names == ImportNames::None && globbed.contains(&(*path, *alias)))
-    });
-    if groups.is_empty() {
-        return String::new();
-    }
-    let parts: Vec<String> = groups
-        .iter()
-        .map(|(module_path, alias, names)| render_pair(module_path, *alias, names))
-        .collect();
-    format!("(import [{}])", parts.join(" "))
+    first_occurrences(user_authored.map(|spec| {
+        format!(
+            "(import [{}])",
+            render_pair(&spec.module_path, spec.alias.as_ref(), &spec.names)
+        )
+    }))
+    .join("\n")
 }
 
-/// Merge `incoming`, a list or name-less spec, into `merged`, the list pair
-/// of an earlier spec for the same module and alias.
-fn merge_list(merged: &mut ImportNames, incoming: &ImportNames) {
-    match (&mut *merged, incoming) {
-        (_, ImportNames::None) => {}
-        (ImportNames::None, _) => *merged = incoming.clone(),
-        (ImportNames::Specific(entries), ImportNames::Specific(new_entries)) => {
-            for entry in new_entries {
-                if !entries.contains(entry) {
-                    entries.push(entry.clone());
-                }
-            }
-        }
-        (ImportNames::Glob, _) | (_, ImportNames::Glob) => {
-            unreachable!("invariant: a glob forms its own pair and never joins a list")
-        }
-    }
+/// `forms` in order, each exact repeat of an earlier one dropped.
+fn first_occurrences(forms: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    forms.filter(|form| seen.insert(form.clone())).collect()
 }
 
 fn generate_exports(specs: &[ExportSpec]) -> String {
@@ -654,25 +517,6 @@ fn render_entry(entry: &ImportEntry) -> String {
         other => unreachable!(
             "invariant: the frontend produces only `Name` and `MemberGlob` entries, got {other:?}"
         ),
-    }
-}
-
-/// The (sexp, source) pair off a symbol's introspection record. The verbatim
-/// `source` text is the S102 CS-D2 emission authority (§15.4 rule 1, §15.1
-/// authorship fidelity); the `sexp` remains the structural authority (dedup
-/// identity, dependency sort, render fallback).
-fn introspection_sexp_and_source(
-    introspection: Option<&DashMap<FQSymbol, Introspection>>,
-    module_path: &ModuleFullPath,
-    name: &cranelisp_types::Symbol,
-) -> (Option<Sexp>, Option<String>) {
-    let fq = FQSymbol {
-        module: module_path.clone(),
-        symbol: name.clone(),
-    };
-    match introspection.and_then(|m| m.get(&fq)) {
-        Some(intro) => (intro.sexp.clone(), intro.source.clone()),
-        None => (None, None),
     }
 }
 
@@ -767,39 +611,30 @@ fn emit_decl_text(sexp: &Sexp, source: Option<&str>, live_doc: Option<&str>) -> 
     render_decl_sexp(sexp, live_doc)
 }
 
-/// Choose the emitted text for one `deftrait` / `deftype` declaration (FIXME
-/// 0538 — source-first regen extended to save.rs §5–7, symmetric with §8's
-/// `generate_fns_and_macros`).
+/// Choose the emitted text for one definition from its record: source-text
+/// first through the shared `emit_decl_text` gate when the record carries a
+/// form, splicing `live_doc` into a function's §5.12 slot.
 ///
-/// Emission is source-text-first: when the record carries a `sexp`, delegate to
-/// the shared `emit_decl_text` gate — verbatim `Introspection.source` when it
-/// re-parses to the recorded sexp (preserving the user's formatting + reader
-/// shorthand), else the reconciled `render_decl_sexp` pretty-printer. A
-/// declaration is NOT a `defn`, so no docstring is spliced (`None`).
-///
-/// The `(None, Some(source))` arm covers the REPL-defined decl case: a
-/// `deftrait`/`deftype` entered at the prompt records only the authored
-/// `Introspection.source` (via `eval::record_defining_turn_source`, keyed on the
-/// trait/type name) — no `sexp` is captured for a `TypeDef`/`TraitDecl` form.
-/// Before this fix the sexp-only gate dropped such declarations ENTIRELY from
-/// the regenerated file. Emit the verbatim authored source, gated on it
-/// re-parsing to a single well-formed form (a stale/garbage source is skipped,
-/// never corrupts the file). The text-only record's authored form is that
-/// parse. `None` ⇒ nothing renderable is recorded ⇒ the caller reports the
-/// entry as unrendered (§2.4.3).
-fn emit_decl_or_source(sexp: Option<Sexp>, source: Option<String>) -> Option<RenderedDecl> {
+/// The `(None, Some(source))` arm is a record that holds authored text only,
+/// as a REPL declaration's may (`eval::record_defining_turn_source`): the
+/// verbatim text is emitted, gated on it re-parsing to a single well-formed
+/// form, and that parse is its authored form. `None` ⇒ nothing renderable is
+/// recorded ⇒ the caller reports the entry as unrendered (§2.4.3).
+fn emit_decl_or_source(
+    sexp: Option<Sexp>,
+    source: Option<String>,
+    live_doc: Option<&str>,
+) -> Option<RenderedDecl> {
     match (sexp, source) {
         (Some(sexp), src) => Some(RenderedDecl {
-            text: emit_decl_text(&sexp, src.as_deref(), None),
-            authored_at: Some(sexp.span()),
-            form: sexp,
+            text: emit_decl_text(&sexp, src.as_deref(), live_doc),
+            form: sexp.format_flat(),
         }),
         (None, Some(src)) => {
             let trimmed = src.trim();
             match cranelisp_frontend::parse(trimmed) {
-                Ok(mut forms) if forms.len() == 1 => Some(RenderedDecl {
-                    form: forms.remove(0),
-                    authored_at: None,
+                Ok(forms) if forms.len() == 1 => Some(RenderedDecl {
+                    form: forms[0].format_flat(),
                     text: trimmed.to_string(),
                 }),
                 _ => None,
@@ -809,353 +644,267 @@ fn emit_decl_or_source(sexp: Option<Sexp>, source: Option<String>) -> Option<Ren
     }
 }
 
-/// One declaration's authored form, where it was authored when the record
-/// knows, and the text emitted for it.
+/// One declaration's authored form, flat, and the text emitted for it.
 struct RenderedDecl {
-    form: Sexp,
-    authored_at: Option<Span>,
+    form: String,
     text: String,
 }
 
-/// Join a declaration section's items in key order, leaving out a form an
-/// earlier item or section already emitted.
-fn join_declarations(mut items: Vec<(String, RenderedDecl)>, ledger: &mut SectionLedger) -> String {
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    items
-        .into_iter()
-        .filter(|(_, decl)| ledger.first_emission(&decl.form, decl.authored_at))
-        .map(|(_, decl)| decl.text)
-        .collect::<Vec<_>>()
-        .join("\n\n")
+// ---------------------------------------------------------------------------
+// The section selector (design/int/s125-binary-clean.md §4.1)
+// ---------------------------------------------------------------------------
+
+/// What regeneration does with one binding of the module's table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Persistence {
+    /// The binding is module content, written from its record.
+    Persisted(PersistedKind),
+    /// The binding is not module content, for the reason given.
+    Excluded(Exclusion),
 }
 
-fn generate_traits(
+/// The kinds of binding a module file holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedKind {
+    /// A single-signature function.
+    Function,
+    /// A multi-signature family, under its base name (ACT-1068).
+    Family,
+    Macro,
+    /// A defined type: a sum or enum type, or a product type through its
+    /// constructor's type facet.
+    Type,
+    Trait,
+}
+
+/// Why a binding is not written. An implementation is written from the
+/// module's written-implementation records, never from a binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exclusion {
+    /// A synthetic internal name: an `__expr` wrapper, a mangled variant.
+    Internal,
+    /// A minted instance of a template, product constructors included
+    /// (ACT-1101): the definitions that use it demand it again.
+    MintedInstance,
+    /// A sum type's constructor, written with its type.
+    Constructor,
+    /// A product field accessor, written with its type.
+    Accessor,
+    /// A method body of a trait implementation, written with its `impl`.
+    ImplementationMethod,
+    /// A trait's method declaration, written with its trait.
+    TraitMethod,
+    /// A trait implementation's discovery shell.
+    ImplShell,
+    SpecialForm,
+    IntrinsicType,
+    Primitive,
+    PlatformEffect,
+}
+
+/// Classify one binding. Every `Decl` variant and callable origin is matched
+/// with no wildcard, so a new variant does not compile until it is
+/// classified. Instances are excluded before any facet is read.
+fn persistence(name: &str, entry: &Binding<crate::code::Code>) -> Persistence {
+    use Persistence::{Excluded, Persisted};
+    if crate::worker::is_internal_listing_name(name) {
+        return Excluded(Exclusion::Internal);
+    }
+    if crate::worker::is_internal_listing_entry(name, entry) {
+        return Excluded(Exclusion::MintedInstance);
+    }
+    match &entry.declaration {
+        Decl::Callable(callable) => match &callable.origin {
+            CallableOrigin::Plain => Persisted(PersistedKind::Function),
+            CallableOrigin::Ctor {
+                type_def: Some(_), ..
+            } => Persisted(PersistedKind::Type),
+            CallableOrigin::Ctor { type_def: None, .. } => Excluded(Exclusion::Constructor),
+            CallableOrigin::Accessor { .. } => Excluded(Exclusion::Accessor),
+            CallableOrigin::TraitMethod { .. } => Excluded(Exclusion::ImplementationMethod),
+            CallableOrigin::RustPrimitive => Excluded(Exclusion::Primitive),
+            CallableOrigin::PlatformEffect { .. } => Excluded(Exclusion::PlatformEffect),
+        },
+        Decl::Overloaded(_) => Persisted(PersistedKind::Family),
+        Decl::Macro(_) => Persisted(PersistedKind::Macro),
+        Decl::TraitMethod(_) => Excluded(Exclusion::TraitMethod),
+        Decl::Type(TypeRecord::Defined { .. }) => Persisted(PersistedKind::Type),
+        Decl::Type(TypeRecord::Intrinsic { .. }) => Excluded(Exclusion::IntrinsicType),
+        Decl::Trait(_) => Persisted(PersistedKind::Trait),
+        Decl::ImplShell(_) => Excluded(Exclusion::ImplShell),
+        Decl::SpecialForm(_) => Excluded(Exclusion::SpecialForm),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Definitions in authorship order (design/int/s125-binary-clean.md §4.2)
+// ---------------------------------------------------------------------------
+
+/// One persisted definition: its record's key, its authorship position and
+/// its rendering.
+struct Definition {
+    key: cranelisp_types::Symbol,
+    position: Option<AuthoredPosition>,
+    decl: RenderedDecl,
+}
+
+/// The module's definitions, one sequence in authorship order (repl §15.4
+/// rule 2), or every selected entry that has no recorded authored form.
+fn generate_definitions(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
-    ledger: &mut SectionLedger,
-) -> String {
-    let mut items = Vec::new();
+) -> Result<String, UnrenderedEntries> {
+    let mut unrendered = Vec::new();
+    let mut definitions = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if matches!(entry.declaration, Decl::Trait(_)) {
-            let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
-            match emit_decl_or_source(sexp, source) {
-                Some(decl) => items.push((name.to_string(), decl)),
-                None => ledger.unrendered.push(Unrendered::Named(name.clone())),
+        let kind = match persistence(name.as_ref(), entry) {
+            Persistence::Persisted(kind) => kind,
+            Persistence::Excluded(reason) => {
+                if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+                    eprintln!("module-trace: regeneration excludes {name}: {reason:?}");
+                }
+                continue;
             }
+        };
+        let record = authored_record(introspection, module_path, name);
+        let (fallback, live_doc) = match (&entry.declaration, kind) {
+            (Decl::Macro(declaration), _) => (Some(declaration.macro_sexp.clone()), None),
+            (Decl::Callable(callable), PersistedKind::Function) => {
+                (None, callable.docstring.as_deref())
+            }
+            (Decl::Overloaded(family), _) => (None, family.docstring.as_deref()),
+            _ => (None, None),
+        };
+        match emit_decl_or_source(record.sexp.or(fallback), record.source, live_doc) {
+            Some(decl) => definitions.push(Definition {
+                key: name.clone(),
+                position: record.position,
+                decl,
+            }),
+            None => unrendered.push(Unrendered::Named(name.clone())),
         }
     }
-    join_declarations(items, ledger)
-}
-
-fn generate_types(
-    st: &crate::code::SessionSymbolTable,
-    introspection: Option<&DashMap<FQSymbol, Introspection>>,
-    module_path: &ModuleFullPath,
-    ledger: &mut SectionLedger,
-) -> String {
-    let mut items = Vec::new();
-    for (name, entry) in st.all_symbols() {
-        // Enumerate through the SINGLE `type_def_info()` reader (0573; the S79
-        // dual-facet cure) — it answers `Some` for a sum/enum `TypeDef` entry AND
-        // for a single-ctor PRODUCT deftype, whose type facet rides on its
-        // got-slotted ctor `Def` (`Constructor { type_def: Some(..) }`) and has NO
-        // separate `TypeDef` entry. Matching `ModuleEntry::TypeDef` literally
-        // skipped the product form ⇒ it was accepted + usable in-session but never
-        // persisted to the backing `.cl` (silent data loss on reload). A sum ctor
-        // (`type_def: None`) answers `None`, so each type is emitted exactly once.
-        if entry.type_def_info().is_some() {
-            let (sexp, source) = introspection_sexp_and_source(introspection, module_path, name);
-            match emit_decl_or_source(sexp, source) {
-                Some(decl) => items.push((name.to_string(), decl)),
-                None => ledger.unrendered.push(Unrendered::Named(name.clone())),
-            }
-        }
-    }
-    join_declarations(items, ledger)
-}
-
-/// Generate trait implementations WRITTEN IN this module (RT-4 close,
-/// `design/int/session-persistence.md` §12).
-///
-/// The former stub silently skipped the whole `impl` kind (the §12.1
-/// enumeration-miss data-loss class): every `impl` — conventional and HKT —
-/// vanished from the regenerated `.cl` while `deftrait`/`deftype`/`defn`
-/// survived (inconsistent-resurrection, the S109-4/0573 class). The fix mirrors
-/// `generate_traits`/`generate_types` exactly (ONE reader per kind, Principle 7).
-///
-/// **Enumeration (§12.3, completeness-binding).** "The impls written in module
-/// M" are M's `written_trait_impls` records: every impl written in M has one,
-/// whether its trait is M's own or imported, and a cache-restored table carries
-/// them. Each record is identified by its settled pair through the injective
-/// `trait_impl_key`, the key its live turn and rehydration record its form
-/// under (`design/int/int.md` §6.13), so two impls of one trait for same-named
-/// types from different modules stay two. An impl of M's trait written in
-/// another module N is N's record, not M's: a legal exclusion.
-///
-/// Source is fetched via the same `introspection_sexp_and_source` +
-/// `emit_decl_or_source` re-parse-gated reader every decl section uses; a
-/// record with no form is reported as unrendered (§2.4.3), never skipped.
-/// Output is ordered by trait and type name, then by the key.
-fn generate_impls(
-    st: &crate::code::SessionSymbolTable,
-    introspection: Option<&DashMap<FQSymbol, Introspection>>,
-    module_path: &ModuleFullPath,
-    ledger: &mut SectionLedger,
-) -> String {
-    let mut written: Vec<&cranelisp_types::WrittenTraitImpl> = st
+    // "The impls written in module M" are M's `written_trait_impls` records
+    // (`design/int/session-persistence.md` §12.3), each identified by the
+    // injective key its live turn and rehydration record its form under
+    // (`design/int/int.md` §6.13). An impl of M's trait written in another
+    // module is that module's record: a legal exclusion.
+    for record in st
         .written_trait_impls
         .iter()
         .filter(|record| record.impl_module == *module_path)
-        .collect();
-    written.sort_by_cached_key(|record| {
-        let identity = crate::session_v4::impl_identity(record).symbol;
-        (
-            record.trait_name.name.to_string(),
-            record.impl_type.name.to_string(),
-            identity,
-        )
-    });
-
-    let mut items = Vec::new();
-    for record in written {
+    {
         let key = crate::session_v4::impl_identity(record).symbol;
-        let (sexp, source) = introspection_sexp_and_source(introspection, module_path, &key);
-        match emit_decl_or_source(sexp, source) {
-            Some(decl) => items.push((key.to_string(), decl)),
-            None => ledger.unrendered.push(Unrendered::Impl {
+        let authored = authored_record(introspection, module_path, &key);
+        match emit_decl_or_source(authored.sexp, authored.source, None) {
+            Some(decl) => definitions.push(Definition {
+                key,
+                position: authored.position,
+                decl,
+            }),
+            None => unrendered.push(Unrendered::Impl {
                 trait_name: record.trait_name.clone(),
                 impl_type: record.impl_type.clone(),
             }),
         }
     }
-    join_declarations(items, ledger)
+    if !unrendered.is_empty() {
+        return Err(UnrenderedEntries(unrendered));
+    }
+    definitions.sort_by(|a, b| {
+        (
+            a.position.is_none(),
+            a.position,
+            &a.decl.form,
+            a.key.as_ref(),
+        )
+            .cmp(&(
+                b.position.is_none(),
+                b.position,
+                &b.decl.form,
+                b.key.as_ref(),
+            ))
+    });
+    Ok(emit_definitions(&definitions))
 }
 
-/// §12.3.1 section-completeness guard (Principle 18) — the runtime seam. Sweeps
-/// the live table and, for any entry a classification marks unclaimed, trips a
-/// `debug_assert!` (debug) / emits `MODULE_TRACE` (release).
-///
-/// The PRIMARY guard is compile-time: `section_entry_claimed_or_excluded` matches
-/// `ModuleEntry`/`DefKind` exhaustively, so a NEW persisted kind cannot be added
-/// without classifying it here. With the current variant set every classification
-/// is claimed-or-excluded, so this sweep does not fire today — it remains as the
-/// documented seam + `MODULE_TRACE` hook, firing only if a future edit marks a
-/// classification `false` (a persisted-content kind left unclaimed).
-fn assert_section_completeness(st: &crate::code::SessionSymbolTable, module_path: &ModuleFullPath) {
-    for (name, entry) in st.all_symbols() {
-        if section_entry_claimed_or_excluded(name.as_ref(), entry) {
-            continue;
-        }
-        if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
-            eprintln!(
-                "[MODULE_TRACE] regen section-completeness breach in `{module_path}`: \
-                 entry `{name}` is a persisted-content kind claimed by no section \
-                 generator — it would be SILENTLY dropped from the regenerated `.cl` \
-                 (session-persistence.md §12.3.1)"
-            );
-        }
-        debug_assert!(
-            false,
-            "regen section-completeness breach in `{module_path}`: entry `{name}` \
-             is a persisted-content kind claimed by no section generator — it would \
-             be silently dropped from the regenerated `.cl` (session-persistence.md \
-             §12.3.1). Add a section generator or list it as a legal exclusion in \
-             `section_entry_claimed_or_excluded`."
-        );
-    }
+/// The authored carriers a definition is written from.
+struct AuthoredRecord {
+    sexp: Option<Sexp>,
+    source: Option<String>,
+    position: Option<AuthoredPosition>,
 }
 
-/// `true` iff `entry` is claimed by a section generator (traits/types/impls/fns)
-/// OR is an enumerated LEGAL exclusion (a non-persisted kind, or an impl written
-/// in another module) — the §12.3.1 completeness contract.
-///
-/// Both `ModuleEntry` and `DefKind` are matched EXHAUSTIVELY (no `_` arm), so a
-/// NEW variant is a COMPILE error here: its author must classify it before it can
-/// be persisted (compile-time enforcement — louder than the runtime sweep the
-/// design first sketched, since the enums turned out exhaustive to this crate).
-/// The runtime sweep in `assert_section_completeness` remains as the documented
-/// seam + `MODULE_TRACE` hook (it fires if a future classification is set wrong).
-fn section_entry_claimed_or_excluded(name: &str, entry: &Binding<crate::code::Code>) -> bool {
-    // Internal synthetic names (`$`-mangled impl methods / mono / multi-sig
-    // variants, `__expr` / `__macro_*` wrappers) are never persisted as their
-    // own row — they ride their owner's form (§8's `is_internal_listing_name`
-    // skip). A legal exclusion regardless of kind.
-    if crate::worker::is_internal_listing_entry(name, entry) {
-        return true;
-    }
-    match &entry.declaration {
-        Decl::Callable(_)
-        | Decl::TraitMethod(_)
-        | Decl::Overloaded(_)
-        | Decl::Macro(_)
-        | Decl::Type(_)
-        | Decl::Trait(_)
-        | Decl::ImplShell(_)
-        | Decl::SpecialForm(_) => true,
-    }
-}
-
-fn generate_fns_and_macros(
-    st: &crate::code::SessionSymbolTable,
+/// The record of `name`'s authored form, empty when none is recorded. The
+/// verbatim `source` text is the S102 CS-D2 emission authority (§15.4 rule 1,
+/// §15.1 authorship fidelity); the `sexp` remains the structural authority
+/// (dedup identity, render fallback).
+fn authored_record(
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
     module_path: &ModuleFullPath,
-    ledger: &mut SectionLedger,
-) -> String {
-    // Partition into macros and non-macro fns. Macros MUST be emitted BEFORE
-    // the functions that use them (S77 W-MacroTrait, FIXME 0299): defmacro-
-    // before-use is normative (`macro-availability-model.md` §1), and the
-    // regenerated file must be round-trip-safe (§2 — a cached REPL restart
-    // recompiles the regenerated `user.cl` under the SAME availability rules
-    // the live session used). The callee-list `dependency_sort` does NOT model
-    // the macro-use edge (a macro call is not a `callees()` entry), so without
-    // this partition `(defn main [] (twice 21))` could be emitted before
-    // `(defmacro twice …)`, and the restart would reject `twice` as a forward
-    // reference. Per the locked model a macro depends only on PRIOR modules +
-    // other macros (never a same-module non-macro def), so emitting all macros
-    // first is always valid; functions then see every macro defined above them.
-    let mut macro_items: Vec<FnMacroItem> = Vec::new();
-    let mut fn_items: Vec<FnMacroItem> = Vec::new();
-    // Live docstrings, keyed by symbol name (FIXME 0430, §11.3a). The live
-    // `ModuleEntry::Def.docstring` is AUTHORITATIVE — threaded into the renderer
-    // at emit time so a `set-doc` edit round-trips through regen. Only `UserFn`
-    // entries with a `Some` docstring are recorded; macros are out of scope for
-    // S94 (a `defmacro` has no `set-doc` surface — they render with `None`).
-    let mut docstrings: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-
-    for (name, entry) in st.all_symbols() {
-        // Skip internal synthetic names — mangled entries ($-containing: impl
-        // methods like `show$Int`, macro clause variants like `m$clause-0`,
-        // mono variants like `g$Int`) AND the synthetic `__expr` eval wrapper.
-        //
-        // FIXME 0549 — a bare top-level EXPRESSION evaluation is recorded as a
-        // synthetic `__expr`-named `UserFn` (`wrap_exprs_as_defns`). It is
-        // transient session output, NOT module content, and MUST NOT be
-        // persisted to the backing source file (repl/spec.md §15.7). Only its
-        // SOURCE emission is suppressed — the live in-session `__expr` entry is
-        // left untouched. A reload rebuilds the module from the
-        // definitions-only file and keeps no instance: the definitions that use
-        // one demand it again when they recompile
-        // (design/int/session-transaction.md §8.5).
-        //
-        // The wrapper name is EXACTLY `"__expr"` (never suffixed), so match it
-        // exactly via `worker::is_internal_listing_name` — a user symbol like
-        // `__expr-helper` is a legitimate definition and MUST be preserved
-        // (Principle 7: one predicate encapsulates the `$`-contains + `__expr`
-        // pair, not an over-broad `starts_with`).
-        if crate::worker::is_internal_listing_entry(name.as_ref(), entry) {
-            continue;
-        }
-        // Predicate: include both UserFn and Macro Def entries for
-        // regeneration; skip primitives, constructors, platform effects,
-        // overloaded base entries, etc. Per FIXME 0219 — macros surface
-        // through the same `ModuleEntry::Def` arm symmetric with UserFn.
-        // For macros, the cache-surviving `macro_sexp` (D1 ruling §6) is the
-        // fallback source when no record exists, e.g. a cache-restored macro
-        // that rehydration could not key (§2.2, §2.4.4).
-        let (is_macro, macro_table_sexp) = match &entry.declaration {
-            Decl::Macro(declaration) => (true, Some(declaration.macro_sexp.clone())),
-            Decl::Overloaded(_) => continue,
-            Decl::Callable(callable) => match &callable.origin {
-                CallableOrigin::Plain => {
-                    // Capture the live, authoritative docstring (§11.3a) so regen
-                    // re-emits a `set-doc` edit into the §5.12 slot.
-                    if let Some(doc) = &callable.docstring {
-                        docstrings.insert(name.to_string(), doc.clone());
-                    }
-                    (false, None)
-                }
-                _ => continue,
-            },
-            _ => continue,
-        };
-        // Prefer the introspection record (carries the verbatim REPL input text
-        // when present); fall back to the symbol-table `macro_sexp` for macros.
-        // S102 CS-D2: the record's verbatim `source` rides along as the
-        // emission authority; `emit_decl_text`'s consistency gate makes a
-        // stale or mispaired source harmless (render fallback).
-        let (record_sexp, record_source) =
-            introspection_sexp_and_source(introspection, module_path, name);
-        let Some(sexp) = record_sexp.or(macro_table_sexp) else {
-            ledger.unrendered.push(Unrendered::Named(name.clone()));
-            continue;
-        };
-        let item = FnMacroItem {
-            name: name.to_string(),
-            sexp,
-            source: record_source,
-        };
-        if is_macro {
-            macro_items.push(item);
-        } else {
-            fn_items.push(item);
-        }
+    name: &cranelisp_types::Symbol,
+) -> AuthoredRecord {
+    let fq = FQSymbol {
+        module: module_path.clone(),
+        symbol: name.clone(),
+    };
+    match introspection.and_then(|m| m.get(&fq)) {
+        Some(record) => AuthoredRecord {
+            sexp: record.sexp.clone(),
+            source: record.source.clone(),
+            position: record.position,
+        },
+        None => AuthoredRecord {
+            sexp: None,
+            source: None,
+            position: None,
+        },
     }
-
-    // Dependency-sort each section independently (macro→macro and fn→fn
-    // intra-section edges still matter), then concatenate macros-first.
-    //
-    // An authored form shared with an earlier item or section is emitted once
-    // (§1.4). A second copy poisons the file: a macro call re-expands at
-    // reload while its expansion artifacts are already registered, and the
-    // two do not co-load.
-    let macros_sorted = dependency_sort(macro_items, st);
-    let fns_sorted = dependency_sort(fn_items, st);
-    macros_sorted
-        .into_iter()
-        .chain(fns_sorted)
-        .filter(|item| ledger.first_emission(&item.sexp, Some(item.sexp.span())))
-        // Macros carry `None` (they are absent from `docstrings`); UserFns thread
-        // their live, authoritative docstring (§11.3a). Emission is source-text-
-        // first (CS-D2): the verbatim authored text when consistent, else the
-        // reconciled render (a strict no-op for a never-`set-doc`'d def).
-        .map(|item| {
-            emit_decl_text(
-                &item.sexp,
-                item.source.as_deref(),
-                docstrings.get(&item.name).map(String::as_str),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
-/// One fn/macro regeneration item: the symbol, its structural authority
-/// (`sexp` — dedup identity + dependency sort + render fallback), and the
-/// verbatim authored text when recorded (`source` — the CS-D2 emission
-/// authority, consistency-gated at emit time).
-struct FnMacroItem {
-    name: String,
-    sexp: Sexp,
-    source: Option<String>,
+/// Write each entry once, in the definitions' authored order
+/// (`design/int/s125-binary-clean.md` §4.2). The definitions a macro call
+/// generated share its entry, its position and its authored form, so the call
+/// is written once: a second copy poisons the file, since the call re-expands
+/// at reload while its artifacts are already registered. A form at a position
+/// is never dropped for a different form's sake.
+fn emit_definitions(definitions: &[Definition]) -> String {
+    let mut written: Vec<String> = Vec::new();
+    let mut entry_at: Option<(AuthoredPosition, String)> = None;
+    for definition in definitions {
+        if let Some(position) = definition.position {
+            let form = &definition.decl.form;
+            if entry_at
+                .as_ref()
+                .is_some_and(|(at, seen)| *at == position && seen == form)
+            {
+                continue;
+            }
+            entry_at = Some((position, form.clone()));
+        }
+        written.push(definition.decl.text.clone());
+    }
+    written.join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
 // Backing-file rehydration (design/int/session-persistence.md §2.4.2)
 // ---------------------------------------------------------------------------
 
-/// The identity a live turn records for one top-level definition form.
-enum AuthoredKey {
-    /// A name-slot form: live when the module's table binds the name.
-    Entry(cranelisp_types::Symbol),
-    /// An `impl`, by its authored label: live, and keyed, when exactly one of
-    /// the module's written-impl records carries the label.
-    Impl(cranelisp_types::Symbol),
-}
-
 /// Fill every missing authored-form record of `module_path` from its backing
 /// file (`design/int/session-persistence.md` §2.4.2).
 ///
 /// Cache restore and a fresh file load of declarations install entries
 /// without records; the backing file they were installed from supplies them.
-/// Each top-level native definition form, and each member of a top-level
-/// `begin`, is keyed as a live turn keys it and fills that key's record only
-/// when the key is live and the record has neither form nor text. The record
-/// takes the whole top-level form, as a live turn records a `begin`. A text-
-/// only record is a REPL declaration that the file may hold an older
-/// generation of, so it is never replaced. Returns the number of records
-/// filled; an unparseable file fills none.
+/// Each top-level native definition form is keyed as a live turn keys it and
+/// fills that key's record only when the key is live and the record has
+/// neither form nor text. A legacy file's `begin` dissolves as a load
+/// dissolves it: each member records its own form at its own file position
+/// (`design/int/s125-binary-clean.md` §4.2). A text-only record is a REPL
+/// declaration that the file may hold an older generation of, so it is never
+/// replaced. Returns the number of records filled; an unparseable file fills
+/// none.
 pub(crate) fn rehydrate_introspection_from_source(
     st: &crate::code::SessionSymbolTable,
     introspection: &DashMap<FQSymbol, Introspection>,
@@ -1169,18 +918,18 @@ pub(crate) fn rehydrate_introspection_from_source(
 
     let mut filled = 0;
     for form in &forms {
-        for key in authored_keys(form, module_path) {
+        for (member, key) in entry_keys(form, module_path) {
             // An impl form that no single record carries stays unkeyed; the
             // regeneration then reports its record as unrendered (§2.4.3).
             let symbol = match key {
-                AuthoredKey::Entry(symbol) if st.get(symbol.as_ref()).is_some() => symbol,
-                AuthoredKey::Impl(label) => {
+                EntryKey::Name(symbol) if st.get(symbol.as_ref()).is_some() => symbol,
+                EntryKey::Impl(label) => {
                     match match_impl_record(&st.written_trait_impls, module_path, &label) {
                         ImplRecordMatch::One(record) => impl_identity(record).symbol,
                         ImplRecordMatch::Unmatched | ImplRecordMatch::Several => continue,
                     }
                 }
-                AuthoredKey::Entry(_) => continue,
+                EntryKey::Name(_) => continue,
             };
             let mut record = introspection
                 .entry(FQSymbol {
@@ -1191,141 +940,54 @@ pub(crate) fn rehydrate_introspection_from_source(
             if record.sexp.is_some() || record.source.is_some() {
                 continue;
             }
-            record.sexp = Some(form.clone());
             record.source = Some(
-                verbatim_slice(form, backing_source)
-                    .unwrap_or_else(|| crate::pretty::pretty_print_plain(form)),
+                verbatim_slice(&member, backing_source)
+                    .unwrap_or_else(|| crate::pretty::pretty_print_plain(&member)),
             );
+            record.position = record
+                .position
+                .or(Some(AuthoredPosition::in_file(member.span().start)));
+            record.sexp = Some(member);
             filled += 1;
         }
     }
     filled
 }
 
-/// The live-turn keys of one top-level form: its own, or each `begin`
-/// member's. Structural forms, expressions and macro calls have none, and a
-/// member that does not build is skipped.
-fn authored_keys(form: &Sexp, module_path: &ModuleFullPath) -> Vec<AuthoredKey> {
+/// The keys one top-level form's definitions record under before `impl`
+/// identities settle, each with the member form that defines it: its own, or
+/// each member's of a `begin`, recursively. Structural forms, expressions and
+/// macro calls define none, and a member that does not build is skipped.
+pub(crate) fn entry_keys(form: &Sexp, module_path: &ModuleFullPath) -> Vec<(Sexp, EntryKey)> {
     use crate::process_form::form_dispatch::{FormKind, classify_form};
     cranelisp_frontend::flatten_begin(form.clone())
-        .iter()
-        .filter_map(|member| {
-            if cranelisp_frontend::is_defmacro(member) {
-                return cranelisp_frontend::parse_defmacro(member)
-                    .ok()
-                    .map(|info| AuthoredKey::Entry(info.name));
-            }
-            if !matches!(classify_form(member, module_path), Ok(FormKind::Regular)) {
-                return None;
-            }
-            let built = crate::worker::build_program_compat(std::slice::from_ref(member)).ok()?;
-            let [top] = built.as_slice() else {
-                return None;
-            };
-            Some(match top {
-                cranelisp_types::TopLevel::TraitImpl(trait_impl) => {
-                    AuthoredKey::Impl(trait_impl.authored_label())
-                }
-                _ => match crate::session_v4::definition_identity(module_path, top)? {
-                    crate::session_v4::BuiltIdentity::Keyed(symbol) => {
-                        AuthoredKey::Entry(symbol.symbol)
-                    }
-                    crate::session_v4::BuiltIdentity::Impl(_) => return None,
-                },
-            })
-        })
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Dependency sorting (Kahn's topological sort)
-// ---------------------------------------------------------------------------
-
-/// Sort functions/macros by dependency order using callee lists from the
-/// symbol table (Decision 21). Items with no intra-module deps appear first.
-/// Cycles are broken alphabetically.
-fn dependency_sort(
-    items: Vec<FnMacroItem>,
-    st: &crate::code::SessionSymbolTable,
-) -> Vec<FnMacroItem> {
-    if items.len() <= 1 {
-        return items;
-    }
-
-    let names: HashSet<&str> = items.iter().map(|i| i.name.as_str()).collect();
-
-    // Build adjacency from callee lists (intra-module only)
-    let mut deps: std::collections::HashMap<&str, HashSet<&str>> = std::collections::HashMap::new();
-    for item in &items {
-        let name = &item.name;
-        let mut item_deps = HashSet::new();
-        if let Some(entry) = st.get(name) {
-            for callee in entry.callees() {
-                let callee_name = callee.symbol.as_ref();
-                if names.contains(callee_name)
-                    && callee_name != name.as_str()
-                    && callee.module == st.path
-                {
-                    item_deps.insert(callee_name);
-                }
-            }
-        }
-        deps.insert(name.as_str(), item_deps);
-    }
-
-    // Kahn's algorithm
-    let mut in_degree: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    let mut dependents: std::collections::HashMap<&str, Vec<&str>> =
-        std::collections::HashMap::new();
-    for item in &items {
-        in_degree.entry(item.name.as_str()).or_insert(0);
-    }
-    for (name, item_deps) in &deps {
-        for dep in item_deps {
-            dependents.entry(*dep).or_default().push(*name);
-            *in_degree.entry(*name).or_insert(0) += 1;
-        }
-    }
-
-    let mut queue: Vec<&str> = in_degree
-        .iter()
-        .filter(|&(_, &deg)| deg == 0)
-        .map(|(name, _)| *name)
-        .collect();
-    queue.sort_by(|a, b| b.cmp(a)); // reverse so pop() gives smallest
-
-    let mut order: Vec<String> = Vec::new();
-    while let Some(name) = queue.pop() {
-        order.push(name.to_string());
-        if let Some(dep_list) = dependents.get(name) {
-            for dep_name in dep_list {
-                if let Some(deg) = in_degree.get_mut(dep_name) {
-                    *deg -= 1;
-                    if *deg == 0 {
-                        queue.push(*dep_name);
-                        queue.sort_by(|a, b| b.cmp(a));
-                    }
-                }
-            }
-        }
-    }
-
-    // Remaining items (cycles) added alphabetically
-    let ordered_set: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
-    let mut remaining: Vec<String> = items
-        .iter()
-        .filter(|i| !ordered_set.contains(i.name.as_str()))
-        .map(|i| i.name.clone())
-        .collect();
-    remaining.sort();
-    order.extend(remaining);
-
-    // Reorder items according to order
-    let mut item_map: std::collections::HashMap<String, FnMacroItem> =
-        items.into_iter().map(|i| (i.name.clone(), i)).collect();
-    order
         .into_iter()
-        .filter_map(|name| item_map.remove(&name))
+        .filter_map(|member| {
+            let key = if cranelisp_frontend::is_defmacro(&member) {
+                EntryKey::Name(cranelisp_frontend::parse_defmacro(&member).ok()?.name)
+            } else {
+                if !matches!(classify_form(&member, module_path), Ok(FormKind::Regular)) {
+                    return None;
+                }
+                let built =
+                    crate::worker::build_program_compat(std::slice::from_ref(&member)).ok()?;
+                let [top] = built.as_slice() else {
+                    return None;
+                };
+                match top {
+                    cranelisp_types::TopLevel::TraitImpl(trait_impl) => {
+                        EntryKey::Impl(trait_impl.authored_label())
+                    }
+                    _ => match crate::session_v4::definition_identity(module_path, top)? {
+                        crate::session_v4::BuiltIdentity::Keyed(symbol) => {
+                            EntryKey::Name(symbol.symbol)
+                        }
+                        crate::session_v4::BuiltIdentity::Impl(_) => return None,
+                    },
+                }
+            };
+            Some((member, key))
+        })
         .collect()
 }
 
@@ -1494,52 +1156,58 @@ mod tests {
         }
     }
 
-    // spec: spec/08-modules.md §8.3.10–§8.3.11; repl/spec/15-session-persistence.md
-    // §15.4 rule 1; design/int/int.md §6.13 (merging specs) — a glob and a
-    // list for one module stay separate pairs in first-appearance order, so
-    // a rename beside a glob survives.
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 4;
+    // design/int/s125-binary-clean.md §4.6 R4 — one `import` form per spec, in
+    // the table's order: specs of one module are not merged, and a glob, a
+    // rename and a name-less spec each keep their own form.
     #[test]
-    fn merge_imports_keeps_a_glob_and_a_list_apart() {
-        let glob = import_spec("m", ImportNames::Glob);
-        let renamed = import_spec("m", names(&[rename("f", "g")]));
-        let plain = import_spec("m", names(&[crate::imports::plain_entry("f")]));
-        for (specs, expected) in [
-            (
-                vec![glob.clone(), renamed.clone()],
-                "(import [m [*] m [(f g)]])",
-            ),
-            (
-                vec![renamed.clone(), glob.clone()],
-                "(import [m [(f g)] m [*]])",
-            ),
-            (vec![glob.clone(), plain.clone()], "(import [m [*] m [f]])"),
-            (
-                vec![glob.clone(), renamed.clone(), glob.clone(), plain.clone()],
-                "(import [m [*] m [(f g) f]])",
-            ),
-        ] {
-            assert_eq!(generate_imports(&specs), expected, "{specs:?}");
-        }
+    fn imports_write_one_form_per_spec_in_table_order() {
+        let plain = |name: &str| names(&[crate::imports::plain_entry(name)]);
+        let specs = vec![
+            import_spec("aa", plain("a")),
+            import_spec("bb", plain("b")),
+            import_spec("aa", plain("c")),
+            import_spec("m", ImportNames::Glob),
+            import_spec("m", names(&[rename("f", "g")])),
+            import_spec("m", ImportNames::None),
+        ];
+        assert_eq!(
+            generate_imports(&specs),
+            "(import [aa [a]])\n(import [bb [b]])\n(import [aa [c]])\n\
+             (import [m [*]])\n(import [m [(f g)]])\n(import [m []])"
+        );
     }
 
-    // spec: design/int/int.md §6.13 (merging specs) — two equal lists render
-    // one pair; a name-less spec adds no pair beside a glob or a list, in
-    // either order, and alone renders `[]`.
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 4;
+    // design/int/s125-binary-clean.md §4.6 R4 — an exact repeat of an earlier
+    // spec is written once, at its first place.
     #[test]
-    fn merge_imports_equal_lists_and_name_less_specs_add_no_pair() {
-        let glob = import_spec("m", ImportNames::Glob);
+    fn a_repeated_import_spec_is_written_once() {
         let list = import_spec("m", names(&[crate::imports::plain_entry("f")]));
-        let name_less = import_spec("m", ImportNames::None);
-        for (specs, expected) in [
-            (vec![list.clone(), list.clone()], "(import [m [f]])"),
-            (vec![glob.clone(), name_less.clone()], "(import [m [*]])"),
-            (vec![name_less.clone(), glob.clone()], "(import [m [*]])"),
-            (vec![list.clone(), name_less.clone()], "(import [m [f]])"),
-            (vec![name_less.clone(), list.clone()], "(import [m [f]])"),
-            (vec![name_less.clone()], "(import [m []])"),
-        ] {
-            assert_eq!(generate_imports(&specs), expected, "{specs:?}");
-        }
+        let other = import_spec("n", ImportNames::Glob);
+        assert_eq!(
+            generate_imports(&[list.clone(), other.clone(), list, other]),
+            "(import [m [f]])\n(import [n [*]])"
+        );
+    }
+
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 4;
+    // design/int/s125-binary-clean.md §4.6 R4 — platforms keep their entered
+    // order, a repeat written once.
+    #[test]
+    fn platforms_keep_their_entered_order() {
+        let platform = |name: &str| PlatformSpec {
+            name: name.to_string(),
+            span: Span::SYNTHETIC,
+        };
+        assert_eq!(
+            generate_platforms(&[
+                platform("test-capture"),
+                platform("stdio"),
+                platform("test-capture"),
+            ]),
+            "(platform test-capture)\n(platform stdio)"
+        );
     }
 
     // spec: spec/08-modules.md §8.3.2; repl/spec/15-session-persistence.md §15.4
@@ -1626,69 +1294,6 @@ mod tests {
         );
     }
 
-    // Consumer-audit guard for the S101 `Def.callees` enrichment (FIXME 0470;
-    // gate note 2). With the denser edge set — plain direct-call and
-    // fn-as-value edges now recorded, where before only trait/sig-dispatch/
-    // auto-curry edges existed — `dependency_sort` must still produce a
-    // correct, complete emission order: callees before callers on acyclic
-    // edges, termination + no item loss on the newly-representable cycles
-    // (mutual recursion is a 2-cycle in the enriched graph), self-edges
-    // filtered, cross-module edges ignored. The e2e cover is the existing
-    // `repl_persist.rs` §15.4 round-trips; this pins the seam directly.
-    // spec: tests/plan/s101-coverage-postmortem.md §2.1 item 4
-    #[test]
-    fn dependency_sort_correct_and_total_under_dense_callee_edges() {
-        let module = ModuleFullPath::from("user");
-        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-
-        let fq = |m: &str, s: &str| FQSymbol {
-            module: ModuleFullPath::from(m),
-            symbol: s.into(),
-        };
-        let mut insert_fn = |name: &str, slot: usize, callees: Vec<FQSymbol>| {
-            install_userfn(&mut st, name, slot, callees);
-        };
-
-        // Acyclic chain: top → mid → leaf (dense direct-call edges).
-        insert_fn("leaf", 0, vec![]);
-        insert_fn("mid", 1, vec![fq("user", "leaf")]);
-        insert_fn("top", 2, vec![fq("user", "mid")]);
-        // Mutual recursion: pa ↔ pb (a 2-cycle, newly representable with
-        // enriched edges), plus a caller pc → pa whose in-degree never
-        // resolves through the cycle.
-        insert_fn("pa", 3, vec![fq("user", "pb")]);
-        insert_fn("pb", 4, vec![fq("user", "pa")]);
-        insert_fn("pc", 5, vec![fq("user", "pa")]);
-        // Self-recursion (filtered by the `callee_name != name` guard) and a
-        // cross-module edge (filtered by the `callee.module == st.path` guard).
-        insert_fn("selfy", 6, vec![fq("user", "selfy"), fq("other", "leaf")]);
-
-        let p = |s: &str| cranelisp_frontend::parse(s).unwrap().remove(0);
-        let items: Vec<FnMacroItem> = ["top", "mid", "leaf", "pa", "pb", "pc", "selfy"]
-            .iter()
-            .map(|n| FnMacroItem {
-                name: n.to_string(),
-                sexp: p(&format!("(defn {n} [] 1)")),
-                source: None,
-            })
-            .collect();
-
-        let sorted = dependency_sort(items, &st);
-        let order: Vec<&str> = sorted.iter().map(|i| i.name.as_str()).collect();
-
-        // Termination + totality: every item exactly once, cycles included.
-        assert_eq!(order.len(), 7, "no item lost or duplicated: {order:?}");
-        let pos = |n: &str| {
-            order
-                .iter()
-                .position(|x| *x == n)
-                .unwrap_or_else(|| panic!("{n} missing from {order:?}"))
-        };
-        // Callee-before-caller on the acyclic chain.
-        assert!(pos("leaf") < pos("mid"), "leaf before mid: {order:?}");
-        assert!(pos("mid") < pos("top"), "mid before top: {order:?}");
-    }
-
     // -----------------------------------------------------------------------
     // S102 CS-D1 — origin-uniform regen dedup (Matrix B: single-authority)
     // -----------------------------------------------------------------------
@@ -1710,6 +1315,7 @@ mod tests {
         install_macro(&mut st, "x", expanded_defmacro);
         install_userfn(&mut st, "x-def", 0, Vec::new());
 
+        // One macro-call entry: both records carry the call at its position.
         let original = parse1("(mdef x 1)");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         for name in ["x", "x-def"] {
@@ -1717,7 +1323,9 @@ mod tests {
                 module: module.clone(),
                 symbol: name.into(),
             };
-            introspection.entry(fq).or_default().sexp = Some(original.clone());
+            let mut record = introspection.entry(fq).or_default();
+            record.sexp = Some(original.clone());
+            record.position = Some(AuthoredPosition::entered(0));
         }
 
         let out = regen_ok(&st, Some(&introspection), &module);
@@ -1732,33 +1340,55 @@ mod tests {
         );
     }
 
-    // Matrix B {literal-begin multi-defn × single-authority}: a user-typed
-    // `(begin (defn a …) (defn b …))` records the begin form under both names;
-    // regen emits it once (the latent sibling of the D1 cell — same dedup).
-    // spec: repl/spec.md §15.1
+    // A user-typed `(begin (defn a …) (defn b …))` dissolves at entry: each
+    // member records its own form at its own position, so each is written
+    // once, in member order, and no `begin` is written.
+    // spec: repl/spec/15-session-persistence.md §15.4 rules 1–2;
+    // design/int/s125-binary-clean.md §4.2
     #[test]
-    fn regen_literal_begin_multi_defn_emits_once() {
+    fn regen_writes_begin_members_as_their_own_entries() {
         let module = ModuleFullPath::from("user");
         let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
         install_userfn(&mut st, "a", 0, Vec::new());
         install_userfn(&mut st, "b", 1, Vec::new());
 
-        let begin_form = parse1("(begin (defn a [] 1) (defn b [] 2))");
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        for name in ["a", "b"] {
-            let fq = FQSymbol {
-                module: module.clone(),
-                symbol: name.into(),
-            };
-            introspection.entry(fq).or_default().sexp = Some(begin_form.clone());
-        }
+        record_at(
+            &introspection,
+            &module,
+            "b",
+            "(defn b [] 2)",
+            AuthoredPosition::entered(1),
+        );
+        record_at(
+            &introspection,
+            &module,
+            "a",
+            "(defn a [] 1)",
+            AuthoredPosition::entered(0),
+        );
 
         let out = regen_ok(&st, Some(&introspection), &module);
-        assert_eq!(
-            out.matches("(begin").count(),
-            1,
-            "one authored begin form, one emission: {out:?}"
-        );
+        assert_eq!(out, "(defn a [] 1)\n\n(defn b [] 2)\n");
+    }
+
+    // Two different forms recorded at one position are two entries, and
+    // each is written: a position alone never drops a form.
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 1;
+    // design/int/s125-binary-clean.md §4.2
+    #[test]
+    fn distinct_forms_at_one_position_are_each_written() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        install_userfn(&mut st, "a", 0, Vec::new());
+        install_userfn(&mut st, "b", 1, Vec::new());
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let at = AuthoredPosition::in_file(7);
+        record_at(&introspection, &module, "a", "(defn a [] 1)", at);
+        record_at(&introspection, &module, "b", "(defn b [] 2)", at);
+
+        let out = regen_ok(&st, Some(&introspection), &module);
+        assert_eq!(out, "(defn a [] 1)\n\n(defn b [] 2)\n");
     }
 
     // Control (negative boundary): two DISTINCT defns — same shape, different
@@ -2788,13 +2418,8 @@ mod tests {
             imported,
         );
 
-        let out = generate_impls(
-            &st,
-            Some(&introspection),
-            &module,
-            &mut SectionLedger::default(),
-        );
-        assert_eq!(out, format!("{imported}\n\n{own}"), "{out:?}");
+        let out = regen_ok(&st, Some(&introspection), &module);
+        assert_eq!(out, format!("{imported}\n\n{own}\n"), "{out:?}");
     }
 
     // §12.3 legal exclusion: a shell HOMED in M but WRITTEN IN another module N
@@ -2815,12 +2440,7 @@ mod tests {
             "(impl Disp X (defn dp [w] 7))",
         );
 
-        let out = generate_impls(
-            &st,
-            Some(&introspection),
-            &home,
-            &mut SectionLedger::default(),
-        );
+        let out = regen_ok(&st, Some(&introspection), &home);
         assert!(
             out.is_empty(),
             "an impl written in another module is a LEGAL exclusion from M's regen: {out:?}"
@@ -2860,12 +2480,7 @@ mod tests {
             renamed,
         );
 
-        let out = generate_impls(
-            &st,
-            Some(&introspection),
-            &module,
-            &mut SectionLedger::default(),
-        );
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(out.contains(local) && out.contains(renamed), "{out:?}");
     }
 
@@ -2885,44 +2500,8 @@ mod tests {
             "(impl Disp W (defn dp [w] 42))",
         );
 
-        let out = generate_impls(
-            &st,
-            Some(&introspection),
-            &module,
-            &mut SectionLedger::default(),
-        );
+        let out = regen_ok(&st, Some(&introspection), &module);
         assert!(out.is_empty(), "{out:?}");
-    }
-
-    // The §12.3.1 fail-loud guard: the current variant set is FULLY classified —
-    // a realistic user module (trait + type + defn + impl written here) passes the
-    // section-completeness sweep WITHOUT tripping. (The trip case is a NEW variant,
-    // structurally unconstructable here — the guard's `_` arms.)
-    // spec: session-persistence.md §12.3.1 — section-completeness guard
-    #[test]
-    fn section_completeness_guard_passes_for_realistic_module() {
-        let module = ModuleFullPath::from("user");
-        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        st.install_binding("Disp".into(), trait_decl_entry("Disp"))
-            .expect("trait fixture installs");
-        st.install_binding("W".into(), type_def_entry(&module, "W"))
-            .expect("type fixture installs");
-        install_userfn(&mut st, "g", 0, Vec::new());
-        install_trait_impl_shell(&mut st, &module, "Disp", &module, "W", &module);
-        // Also an internal `$`-mangled impl method + the `__expr` wrapper — both
-        // legal exclusions (ride their owner / transient).
-        install_userfn(&mut st, "dp$user/W", 1, Vec::new());
-        install_userfn(&mut st, "__expr", 2, Vec::new());
-        // Every entry must be claimed-or-excluded (the guard's `debug_assert!`
-        // would panic this test otherwise).
-        for (name, entry) in st.all_symbols() {
-            assert!(
-                section_entry_claimed_or_excluded(name.as_ref(), entry),
-                "entry `{name}` must be claimed or a legal exclusion"
-            );
-        }
-        // And the full sweep runs clean (no panic).
-        assert_section_completeness(&st, &module);
     }
 
     // -----------------------------------------------------------------------
@@ -2990,10 +2569,13 @@ mod tests {
 (begin (deftype Token MkToken) (impl Weigh Token (defn weigh [x] 3)) (defn c [] 3))
 ";
 
-    /// The fixture's `begin` whose members fall in the type, impl and
+    /// The members of the fixture's `begin` that fall in the type, impl and
     /// function sections.
-    const SPANNING_BEGIN: &str =
-        "(begin (deftype Token MkToken) (impl Weigh Token (defn weigh [x] 3)) (defn c [] 3))";
+    const SPANNING_MEMBERS: [&str; 3] = [
+        "(deftype Token MkToken)",
+        "(impl Weigh Token (defn weigh [x] 3))",
+        "(defn c [] 3)",
+    ];
 
     /// A cache-restored module: every live entry of the backing file's forms
     /// installed, no introspection records. `retained-failure` and the
@@ -3014,7 +2596,6 @@ mod tests {
                 type_name: box_type.clone(),
                 tag: 0,
                 field_count: 1,
-                internal: false,
                 type_def: Some(Box::new(TypeDefInfo {
                     name: box_type,
                     type_params: vec![],
@@ -3211,10 +2792,12 @@ mod tests {
         assert_eq!(refusal.0.len(), 2, "{refusal}");
     }
 
-    // spec: design/int/session-persistence.md §2.4.2 — scope: private heads,
-    // and each `begin` member takes the outer form as a live turn does.
+    // spec: design/int/session-persistence.md §2.4.2; spec/09-macros.md §9.6
+    // (the SHOULD leniency); design/int/s125-binary-clean.md §4.2 — scope:
+    // private heads, and each member of a legacy file's `begin` takes its own
+    // form, text and file position, as a load dissolves it.
     #[test]
-    fn rehydrate_fills_private_heads_and_begin_members_with_outer_form() {
+    fn rehydrate_fills_private_heads_and_legacy_begin_members_with_their_own_forms() {
         let (module, st) = rehydration_fixture();
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
@@ -3223,12 +2806,27 @@ mod tests {
             record_form(&introspection, &module, "hidden"),
             Some(backing_form("(defn- hidden"))
         );
-        let begin = backing_form("(begin");
         assert_eq!(
             record_form(&introspection, &module, "a"),
-            Some(begin.clone())
+            Some(parse1("(defn a [] 1)").format_flat())
         );
-        assert_eq!(record_form(&introspection, &module, "b"), Some(begin));
+        assert_eq!(
+            record_form(&introspection, &module, "b"),
+            Some(parse1("(defn b [] 2)").format_flat())
+        );
+        let record = |key: &str| {
+            introspection
+                .get(&FQSymbol {
+                    module: module.clone(),
+                    symbol: key.into(),
+                })
+                .map(|record| (record.source.clone(), record.position))
+                .expect("record filled")
+        };
+        let (a_source, a_at) = record("a");
+        let (_, b_at) = record("b");
+        assert_eq!(a_source.as_deref(), Some("(defn a [] 1)"));
+        assert!(a_at.is_some() && a_at < b_at, "{a_at:?} {b_at:?}");
     }
 
     // spec: design/int/session-persistence.md §2.4.2 — a cache-restored macro
@@ -3320,9 +2918,10 @@ mod tests {
         assert!(introspection.is_empty());
     }
 
-    // spec: design/int/session-persistence.md §2.4.3 negative and §1.4 — a
-    // fully rehydrated module writes, and a `begin` shared by records in one
-    // section or across sections is rendered once rather than reported missing.
+    // spec: design/int/session-persistence.md §2.4.3 negative;
+    // design/int/s125-binary-clean.md §4.2 — a fully rehydrated module writes,
+    // and the members of a legacy `begin`, in one section or across sections,
+    // are each written once in member order with no `begin`.
     #[test]
     fn rehydrated_module_regenerates_every_definition() {
         let (module, st) = rehydration_fixture();
@@ -3342,75 +2941,74 @@ mod tests {
         ] {
             assert!(out.contains(form), "`{form}` regenerates: {out}");
         }
-        assert_eq!(
-            out.matches("(begin (defn a [] 1) (defn b [] 2))").count(),
-            1
-        );
-        assert_eq!(out.matches(SPANNING_BEGIN).count(), 1, "{out}");
+        assert!(!out.contains("(begin"), "{out}");
+        for member in SPANNING_MEMBERS
+            .iter()
+            .chain(&["(defn a [] 1)", "(defn b [] 2)"])
+        {
+            assert_eq!(out.matches(member).count(), 1, "`{member}`: {out}");
+        }
+        // Authored order (repl §15.4 rule 2): the file's own order, the
+        // spanning `begin`'s members last, in member order.
+        let positions: Vec<usize> = [
+            "(deftype Shape",
+            "(deftype Box",
+            "(deftrait Weigh",
+            "(impl Weigh Box",
+            "(defn- hidden",
+            "(defn a [] 1)",
+            "(defn b [] 2)",
+            "(defmacro twice",
+        ]
+        .into_iter()
+        .chain(SPANNING_MEMBERS)
+        .map(|form| out.find(form).unwrap_or_else(|| panic!("{form} in {out}")))
+        .collect();
         assert!(
-            out.find(SPANNING_BEGIN) < out.find("(impl"),
-            "emitted at its first position, the type section: {out}"
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "emitted in the file's order: {out}"
         );
         assert!(!out.contains("retained-failure") && !out.contains("Weigh Shape"));
     }
 
-    // spec: design/int/session-persistence.md §1.4 — a REPL turn's `begin`
-    // spanning sections: the declarations' text-only records and the
-    // function's form record share one authored form, emitted once.
+    // spec: repl/spec/15-session-persistence.md §15.4 rules 1–2;
+    // design/int/s125-binary-clean.md §4.2 — a REPL turn's `begin` spanning
+    // sections dissolves at entry: the type, the `impl` and the function each
+    // record their own member at consecutive entered positions, and each is
+    // written once, in member order, with no `begin`.
     #[test]
-    fn regen_repl_begin_spanning_sections_emits_once() {
+    fn regen_repl_begin_spanning_sections_writes_each_member_once() {
         let (module, st) = rehydration_fixture();
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
         let weigh_token = impl_key("user", "Weigh", "user", "Token");
-        for key in ["Token", weigh_token.as_ref(), "c"] {
-            let mut record = introspection
-                .entry(FQSymbol {
-                    module: module.clone(),
-                    symbol: key.into(),
-                })
-                .or_default();
-            record.source = Some(SPANNING_BEGIN.to_string());
-            if key == "c" {
-                record.sexp = Some(parse1(SPANNING_BEGIN));
-            }
+        for (sequence, (key, member)) in [
+            ("Token", SPANNING_MEMBERS[0]),
+            (weigh_token.as_ref(), SPANNING_MEMBERS[1]),
+            ("c", SPANNING_MEMBERS[2]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            record_at(
+                &introspection,
+                &module,
+                key,
+                member,
+                AuthoredPosition::entered(sequence as u64),
+            );
         }
         rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
 
         let out = regen_ok(&st, Some(&introspection), &module);
-        assert_eq!(out.matches(SPANNING_BEGIN).count(), 1, "{out}");
-    }
-
-    // spec: design/int/session-persistence.md §1.4 — the function's form
-    // carries its offset in the input line, `  (begin …)`; a text-only record
-    // has no position, so the shared form still matches on its text.
-    #[test]
-    fn regen_repl_begin_after_leading_whitespace_emits_once() {
-        let (module, st) = rehydration_fixture();
-        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
-        let turn = format!("  {SPANNING_BEGIN}");
-        let offset_form = cranelisp_frontend::parse(&turn).unwrap().remove(0);
-        assert_ne!(
-            offset_form.span().start,
-            0,
-            "precondition: the form is offset"
-        );
-        let weigh_token = impl_key("user", "Weigh", "user", "Token");
-        for key in ["Token", weigh_token.as_ref(), "c"] {
-            let mut record = introspection
-                .entry(FQSymbol {
-                    module: module.clone(),
-                    symbol: key.into(),
-                })
-                .or_default();
-            record.source = Some(SPANNING_BEGIN.to_string());
-            if key == "c" {
-                record.sexp = Some(offset_form.clone());
-            }
-        }
-        rehydrate(&st, &introspection, &module, REHYDRATION_BACKING);
-
-        let out = regen_ok(&st, Some(&introspection), &module);
-        assert_eq!(out.matches(SPANNING_BEGIN).count(), 1, "{out}");
+        assert!(!out.contains("(begin"), "{out}");
+        let at: Vec<usize> = SPANNING_MEMBERS
+            .iter()
+            .map(|member| {
+                assert_eq!(out.matches(member).count(), 1, "`{member}`: {out}");
+                out.find(member).unwrap_or_default()
+            })
+            .collect();
+        assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{out}");
     }
 
     // spec: design/int/session-persistence.md §2.4.3 — detection proof: remove
@@ -3431,6 +3029,178 @@ mod tests {
             refusal.to_string(),
             "`impl prelude/Show for user/Box`",
             "the warning names the entry"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // S125 — the section selector (§4.1) and authored order (§4.2)
+    // (design/int/s125-binary-clean.md)
+    // -----------------------------------------------------------------------
+
+    // One row per declaration class the fixtures can build: each classified
+    // with its reason, the instance and internal names before any facet.
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 1;
+    // design/int/s125-binary-clean.md §4.1
+    #[test]
+    fn selector_classifies_each_declaration_class() {
+        use cranelisp_types::{FQTypeName, TypeDefInfo};
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        install_userfn(&mut st, "f", 0, Vec::new());
+        install_userfn(&mut st, "__expr", 1, Vec::new());
+        let product = FQTypeName::new(module.clone(), "Pt".into());
+        install_callable(
+            &mut st,
+            "Pt",
+            2,
+            Vec::new(),
+            CallableOrigin::Ctor {
+                type_name: product.clone(),
+                tag: 0,
+                field_count: 1,
+                type_def: Some(Box::new(TypeDefInfo {
+                    name: product,
+                    type_params: vec![],
+                    constructors: vec![],
+                })),
+            },
+        );
+        install_callable(
+            &mut st,
+            "Leaf",
+            3,
+            Vec::new(),
+            CallableOrigin::Ctor {
+                type_name: FQTypeName::new(module.clone(), "Tree".into()),
+                tag: 0,
+                field_count: 0,
+                type_def: None,
+            },
+        );
+        install_macro(&mut st, "m", parse1("(defmacro m [] 1)"));
+        st.install_binding("Tree".into(), type_def_entry(&module, "Tree"))
+            .expect("type fixture installs");
+        st.install_binding("Disp".into(), trait_decl_entry("Disp"))
+            .expect("trait fixture installs");
+        install_trait_impl_shell(&mut st, &module, "Disp", &module, "Tree", &module);
+
+        let class = |name: &str| persistence(name, st.get(name).expect("fixture installed"));
+        use Persistence::{Excluded, Persisted};
+        assert_eq!(class("f"), Persisted(PersistedKind::Function));
+        assert_eq!(class("__expr"), Excluded(Exclusion::Internal));
+        assert_eq!(class("Pt"), Persisted(PersistedKind::Type));
+        assert_eq!(class("Leaf"), Excluded(Exclusion::Constructor));
+        assert_eq!(class("m"), Persisted(PersistedKind::Macro));
+        assert_eq!(class("Tree"), Persisted(PersistedKind::Type));
+        assert_eq!(class("Disp"), Persisted(PersistedKind::Trait));
+        let shell = st
+            .all_symbols()
+            .find(|(_, entry)| matches!(entry.declaration, Decl::ImplShell(_)))
+            .map(|(name, entry)| persistence(name.as_ref(), entry));
+        // A shell's key is an internal name, so it is excluded by name first.
+        assert!(matches!(shell, Some(Excluded(_))), "{shell:?}");
+    }
+
+    /// Record `form` for `name` at `position`.
+    fn record_at(
+        introspection: &DashMap<FQSymbol, Introspection>,
+        module: &ModuleFullPath,
+        name: &str,
+        form: &str,
+        position: AuthoredPosition,
+    ) {
+        let mut record = introspection
+            .entry(FQSymbol {
+                module: module.clone(),
+                symbol: name.into(),
+            })
+            .or_default();
+        record.sexp = Some(parse1(form));
+        record.source = Some(form.to_string());
+        record.position = Some(position);
+    }
+
+    // File positions keep the file's order, entered positions follow them in
+    // entry order, and a record moved just after another stands between it
+    // and the next; kind and name decide nothing.
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 2;
+    // design/int/s125-binary-clean.md §4.2
+    #[test]
+    fn definitions_follow_authored_positions() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        for (slot, name) in ["a", "b", "c", "d"].iter().enumerate() {
+            install_userfn(&mut st, name, slot, Vec::new());
+        }
+        st.install_binding("T".into(), type_def_entry(&module, "T"))
+            .expect("type fixture installs");
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let file = AuthoredPosition::in_file;
+        record_at(
+            &introspection,
+            &module,
+            "d",
+            "(defn d [] 4)",
+            AuthoredPosition::entered(0),
+        );
+        record_at(&introspection, &module, "T", "(deftype T K)", file(30));
+        record_at(&introspection, &module, "c", "(defn c [] 3)", file(5));
+        record_at(
+            &introspection,
+            &module,
+            "a",
+            "(defn a [] 1)",
+            file(30).just_after(),
+        );
+        record_at(&introspection, &module, "b", "(defn b [] 2)", file(50));
+        let out = regen_ok(&st, Some(&introspection), &module);
+        assert_eq!(
+            out,
+            "(defn c [] 3)\n\n(deftype T K)\n\n(defn a [] 1)\n\n(defn b [] 2)\n\n(defn d [] 4)\n"
+        );
+    }
+
+    // Rule 4: platforms, submodules, exports, then imports, whatever order the
+    // table holds them in.
+    // spec: repl/spec/15-session-persistence.md §15.4 rule 4
+    #[test]
+    fn structural_sections_follow_rule_four() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.imports.push(import_spec(
+            "lib",
+            names(&[ImportEntry::Name {
+                source: "x".into(),
+                local: "x".into(),
+            }]),
+        ));
+        st.exports.push(export_spec(
+            "lib",
+            names(&[ImportEntry::Name {
+                source: "x".into(),
+                local: "x".into(),
+            }]),
+        ));
+        st.submodules.push(ModDecl {
+            name: "sub".into(),
+            visibility: cranelisp_types::Visibility::Public,
+            inline_body: None,
+            span: Span::SYNTHETIC,
+        });
+        st.platforms.push(PlatformSpec {
+            name: "stdio".to_string(),
+            span: Span::SYNTHETIC,
+        });
+        let out = regen_ok(&st, None, &module);
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {out}"))
+        };
+        assert!(
+            at("(platform") < at("(mod sub)")
+                && at("(mod sub)") < at("(export")
+                && at("(export") < at("(import"),
+            "{out}"
         );
     }
 }

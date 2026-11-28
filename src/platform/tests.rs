@@ -1,7 +1,7 @@
 use super::*;
 
 // -----------------------------------------------------------------
-// FIXME 0318 / spec §8.11 — every platform fn MUST return `IO _`.
+// spec §8.9.3 — every platform fn MUST return `IO _`.
 // `require_io_return` is the smallest testable owner of the gate
 // `register_platform_in_tc` applies after the sig is checked (the full
 // path dlopens a real DLL; this drives the rejection with a perturbed
@@ -18,7 +18,7 @@ fn io_int() -> Type {
     )
 }
 
-// spec: design/arch/fixmes/0318 / spec §8.11 — a platform fn declaring a
+// spec: spec/08-modules.md §8.9.3 — a platform fn declaring a
 // non-IO return (`(Fn [Int] Int)`) is REJECTED, naming the platform + fn +
 // the IO requirement.
 #[test]
@@ -41,7 +41,7 @@ fn platform_fn_non_io_return_is_rejected() {
     }
 }
 
-// spec: design/arch/fixmes/0318 / spec §8.11 — an IO-returning platform fn
+// spec: spec/08-modules.md §8.9.3 — an IO-returning platform fn
 // (`(Fn [String] (IO Int))`, the stdio `print` shape) passes the gate.
 #[test]
 fn platform_fn_io_return_accepted() {
@@ -52,7 +52,7 @@ fn platform_fn_io_return_accepted() {
     );
 }
 
-// spec: design/arch/fixmes/0318 — a non-IO ADT return (e.g. a bare
+// spec: spec/08-modules.md §8.9.3 — a non-IO ADT return (e.g. a bare
 // `shapes/Rectangle`) is also rejected — only the `IO` ADT satisfies the gate.
 #[test]
 fn platform_fn_non_io_adt_return_is_rejected() {
@@ -620,4 +620,210 @@ fn fqize_type_expr_repairs_named_and_typevar_leaves_in_fn_sig() {
         }
         other => panic!("IO arg must be a split Named Int, got {other:?}"),
     }
+}
+
+// -----------------------------------------------------------------
+// spec §10.10.1 — no function type in a platform signature, followed
+// through type arguments and ADT fields.
+// -----------------------------------------------------------------
+
+/// A session whose `user` module defines the ADTs the containment cases name.
+fn containment_session() -> crate::session_v4::CompilerSession {
+    let mut s = crate::repl::test_support::session();
+    for form in [
+        "(deftype Callback [:(Fn [primitives/Int] primitives/Int) f])",
+        "(deftype Outer [:Callback inner])",
+        "(deftype Ints Done (More [:primitives/Int head :Ints tail]))",
+        "(deftype (Holder a) (Holder [:a held]))",
+    ] {
+        s.eval(form)
+            .unwrap_or_else(|e| panic!("fixture form `{form}` must compile: {e}"));
+    }
+    s
+}
+
+fn user_adt(name: &str, args: Vec<Type>) -> Type {
+    Type::ADT(
+        cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("user"),
+            cranelisp_types::TypeName::from(name),
+        ),
+        args,
+    )
+}
+
+fn int_to_int() -> Type {
+    Type::Fn(vec![Type::Int], Box::new(Type::Int))
+}
+
+fn io_of(ty: Type) -> Type {
+    Type::ADT(
+        cranelisp_types::FQTypeName::new(
+            ModuleFullPath::from("primitives"),
+            cranelisp_types::TypeName::from("IO"),
+        ),
+        vec![ty],
+    )
+}
+
+fn containment_refusal(sig: &Type) -> Option<String> {
+    let s = containment_session();
+    match refuse_function_types(sig, &s.shared.symbol_tables, "fixture", "f") {
+        Ok(()) => None,
+        Err(CranelispError::ModuleError { message, .. }) => Some(message),
+        Err(other) => panic!("expected ModuleError, got {other:?}"),
+    }
+}
+
+// spec: spec/10-io.md §10.10.1 — a function-typed parameter is refused,
+// naming the platform function and the parameter.
+#[test]
+fn platform_sig_function_parameter_is_refused() {
+    let sig = Type::Fn(vec![int_to_int()], Box::new(io_of(Type::Int)));
+    let message = containment_refusal(&sig).expect("function parameter refused");
+    assert!(
+        message.contains("fixture/f"),
+        "names the function: {message}"
+    );
+    assert!(
+        message.contains("function type"),
+        "names the rule: {message}"
+    );
+    assert!(message.contains("parameter 1"), "names the site: {message}");
+}
+
+// spec: spec/10-io.md §10.10.1 — a function type inside the `IO` result's
+// type argument is refused.
+#[test]
+fn platform_sig_function_in_result_is_refused() {
+    let sig = Type::Fn(vec![Type::Int], Box::new(io_of(int_to_int())));
+    let message = containment_refusal(&sig).expect("function result refused");
+    assert!(message.contains("result"), "names the site: {message}");
+}
+
+// spec: spec/10-io.md §10.10.1 — a parameter whose ADT has a function field
+// is refused, transitively through a further ADT field.
+#[test]
+fn platform_sig_function_field_is_refused_transitively() {
+    for param in [user_adt("Callback", vec![]), user_adt("Outer", vec![])] {
+        let sig = Type::Fn(vec![param.clone()], Box::new(io_of(Type::Int)));
+        let message = containment_refusal(&sig)
+            .unwrap_or_else(|| panic!("{param:?} carries a function field"));
+        assert!(
+            message.contains("user/Callback"),
+            "names the type: {message}"
+        );
+    }
+}
+
+// spec: spec/10-io.md §10.10.1 — a function type as an ADT's type argument
+// is refused.
+#[test]
+fn platform_sig_function_type_argument_is_refused() {
+    let sig = Type::Fn(
+        vec![user_adt("Holder", vec![int_to_int()])],
+        Box::new(io_of(Type::Int)),
+    );
+    assert!(containment_refusal(&sig).is_some());
+}
+
+// spec: spec/10-io.md §10.10.1 — function-free signatures load, including a
+// recursive ADT and a generic ADT at a scalar argument.
+#[test]
+fn platform_sig_without_function_types_is_accepted() {
+    for param in [
+        Type::Int,
+        user_adt("Ints", vec![]),
+        user_adt("Holder", vec![Type::String]),
+    ] {
+        let sig = Type::Fn(vec![param.clone()], Box::new(io_of(Type::Int)));
+        assert_eq!(
+            containment_refusal(&sig),
+            None,
+            "{param:?} is function-free"
+        );
+    }
+}
+
+// -----------------------------------------------------------------
+// design/arch/total-concreteness.md §3.5 — a platform signature must be
+// fully concrete; the mint's refusal names the written signature.
+// -----------------------------------------------------------------
+
+fn spec<'a>(name: &'a str, type_sig: &'a str, params: &'a [String]) -> PlatformFnSpec<'a> {
+    PlatformFnSpec {
+        name,
+        type_sig,
+        docstring: "",
+        param_names: params,
+        scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+        poll_shape: false,
+    }
+}
+
+/// Install `desc` into a fresh `platform.fixture` module of a bootstrapped
+/// session; returns the outcome and whether an entry was installed.
+fn install_fixture_fn(desc: &PlatformFnSpec<'_>) -> (Result<(), CranelispError>, bool) {
+    let s = crate::repl::test_support::session();
+    let module_path = ModuleFullPath::from("platform.fixture");
+    cranelisp_types::ensure_module_exists(&s.shared.symbol_tables, &module_path);
+    let outcome = install_platform_fn(
+        &s.shared.symbol_tables,
+        &cranelisp_types::ModuleAliases::default(),
+        &module_path,
+        "fixture",
+        0,
+        desc,
+    );
+    let installed = s
+        .shared
+        .symbol_tables
+        .get(&module_path)
+        .is_some_and(|table| table.get(desc.name).is_some());
+    (outcome, installed)
+}
+
+// spec: design/arch/total-concreteness.md §3.5 — a signature with a type
+// variable is a load error naming the function and quoting the written
+// signature; nothing is installed.
+#[test]
+fn platform_sig_with_type_variable_is_refused_quoting_the_signature() {
+    let sig = "(Fn [a] (primitives/IO primitives/Int))";
+    let params = ["x".to_string()];
+    let (outcome, installed) = install_fixture_fn(&spec("poly", sig, &params));
+    let Err(CranelispError::ModuleError { message, .. }) = outcome else {
+        panic!("a type-variable signature must be a load error, got {outcome:?}");
+    };
+    assert!(
+        message.contains("fixture/poly"),
+        "names the function: {message}"
+    );
+    assert!(
+        message.contains(sig),
+        "quotes the written signature: {message}"
+    );
+    assert!(
+        message.contains("type variable"),
+        "names the rule: {message}"
+    );
+    assert!(
+        !message.contains("Var("),
+        "no internal variable id: {message}"
+    );
+    assert!(!installed, "nothing is installed");
+}
+
+// spec: design/arch/total-concreteness.md §3.5 — control: a concrete
+// signature still mints.
+#[test]
+fn platform_sig_concrete_still_mints() {
+    let params = ["x".to_string()];
+    let desc = spec(
+        "mono",
+        "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+        &params,
+    );
+    let (outcome, installed) = install_fixture_fn(&desc);
+    assert!(outcome.is_ok(), "a concrete signature mints: {outcome:?}");
+    assert!(installed);
 }

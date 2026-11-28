@@ -711,10 +711,10 @@ mod tests {
         );
     }
 
-    // spec: repl/spec.md §17 — the read-only tool allowlist is offered every
-    // turn, and contains NO write/`/sh`/submit tools (+neg, the consent gate).
+    // spec: repl/spec.md §17 — every turn offers the read tools plus the one
+    // confirm-gated write tool `submit`, and no other write or `/sh` tool (+neg).
     #[test]
-    fn request_tools_are_read_only_allowlist() {
+    fn request_tools_offer_read_tools_and_only_gated_submit() {
         let (mut s, capture) = session_with_stub(vec![ModelResponse::Done("ok".to_string())]);
         drive(&mut s, "anything");
         let reqs = capture.lock().unwrap();
@@ -768,6 +768,7 @@ mod tests {
                         ast: None,
                         clif_ir: None,
                         code_size: None,
+                        ..Default::default()
                     },
                 )
             };
@@ -864,6 +865,7 @@ mod tests {
                     ast: None,
                     clif_ir: None,
                     code_size: None,
+                    ..Default::default()
                 },
             );
         }
@@ -971,6 +973,7 @@ mod tests {
                     ast: None,
                     clif_ir: None,
                     code_size: None,
+                    ..Default::default()
                 },
             );
         }

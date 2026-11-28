@@ -15,7 +15,7 @@ pub(crate) use std::io::Write;
 pub(crate) use cranelisp_types::{
     Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol, FQTraitName,
     FQTypeName, MacroClause, MacroParam, ModuleFullPath, OverloadArm, Scheme, Sexp, Span, Symbol,
-    TopLevel, TraitName, Type, TypeName, TypeRecord, View,
+    TraitName, Type, TypeName, TypeRecord, View,
 };
 
 pub(crate) use crate::code::Code;
@@ -1203,7 +1203,6 @@ pub(crate) mod test_support {
                         type_name: fqtn.clone(),
                         tag: 0,
                         field_count: 0,
-                        internal: false,
                         type_def: Some(Box::new(info.clone())),
                     },
                     Realization::Body {
@@ -1238,7 +1237,6 @@ pub(crate) mod test_support {
                         type_name: fqtn,
                         tag: 0,
                         field_count: 0,
-                        internal: false,
                         type_def: Some(Box::new(info)),
                     },
                     Realization::Body { view, code: None },

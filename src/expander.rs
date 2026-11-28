@@ -8,10 +8,10 @@
 //!
 //! - [`JitMacroExpander`] — the int implementation of
 //!   [`cranelisp_types::MacroExpander`] over the surviving invocation core
-//!   (signal-protected JIT call + `Sexp`↔heap marshal). This is the only
-//!   crate that may touch the JIT + runtime + `libc`.
-//! - The invocation core (`find_matching_clause`, `invoke_clause`,
-//!   `invoke_jit_protected`, `rewrite_spans`) that the impl wraps.
+//!   (JIT call + `Sexp`↔heap marshal). This is the only crate that may touch
+//!   the JIT + runtime.
+//! - The invocation core (`find_matching_clause`, `invoke_clause`) that the
+//!   impl wraps.
 //!
 //! The binary's `process_form::process_cluster_once` drives
 //! [`expand_sexp_recursive`] before typechecking. Workers enter through
@@ -31,6 +31,12 @@ use std::collections::HashSet;
 
 use crate::code::Code;
 use crate::marshal;
+
+#[cfg(test)]
+mod caller_text_tests;
+mod qualify;
+#[cfg(test)]
+mod trap_dispositions_tests;
 
 /// Maximum recursion depth for macro expansion.
 pub(crate) const EXPANSION_DEPTH_LIMIT: usize = 100;
@@ -80,13 +86,12 @@ pub(crate) struct ExecutableMacroClause {
 /// 3. loads the matched clause's JIT'd code pointer from its GOT slot
 ///    (clause functions are normal per-module GOT fns named
 ///    `__macro_{name}_clause_{idx}`),
-/// 4. marshals the args, invokes under signal protection, unmarshals the
+/// 4. marshals the args, invokes the clause, unmarshals the
 ///    result, and rewrites every node's span to a fresh synthetic span.
 ///
 /// It holds only `cranelisp-types` collections (`&SymbolTables` is the
 /// committed code+GOT store); `Send + Sync` is satisfied because the borrows
-/// are shared-read and the invocation core isolates per-call signal state in
-/// thread-locals.
+/// are shared-read.
 pub(crate) struct JitMacroExpander<'a> {
     /// Committed per-module symbol tables — clause `clauses_meta` + GOT-stored
     /// clause code pointers are read from here.
@@ -100,6 +105,20 @@ impl MacroExpander for JitMacroExpander<'_> {
         args: &[Sexp],
         call_span: Span,
     ) -> Result<Sexp, MacroInvokeError> {
+        self.invoke_expansion(fq, args, call_span)
+            .map(|expansion| expansion.sexp)
+    }
+}
+
+impl JitMacroExpander<'_> {
+    /// [`MacroExpander::invoke`], keeping which output symbols are the caller's
+    /// text (`design/int/expansion-qualification-scope.md` §2.7).
+    pub(crate) fn invoke_expansion(
+        &self,
+        fq: &FQSymbol,
+        args: &[Sexp],
+        call_span: Span,
+    ) -> Result<marshal::Expansion, MacroInvokeError> {
         // Read parent metadata, select the exact clause, and lease its pointer
         // plus owner from one coherent module snapshot. The read guard is
         // released before any macro code executes.
@@ -128,25 +147,10 @@ impl MacroExpander for JitMacroExpander<'_> {
             span: call_span,
         })?;
 
-        // 4. Marshal + signal-protected invoke + unmarshal + span-rewrite.
-        execute_matched_clause(&executable, args, call_span)
+        // 4. Marshal + invoke + unmarshal.
+        invoke_clause(&executable, args, call_span)
             .map_err(|e| macro_error_to_invoke_error(fq, call_span, e))
     }
-}
-
-/// The shared single-invocation core: marshal args, call the matched clause
-/// under signal protection, unmarshal, and rewrite spans to fresh synthetic
-/// ones. [`JitMacroExpander::invoke`] (the locked-decision boundary) executes
-/// through this one function — there is no second executor; the legacy walk
-/// also reaches it via `JitMacroExpander`.
-pub(crate) fn execute_matched_clause(
-    clause: &ExecutableMacroClause,
-    args: &[Sexp],
-    span: Span,
-) -> Result<Sexp, CranelispError> {
-    let mut result = invoke_clause(clause, args, span)?;
-    rewrite_spans(&mut result, span);
-    Ok(result)
 }
 
 /// Build the `no matching clause` diagnostic for a multi-clause macro whose
@@ -420,6 +424,10 @@ pub(crate) trait MacroResolver {
 
     /// The committed symbol tables to execute recognized macros over.
     fn symbol_tables(&self) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>;
+
+    /// The module whose forms are being expanded: the scope an expansion's
+    /// qualified output is resolved from.
+    fn current_module(&self) -> &ModuleFullPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -477,259 +485,41 @@ pub(crate) fn find_matching_clause<'a>(
 // Clause invocation
 // ---------------------------------------------------------------------------
 
-/// Marshal arguments, transfer them to a clause, and copy and release its result.
+/// The one clause executor: marshal arguments, transfer them to a clause, and
+/// copy and release its result.
 ///
-/// The argument owner crosses the ABI before the protected call. A hardware
-/// trap forfeits that one tree in the abandoned JIT frame; the host must not
-/// attempt cleanup after the non-local exit. A successful result is observed
+/// The argument owner crosses the ABI at the call. The result is observed
 /// through a borrow and consumed exactly once while the clause's `Code` lease
-/// remains live.
+/// remains live. The argument names stay held until the result is copied, so
+/// the copy can tell the caller's symbols from the macro's.
 pub(crate) fn invoke_clause(
     clause: &ExecutableMacroClause,
     args: &[Sexp],
     span: Span,
-) -> Result<Sexp, CranelispError> {
+) -> Result<marshal::Expansion, CranelispError> {
     let _code_lease = &clause.owner;
-    let marshalled = args.iter().map(marshal::sexp_to_runtime).collect();
-    let args_slist = marshal::build_runtime_slist(marshalled);
+    let call = marshal::marshal_clause_call(args);
 
-    // Invoke the compiled function with signal protection.
-    // JIT code may trigger hardware traps (e.g., division by zero -> SIGFPE,
-    // illegal instruction -> SIGILL). We install temporary signal handlers
-    // that convert these signals to Rust panics, then use catch_unwind
-    // to turn them into clean CranelispError results.
-    let result_i64 = invoke_jit_protected(clause.entry, clause.abi, args_slist, span)?;
-    // SAFETY: the macro-clause ABI transfers one owned Sexp result word to the
-    // host. Bare nullary tags are valid `Owned` values and consume as a no-op.
-    let result = unsafe { cranelisp_intrinsics::handle::Owned::from_abi(result_i64) };
-
-    // Validate the result is a heap pointer (all Sexp constructors are data).
-    if result.is_nullary_tag() {
-        cranelisp_intrinsics::drop::consume_sexp(result);
-        return Err(CranelispError::MacroError {
-            message: format!("macro returned invalid value {result_i64} (expected heap pointer)"),
+    // SAFETY: `ExecutableMacroClause` is constructed only from a finalized,
+    // non-null GOT entry while retaining its `Code` owner, borrowed above for
+    // the whole call. `SexpListToSexpI64V1` witnesses the exact
+    // `extern "C" fn(i64) -> i64` ABI. `into_raw` transfers the argument tree
+    // to the clause. A trap in clause code is not recovered here: it ends the
+    // process (`design/int/s125-binary-clean.md` §8.1).
+    let result_i64 = unsafe {
+        let func: extern "C" fn(i64) -> i64 = match clause.abi {
+            MacroClauseAbi::SexpListToSexpI64V1 => {
+                std::mem::transmute::<*mut u8, extern "C" fn(i64) -> i64>(clause.entry.as_ptr())
+            }
+        };
+        func(call.args.into_raw())
+    };
+    marshal::take_clause_result(result_i64, call.held).map_err(
+        |marshal::InvalidClauseResult(word)| CranelispError::MacroError {
+            message: format!("macro returned invalid value {word} (expected heap pointer)"),
             location: ErrorLocation::from_span(span),
-        });
-    }
-
-    let copied = marshal::runtime_to_sexp(result.as_borrowed());
-    cranelisp_intrinsics::drop::consume_sexp(result);
-    Ok(copied)
-}
-
-/// Invoke a JIT function pointer with crash protection.
-///
-/// A runtime panic in the clause ends the process and never returns here.
-/// `catch_unwind` covers a Rust panic in this host closure. The function also
-/// installs signal handlers for SIGFPE/SIGILL/SIGBUS that use
-/// `sigsetjmp`/`siglongjmp` to recover from hardware traps without
-/// unwinding through the JIT code frames.
-///
-/// On macOS/aarch64, division by zero in JIT code raises SIGFPE. The signal
-/// handler `siglongjmp`s back to the recovery point, avoiding the problem
-/// of unwinding through `extern "C"` frames.
-fn invoke_jit_protected(
-    entry: std::ptr::NonNull<u8>,
-    abi: MacroClauseAbi,
-    args_slist: cranelisp_intrinsics::handle::Owned,
-    span: Span,
-) -> Result<i64, CranelispError> {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: We use sigsetjmp/siglongjmp (declared below via raw FFI)
-        // to recover from hardware traps. sigsetjmp saves the execution
-        // context; if a signal handler calls siglongjmp, control returns
-        // to the sigsetjmp call with a non-zero value (the signal number).
-        unsafe {
-            // Set up the jump buffer for signal recovery.
-            let sig = sigsetjmp(JMP_BUF.with(|buf| buf.get()), 1);
-            if sig != 0 {
-                // Got here via siglongjmp from signal handler.
-                return Err(sig);
-            }
-
-            // Install signal handlers that siglongjmp back on trap.
-            let old_handlers = install_signal_handlers();
-
-            // SAFETY: `ExecutableMacroClause` is constructed only from a
-            // finalized, non-null GOT entry while retaining its required
-            // `Code` owner. `SexpListToSexpI64V1` witnesses the exact
-            // `extern "C" fn(i64) -> i64` ABI. The owner is borrowed by the
-            // caller across marshalling, this signal-recovered call, result
-            // unmarshalling, and span rewriting. Signal recovery is a separate
-            // execution guard; it does not establish pointer/ABI validity.
-            let func: extern "C" fn(i64) -> i64 = match abi {
-                MacroClauseAbi::SexpListToSexpI64V1 => std::mem::transmute(entry.as_ptr()),
-            };
-            // `into_raw` is the ownership transfer. On a signal recovery the
-            // JIT frame and that transferred tree are forfeited; the host has
-            // no remaining handle it could incorrectly release.
-            let result_i64 = func(args_slist.into_raw());
-
-            // Restore original signal handlers.
-            restore_signal_handlers(old_handlers);
-
-            Ok(result_i64)
-        }
-    }));
-
-    // A runtime panic in the clause never returns here: it ends the process
-    // (`design/int/io-integration.md` §1.2). Signals are not panics and keep
-    // their recovery below.
-    match result {
-        Ok(Ok(val)) => Ok(val),
-        Ok(Err(sig)) => {
-            // Signal caught via siglongjmp.
-            let message = match sig {
-                libc::SIGFPE => {
-                    "runtime error during macro expansion: arithmetic exception (division by zero)"
-                        .to_string()
-                }
-                libc::SIGILL => {
-                    "runtime error during macro expansion: illegal instruction".to_string()
-                }
-                libc::SIGBUS => "runtime error during macro expansion: bus error".to_string(),
-                _ => format!("runtime error during macro expansion: signal {sig}"),
-            };
-            Err(CranelispError::MacroError {
-                message,
-                location: ErrorLocation::from_span(span),
-            })
-        }
-        Err(panic_payload) => {
-            // A Rust panic raised by host code in this closure.
-            let message = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else {
-                "unknown runtime error during macro expansion".to_string()
-            };
-            Err(CranelispError::MacroError {
-                message,
-                location: ErrorLocation::from_span(span),
-            })
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// sigsetjmp/siglongjmp FFI (not in the `libc` crate)
-// ---------------------------------------------------------------------------
-
-// On macOS/aarch64, sigjmp_buf is 196 bytes (jmp_buf + signal mask).
-// We use a conservatively sized array. The exact layout is opaque.
-#[cfg(target_os = "macos")]
-type SigJmpBuf = [u8; 196];
-
-#[cfg(not(target_os = "macos"))]
-type SigJmpBuf = [u8; 256]; // Conservative fallback for other platforms
-
-unsafe extern "C" {
-    /// POSIX sigsetjmp: save execution context and optionally signal mask.
-    /// Returns 0 on direct call, non-zero value (from siglongjmp) on return.
-    ///
-    /// On glibc/musl `sigsetjmp` is a header macro, not a linkable symbol — the
-    /// real function is `__sigsetjmp(env, savemask)` (same signature). macOS
-    /// exports a real `sigsetjmp`, so the redirect is Linux-only.
-    #[cfg_attr(target_os = "linux", link_name = "__sigsetjmp")]
-    fn sigsetjmp(env: *mut SigJmpBuf, savesigs: libc::c_int) -> libc::c_int;
-
-    /// POSIX siglongjmp: restore execution context saved by sigsetjmp.
-    fn siglongjmp(env: *mut SigJmpBuf, val: libc::c_int) -> !;
-}
-
-// Thread-local jump buffer for signal recovery during JIT macro execution.
-// Only accessed by the signal handler and invoke_jit_protected on the same
-// thread. Signal delivery for SIGFPE/SIGILL/SIGBUS is synchronous (delivered
-// to the thread that caused the trap).
-std::thread_local! {
-    static JMP_BUF: std::cell::UnsafeCell<SigJmpBuf> =
-        const { std::cell::UnsafeCell::new([0u8; std::mem::size_of::<SigJmpBuf>()]) };
-}
-
-/// Signal handler for SIGFPE/SIGILL/SIGBUS during JIT macro execution.
-///
-/// Uses siglongjmp to jump back to the sigsetjmp point, bypassing the
-/// JIT code frames entirely. This avoids the problem of unwinding through
-/// `extern "C"` frames (which would be UB).
-extern "C" fn signal_handler_longjmp(sig: libc::c_int) {
-    unsafe {
-        // Reset to default handler to prevent infinite signal loops.
-        libc::signal(sig, libc::SIG_DFL);
-        // Jump back to sigsetjmp, passing the signal number.
-        siglongjmp(JMP_BUF.with(|buf| buf.get() as *mut SigJmpBuf), sig);
-    }
-}
-
-/// Saved signal handler state for restoration after JIT call.
-struct SavedSignalHandlers {
-    fpe: libc::sighandler_t,
-    ill: libc::sighandler_t,
-    bus: libc::sighandler_t,
-}
-
-/// Install signal handlers that siglongjmp on SIGFPE/SIGILL/SIGBUS.
-/// Returns the previously installed handlers for later restoration.
-fn install_signal_handlers() -> SavedSignalHandlers {
-    unsafe {
-        let handler = signal_handler_longjmp as *const () as libc::sighandler_t;
-        let fpe = libc::signal(libc::SIGFPE, handler);
-        let ill = libc::signal(libc::SIGILL, handler);
-        let bus = libc::signal(libc::SIGBUS, handler);
-        SavedSignalHandlers { fpe, ill, bus }
-    }
-}
-
-/// Restore previously saved signal handlers.
-fn restore_signal_handlers(saved: SavedSignalHandlers) {
-    unsafe {
-        libc::signal(libc::SIGFPE, saved.fpe);
-        libc::signal(libc::SIGILL, saved.ill);
-        libc::signal(libc::SIGBUS, saved.bus);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Span rewriting
-// ---------------------------------------------------------------------------
-
-/// Recursively replace all spans in a Sexp tree with unique synthetic spans.
-///
-/// Each node gets a fresh span from the global synthetic span counter. This
-/// prevents span collisions when the same macro parameter appears multiple
-/// times in the expansion — downstream maps keyed by span (expr_types,
-/// method_resolutions, last_uses) would otherwise overwrite each other.
-pub(crate) fn rewrite_spans(sexp: &mut Sexp, _call_site_span: Span) {
-    rewrite_spans_unique(sexp);
-}
-
-/// Assign a unique synthetic span to every node in the Sexp tree.
-fn rewrite_spans_unique(sexp: &mut Sexp) {
-    match sexp {
-        Sexp::Symbol(_, s)
-        | Sexp::Int(_, s)
-        | Sexp::Float(_, s)
-        | Sexp::Bool(_, s)
-        | Sexp::Str(_, s) => *s = cranelisp_frontend::next_synthetic_span(),
-        Sexp::List(children, s) | Sexp::Bracket(children, s) => {
-            for child in children {
-                rewrite_spans_unique(child);
-            }
-            *s = cranelisp_frontend::next_synthetic_span();
-        }
-        Sexp::Annotated {
-            annotation,
-            subject,
-            span,
-        } => {
-            rewrite_spans_unique(annotation);
-            rewrite_spans_unique(subject);
-            *span = cranelisp_frontend::next_synthetic_span();
-        }
-        Sexp::Comment(_, s) => *s = cranelisp_frontend::next_synthetic_span(),
-    }
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,16 +1168,36 @@ fn expand_recognized_macro(
     depth: usize,
     shadows: &HashSet<String>,
 ) -> Result<Sexp, CranelispError> {
-    let result = {
+    let expansion = {
         let expander = JitMacroExpander {
             symbol_tables: resolver.symbol_tables(),
         };
         expander
-            .invoke(&fq, args, call_span)
+            .invoke_expansion(&fq, args, call_span)
             .map_err(|e| CranelispError::MacroError {
                 message: e.to_string(),
                 location: ErrorLocation::from_span(call_span),
             })?
+    };
+    // A macro from another module has its output qualified against that one
+    // defining module before re-expansion, so a call to one of its own macros
+    // is recognised through the qualified head from the using module
+    // (spec §9.3.4, `design/int/s125-binary-clean.md` §5.2). The caller's own
+    // text in the output stays bare (spec §8.6.1). This is the one
+    // qualification site; `/expand` walks it too.
+    let result = if fq.module == *resolver.current_module() {
+        expansion.sexp
+    } else {
+        qualify::qualify_expansion(
+            qualify::QualifyScope {
+                symbol_tables: resolver.symbol_tables(),
+                current_module: resolver.current_module(),
+                defining_module: &fq.module,
+                caller_text: &expansion.caller_text,
+            },
+            expansion.sexp,
+            shadows,
+        )
     };
     // Re-expand the result (may contain further macro calls); nested calls in
     // the expansion inherit the user-call span as their error-attribution origin.
@@ -1456,6 +1266,10 @@ mod tests {
             &self,
         ) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
             &self.tables
+        }
+        fn current_module(&self) -> &ModuleFullPath {
+            static USER: std::sync::OnceLock<ModuleFullPath> = std::sync::OnceLock::new();
+            USER.get_or_init(|| ModuleFullPath::from("user"))
         }
     }
 

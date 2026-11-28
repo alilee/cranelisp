@@ -130,7 +130,6 @@ fn install_constructor(st: &mut SessionSymbolTable, user: &ModuleFullPath) {
             type_name: FQTypeName::new(user.clone(), "T".into()),
             tag: 0,
             field_count: 0,
-            internal: false,
             type_def: None,
         },
         Realization::Body { view, code: None },

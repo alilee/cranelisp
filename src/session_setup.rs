@@ -39,6 +39,21 @@ pub struct CacheState {
     /// Used for cascade invalidation: if a dependency was recompiled,
     /// all its dependents must also recompile.
     recompiled: HashSet<ModuleFullPath>,
+    /// The modules whose live table holds definitions their source file lacks
+    /// (`design/int/s125-binary-clean.md` §4.3). A module absent here agrees.
+    diverged: HashSet<ModuleFullPath>,
+}
+
+/// Whether a module's live table agrees with the source file its cache entry
+/// is recorded under (`design/int/s125-binary-clean.md` §4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileAgreement {
+    /// The table is what the file establishes: a load or reload read it, or
+    /// a regeneration wrote it.
+    Agrees,
+    /// A definition turn's regeneration did not write: the table is ahead of
+    /// the file, and no cache entry may be written from it.
+    Diverged,
 }
 
 /// Outcome of validating a module's manifest entry against current sources.
@@ -79,6 +94,7 @@ impl CacheState {
             deferred: HashMap::new(),
             dirty: false,
             recompiled: HashSet::new(),
+            diverged: HashSet::new(),
         }
     }
 
@@ -101,6 +117,32 @@ impl CacheState {
     ) {
         self.loaded
             .insert(module_path.clone(), LoadedSource::Fresh { source_hash });
+        self.diverged.remove(module_path);
+    }
+
+    /// `module_path`'s manifest entry, for the cache's unit tests.
+    #[cfg(test)]
+    pub(crate) fn manifest_entry(
+        &self,
+        module_path: &ModuleFullPath,
+    ) -> Option<&cache_manifest::CachedModuleRef> {
+        self.manifest.get_module(module_path)
+    }
+
+    /// Whether `module_path`'s live table agrees with its source file.
+    pub(crate) fn agreement(&self, module_path: &ModuleFullPath) -> FileAgreement {
+        if self.diverged.contains(module_path) {
+            FileAgreement::Diverged
+        } else {
+            FileAgreement::Agrees
+        }
+    }
+
+    /// Record that `module_path`'s table is ahead of its file. Any entry held
+    /// for it is dropped, and none is written until the file agrees again.
+    pub(crate) fn record_divergence(&mut self, module_path: &ModuleFullPath) {
+        self.diverged.insert(module_path.clone());
+        self.deferred.remove(module_path);
     }
 
     pub(crate) fn loaded_source(&self, module_path: &ModuleFullPath) -> Option<&LoadedSource> {
@@ -114,6 +156,9 @@ impl CacheState {
         source_hash: String,
         record: DependencyRecord,
     ) {
+        if self.agreement(module_path) == FileAgreement::Diverged {
+            return;
+        }
         self.manifest
             .upsert_module(module_path, source_hash, record.into_manifest());
         self.deferred.remove(module_path);
@@ -122,6 +167,9 @@ impl CacheState {
     }
 
     pub(crate) fn defer_entry(&mut self, entry: DeferredEntry) {
+        if self.agreement(&entry.module) == FileAgreement::Diverged {
+            return;
+        }
         self.deferred.insert(entry.module.clone(), entry);
     }
 
@@ -192,6 +240,7 @@ impl CacheState {
                 record,
             },
         );
+        self.diverged.remove(module_path);
     }
 }
 

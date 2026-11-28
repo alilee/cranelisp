@@ -24,7 +24,7 @@
 //! 4b. `Pair` ADT in `primitives` (test-discovery.md ruling 1 — `discover-tests`
 //!    return shape).
 //! 4c. `Result` ADT in `primitives` (tag order Ok=0 / Err=1).
-//! 5. `IO` ADT (`Pure`/`Effect`/`Bind`) in `primitives`.
+//! 5. `IO` in `primitives`, a type with no constructor (row IO-T).
 //! 6. `bind` primitive in `primitives`.
 //! 7. `Trace` ADT (`TraceCall` + field accessors) in `primitives` (ADT data
 //!    declaration only — the 12 runtime bodies live in `cranelisp-intrinsics`,
@@ -43,8 +43,8 @@
 //!
 //! ## `next_type_id` threading
 //!
-//! Each polymorphic ADT (`SList`, `Option`, `IO`) and the polymorphic `bind`
-//! primitive allocate fresh `TypeId`s from the session `next_type_id`
+//! Each polymorphic ADT (`SList`, `Option`, `Pair`, `Result`) and each generic
+//! primitive (`bind`, `pure`, `race`, `select`) allocate fresh `TypeId`s from the session `next_type_id`
 //! `AtomicU32` via [`fresh_type_id`]. The high-water mark therefore advances
 //! monotonically as the legacy body did (it allocated through
 //! `TypeCheckEnv::fresh_var_id`, the same `AtomicU32`).
@@ -54,9 +54,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use cranelisp_types::TypeName;
 use cranelisp_types::{
-    AdtEntrySpec, Binding, CallableOrigin, CranelispError, Decl, DefnVariant, ErrorLocation, Expr,
-    FQSymbol, FQTypeName, ModuleFullPath, Realization, Scheme, Span, SpecialFormRecord, Symbol,
-    TemplateBody, TemplateKind, Type, TypeDefInfo, TypeExpr, TypeId, TypeRecord, Visibility,
+    AdtEntrySpec, Binding, CallableOrigin, CranelispError, Decl, ErrorLocation, FQSymbol,
+    FQTypeName, ModuleFullPath, Realization, Scheme, Span, SpecialFormRecord, Symbol, TemplateBody,
+    TemplateKind, Type, TypeDefInfo, TypeId, TypeRecord, Visibility,
 };
 
 use crate::code::{Code, SessionSymbolTable};
@@ -105,13 +105,11 @@ struct SynthField {
     ty: Type,
 }
 
-/// A synthetic constructor: name, fields (resolved types), docstring,
-/// internal flag. Tag is the positional index in the constructor list.
+/// A synthetic constructor: name, fields (resolved types) and docstring. Tag is the positional index in the constructor list.
 struct SynthCtor {
     name: &'static str,
     fields: Vec<SynthField>,
     docstring: Option<&'static str>,
-    internal: bool,
 }
 
 /// Register a synthetic ADT into `module` exactly as the
@@ -134,7 +132,7 @@ struct SynthCtor {
 /// (builder rustdoc §"What the builder owns vs what callers keep").
 ///
 /// The builder handles both facets: **sum/enum** (distinct ctor names —
-/// `Option`/`Result`/`IO`) get a separate `ModuleEntry::TypeDef` plus one
+/// `Option`/`Result`) get a separate `ModuleEntry::TypeDef` plus one
 /// got-slotted `DefKind::Constructor { type_def: None }` per ctor (bare-name
 /// `Import` alias onto the canonical `member_key(Type, Ctor)` `Def`);
 /// **single-ctor product** (type-name == sole ctor-name — `Pair`) gets ONE
@@ -168,7 +166,6 @@ fn register_synth_adt(
                     })
                     .collect(),
                 c.docstring.map(String::from),
-                c.internal,
             )
         })
         .collect();
@@ -309,10 +306,10 @@ fn insert_primitive(
 /// (`imports.rs::check_exposed_candidate_closure`;
 /// `design/int/int.md` §6.7). This runs ONCE at
 /// session init, single-threaded, before any worker is spawned — outside the
-/// foreground concurrent-compile path — and every entry it seeds is either the
-/// module's OWN definition or ONE intra-module public self-alias
-/// (`primitives/Bind → primitives/IO.Bind`), both of which the gate admits with
-/// no map read. The skip is ASSERTED, not argued:
+/// foreground concurrent-compile path — and every public entry it seeds is
+/// either the module's OWN definition or a same-module bare-constructor alias
+/// (`primitives/Some → primitives/Option.Some`), both of which the gate admits
+/// with no map read. The skip is ASSERTED, not argued:
 /// `tests::bootstrap_public_candidate_exposures_are_self_aliases_or_private`
 /// sweeps every
 /// seeded name candidate through the gate under `D(M) = {}`, so seeding a
@@ -330,8 +327,9 @@ pub(crate) fn mount_synthetic_modules(
     register_option_type(symbol_tables, next_id)?; // step 4
     register_pair_type(symbol_tables, next_id)?; // step 4b (test-discovery.md ruling 1)
     register_result_type(symbol_tables, next_id)?; // step 4c (test-discovery.md ruling 1)
-    register_io_type(symbol_tables, next_id)?; // step 5
+    register_io_type(symbol_tables)?; // step 5
     register_bind_primitive(symbol_tables, next_id)?; // step 6
+    register_pure_primitive(symbol_tables, next_id)?; // step 6a
     register_combinators(symbol_tables, next_id)?; // step 6b (S96 Chunk C, slice 7)
     register_trace_type(symbol_tables)?; // step 7
     register_test_infrastructure(symbol_tables)?; // step 8
@@ -614,7 +612,6 @@ fn register_macros_module(
                     name: "SNil",
                     fields: vec![],
                     docstring: None,
-                    internal: false,
                 },
                 SynthCtor {
                     name: "SCons",
@@ -629,7 +626,6 @@ fn register_macros_module(
                         },
                     ],
                     docstring: None,
-                    internal: false,
                 },
             ],
         )?;
@@ -670,7 +666,6 @@ fn register_macros_module(
                         },
                     ],
                     docstring: None,
-                    internal: false,
                 },
             ],
         )?;
@@ -696,7 +691,6 @@ fn sexp_ctor(name: &'static str, field: &'static str, ty: Type) -> SynthCtor {
         name,
         fields: vec![SynthField { name: field, ty }],
         docstring: None,
-        internal: false,
     }
 }
 
@@ -723,7 +717,6 @@ fn register_option_type(
                 name: "None",
                 fields: vec![],
                 docstring: Some("Absent value"),
-                internal: false,
             },
             SynthCtor {
                 name: "Some",
@@ -732,7 +725,6 @@ fn register_option_type(
                     ty: Type::Var(option_a),
                 }],
                 docstring: Some("Present value"),
-                internal: false,
             },
         ],
     )
@@ -778,7 +770,6 @@ fn register_pair_type(
                 },
             ],
             docstring: Some("Construct a pair"),
-            internal: false,
         }],
     )
 }
@@ -815,7 +806,6 @@ fn register_result_type(
                     ty: Type::Var(result_a),
                 }],
                 docstring: Some("Success value"),
-                internal: false,
             },
             SynthCtor {
                 name: "Err",
@@ -824,159 +814,40 @@ fn register_result_type(
                     ty: Type::Var(result_b),
                 }],
                 docstring: Some("Failure value"),
-                internal: false,
             },
         ],
     )
 }
 
-// --- Step 5: IO ADT (primitives) ---
+// --- Step 5: IO type (primitives) ---
 
+/// Seed `primitives/IO` with type parameter `a` and no constructor, like `Vec`
+/// (row IO-T, `design/arch/interfaces.md` §Opaque `IO`). An `IO` value is built
+/// only by `pure`, `bind` and the effect primitives, so no table holds a
+/// constructor a user spelling could name.
 fn register_io_type(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
-    next_id: &AtomicU32,
 ) -> Result<(), CranelispError> {
     let primitives_path = ModuleFullPath::from("primitives");
-    let io_a = fresh_type_id(next_id);
-    let io_fqtn = primitives_fqtn("IO");
-
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
         .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `IO`"))?;
-
-    // Pure / Effect via the standard ADT path.
-    register_synth_adt(
-        &mut primitives,
-        &io_fqtn,
-        &["a"],
-        &[io_a],
-        Some("Deferred IO computation tree"),
-        &[
-            SynthCtor {
-                name: "Pure",
-                fields: vec![SynthField {
-                    name: "ioval",
-                    ty: Type::Var(io_a),
-                }],
-                docstring: Some("Lift a value into IO"),
-                internal: false,
-            },
-            SynthCtor {
-                name: "Effect",
-                fields: vec![SynthField {
-                    name: "thunk",
-                    ty: Type::Var(io_a),
-                }],
-                docstring: Some("Deferred effectful computation"),
-                internal: false,
-            },
-        ],
-    )?;
-
-    // Bind (tag=2, internal): existential `b` independent of IO's `a`.
-    // HM cannot express the existential, so Bind bypasses the normal ctor
-    // scheme path — built manually with two fresh vars, matching the legacy
-    // `add_internal_bind_constructor`.
-    let bind_a = fresh_type_id(next_id);
-    let bind_b = fresh_type_id(next_id);
-    let io_b = Type::ADT(io_fqtn.clone(), vec![Type::Var(bind_b)]);
-    let io_a_ty = Type::ADT(io_fqtn.clone(), vec![Type::Var(bind_a)]);
-    let cont_ty = Type::Fn(vec![Type::Var(bind_b)], Box::new(io_a_ty.clone()));
-    let bind_ctor_scheme = Scheme {
-        type_vars: vec![bind_a, bind_b],
-        constraints: HashMap::new(),
-        ty: Type::Fn(
-            vec![io_b.clone(), cont_ty.clone()],
-            Box::new(Type::ADT(io_fqtn.clone(), vec![Type::Var(bind_a)])),
-        ),
-    };
-    let body_span = Span::SYNTHETIC;
-    let bind_param_names = vec![Symbol::from("inner"), Symbol::from("cont")];
-    let synth_params: Vec<(Symbol, Option<TypeExpr>)> = bind_param_names
-        .iter()
-        .cloned()
-        .map(|n| (n, None))
-        .collect();
-    let synth_body = Expr::ConstrADT {
-        type_name: io_fqtn.clone(),
-        tag: 2,
-        fields: bind_param_names
-            .iter()
-            .map(|n| Expr::Var {
-                name: n.clone(),
-                span: body_span,
-                resolved_call: None,
-                inferred_type: None,
-            })
-            .collect(),
-        span: body_span,
-        inferred_type: None,
-    };
-
-    // Append Bind to IO's constructor list.
-    let mut io_info = primitives
-        .get("IO")
-        .and_then(|binding| binding.type_def_info().cloned())
-        .ok_or_else(|| {
-            bootstrap_error(
-                "extending `IO` with `Bind`",
-                "the newly installed `IO` type definition is absent",
-            )
-        })?;
-    io_info.constructors.push(Symbol::from("Bind"));
     primitives
         .install_binding(
             Symbol::from("IO"),
             Binding::new(
                 Decl::Type(TypeRecord::Defined {
-                    info: io_info,
+                    info: TypeDefInfo {
+                        name: primitives_fqtn("IO"),
+                        type_params: vec![Symbol::from("a")],
+                        constructors: vec![],
+                    },
                     docstring: Some("Deferred IO computation tree".to_string()),
                 }),
                 Visibility::Public,
             ),
         )
-        .map_err(|error| bootstrap_error("extending the `IO` type definition", error))?;
-    // Slot rides on the `Constructor` variant (S83 reshape, FIXME 0356/0357).
-    // **Uniform canonical keying (S109 W1):** `Bind` is a sum ctor of `IO`, so —
-    // like `Pure`/`Effect` and every user `deftype` sum ctor — the real `Def` is
-    // keyed `IO.Bind` (`member_key`), the bare `Bind` an `Import` alias onto it;
-    // `internal: true` rides the `Def` unchanged.
-    let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
-    let bind_variant = DefnVariant {
-        params: synth_params,
-        body: synth_body,
-        span: body_span,
-    };
-    primitives
-        .install_template(
-            bind_canonical.clone(),
-            bind_ctor_scheme,
-            bind_param_names,
-            Some("Chain IO actions (internal — constructed by bind primitive)".to_string()),
-            0,
-            CallableOrigin::Ctor {
-                type_name: io_fqtn.clone(),
-                tag: 2,
-                field_count: 2,
-                internal: true,
-                type_def: None,
-            },
-            cranelisp_types::TemplateBody::Synth(cranelisp_types::SynthSpec::new(bind_variant)),
-            TemplateKind::Parametric,
-            Vec::new(),
-            Visibility::Public,
-        )
-        .map_err(|error| bootstrap_error("installing the `IO.Bind` constructor", error))?;
-    primitives
-        .expose_candidate(
-            Symbol::from("Bind"),
-            cranelisp_types::FQSymbol {
-                module: io_fqtn.module.clone(),
-                symbol: bind_canonical,
-            },
-            Visibility::Public,
-        )
-        .map_err(|error| bootstrap_error("exposing the `Bind` constructor", error))?;
+        .map_err(|error| bootstrap_error("installing the `IO` type definition", error))?;
     Ok(())
 }
 
@@ -1039,6 +910,33 @@ fn register_bind_primitive(
         bind_scheme,
         vec!["io", "f"],
         "Chain IO actions: extract value from first IO, pass to continuation",
+    )
+}
+
+/// Seed `primitives/pure : ∀a. (Fn [a] (IO a))`, the host-promised lift the
+/// backend lowers inline by its stored symbol (`design/int/s125-binary-clean.md`
+/// §1.1). It is an ordinary first-class function (spec §10.2.3).
+fn register_pure_primitive(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    next_id: &AtomicU32,
+) -> Result<(), CranelispError> {
+    let primitives_path = ModuleFullPath::from("primitives");
+    let a = fresh_type_id(next_id);
+    let io_a = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(a)]);
+    let pure_scheme = Scheme {
+        type_vars: vec![a],
+        constraints: HashMap::new(),
+        ty: Type::Fn(vec![Type::Var(a)], Box::new(io_a)),
+    };
+    let mut primitives = symbol_tables
+        .get_mut(&primitives_path)
+        .ok_or_else(|| missing_bootstrap_module(&primitives_path, "installing `pure`"))?;
+    insert_primitive(
+        &mut primitives,
+        "pure",
+        pure_scheme,
+        vec!["x"],
+        "Lift a value into IO",
     )
 }
 
@@ -1179,7 +1077,6 @@ fn register_trace_type(
                 },
             ],
             docstring: Some("Trace call tree node"),
-            internal: false,
         }],
     )?;
 
@@ -1507,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn mounts_option_io_bind() {
+    fn mounts_option_io_and_bind() {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
@@ -1539,28 +1436,46 @@ mod tests {
                 ..
             })
         ));
-        // Bind is internal.
-        match ctor_entry(&prims, "Bind") {
-            Some(Binding {
-                declaration: Decl::Callable(callable),
-                ..
-            }) => match &callable.origin {
-                CallableOrigin::Ctor { internal, tag, .. } => {
-                    assert!(*internal);
-                    assert_eq!(*tag, 2);
-                }
-                _ => panic!("Bind should be a constructor callable"),
-            },
-            _ => panic!("Bind should be a Def"),
+        for spelling in ["Pure", "Effect", "Bind"] {
+            assert!(
+                ctor_entry(&prims, spelling).is_none(),
+                "`{spelling}` must not be seeded"
+            );
         }
-        // IO has 3 constructors recorded.
-        if let Some(Binding {
-            declaration: Decl::Type(TypeRecord::Defined { info, .. }),
-            ..
-        }) = prims.get("IO")
-        {
-            assert_eq!(info.constructors.len(), 3);
-        }
+    }
+
+    // spec: design/arch/interfaces.md §Opaque `IO` (row IO-T) — `IO` is
+    // seeded with no constructor, like `Vec`, so no table holds a constructor
+    // a user spelling could name. This is the row's one residual: a bootstrap
+    // that seeds an `IO` constructor again turns it red.
+    #[test]
+    fn io_is_seeded_with_no_constructor() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
+        let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
+        let info = prims
+            .get("IO")
+            .and_then(|binding| binding.type_def_info())
+            .expect("`IO` is a seeded type");
+        assert_eq!(info.type_params, vec![Symbol::from("a")]);
+        assert!(
+            info.constructors.is_empty(),
+            "`IO` must have no constructors, found {:?}",
+            info.constructors
+        );
+        let io_members: Vec<String> = prims
+            .all_symbols()
+            .map(|(name, _)| name.to_string())
+            .filter(|name| name.starts_with("IO."))
+            .collect();
+        assert!(
+            io_members.is_empty(),
+            "`primitives` must have no `IO.` key, found {io_members:?}"
+        );
+        assert!(
+            prims.get("Option.Some").is_some(),
+            "control: a seeded sum keeps its `Type.Ctor` keys"
+        );
     }
 
     // S96 Chunk C, slice 7 — `race`/`select` are seeded as slot-less
@@ -1615,6 +1530,41 @@ mod tests {
         assert!(
             prims.get("timeout").is_none(),
             "timeout must NOT be a seeded builtin (C4 stdlib)"
+        );
+    }
+
+    // spec: spec/10-io.md §10.2
+    // `primitives/pure` is the host-promised lift the backend lowers inline
+    // (`design/int/s125-binary-clean.md` §1.1): public, no body, no slot, with
+    // scheme `∀a. (Fn [a] (IO a))`. The backend classifies it by its stored
+    // symbol, so the key must be exactly `pure`.
+    #[test]
+    fn mounts_pure_as_host_promised_lift() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
+        let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
+        let Some(Binding {
+            declaration: Decl::Callable(callable),
+            visibility,
+            ..
+        }) = prims.get("pure")
+        else {
+            panic!("primitives/pure must be a seeded callable");
+        };
+        assert!(matches!(callable.arm.life, Life::HostPromised));
+        assert_eq!(*visibility, Visibility::Public);
+        assert_eq!(callable.arm.param_names, vec![Symbol::from("x")]);
+        let scheme = &callable.arm.scheme;
+        let [a] = scheme.type_vars.as_slice() else {
+            panic!("pure quantifies exactly one variable, got {scheme:?}");
+        };
+        assert!(scheme.constraints.is_empty());
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(
+                vec![Type::Var(*a)],
+                Box::new(Type::ADT(primitives_fqtn("IO"), vec![Type::Var(*a)])),
+            )
         );
     }
 
@@ -1825,6 +1775,7 @@ mod tests {
         }
         let expected = std::collections::BTreeSet::from([
             "primitives/bind: HostPromised".to_string(),
+            "primitives/pure: HostPromised".to_string(),
             "primitives/race: HostPromised".to_string(),
             "primitives/select: HostPromised".to_string(),
         ]);
@@ -1838,9 +1789,8 @@ mod tests {
     fn next_type_id_advances_monotonically() {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id).expect("bootstrap mount");
-        // SList(1) + Option(1) + Pair(2) + Result(2) + IO(1) + Bind(2)
-        // + bind(2) + race(1) + select(1) = 13 fresh vars.
-        // (S96 Chunk C: `register_combinators` mints one var each for race + select.)
-        assert_eq!(next_id.load(Ordering::SeqCst), 13);
+        // SList(1) + Option(1) + Pair(2) + Result(2)
+        // + bind(2) + pure(1) + race(1) + select(1) = 11 fresh vars.
+        assert_eq!(next_id.load(Ordering::SeqCst), 11);
     }
 }

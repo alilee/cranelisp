@@ -348,14 +348,9 @@ impl CompilerSession {
             // (`design/int/result-owner.md` §4.2). This formatter must never
             // finalize the word itself, and it holds no copy of it.
             //
-            // The former defensive `ty.is_io()` branch is GONE (0745). It
-            // drove `cranelisp_run_io` on the displayed word and rendered the
-            // inner value — a SECOND IO/result owner, which §4.2 forbids. It
-            // is now unconstructable rather than merely unreachable:
-            // `OwnedProgramResult::new` refuses an `IO a` type outright, so the
-            // single unwrap at the driver boundary
-            // (`pipeline::program_outcome_to_result`) is the only one there
-            // can be (Principle 20 — model invariants by representation).
+            // An `IO`-typed value here is an unforced payload node and renders
+            // as `#io`; the formatter never forces it, since that would make it
+            // a second IO owner, which §4.2 forbids.
             EvalResult::Val { result, .. } => crate::display::result_value_doc(
                 result.observed_value(),
                 result.ty(),
@@ -626,7 +621,7 @@ impl CompilerSession {
                 );
                 doc
             }
-            Decl::Type(_) => self.format_type_display_doc(name, module),
+            Decl::Type(_) => self.format_type_display_doc(name, entry.type_def_info(), module),
             Decl::Trait(record) => {
                 // 0558 (S108, resolve-home-enumeration.md §5): pass the RESOLVED
                 // HOME `module` (the fn param, produced by the gate) so the trait

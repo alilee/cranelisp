@@ -585,7 +585,7 @@ pub(crate) fn validate_main(
             // unresolved-return-poly-dispatch signal but never rejects a
             // poly-returning `main` (legitimate as a library defn). int owns the
             // entry decision — a `main` whose evaluated body carries an
-            // unresolved return dispatch (`(defn main [] (Pure (zed)))`) is
+            // unresolved return dispatch (`(defn main [] (pure (zed)))`) is
             // ambiguous at THIS execution boundary. Filtered to main's own body
             // span so a sibling poly defn in the same module is not implicated.
             let body_span = match &callable.arm.life {

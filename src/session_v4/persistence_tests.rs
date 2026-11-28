@@ -165,39 +165,49 @@ fn commit_gate_rejected_redefinition_keeps_the_published_record() {
 }
 
 // spec: design/int/session-persistence.md §2.4.1 — an accepted replacement
-// replaces form, AST and text, and clears an expansion the new generation
-// lacks; the new generation's codegen facts are present.
+// replaces form, expansion, AST and text; the new generation's codegen facts
+// are present. A written form cannot replace a generated one (spec §9.6.1),
+// so the cleared-expansion leg is `process_form::tests`' macro record.
 #[test]
 fn accepted_replacement_replaces_every_authored_carrier() {
     let root = tempfile::tempdir().unwrap();
     let mut s = repl_session(root.path());
     s.eval("(defmacro mkg [] `(defn g [] 1))").unwrap();
+    s.eval("(defn g [] 1)").unwrap();
+    let written = record_of(&s, "user", "g").unwrap();
+    assert!(
+        written.expanded.is_none(),
+        "precondition: a written form has no expansion"
+    );
+
+    // A macro call over a written definition is an ordinary replacement
+    // (`spec/09-macros.md` §9.6.1 restricts only generated definitions).
     s.eval("(mkg)").unwrap();
     let expanded = record_of(&s, "user", "g").unwrap();
     assert_eq!(
         expanded.sexp.as_ref().map(Sexp::format_flat),
         Some(flat("(mkg)"))
     );
-    assert!(
-        expanded.expanded.is_some(),
-        "precondition: an expansion is recorded"
-    );
+    assert!(expanded.expanded.is_some(), "an expansion is recorded");
 
-    s.eval("(defn g [] 2)").unwrap();
-
+    // Re-entering the same call after its macro changed replaces it again.
+    s.eval("(defmacro mkg [] `(defn g [] 2))").unwrap();
+    s.eval("(mkg)").unwrap();
     let replaced = record_of(&s, "user", "g").unwrap();
     assert_eq!(
         replaced.sexp.as_ref().map(Sexp::format_flat),
-        Some(flat("(defn g [] 2)"))
+        Some(flat("(mkg)"))
     );
-    assert!(
-        replaced.expanded.is_none(),
-        "the prior expansion is cleared"
+    assert_ne!(
+        replaced.expanded.as_ref().map(Sexp::format_flat),
+        expanded.expanded.as_ref().map(Sexp::format_flat),
+        "the expansion is the new generation's"
     );
-    assert_eq!(replaced.source.as_deref(), Some("(defn g [] 2)"));
+    assert_eq!(replaced.source.as_deref(), Some("(mkg)"));
     assert!(replaced.ast.is_some());
     assert_ne!(format!("{:?}", replaced.ast), format!("{:?}", expanded.ast));
     assert!(replaced.clif_ir.is_some() && replaced.code_size.is_some());
+    assert_eq!(s.eval("(g)").unwrap().unwrap().value(), 2);
     s.shutdown();
 }
 
@@ -2666,7 +2676,7 @@ fn startup_cycle_leaves_the_refused_member_failed_and_the_other_waiting() {
             ("b.cl", "(defn g [] (a/f))\n"),
             (
                 "user.cl",
-                "(import [primitives [Pure]])\n(defn main [] (Pure (a/f)))\n",
+                "(import [primitives [pure]])\n(defn main [] (pure (a/f)))\n",
             ),
         ],
     );

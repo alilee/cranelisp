@@ -425,8 +425,8 @@ impl CompilerSession {
             crate::process_form::drive_module_dep(ctx, &current, target, Span::SYNTHETIC)
         }) {
             Err(error) => Err(self.reset_failed_load(&held, error)),
-            Ok(()) => self.register_dep_for_eval(
-                target,
+            Ok(driven) => self.register_dep_for_eval(
+                &driven,
                 &held,
                 crate::eval::DependencyReadiness::InMemory,
             ),
@@ -670,92 +670,30 @@ impl CompilerSession {
         }
     }
 
-    /// Parse, expand, and typecheck an expression without compiling or executing.
-    ///
-    /// Per Decision 44 (2026-05-13 third amendment) — routes through the
-    /// collapsed `check_forms` surface via `worker::check_program_compat`.
-    /// The pre-S66 `tc.check(...)` entry point (which fed a multi-pass
-    /// pipeline driven by a public `ModuleCheckAccumulator`) is retired;
-    /// the type query now lifts inferred-type data off the live `SymbolTable`
-    /// after the cluster commit.
+    /// Parse, expand and typecheck one expression without compiling,
+    /// executing, committing or loading anything (repl spec §3).
     pub(crate) fn typecheck_only(&mut self, expr_src: &str) -> Result<Type, CranelispError> {
         let sexps = cranelisp_frontend::parse(expr_src)?;
-        if sexps.is_empty() {
-            return Err(CranelispError::ParseError {
-                message: "empty expression".into(),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            });
-        }
+        let sexp = match sexps.as_slice() {
+            [] => {
+                return Err(CranelispError::ParseError {
+                    message: "empty expression".into(),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                });
+            }
+            [sexp] => sexp,
+            [_, extra, ..] => {
+                return Err(CranelispError::TypeError {
+                    message: "`/type` takes one expression".into(),
+                    location: ErrorLocation::from_span(extra.span()),
+                });
+            }
+        };
         let module = self.current_module_path();
-
-        // Bare expressions become synthetic __expr definitions for the same
-        // typecheck path used by definitions.
-        let working_program = crate::worker::build_program_compat(&[sexps[0].clone()])?;
-        let working_program = self.wrap_exprs_as_synthetic_defns(&working_program);
-
-        // Ensure the current module exists before the live ClusterContext
-        // tries to take a guard on it.
         cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
-
-        crate::worker::check_program_compat_no_gap(
-            &self.shared.symbol_tables,
-            &self.shared.module_aliases,
-            &self.shared.prelude_fallback,
-            &module,
-            &working_program,
-        )?;
-
-        // The type is the synthetic `__expr`'s scheme result, read back from
-        // the live table; it has no default (`design/int/result-owner.md`
-        // §4.3.1).
-        self.lift_expr_type(&module)
-            .ok_or_else(|| CranelispError::TypeError {
-                message: "`/type` found no `__expr` to read a type from: the checked input \
-                          is not an expression"
-                    .into(),
-                location: ErrorLocation::from_span(sexps[0].span()),
-            })
-    }
-
-    /// Local equivalent of the retired `wrap_exprs_as_defns` helper. Folds
-    /// any `TopLevel::Expr` into a synthetic zero-arg `__expr` defn so it
-    /// flows uniformly through the typecheck dispatch.
-    pub(crate) fn wrap_exprs_as_synthetic_defns(&self, program: &[TopLevel]) -> Vec<TopLevel> {
-        use cranelisp_types::{DefnVariant, Visibility};
-        let mut working = Vec::with_capacity(program.len());
-        for top in program {
-            match top {
-                TopLevel::Expr(expr) => {
-                    let span = expr.span();
-                    let wrapper_span =
-                        Span::new(span.start.saturating_sub(1), span.end.saturating_add(1));
-                    working.push(TopLevel::Defn(cranelisp_types::Defn {
-                        name: Symbol::from("__expr"),
-                        docstring: None,
-                        variants: vec![DefnVariant {
-                            params: vec![],
-                            body: expr.clone(),
-                            span,
-                        }],
-                        visibility: Visibility::Public,
-                        span: wrapper_span,
-                    }));
-                }
-                other => working.push(other.clone()),
-            }
-        }
-        working
-    }
-
-    /// Read back the inferred type of the synthetic `__expr` defn, if any.
-    pub(crate) fn lift_expr_type(&self, module: &ModuleFullPath) -> Option<Type> {
-        let table = self.shared.symbol_tables.get(module)?;
-        match table.get("__expr")?.callable() {
-            Some(callable) => {
-                Some(crate::pipeline::zero_arg_result(&callable.arm.scheme.ty).clone())
-            }
-            _ => None,
-        }
+        self.with_eval_compiler(&module, |ctx| {
+            crate::process_form::type_of_expression(ctx, &module, sexp)
+        })
     }
 
     /// S78 §2.6 — prelude's own public symbol names, for the `/imports`
@@ -1828,7 +1766,7 @@ mod tests_for_filter_tests {
 
 #[cfg(test)]
 mod type_command_tests {
-    use cranelisp_types::{CodegenBehaviour, Span, Type};
+    use cranelisp_types::{CodegenBehaviour, ModuleFullPath, Span, Type};
 
     use crate::session_v4::{CompilerSession, RunMode, SessionSettings};
 
@@ -1860,16 +1798,142 @@ mod type_command_tests {
         );
     }
 
-    // spec: design/int/result-owner.md §4.3.1 — `/type` with no `__expr` after
-    // a clean check is a located error, never a default type. A definition
-    // argument in a fresh session checks clean and leaves no `__expr`.
+    /// Every name the live table holds for `module`, sorted.
+    fn live_names(s: &CompilerSession, module: &str) -> Vec<String> {
+        let table = s
+            .shared
+            .symbol_tables
+            .get(&ModuleFullPath::from(module))
+            .expect("module table");
+        let mut names: Vec<String> = table
+            .all_symbols()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn eval_fixture(s: &mut CompilerSession, forms: &[&str]) {
+        for form in forms {
+            s.eval(form)
+                .unwrap_or_else(|e| panic!("fixture form `{form}` must compile: {e}"));
+        }
+    }
+
+    // spec: repl/spec.md §3 — `/type` never evaluates or defines: the check
+    // leaves the live table exactly as it found it, `__expr` included (TY-U).
     #[test]
-    fn type_with_no_expr_after_a_clean_check_is_a_located_error() {
+    fn type_check_leaves_the_live_table_unchanged() {
         let (mut s, _root) = isolated_session();
-        let error = s
-            .typecheck_only("(defn g [] 1)")
-            .expect_err("no `__expr`, so no type");
+        eval_fixture(&mut s, &["(import [primitives [add-i64]])"]);
+        let before = live_names(&s, "user");
+        assert_eq!(
+            s.typecheck_only("(add-i64 1 2)").map_err(|e| e.to_string()),
+            Ok(Type::Int)
+        );
+        assert_eq!(live_names(&s, "user"), before);
+        assert!(!before.iter().any(|name| name == "__expr"), "{before:?}");
+    }
+
+    // spec: repl/spec.md §3 (S124 ruling, appendix D) — `/type` of a
+    // definition form is a located error and defines nothing.
+    #[test]
+    fn type_of_a_definition_is_a_located_error_and_defines_nothing() {
+        let (mut s, _root) = isolated_session();
+        let before = live_names(&s, "user");
+        for form in [
+            "(defn g [] 1)",
+            "(deftype T A B)",
+            "(defmacro mm [x] x)",
+            "(import [primitives [add-i64]])",
+        ] {
+            let error = s.typecheck_only(form).expect_err(form);
+            assert_ne!(error.location().span, Span::SYNTHETIC, "{form}: {error:?}");
+            assert!(error.to_string().contains("has no type"), "{form}: {error}");
+        }
+        assert_eq!(live_names(&s, "user"), before);
+    }
+
+    // spec: repl/spec.md §3 — a macro whose expansion is a definition is
+    // refused after expansion, as the definition itself is.
+    #[test]
+    fn type_of_a_macro_expanding_to_a_definition_is_refused() {
+        let (mut s, _root) = isolated_session();
+        eval_fixture(&mut s, &["(defmacro mdef [n v] `(defn ~n [] ~v))"]);
+        let before = live_names(&s, "user");
+        let error = s.typecheck_only("(mdef x 1)").expect_err("a definition");
+        assert!(error.to_string().contains("has no type"), "{error}");
+        assert_eq!(live_names(&s, "user"), before);
+    }
+
+    // spec: repl/spec/03-slash-commands.md §3.1 — `/type` expands a macro
+    // call as the evaluated turn does (ACT-1099).
+    #[test]
+    fn type_expands_a_macro_call() {
+        let (mut s, _root) = isolated_session();
+        eval_fixture(
+            &mut s,
+            &[
+                "(import [primitives [add-i64]])",
+                "(defmacro twice [x] `(add-i64 ~x ~x))",
+            ],
+        );
+        assert_eq!(
+            s.typecheck_only("(twice 2)").map_err(|e| e.to_string()),
+            Ok(Type::Int)
+        );
+    }
+
+    // spec: repl/spec.md §3 — `/type` loads no module: a reference into an
+    // unloaded module is a located error and the module stays unloaded.
+    #[test]
+    fn type_of_an_unloaded_module_reference_is_located_and_loads_nothing() {
+        let (mut s, root) = isolated_session();
+        std::fs::write(root.path().join("m.cl"), "(defn value [] 42)").unwrap();
+        for form in ["(m/value)", "m/value"] {
+            let error = s.typecheck_only(form).expect_err(form);
+            assert_ne!(error.location().span, Span::SYNTHETIC, "{form}: {error:?}");
+            assert!(error.to_string().contains("'m'"), "{form}: {error}");
+        }
+        assert!(
+            s.shared
+                .symbol_tables
+                .get(&ModuleFullPath::from("m"))
+                .is_none()
+        );
+    }
+
+    // spec: repl/spec.md §5.1, §5.3 — an error inside a macro's expansion is
+    // anchored to the written call with expansion context, as the evaluated
+    // turn anchors it (T-TY-LOC), for a build error and a type error alike.
+    #[test]
+    fn type_anchors_an_expansion_error_to_the_written_call_as_evaluation_does() {
+        for (expansion, kind) in [
+            ("(if true)", "parse error"),
+            ("(primitives/add-i64 true 1)", "type error"),
+        ] {
+            let (mut s, _root) = isolated_session();
+            eval_fixture(&mut s, &[&format!("(defmacro bad [] `{expansion})")]);
+            let queried = s.typecheck_only("(bad)").expect_err(expansion);
+            let Err(evaluated) = s.eval("(bad)") else {
+                panic!("evaluating `{expansion}` must fail");
+            };
+            assert_eq!(queried.location().span, Span::new(0, 5), "{queried:?}");
+            assert_eq!(queried.location().span, evaluated.location().span);
+            assert_eq!(queried.to_string(), evaluated.to_string());
+            assert!(queried.to_string().starts_with(kind), "{queried}");
+            assert!(
+                queried.to_string().contains("in expansion of `(bad)`"),
+                "{queried}"
+            );
+        }
+    }
+
+    // spec: repl/spec.md §3 — `/type` takes one expression.
+    #[test]
+    fn type_of_more_than_one_form_is_refused() {
+        let (mut s, _root) = isolated_session();
+        let error = s.typecheck_only("1 2").expect_err("two forms");
         assert_ne!(error.location().span, Span::SYNTHETIC, "{error:?}");
-        assert!(error.to_string().contains("__expr"), "{error}");
     }
 }

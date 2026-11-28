@@ -100,8 +100,8 @@ pub(crate) struct FreshJitDropGlue {
     pub(crate) owner: crate::code::Code,
 }
 
-struct PreparedCheck {
-    staging: crate::code::SessionSymbolTable,
+pub(crate) struct PreparedCheck {
+    pub(crate) staging: crate::code::SessionSymbolTable,
     result: cranelisp_typecheck::CheckResult,
 }
 
@@ -285,40 +285,6 @@ pub(crate) fn check_program_compat(
     )
 }
 
-/// Run `check_program_compat` and reject a surviving gap as a hard error.
-///
-/// Used by `/type` introspection, which does not load dependencies and retry.
-/// An unresolved `CheckError::Gap` is translated into a `TypeError`.
-pub(crate) fn check_program_compat_no_gap(
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    module_aliases: &cranelisp_types::ModuleAliases,
-    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
-    module: &ModuleFullPath,
-    working_program: &[TopLevel],
-) -> Result<(), CranelispError> {
-    // These call sites (macro-clause compilation, cache-load typecheck,
-    // `/type` introspection) do not participate in the REPL warning surface,
-    // so the FIXME-0365 warning channel is discarded here.
-    match check_program_compat(
-        symbol_tables,
-        module_aliases,
-        prelude_fallback,
-        module,
-        working_program,
-        // No session context on these paths: the gate falls back to the
-        // reuse-and-patch slot policy (no retention pool to freeze into). The
-        // internal-name shapes these callers commit (`__expr`, `__macro_*`
-        // clauses) are gate-exempt anyway (`redefine::is_gate_exempt_internal`).
-        None,
-    )? {
-        (None, _warnings, _dispatch) => Ok(()),
-        (Some(gap), _warnings, _dispatch) => Err(CranelispError::TypeError {
-            message: format!("unresolved cross-module reference: {gap:?}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        }),
-    }
-}
-
 /// Process a cluster through `ClusterContext::Cluster` with a fresh staging
 /// table and atomic commit/discard.
 ///
@@ -406,7 +372,9 @@ pub(crate) fn process_cluster_with_staging(
     }
 }
 
-fn check_cluster_to_staging(
+/// Check a cluster into a fresh staging table and return it uncommitted; the
+/// live table is unchanged whatever the outcome.
+pub(crate) fn check_cluster_to_staging(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module_aliases: &cranelisp_types::ModuleAliases,
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
@@ -1501,7 +1469,7 @@ pub(crate) fn validate_forms_dry_run(
         // surface it as an error so the repair loop re-prompts (U5 — no
         // error-classification; any non-Ok triggers repair).
         Err(CheckError::Gap(gap)) => Err(CranelispError::TypeError {
-            message: format!("unresolved cross-module reference: {gap:?}"),
+            message: crate::process_form::unresolved_reference_message(&gap),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
         Err(e) => Err(check_error_to_cranelisp_error(e)),
@@ -1692,7 +1660,7 @@ pub(crate) fn check_error_to_cranelisp_error(
             CranelispError::TypeError { message, location }
         }
         CheckError::Gap(gap) => CranelispError::TypeError {
-            message: format!("typecheck gap: {gap:?}"),
+            message: crate::process_form::unresolved_reference_message(&gap),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         },
         // `CheckError` is `#[non_exhaustive]` per the typecheck facade —
@@ -2507,8 +2475,9 @@ fn notify_processed_ready(
 /// AOT symbol under `--link` (the standalone executable has no live session to
 /// scan). This is the single source of truth shared by two sites:
 ///
-///   1. `dev_session_extern_bodies` — promises each one to the live-session JIT
-///      and to the cache-restore `Linker`.
+///   1. `dev_session_extern_body` — supplies each one's body to
+///      `host_extern_addresses`, which promises it to the live-session JIT and
+///      to the cache-restore `Linker`.
 ///   2. `crate::exe::refuse_dev_session_externs` — refuses a `--run`, `--link`
 ///      or `--test` program that references any of them (REPL §16.6).
 ///
@@ -2537,7 +2506,7 @@ pub(crate) const SYNTHETIC_EXPR_WRAPPER: &str = "__expr";
 /// compiled-state channel, never source) or the synthetic top-level-expression
 /// wrapper (`SYNTHETIC_EXPR_WRAPPER`, always EXACTLY `"__expr"` — a user symbol
 /// like `__expr-helper` is a real definition and is NOT matched). Shared by
-/// `/list`, `/exports`, the agent harvest, and `save::generate_fns_and_macros`
+/// `/list`, `/exports`, the agent harvest, and `save::generate_definitions`
 /// (FIXME 0549) so the exclusion is uniform (one predicate, not four drifting
 /// copies).
 pub(crate) fn is_internal_listing_name(name: &str) -> bool {
@@ -2598,36 +2567,23 @@ pub(crate) fn classify_listing_entry(
 }
 
 /// Build the session JIT from the symbol tables (the unified `Jit::new`
-/// boundary, BC §3), then register the host-promised dev-session-only externs.
+/// boundary, BC §3), then promise it every host-promised extern through
+/// `host_extern_addresses`, the resolver the cache-restore `Linker` shares.
 ///
-/// `Jit::new` registers the full intrinsics catalog (incl. trace) + per-module GOT data symbols + platform-effect
-/// jit-names. `discover-tests` is a `DefKind::PrimitiveExtern` whose body lives
-/// in int (it reads the live typed session state — `cranelisp-intrinsics`
-/// cannot name `Code`, Principle 18). int promises it here via the additive
-/// `Jit::define_symbol` escape hatch (test-discovery.md §6; FIXME 0271/0269).
+/// `Jit::new` registers the full intrinsics catalog (incl. trace) + per-module
+/// GOT data symbols + platform-effect jit-names. A host-promised extern's body
+/// lives outside the backend's view: `discover-tests` reads the live typed
+/// session state (`cranelisp-intrinsics` cannot name `Code`, Principle 18), and
+/// `sconcat`/`quote-sexp` are host-binary exports. int promises each via the
+/// additive `Jit::define_symbol` escape hatch (test-discovery.md §6).
 pub(crate) fn build_session_jit(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Result<cranelisp_backend::jit::Jit, CranelispError> {
     let jit = cranelisp_backend::jit::Jit::new(tc_modules)?;
-    for (name, body) in dev_session_extern_bodies() {
-        jit.define_symbol(name, body);
+    for (name, address) in host_extern_addresses(tc_modules) {
+        jit.define_symbol(name.as_ref(), address);
     }
     Ok(jit)
-}
-
-/// The host body of each `DEV_SESSION_ONLY_EXTERNS` name. The fresh JIT and the
-/// cache-restore `Linker` both resolve through this, so restored code that
-/// references one loads exactly as fresh code does; the batch driver seams then
-/// refuse such a program before it runs (`crate::exe::refuse_dev_session_externs`).
-fn dev_session_extern_bodies() -> impl Iterator<Item = (&'static str, *const u8)> {
-    DEV_SESSION_ONLY_EXTERNS.iter().map(|name| {
-        debug_assert_eq!(
-            *name, "discover-tests",
-            "the only dev-session-only extern body wired here is discover-tests; \
-             a new entry in DEV_SESSION_ONLY_EXTERNS needs its own body",
-        );
-        (*name, crate::session_v4::discover_tests_extern as *const u8)
-    })
 }
 
 /// Read the runtime GOT address for `name` in `module`, following Import
@@ -2665,57 +2621,50 @@ fn lookup_got_slot(
 // Linker-based loading for cached modules (Step 13 — cache-hit inmem codegen)
 // ---------------------------------------------------------------------------
 
-/// Register user-callable primitive externs that the cache-restore `Linker`
-/// would otherwise be unable to resolve (FIXME 0299).
-///
-/// Primitive-ish entries fall into two groups:
-///   1. Ring primitives (`add-i64`, `str-concat`, …) — `DefKind::Primitive`
-///      entries living in the session `primitives` module with a populated GOT
-///      slot (copied from `cranelisp_primitives::PRIMITIVES_TABLE` by
-///      `populate_ring0_got_slots`), already registered by the GOT-pointer walk
-///      below.
-///   2. Synthetic slot-less externs (`sconcat`, the Trace accessors, …) —
-///      `DefKind::PrimitiveExtern` entries seeded by
-///      `bootstrap.rs` with `code: None` and NO GOT slot (S83 reshape, FIXME
-///      0356/0357/0360: these are by-ABI-name `Linkage::Import` callees, not
-///      GOT-indirect). Their bodies are binary-exported symbols
-///      (`#[unsafe(export_name = "…")]` in `cranelisp-primitives` /
-///      `cranelisp-intrinsics`, statically linked into the host). The fresh JIT
-///      resolves them through its exported-symbol fallback; the cache `Linker`
-///      has none, so we resolve them here via the host's own symbol table
-///      (`dlsym(RTLD_DEFAULT, name)`) and register the address.
-///
-/// We walk every `DefKind::PrimitiveExtern` and attempt a `dlsym` of its bare
-/// name. A miss is silently skipped (the relocation pass surfaces a clear
-/// `unresolved symbol` error if the `.o` actually needs it).
-fn register_binary_exported_primitives(
-    linker: &mut cranelisp_backend::cache::linker::Linker,
-    shared_state: &crate::session_v4::SharedState,
-) {
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for st_entry in shared_state.symbol_tables.iter() {
-        let st = st_entry.value();
-        for (name, entry) in st.all_symbols() {
-            // Slot-less `PrimitiveExtern` entries are the synthetic externs
-            // resolved by ABI name (S83 reshape, FIXME 0360). Ring
-            // `DefKind::Primitive` entries carry a GOT slot and are registered
-            // by the GOT-pointer walk — skip them here.
-            if !matches!(
-                entry.callable(),
-                Some(callable)
-                    if matches!(callable.origin, CallableOrigin::RustPrimitive)
-                        && matches!(callable.arm.life, Life::HostPromised)
-            ) {
+/// The address of every host-promised extern the host can supply, by ABI
+/// name. This is the one resolver behind the session JIT
+/// (`Jit::define_symbol`) and the cache-restore `Linker`
+/// (`Linker::register_symbol`), so fresh and restored code bind each by-name
+/// host extern to the same body. A dev-session-only extern takes its
+/// live-session body; every other takes the host binary's exported symbol. A
+/// name the host cannot supply is absent for both, so a reference to it fails
+/// at finalization or relocation.
+pub(crate) fn host_extern_addresses(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+) -> std::collections::BTreeMap<Symbol, *const u8> {
+    let mut addresses = std::collections::BTreeMap::new();
+    for table in symbol_tables.iter() {
+        for (name, entry) in table.value().all_symbols() {
+            if addresses.contains_key(name) {
                 continue;
             }
-            let bare = name.as_ref();
-            if !seen.insert(bare.to_string()) {
-                continue;
-            }
-            if let Some(ptr) = dlsym_host_symbol(bare) {
-                linker.register_symbol(bare, ptr);
+            if let Some(address) = host_extern_address(name, entry) {
+                addresses.insert(name.clone(), address);
             }
         }
+    }
+    addresses
+}
+
+/// The address the host supplies for `entry` when it is a host-promised
+/// extern: its live-session body, else the host binary's exported symbol.
+/// `None` for any other entry, or for a name the host cannot supply.
+fn host_extern_address(name: &Symbol, entry: &Binding<crate::code::Code>) -> Option<*const u8> {
+    let host_promised = entry.callable().is_some_and(|callable| {
+        matches!(callable.origin, CallableOrigin::RustPrimitive)
+            && matches!(callable.arm.life, Life::HostPromised)
+    });
+    if !host_promised {
+        return None;
+    }
+    dev_session_extern_body(name.as_ref()).or_else(|| dlsym_host_symbol(name.as_ref()))
+}
+
+/// The live-session body of a `DEV_SESSION_ONLY_EXTERNS` name.
+fn dev_session_extern_body(name: &str) -> Option<*const u8> {
+    match name {
+        "discover-tests" => Some(crate::session_v4::discover_tests_extern as *const u8),
+        _ => None,
     }
 }
 
@@ -2745,211 +2694,219 @@ fn load_cached_module_via_linker(
     module: &ModuleFullPath,
     shared_state: &crate::session_v4::SharedState,
 ) -> Result<Vec<Symbol>, CranelispError> {
-    use cranelisp_backend::cache;
-
-    // Sprint 67 Cluster B sub-fire 3: cache dir via ObjectCache facade.
-    let cache_dir = shared_state
-        .cache
-        .cache_dir()
-        .ok_or_else(|| CranelispError::ModuleError {
-            message: format!("no cache directory for cache-hit loading of '{}'", module),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        })?;
-
-    // Load metadata from disk.
-    let cached = cache::try_load_cached_module(&cache_dir, module)?.ok_or_else(|| {
-        CranelispError::ModuleError {
-            message: format!("cache metadata missing for module '{}'", module),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        }
-    })?;
-
-    if !cached.has_object {
-        return Err(CranelispError::ModuleError {
-            message: format!("cached .o file missing for module '{}'", module),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        });
-    }
-
-    // Build Linker with all known symbols.
-    let mut linker = cache::linker::Linker::new()?;
-
-    // S76: register the full intrinsics catalog (incl. trace) from
-    // `cranelisp_intrinsics::intrinsics_table()` — the same source `Jit::new`
-    // consumes (backend's `intrinsic_symbols()` is retired).
-    for entry in cranelisp_intrinsics::intrinsics_table() {
-        linker.register_symbol(entry.name, entry.ptr);
-    }
-
-    // S77 W-MacroTrait (FIXME 0299): register user-callable primitive externs
-    // that are NOT in the intrinsics catalog and have no GOT-stored pointer —
-    // notably the synthetic `macros` module's `sconcat`/`quote-sexp` (seeded by
-    // `bootstrap.rs` with `code: None` + no GOT slot). The fresh JIT resolves
-    // these via its `symbol_lookup_fn` falling back to the binary's exported
-    // symbols (each is `#[unsafe(export_name = "...")]` in `cranelisp-primitives`,
-    // statically linked into the host). The cache-restore `Linker` has NO such
-    // dlsym fallback (`cache/linker.rs` resolves only its registered maps), so a
-    // cached `.o` referencing `sconcat` failed with `unresolved symbol: sconcat`
-    // (the disk-cache gap noted in `src/AGENTS.md`). Mirror the JIT by resolving
-    // every `DefKind::Primitive` whose GOT slot is empty against the host's own
-    // exported symbol and registering it with the linker.
-    register_binary_exported_primitives(&mut linker, shared_state);
-    for (name, body) in dev_session_extern_bodies() {
-        linker.register_symbol(name, body);
-    }
-
-    // Register platform symbols by walking symbol tables. Every
-    // `PlatformEffect` entry carries its DLL function pointer in the owning
-    // module's GOT slot (`got.load_slot(got_slot)`); the symbol-table key IS
-    // the JIT linker name (the retired `jit_name` field no longer exists —
-    // `src/AGENTS.md` §"JIT Symbol Names").
-    for st_entry in shared_state.symbol_tables.iter() {
-        let st = st_entry.value();
-        for (name, entry) in st.all_symbols() {
-            // The platform effect's GOT slot now rides on its variant (S83
-            // reshape, FIXME 0358 — PlatformEffect IS GOT-callable).
-            if matches!(
-                entry.callable().map(|callable| &callable.origin),
-                Some(CallableOrigin::PlatformEffect { .. })
-            ) && let Some(got_slot) = entry.callable_got_slot()
-            {
-                let ptr = st.got.load_slot(got_slot);
-                if !ptr.is_null() {
-                    linker.register_symbol(name.as_ref(), ptr);
-                }
-            }
-        }
-    }
-
-    // Register code pointers from already-compiled modules. The callable
-    // address is the per-module GOT slot (the single source of truth — no
-    // per-entry `ptr`). Read it via `got.load_slot(got_slot)`.
-    for st_entry in shared_state.symbol_tables.iter() {
-        let st = st_entry.value();
-        for (name, entry) in st.all_symbols() {
-            if matches!(
-                entry.callable().map(|callable| &callable.arm.life),
-                Some(Life::Concrete {
-                    realization: Realization::Body { code: Some(_), .. },
-                    ..
-                })
-            ) && let Some(slot) = entry.callable_got_slot()
-            {
-                let ptr = st.got.load_slot(slot);
-                if !ptr.is_null() {
-                    linker.register_symbol(name.as_ref(), ptr);
-                }
-            }
-        }
-    }
-
-    // Register per-module GOT data symbols for cross-module GOT-indirect calls.
-    // `got_data_symbol_name` is now types-owned.
-    for st_entry in shared_state.symbol_tables.iter() {
-        let name = cranelisp_types::got_data_symbol_name(st_entry.key());
-        linker.register_symbol(&name, st_entry.value().got.base_ptr());
-    }
-
-    // Get this module's GOT table from the symbol table.
+    let cached = read_cached_artefact(module, shared_state)?;
+    let linker = session_linker(&shared_state.symbol_tables)?;
     let module_got = shared_state
         .symbol_tables
         .get(module)
-        .ok_or_else(|| CranelispError::ModuleError {
-            message: format!("no symbol table for cached module '{}'", module),
-            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-        })?
+        .ok_or_else(|| cached_load_error(format!("no symbol table for cached module '{module}'")))?
         .got
         .clone();
+    let loaded = load_and_wire_slots(module, linker, &cached, &module_got)?;
+    let targets = publish_linker_owners(module, &shared_state.symbol_tables, loaded)?;
+    Ok(record_restored_object(shared_state, &cached, &targets))
+}
 
-    // Load the .o file — one mmap + relocation pass.
-    let fn_addrs = cache::load_cached_object(&mut linker, &cached)?;
+fn cached_load_error(message: String) -> CranelispError {
+    CranelispError::ModuleError {
+        message,
+        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+    }
+}
 
-    // Wire code pointers into the per-module GOT using slot assignments
-    // from the symbol table.
-    //
-    // Sprint 58 Wave 2 (Decision 37 — "no swallowed failures"): each cached
-    // symbol with a `got_slot` MUST resolve through the linker. Per
-    // Decision 36, function symbols are bare-Local everywhere uniformly, so
-    // `linker.get_symbol(bare)` succeeds for every defined function. A
-    // resolution failure here means either (a) the cached `.o` is corrupt
-    // / mismatched against the cached `.meta.json`, or (b) the `/backend`
-    // contract was violated. Either way we surface a hard error rather
-    // than silently produce an `inmem_done` state with empty GOT slots —
-    // the latter is a Decision-31 safety-invariant violation (a slot that
-    // resolves to NULL is reachable from the code path that calls it).
-    let mut loaded_targets = Vec::new();
-    for (target, arm) in cached.symbol_table().codegen_targets() {
-        let Life::Concrete { slot, .. } = &arm.life else {
-            continue;
-        };
-        let slot = slot.index();
-        let Some(ptr) = fn_addrs.get(&target).copied() else {
-            return Err(CranelispError::ModuleError {
-                message: format!(
-                    "cache-hit symbol resolution failed for target '{target:?}' in '{module}': \
-                     `.o` linker did not define its expected emitted symbol. \
-                     This indicates a cache inconsistency — the cached `.meta.json` \
-                     records a callable body whose code is missing from the `.o`."
-                ),
-                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-            });
-        };
-        module_got.store_slot(slot, ptr);
-        loaded_targets.push(target);
+/// Step 1: the module's cached metadata, which must record an object file.
+fn read_cached_artefact(
+    module: &ModuleFullPath,
+    shared_state: &crate::session_v4::SharedState,
+) -> Result<cranelisp_backend::cache::CachedModule, CranelispError> {
+    let cache_dir = shared_state.cache.cache_dir().ok_or_else(|| {
+        cached_load_error(format!(
+            "no cache directory for cache-hit loading of '{module}'"
+        ))
+    })?;
+    let cached =
+        cranelisp_backend::cache::try_load_cached_module(&cache_dir, module)?.ok_or_else(|| {
+            cached_load_error(format!("cache metadata missing for module '{module}'"))
+        })?;
+    if !cached.has_object {
+        return Err(cached_load_error(format!(
+            "cached .o file missing for module '{module}'"
+        )));
+    }
+    Ok(cached)
+}
+
+/// Step 2: a `Linker` holding every symbol the session can supply to a
+/// restored object, read in one walk of the tables: the intrinsics catalog,
+/// the host-promised externs (the rule `host_extern_addresses` shares with the
+/// session JIT), platform-effect and compiled-body slot pointers, and each
+/// module's GOT data symbol. A null slot is skipped. The groups register in
+/// that order, so a later group wins a shared name.
+fn session_linker(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+) -> Result<cranelisp_backend::cache::linker::Linker, CranelispError> {
+    let mut host_externs = std::collections::BTreeMap::new();
+    let mut platform_effects = Vec::new();
+    let mut compiled_bodies = Vec::new();
+    let mut got_data = Vec::new();
+    for table in symbol_tables.iter() {
+        let st = table.value();
+        got_data.push((
+            cranelisp_types::got_data_symbol_name(table.key()),
+            st.got.base_ptr(),
+        ));
+        for (name, entry) in st.all_symbols() {
+            if !host_externs.contains_key(name)
+                && let Some(address) = host_extern_address(name, entry)
+            {
+                host_externs.insert(name.clone(), address);
+            }
+            let Some(callable) = entry.callable() else {
+                continue;
+            };
+            let Some(slot) = entry.callable_got_slot() else {
+                continue;
+            };
+            let group = if matches!(callable.origin, CallableOrigin::PlatformEffect { .. }) {
+                &mut platform_effects
+            } else if matches!(
+                callable.arm.life,
+                Life::Concrete {
+                    realization: Realization::Body { code: Some(_), .. },
+                    ..
+                }
+            ) {
+                &mut compiled_bodies
+            } else {
+                continue;
+            };
+            let ptr = st.got.load_slot(slot);
+            if !ptr.is_null() {
+                group.push((name.clone(), ptr));
+            }
+        }
     }
 
-    // Sprint 58 Step 5b §3.2 + Wave 3b (Decision 35 Cache-restore): after
-    // fresh build, the integration layer writes `Code::Jit { jit, ptr }`
-    // onto each `ModuleEntry::Def.code`; the cache-hit Linker path mirrors
-    // that with `Code::Linker { linker, ptr }`, sharing one `Arc<Linker>`
-    // across every entry the linker materialised. Reclamation of the
-    // mmap'd `.o` pages happens when the last `Code::Linker` referencing
-    // the Arc drops (per-module reclaim, dual of Scenario 2's per-batch
-    // JIT reclaim).
-    let linker_arc = std::sync::Arc::new(linker);
-    if let Some(mut live_table) = shared_state.symbol_tables.get_mut(module) {
+    let mut linker = cranelisp_backend::cache::linker::Linker::new()?;
+    for entry in cranelisp_intrinsics::intrinsics_table() {
+        linker.register_symbol(entry.name, entry.ptr);
+    }
+    for (name, ptr) in host_externs
+        .into_iter()
+        .chain(platform_effects)
+        .chain(compiled_bodies)
+    {
+        linker.register_symbol(name.as_ref(), ptr);
+    }
+    for (name, ptr) in got_data {
+        linker.register_symbol(&name, ptr);
+    }
+    Ok(linker)
+}
+
+/// A relocated cached object: the linker that owns its mapped pages and the
+/// targets whose GOT slots now point into them.
+struct LoadedObject {
+    linker: cranelisp_backend::cache::linker::Linker,
+    targets: Vec<CallableTarget>,
+}
+
+/// Step 3: relocate the cached object and point each codegen target's GOT
+/// slot at its linked address.
+fn load_and_wire_slots(
+    module: &ModuleFullPath,
+    mut linker: cranelisp_backend::cache::linker::Linker,
+    cached: &cranelisp_backend::cache::CachedModule,
+    module_got: &cranelisp_types::GotTable,
+) -> Result<LoadedObject, CranelispError> {
+    let fn_addrs = cranelisp_backend::cache::load_cached_object(&mut linker, cached)?;
+    let wanted = cached
+        .symbol_table()
+        .codegen_targets()
+        .filter_map(|(target, arm)| match &arm.life {
+            Life::Concrete { slot, .. } => Some((target, slot.index())),
+            _ => None,
+        })
+        .collect();
+    let targets = wire_slots(module, wanted, &fn_addrs, module_got)?;
+    Ok(LoadedObject { linker, targets })
+}
+
+/// Store each wanted target's linked address in its slot. A target the object
+/// did not define is a hard error (Decision 37), raised before any slot is
+/// written, so a failed restore leaves no slot half-wired and none null.
+fn wire_slots(
+    module: &ModuleFullPath,
+    wanted: Vec<(CallableTarget, usize)>,
+    fn_addrs: &std::collections::HashMap<CallableTarget, *const u8>,
+    module_got: &cranelisp_types::GotTable,
+) -> Result<Vec<CallableTarget>, CranelispError> {
+    let mut resolved = Vec::with_capacity(wanted.len());
+    for (target, slot) in wanted {
+        let Some(ptr) = fn_addrs.get(&target).copied() else {
+            return Err(cached_load_error(format!(
+                "cache-hit symbol resolution failed for target '{target:?}' in '{module}': \
+                 `.o` linker did not define its expected emitted symbol. \
+                 This indicates a cache inconsistency — the cached `.meta.json` \
+                 records a callable body whose code is missing from the `.o`."
+            )));
+        };
+        resolved.push((target, slot, ptr));
+    }
+    Ok(resolved
+        .into_iter()
+        .map(|(target, slot, ptr)| {
+            module_got.store_slot(slot, ptr);
+            target
+        })
+        .collect())
+}
+
+/// Step 4: publish one `Code::Linker` owner per loaded target, all sharing one
+/// `Arc` of the linker, which is the retention root of the mapped pages
+/// (`design/int/int.md` §7.4). Displaced owners drop after the loop.
+fn publish_linker_owners(
+    module: &ModuleFullPath,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    loaded: LoadedObject,
+) -> Result<Vec<CallableTarget>, CranelispError> {
+    let linker = std::sync::Arc::new(loaded.linker);
+    if let Some(mut live_table) = symbol_tables.get_mut(module) {
         let mut displaced_owners = Vec::new();
-        for target in &loaded_targets {
-            let owner = crate::code::Code::linker(std::sync::Arc::clone(&linker_arc));
+        for target in &loaded.targets {
+            let owner = crate::code::Code::linker(std::sync::Arc::clone(&linker));
             match live_table.publish_compiled_owner(target, owner) {
                 Ok(Some(displaced)) => displaced_owners.push(displaced),
                 Ok(None) => {}
                 Err(rejection) => {
-                    return Err(CranelispError::ModuleError {
-                        message: format!(
-                            "cache-hit owner publication failed for '{target:?}' in '{module}': {}",
-                            rejection.reason()
-                        ),
-                        location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
-                    });
+                    return Err(cached_load_error(format!(
+                        "cache-hit owner publication failed for '{target:?}' in '{module}': {}",
+                        rejection.reason()
+                    )));
                 }
             }
         }
         drop(displaced_owners);
     }
-    // Each restored entry's `Code::Linker` clone is the retention root; there
-    // is no session-level linker pool (`design/int/int.md` §7.4).
-    drop(linker_arc);
+    Ok(loaded.targets)
+}
 
-    // S86 D5b: register the cache-restored `.o` into the `--link` set. The
-    // only writer of `compiled_o_paths` was `compile_module_object` (the
-    // freshly-compiled / cache-MISS path), so a module restored from a prior
-    // `--run`'s cache (cache-HIT) was absent from `all_paths()` at `--link`
-    // time — `cc` linked without it and `user.o`'s cross-module
-    // `__cranelisp_got_{dep}` reference was undefined. The `.o` we just
-    // mmap+relocated is `cached.object_path` (`has_object` is asserted above,
-    // so this is the genuine on-disk object, not a generic-only no-codegen
-    // module). `append_o_path` dedups, so a module that is both cache-restored
-    // and later freshly recompiled is listed once.
+/// Step 5: add the restored object to the `--link` set, so a module restored
+/// from cache links like a fresh one (S86 D5b), and return the loaded owners'
+/// symbols.
+fn record_restored_object(
+    shared_state: &crate::session_v4::SharedState,
+    cached: &cranelisp_backend::cache::CachedModule,
+    targets: &[CallableTarget],
+) -> Vec<Symbol> {
     shared_state.cache.append_o_path(cached.object_path.clone());
-
-    Ok(loaded_targets
+    targets
         .iter()
         .filter_map(callable_target_owner)
         .map(|owner| owner.symbol.clone())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .collect())
+        .collect()
 }
 
 /// Load a cache-restored module's object under the scheduler's claim
