@@ -1,6 +1,6 @@
 ; Cranelisp Ring 4B — IO Sequencing
 
-(import [primitives [Pure add-i64]])
+(import [primitives [pure add-i64 mul-i64 int-to-string]])
 
 ; Load the platform and import IO functions
 
@@ -10,23 +10,23 @@
 ; do sequences IO actions — results discarded except the last
 
 do
-(do (print "one") (print "two") (Pure 42))
+(do (print "one") (print "two") (pure 42))
 
 ; bind! names intermediate IO results
 
 bind!
-(bind! [x (Pure 10) y (Pure 20)] (Pure (add-i64 x y)))
+(bind! [x (pure 10) y (pure 20)] (pure (add-i64 x y)))
 
 ; bind! with side effects — name a result, then use it
 
-(bind! [x (Pure 42)] (print (str "the answer is " (int-to-string x))))
+(bind! [x (pure 42)] (print (str "the answer is " (int-to-string x))))
 
 ; Combining do and bind! — a small program
 
-(defn run [] (do (print "computing...") (bind! [x (Pure (mul-i64 6 7))] (print (str "result: " (show x))))))
+(defn run [] (do (print "computing...") (bind! [x (pure (mul-i64 6 7))] (print (str "result: " (show x))))))
 (run)
 
 ; IO composes with conditionals
 
 (if true (print "yes") (print "no"))
-(if (> 10 5) (Pure "big") (Pure "small"))
+(if (> 10 5) (pure "big") (pure "small"))

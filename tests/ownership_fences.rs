@@ -81,7 +81,7 @@ fn rc_imbalance(stderr: &str) -> i64 {
     field("allocs") - field("deallocs")
 }
 
-/// Assert exit code equals `value % 256` (batch `main` returns `Pure Int`;
+/// Assert exit code equals `value % 256` (batch `main` returns `pure Int`;
 /// the process exit code carries it, mod 256).
 fn assert_exit_value(out: helpers::e2e::CrOutput, value: i64) -> helpers::e2e::CrOutput {
     let expected = (value % 256) as i32;
@@ -163,7 +163,7 @@ const S1_TEMPLATE: &str = "(import [primitives [*]])\n\
     (defn spin [:Int n :Int acc :String s]\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1) (add-i64 acc (add-i64 (use-len s) (str-len s))) s)))\n\
-    (defn main [] (Pure (spin {N} 0 \"hello\")))\n";
+    (defn main [] (primitives/pure (spin {N} 0 \"hello\")))\n";
 
 // spec: design/arch/ownership-inference.md §3.1 — S1 behavioral leg: the
 // borrowed-param elision site; the var survives every crossing and reads
@@ -192,7 +192,7 @@ const S2_TEMPLATE: &str = "(import [primitives [*]])\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (walk v (sub-i64 n 1)\n\
     \x20     (add-i64 acc (add-i64 (str-len (vec-get v 0)) (vec-len v))))))\n\
-    (defn main [] (Pure (walk [\"aa\" \"bbb\"] {N} 0)))\n";
+    (defn main [] (primitives/pure (walk [\"aa\" \"bbb\"] {N} 0)))\n";
 
 // spec: design/arch/ownership-inference.md §3.3 — S2 behavioral leg:
 // projection skip-inc on a borrowed root; the ROOT is used again (vec-len)
@@ -219,7 +219,7 @@ const S3_TEMPLATE: &str = "(import [primitives [*]])\n\
     (defn spin [:Int n :Int acc]\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1) (add-i64 acc (use-len (str-concat \"ab\" \"cd\"))))))\n\
-    (defn main [] (Pure (spin {N} 0)))\n";
+    (defn main [] (primitives/pure (spin {N} 0)))\n";
 
 // spec: design/arch/ownership-inference.md §3.1 — S3 behavioral leg: a fresh
 // temporary passed where a borrowed param lands must still be released
@@ -258,7 +258,7 @@ const S4_TEMPLATE: &str = "(import [primitives [*]])\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1)\n\
     \x20     (add-i64 acc (add-i64 (measure s 1) (call2 measure s 1))) s)))\n\
-    (defn main [] (Pure (spin {N} 0 \"abcd\")))\n";
+    (defn main [] (primitives/pure (spin {N} 0 \"abcd\")))\n";
 
 // spec: design/arch/ownership-inference.md §3.4 — S4 behavioral leg: static
 // call and fn-as-value through a HOF give identical results over the same
@@ -296,7 +296,7 @@ fn curried_partial_and_static_call_of_same_fn_in_one_body_compiles() {
         "(import [primitives [*]])\n\
          (defn measure [:String s :Int extra] (add-i64 (str-len s) extra))\n\
          (defn both [:String s] (add-i64 (measure s 1) ((measure s) 1)))\n\
-         (defn main [] (Pure (both \"ab\")))\n",
+         (defn main [] (primitives/pure (both \"ab\")))\n",
     );
     // (2+1) + (2+1) = 6.
     let out = assert_exit_value(out, 6);
@@ -315,7 +315,7 @@ const S5_TEMPLATE: &str = "(import [primitives [*]])\n\
     (defn hot [:Int n :Int acc :String s]\n\
     \x20 (if (eq-i64 n 0) (add-i64 acc (str-len s))\n\
     \x20   (hot (sub-i64 n 1) (add-i64 acc (str-len s)) s)))\n\
-    (defn main [] (Pure (hot {N} 0 \"xyz\")))\n";
+    (defn main [] (primitives/pure (hot {N} 0 \"xyz\")))\n";
 
 // spec: design/backend/uniform-counting.md §1 — str-len preserves a repeatedly used string and releases it at its last use.
 #[test]
@@ -336,7 +336,7 @@ const D3A_TEMPLATE: &str = "(import [primitives [*]])\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1)\n\
     \x20     (add-i64 acc (add-i64 (str-len (first-of v)) (vec-len v))) v)))\n\
-    (defn main [] (Pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
+    (defn main [] (primitives/pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
 
 // spec: design/typecheck/ownership-inference.md §4.4 — L-D3a behavioral leg:
 // a projection returned OUT of the projecting fn escapes — the returned
@@ -367,7 +367,7 @@ fn l_d3b_projection_stored_into_escaping_vec_sustained() {
         \x20 (if (eq-i64 n 0) acc\n\
         \x20   (spin (sub-i64 n 1)\n\
         \x20     (add-i64 acc (add-i64 (str-len (vec-get (vec-push [] (vec-get v 0)) 0)) (vec-len v))) v)))\n\
-        (defn main [] (Pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
+        (defn main [] (primitives/pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
     let out = run_program(&template.replace("{N}", "500"));
     assert_exit_value(out, 500 * (5 + 2));
     assert_iteration_independent_imbalance(template, "L-D3b");
@@ -392,7 +392,7 @@ fn vec_returned_from_generic_fn_consumed_by_vec_op_releases_temp() {
         (defn spin [:Int n :Int acc v]\n\
         \x20 (if (eq-i64 n 0) acc\n\
         \x20   (spin (sub-i64 n 1) (add-i64 acc (vec-get (stash v) 0)) v)))\n\
-        (defn main [] (Pure (spin {N} 0 [7 8])))\n";
+        (defn main [] (primitives/pure (spin {N} 0 [7 8])))\n";
     // Behavioral leg is green (values correct); the leak is the defect.
     let out = run_program(&template.replace("{N}", "20"));
     assert_exit_value(out, 20 * 7);
@@ -415,7 +415,7 @@ fn l_d3c_borrowed_capture_crosses_suspension_sustained() {
         \x20 (if (eq-i64 (sub-i64 hi lo) 1) (leaf v lo)\n\
         \x20   (let [m (mid-of lo hi)]\n\
         \x20     (add-i64 (reduce-range v lo m) (reduce-range v m hi)))))\n\
-        (defn main [] (Pure (reduce-range [\"hello\" \"bb\"] 0 256)))\n";
+        (defn main [] (primitives/pure (reduce-range [\"hello\" \"bb\"] 0 256)))\n";
     let out = run_program(src);
     // 256 leaves × str-len "hello" = 1280; mod 256 = 0.
     assert_exit_value(out, 256 * 5);
@@ -434,7 +434,7 @@ fn l_d3d_root_last_use_write_with_live_projected_borrow() {
         \x20       e (vec-get v 0)\n\
         \x20       w (vec-set v 0 \"cccc\")]\n\
         \x20   (add-i64 (str-len e) (str-len (vec-get w 0)))))\n\
-        (defn main [] (Pure (probe)))\n";
+        (defn main [] (primitives/pure (probe)))\n";
     let out = run_program(src);
     // e must still read "aa" (2) after the COW write; w[0] is "cccc" (4).
     assert_exit_value(out, 2 + 4);
@@ -453,7 +453,7 @@ fn l_d3f_stored_param_not_summarised_borrowed() {
         .user(
             "(import [primitives [*]])\n\
              (defn keepit [s] s)\n\
-             (defn main [] (Pure (str-len (keepit \"abc\"))))\n",
+             (defn main [] (primitives/pure (str-len (keepit \"abc\"))))\n",
         )
         .env("CRANELISP_OWNERSHIP_TRACE", "1")
         .output();
@@ -485,7 +485,7 @@ fn fact_row_string(row: &str, expr: &str, per_iter: i64) {
          (defn spin [:Int n :Int acc :String s]\n\
          \x20 (if (eq-i64 n 0) acc\n\
          \x20   (spin (sub-i64 n 1) (add-i64 acc (add-i64 {expr} (str-len s))) s)))\n\
-         (defn main [] (Pure (spin {{N}} 0 \"Hello\")))\n"
+         (defn main [] (primitives/pure (spin {{N}} 0 \"Hello\")))\n"
     );
     let out = run_program(&template.replace("{N}", "200"));
     assert_exit_value(out, 200 * (per_iter + 5));
@@ -596,7 +596,7 @@ fn fact_row_neq_string_both_comparands_survive() {
          \x20   (spin (sub-i64 n 1)\n\
          \x20     (add-i64 acc (add-i64 (if (neq-string s t) 1 0)\n\
          \x20                           (add-i64 (str-len s) (str-len t)))) s t)))\n\
-         (defn main [] (Pure (spin 200 0 \"Hello\" \"world\")))\n",
+         (defn main [] (primitives/pure (spin 200 0 \"Hello\" \"world\")))\n",
     );
     // per iter: neq ⇒ 1; str-len "Hello" 5 + str-len "world" 5 = 10; total 11.
     assert_exit_value(out, 200 * 11);
@@ -607,7 +607,7 @@ fn fact_row_neq_string_both_comparands_survive() {
          \x20   (spin (sub-i64 n 1)\n\
          \x20     (add-i64 acc (add-i64 (if (neq-string s t) 1 0)\n\
          \x20                           (add-i64 (str-len s) (str-len t)))) s t)))\n\
-         (defn main [] (Pure (spin {N} 0 \"Hello\" \"world\")))\n",
+         (defn main [] (primitives/pure (spin {N} 0 \"Hello\" \"world\")))\n",
         "neq-string both-comparands",
     );
 }
@@ -622,7 +622,7 @@ fn fact_row_vec_len_and_vec_get_root_survives_and_balances() {
         \x20 (if (eq-i64 n 0) acc\n\
         \x20   (spin (sub-i64 n 1)\n\
         \x20     (add-i64 acc (add-i64 (vec-len v) (str-len (vec-get v 1)))) v)))\n\
-        (defn main [] (Pure (spin {N} 0 [\"aa\" \"bbb\"])))\n";
+        (defn main [] (primitives/pure (spin {N} 0 [\"aa\" \"bbb\"])))\n";
     let out = run_program(&template.replace("{N}", "200"));
     assert_exit_value(out, 200 * (2 + 3));
     assert_iteration_independent_imbalance(template, "vec-len/vec-get");
@@ -639,7 +639,7 @@ fn l_c2a_tco_backedge_allocation_flows_into_recur_args_10k() {
         (defn spin [:Int n :String s]\n\
         \x20 (if (eq-i64 n 0) (str-len s)\n\
         \x20   (spin (sub-i64 n 1) (substring (str-concat s \"ab\") 0 3))))\n\
-        (defn main [] (Pure (spin 10000 \"xy\")))\n";
+        (defn main [] (primitives/pure (spin 10000 \"xy\")))\n";
     let out = run_program(src);
     assert_exit_value(out, 3);
 }
@@ -653,7 +653,7 @@ fn l_c2b_sparked_branches_read_parent_value_sustained() {
         (defn rr [v :Int lo :Int hi]\n\
         \x20 (if (eq-i64 (sub-i64 hi lo) 1) (leaf v lo)\n\
         \x20   (let [m (mid-of lo hi)] (add-i64 (rr v lo m) (rr v m hi)))))\n\
-        (defn main [] (Pure (rr [7] 0 128)))\n";
+        (defn main [] (primitives/pure (rr [7] 0 128)))\n";
     let out = run_program(src);
     // sum(i=0..127) (7 + i) = 128*7 + 127*128/2 = 896 + 8128 = 9024; mod 256 = 64.
     assert_exit_value(out, 9024);
@@ -676,7 +676,7 @@ fn l_c2b_sparked_branches_read_parent_value_sustained() {
 fn h3_rc_stats_reports_per_extern_adaptation_pairs() {
     let (out, _) = run_with_rc_stats(
         "(import [primitives [*]])\n\
-         (defn main [] (Pure (str-len \"abc\")))\n",
+         (defn main [] (primitives/pure (str-len \"abc\")))\n",
     );
     assert!(
         out.stderr.contains("str-len"),
@@ -697,7 +697,7 @@ fn h5_ownership_trace_emits_verdicts() {
         .user(
             "(import [primitives [*]])\n\
              (defn reader [:String s] (str-len s))\n\
-             (defn main [] (Pure (reader \"abc\")))\n",
+             (defn main [] (primitives/pure (reader \"abc\")))\n",
         )
         .env("CRANELISP_OWNERSHIP_TRACE", "1")
         .output();
@@ -841,7 +841,7 @@ fn extract_clif_frames(raw: &str) -> Result<String, String> {
 // into a trusted golden frame.
 #[test]
 fn clif_frame_extractor_accepts_whitespace_name_and_rejects_mismatched_end() {
-    const NAME: &str = "user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))";
+    const NAME: &str = "user::(probe [primitives/Int] primitives/Int)";
     let matched =
         format!("; === CLIF {NAME} ===\nfunction %probe() {{\n}}\n; === end CLIF {NAME} ===\n");
     let extracted = extract_clif_frames(&matched).expect("whitespace-bearing matched frame");

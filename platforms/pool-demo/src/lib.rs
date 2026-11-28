@@ -9,7 +9,7 @@
 //! constructor (slice-3 capacity carrier, S95), then performs a blocking sleep so
 //! the pool's admit/park behaviour is wall-clock observable.
 //!
-//! Three platform effects, all routing to the BLOCKING pool, all sharing the
+//! Four platform effects, all routing to the BLOCKING pool, all sharing the
 //! capacity-on-token model (distinct tokens ⇒ independent pools; shared token ⇒
 //! one shared pool — the DB connection-pool case):
 //!
@@ -20,6 +20,8 @@
 //! - `pool-log   : (Int token, Int capacity, Int ms, String tag) -> IO Int` —
 //!   sleep `ms`, then print `tag` to real stdout (the §1D source-order witness),
 //!   return `ms`.
+//! - `pool-trap : (Int token, Int capacity, Int ms) -> IO Int` — sleep `ms`,
+//!   then raise SIGSEGV on the forcing thread (dispatch-fault fixture).
 //!
 //! **Posture (S95 Wave 2).** This leaf supplies a *live* `(token, capacity)` pair
 //! on every blocking node, but the host-owned `HashMap<token, Semaphore(capacity)>`
@@ -47,6 +49,24 @@ pub extern "C" fn pool_read(token: CLInt, capacity: CLInt, ms: CLInt) -> CLIO<CL
     let duration = i64::from(ms);
     CLIO::effect_on_resource_with_capacity(tok, cap, move || {
         std::thread::sleep(std::time::Duration::from_millis(duration as u64));
+        CLInt::from(duration)
+    })
+}
+
+/// Sleep on the token's pool, then deliver SIGSEGV to the forcing thread.
+/// This exercises the host's trap guard without a Rust panic or memory UB.
+pub extern "C" fn pool_trap(token: CLInt, capacity: CLInt, ms: CLInt) -> CLIO<CLInt> {
+    let tok = i64::from(token);
+    let cap = i64::from(capacity);
+    let duration = i64::from(ms);
+    CLIO::effect_on_resource_with_capacity(tok, cap, move || {
+        std::thread::sleep(std::time::Duration::from_millis(duration as u64));
+        unsafe extern "C" {
+            fn raise(signal: std::ffi::c_int) -> std::ffi::c_int;
+        }
+        // SIGSEGV is 11 on the supported Unix hosts. raise delivers it to this
+        // thread, whose active foreign-call guard owns the recovery context.
+        unsafe { raise(11) };
         CLInt::from(duration)
     })
 }
@@ -91,6 +111,13 @@ declare_platform! {
     version: "0.1.0",
     host: HOST,
     functions: [
+        pool_trap {
+            cl_name: "pool-trap",
+            sig: "(Fn [primitives/Int primitives/Int primitives/Int] (primitives/IO primitives/Int))",
+            doc: "Sleep ms on the token's pool then raise a trap signal on the forcing thread (dispatch-fault fixture)",
+            params: [token, capacity, ms],
+            scheduling: SchedulingClass::ResourceSerial,
+        },
         pool_read {
             cl_name: "pool-read",
             sig: "(Fn [primitives/Int primitives/Int primitives/Int] (primitives/IO primitives/Int))",

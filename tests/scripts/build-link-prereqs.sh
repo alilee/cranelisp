@@ -56,3 +56,13 @@ cargo build \
 if [[ -n "${NEXTEST_ENV:-}" ]]; then
   printf '%s\n' 'CRANELISP_NO_ENV=1' 'CRANELISP_AGENT_PROVIDER=' >> "$NEXTEST_ENV"
 fi
+
+# Isolated test-only workspace: the DLL is load-only and has no rlib link edge.
+cargo build --offline --manifest-path platforms/function-types/Cargo.toml --target-dir target
+for name in fnparam fnresult fnfield fngood; do
+  for ext in so dylib; do
+    if [[ -f "target/debug/libcranelisp_function_types.$ext" ]]; then
+      cp "target/debug/libcranelisp_function_types.$ext" "target/debug/libcranelisp_$name.$ext"
+    fi
+  done
+done

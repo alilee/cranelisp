@@ -6,4 +6,4 @@
 
 (defn main []
   (let [p (add3 1 2)]
-    (Pure (p 3))))
+    (primitives/pure (p 3))))

@@ -71,10 +71,10 @@ fn method_only_import_wrapper_hop_green() {
              (impl Bump Int (defn bump [x] (add-i64 x 1)))\n",
         )
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [blib [bump]])\n\
              (defn wrap [x] (bump x))\n\
-             (defn main [] (Pure (wrap 1)))\n",
+             (defn main [] (primitives/pure (wrap 1)))\n",
         )
         .output();
     out.assert_exit(2);
@@ -97,10 +97,10 @@ fn foreign_sig_type_method_only_import_green() {
              (impl Show Int (defn sh [x] 99))\n",
         )
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [zlib [sh]])\n\
              (defn get-s [] (sh 5))\n\
-             (defn main [] (Pure (get-s)))\n",
+             (defn main [] (primitives/pure (get-s)))\n",
         )
         .output();
     out.assert_exit(99);

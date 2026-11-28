@@ -88,7 +88,7 @@ fn names_eq_no_impl(out: &helpers::e2e::CrOutput) -> bool {
 fn value_position_trait_method_no_impl_wrong_accepts_neg() {
     let src = format!(
         "{WIDGET}(defn f [] (let [eq =] (eq (Widget 1) (Widget 2))))\n\
-         (defn main [] (Pure (if (f) 7 8)))\n"
+         (defn main [] (primitives/pure (if (f) 7 8)))\n"
     );
     let out = run(&src);
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -129,7 +129,7 @@ fn value_position_trait_method_no_impl_wrong_accepts_repl_neg() {
 fn value_position_trait_method_no_impl_wrong_accepts_link_neg() {
     let src = format!(
         "{WIDGET}(defn f [] (let [eq =] (eq (Widget 1) (Widget 2))))\n\
-         (defn main [] (Pure (if (f) 7 8)))\n"
+         (defn main [] (primitives/pure (if (f) 7 8)))\n"
     );
     let out = link(&src);
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -150,7 +150,7 @@ fn value_position_trait_method_no_impl_wrong_accepts_link_neg() {
 #[test]
 fn direct_call_trait_method_no_impl_rejects_naming_trait_green() {
     let out = run(&format!(
-        "{WIDGET}(defn main [] (Pure (if (= (Widget 1) (Widget 2)) 7 8)))\n"
+        "{WIDGET}(defn main [] (primitives/pure (if (= (Widget 1) (Widget 2)) 7 8)))\n"
     ));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -184,7 +184,7 @@ fn direct_call_trait_method_no_impl_rejects_naming_trait_green() {
 #[test]
 fn auto_curry_trait_method_no_impl_rejects_naming_trait_green() {
     let out = run(&format!(
-        "{WIDGET}(defn main [] (Pure (if ((= (Widget 1)) (Widget 2)) 7 8)))\n"
+        "{WIDGET}(defn main [] (primitives/pure (if ((= (Widget 1)) (Widget 2)) 7 8)))\n"
     ));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -217,7 +217,7 @@ fn auto_curry_trait_method_no_impl_rejects_naming_trait_repl_green() {
 #[test]
 fn auto_curry_trait_method_no_impl_rejects_naming_trait_link_green() {
     let out = link(&format!(
-        "{WIDGET}(defn main [] (Pure (if ((= (Widget 1)) (Widget 2)) 7 8)))\n"
+        "{WIDGET}(defn main [] (primitives/pure (if ((= (Widget 1)) (Widget 2)) 7 8)))\n"
     ));
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(

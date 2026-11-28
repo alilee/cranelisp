@@ -342,13 +342,13 @@ fn select_loser_joins_inflight_blocking_par_worker_before_teardown() {
          (import [platform.pool-demo [pool-read]])\n\
          (import [platform.test-capture [fault-now]])\n\
          (import [platform.{poll_platform} [{poll_read}]])\n\
-         (import [primitives [select bind Pure add-i64]])\n\
+         (import [primitives [select bind pure add-i64]])\n\
          (defn later-fault [x] (fault-now))\n\
          (defn held-loser []\n\
            (bind (pool-read 31 1 300) (fn [a]\n\
              (bind (pool-read 32 1 300) (fn [b]\n\
                (bind (later-fault (add-i64 a b)) (fn [_]\n\
-                 (Pure (add-i64 a b)))))))))\n\
+                 (primitives/pure (add-i64 a b)))))))))\n\
          (defn main []\n\
            (select [(held-loser) ({poll_read} 99 1 {fast})]))\n",
         poll_platform = POLL_PLATFORM,
@@ -387,11 +387,11 @@ fn select_loser_joins_inflight_blocking_par_worker_before_teardown() {
 fn blocking_par_without_select_waits_for_both_workers_control() {
     let prog = "(platform pool-demo)\n\
                 (import [platform.pool-demo [pool-read]])\n\
-                (import [primitives [bind Pure add-i64]])\n\
+                (import [primitives [bind pure add-i64]])\n\
                 (defn main []\n\
                   (bind (pool-read 31 1 120) (fn [a]\n\
                     (bind (pool-read 32 1 120) (fn [b]\n\
-                      (Pure (add-i64 a b)))))))\n";
+                      (primitives/pure (add-i64 a b)))))))\n";
     let out = Cranelisp::new()
         .use_workspace_platforms()
         .env("CRANELISP_RC_TRACE", "1")
@@ -575,14 +575,14 @@ fn volume_cancellation_does_not_leak_fd_waiters_bounded() {
     // `poll-block` token `n`; a deadline token inside the range deadlocks at the
     // iteration where n == that token, FIXME 0473) — the
     // deadline always wins ⇒ the `poll-block` is cancelled (its fd interest must be
-    // deregistered on drop). Result discarded; recurse VOLUME_N times ⇒ (Pure 0).
+    // deregistered on drop). Result discarded; recurse VOLUME_N times ⇒ (primitives/pure 0).
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read} {block}]])\n\
-         (import [primitives [race bind Pure sub-i64 eq-i64]])\n\
+         (import [primitives [race bind pure sub-i64 eq-i64]])\n\
          (defn cancel-loop [n]\n\
            (if (eq-i64 n 0)\n\
-               (Pure 0)\n\
+               (primitives/pure 0)\n\
                (bind (race ({block} n 1) ({read} 9999 1 {short})) (fn [_]\n\
                  (cancel-loop (sub-i64 n 1))))))\n\
          (defn main [] (cancel-loop {vol}))\n",
@@ -623,10 +623,10 @@ fn volume_cancel_while_awaiting_permit_next_live_waiter_proceeds() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
-         (import [primitives [race bind Pure sub-i64 eq-i64]])\n\
+         (import [primitives [race bind pure sub-i64 eq-i64]])\n\
          (defn await-cancel-loop [n]\n\
            (if (eq-i64 n 0)\n\
-               (Pure 0)\n\
+               (primitives/pure 0)\n\
                (bind (race ({read} 7 1 {slow}) ({read} 99 1 {short})) (fn [_]\n\
                  (await-cancel-loop (sub-i64 n 1))))))\n\
          (defn main [] (await-cancel-loop {vol}))\n",
@@ -702,9 +702,9 @@ fn s124_0977_race() {
     run_prog(r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
-(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
-(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 3000 3) (other 50 4)) tail))"#).assert_exit(54).assert_stdout_eq(r#""#);
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (primitives/pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (primitives/pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (primitives/pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 3000 3) (other 50 4)) tail))"#).assert_exit(54).assert_stdout_eq(r#""#);
 }
 
 // spec: spec/10-io.md §10.12.7
@@ -714,9 +714,9 @@ fn s124_0977_select() {
     run_prog(r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
-(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
-(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (select [(fan 3 3000 3) (other 50 4)]) tail))"#).assert_exit(54).assert_stdout_eq(r#""#);
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (primitives/pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (primitives/pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (primitives/pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (select [(fan 3 3000 3) (other 50 4)]) tail))"#).assert_exit(54).assert_stdout_eq(r#""#);
 }
 
 // spec: spec/10-io.md §10.12.7
@@ -725,9 +725,9 @@ fn s124_0977_winner_control() {
     run_prog(r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
-(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
-(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 50 3) (other 3000 4)) tail))"#).assert_exit(53).assert_stdout_eq(r#"LLL"#);
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (primitives/pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (primitives/pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (primitives/pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 50 3) (other 3000 4)) tail))"#).assert_exit(53).assert_stdout_eq(r#"LLL"#);
 }
 
 // spec: spec/10-io.md §10.12.7
@@ -736,9 +736,9 @@ fn s124_0977_launched_control() {
     run_prog(r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
-(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
-(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (race (fan 3 50 3) (other 200 4)))"#).assert_exit(53).assert_stdout_eq(r#"LLL"#);
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (primitives/pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (primitives/pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (primitives/pure (add-i64 r (sub-i64 q q)))))) (defn main [] (race (fan 3 50 3) (other 200 4)))"#).assert_exit(53).assert_stdout_eq(r#"LLL"#);
 }
 
 // spec: spec/10-io.md §10.12.7
@@ -747,9 +747,9 @@ fn s124_0977_inline_control() {
     run_prog(r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
-(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
-(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (race (bind (poll-log 7 1 400 "D") (fn [x] (Pure (add-i64 x 3)))) (other 50 4)))"#).assert_exit(54).assert_stdout_eq(r#""#);
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (primitives/pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (primitives/pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (primitives/pure (add-i64 r (sub-i64 q q)))))) (defn main [] (race (bind (poll-log 7 1 400 "D") (fn [x] (primitives/pure (add-i64 x 3)))) (other 50 4)))"#).assert_exit(54).assert_stdout_eq(r#""#);
 }
 
 // spec: spec/10-io.md §10.12.7
@@ -759,7 +759,7 @@ fn s124_0977_timeout() {
     run_prog(r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (Pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
-(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (Pure (add-i64 x v)))))
-(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (Pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 3000 3) (sleep 50)) (fn [_] (tail 54))))"#).assert_exit(54).assert_stdout_eq(r#""#);
+(defn fan [n d v] (if (eq-i64 n 0) (bind (poll-read 99 1 d) (fn [x] (primitives/pure (add-i64 x v)))) (let [m (sub-i64 n 1)] (bind (poll-log n 1 400 "L") (fn [r] (fan m d v))))))
+(defn other [d v] (bind (poll-read 98 1 d) (fn [x] (primitives/pure (add-i64 x v)))))
+(defn tail [r] (bind (poll-read 97 1 900) (fn [q] (primitives/pure (add-i64 r (sub-i64 q q)))))) (defn main [] (bind (race (fan 3 3000 3) (sleep 50)) (fn [_] (tail 54))))"#).assert_exit(54).assert_stdout_eq(r#""#);
 }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 fn capture(repl: bool, panic: bool, trace: bool) -> (ExitStatus, String, String) {
     let program = if panic {
-        "(import [prelude []])\n(platform stdio)\n(import [platform.stdio [print]])\n(import [primitives [*]])\n(defn main [] (bind (print \"BEFORE-PANIC\") (fn [_] (Pure (div-i64 1 0)))))\n"
+        "(import [prelude []])\n(platform stdio)\n(import [platform.stdio [print]])\n(import [primitives [*]])\n(defn main [] (bind (print \"BEFORE-PANIC\") (fn [_] (primitives/pure (div-i64 1 0)))))\n"
     } else {
         "(import [prelude []])\n(platform stdio)\n(import [platform.stdio [print]])\n(defn main [] (print \"BEFORE-PANIC\"))\n"
     };

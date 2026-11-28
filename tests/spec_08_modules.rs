@@ -21,7 +21,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 use std::time::Duration;
 
 // =============================================================================
@@ -34,7 +34,7 @@ fn import_specific_name_compiles_and_runs() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper)))",
         )
         .file("util.cl", "(defn helper [] 42)")
         .run("main.cl")
@@ -52,7 +52,7 @@ fn import_glob_brings_in_all_exports() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [*]])\n(defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(import [util [*]])\n(defn main [] (primitives/pure (helper)))",
         )
         .file("util.cl", "(defn helper [] 17)")
         .run("main.cl")
@@ -74,7 +74,7 @@ fn qualified_name_resolution() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (util/helper)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (util/helper)))",
         )
         .file("util.cl", "(defn helper [] 99)")
         .run("main.cl")
@@ -139,7 +139,7 @@ fn local_let_shadows_imported_name() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (let [helper 7] helper)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (let [helper 7] helper)))",
         )
         .file("util.cl", "(defn helper [] 100)")
         .run("main.cl")
@@ -157,7 +157,7 @@ fn synthetic_primitives_module_available() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [*]])\n(defn main [] (Pure (add-i64 1 2)))",
+            "(import [primitives [*]])\n(defn main [] (primitives/pure (add-i64 1 2)))",
         )
         .run("main.cl")
         .output()
@@ -334,7 +334,7 @@ fn import_below_use_still_available_before_definitions() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (helper)))\n(import [util [helper]])",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (helper)))\n(import [util [helper]])",
         )
         .file("util.cl", "(defn helper [] 42)")
         .run("main.cl")
@@ -378,9 +378,9 @@ fn inline_mod_extracts_backing_file_and_rewrites_parent() {
     let cr = Cranelisp::new()
         .file(
             "app.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (mod child (defn helper [] 7))\n\
-             (defn main [] (Pure (child/helper)))",
+             (defn main [] (primitives/pure (child/helper)))",
         )
         .run("app.cl");
     let out = cr.output().assert_exit(7);
@@ -410,8 +410,8 @@ fn inline_mod_extracts_backing_file_and_rewrites_parent() {
         "the inline body MUST NOT remain in the parent after extraction, got:\n{parent}"
     );
     assert!(
-        parent.contains("(import [primitives [Pure]])")
-            && parent.contains("(defn main [] (Pure (child/helper)))"),
+        parent.contains("(import [primitives [pure]])")
+            && parent.contains("(defn main [] (primitives/pure (child/helper)))"),
         "surrounding forms MUST be preserved intact (FIXME 0336 corrupts `main`), got:\n{parent}"
     );
 }
@@ -425,9 +425,9 @@ fn inline_mod_extraction_is_idempotent_on_rerun() {
     let cr = Cranelisp::new()
         .file(
             "app.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (mod child (defn helper [] 7))\n\
-             (defn main [] (Pure (child/helper)))",
+             (defn main [] (primitives/pure (child/helper)))",
         )
         .run("app.cl");
     let first = cr.output().assert_exit(7);
@@ -495,8 +495,8 @@ fn inline_mod_test_extraction_writes_lib_dir_relative_not_cwd() {
         .file(
             "driver.cl",
             "(import [accum [double]])\n\
-             (import [primitives [Pure]])\n\
-             (defn main [] (Pure (double 21)))",
+             (import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (double 21)))",
         )
         .lib_dir("lib")
         .run("driver.cl")
@@ -546,8 +546,8 @@ fn regen_annotation_spacing_no_space_after_colon() {
         .file(
             "driver.cl",
             "(import [annot [double]])\n\
-             (import [primitives [Pure]])\n\
-             (defn main [] (Pure (double 21)))",
+             (import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (double 21)))",
         )
         .lib_dir("lib")
         .run("driver.cl")
@@ -594,7 +594,7 @@ fn import_dependency_compiles_correctly() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod util)\n(import [main.util [helper]])\n(defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(mod util)\n(import [main.util [helper]])\n(defn main [] (primitives/pure (helper)))",
         )
         .file("main/util.cl", "(defn helper [] 99)")
         .run("main.cl")
@@ -616,7 +616,7 @@ fn project_root_shadows_stdlib() {
     let cr = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod helper)\n(defn main [] (Pure (helper/val)))",
+            "(import [primitives [pure]])\n(mod helper)\n(defn main [] (primitives/pure (helper/val)))",
         )
         .file("main/helper.cl", "(defn val [] 100)")
         // Stdlib copy with a DIFFERENT value — if the resolver picked
@@ -627,19 +627,34 @@ fn project_root_shadows_stdlib() {
     cr.output().assert_exit(100);
 }
 
-// spec: spec/08-modules.md §8.11.2 — module file present ONLY in stdlib_dir
-// MUST resolve. Demonstrates that stdlib search-path participation works
-// when the module is absent from project root.
+// spec: spec/08-modules.md §8.2.5 — a declared child must exist beside its declaring file.
 // (carry: legacy/modules.rs::stdlib_module_compiles_and_runs)
 #[test]
 fn stdlib_module_compiles_and_runs() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod helper)\n(defn main [] (Pure (helper/compute)))",
+            "(import [primitives [pure]])\n(mod helper)\n(defn main [] (primitives/pure 55))",
         )
         // Note: NO `main/helper.cl` at project root — only in stdlib.
         .file("stdlib/main/helper.cl", "(defn compute [] 55)")
+        .lib_dir("stdlib")
+        .run("main.cl")
+        .output()
+        .assert_exit(1)
+        .assert_stderr_contains("main.cl:2:1:")
+        .assert_stderr_contains("main/helper.cl");
+}
+
+// spec: spec/08-modules.md §8.11.2 — a root module absent from the project resolves from a library.
+#[test]
+fn imported_root_module_present_only_in_library_compiles_and_runs() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [helper [compute]])\n(defn main [] (primitives/pure (compute)))",
+        )
+        .file("stdlib/helper.cl", "(defn compute [] 55)")
         .lib_dir("stdlib")
         .run("main.cl")
         .output()
@@ -659,7 +674,7 @@ fn prelude_like_reexport_compiles() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod shell)\n(import [main.shell [get-val]])\n(defn main [] (Pure (get-val)))",
+            "(import [primitives [pure]])\n(mod shell)\n(import [main.shell [get-val]])\n(defn main [] (primitives/pure (get-val)))",
         )
         .file("main/shell.cl", "(defn get-val [] 88)")
         .run("main.cl")
@@ -680,7 +695,7 @@ fn multi_dot_module_path_in_import() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod shell)\n(import [main.shell [relay]])\n(defn main [] (Pure (relay)))",
+            "(import [primitives [pure]])\n(mod shell)\n(import [main.shell [relay]])\n(defn main [] (primitives/pure (relay)))",
         )
         .file(
             "main/shell.cl",
@@ -705,7 +720,7 @@ fn nested_dependency_chain_compiles() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod mid)\n(import [main.mid [relay]])\n(defn main [] (Pure (relay)))",
+            "(import [primitives [pure]])\n(mod mid)\n(import [main.mid [relay]])\n(defn main [] (primitives/pure (relay)))",
         )
         .file(
             "main/mid.cl",
@@ -760,9 +775,9 @@ fn run_main_with_b(main: &str, b: &str) -> helpers::e2e::CrOutput {
 #[test]
 fn fq_type_annotation_alone_loads_its_module() {
     let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n(defn mk [] (T 7))\n";
-    let annotated = "(defn h [:b/T t] :Int 7)\n(defn main [] (Pure 7))\n";
+    let annotated = "(defn h [:b/T t] :Int 7)\n(defn main [] (primitives/pure 7))\n";
     let control = run_main_with_b(
-        &format!("(import [primitives [Pure Int]])\n(import [b [mk]])\n{annotated}"),
+        &format!("(import [primitives [pure Int]])\n(import [b [mk]])\n{annotated}"),
         b,
     );
     assert_eq!(
@@ -771,7 +786,7 @@ fn fq_type_annotation_alone_loads_its_module() {
         "control: with `b` loaded, `:b/T` must resolve:\n{}",
         control.stderr
     );
-    let subject = run_main_with_b(&format!("(import [primitives [Pure Int]])\n{annotated}"), b);
+    let subject = run_main_with_b(&format!("(import [primitives [pure Int]])\n{annotated}"), b);
     assert_eq!(
         subject.status.code(),
         Some(7),
@@ -789,8 +804,8 @@ fn fq_type_annotation_alone_loads_its_module() {
 #[test]
 fn fq_type_annotation_through_alias_only_import_loads_its_target() {
     let b = "(import [primitives [Int]])\n(deftype T [:Int n])\n(defn mk [] (T 7))\n";
-    let rest = "(defn h [:bb/T t] :Int 7)\n(defn main [] (Pure 7))\n";
-    let prefix = "(import [primitives [Pure Int]])\n";
+    let rest = "(defn h [:bb/T t] :Int 7)\n(defn main [] (primitives/pure 7))\n";
+    let prefix = "(import [primitives [pure Int]])\n";
     let control = run_main_with_b(&format!("{prefix}(import [(b bb) [mk]])\n{rest}"), b);
     assert_eq!(
         control.status.code(),
@@ -818,7 +833,7 @@ fn fq_type_annotation_to_missing_module_errors_at_reference_site_neg() {
             .file(
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure Int]])\n(defn h [{param} t] :Int 7)\n(defn main [] (Pure 7))\n"
+                    "(import [primitives [pure Int]])\n(defn h [{param} t] :Int 7)\n(defn main [] (primitives/pure 7))\n"
                 ),
             )
             .run("main.cl")
@@ -880,7 +895,7 @@ fn fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted() {
     let program = |annotation: &str, b: Option<&str>| {
         run_main_with_optional_b(
             &format!(
-                "(import [primitives [Pure Int]])\n(defn h [t] {annotation} t)\n(defn main [] (Pure 7))\n"
+                "(import [primitives [pure Int]])\n(defn h [t] {annotation} t)\n(defn main [] (primitives/pure 7))\n"
             ),
             b,
         )
@@ -921,7 +936,9 @@ fn fq_value_annotation_neg_missing_module_rejected_unloaded_trait_accepted() {
 fn fq_param_trait_annotation_resolves_in_named_module_neg_not_captured_by_bare_trait() {
     let program = |main_body: &str, b: Option<&str>| {
         run_main_with_optional_b(
-            &format!("(import [primitives [Pure]])\n{main_body}(defn main [] (Pure 7))\n"),
+            &format!(
+                "(import [primitives [pure]])\n{main_body}(defn main [] (primitives/pure 7))\n"
+            ),
             b,
         )
     };
@@ -1033,10 +1050,10 @@ fn fq_stacked_bound_trait_to_missing_module_rejected_neg() {
         run_project(&[(
             "main.cl",
             &format!(
-                "(import [primitives [Pure Int]])\n\
+                "(import [primitives [pure Int]])\n\
                  (deftrait Ts (ts [self] Int))\n\
                  (defn f [{bound} x] 7)\n\
-                 (defn main [] (Pure 7))\n"
+                 (defn main [] (primitives/pure 7))\n"
             ),
         )])
     };
@@ -1072,10 +1089,10 @@ fn fq_ctor_pattern_through_alias_resolves_in_aliased_module() {
             (
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure]])\n\
+                    "(import [primitives [pure]])\n\
                      (import [(shapes s) []])\n\
                      (defn radius [c] (match c [({pattern} r) r]))\n\
-                     (defn main [] (Pure (radius (s/Circle 8))))\n"
+                     (defn main [] (primitives/pure (radius (s/Circle 8))))\n"
                 ),
             ),
             ("shapes.cl", PATTERN_SHAPES),
@@ -1106,7 +1123,7 @@ fn fq_ctor_pattern_private_constructor_rejected_neg() {
         run_project(&[
             (
                 "main.cl",
-                &format!("(import [primitives [Pure]])\n(defn main [] (Pure {body}))\n"),
+                &format!("(import [primitives [pure]])\n(defn main [] (primitives/pure {body}))\n"),
             ),
             (
                 "shapes.cl",
@@ -1148,9 +1165,9 @@ fn fq_ctor_pattern_as_only_reference_loads_its_module() {
             (
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure]])\n\
+                    "(import [primitives [pure]])\n\
                      (defn radius [{param}] (match c [(shapes/Circle r) r]))\n\
-                     (defn main [] (Pure 8))\n"
+                     (defn main [] (primitives/pure 8))\n"
                 ),
             ),
             ("shapes.cl", PATTERN_SHAPES),
@@ -1197,9 +1214,9 @@ fn qualified_name_to_undeclared_registered_child_resolves_to_root_module() {
         run_project(&[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [a [h]])\n\
-                 (defn main [] (Pure (h)))\n",
+                 (defn main [] (primitives/pure (h)))\n",
             ),
             (
                 "a.cl",
@@ -1262,10 +1279,10 @@ fn import_and_export_of_undeclared_file_backed_child_resolve_to_root_module() {
             (
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure]])\n\
+                    "(import [primitives [pure]])\n\
                      {main_imports}\
                      (import [a [{entry}]])\n\
-                     (defn main [] (Pure ({entry})))\n"
+                     (defn main [] (primitives/pure ({entry})))\n"
                 ),
             ),
             ("a.cl", a_src),
@@ -1346,8 +1363,8 @@ const ALIAS_TARGET_B: &str = "(defn f [] 11)\n";
 // guards against a repair that registers the alias only when it loads.
 #[test]
 fn alias_only_import_alias_resolves_qualified_call() {
-    let prefix = "(import [primitives [Pure]])\n";
-    let call = "(defn main [] (Pure (bb/f)))\n";
+    let prefix = "(import [primitives [pure]])\n";
+    let call = "(defn main [] (primitives/pure (bb/f)))\n";
     let control = run_main_with_b(
         &format!("{prefix}(import [(b bb) [f]])\n{call}"),
         ALIAS_TARGET_B,
@@ -1387,7 +1404,7 @@ fn alias_only_import_alias_resolves_qualified_call() {
 #[test]
 fn undeclared_alias_qualifier_is_not_resolved_neg() {
     let out = run_main_with_b(
-        "(import [primitives [Pure]])\n(import [(b bb) []])\n(defn main [] (Pure (vv/f)))\n",
+        "(import [primitives [pure]])\n(import [(b bb) []])\n(defn main [] (primitives/pure (vv/f)))\n",
         ALIAS_TARGET_B,
     );
     assert!(
@@ -1404,7 +1421,7 @@ fn undeclared_alias_qualifier_is_not_resolved_neg() {
 fn null_import_does_not_load_its_module() {
     let broken = "(defn f [] (no-such-name))\n";
     let named = run_main_with_b(
-        "(import [primitives [Pure]])\n(import [b [f]])\n(defn main [] (Pure 5))\n",
+        "(import [primitives [pure]])\n(import [b [f]])\n(defn main [] (primitives/pure 5))\n",
         broken,
     );
     assert!(
@@ -1414,7 +1431,7 @@ fn null_import_does_not_load_its_module() {
         named.stderr
     );
     run_main_with_b(
-        "(import [primitives [Pure]])\n(import [b []])\n(defn main [] (Pure 5))\n",
+        "(import [primitives [pure]])\n(import [b []])\n(defn main [] (primitives/pure 5))\n",
         broken,
     )
     .assert_exit(5);
@@ -1462,7 +1479,7 @@ fn export_specific_reexport() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod shell)\n(import [main.shell [val]])\n(defn main [] (Pure (val)))",
+            "(import [primitives [pure]])\n(mod shell)\n(import [main.shell [val]])\n(defn main [] (primitives/pure (val)))",
         )
         .file(
             "main/shell.cl",
@@ -1482,10 +1499,10 @@ fn export_glob_reexport() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (mod shell)\n\
              (import [main.shell [a b]])\n\
-             (defn main [] (Pure (add-i64 (a) (b))))",
+             (defn main [] (primitives/pure (add-i64 (a) (b))))",
         )
         .file(
             "main/shell.cl",
@@ -1507,10 +1524,10 @@ fn export_transitive_reexport_chain() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (mod shell)\n\
              (import [main.shell [deep-val]])\n\
-             (defn main [] (Pure (deep-val)))",
+             (defn main [] (primitives/pure (deep-val)))",
         )
         .file(
             "main/shell.cl",
@@ -1538,10 +1555,10 @@ fn export_multiple_modules() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (mod shell)\n\
              (import [main.shell [alpha beta]])\n\
-             (defn main [] (Pure (add-i64 (alpha) (beta))))",
+             (defn main [] (primitives/pure (add-i64 (alpha) (beta))))",
         )
         .file(
             "main/shell.cl",
@@ -1783,7 +1800,7 @@ fn null_import_module_resolves_all_names_via_explicit_imports() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [lib.leaf [value]])\n(defn main [] (Pure (value)))",
+            "(import [primitives [pure]])\n(import [lib.leaf [value]])\n(defn main [] (primitives/pure (value)))",
         )
         .run("main.cl")
         .output();
@@ -1854,10 +1871,10 @@ fn multiple_import_forms_in_one_module() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [alpha [get-alpha]])\n\
              (import [beta [get-beta]])\n\
-             (defn main [] (Pure (primitives/add-i64 (get-alpha) (get-beta))))",
+             (defn main [] (primitives/pure (primitives/add-i64 (get-alpha) (get-beta))))",
         )
         .file("alpha.cl", "(defn get-alpha [] 50)")
         .file("beta.cl", "(defn get-beta [] 60)")
@@ -1881,10 +1898,10 @@ fn defn_before_import_resumes_correctly_after_dep_load() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn local-fn [] 10)\n\
              (import [util [remote-fn]])\n\
-             (defn main [] (Pure (primitives/add-i64 (local-fn) (remote-fn))))",
+             (defn main [] (primitives/pure (primitives/add-i64 (local-fn) (remote-fn))))",
         )
         .file("util.cl", "(defn remote-fn [] 32)")
         .run("main.cl")
@@ -1924,7 +1941,7 @@ fn entry_module_named_non_user_runs() {
     Cranelisp::new()
         .file(
             "sudoku.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 7))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 7))",
         )
         .run("sudoku.cl")
         .output()
@@ -1940,7 +1957,7 @@ fn program_with_no_user_module_runs_end_to_end() {
     Cranelisp::new()
         .file(
             "myapp.cl",
-            "(import [primitives [Pure]])\n(import [board [cell]])\n(defn main [] (Pure (cell)))",
+            "(import [primitives [pure]])\n(import [board [cell]])\n(defn main [] (primitives/pure (cell)))",
         )
         .file("board.cl", "(defn cell [] 42)")
         .run("myapp.cl")
@@ -1954,7 +1971,7 @@ fn program_with_no_user_module_runs_end_to_end() {
 #[test]
 fn entry_module_default_user_name_still_runs() {
     Cranelisp::new()
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure 5))")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure 5))")
         .run("user.cl")
         .output()
         .assert_exit(5);
@@ -1999,10 +2016,10 @@ fn glob_and_reexport_of_same_terminal_dedup() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [prim [*]])\n\
              (import [reexp [Foo]])\n\
-             (defn main [] (Pure (match (Foo 42) [(Foo n) n])))",
+             (defn main [] (primitives/pure (match (Foo 42) [(Foo n) n])))",
         )
         .run("main.cl")
         .output();
@@ -2045,11 +2062,11 @@ fn distinct_terminal_overlap_collides() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [a [Bar]])\n\
              (import [b [Bar]])\n\
              (defn discard [f] 0)\n\
-             (defn main [] (Pure (discard Bar)))",
+             (defn main [] (primitives/pure (discard Bar)))",
         )
         .run("main.cl")
         .output();
@@ -2110,11 +2127,11 @@ fn distinct_terminal_overlap_collides() {
         )
         .file(
             "qualified.cl",
-            "(import [primitives [Pure add-i64]])\n\
+            "(import [primitives [pure add-i64]])\n\
              (import [a [Bar]])\n\
              (import [b [Bar]])\n\
              (defn main []\n\
-               (Pure (add-i64\n\
+               (primitives/pure (add-i64\n\
                  (match (a/Bar 3) [(a/Bar x) x])\n\
                  (match (b/Bar 4) [(b/Bar y) y]))))",
         )
@@ -2363,7 +2380,7 @@ fn bare_mod_decl_resolves_nested_child_for_entry_main() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod child)\n(defn main [] (Pure (child/answer)))",
+            "(import [primitives [pure]])\n(mod child)\n(defn main [] (primitives/pure (child/answer)))",
         )
         .file("main/child.cl", "(defn answer [] 42)")
         .run("main.cl")
@@ -2382,7 +2399,7 @@ fn bare_mod_decl_neg_does_not_resolve_sibling_file() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod child)\n(defn main [] (Pure (child/answer)))",
+            "(import [primitives [pure]])\n(mod child)\n(defn main [] (primitives/pure (child/answer)))",
         )
         // A SIBLING child.cl exists, but no NESTED main/child.cl. Per §8.2.5
         // the bare `(mod child)` seeks ONLY main/child.cl and must NOT fall
@@ -2445,9 +2462,9 @@ fn super_import_resolves_parent_fn() {
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [superp [helper]])\n\
-             (defn main [] (Pure (helper 7)))",
+             (defn main [] (primitives/pure (helper 7)))",
         )
         .run("entry.cl")
         .output()
@@ -2487,9 +2504,9 @@ fn super_import_resolves_parent_type_constructor() {
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [superp [Box unbox]])\n\
-             (defn main [] (Pure (unbox (Box 9))))",
+             (defn main [] (primitives/pure (unbox (Box 9))))",
         )
         .run("entry.cl")
         .output()
@@ -2514,7 +2531,7 @@ fn super_import_resolves_parent_type_constructor() {
 //
 // The behaviour-under-test is the self-qualified `:t/Box` annotation on `unbox`
 // (module `t` referencing its OWN type by qualified name). Post-S80 `main` MUST
-// return `IO _`, so the body is wrapped in `Pure` (importing `[primitives [Pure]]`),
+// return `IO _`, so the body is wrapped in `pure` (importing `[primitives [pure]]`),
 // mirroring the corrected sibling `super_import_resolves_parent_type_constructor`.
 // The wrap is the `main` envelope only; the self-qualified resolution is unchanged.
 #[test]
@@ -2522,10 +2539,10 @@ fn self_qualified_type_reference_resolves_to_local_type() {
     Cranelisp::new()
         .file(
             "t.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (deftype Box [:primitives/Int v])\n\
              (defn unbox [:t/Box b] (match b [(Box x) x]))\n\
-             (defn main [] (Pure (unbox (Box 9))))",
+             (defn main [] (primitives/pure (unbox (Box 9))))",
         )
         .run("t.cl")
         .output()
@@ -2570,9 +2587,9 @@ fn mod_test_child_in_trait_module_does_not_redefine_parent_trait() {
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [eqmod [Eq =]])\n\
-             (defn main [] (Pure 0))",
+             (defn main [] (primitives/pure 0))",
         )
         .run("entry.cl")
         .output()
@@ -2610,9 +2627,9 @@ fn mod_test_child_super_imported_parent_trait_resolves_as_constraint() {
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [eqmod [Eq]])\n\
-             (defn main [] (Pure 0))",
+             (defn main [] (primitives/pure 0))",
         )
         .run("entry.cl")
         .output()
@@ -2639,7 +2656,7 @@ fn mod_test_child_super_imported_parent_trait_resolves_as_constraint() {
 //     of the SAME name WORKED (the control test below, exit 3). So the trigger
 //     was the implicit-glob / re-export path, NOT the function itself.
 //   - The body had to wrap a GOT-dispatched primitive (`vec-len`, `vec-push`,
-//     `Pure`) to surface the drop. A wrapper of an INLINE-emitted primitive
+//     `pure`) to surface the drop. A wrapper of an INLINE-emitted primitive
 //     (`add-i64`) appeared to work because the inline materialised at the call
 //     site — masking the same batch-derivation gap. `count` (wraps `vec-len`)
 //     is the representative shape.
@@ -2672,7 +2689,7 @@ fn def1_prelude_provided_defn_called_bare_enters_codegen_batch() {
     // Vec of 3 ⇒ exit 3 when GREEN.
     Cranelisp::new()
         .prelude(PRELUDE_WITH_COUNT)
-        .user("(defn main [] (Pure (count [10 20 30])))")
+        .user("(defn main [] (primitives/pure (count [10 20 30])))")
         .run("user.cl")
         .output()
         .assert_exit(3);
@@ -2686,11 +2703,11 @@ fn def1_prelude_provided_defn_called_bare_enters_codegen_batch() {
 fn def1_prelude_provided_defn_explicit_import_works_control() {
     Cranelisp::new()
         .prelude(PRELUDE_WITH_COUNT)
-        // Explicit import of `count`; `Pure` comes via the implicit prelude glob.
+        // Explicit import of `count`; `pure` comes via the implicit prelude glob.
         .user(
             "(import [prelude [count]])\n\
-             (import [primitives [Pure]])\n\
-             (defn main [] (Pure (count [10 20 30])))",
+             (import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (count [10 20 30])))",
         )
         .run("user.cl")
         .output()
@@ -2785,9 +2802,9 @@ fn import_mod_target_qualified_and_bare_equiv() {
         .file(
             "app.cl",
             "(import [primitives [add-i64]])\n\
-             (import [primitives [Pure]])\n\
+             (import [primitives [pure]])\n\
              (mod child (defn val [] 7))\n\
-             (defn main [] (Pure (add-i64 (child/val) (app.child/val))))\n",
+             (defn main [] (primitives/pure (add-i64 (child/val) (app.child/val))))\n",
         )
         .run("app.cl")
         .output()
@@ -2839,9 +2856,9 @@ fn bare_relative_submodule_reexport_resolves() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [shell [foo]])\n\
-             (defn main [] (Pure (foo 41)))",
+             (defn main [] (primitives/pure (foo 41)))",
         )
         .file(
             "shell.cl",
@@ -2969,9 +2986,9 @@ fn dotted_constructor_in_value_position_resolves() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (deftype Color Red Green)\n\
-             (defn main [] (Pure (match (let [c Color.Red] c) [Red 7 Green 0])))",
+             (defn main [] (primitives/pure (match (let [c Color.Red] c) [Red 7 Green 0])))",
         )
         .run("main.cl")
         .output()
@@ -3015,8 +3032,8 @@ fn assert_no_doubly_wrapped_codegen_leak(text: &str) {
 fn fq_call_position_autoloads_all_modes() {
     let aux = "(import [primitives [Int mul-i64]])\n\
                (defn square [:Int x] :Int (mul-i64 x x))\n";
-    let entry = "(import [primitives [Pure]])\n\
-                 (defn main [] (Pure (mathx/square 5)))\n";
+    let entry = "(import [primitives [pure]])\n\
+                 (defn main [] (primitives/pure (mathx/square 5)))\n";
     // --run
     Cranelisp::new()
         .file("mathx.cl", aux)
@@ -3046,8 +3063,8 @@ fn fq_call_position_autoloads_all_modes() {
 fn fq_value_position_ref_call_through_let() {
     let aux = "(import [primitives [Int add-i64]])\n\
                (defn inc1 [:Int x] :Int (add-i64 x 1))\n";
-    let entry = "(import [primitives [Pure]])\n\
-                 (defn main [] (Pure (let [f mathx/inc1] (f 41))))\n";
+    let entry = "(import [primitives [pure]])\n\
+                 (defn main [] (primitives/pure (let [f mathx/inc1] (f 41))))\n";
     Cranelisp::new()
         .file("mathx.cl", aux)
         .file("main.cl", entry)
@@ -3069,8 +3086,8 @@ fn fq_value_position_ref_call_through_let() {
 fn fq_macro_ref_expands_at_qualified_site() {
     let aux = "(import [primitives [Int add-i64]])\n\
                (defmacro dbl [x] `(add-i64 ~x ~x))\n";
-    let entry = "(import [primitives [Pure]])\n\
-                 (defn main [] (Pure (macx/dbl 21)))\n";
+    let entry = "(import [primitives [pure]])\n\
+                 (defn main [] (primitives/pure (macx/dbl 21)))\n";
     let out = Cranelisp::new()
         .file("macx.cl", aux)
         .file("main.cl", entry)
@@ -3089,9 +3106,9 @@ fn fq_macro_ref_expands_at_qualified_site() {
 fn fq_type_annotation_triggers_autoload() {
     let aux = "(import [primitives [Int]])\n\
                (deftype Circle [:Int r])\n";
-    let entry = "(import [primitives [Pure Int]])\n\
+    let entry = "(import [primitives [pure Int]])\n\
                  (defn area [:shapes/Circle c] :Int (shapes/Circle.r c))\n\
-                 (defn main [] (Pure (area (shapes/Circle 9))))\n";
+                 (defn main [] (primitives/pure (area (shapes/Circle 9))))\n";
     let out = Cranelisp::new()
         .file("shapes.cl", aux)
         .file("main.cl", entry)
@@ -3115,8 +3132,8 @@ fn fq_ref_autoloads_absolute_module_path() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (util.helper/val)))\n",
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (util.helper/val)))\n",
         )
         .run("main.cl")
         .output()
@@ -3132,8 +3149,8 @@ fn autoload_neg_no_phantom_child_from_bare_qualifier() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (util.helper/val)))\n",
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (util.helper/val)))\n",
         )
         .run("main.cl")
         .output();
@@ -3158,8 +3175,8 @@ fn fq_ref_missing_module_errors_at_reference_site() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (nonesuch/square 5)))\n",
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (nonesuch/square 5)))\n",
         )
         .run("main.cl")
         .output();
@@ -3199,8 +3216,8 @@ fn fq_ref_member_absent_names_module_and_member() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (mathx/absent)))\n",
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (mathx/absent)))\n",
         )
         .run("main.cl")
         .output();
@@ -3226,9 +3243,9 @@ fn fq_ref_member_absent_error_identical_when_preloaded_neg() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [mathx [present]])\n\
-             (defn main [] (Pure (mathx/absent)))\n",
+             (defn main [] (primitives/pure (mathx/absent)))\n",
         )
         .run("main.cl")
         .output();
@@ -3258,7 +3275,7 @@ fn fq_ref_dep_compile_error_chained_diagnostic() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (broken/f)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (broken/f)))\n",
         )
         .run("main.cl")
         .output();
@@ -3311,7 +3328,7 @@ fn fq_ref_cycle_reports_circular_dependency_path() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (a/x)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (a/x)))\n",
         )
         .timeout(Duration::from_secs(15))
         .run("main.cl")
@@ -3345,7 +3362,7 @@ fn fq_ref_mixed_cycle_import_plus_fq_reports_cycle() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [a [x]])\n(defn main [] (Pure (x)))\n",
+            "(import [primitives [pure]])\n(import [a [x]])\n(defn main [] (primitives/pure (x)))\n",
         )
         .timeout(Duration::from_secs(15))
         .run("main.cl")
@@ -3373,7 +3390,7 @@ fn fq_ref_mixed_cycle_import_plus_fq_reports_cycle() {
 // defect: class=mode-divergence locus=src/scheduler.rs::SchedulerError::InmemIncomplete found=S122 owner=/dev — unattributed; the face's emission site, not a placed mechanism
 #[test]
 fn fq_ref_cycle_repl_startup_reports_circular_dependency_like_run() {
-    const USER: &str = "(import [primitives [Pure]])\n(defn main [] (Pure (a/f)))\n";
+    const USER: &str = "(import [primitives [pure]])\n(defn main [] (primitives/pure (a/f)))\n";
     let cyclic = || {
         Cranelisp::new()
             .file("a.cl", "(defn f [] (b/g))\n")
@@ -3412,7 +3429,7 @@ fn import_cycle_repl_startup_reports_circular_dependency() {
     let out = Cranelisp::new()
         .file("a.cl", "(import [b [g]])\n(defn f [] (g))\n")
         .file("b.cl", "(import [a [f]])\n(defn g [] (f))\n")
-        .user("(import [primitives [Pure]])\n(import [a [f]])\n(defn main [] (Pure (f)))\n")
+        .user("(import [primitives [pure]])\n(import [a [f]])\n(defn main [] (primitives/pure (f)))\n")
         .timeout(Duration::from_secs(15))
         .repl()
         .stdin("(main)\n/quit\n")
@@ -3449,8 +3466,8 @@ fn fq_ref_second_reference_no_reload() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure add-i64]])\n\
-             (defn main [] (Pure (add-i64 (mathx/square 5) (mathx/square 6))))\n",
+            "(import [primitives [pure add-i64]])\n\
+             (defn main [] (primitives/pure (add-i64 (mathx/square 5) (mathx/square 6))))\n",
         )
         .run("main.cl")
         .output()
@@ -3471,7 +3488,7 @@ fn fq_ref_private_member_rejected_neg() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/secret)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (mathx/secret)))\n",
         )
         .run("main.cl")
         .output();
@@ -3493,7 +3510,7 @@ fn fq_ref_public_member_resolves() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/public-val)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (mathx/public-val)))\n",
         )
         .run("main.cl")
         .output()
@@ -3514,8 +3531,8 @@ fn autoload_neg_installs_no_bare_bindings() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure add-i64]])\n\
-             (defn main [] (Pure (add-i64 (mathx/square 3) (square 4))))\n",
+            "(import [primitives [pure add-i64]])\n\
+             (defn main [] (primitives/pure (add-i64 (mathx/square 3) (square 4))))\n",
         )
         .run("main.cl")
         .output();
@@ -3543,10 +3560,10 @@ fn autoload_neg_no_ambiguity_with_local_def() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure Int add-i64]])\n\
+            "(import [primitives [pure Int add-i64]])\n\
              (defn use-fq [] :Int (mathx/square 3))\n\
              (defn square [:Int x] :Int (add-i64 x 1))\n\
-             (defn main [] (Pure (add-i64 (use-fq) (square 4))))\n",
+             (defn main [] (primitives/pure (add-i64 (use-fq) (square 4))))\n",
         )
         .run("main.cl")
         .output()
@@ -3571,7 +3588,7 @@ fn fq_ref_chain_depth_three_resumes() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (aa/v)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (aa/v)))\n",
         )
         .run("main.cl")
         .output()
@@ -3601,8 +3618,8 @@ fn fq_ref_diamond_loads_once_both_resume() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure add-i64]])\n\
-             (defn main [] (Pure (add-i64 (aa/va) (bb/vb))))\n",
+            "(import [primitives [pure add-i64]])\n\
+             (defn main [] (primitives/pure (add-i64 (aa/va) (bb/vb))))\n",
         )
         .run("main.cl")
         .output()
@@ -3626,9 +3643,9 @@ fn autoload_diamond_race_under_load_repeated() {
     let aa = "(import [primitives [Int add-i64]])\n(defn va [] :Int (add-i64 (cc/base) 1))\n";
     let bb = "(import [primitives [Int add-i64]])\n(defn vb [] :Int (add-i64 (cc/base) 2))\n";
     // root imports A and B (import wave puts both in-flight); A also FQ-refs B.
-    let main = "(import [primitives [Pure add-i64]])\n\
+    let main = "(import [primitives [pure add-i64]])\n\
                 (import [aa [va]])\n(import [bb [vb]])\n\
-                (defn main [] (Pure (add-i64 (va) (vb))))\n";
+                (defn main [] (primitives/pure (add-i64 (va) (vb))))\n";
     for i in 0..25 {
         let out = Cranelisp::new()
             .file("cc.cl", cc)
@@ -3669,8 +3686,8 @@ fn fq_value_ref_generic_fn_concrete_use_never_reaches_codegen() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (let [f mathx/gcount] (f [1 2 3]))))\n",
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (let [f mathx/gcount] (f [1 2 3]))))\n",
         )
         .run("main.cl")
         .output();
@@ -3701,8 +3718,8 @@ fn fq_ref_neg_no_doubly_wrapped_codegen_error() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (mathx/gcount [1 2 3])))\n",
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (mathx/gcount [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -3720,7 +3737,7 @@ fn fq_ref_import_invariance_twin() {
         .file("mathx.cl", aux)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/square 5)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (mathx/square 5)))\n",
         )
         .run("main.cl")
         .output();
@@ -3729,8 +3746,8 @@ fn fq_ref_import_invariance_twin() {
         .file("mathx.cl", aux)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [mathx [square]])\n\
-             (defn main [] (Pure (mathx/square 5)))\n",
+            "(import [primitives [pure]])\n(import [mathx [square]])\n\
+             (defn main [] (primitives/pure (mathx/square 5)))\n",
         )
         .run("main.cl")
         .output();
@@ -3755,10 +3772,10 @@ fn fq_ref_import_invariance_twin() {
 #[test]
 fn same_named_ctors_dotted_value_position_both_resolve() {
     run_through_all_modes(
-        "(import [primitives [Pure add-i64]])\n\
+        "(import [primitives [pure add-i64]])\n\
          (deftype (Maybe a) None (Some [:a v]))\n\
          (deftype (Option a) None (Some [:a v]))\n\
-         (defn main [] (Pure\n\
+         (defn main [] (primitives/pure\n\
            (add-i64 (match (Maybe.Some 7) [(Maybe.Some x) x Maybe.None 0])\n\
                     (match Option.None [(Option.Some x) x Option.None 3]))))\n",
         PreludeVariant::None,
@@ -3779,10 +3796,10 @@ fn same_named_ctors_bare_value_poisoned_lists_alternatives_neg() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (deftype (Maybe a) MNone (Some [:a v]))\n\
              (deftype (Option a) ONone (Some [:a v]))\n\
-             (defn main [] (Pure (match (Some 7) [(Some x) x _ 0])))\n",
+             (defn main [] (primitives/pure (match (Some 7) [(Some x) x _ 0])))\n",
         )
         .run("main.cl")
         .output();
@@ -3814,10 +3831,10 @@ fn same_named_ctors_define_plus_import_twin() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [optmod [Option]])\n\
              (deftype (Maybe a) MNone (Some [:a v]))\n\
-             (defn main [] (Pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
+             (defn main [] (primitives/pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
         )
         .run("main.cl")
         .output();
@@ -3837,9 +3854,9 @@ fn same_named_ctors_import_plus_import_twin() {
         .file("optmod.cl", option)
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [maybemod [Maybe]])\n(import [optmod [Option]])\n\
-             (defn main [] (Pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
+             (defn main [] (primitives/pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
         )
         .run("main.cl")
         .output()
@@ -3850,9 +3867,9 @@ fn same_named_ctors_import_plus_import_twin() {
         .file("optmod.cl", option)
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [maybemod [Maybe]])\n(import [optmod [Option]])\n\
-             (defn main [] (Pure (match (Some 7) [(Some x) x _ 0])))\n",
+             (defn main [] (primitives/pure (match (Some 7) [(Some x) x _ 0])))\n",
         )
         .run("main.cl")
         .output();
@@ -3877,7 +3894,7 @@ fn imported_trait_dotted_method_resolves_via_import_and_prelude_reexport() {
         .file("tm.cl", tm)
         .file(
             "main.cl",
-            "(import [tm [T]])\n(defn main [] (Pure (tm/T.m 4)))\n",
+            "(import [tm [T]])\n(defn main [] (primitives/pure (tm/T.m 4)))\n",
         )
         .run("main.cl")
         .output();
@@ -3894,14 +3911,14 @@ fn imported_trait_dotted_method_resolves_via_import_and_prelude_reexport() {
         .file("tm.cl", tm)
         .file(
             "main.cl",
-            "(import [tm [T]])\n(defn main [] (Pure (T.m 4)))\n",
+            "(import [tm [T]])\n(defn main [] (primitives/pure (T.m 4)))\n",
         )
         .run("main.cl")
         .output();
     let prelude_reexport = Cranelisp::new()
         .prelude("(export [primitives [*]])\n(export [tm [T m]])\n")
         .file("tm.cl", tm)
-        .file("main.cl", "(defn main [] (Pure (T.m 4)))\n")
+        .file("main.cl", "(defn main [] (primitives/pure (T.m 4)))\n")
         .run("main.cl")
         .output();
     let failures: Vec<String> = [
@@ -3941,21 +3958,21 @@ fn dotted_member_under_ambiguous_trait_parent_is_rejected_neg() {
             .run("main.cl")
             .output()
     };
-    let prelude_only = run("(defn main [] (Pure (T.m 4)))\n");
+    let prelude_only = run("(defn main [] (primitives/pure (T.m 4)))\n");
     assert_eq!(
         prelude_only.status.code(),
         Some(104),
         "control: with no import, `T.m` MUST dispatch to the prelude impl; {}",
         combined(&prelude_only)
     );
-    let qualified = run("(import [tm [T]])\n(defn main [] (Pure (tm/T.m 4)))\n");
+    let qualified = run("(import [tm [T]])\n(defn main [] (primitives/pure (tm/T.m 4)))\n");
     assert_eq!(
         qualified.status.code(),
         Some(5),
         "control: the qualified member `tm/T.m` MUST dispatch to `tm`'s impl; {}",
         combined(&qualified)
     );
-    let subject = run("(import [tm [T]])\n(defn main [] (Pure (T.m 4)))\n");
+    let subject = run("(import [tm [T]])\n(defn main [] (primitives/pure (T.m 4)))\n");
     let text = combined(&subject);
     let code = subject.status.code();
     assert!(
@@ -3981,9 +3998,9 @@ fn product_ctor_dotted_form_does_not_resolve_neg() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int add-i64]])\n\
+            "(import [primitives [pure Int add-i64]])\n\
              (deftype Point [:Int x :Int y])\n\
-             (defn main [] (Pure (add-i64 (Point.x (Point 3 4)) (Point.y (Point 3 4)))))\n",
+             (defn main [] (primitives/pure (add-i64 (Point.x (Point 3 4)) (Point.y (Point 3 4)))))\n",
         )
         .run("main.cl")
         .output()
@@ -3992,9 +4009,9 @@ fn product_ctor_dotted_form_does_not_resolve_neg() {
     let neg = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (deftype Point [:Int x :Int y])\n\
-             (defn main [] (Pure (Point.x (Point.Point 3 4))))\n",
+             (defn main [] (primitives/pure (Point.x (Point.Point 3 4))))\n",
         )
         .run("main.cl")
         .output();
@@ -4013,10 +4030,10 @@ fn dotted_ctor_passed_as_argument_and_let_bound() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (deftype (Maybe a) MNone (Some [:a v]))\n\
              (deftype (Option a) ONone (Some [:a v]))\n\
-             (defn main [] (Pure (match (let [f Maybe.Some] (f 3)) [(Some x) x MNone 0])))\n",
+             (defn main [] (primitives/pure (match (let [f Maybe.Some] (f 3)) [(Some x) x MNone 0])))\n",
         )
         .run("main.cl")
         .output()
@@ -4036,9 +4053,9 @@ fn mod_dash_child_file_pattern_loads() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (mod- test)\n\
-             (defn main [] (Pure (main.test/answer)))\n",
+             (defn main [] (primitives/pure (main.test/answer)))\n",
         )
         .file(
             "main/test.cl",
@@ -4086,9 +4103,9 @@ fn prelude_module_with_ctor_matching_submodule_still_exports_all() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [pre [later-fn]])\n\
-             (defn main [] (Pure (later-fn)))\n",
+             (defn main [] (primitives/pure (later-fn)))\n",
         )
         .run("main.cl")
         .output()
@@ -4112,9 +4129,9 @@ fn prelude_module_with_ctor_matching_submodule_still_exports_all() {
 fn imported_bare_nullary_ctor_match_compiles_to_tag_not_closure() {
     let defmod = "(import [primitives [Int]])\n(deftype Color Red Green Blue)\n";
     let midmod = "(export [defmod [Color Red Green Blue]])\n"; // re-export hop (≥2 hops)
-    let entry = "(import [primitives [Pure Int]])\n\
+    let entry = "(import [primitives [pure Int]])\n\
                  (import [midmod [Red Green Blue]])\n\
-                 (defn main [] (Pure (match Red [Red 1 Green 2 Blue 3])))\n";
+                 (defn main [] (primitives/pure (match Red [Red 1 Green 2 Blue 3])))\n";
     // --run
     let run = Cranelisp::new()
         .file("defmod.cl", defmod)
@@ -4151,9 +4168,9 @@ fn glob_import_bare_ctor_still_resolves() {
         .file("m.cl", m)
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [m [*]])\n\
-             (defn main [] (Pure (match (Cons 5 Nil) [(Cons h t) h Nil 0])))\n",
+             (defn main [] (primitives/pure (match (Cons 5 Nil) [(Cons h t) h Nil 0])))\n",
         )
         .run("main.cl")
         .output()
@@ -4163,9 +4180,9 @@ fn glob_import_bare_ctor_still_resolves() {
         .file("m.cl", m)
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [m [Lst.*]])\n\
-             (defn main [] (Pure (match (Cons 9 Nil) [(Cons h t) h Nil 0])))\n",
+             (defn main [] (primitives/pure (match (Cons 9 Nil) [(Cons h t) h Nil 0])))\n",
         )
         .run("main.cl")
         .output()
@@ -4183,9 +4200,9 @@ fn bare_field_accessor_same_cluster_run_mode() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (deftype Box [:Int v])\n\
-             (defn main [] (Pure (v (Box 7))))\n",
+             (defn main [] (primitives/pure (v (Box 7))))\n",
         )
         .run("main.cl")
         .output()
@@ -4254,8 +4271,8 @@ fn fq_generic_value_ref_in_if_position_never_reaches_codegen() {
         .file("mathx.cl", I2_MATHX)
         .file(
             "main.cl",
-            "(import [primitives [Pure Bool]])\n\
-             (defn main [] (Pure ((if true mathx/gcount mathx/gother) [1 2 3])))\n",
+            "(import [primitives [pure Bool]])\n\
+             (defn main [] (primitives/pure ((if true mathx/gcount mathx/gother) [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -4280,8 +4297,8 @@ fn fq_generic_value_ref_in_match_position_never_reaches_codegen() {
         .file("mathx.cl", I2_MATHX)
         .file(
             "main.cl",
-            "(import [primitives [Pure Option Some None]])\n\
-             (defn main [] (Pure\n\
+            "(import [primitives [pure Option Some None]])\n\
+             (defn main [] (primitives/pure\n\
                ((match (Some 0) [(Some _) mathx/gcount None mathx/gother]) [1 2 3])))\n",
         )
         .run("main.cl")
@@ -4306,8 +4323,8 @@ fn fq_generic_value_ref_in_vector_position_never_reaches_codegen() {
         .file("mathx.cl", I2_MATHX)
         .file(
             "main.cl",
-            "(import [primitives [Pure Vec vec-get]])\n\
-             (defn main [] (Pure ((vec-get [mathx/gcount] 0) [1 2 3])))\n",
+            "(import [primitives [pure Vec vec-get]])\n\
+             (defn main [] (primitives/pure ((vec-get [mathx/gcount] 0) [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -4339,7 +4356,7 @@ fn prelude_importing_x(opt_out: bool) -> Cranelisp {
         .file("x.cl", x)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (x/one)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (x/one)))\n",
         )
         .user("")
         .timeout(Duration::from_secs(15))
@@ -4476,7 +4493,7 @@ fn run_unparseable_imported_module_is_located_in_its_file() {
         .file("lib.cl", "(defn inc1 [x] (primitives/add-i64 x 1)\n")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [lib [inc1]])\n(defn main [] (Pure (inc1 1)))\n",
+            "(import [primitives [pure]])\n(import [lib [inc1]])\n(defn main [] (primitives/pure (inc1 1)))\n",
         )
         .run("main.cl")
         .output();
@@ -4494,8 +4511,8 @@ fn run_unparseable_imported_module_is_located_in_its_file() {
 #[test]
 fn run_unparseable_project_prelude_is_located_in_its_file() {
     let out = Cranelisp::new()
-        .prelude("(export [primitives [Pure]])\n(defn inc1 [x] (primitives/add-i64 x 1)\n")
-        .file("main.cl", "(defn main [] (Pure (inc1 1)))\n")
+        .prelude("(export [primitives [pure]])\n(defn inc1 [x] (primitives/add-i64 x 1)\n")
+        .file("main.cl", "(defn main [] (primitives/pure (inc1 1)))\n")
         .run("main.cl")
         .output();
     assert_run_locates_failure_in(&out, "prelude.cl");
@@ -4595,7 +4612,7 @@ fn box_import_fixture(entry: &str) -> Cranelisp {
 #[test]
 fn box_import_unrenamed_control() {
     box_import_fixture(
-        "(import [lib [Box]])\n(defn main [] (Pure (lib/unbox (Box (Box.value (lib/mk))))))",
+        "(import [lib [Box]])\n(defn main [] (primitives/pure (lib/unbox (Box (Box.value (lib/mk))))))",
     )
     .run("main.cl")
     .output()
@@ -4608,7 +4625,7 @@ fn box_import_unrenamed_control() {
 #[test]
 fn box_import_renamed_binds_canonical_type() {
     box_import_fixture(
-        "(import [lib [(Box B)]])\n(defn main [] (Pure (lib/unbox (B (B.value (lib/mk))))))",
+        "(import [lib [(Box B)]])\n(defn main [] (primitives/pure (lib/unbox (B (B.value (lib/mk))))))",
     )
     .run("main.cl")
     .output()
@@ -4620,10 +4637,12 @@ fn box_import_renamed_binds_canonical_type() {
 // ACT-0997; control: box_import_unrenamed_control.
 #[test]
 fn box_import_self_rename_is_accepted() {
-    box_import_fixture("(import [lib [(Box Box)]])\n(defn main [] (Pure (Box.value (Box 7))))")
-        .run("main.cl")
-        .output()
-        .assert_exit(7);
+    box_import_fixture(
+        "(import [lib [(Box Box)]])\n(defn main [] (primitives/pure (Box.value (Box 7))))",
+    )
+    .run("main.cl")
+    .output()
+    .assert_exit(7);
 }
 
 fn export_cycle_fixture() -> Cranelisp {
@@ -4634,7 +4653,7 @@ fn export_cycle_fixture() -> Cranelisp {
         .user("(defn run [] (b/g))")
         .file(
             "main.cl",
-            "(import [primitives [Pure]]) (defn main [] (Pure (b/g)))",
+            "(import [primitives [pure]]) (defn main [] (primitives/pure (b/g)))",
         )
         .cli_flag("--no-cache")
 }
@@ -4689,7 +4708,7 @@ fn impl_head_diagnostic(head: &str) -> helpers::e2e::CrOutput {
         )
         .file(
             "main.cl",
-            &format!("(import [tm [T]]) (impl {head} Int (defn m [x] x)) (defn main [] (Pure 0))"),
+            &format!("(import [tm [T]]) (impl {head} Int (defn m [x] x)) (defn main [] (primitives/pure 0))"),
         )
         .run("main.cl")
         .cli_flag("--no-cache")
@@ -4733,7 +4752,7 @@ fn failed_import_diagnostic(fail: bool) -> Cranelisp {
     };
     Cranelisp::new()
         .file("helper.cl", helper)
-        .file("main.cl", "; distinct reference location\n\n(import [helper [f]])\n(defn main [] (primitives/Pure (f)))\n")
+        .file("main.cl", "; distinct reference location\n\n(import [helper [f]])\n(defn main [] (primitives/pure (f)))\n")
 }
 
 // spec: spec/08-modules.md §8.10.3 — ACT-1017 control imports a non-failed module.
@@ -4824,7 +4843,7 @@ fn assert_member_import_result(import: &str, body: &str, expected: i32) {
     let out = member_import_fixture()
         .file(
             "app.cl",
-            &format!("{import}\n(defn main [] (primitives/Pure {body}))"),
+            &format!("{import}\n(defn main [] (primitives/pure {body}))"),
         )
         .run("app.cl")
         .output();
@@ -4863,7 +4882,7 @@ fn selective_member_does_not_bind_sibling_neg() {
     let out = member_import_fixture()
         .file(
             "app.cl",
-            "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/Pure (match Red [_ 0])))",
+            "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/pure (match Red [_ 0])))",
         )
         .run("app.cl")
         .output();
@@ -4884,7 +4903,7 @@ fn selective_member_does_not_bind_sibling_neg() {
 #[test]
 fn selective_member_does_not_bind_parent_dotted_member_neg() {
     let out = member_import_fixture()
-        .file("app.cl", "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/Pure (match Shade.Blue [_ 0])))")
+        .file("app.cl", "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/pure (match Shade.Blue [_ 0])))")
         .run("app.cl").output();
     assert!(
         !out.status.success(),
@@ -4903,7 +4922,7 @@ fn selective_member_does_not_bind_parent_dotted_member_neg() {
 #[test]
 fn selective_member_does_not_bind_parent_type_neg() {
     let out = member_import_fixture()
-        .file("app.cl", "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/Pure (let [x :Shade mathx/Shade.Blue] 0)))")
+        .file("app.cl", "(import [mathx [Shade.Blue]])\n(defn main [] (primitives/pure (let [x :Shade mathx/Shade.Blue] 0)))")
         .run("app.cl").output();
     assert!(
         !out.status.success(),
@@ -4961,7 +4980,7 @@ fn export_fixture(export: &str, body: &str) -> helpers::e2e::CrOutput {
         .file("api.cl", &format!("{export}\n(defn marker [] 1)"))
         .file(
             "app.cl",
-            &format!("(import [api [*]])\n(defn main [] (primitives/Pure {body}))"),
+            &format!("(import [api [*]])\n(defn main [] (primitives/pure {body}))"),
         )
         .run("app.cl")
         .output()
@@ -5069,7 +5088,7 @@ fn s124_modules_r2_a_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/Pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
+        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
         49,
         "run",
     );
@@ -5082,7 +5101,7 @@ fn s124_modules_r2_a_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/Pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
+        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
         49,
         "link",
     );
@@ -5095,7 +5114,7 @@ fn s124_modules_r2_a_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/Pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
+        r#"(import [mathx [Shade.* Hue.*]]) (defn main [] (primitives/pure (match Dark [Dark (match Red [Red 49 _ 99]) _ 98])))"#,
         49,
         "repl",
     );
@@ -5108,7 +5127,7 @@ fn s124_modules_r2_b_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/pure (sq 7)))"#,
         49,
         "run",
     );
@@ -5121,7 +5140,7 @@ fn s124_modules_r2_b_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/pure (sq 7)))"#,
         49,
         "link",
     );
@@ -5134,7 +5153,7 @@ fn s124_modules_r2_b_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        r#"(import [mathx [(square sq)]]) (defn main [] (primitives/pure (sq 7)))"#,
         49,
         "repl",
     );
@@ -5147,7 +5166,7 @@ fn s124_modules_r2_c_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [api [sq]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        r#"(import [api [sq]]) (defn main [] (primitives/pure (sq 7)))"#,
         49,
         "run",
     );
@@ -5160,7 +5179,7 @@ fn s124_modules_r2_c_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [api [sq]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        r#"(import [api [sq]]) (defn main [] (primitives/pure (sq 7)))"#,
         49,
         "link",
     );
@@ -5173,7 +5192,7 @@ fn s124_modules_r2_c_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [api [sq]]) (defn main [] (primitives/Pure (sq 7)))"#,
+        r#"(import [api [sq]]) (defn main [] (primitives/pure (sq 7)))"#,
         49,
         "repl",
     );
@@ -5185,7 +5204,7 @@ fn s124_modules_r2_control_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [api0 [square]]) (defn main [] (primitives/Pure (square 7)))"#,
+        r#"(import [api0 [square]]) (defn main [] (primitives/pure (square 7)))"#,
         49,
         "run",
     );
@@ -5197,7 +5216,7 @@ fn s124_modules_r2_control_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [api0 [square]]) (defn main [] (primitives/Pure (square 7)))"#,
+        r#"(import [api0 [square]]) (defn main [] (primitives/pure (square 7)))"#,
         49,
         "link",
     );
@@ -5209,7 +5228,7 @@ fn s124_modules_r2_control_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [api0 [square]]) (defn main [] (primitives/Pure (square 7)))"#,
+        r#"(import [api0 [square]]) (defn main [] (primitives/pure (square 7)))"#,
         49,
         "repl",
     );
@@ -5221,7 +5240,7 @@ fn s124_modules_dup_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "run",
     );
@@ -5233,7 +5252,7 @@ fn s124_modules_dup_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "link",
     );
@@ -5245,7 +5264,7 @@ fn s124_modules_dup_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.Blue Shade.*]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "repl",
     );
@@ -5257,7 +5276,7 @@ fn s124_modules_dup_glob_control_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "run",
     );
@@ -5269,7 +5288,7 @@ fn s124_modules_dup_glob_control_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "link",
     );
@@ -5281,7 +5300,7 @@ fn s124_modules_dup_glob_control_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.*]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "repl",
     );
@@ -5293,7 +5312,7 @@ fn s124_modules_dup_dotted_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "run",
     );
@@ -5305,7 +5324,7 @@ fn s124_modules_dup_dotted_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "link",
     );
@@ -5317,7 +5336,7 @@ fn s124_modules_dup_dotted_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/Pure (match Blue [Blue 49 _ 99])))"#,
+        r#"(import [mathx [Shade.Blue]]) (defn main [] (primitives/pure (match Blue [Blue 49 _ 99])))"#,
         49,
         "repl",
     );
@@ -5329,7 +5348,7 @@ fn s124_modules_exp0_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(export [broken []]) (defn main [] (primitives/Pure 49))"#,
+        r#"(export [broken []]) (defn main [] (primitives/pure 49))"#,
         49,
         "run",
     );
@@ -5341,7 +5360,7 @@ fn s124_modules_exp0_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(export [broken []]) (defn main [] (primitives/Pure 49))"#,
+        r#"(export [broken []]) (defn main [] (primitives/pure 49))"#,
         49,
         "link",
     );
@@ -5353,7 +5372,7 @@ fn s124_modules_exp0_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(export [broken []]) (defn main [] (primitives/Pure 49))"#,
+        r#"(export [broken []]) (defn main [] (primitives/pure 49))"#,
         49,
         "repl",
     );
@@ -5365,7 +5384,7 @@ fn s124_modules_exp0_control_run() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(export [mathx []]) (defn main [] (primitives/Pure 49))"#,
+        r#"(export [mathx []]) (defn main [] (primitives/pure 49))"#,
         49,
         "run",
     );
@@ -5377,7 +5396,7 @@ fn s124_modules_exp0_control_link() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(export [mathx []]) (defn main [] (primitives/Pure 49))"#,
+        r#"(export [mathx []]) (defn main [] (primitives/pure 49))"#,
         49,
         "link",
     );
@@ -5389,7 +5408,7 @@ fn s124_modules_exp0_control_repl() {
     let cr = s124_projection_modules();
     s124_module_value(
         cr,
-        r#"(export [mathx []]) (defn main [] (primitives/Pure 49))"#,
+        r#"(export [mathx []]) (defn main [] (primitives/pure 49))"#,
         49,
         "repl",
     );
@@ -5398,11 +5417,11 @@ fn s124_modules_exp0_control_repl() {
 fn s124_super_reexport(mode: &str, cycle: bool) {
     let cr = Cranelisp::new();
     let cr = if cycle {
-        cr.file("p.cl", "(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/Pure (p.child/x)))")
+        cr.file("p.cl", "(mod child (export [super [x]])) (defn x [] 49) (defn main [] (primitives/pure (p.child/x)))")
     } else {
         cr.file("p.cl", "(mod child) (defn x [] 49)")
             .file("p/child.cl", "(export [super [x]])")
-            .file("app.cl", "(import [p.child [x]]) (defn main [] (primitives/Pure (if (primitives/eq-i64 (x) 49) (p.child/x) 99)))")
+            .file("app.cl", "(import [p.child [x]]) (defn main [] (primitives/pure (if (primitives/eq-i64 (x) 49) (p.child/x) 99)))")
     };
     let entry = if cycle { "p.cl" } else { "app.cl" };
     let out = match mode {
@@ -5478,7 +5497,7 @@ fn s124_modules_alias_conflict_file() {
         .file("b.cl", "(defn v [] 2)")
         .file(
             "p.cl",
-            "(import [(a z) []])\n(import [(b z) []])\n(defn main [] (primitives/Pure (z/v)))",
+            "(import [(a z) []])\n(import [(b z) []])\n(defn main [] (primitives/pure (z/v)))",
         )
         .run("p.cl")
         .output();
@@ -5517,7 +5536,7 @@ fn s124_modules_alias_distinct_control() {
         Cranelisp::new()
             .file("a.cl", "(defn v [] 1)")
             .file("b.cl", "(defn v [] 2)"),
-        "(import [(a za) []]) (import [(b zb) []]) (defn main [] (primitives/Pure (primitives/add-i64 (za/v) (zb/v))))",
+        "(import [(a za) []]) (import [(b zb) []]) (defn main [] (primitives/pure (primitives/add-i64 (za/v) (zb/v))))",
         3,
         "run",
     );
@@ -5540,7 +5559,7 @@ fn s124_alias_refusal(forms: &str, line: usize, repl: bool) {
         s124_alias_fixture()
             .file(
                 "app.cl",
-                &format!("{forms}\n(defn main [] (primitives/Pure 0))"),
+                &format!("{forms}\n(defn main [] (primitives/pure 0))"),
             )
             .run("app.cl")
             .output()
@@ -5656,7 +5675,7 @@ fn s124_modules_mnt_same_target() {
 (export [(lib s) [x]])
 (defn inside [] (s/y))
 "#;
-    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
+    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
     out.run_again()
         .env("CRANELISP_MODULE_TRACE", "1")
         .run("app.cl")
@@ -5672,7 +5691,7 @@ fn s124_modules_q4_equal_import_first() {
 (export [(lib s) [x]])
 (defn inside [] (s/y))
 "#;
-    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
+    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
     out.run_again()
         .env("CRANELISP_MODULE_TRACE", "1")
         .run("app.cl")
@@ -5688,7 +5707,7 @@ fn s124_modules_q4_equal_export_first() {
 (import [(lib s) []])
 (defn inside [] (s/y))
 "#;
-    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/Pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
+    let out=s124_alias_fixture().file("p.cl",src).file("app.cl","(import [p [inside]]) (defn main [] (primitives/pure (primitives/add-i64 (inside) (p.s/y))))").run("app.cl").output().assert_exit(14);
     out.run_again()
         .env("CRANELISP_MODULE_TRACE", "1")
         .run("app.cl")
@@ -5923,7 +5942,7 @@ fn s124_modules_root_super_refusal_controls() {
         let out = Cranelisp::new()
             .file(
                 "app.cl",
-                &format!("{form}\n(defn main [] (primitives/Pure 0))"),
+                &format!("{form}\n(defn main [] (primitives/pure 0))"),
             )
             .run("app.cl")
             .output();
@@ -5941,7 +5960,7 @@ fn s124_modules_root_super_refusal_controls() {
 // spec: spec/08-modules.md §8.3.11 — T-DUP, dotted source projects only the member
 #[test]
 fn s124_modules_dotted_source_not_local_name() {
-    let out=Cranelisp::new().file("colors.cl","(deftype Shade Blue Dark)").file("p.cl","(import [colors [Shade.Blue]]) (defn main [] (primitives/Pure (match Shade.Blue [Blue 5 _ 99])))").run("p.cl").output();
+    let out=Cranelisp::new().file("colors.cl","(deftype Shade Blue Dark)").file("p.cl","(import [colors [Shade.Blue]]) (defn main [] (primitives/pure (match Shade.Blue [Blue 5 _ 99])))").run("p.cl").output();
     assert!(
         !out.status.success() && out.stderr.contains("Shade.Blue"),
         "{}{}",
@@ -6001,7 +6020,7 @@ fn s124_selected_candidate_value(mode: &str, leg: CandidateSelectionLeg) {
         "(import [n [conv]])\n"
     };
     let definitions = format!(
-        "(import [primitives [Pure add-i64]])\n(import [m [conv]])\n{second_import}{}",
+        "(import [primitives [pure add-i64]])\n(import [m [conv]])\n{second_import}{}",
         if matches!(leg, CandidateSelectionLeg::PolymorphicValue) {
             "(defn app [g] (g 5 (fn [x] (add-i64 x 1))))\n"
         } else {
@@ -6020,7 +6039,7 @@ fn s124_selected_candidate_value(mode: &str, leg: CandidateSelectionLeg) {
         "run" | "link" => {
             let fixture = fixture.file(
                 "p.cl",
-                &format!("{definitions}(defn main [] (Pure {expression}))\n"),
+                &format!("{definitions}(defn main [] (primitives/pure {expression}))\n"),
             );
             if mode == "run" {
                 fixture.run("p.cl")
@@ -6191,7 +6210,7 @@ fn s124_unloaded_mount_owner(mode: &str, chain: bool, control: bool) {
         .file("x.cl", "(defn y [] 37)")
         .file(
             "app.cl",
-            &format!("{imports}\n(defn main [] (primitives/Pure ({call})))"),
+            &format!("{imports}\n(defn main [] (primitives/pure ({call})))"),
         );
     let out = match mode {
         "run" => cr.run("app.cl").output(),
@@ -6367,7 +6386,7 @@ fn s124_declared_child_batch_outcomes_with_alias(
     ]
     .iter()
     .map(|import| {
-        let source = format!("{import}\n(defn main [] (primitives/Pure (P.c/cf)))\n");
+        let source = format!("{import}\n(defn main [] (primitives/pure (P.c/cf)))\n");
         let out = s124_declared_child_graph_with_alias(returns_to_parent, alias)
             .file("app.cl", &source)
             .run("app.cl")
@@ -6400,7 +6419,7 @@ fn s124_declared_child_batch_outcomes_with_alias(
 fn s124_declared_child_graph_batch_routes_agree() {
     let outcomes = s124_declared_child_batch_outcomes(true);
     assert!(
-        outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        outcomes.iter().all(|outcome| *outcome),
         "the same graph must agree across P, z, P.c entry routes (true=value, false=cycle): {outcomes:?}"
     );
 }
@@ -6451,7 +6470,7 @@ fn s124_declared_child_graph_repl_orders_agree() {
     let mut outcomes = s124_declared_child_repl_outcomes(true);
     outcomes.extend(s124_declared_child_batch_outcomes(true));
     assert!(
-        outcomes.iter().all(|outcome| *outcome == outcomes[0]),
+        outcomes.iter().all(|outcome| *outcome),
         "REPL z-first, child-first and batch routes must agree (true=value, false=cycle): {outcomes:?}"
     );
 }
@@ -6474,8 +6493,7 @@ fn s124_declared_child_graph_neg_failed_module_evaluates_next_turn() {
             .assert_ok();
         let text = combined(&out);
         assert!(
-            text.contains("circular dependency detected")
-                || text.matches(":primitives/Int 11").count() == 3,
+            text.matches(":primitives/Int 11").count() == 3,
             "route must consistently accept or reach the cycle gate: {text}"
         );
         if text.contains("circular dependency detected") {
@@ -6493,7 +6511,7 @@ fn s124_parent_path_and_super_exports(mode: &str) {
         .file("p/c.cl", "(export [p [x]])\n(export [super [y]])\n")
         .file(
             "app.cl",
-            "(import [p.c [x y]])\n(defn main [] (primitives/Pure (primitives/add-i64 (x) (y))))\n",
+            "(import [p.c [x y]])\n(defn main [] (primitives/pure (primitives/add-i64 (x) (y))))\n",
         );
     match mode {
         "run" => {
@@ -6613,7 +6631,7 @@ fn s124_declared_child_alias_graph_batch_acyclic_control() {
 }
 
 // spec: spec/08-modules.md §8.10.2 — ACT-1081 aliased graph agrees across cold REPL orders and batch routes.
-// defect: class=mode-divergence locus=src/process_form/dependency.rs found=S124 owner=/dev
+// defect: class=mode-divergence locus=cranelisp-typecheck::resolve_qualified found=S124 owner=/dev
 // Open: ACT-1082 — one REPL order looks up the file-local alias as a module.
 #[test]
 fn s124_declared_child_alias_graph_repl_orders_agree() {
@@ -6650,7 +6668,7 @@ fn s124_missing_member_diagnostic(mode: &str, alias: bool) {
         "run" | "link" => {
             let builder = builder.file(
                 "app.cl",
-                &format!("{import}\n(defn main [] (primitives/Pure {call}))\n"),
+                &format!("{import}\n(defn main [] (primitives/pure {call}))\n"),
             );
             let out = if mode == "run" {
                 builder.run("app.cl")
@@ -6750,14 +6768,14 @@ fn s124_declared_child_qualified_in_flight_repl_acyclic_control() {
 }
 
 fn s124_child_project() -> Cranelisp {
-    Cranelisp::new()
+    Cranelisp::new().use_workspace_platforms()
         .with_prelude(PreludeVariant::None)
         .lib_dir("lib")
         .file("lib/m.cl", "(mod- t)\n(import [t [v]])\n(defn f [] (v))\n")
         .file("lib/m/t.cl", "(defn v [] 5)\n")
         .file(
             "proj/main.cl",
-            "(import [primitives [Pure]])\n(import [m [f]])\n(defn main [] (Pure (f)))\n",
+            "(platform stdio)\n(import [platform.stdio [print]])\n(import [primitives [pure]])\n(import [m [f]])\n(defn main [] (primitives/bind (print (primitives/int-to-string (f))) (fn [_] (primitives/pure (f)))))\n",
         )
 }
 
@@ -6770,7 +6788,8 @@ fn s124_declared_child_run_not_replaced_by_project_file() {
         .run("proj/main.cl")
         .cli_flag("--no-cache")
         .output()
-        .assert_exit(5);
+        .assert_exit(5)
+        .assert_stdout_contains("5");
 }
 
 // spec: spec/08-modules.md §8.2.5 — T-MOD-CHILD linked execution
@@ -6781,7 +6800,8 @@ fn s124_declared_child_link_not_replaced_by_project_file() {
         .file("proj/m/t.cl", "(defn v [] 6)\n")
         .link_then_run("proj/main.cl")
         .output()
-        .assert_exit(5);
+        .assert_exit(5)
+        .assert_stdout_contains("5");
 }
 
 // spec: spec/08-modules.md §8.2.5 — T-MOD-CHILD cached launch
@@ -6791,17 +6811,20 @@ fn s124_declared_child_cached_not_replaced_by_new_project_file() {
     let warm = s124_child_project()
         .run("proj/main.cl")
         .output()
-        .assert_exit(5);
+        .assert_exit(5)
+        .assert_stdout_contains("5");
     assert!(
         warm.tmp_exists("proj/.cranelisp-cache/m.o"),
         "library object must be cached"
     );
     warm.run_again()
+        .use_workspace_platforms()
         .lib_dir("lib")
         .file("proj/m/t.cl", "(defn v [] 6)\n")
         .run("proj/main.cl")
         .output()
-        .assert_exit(5);
+        .assert_exit(5)
+        .assert_stdout_contains("5");
 }
 
 // spec: spec/08-modules.md §8.2.5 — T-MOD-CHILD earlier library directory
@@ -6820,7 +6843,8 @@ fn s124_declared_child_not_replaced_by_earlier_library_file() {
         .run("proj/main.cl")
         .cli_flag("--no-cache")
         .output()
-        .assert_exit(5);
+        .assert_exit(5)
+        .assert_stdout_contains("5");
 }
 
 // spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD project override control
@@ -6832,4 +6856,190 @@ fn s124_declared_child_project_module_override_control() {
         .run("proj/main.cl")
         .output()
         .assert_exit(6);
+}
+
+// spec: spec/08-modules.md §8.5.4, §8.6.6
+#[test]
+fn s125_1079_missing_mount_neg_located_once() {
+    let out = Cranelisp::new()
+        .file("owner.cl", "(defn value [] 1)")
+        .user(
+            "(import [owner [value]])
+(defn main [] (primitives/pure (owner.absent/f)))
+",
+        )
+        .run("user.cl")
+        .timeout(std::time::Duration::from_secs(5))
+        .output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert_eq!(out.status.code(), Some(1), "missing mount refused: {diag}");
+    assert!(
+        diag.contains("user.cl:2:") && diag.contains("absent"),
+        "refusal located at reference: {diag}"
+    );
+    assert_eq!(
+        diag.matches("error:").count(),
+        1,
+        "one refusal, no retries: {diag}"
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_import_cycle_p_neg() {
+    let out = s124_declared_child_graph(true)
+        .file("P.cl", "(mod c)\n(import [P.c [cf]])\n(defn x [] 1)\n")
+        .user("(import [P []]) (defn main [] (primitives/pure (P.c/cf)))")
+        .run("user.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "import cycle refused: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        combined(&out).contains("circular dependency"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_import_cycle_z_neg() {
+    let out = s124_declared_child_graph(true)
+        .file("P.cl", "(mod c)\n(import [P.c [cf]])\n(defn x [] 1)\n")
+        .user("(import [z []]) (defn main [] (primitives/pure (P.c/cf)))")
+        .run("user.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "import cycle refused: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        combined(&out).contains("circular dependency"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_import_cycle_p_c_neg() {
+    let out = s124_declared_child_graph(true)
+        .file("P.cl", "(mod c)\n(import [P.c [cf]])\n(defn x [] 1)\n")
+        .user("(import [P.c []]) (defn main [] (primitives/pure (P.c/cf)))")
+        .run("user.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "import cycle refused: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        combined(&out).contains("circular dependency"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_import_cycle_parent_first_neg() {
+    let out = s124_declared_child_graph(true)
+        .file("P.cl", "(mod c)\n(import [P.c [cf]])\n(defn x [] 1)\n")
+        .stdin("(z/zf)\n")
+        .output()
+        .assert_ok();
+    assert!(
+        combined(&out).contains("circular dependency"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_does_not_contain(":primitives/Int 11");
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_import_cycle_child_first_neg() {
+    let out = s124_declared_child_graph(true)
+        .file("P.cl", "(mod c)\n(import [P.c [cf]])\n(defn x [] 1)\n")
+        .stdin("(P.c/cf)\n")
+        .output()
+        .assert_ok();
+    assert!(
+        combined(&out).contains("circular dependency"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_does_not_contain(":primitives/Int 11");
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_save_restart_agrees_with_cold() {
+    let out = s124_declared_child_graph(true)
+        .stdin(
+            "(import [P.c [cf]])
+(defn f [] (cf))
+(f)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 11");
+    assert!(out.read_tmp("user.cl").contains("(defn f"), "session saved");
+    out.run_again()
+        .stdin(
+            "(f)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 11");
+}
+
+// spec: spec/08-modules.md §8.10.1, §8.10.2
+#[test]
+fn s125_1081_import_cycle_restart_stays_refused() {
+    let first = s124_declared_child_graph(true)
+        .file("P.cl", "(mod c)\n(import [P.c [cf]])\n(defn x [] 1)\n")
+        .stdin(
+            "(import [P.c [cf]])
+(defn retained [] 7)
+",
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        combined(&first).contains("circular dependency"),
+        "refuse before restart: {}",
+        combined(&first)
+    );
+    let next = first
+        .run_again()
+        .stdin(
+            "(P.c/cf)
+",
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        combined(&next).contains("circular dependency"),
+        "refuse after restart: {}",
+        combined(&next)
+    );
+    next.assert_stdout_does_not_contain(":primitives/Int 11");
 }

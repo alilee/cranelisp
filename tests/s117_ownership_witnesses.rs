@@ -36,7 +36,7 @@ fn r2_borrowed_scalar_result_live_and_temporary_all_modes() {
     let src = "(import [primitives [*]])\n\
                (defn main []\n\
                  (let [s \"abc\"]\n\
-                   (Pure (add-i64 (str-len s)\n\
+                   (primitives/pure (add-i64 (str-len s)\n\
                                   (add-i64 (str-len s)\n\
                                            (str-len (str-concat \"a\" \"b\")))))))\n";
     run_through_all_modes(src, PreludeVariant::None).assert_all_equal(8);
@@ -49,7 +49,7 @@ fn r2_alias_of_string_identity_source_and_alias_all_modes() {
     let src = "(import [primitives [*]])\n\
                (defn main []\n\
                  (let [s \"abc\" a (string-identity s)]\n\
-                   (Pure (add-i64 (str-len a) (str-len s)))))\n";
+                   (primitives/pure (add-i64 (str-len a) (str-len s)))))\n";
     run_through_all_modes(src, PreludeVariant::None).assert_all_equal(6);
 }
 
@@ -85,7 +85,7 @@ fn r2_projection_of_heap_element_and_root_all_modes() {
     let src = "(import [primitives [*]])\n\
                (defn main []\n\
                  (let [v [\"abc\"] x (vec-get v 0)]\n\
-                   (Pure (add-i64 (str-len x) (str-len (vec-get v 0))))))\n";
+                   (primitives/pure (add-i64 (str-len x) (str-len (vec-get v 0))))))\n";
     run_through_all_modes(src, PreludeVariant::None).assert_all_equal(6);
 }
 
@@ -163,7 +163,7 @@ fn r2_may_alias_vec_set_unique_and_shared_all_modes() {
                        old [1 2]\n\
                        alias old\n\
                        changed (vec-set alias 0 9)]\n\
-                   (Pure (add-i64 (vec-get u 0)\n\
+                   (primitives/pure (add-i64 (vec-get u 0)\n\
                            (add-i64 (vec-get old 0) (vec-get changed 0))))))\n";
     run_through_all_modes(src, PreludeVariant::None).assert_all_equal(19);
 }

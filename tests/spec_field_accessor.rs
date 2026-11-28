@@ -53,9 +53,9 @@ fn cross_module_canonical_accessor_resolves() {
         .file("lib/shapes.cl", "(deftype Box [:primitives/Int v])\n")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [shapes [Box]])\n\
-             (defn main [] (Pure (shapes/Box.v (Box 7))))",
+             (defn main [] (primitives/pure (shapes/Box.v (Box 7))))",
         )
         .lib_dir("lib")
         .run("main")
@@ -82,9 +82,9 @@ fn cross_module_contested_canonical_accessors_no_cliff() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure add-i64]])\n\
+            "(import [primitives [pure add-i64]])\n\
              (import [shapes [Box Cup]])\n\
-             (defn main [] (Pure (add-i64 (shapes/Box.v (Box 5)) \
+             (defn main [] (primitives/pure (add-i64 (shapes/Box.v (Box 5)) \
                                           (shapes/Cup.v (Cup 9)))))",
         )
         .lib_dir("lib")
@@ -112,9 +112,9 @@ fn cross_module_contested_bare_accessor_selects_by_type_and_no_match_neg() {
             .file(
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure]])\n\
+                    "(import [primitives [pure]])\n\
                      (import [shapes [Box Cup]])\n\
-                     (defn main [] (Pure {expr}))"
+                     (defn main [] (primitives/pure {expr}))"
                 ),
             )
             .lib_dir("lib")

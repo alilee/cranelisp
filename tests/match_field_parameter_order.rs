@@ -52,7 +52,7 @@ fn field_projection(program: &str, expected: i32, mode: &str) {
 #[test]
 fn s124_1062_a_subject_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:b y :a x])) (defn f [p] (match p [(MkP y x) (add-i64 x (str-len y))])) (defn main [] (Pure (f (MkP "abc" 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:b y :a x])) (defn f [p] (match p [(MkP y x) (add-i64 x (str-len y))])) (defn main [] (primitives/pure (f (MkP "abc" 2000))))"#,
         2003,
         "run",
     );
@@ -63,7 +63,7 @@ fn s124_1062_a_subject_run() {
 #[test]
 fn s124_1062_a_subject_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:b y :a x])) (defn f [p] (match p [(MkP y x) (add-i64 x (str-len y))])) (defn main [] (Pure (f (MkP "abc" 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:b y :a x])) (defn f [p] (match p [(MkP y x) (add-i64 x (str-len y))])) (defn main [] (primitives/pure (f (MkP "abc" 2000))))"#,
         2003,
         "link",
     );
@@ -74,7 +74,7 @@ fn s124_1062_a_subject_link() {
 #[test]
 fn s124_1062_a_subject_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:b y :a x])) (defn f [p] (match p [(MkP y x) (add-i64 x (str-len y))])) (defn main [] (Pure (f (MkP "abc" 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:b y :a x])) (defn f [p] (match p [(MkP y x) (add-i64 x (str-len y))])) (defn main [] (primitives/pure (f (MkP "abc" 2000))))"#,
         2003,
         "repl",
     );
@@ -84,7 +84,7 @@ fn s124_1062_a_subject_repl() {
 #[test]
 fn s124_1062_a_control_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:a x :b y])) (defn f [p] (match p [(MkP x y) (add-i64 x (str-len y))])) (defn main [] (Pure (f (MkP 2000 "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:a x :b y])) (defn f [p] (match p [(MkP x y) (add-i64 x (str-len y))])) (defn main [] (primitives/pure (f (MkP 2000 "abc"))))"#,
         2003,
         "run",
     );
@@ -94,7 +94,7 @@ fn s124_1062_a_control_run() {
 #[test]
 fn s124_1062_a_control_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:a x :b y])) (defn f [p] (match p [(MkP x y) (add-i64 x (str-len y))])) (defn main [] (Pure (f (MkP 2000 "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:a x :b y])) (defn f [p] (match p [(MkP x y) (add-i64 x (str-len y))])) (defn main [] (primitives/pure (f (MkP 2000 "abc"))))"#,
         2003,
         "link",
     );
@@ -104,7 +104,7 @@ fn s124_1062_a_control_link() {
 #[test]
 fn s124_1062_a_control_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:a x :b y])) (defn f [p] (match p [(MkP x y) (add-i64 x (str-len y))])) (defn main [] (Pure (f (MkP 2000 "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (P a b) (MkP [:a x :b y])) (defn f [p] (match p [(MkP x y) (add-i64 x (str-len y))])) (defn main [] (primitives/pure (f (MkP 2000 "abc"))))"#,
         2003,
         "repl",
     );
@@ -115,7 +115,7 @@ fn s124_1062_a_control_repl() {
 #[test]
 fn s124_1062_b_subject_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (R a b) (MkR [:b y])) (defn f [:(R Int String) p] (match p [(MkR y) (str-len y)])) (defn main [] (Pure (f (MkR "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (R a b) (MkR [:b y])) (defn f [:(R Int String) p] (match p [(MkR y) (str-len y)])) (defn main [] (primitives/pure (f (MkR "abc"))))"#,
         3,
         "run",
     );
@@ -126,7 +126,7 @@ fn s124_1062_b_subject_run() {
 #[test]
 fn s124_1062_b_subject_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (R a b) (MkR [:b y])) (defn f [:(R Int String) p] (match p [(MkR y) (str-len y)])) (defn main [] (Pure (f (MkR "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (R a b) (MkR [:b y])) (defn f [:(R Int String) p] (match p [(MkR y) (str-len y)])) (defn main [] (primitives/pure (f (MkR "abc"))))"#,
         3,
         "link",
     );
@@ -137,7 +137,7 @@ fn s124_1062_b_subject_link() {
 #[test]
 fn s124_1062_b_subject_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (R a b) (MkR [:b y])) (defn f [:(R Int String) p] (match p [(MkR y) (str-len y)])) (defn main [] (Pure (f (MkR "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (R a b) (MkR [:b y])) (defn f [:(R Int String) p] (match p [(MkR y) (str-len y)])) (defn main [] (primitives/pure (f (MkR "abc"))))"#,
         3,
         "repl",
     );
@@ -147,7 +147,7 @@ fn s124_1062_b_subject_repl() {
 #[test]
 fn s124_1062_b_control_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (R b a) (MkR [:b y])) (defn f [:(R String Int) p] (match p [(MkR y) (str-len y)])) (defn main [] (Pure (f (MkR "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (R b a) (MkR [:b y])) (defn f [:(R String Int) p] (match p [(MkR y) (str-len y)])) (defn main [] (primitives/pure (f (MkR "abc"))))"#,
         3,
         "run",
     );
@@ -157,7 +157,7 @@ fn s124_1062_b_control_run() {
 #[test]
 fn s124_1062_b_control_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (R b a) (MkR [:b y])) (defn f [:(R String Int) p] (match p [(MkR y) (str-len y)])) (defn main [] (Pure (f (MkR "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (R b a) (MkR [:b y])) (defn f [:(R String Int) p] (match p [(MkR y) (str-len y)])) (defn main [] (primitives/pure (f (MkR "abc"))))"#,
         3,
         "link",
     );
@@ -167,7 +167,7 @@ fn s124_1062_b_control_link() {
 #[test]
 fn s124_1062_b_control_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (R b a) (MkR [:b y])) (defn f [:(R String Int) p] (match p [(MkR y) (str-len y)])) (defn main [] (Pure (f (MkR "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (R b a) (MkR [:b y])) (defn f [:(R String Int) p] (match p [(MkR y) (str-len y)])) (defn main [] (primitives/pure (f (MkR "abc"))))"#,
         3,
         "repl",
     );
@@ -178,7 +178,7 @@ fn s124_1062_b_control_repl() {
 #[test]
 fn s124_1062_c_subject_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (E a b) (L [:b l]) (R [:a r])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (Pure (f (R 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (E a b) (L [:b l]) (R [:a r])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (primitives/pure (f (R 2000))))"#,
         2003,
         "run",
     );
@@ -189,7 +189,7 @@ fn s124_1062_c_subject_run() {
 #[test]
 fn s124_1062_c_subject_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (E a b) (L [:b l]) (R [:a r])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (Pure (f (R 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (E a b) (L [:b l]) (R [:a r])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (primitives/pure (f (R 2000))))"#,
         2003,
         "link",
     );
@@ -200,7 +200,7 @@ fn s124_1062_c_subject_link() {
 #[test]
 fn s124_1062_c_subject_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (E a b) (L [:b l]) (R [:a r])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (Pure (f (R 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (E a b) (L [:b l]) (R [:a r])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (primitives/pure (f (R 2000))))"#,
         2003,
         "repl",
     );
@@ -210,7 +210,7 @@ fn s124_1062_c_subject_repl() {
 #[test]
 fn s124_1062_c_control_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (E a b) (R [:a r]) (L [:b l])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (Pure (f (R 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (E a b) (R [:a r]) (L [:b l])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (primitives/pure (f (R 2000))))"#,
         2003,
         "run",
     );
@@ -220,7 +220,7 @@ fn s124_1062_c_control_run() {
 #[test]
 fn s124_1062_c_control_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (E a b) (R [:a r]) (L [:b l])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (Pure (f (R 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (E a b) (R [:a r]) (L [:b l])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (primitives/pure (f (R 2000))))"#,
         2003,
         "link",
     );
@@ -230,7 +230,7 @@ fn s124_1062_c_control_link() {
 #[test]
 fn s124_1062_c_control_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (E a b) (R [:a r]) (L [:b l])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (Pure (f (R 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (E a b) (R [:a r]) (L [:b l])) (defn f [:(E Int String) p] (match p [(L s) (str-len s) (R n) (add-i64 n 3)])) (defn main [] (primitives/pure (f (R 2000))))"#,
         2003,
         "repl",
     );
@@ -241,7 +241,7 @@ fn s124_1062_c_control_repl() {
 #[test]
 fn s124_1062_d_subject_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (Duo a b) [:b y :a x]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (Pure (f (Duo "abc" 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (Duo a b) [:b y :a x]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (primitives/pure (f (Duo "abc" 2000))))"#,
         2003,
         "run",
     );
@@ -252,7 +252,7 @@ fn s124_1062_d_subject_run() {
 #[test]
 fn s124_1062_d_subject_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (Duo a b) [:b y :a x]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (Pure (f (Duo "abc" 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (Duo a b) [:b y :a x]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (primitives/pure (f (Duo "abc" 2000))))"#,
         2003,
         "link",
     );
@@ -263,7 +263,7 @@ fn s124_1062_d_subject_link() {
 #[test]
 fn s124_1062_d_subject_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (Duo a b) [:b y :a x]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (Pure (f (Duo "abc" 2000))))"#,
+        r#"(import [primitives [*]]) (deftype (Duo a b) [:b y :a x]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (primitives/pure (f (Duo "abc" 2000))))"#,
         2003,
         "repl",
     );
@@ -273,7 +273,7 @@ fn s124_1062_d_subject_repl() {
 #[test]
 fn s124_1062_d_control_run() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (Duo a b) [:a x :b y]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (Pure (f (Duo 2000 "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (Duo a b) [:a x :b y]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (primitives/pure (f (Duo 2000 "abc"))))"#,
         2003,
         "run",
     );
@@ -283,7 +283,7 @@ fn s124_1062_d_control_run() {
 #[test]
 fn s124_1062_d_control_link() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (Duo a b) [:a x :b y]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (Pure (f (Duo 2000 "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (Duo a b) [:a x :b y]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (primitives/pure (f (Duo 2000 "abc"))))"#,
         2003,
         "link",
     );
@@ -293,7 +293,7 @@ fn s124_1062_d_control_link() {
 #[test]
 fn s124_1062_d_control_repl() {
     field_projection(
-        r#"(import [primitives [*]]) (deftype (Duo a b) [:a x :b y]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (Pure (f (Duo 2000 "abc"))))"#,
+        r#"(import [primitives [*]]) (deftype (Duo a b) [:a x :b y]) (defn f [d] (add-i64 (Duo.x d) (str-len (Duo.y d)))) (defn main [] (primitives/pure (f (Duo 2000 "abc"))))"#,
         2003,
         "repl",
     );
@@ -362,7 +362,7 @@ fn s124_1062_trace(leg: &str, mode: &str) {
         )
     };
     let program = format!(
-        "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n{checker}\n(defn main [] (Pure {body}))\n"
+        "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n{checker}\n(defn main [] (primitives/pure {body}))\n"
     );
     let cr = Cranelisp::new()
         .file("shapes.cl", S124_1062_SHAPES)
@@ -475,4 +475,64 @@ fn s124_1062_f_untraced_control_link() {
 #[test]
 fn s124_1062_f_untraced_control_repl() {
     s124_1062_trace("untraced_control", "repl");
+}
+
+// spec: spec/12-runtime.md §12.9.1; repl/spec.md §4.1.3
+// defect: class=projection-mirror locus=src/display.rs::build_adt_subst found=S125 owner=/dev
+#[test]
+fn s125_d1_unused_parameter_display() {
+    let out = Cranelisp::new().stdin(r#"(deftype (Phantom a b) (Ph [:b value])) (defn make [] :(Phantom primitives/String primitives/Int) (Ph 42))
+(make)
+"#).output().assert_ok();
+    assert!(
+        out.stdout.contains(r#"Phantom.Ph 42"#),
+        "field display follows declared parameters: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.9.1; repl/spec.md §4.1.3
+// defect: class=projection-mirror locus=src/display.rs::build_adt_subst found=S125 owner=/dev
+#[test]
+fn s125_d1_nested_parameter_display() {
+    let out = Cranelisp::new().stdin(r#"(deftype (Pair a b) (MkPair [:b second :a first])) (deftype (Nest a b) (MkNest [:(Pair b a) pair]))
+(MkNest (MkPair 42 "hi"))
+"#).output().assert_ok();
+    assert!(
+        out.stdout.contains(r#"Nest.MkNest (Pair.MkPair 42 "hi")"#),
+        "field display follows declared parameters: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.9.1
+#[test]
+fn s125_d1_unused_ordered_control() {
+    Cranelisp::new()
+        .stdin(
+            "(deftype (Phantom a b) (Ph [:a value]))
+(defn make [] :(Phantom primitives/Int primitives/String) (Ph 42))
+(make)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("Phantom.Ph 42");
+}
+
+// spec: spec/12-runtime.md §12.9.1
+#[test]
+fn s125_d1_nested_ordered_control() {
+    Cranelisp::new()
+        .stdin(
+            r#"(deftype (Pair a b) (MkPair [:a first :b second]))
+(deftype (Nest a b) (MkNest [:(Pair a b) pair]))
+(MkNest (MkPair 42 "hi"))
+"#,
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(r#"Nest.MkNest (Pair.MkPair 42 "hi")"#);
 }

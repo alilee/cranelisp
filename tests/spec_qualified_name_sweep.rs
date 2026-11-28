@@ -141,9 +141,9 @@ fn import_qualified_target_resolves() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [util [helper]])\n\
-             (defn main [] (Pure (util/helper)))",
+             (defn main [] (primitives/pure (util/helper)))",
         )
         .file("util.cl", "(defn helper [] 99)")
         .run("main.cl")

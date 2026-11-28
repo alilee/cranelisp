@@ -89,7 +89,7 @@ fn rc_field(stderr: &str, k: &str) -> i64 {
         .unwrap_or_else(|| panic!("no {k}= field in RC_STATS line: {line}"))
 }
 
-/// Assert exit code equals `value % 256` (batch `main` returns `Pure Int`).
+/// Assert exit code equals `value % 256` (batch `main` returns `pure Int`).
 fn assert_exit_value(out: helpers::e2e::CrOutput, value: i64) -> helpers::e2e::CrOutput {
     let expected = (value % 256) as i32;
     match out.status.code() {
@@ -166,7 +166,7 @@ fn l_c3_reuse_on_shared_value_other_ref_unchanged() {
          \x20       w (id v)\n\
          \x20       v2 (vec-set v 0 99)]\n\
          \x20   (add-i64 (vec-get w 0) (vec-get v2 0))))\n\
-         (defn main [] (Pure (probe)))\n",
+         (defn main [] (primitives/pure (probe)))\n",
     );
     assert_exit_value(out, 10 + 99);
 }
@@ -186,7 +186,7 @@ fn l_c3_reuse_on_shared_value_sustained() {
          \x20         w (id v)\n\
          \x20         v2 (vec-set v 0 99)]\n\
          \x20     (spin (sub-i64 n 1) (add-i64 acc (sub-i64 (vec-get v2 0) (vec-get w 0)))))))\n\
-         (defn main [] (Pure (spin 1000 0)))\n",
+         (defn main [] (primitives/pure (spin 1000 0)))\n",
     );
     // Each iteration contributes 99 - 10 = 89; 1000 * 89 = 89000; mod 256 = 168.
     assert_exit_value(out, 1000 * 89);
@@ -213,7 +213,7 @@ fn l_c3_pure_ssa_alias_vec_set_preserves_value_semantics() {
          \x20       w v\n\
          \x20       v2 (vec-set v 0 99)]\n\
          \x20   (add-i64 (vec-get w 0) (vec-get v2 0))))\n\
-         (defn main [] (Pure (probe)))\n",
+         (defn main [] (primitives/pure (probe)))\n",
     );
     // Value semantics: w[0] MUST stay 10 (109). Today: 198 (in-place corruption).
     assert_exit_value(out, 10 + 99);
@@ -237,7 +237,7 @@ fn l_c3_reuse_on_unique_value_reuse_hit_fires() {
          (defn main []\n\
          \x20 (let [v (build [] 0 64)\n\
          \x20       w (churn v 0 64)]\n\
-         \x20   (Pure (vec-get w 0))))\n",
+         \x20   (primitives/pure (vec-get w 0))))\n",
     );
     // Value leg (green today): w[0] = 0 + 1 = 1.
     let out = assert_exit_value(out, 1);
@@ -267,7 +267,7 @@ fn l_c3_reuse_on_off_differential_identical_values() {
         \x20 (if (eq-i64 i n) v (churn (vec-set v i (add-i64 (vec-get v i) 7)) (add-i64 i 1) n)))\n\
         (defn main []\n\
         \x20 (let [v (build [] 0 32) w (churn v 0 32)]\n\
-        \x20   (Pure (add-i64 (vec-get w 5) (vec-get w 31)))))\n";
+        \x20   (primitives/pure (add-i64 (vec-get w 5) (vec-get w 31)))))\n";
     let on = run_with_ownership(src, false);
     let off = run_with_ownership(src, true);
     assert_eq!(
@@ -306,7 +306,7 @@ fn l_c3_reuse_heap_balance_iteration_independent() {
         \x20 (if (eq-i64 k 0) acc\n\
         \x20   (let [w (churn (build [] 0 16) 0 16)]\n\
         \x20     (spin (sub-i64 k 1) (add-i64 acc (vec-get w 0))))))\n\
-        (defn main [] (Pure (spin {N} 0)))\n";
+        (defn main [] (primitives/pure (spin {N} 0)))\n";
     assert_iteration_independent_imbalance(template, "L-C3 reuse");
 }
 
@@ -330,7 +330,7 @@ fn l_c3_sustained_epoch_allocs_independent_of_mutation_count() {
         \x20 (if (eq-i64 i n) v (churn (vec-set v 0 i) (add-i64 i 1) n)))\n\
         (defn main []\n\
         \x20 (let [w (churn (build [] 0 8) 0 {K})]\n\
-        \x20   (Pure (vec-get w 0))))\n";
+        \x20   (primitives/pure (vec-get w 0))))\n";
     let allocs = |k: &str| -> i64 {
         let o = run_with_rc_stats(&template.replace("{K}", k));
         rc_field(&o.stderr, "allocs")
@@ -358,7 +358,7 @@ fn l_c3_sustained_epoch_allocs_independent_of_mutation_count() {
 fn reuse_counter_family_present_reads_zero_pre_mechanism() {
     let out = run_with_rc_stats(
         "(import [primitives [*]])\n\
-         (defn main [] (Pure (vec-get [1 2 3] 0)))\n",
+         (defn main [] (primitives/pure (vec-get [1 2 3] 0)))\n",
     );
     let line = out
         .stderr
@@ -392,7 +392,7 @@ fn reuse_hit_nonzero_when_unique_vec_mutated_in_place() {
          \x20 (if (eq-i64 i n) v (build (vec-push v i) (add-i64 i 1) n)))\n\
          (defn churn [v i n]\n\
          \x20 (if (eq-i64 i n) v (churn (vec-set v i 0) (add-i64 i 1) n)))\n\
-         (defn main [] (Pure (vec-len (churn (build [] 0 128) 0 128))))\n",
+         (defn main [] (primitives/pure (vec-len (churn (build [] 0 128) 0 128))))\n",
     );
     let hits = rc_field(&out.stderr, "reuse_hit");
     assert!(
@@ -423,7 +423,7 @@ fn r5_soundness_couple_unflattened_two_ctor_not_copy_moded() {
         \x20   (let [w (vec-set v 0 (Solved 7))]\n\
         \x20     (spin (sub-i64 n 1)\n\
         \x20       (add-i64 acc (add-i64 (cval (vec-get w 0)) (cval (vec-get v 1)))) v))))\n\
-        (defn main [] (Pure (spin {N} 0 [(Given 3) (Given 4)])))\n";
+        (defn main [] (primitives/pure (spin {N} 0 [(Given 3) (Given 4)])))\n";
     let out = run_program(&template.replace("{N}", "1000"));
     // w[0] = Solved 7 (7); v[1] stays Given 4 (4) — the aliased original is
     // never mutated. 1000 * (7 + 4) = 11000; mod 256 = 248.
@@ -452,7 +452,7 @@ const CHAIN_SRC: &str = "(import [primitives [*]])\n\
     \x20 (if (eq-i64 i n) v (build (vec-push v i) (add-i64 i 1) n)))\n\
     (defn main []\n\
     \x20 (let [v (build [] 0 {N})]\n\
-    \x20   (Pure (vec-get (mapf inc (mapf dec v)) 3))))\n";
+    \x20   (primitives/pure (vec-get (mapf inc (mapf dec v)) 3))))\n";
 
 // spec: design/typecheck/ownership-inference.md §7.2 — the chaining pipeline's
 // VALUE correctness (GREEN at draft): `(mapf inc (mapf dec v))` leaves each
@@ -570,7 +570,7 @@ fn chaining_toggle_off_allocates_intermediate() {
 fn elided_proof_fresh_vec_set_value_correct() {
     let out = run_with_rc_stats(
         "(import [primitives [*]])\n\
-         (defn main [] (Pure (vec-get (vec-set [10 20 30] 0 99) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-set [10 20 30] 0 99) 0)))\n",
     );
     let hits = rc_field(&out.stderr, "reuse_hit");
     let misses = rc_field(&out.stderr, "reuse_miss");
@@ -599,7 +599,7 @@ fn elided_proof_fresh_vec_set_value_correct() {
 fn elided_proof_fresh_vec_push_value_correct() {
     let out = run_with_rc_stats(
         "(import [primitives [*]])\n\
-         (defn main [] (Pure (vec-get (vec-push [10 20 30] 99) 3)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-push [10 20 30] 99) 3)))\n",
     );
     let hits = rc_field(&out.stderr, "reuse_hit");
     let misses = rc_field(&out.stderr, "reuse_miss");
@@ -631,7 +631,7 @@ fn elided_proof_fresh_heap_balance_iteration_independent() {
         \x20 (if (eq-i64 n 0) acc\n\
         \x20   (spin (sub-i64 n 1)\n\
         \x20     (add-i64 acc (vec-get (vec-set [10 20 30] 0 99) 0)))))\n\
-        (defn main [] (Pure (spin {N} 0)))\n";
+        (defn main [] (primitives/pure (spin {N} 0)))\n";
     assert_iteration_independent_imbalance(template, "proof-elided fresh vec-set");
 }
 
@@ -657,7 +657,7 @@ fn elided_proof_not_taken_on_aliased_value_neg() {
          \x20       w (id v)\n\
          \x20       v2 (vec-set v 0 99)]\n\
          \x20   (add-i64 (vec-get w 0) (vec-get v2 0))))\n\
-         (defn main [] (Pure (probe)))\n",
+         (defn main [] (primitives/pure (probe)))\n",
     );
     let hits = rc_field(&out.stderr, "reuse_hit");
     let misses = rc_field(&out.stderr, "reuse_miss");
@@ -718,7 +718,7 @@ fn s124_d4(position: &str, mode: &str) {
         ""
     };
     let program = format!(
-        "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n{checker}\n(defn main [] (Pure {body}))\n"
+        "(import [primitives [*]])\n(import [macros [SCons SNil]])\n(import [shapes [*]])\n{checker}\n(defn main [] (primitives/pure {body}))\n"
     );
     // Import the traced callee to avoid ACT-1039's same-module omission.
     let cr = Cranelisp::new()

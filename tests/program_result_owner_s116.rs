@@ -22,13 +22,13 @@ fn counts(stderr: &str) -> (i64, i64) {
 
 const NESTED_MAIN: &str = "(deftype Leaf [:String text])\n\
      (deftype Branch [:(Vec Leaf) leaves])\n\
-     (defn main [] (Pure (Branch [(Leaf \"seen-before-release\")])))\n";
+     (defn main [] (primitives/pure (Branch [(Leaf \"seen-before-release\")])))\n";
 
-// Run observes a non-Int `Pure` payload as exit 0, then releases the nested
+// Run observes a non-Int `pure` payload as exit 0, then releases the nested
 // ADT→Vec→ADT→String graph. Both analysis polarities are exact. The entry
 // result was once observed and never released; `src/result_owner.rs` is the
 // owner today.
-// spec: spec/10-io.md §10.1 and spec/12-runtime.md §12.3.1 — `Pure` transfers
+// spec: spec/10-io.md §10.1 and spec/12-runtime.md §12.3.1 — `pure` transfers
 // its payload to the program-result owner; non-Int conversion precedes release.
 // defect: class=rc-miscount locus=src program-result typed-context exit — entry result is observed but never released (0745/R15) found=S114 owner=/dev fixed=S118/fc3375f9
 #[test]
@@ -118,10 +118,10 @@ fn repl_nested_heap_value_displays_before_exact_release() {
 
 // Control — scalar results require no glue and retain ordinary exit-code
 // conversion in both run and link modes.
-// spec: spec/10-io.md §10.1 — `Pure Int` becomes the process exit code.
+// spec: spec/10-io.md §10.1 — `pure Int` becomes the process exit code.
 #[test]
 fn scalar_pure_result_exit_conversion_control_green() {
-    let src = "(defn main [] (Pure 7))\n";
+    let src = "(defn main [] (primitives/pure 7))\n";
     for linked in [false, true] {
         let c = Cranelisp::new()
             .with_prelude(PreludeVariant::PrimitivesOnly)

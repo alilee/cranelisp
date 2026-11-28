@@ -157,7 +157,7 @@ fn web_server_no_user_spawn_primitive_neg() {
 #[test]
 fn detached_faulting_effect_exits_the_process() {
     let prog = format!(
-        "(platform {POLL_PLATFORM})\n(import [platform.{POLL_PLATFORM} [{POLL_FAULT}]])\n(import [primitives [bind Pure sub-i64 eq-i64]])\n(defn fault-loop [n] (if (eq-i64 n 0) (Pure 42) (let [m (sub-i64 n 1)] (bind ({POLL_FAULT} n 1 {D_MS}) (fn [r] (fault-loop m))))))\n(defn main [] (fault-loop 3))\n"
+        "(platform {POLL_PLATFORM})\n(import [platform.{POLL_PLATFORM} [{POLL_FAULT}]])\n(import [primitives [bind pure sub-i64 eq-i64]])\n(defn fault-loop [n] (if (eq-i64 n 0) (primitives/pure 42) (let [m (sub-i64 n 1)] (bind ({POLL_FAULT} n 1 {D_MS}) (fn [r] (fault-loop m))))))\n(defn main [] (fault-loop 3))\n"
     );
     let out = run_prog(&prog);
     helpers::e2e::assert_panic_exit(
@@ -199,16 +199,16 @@ fn degree_n_bounds_inflight_launched_effects_nplus1_parks() {
     // permits the launch. The discarded, token-
     // disjoint single bind step lowers to `IO_TAG_LAUNCH`, whose `launch_continue`
     // arm acquires the GLOBAL-budget permit (sized to the degree) — so degree=2
-    // admits 2 strands and PARKS the 3rd/4th launch. Returns `(Pure 0)` ⇒ exit 0
+    // admits 2 strands and PARKS the 3rd/4th launch. Returns `(primitives/pure 0)` ⇒ exit 0
     // (results are discarded, so there is no sum to witness — the wall-clock IS the
     // witness, exactly as the §B4 launch row).
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
-         (import [primitives [bind Pure sub-i64 eq-i64]])\n\
+         (import [primitives [bind pure sub-i64 eq-i64]])\n\
          (defn launch-loop [n]\n\
            (if (eq-i64 n 0)\n\
-               (Pure 0)\n\
+               (primitives/pure 0)\n\
                (let [m (sub-i64 n 1)]\n\
                  (bind ({read} n 1 {d}) (fn [r]\n\
                    (launch-loop m))))))\n\
@@ -271,14 +271,14 @@ fn launch_and_continue_runs_concurrently_launcher_does_not_await() {
     // iteration, so capacity never bounds them. The `(let [m (sub-i64 n 1)] …)`
     // decouple hoists the loop control value out of the token operand (io free {n},
     // cont free {m} ⇒ disjoint), which the unified single-step launch-arm E2 (FIXME
-    // 0478) requires to permit the launch. Returns `(Pure 0)` at n=0 ⇒ exit 0.
+    // 0478) requires to permit the launch. Returns `(primitives/pure 0)` at n=0 ⇒ exit 0.
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
-         (import [primitives [bind Pure sub-i64 eq-i64]])\n\
+         (import [primitives [bind pure sub-i64 eq-i64]])\n\
          (defn fanout-loop [n]\n\
            (if (eq-i64 n 0)\n\
-               (Pure 0)\n\
+               (primitives/pure 0)\n\
                (let [m (sub-i64 n 1)]\n\
                  (bind ({read} n 1 {d}) (fn [r]\n\
                    (fanout-loop m))))))\n\
@@ -342,14 +342,14 @@ fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
 }
 
 // spec: spec/10-io.md §10.12.8 — a continuation-produced FRESH `select` with N≥2 heap
-// branches: `(bind (Pure 0) (fn [_] (select [(Pure 7) (Pure 8)])))`. The first branch
+// branches: `(bind (primitives/pure 0) (fn [_] (select [(primitives/pure 7) (primitives/pure 8)])))`. The first branch
 // wins ⇒ exit 7 (a clean run), but the freshly-built `IO_TAG_SELECT` node is released
 // shallow, leaking the branch container + the N branch roots. `[RC] alloc` MUST equal
 // `[RC] free`. RED on HEAD (leaks); GREEN post-0474 deep-free.
 #[test]
 fn fresh_select_in_continuation_rc_balanced() {
-    let src = "(import [primitives [bind select Pure]])\n\
-               (defn main [] (bind (Pure 0) (fn [_] (select [(Pure 7) (Pure 8)]))))\n";
+    let src = "(import [primitives [bind select pure]])\n\
+               (defn main [] (bind (primitives/pure 0) (fn [_] (select [(primitives/pure 7) (primitives/pure 8)]))))\n";
     let out = Cranelisp::new()
         .env("CRANELISP_RC_TRACE", "1")
         .file("user.cl", src)
@@ -395,12 +395,12 @@ fn fresh_par_in_continuation_rc_balanced() {
     // in the continuation. 30 + 30 ⇒ exit 60 (a clean run).
     let src = "(platform poll-pool)\n\
                (import [platform.poll-pool [poll-read]])\n\
-               (import [primitives [bind Pure add-i64]])\n\
+               (import [primitives [bind pure add-i64]])\n\
                (defn main []\n\
-                 (bind (Pure 0) (fn [_]\n\
+                 (bind (primitives/pure 0) (fn [_]\n\
                    (bind (poll-read 1 1 30) (fn [a]\n\
                      (bind (poll-read 2 1 30) (fn [b]\n\
-                       (Pure (add-i64 a b)))))))))\n";
+                       (primitives/pure (add-i64 a b)))))))))\n";
     let out = Cranelisp::new()
         .use_workspace_platforms()
         .env("CRANELISP_RC_TRACE", "1")

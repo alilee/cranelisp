@@ -9,7 +9,7 @@ fn child(body: &str, linked: bool) -> Child {
         "(import [primitives [*]])\n\
          (deftype B (MkB [:String s]))\n\
          (defn ap [f v i x] (f v i x))\n\
-         (defn work [] {body})\n(defn main [] (Pure (work)))\n"
+         (defn work [] {body})\n(defn main [] (primitives/pure (work)))\n"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1");
     if linked { c.link_then_run() } else { c }

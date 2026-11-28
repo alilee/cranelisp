@@ -1,26 +1,7 @@
-; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
-function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
 ; === CLIF user::__expr ===
 function %__expr() -> i64 system_v {
-    gv0 = symbol userextname0
     sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
 
 block0:
     jump block1
@@ -29,27 +10,33 @@ block1:
     v0 = iconst.i64 1
     v1 = iconst.i64 2
     v2 = iadd v0, v1  ; v0 = 1, v1 = 2
-    v3 = global_value.i64 gv0
-    v4 = iadd_imm v3, 0
-    v5 = load.i64 notrap aligned v4
-    v6 = call_indirect sig0, v5(v2)
-    return v6
+    v3 = iconst.i64 0
+    v4 = iconst.i64 24
+    v5 = call fn0(v4)  ; v4 = 24
+    v6 = iconst.i64 0
+    store notrap aligned v6, v5+16  ; v6 = 0
+    store notrap aligned v2, v5+24
+    store notrap aligned v3, v5+32  ; v3 = 0
+    return v5
 }
 ; === end CLIF user::__expr ===
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
-    gv0 = symbol userextname0
     sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
 
 block0:
     jump block1
 
 block1:
     v0 = iconst.i64 0
-    v1 = global_value.i64 gv0
-    v2 = iadd_imm v1, 0
-    v3 = load.i64 notrap aligned v2
-    v4 = call_indirect sig0, v3(v0)  ; v0 = 0
-    return v4
+    v1 = iconst.i64 0
+    v2 = iconst.i64 24
+    v3 = call fn0(v2)  ; v2 = 24
+    v4 = iconst.i64 0
+    store notrap aligned v4, v3+16  ; v4 = 0
+    store notrap aligned v0, v3+24  ; v0 = 0
+    store notrap aligned v1, v3+32  ; v1 = 0
+    return v3
 }
 ; === end CLIF user::main ===

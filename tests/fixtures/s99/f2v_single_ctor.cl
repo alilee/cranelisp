@@ -58,4 +58,4 @@
 
 (defn main []
   (let [g (build-grid [] 0 81)]
-    (Pure (rem-i64 (reduce-tree g 0 (leaves)) 251))))
+    (primitives/pure (rem-i64 (reduce-tree g 0 (leaves)) 251))))

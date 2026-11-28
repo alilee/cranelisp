@@ -25,7 +25,7 @@ use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 /// payload's value on the first iteration).
 fn program(scrutinee_callee: &str, n: u32) -> String {
     format!(
-        "(import [primitives [IO Pure sub-i64 eq-i64]])\n\
+        "(import [primitives [IO pure sub-i64 eq-i64]])\n\
          (deftype (Option a) None (Some [:a val]))\n\
          (deftrait (Functor f)\n\
            (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
@@ -34,10 +34,10 @@ fn program(scrutinee_callee: &str, n: u32) -> String {
          (defn fmapo [g o] (match o [None None (Some x) (Some (g x))]))\n\
          (defn go [n acc]\n\
            (if (eq-i64 n 0)\n\
-             (Pure acc)\n\
+             (primitives/pure acc)\n\
              (match ({scrutinee_callee} (fn [z] z) (Some n))\n\
                [(Some v) (go (sub-i64 n 1) acc)\n\
-                None     (Pure 0)])))\n\
+                None     (primitives/pure 0)])))\n\
          (defn main [] (go {n} 7))\n"
     )
 }

@@ -59,13 +59,13 @@ fn bare_ctors_as_first_class_values_run_and_link() {
          \x20 (let [a (unbx (apply-it Bx 7))\n\
          \x20       b (opt-or (apply-it Some 8) 0)\n\
          \x20       c (opt-or (let [f Some] (f 9)) 0)]\n\
-         \x20   (Pure (if (eq-i64 (add-i64 a (add-i64 b c)) 24) 7 99))))\n",
+         \x20   (primitives/pure (if (eq-i64 (add-i64 a (add-i64 b c)) 24) 7 99))))\n",
         7,
     );
 }
 
 // Shape 2 — the composed `map-io` + bare-`Some` shape (the /stdlib io.cl gate):
-// `my-map-io = (bind io (fn [x] (Pure (f x))))`, applied as `(my-map-io Some (Pure
+// `my-map-io = (bind io (fn [x] (primitives/pure (f x))))`, applied as `(my-map-io Some (primitives/pure
 // 5))` — the bare ctor `Some` flows as the mapped function through an IO bind. The
 // mapped `(Some 5)` unwraps to 5 ⇒ exit 5.
 // spec: spec/05-definitions.md §5.2.7 — a constructor passed as the mapping fn of
@@ -74,10 +74,10 @@ fn bare_ctors_as_first_class_values_run_and_link() {
 #[test]
 fn bare_ctor_as_map_io_function_run_and_link() {
     assert_run_and_link(
-        "(defn my-map-io [f io] (bind io (fn [x] (Pure (f x)))))\n\
+        "(defn my-map-io [f io] (bind io (fn [x] (primitives/pure (f x)))))\n\
          (defn opt-or [o d] (match o [(Some x) x None d]))\n\
          (defn main []\n\
-         \x20 (bind (my-map-io Some (Pure 5)) (fn [o] (Pure (opt-or o 0)))))\n",
+         \x20 (bind (my-map-io Some (primitives/pure 5)) (fn [o] (primitives/pure (opt-or o 0)))))\n",
         5,
     );
 }
@@ -91,12 +91,12 @@ fn bare_ctor_as_map_io_function_run_and_link() {
 #[test]
 fn bare_ctor_through_race_map_io_run_and_link() {
     assert_run_and_link(
-        "(defn my-map-io [f io] (bind io (fn [x] (Pure (f x)))))\n\
+        "(defn my-map-io [f io] (bind io (fn [x] (primitives/pure (f x)))))\n\
          (defn opt-or [o d] (match o [(Some x) x None d]))\n\
          (defn main []\n\
-         \x20 (bind (race (my-map-io Some (Pure 6))\n\
-         \x20             (bind (sleep 1000) (fn [_] (Pure None))))\n\
-         \x20       (fn [o] (Pure (opt-or o 0)))))\n",
+         \x20 (bind (race (my-map-io Some (primitives/pure 6))\n\
+         \x20             (bind (sleep 1000) (fn [_] (primitives/pure None))))\n\
+         \x20       (fn [o] (primitives/pure (opt-or o 0)))))\n",
         6,
     );
 }

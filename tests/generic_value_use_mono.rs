@@ -343,21 +343,21 @@ fn prelude_provided_polymorphic_fn_monomorphises_twin() {
 (defn iden [x] x)
 ";
     // Leg A — the prelude generic `iden` explicitly imported (primitives imported
-    // directly so `Pure` stays in scope after the prelude glob is suppressed).
+    // directly so `pure` stays in scope after the prelude glob is suppressed).
     let leg_a = Cranelisp::new()
         .prelude(PRELUDE_POLY)
         .file(
             "user.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [prelude [iden]])\n\
-             (defn main [] (Pure (iden 42)))",
+             (defn main [] (primitives/pure (iden 42)))",
         )
         .run("user.cl")
         .output();
     // Leg B — same program, `iden` reached via the implicit prelude.
     let leg_b = Cranelisp::new()
         .prelude(PRELUDE_POLY)
-        .file("user.cl", "(defn main [] (Pure (iden 42)))")
+        .file("user.cl", "(defn main [] (primitives/pure (iden 42)))")
         .run("user.cl")
         .output();
     leg_a.assert_exit(42);

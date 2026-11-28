@@ -114,7 +114,7 @@ def matched_frames(text):
     return matches
 # Keep the executable-name grammar honest: canonical names may contain spaces,
 # and an end header for a different name must never complete the frame.
-probe_name = 'user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))'
+probe_name = 'user::(probe [primitives/Int] primitives/Int)'
 probe_body = f'; === CLIF {probe_name} ===\nfunction %probe() {{\n}}\n'
 if len(matched_frames(probe_body + f'; === end CLIF {probe_name} ===\n')) != 1:
     sys.exit('INTERNAL EXTRACTOR ERROR: whitespace-bearing CLIF name was dropped')

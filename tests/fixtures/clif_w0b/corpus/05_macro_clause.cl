@@ -10,4 +10,4 @@
 (defmacro twice [x] `(add-i64 ~x ~x))
 
 (defn main []
-  (Pure (twice 5)))
+  (primitives/pure (twice 5)))

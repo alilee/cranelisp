@@ -53,7 +53,7 @@ fn trait_operator_partial_app_impl_present_has_got_carrier() {
         .run("user.cl")
         .user(
             "(defn g [x] (= x))\n\
-             (defn main [] (Pure (if ((g 3) 3) 5 0)))\n",
+             (defn main [] (primitives/pure (if ((g 3) 3) 5 0)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);

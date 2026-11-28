@@ -109,7 +109,7 @@ const ELIDE_TEMPLATE: &str = "(import [primitives [*]])\n\
     (defn spin [:Int n :Int acc v]\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1) (add-i64 acc (probe v)) v)))\n\
-    (defn main [] (Pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
+    (defn main [] (primitives/pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
 
 // spec: design/backend/uniform-counting.md §2.1 — Direct projection into a read-only callee agrees with moves off.
 #[test]
@@ -130,7 +130,7 @@ fn elide_headline_balance_iteration_independent() {
 fn decline_owned_position_callee_returns_arg() {
     let src = "(import [primitives [*]])\n\
         (defn keep [x] x)\n\
-        (defn main [] (Pure (str-len (keep (vec-get [\"hello\" \"bb\"] 0)))))\n";
+        (defn main [] (primitives/pure (str-len (keep (vec-get [\"hello\" \"bb\"] 0)))))\n";
     let out = assert_output_matches_ownership_off(src, "decline owned-position");
     assert_exit_value(out, 5);
 }
@@ -141,7 +141,7 @@ fn decline_neverheap_int_element() {
     let src = "(import [primitives [*]])\n\
         (defn add1 [:Int x] (add-i64 x 1))\n\
         (defn probe [v] (add1 (vec-get v 0)))\n\
-        (defn main [] (Pure (probe [10 20 30])))\n";
+        (defn main [] (primitives/pure (probe [10 20 30])))\n";
     let out = assert_output_matches_ownership_off(src, "decline NeverHeap");
     assert_exit_value(out, 11);
 }
@@ -151,7 +151,7 @@ fn decline_neverheap_int_element() {
 fn decline_fresh_rooted_vecget() {
     let src = "(import [primitives [*]])\n\
         (defn read-str [:String s] (str-len s))\n\
-        (defn main [] (Pure (read-str (vec-get [\"hello\" \"bb\"] 0))))\n";
+        (defn main [] (primitives/pure (read-str (vec-get [\"hello\" \"bb\"] 0))))\n";
     let out = assert_output_matches_ownership_off(src, "decline Fresh-rooted");
     assert_exit_value(out, 5);
 }
@@ -162,7 +162,7 @@ fn decline_control_flow_wrapped_arg() {
     let src = "(import [primitives [*]])\n\
         (defn read-str [:String s] (str-len s))\n\
         (defn probe [v flag] (read-str (if flag (vec-get v 0) \"zzz\")))\n\
-        (defn main [] (Pure (probe [\"hello\" \"bb\"] true)))\n";
+        (defn main [] (primitives/pure (probe [\"hello\" \"bb\"] true)))\n";
     let out = assert_output_matches_ownership_off(src, "decline if-wrapped");
     assert_exit_value(out, 5);
 }
@@ -173,7 +173,7 @@ fn decline_let_bound_projection() {
     let src = "(import [primitives [*]])\n\
         (defn read-str [:String s] (str-len s))\n\
         (defn probe [v] (let [x (vec-get v 0)] (read-str x)))\n\
-        (defn main [] (Pure (probe [\"hello\" \"bb\"])))\n";
+        (defn main [] (primitives/pure (probe [\"hello\" \"bb\"])))\n";
     let out = assert_output_matches_ownership_off(src, "decline let-bound");
     assert_exit_value(out, 5);
 }
@@ -183,7 +183,7 @@ const ESCAPE_RETURN_TEMPLATE: &str = "(import [primitives [*]])\n\
     (defn spin [:Int n :Int acc v]\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1) (add-i64 acc (str-len (get0 v))) v)))\n\
-    (defn main [] (Pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
+    (defn main [] (primitives/pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
 
 // spec: design/backend/uniform-counting.md §1 — Returned elements survive repeated function crossings.
 #[test]
@@ -204,7 +204,7 @@ const ESCAPE_STORE_TEMPLATE: &str = "(import [primitives [*]])\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1)\n\
     \x20     (add-i64 acc (str-len (vec-get (vec-push [] (vec-get v 0)) 0))) v)))\n\
-    (defn main [] (Pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
+    (defn main [] (primitives/pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
 
 // spec: design/backend/uniform-counting.md §1 — Stored elements stay live and balance independently of iteration count.
 #[test]
@@ -221,7 +221,7 @@ const SPRINT61_SRC: &str = "(import [primitives [*]])\n\
     \x20       e (vec-get v 0)\n\
     \x20       w (vec-set v 0 \"cccc\")]\n\
     \x20   (add-i64 (str-len e) (str-len (vec-get w 0)))))\n\
-    (defn main [] (Pure (probe)))\n";
+    (defn main [] (primitives/pure (probe)))\n";
 
 // spec: spec/12-runtime.md §12.3.1 — An independently owned projection keeps its old value across root COW.
 #[test]
@@ -248,7 +248,7 @@ const FN_AS_VALUE_TEMPLATE: &str = "(import [primitives [*]])\n\
     (defn spin [:Int n :Int acc v]\n\
     \x20 (if (eq-i64 n 0) acc\n\
     \x20   (spin (sub-i64 n 1) (add-i64 acc (str-len (apply-it get0 v))) v)))\n\
-    (defn main [] (Pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
+    (defn main [] (primitives/pure (spin {N} 0 [\"hello\" \"bb\"])))\n";
 
 // spec: design/backend/uniform-counting.md §3.3 — A function-value wrapper forwards owned arguments and returns a live element.
 #[test]

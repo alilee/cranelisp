@@ -84,10 +84,10 @@ fn repl_with_fixture(fixture: (&str, &str), stdin: &str) -> CrOutput {
 // defect: class=check-gate-leak locus=typecheck method-import dispatch — nullary return-type-dispatch method-only import (accepts then leaks `undefined function` to codegen; ruled accept per §7.11.2(e)) found=S112 owner=/dev
 #[test]
 fn nullary_return_dispatch_method_only_import_no_codegen_leak() {
-    let user = "(import [primitives [Pure Int]])\n\
+    let user = "(import [primitives [pure Int]])\n\
          (import [zlib [z]])\n\
          (defn get-z [] (let [x :Int (z)] x))\n\
-         (defn main [] (Pure (get-z)))\n";
+         (defn main [] (primitives/pure (get-z)))\n";
     assert_run_and_link_exit(("zlib.cl", ZLIB), user, 42);
 
     // REPL face: importing only `z`, `(let [x :Int (z)] x)` evaluates to 42.
@@ -110,10 +110,10 @@ fn nullary_return_dispatch_method_only_import_no_codegen_leak() {
 // defect: class=wrong-reject locus=typecheck method-import dispatch — unary arg-dispatched method-only import rejected as "no impl in scope" (trait absent); ruled accept per §7.11.2(e) inversion found=S113 owner=/dev
 #[test]
 fn unary_arg_dispatch_method_only_import_accepts_and_dispatches() {
-    let user = "(import [primitives [Pure Int]])\n\
+    let user = "(import [primitives [pure Int]])\n\
          (import [ulib [sh]])\n\
          (defn get-s [] (sh 5))\n\
-         (defn main [] (Pure (get-s)))\n";
+         (defn main [] (primitives/pure (get-s)))\n";
     assert_run_and_link_exit(("ulib.cl", ULIB), user, 99);
 }
 
@@ -133,10 +133,10 @@ fn unary_arg_dispatch_method_only_import_accepts_and_dispatches() {
 // defect: class=carrier-loss locus=crates/cranelisp-typecheck method-import dispatch — sig type not in caller scope (foreign-sig axis) found=S113 owner=/dev
 #[test]
 fn unary_arg_dispatch_method_only_import_foreign_sig_type_accepts() {
-    let user = "(import [primitives [Pure]])\n\
+    let user = "(import [primitives [pure]])\n\
          (import [ulib [sh]])\n\
          (defn get-s [] (sh 5))\n\
-         (defn main [] (Pure (get-s)))\n";
+         (defn main [] (primitives/pure (get-s)))\n";
     assert_run_and_link_exit(("ulib.cl", ULIB), user, 99);
 }
 
@@ -151,10 +151,10 @@ fn nullary_return_dispatch_trait_imported_runs_green_fence() {
         .run("user.cl")
         .file("zlib.cl", ZLIB)
         .user(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [zlib [Zero z]])\n\
              (defn get-z [] (let [x :Int (z)] x))\n\
-             (defn main [] (Pure (get-z)))\n",
+             (defn main [] (primitives/pure (get-z)))\n",
         )
         .output();
     out.assert_exit(42);
@@ -173,10 +173,10 @@ fn nullary_return_dispatch_trait_imported_runs_green_fence() {
 fn nullary_dispatch_method_only_and_trait_imported_agree_twin() {
     let program = |import_line: &str| {
         format!(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              {import_line}\n\
              (defn get-z [] (let [x :Int (z)] x))\n\
-             (defn main [] (Pure (get-z)))\n"
+             (defn main [] (primitives/pure (get-z)))\n"
         )
     };
 
@@ -237,11 +237,11 @@ fn method_import_same_name_two_modules_conflict_neg() {
         .file("alib.cl", ALIB)
         .file("blib.cl", BLIB)
         .user(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [alib [m]])\n\
              (import [blib [m]])\n\
              (defn get-m [] (m 5))\n\
-             (defn main [] (Pure (get-m)))\n",
+             (defn main [] (primitives/pure (get-m)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -271,10 +271,10 @@ fn method_import_same_name_two_modules_conflict_neg() {
 fn method_import_single_of_two_dispatches() {
     assert_run_and_link_exit(
         ("alib.cl", ALIB),
-        "(import [primitives [Pure Int]])\n\
+        "(import [primitives [pure Int]])\n\
          (import [alib [m]])\n\
          (defn get-m [] (m 5))\n\
-         (defn main [] (Pure (get-m)))\n",
+         (defn main [] (primitives/pure (get-m)))\n",
         7,
     );
 }
@@ -293,10 +293,10 @@ fn method_only_import_no_impl_diagnostic_names_owning_trait() {
         .run("user.cl")
         .file("ulib.cl", ULIB)
         .user(
-            "(import [primitives [Pure Int Bool]])\n\
+            "(import [primitives [pure Int Bool]])\n\
              (import [ulib [sh]])\n\
              (defn get-s [] (sh true))\n\
-             (defn main [] (Pure (get-s)))\n",
+             (defn main [] (primitives/pure (get-s)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -329,11 +329,11 @@ fn impl_declaration_still_requires_trait_in_scope_neg() {
             "(import [primitives [Int]])\n(deftrait Tt (m [self] Int))\n(impl Tt Int (defn m [x] 1))\n",
         )
         .user(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [tlib [m]])\n\
              (deftype Foo Bar)\n\
              (impl Tt Foo (defn m [y] 2))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -354,10 +354,10 @@ fn impl_declaration_still_requires_trait_in_scope_neg() {
 // defect: class=mode-divergence locus=typecheck/int method-import dispatch — no-impl diagnostic across modes found=S113 owner=/dev
 #[test]
 fn method_only_import_no_impl_diagnostic_mode_uniform() {
-    let user = "(import [primitives [Pure Int Bool]])\n\
+    let user = "(import [primitives [pure Int Bool]])\n\
          (import [ulib [sh]])\n\
          (defn get-s [] (sh true))\n\
-         (defn main [] (Pure (get-s)))\n";
+         (defn main [] (primitives/pure (get-s)))\n";
 
     for link in [false, true] {
         let b = Cranelisp::new().with_prelude(PreludeVariant::None);
@@ -401,12 +401,12 @@ fn method_only_import_no_impl_diagnostic_mode_uniform() {
 // `Widget` type with NO impl; `:Widget (zed)` pins the return type to the no-impl
 // type. The load-bearing invariant: NO `undefined function` codegen leak, and the
 // diagnostic NAMES the owning trait `Zeroable`.
-const NOIMPL_INLINE: &str = "(import [primitives [Pure Int]])\n\
+const NOIMPL_INLINE: &str = "(import [primitives [pure Int]])\n\
      (deftrait Zeroable (zed [] self))\n\
      (impl Zeroable Int (defn zed [] 0))\n\
      (deftype Widget (MkW [:Int n]))\n\
      (defn getw [] (let [x :Widget (zed)] x))\n\
-     (defn main [] (Pure (getw)))\n";
+     (defn main [] (primitives/pure (getw)))\n";
 
 fn assert_clean_noimpl_reject(c: &str, mode: &str) {
     assert!(
@@ -481,11 +481,11 @@ fn nullary_return_dispatch_no_impl_method_only_import_rejects_naming_trait() {
         .run("user.cl")
         .file("zlib.cl", ZLIB)
         .user(
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [zlib [z]])\n\
              (deftype Widget (MkW [:Int n]))\n\
              (defn getw [] (let [x :Widget (z)] x))\n\
-             (defn main [] (Pure (getw)))\n",
+             (defn main [] (primitives/pure (getw)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);

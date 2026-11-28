@@ -46,8 +46,8 @@ fn combined(out: &helpers::e2e::CrOutput) -> String {
 // between `:` and its form is permitted (`: Int` ≡ `:Int`).
 #[test]
 fn space_tolerance_param_position_equiv() {
-    run_prims("(defn f [: Int x] :Int x)\n(defn main [] (Pure (f 7)))\n").assert_exit(7);
-    run_prims("(defn f [:Int x] :Int x)\n(defn main [] (Pure (f 7)))\n").assert_exit(7);
+    run_prims("(defn f [: Int x] :Int x)\n(defn main [] (primitives/pure (f 7)))\n").assert_exit(7);
+    run_prims("(defn f [:Int x] :Int x)\n(defn main [] (primitives/pure (f 7)))\n").assert_exit(7);
 }
 
 // ---- RA-P2 — space tolerance, EXPRESSION position (born-green fence) ------------
@@ -59,12 +59,14 @@ fn space_tolerance_param_position_equiv() {
 // position, including a list-form type `: (Fn [Int] Int)`.
 #[test]
 fn space_tolerance_expression_position_equiv() {
-    run_prims("(defn f [] (let [x : Int 7] x))\n(defn main [] (Pure (f)))\n").assert_exit(7);
-    run_prims("(defn f [] (let [x :Int 7] x))\n(defn main [] (Pure (f)))\n").assert_exit(7);
+    run_prims("(defn f [] (let [x : Int 7] x))\n(defn main [] (primitives/pure (f)))\n")
+        .assert_exit(7);
+    run_prims("(defn f [] (let [x :Int 7] x))\n(defn main [] (primitives/pure (f)))\n")
+        .assert_exit(7);
     // list-form spaced annotation on a closure value.
     run_prims(
         "(defn f [] (let [g : (Fn [Int] Int) (fn [n] (add-i64 n 1))] (g 4)))\n\
-         (defn main [] (Pure (f)))\n",
+         (defn main [] (primitives/pure (f)))\n",
     )
     .assert_exit(5);
 }
@@ -78,7 +80,7 @@ fn space_tolerance_expression_position_equiv() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_qualified_tail (`:foo/` degrades to `:foo`; located reject re-lands W-D1) found=S114 owner=/dev
 #[test]
 fn annotation_dangling_qualifier_empty_local_rejected_neg() {
-    let out = run_prims("(defn f [] :foo/ 5)\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] :foo/ 5)\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out);
     assert!(
         out.status.code() != Some(0) && c.to_lowercase().contains("error"),
@@ -94,7 +96,7 @@ fn annotation_dangling_qualifier_empty_local_rejected_neg() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_qualified_tail (dotted `:a.b/` swallow; located reject re-lands W-D1) found=S114 owner=/dev
 #[test]
 fn annotation_dangling_qualifier_dotted_empty_local_rejected_neg() {
-    let out = run_prims("(defn f [] :a.b/ 5)\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] :a.b/ 5)\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out);
     assert!(
         out.status.code() != Some(0) && c.to_lowercase().contains("error"),
@@ -112,7 +114,7 @@ fn annotation_dangling_qualifier_dotted_empty_local_rejected_neg() {
 // in every position (value).
 #[test]
 fn bare_dangling_qualifier_value_position_rejected() {
-    let out = run_prims("(defn f [] foo/)\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] foo/)\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out);
     assert!(
         out.status.code() != Some(0) && c.to_lowercase().contains("error"),
@@ -127,7 +129,7 @@ fn bare_dangling_qualifier_value_position_rejected() {
 // operand position too.
 #[test]
 fn bare_dangling_qualifier_operand_position_rejected() {
-    let out = run_prims("(defn f [] (add-i64 foo/ 1))\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] (add-i64 foo/ 1))\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out);
     assert!(
         out.status.code() != Some(0) && c.to_lowercase().contains("error"),
@@ -149,7 +151,7 @@ fn bare_slash_division_stays_legal_green() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::TestStandard)
         .run("user.cl")
-        .user("(defn main [] (Pure (/ 6 2)))\n")
+        .user("(defn main [] (primitives/pure (/ 6 2)))\n")
         .output()
         .assert_exit(3);
 }
@@ -168,7 +170,7 @@ fn bare_slash_division_stays_legal_green() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::try_consume_annotation (bare-`:` swallows a non-type bound form → degrades to `Var`; located reject re-lands W-D1) found=S114 owner=/dev
 #[test]
 fn annotation_non_type_bound_form_rejected_neg() {
-    let out = run_prims("(defn f [] :3 5)\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] :3 5)\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out).to_lowercase();
     assert!(
         out.status.code() != Some(0) && !c.contains("extra forms"),
@@ -195,7 +197,7 @@ fn annotation_non_type_bound_form_rejected_neg() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_operator (`/bar` splits into `/`+`bar`; located empty-module-half reject re-lands W-D1) found=S114 owner=/dev
 #[test]
 fn slash_bar_empty_module_half_value_position_rejected_neg() {
-    let out = run_prims("(defn f [] /bar)\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] /bar)\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out).to_lowercase();
     // RED today: the reject is the INCIDENTAL split artifact "defn has extra forms"
     // (the reader splits `/bar` into `/`+`bar`), NOT a located empty-module-half
@@ -219,7 +221,7 @@ fn slash_bar_empty_module_half_value_position_rejected_neg() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/reader.rs::read_operator (`/bar` operand-position split; located reject re-lands W-D1) found=S114 owner=/dev
 #[test]
 fn slash_bar_empty_module_half_operand_position_rejected_neg() {
-    let out = run_prims("(defn f [] (add-i64 /bar 1))\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] (add-i64 /bar 1))\n(defn main [] (primitives/pure 0))\n");
     let c = combined(&out).to_lowercase();
     // RED today: the reject is the INCIDENTAL "undefined variable: /" (the reader
     // splits `/bar` into `/`+`bar`), NOT a located empty-module-half reject.

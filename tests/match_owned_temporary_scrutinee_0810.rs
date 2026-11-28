@@ -235,7 +235,7 @@ fn inline_call_wrapper(n: i64) -> String {
          \x20 (if (eq-i64 i n) acc\n\
          \x20   (match (mk i)\n\
          \x20     [(Mk v) (go (add-i64 i 1) n (add-i64 acc v))])))\n\
-         (defn main [] (Pure (go 0 {n} 0)))\n"
+         (defn main [] (primitives/pure (go 0 {n} 0)))\n"
     )
 }
 
@@ -249,7 +249,7 @@ fn let_bound_int_payload(n: i64) -> String {
          \x20 (if (eq-i64 i n) acc\n\
          \x20   (let [b (mk i)]\n\
          \x20     (match b [(Mk v) (go (add-i64 i 1) n (add-i64 acc v))]))))\n\
-         (defn main [] (Pure (go 0 {n} 0)))\n"
+         (defn main [] (primitives/pure (go 0 {n} 0)))\n"
     )
 }
 
@@ -262,7 +262,7 @@ fn inline_constructor_no_call(n: i64) -> String {
          \x20 (if (eq-i64 i n) acc\n\
          \x20   (match (Mk i)\n\
          \x20     [(Mk v) (go (add-i64 i 1) n (add-i64 acc v))])))\n\
-         (defn main [] (Pure (go 0 {n} 0)))\n"
+         (defn main [] (primitives/pure (go 0 {n} 0)))\n"
     )
 }
 
@@ -277,7 +277,7 @@ fn inline_call_wrapper_heap_payload(n: i64) -> String {
          \x20 (if (eq-i64 i n) acc\n\
          \x20   (match (mk i)\n\
          \x20     [(Mk v) (go (add-i64 i 1) n acc)])))\n\
-         (defn main [] (Pure (go 0 {n} 7)))\n"
+         (defn main [] (primitives/pure (go 0 {n} 7)))\n"
     )
 }
 
@@ -294,7 +294,7 @@ fn wrapper_from_call_supersedes_loop_param(n: i64) -> String {
          \x20   (match (step g i)\n\
          \x20     [Non g\n\
          \x20      (Jus g2) (go g2 (add-i64 i 1) n)])))\n\
-         (defn main [] (Pure (match (go (Gr [1 2 3]) 0 {n}) [(Gr c) 7])))\n"
+         (defn main [] (primitives/pure (match (go (Gr [1 2 3]) 0 {n}) [(Gr c) 7])))\n"
     )
 }
 
@@ -311,7 +311,7 @@ fn let_bound_scrutinee_supersedes_loop_param(n: i64) -> String {
          \x20     (match r\n\
          \x20       [Non g\n\
          \x20        (Jus g2) (go g2 (add-i64 i 1) n)]))))\n\
-         (defn main [] (let [x (go (Gr [1 2 3]) 0 {n})] (Pure 7)))\n"
+         (defn main [] (let [x (go (Gr [1 2 3]) 0 {n})] (primitives/pure 7)))\n"
     )
 }
 
@@ -329,7 +329,7 @@ fn let_bound_scrutinee_result_outer_matched(n: i64) -> String {
          \x20     (match r\n\
          \x20       [Non g\n\
          \x20        (Jus g2) (go g2 (add-i64 i 1) n)]))))\n\
-         (defn main [] (Pure (match (go (Gr [1 2 3]) 0 {n}) [(Gr c) 7])))\n"
+         (defn main [] (primitives/pure (match (go (Gr [1 2 3]) 0 {n}) [(Gr c) 7])))\n"
     )
 }
 
@@ -344,7 +344,7 @@ fn match_in_callee_on_borrowed_param(n: i64) -> String {
          (defn go [i n acc]\n\
          \x20 (if (eq-i64 i n) acc\n\
          \x20   (go (add-i64 i 1) n (add-i64 acc (peek (mk i))))))\n\
-         (defn main [] (Pure (go 0 {n} 0)))\n"
+         (defn main [] (primitives/pure (go 0 {n} 0)))\n"
     )
 }
 
@@ -536,7 +536,7 @@ fn let_bound_scrutinee_loop_result_still_matches_its_own_tag_linked() {
 #[test]
 fn var_pattern_arm_consuming_owned_temporary_releases_it_once_linked() {
     let program = "(defn f [] (match [7 8 9] [xs (vec-get xs 1)]))\n\
-                   (defn main [] (Pure (f)))\n";
+                   (defn main [] (primitives/pure (f)))\n";
     assert_contract("0782 var-pattern link", program, 8, false, true);
     assert_contract("0782 var-pattern link", program, 8, true, true);
 }
@@ -551,7 +551,7 @@ fn var_pattern_arm_consuming_owned_temporary_releases_it_once_linked() {
 #[test]
 fn control_var_pattern_arm_over_let_bound_scrutinee_linked() {
     let program = "(defn f [] (let [v [7 8 9]] (match v [xs (vec-get xs 1)])))\n\
-                   (defn main [] (Pure (f)))\n";
+                   (defn main [] (primitives/pure (f)))\n";
     assert_contract("0782 control link", program, 8, false, true);
 }
 

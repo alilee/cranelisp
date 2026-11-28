@@ -17,4 +17,4 @@
       (add-i64 (reduce-range lo m) (reduce-range m hi)))))
 
 (defn main []
-  (Pure (reduce-range 0 8)))
+  (primitives/pure (reduce-range 0 8)))

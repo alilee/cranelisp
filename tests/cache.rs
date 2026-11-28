@@ -75,7 +75,7 @@ fn cache_index_importer_calls(index_session: bool, move_slots: bool) {
         .file("lib.cl", "(import [user [f]])\n(defn g [] (f))\n")
         .file(
             "app.cl",
-            "(import [primitives [Pure]])\n(import [lib [g]])\n(defn main [] (Pure (g)))\n",
+            "(import [primitives [pure]])\n(import [lib [g]])\n(defn main [] (primitives/pure (g)))\n",
         )
         .run("app.cl")
         .output()
@@ -149,7 +149,7 @@ fn cache_edit_and_revert_importer_calls(edit: &str, edited_type: &str) {
         .file("lib.cl", "(import [user [f]])\n(defn g [] (f))\n")
         .file(
             "app.cl",
-            "(import [primitives [Pure]])\n(import [lib [g]])\n(defn main [] (Pure (g)))\n",
+            "(import [primitives [pure]])\n(import [lib [g]])\n(defn main [] (primitives/pure (g)))\n",
         )
         .run("app.cl")
         .output();
@@ -269,17 +269,17 @@ fn check_cache_edit_leg(
 #[test]
 fn cached_restarts_keep_generic_instance_slot_capacity_across_modes() {
     // Depends on GOT_TABLE_SIZE = 1,024: k = 300 lies in 256..=340, so
-    // 2(k + 1) slots fit, but retiring k identities + Pure on every launch
+    // 2(k + 1) slots fit, but retiring k identities + pure on every launch
     // exhausted capacity by the third cache-enabled launch before the fix.
     // Smaller per-launch leaks belong to the allocated lifecycle unit row,
     // not this e2e sizing bound.
-    let mut source = String::from("(import [primitives [Pure add-i64]])\n");
+    let mut source = String::from("(import [primitives [pure add-i64]])\n");
     for i in 0..300 {
         source.push_str(&format!(
             "(defn id{i} [x] x)\n(defn use{i} [] (id{i} {i}))\n"
         ));
     }
-    source.push_str("(defn main [] (Pure (add-i64 (use0) (use7))))\n");
+    source.push_str("(defn main [] (primitives/pure (add-i64 (use0) (use7))))\n");
 
     let uncached = Cranelisp::new()
         .user(&source)
@@ -357,9 +357,9 @@ fn cache_result_only_returned_closure_specializations_agree_uncached_cold_and_wa
         ("util.cl", "(defn g [] (fn [y] 100))\n"),
         (
             "main.cl",
-            "(import [primitives [Pure add-i64]])\n\
+            "(import [primitives [pure add-i64]])\n\
              (import [util [g]])\n\
-             (defn main [] (Pure (add-i64 ((g) 5) ((g) \"heap\"))))\n",
+             (defn main [] (primitives/pure (add-i64 ((g) 5) ((g) \"heap\"))))\n",
         ),
     ];
     let uncached = project(&files)
@@ -409,9 +409,9 @@ fn cache_generic_self_call_agrees_cold_warm_and_linked() {
         ),
         (
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [util [repeat-five]])\n\
-             (defn main [] (Pure (repeat-five)))\n",
+             (defn main [] (primitives/pure (repeat-five)))\n",
         ),
     ];
     let cold = project(&files)
@@ -587,10 +587,10 @@ fn schema28_identity_cache_refused_rebuilt_and_reused_warm() {
 // defect: class=wrong-reject locus=src/session_v4.rs found=S121 owner=/dev
 #[test]
 fn cache_restored_sum_field_projection_keeps_ownership_abi() {
-    let source = "(import [primitives [Int Pure]])\n\
+    let source = "(import [primitives [Int pure]])\n\
                   (deftype Customer (Addr [:Int a]))\n\
                   (defn r-cust [c] (match c [(Customer.Addr a) a]))\n\
-                  (defn main [] (Pure (r-cust (Customer.Addr 40))))\n";
+                  (defn main [] (primitives/pure (r-cust (Customer.Addr 40))))\n";
     let uncached = Cranelisp::new()
         .run("main.cl")
         .file("main.cl", source)
@@ -669,7 +669,7 @@ fn cache_lives_under_project_root() {
     let out = Cranelisp::new()
         .run("user.cl")
         .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
-        .user("(defn main [] (Pure 0))")
+        .user("(defn main [] (primitives/pure 0))")
         .output()
         .assert_ok();
 
@@ -690,7 +690,7 @@ fn cache_lives_under_project_root() {
 fn cache_single_file_sanity() {
     project(&[(
         "main.cl",
-        "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+        "(import [primitives [pure]])\n(defn main [] (primitives/pure 42))",
     )])
     .run("main.cl")
     .output()
@@ -702,7 +702,7 @@ fn cache_single_file_sanity() {
 fn cache_object_file_loadable() {
     let out = project(&[(
         "main.cl",
-        "(import [primitives [add-i64 Pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (Pure (double 21)))",
+        "(import [primitives [add-i64 pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (primitives/pure (double 21)))",
     )])
     .run("main.cl")
     .output()
@@ -729,7 +729,7 @@ fn cache_object_file_loadable() {
 fn cache_load_fresh_compile_equivalence() {
     let fresh = project(&[(
         "main.cl",
-        "(import [primitives [add-i64 Pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (Pure (double 21)))",
+        "(import [primitives [add-i64 pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (primitives/pure (double 21)))",
     )])
     .run("main.cl")
     .output()
@@ -746,8 +746,8 @@ fn cache_load_imports_macros_traits_installed() {
         (
             "main.cl",
             "(import [ops [increment]])\n\
-             (import [primitives [Pure]])\n\
-             (defn main [] (Pure (increment 9)))",
+             (import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (increment 9)))",
         ),
         (
             "ops.cl",
@@ -792,10 +792,10 @@ fn cache_restores_sibling_written_trait_impls_for_dispatch() {
                 "main.cl",
                 "(mod lib)\n\
                  (mod impls)\n\
-                 (import [primitives [Pure]])\n\
+                 (import [primitives [pure]])\n\
                  (import [main.lib [show]])\n\
                  (import [main.impls [W]])\n\
-                 (defn main [] (Pure (show (W 7))))\n",
+                 (defn main [] (primitives/pure (show (W 7))))\n",
             ),
         ])
     }
@@ -830,7 +830,7 @@ fn cache_restores_sibling_written_trait_impls_for_dispatch() {
 fn cache_pipeline_hit_second_compile() {
     let first = project(&[(
         "main.cl",
-        "(import [primitives [Pure]])\n(defn val [] 77)\n(defn main [] (Pure (val)))",
+        "(import [primitives [pure]])\n(defn val [] 77)\n(defn main [] (primitives/pure (val)))",
     )])
     .run("main.cl")
     .output()
@@ -846,7 +846,7 @@ fn cache_pipeline_hit_second_compile() {
 fn cache_pipeline_miss_on_source_change() {
     let first = project(&[(
         "main.cl",
-        "(import [primitives [Pure]])\n(defn val [] 100)\n(defn main [] (Pure (val)))",
+        "(import [primitives [pure]])\n(defn val [] 100)\n(defn main [] (primitives/pure (val)))",
     )])
     .run("main.cl")
     .output()
@@ -854,7 +854,7 @@ fn cache_pipeline_miss_on_source_change() {
 
     let second = first.run_again().file(
         "main.cl",
-        "(import [primitives [Pure]])\n(defn val [] 123)\n(defn main [] (Pure (val)))",
+        "(import [primitives [pure]])\n(defn val [] 123)\n(defn main [] (primitives/pure (val)))",
     );
 
     second.run("main.cl").output().assert_exit(123);
@@ -867,7 +867,7 @@ fn cache_pipeline_miss_on_source_change() {
 fn cache_invalidation_transitive_pipeline() {
     let first = project(&[(
         "main.cl",
-        "(import [primitives [Pure]])\n(defn base [] 10)\n(defn main [] (Pure (base)))",
+        "(import [primitives [pure]])\n(defn base [] 10)\n(defn main [] (primitives/pure (base)))",
     )])
     .run("main.cl")
     .output()
@@ -877,7 +877,7 @@ fn cache_invalidation_transitive_pipeline() {
         .run_again()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn base [] 20)\n(defn main [] (Pure (base)))",
+            "(import [primitives [pure]])\n(defn base [] 20)\n(defn main [] (primitives/pure (base)))",
         )
         .run("main.cl")
         .output()
@@ -894,7 +894,7 @@ fn cache_multi_module_hit_cross_module_call() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 21)))",
         ),
         (
             "util.cl",
@@ -923,7 +923,7 @@ fn cache_multi_module_transitive_imports() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(mod mid)\n(import [main.mid [relay]])\n(defn main [] (Pure (relay)))",
+            "(import [primitives [pure]])\n(mod mid)\n(import [main.mid [relay]])\n(defn main [] (primitives/pure (relay)))",
         ),
         (
             "main/mid.cl",
@@ -983,7 +983,7 @@ fn cache_multi_module_invalidation_dependency_change() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 10)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 10)))",
         ),
         (
             "util.cl",
@@ -1011,7 +1011,7 @@ fn cache_multi_module_unchanged_dep_stays_cached() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 5)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 5)))",
         ),
         (
             "util.cl",
@@ -1029,7 +1029,7 @@ fn cache_multi_module_unchanged_dep_stays_cached() {
         .run_again()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 7)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 7)))",
         )
         .run("main.cl")
         .output()
@@ -1048,7 +1048,7 @@ fn cache_multi_module_multiple_imports() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [add-one double]])\n(defn main [] (Pure (add-one (double 10))))",
+            "(import [primitives [pure]])\n(import [util [add-one double]])\n(defn main [] (primitives/pure (add-one (double 10))))",
         ),
         (
             "util.cl",
@@ -1070,10 +1070,10 @@ fn cache_multi_module_two_deps() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [math [square]])\n\
              (import [constants [base-val]])\n\
-             (defn main [] (Pure (square (base-val))))",
+             (defn main [] (primitives/pure (square (base-val))))",
         ),
         (
             "math.cl",
@@ -1109,7 +1109,7 @@ fn cache_prelude_modules_cached() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 42))",
         ),
         ("prelude.cl", "(defn id [x] x)"),
     ])
@@ -1137,7 +1137,7 @@ fn cache_prelude_change_invalidates_user_module() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 42))",
         ),
         ("prelude.cl", "(defn id [x] x)"),
     ])
@@ -1159,7 +1159,7 @@ fn cache_multi_module_with_prelude() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 5)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 5)))",
         ),
         (
             "util.cl",
@@ -1184,7 +1184,7 @@ fn cache_repl_restart_cache_hit() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [helper [add-one]])\n(defn main [] (Pure (add-one 41)))",
+            "(import [primitives [pure]])\n(import [helper [add-one]])\n(defn main [] (primitives/pure (add-one 41)))",
         ),
         (
             "helper.cl",
@@ -1214,7 +1214,7 @@ fn cache_repl_incremental_monomorphisation() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [math [double]])\n(defn main [] (Pure (double 21)))",
+            "(import [primitives [pure]])\n(import [math [double]])\n(defn main [] (primitives/pure (double 21)))",
         ),
         (
             "math.cl",
@@ -1229,7 +1229,7 @@ fn cache_repl_incremental_monomorphisation() {
         .run_again()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [math [double]])\n(defn main [] (Pure (double 10)))",
+            "(import [primitives [pure]])\n(import [math [double]])\n(defn main [] (primitives/pure (double 10)))",
         )
         .run("main.cl")
         .output()
@@ -1242,7 +1242,7 @@ fn cache_quick_build_links_cached_objects() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [helper [double]])\n(defn main [] (Pure (double 21)))",
+            "(import [primitives [pure]])\n(import [helper [double]])\n(defn main [] (primitives/pure (double 21)))",
         ),
         (
             "helper.cl",
@@ -1274,7 +1274,7 @@ fn cache_quick_build_fallback_on_missing_cache() {
     let out = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [helper [triple]])\n(defn main [] (Pure (triple 14)))",
+            "(import [primitives [pure]])\n(import [helper [triple]])\n(defn main [] (primitives/pure (triple 14)))",
         ),
         (
             "helper.cl",
@@ -1299,7 +1299,7 @@ fn cache_quick_build_fallback_on_missing_cache() {
 fn cache_round_trip_single_module_observable_equivalence() {
     let fresh = project(&[(
         "main.cl",
-        "(import [primitives [Pure]])\n(defn main [] (Pure 99))",
+        "(import [primitives [pure]])\n(defn main [] (primitives/pure 99))",
     )])
     .run("main.cl")
     .output()
@@ -1316,7 +1316,7 @@ fn cache_round_trip_multi_module_observable_equivalence() {
     let fresh = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 21)))",
         ),
         (
             "util.cl",
@@ -1338,7 +1338,7 @@ fn cache_invalidation_on_dep_change_e2e() {
     let first = project(&[
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(import [dep [val]])\n(defn main [] (Pure (val)))",
+            "(import [primitives [pure]])\n(import [dep [val]])\n(defn main [] (primitives/pure (val)))",
         ),
         ("dep.cl", "(defn val [] 11)"),
     ])
@@ -1614,7 +1614,7 @@ fn cache_repl_empty_prelude_session_2_evaluates_literal() {
 
 /// Trivial single-file program used by the build_id tests below. `main`
 /// returns 0 (spec §12.6) so `assert_ok()` is the right assertion.
-const BUILD_ID_SRC: &str = "(import [primitives [add-i64 Pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (Pure (double 0)))";
+const BUILD_ID_SRC: &str = "(import [primitives [add-i64 pure]])\n(defn double [x] (add-i64 x x))\n(defn main [] (primitives/pure (double 0)))";
 
 /// Extract the `build_id` string from the raw `.meta.json` text. Returns
 /// `None` if the field is absent. Narrow parser — looks for
@@ -1830,8 +1830,7 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
 // stderr under CRANELISP_MODULE_TRACE=1 (tests/AGENTS.md §Diagnostic Logging);
 // recompilation is additionally pinned via the dep's `.o` mtime.
 
-const LB3_MAIN: &str =
-    "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
+const LB3_MAIN: &str = "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 21)))";
 const LB3_UTIL: &str = "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))";
 
 // spec: design/backend/ownership-codegen.md §2.3 — flipping the ownership
@@ -1951,8 +1950,7 @@ fn cache_ownership_toggle_round_trip_and_same_polarity_stability() {
 // Both tests below are RED at draft (schema is still 14) and flip GREEN with
 // the bump.
 
-const SCHEMA_MAIN: &str =
-    "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
+const SCHEMA_MAIN: &str = "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 21)))";
 const SCHEMA_UTIL: &str = "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))";
 
 /// The schema version the pre-R5 `.o` carries — the value R5's bump must reject.
@@ -2094,10 +2092,10 @@ fn cache_pre_r5_schema_object_invalidated_wholesale() {
 // defect: class=enumeration-miss locus=crates/cranelisp-typecheck/src/checker.rs::resolve_dotted_field_accessor found=S108 owner=/dev
 #[test]
 fn dotted_ctor_resolves_from_warm_cache() {
-    let src = "(import [primitives [Pure Int add-i64]])\n\
+    let src = "(import [primitives [pure Int add-i64]])\n\
                (deftype (Maybe a) Nil (Some [:a v]))\n\
                (deftype (Option a) Nil (Some [:a v]))\n\
-               (defn main [] (Pure\n\
+               (defn main [] (primitives/pure\n\
                  (add-i64 (match (Maybe.Some 7) [(Maybe.Some x) x Maybe.Nil 0])\n\
                           (match (Option.Some 3) [(Option.Some x) x Option.Nil 0]))))\n";
     // Cold run — builds the cache (RED until dotted ctors resolve); then the
@@ -2125,7 +2123,7 @@ fn fq_ref_resolves_from_warm_cache() {
         ),
         (
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/square 5)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (mathx/square 5)))\n",
         ),
     ];
     // Cold: auto-load + compile; then the warm run (same TempDir) is a cache hit.
@@ -2158,10 +2156,10 @@ fn fq_ref_resolves_from_warm_cache() {
 #[test]
 fn pre_schema_18_cache_rejected_and_warm_18_green() {
     // The DC-12 differing-layout twin (order A) — a single entry file.
-    let twin = "(import [primitives [Pure add-i64 Int]])\n\
+    let twin = "(import [primitives [pure add-i64 Int]])\n\
                 (deftype (Maybe a) None (Some [:a v]))\n\
                 (deftype Opt2 (Some [:Int a :Int b]) None2)\n\
-                (defn main [] (Pure\n\
+                (defn main [] (primitives/pure\n\
                   (add-i64 (match (Maybe.Some 5) [(Some x) x None 0])\n\
                            (match (Opt2.Some 10 20) [(Some x y) (add-i64 x y) None2 0]))))\n";
     // Cold compile (RED today — the wrong-ctor Blocker); then the WARM cache hit
@@ -2219,9 +2217,9 @@ fn stale_schema20_multi_sig_var_concrete_cache_refused_wholesale_neg() {
     // whose schema-20 cache carries the bogus `$Var` overload state. Compiles at
     // HEAD (wrong-accept) and post-leg-(a) (legitimate poly) alike; `(lf2 42)` =
     // 42 ⇒ exit 42.
-    let src = "(import [primitives [Pure]])\n\
+    let src = "(import [primitives [pure]])\n\
                (defn lf2 ([:a p] p))\n\
-               (defn main [] (Pure (lf2 42)))\n";
+               (defn main [] (primitives/pure (lf2 42)))\n";
     let warm = project(&[("main.cl", src)])
         .run("main.cl")
         .output()
@@ -2273,9 +2271,9 @@ fn stale_schema20_multi_sig_var_concrete_cache_refused_wholesale_neg() {
 // from cache, so agreement is not agreement through the fresh path.
 // =============================================================================
 
-const DEP_CHANGE_MAIN: &str = "(import [primitives [Pure]])\n\
+const DEP_CHANGE_MAIN: &str = "(import [primitives [pure]])\n\
                                (import [a [g]])\n\
-                               (defn main [] (Pure (g)))\n";
+                               (defn main [] (primitives/pure (g)))\n";
 
 /// Signature leg: `f`'s parameter changes from Int to String, so `a`'s
 /// unchanged call `(f 5)` becomes ill-typed.
@@ -2481,9 +2479,9 @@ fn cache_dep_layout_change_under_cached_importer_matches_uncached_link() {
 // reaches `c` only through `a`, whose own source never changes. A record of
 // `c`'s direct imports alone (`{a}`) would restore `c` stale
 // (design/int/int.md §7.6: the record is the transitive closure).
-const CLOSURE_MAIN: &str = "(import [primitives [Pure]])\n\
+const CLOSURE_MAIN: &str = "(import [primitives [pure]])\n\
                             (import [c [g]])\n\
-                            (defn main [] (Pure (g)))\n";
+                            (defn main [] (primitives/pure (g)))\n";
 const CLOSURE_C: &str = "(import [primitives [add-i64]])\n\
                          (import [a [f]])\n\
                          (defn g [] (add-i64 (f 5) 100))\n";
@@ -2684,9 +2682,9 @@ fn edit_after_warm_restore(
 const FQ_ONLY_A: &str = "(defn g [] (b/f))\n";
 
 /// Entry that loads `a` but not `b`, so only `a`'s restore can load `b`.
-const FQ_ONLY_MAIN_WITHOUT_B: &str = "(import [primitives [Pure]])\n\
+const FQ_ONLY_MAIN_WITHOUT_B: &str = "(import [primitives [pure]])\n\
                                       (import [a [g]])\n\
-                                      (defn main [] (Pure (g)))\n";
+                                      (defn main [] (primitives/pure (g)))\n";
 
 fn fq_only_dependency_change(main_src: &str, a_src: &str) -> (Observed, Observed) {
     let EditLegs {
@@ -2719,10 +2717,10 @@ fn fq_only_dependency_change(main_src: &str, a_src: &str) -> (Observed, Observed
 #[test]
 fn cache_fq_only_dependency_change_under_cached_importer_matches_uncached_run() {
     let (control, cached) = fq_only_dependency_change(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (import [a [g]])\n\
          (import [b [f]])\n\
-         (defn main [] (Pure (g)))\n",
+         (defn main [] (primitives/pure (g)))\n",
         FQ_ONLY_A,
     );
     assert_cached_matches_uncached(&control, &cached);
@@ -2872,10 +2870,10 @@ fn cache_qualified_reexport_first_hop_change_matches_uncached_run() {
 }
 
 // QR-1's fixture: `main` loads `c` so that an `a.o` still bound to `c/f` links.
-const REEXPORT_MAIN: &str = "(import [primitives [Pure]])\n\
+const REEXPORT_MAIN: &str = "(import [primitives [pure]])\n\
                              (import [a [g]])\n\
                              (import [c [f]])\n\
-                             (defn main [] (Pure (g)))\n";
+                             (defn main [] (primitives/pure (g)))\n";
 const REEXPORT_R_BEFORE: &str = "(export [c [f]])\n(defn anchor [] 0)\n";
 const REEXPORT_R_AFTER: &str = "(export [d [f]])\n(defn anchor [] 0)\n";
 
@@ -3152,10 +3150,10 @@ fn cache_qualified_constructor_tag_change_matches_uncached_run() {
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure add-i64 mul-i64]])\n\
+                "(import [primitives [pure add-i64 mul-i64]])\n\
                  (import [a [make classify]])\n\
                  (import [b [mk-hi code]])\n\
-                 (defn main [] (Pure (add-i64 (classify (mk-hi)) (mul-i64 10 (code (make))))))\n",
+                 (defn main [] (primitives/pure (add-i64 (classify (mk-hi)) (mul-i64 10 (code (make))))))\n",
             ),
             (
                 "a.cl",
@@ -3182,10 +3180,10 @@ fn cache_qualified_accessor_field_order_change_matches_uncached_run() {
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [a [g]])\n\
                  (import [b [mk]])\n\
-                 (defn main [] (Pure (g (mk))))\n",
+                 (defn main [] (primitives/pure (g (mk))))\n",
             ),
             ("a.cl", "(defn g [bx] (b/Box.v bx))\n"),
             (
@@ -3241,10 +3239,10 @@ fn cache_qualified_type_only_field_change_matches_uncached_allocator_counts() {
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [b [mk]])\n\
                  (import [a [g]])\n\
-                 (defn main [] (Pure (g (mk))))\n",
+                 (defn main [] (primitives/pure (g (mk))))\n",
             ),
             (
                 "a.cl",
@@ -3319,7 +3317,7 @@ fn fq_type_only_reference_loads_its_module_on_a_fresh_compile() {
         let out = project(&[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n(import [a [g]])\n(defn main [] (Pure (g)))\n",
+                "(import [primitives [pure]])\n(import [a [g]])\n(defn main [] (primitives/pure (g)))\n",
             ),
             ("a.cl", a),
             ("b.cl", b),
@@ -3356,9 +3354,9 @@ fn cache_qualified_macro_head_expansion_change_matches_uncached_run() {
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [a [g]])\n\
-                 (defn main [] (Pure (g)))\n",
+                 (defn main [] (primitives/pure (g)))\n",
             ),
             ("a.cl", "(defn g [] (b/m))\n(defn k [] (e/f))\n"),
             ("b.cl", "(defmacro m [] `11)\n(defn anchor [] 0)\n"),
@@ -3385,9 +3383,9 @@ fn cache_qualified_reference_in_macro_clause_body_change_matches_uncached_run() 
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [a [g]])\n\
-                 (defn main [] (Pure (g)))\n",
+                 (defn main [] (primitives/pure (g)))\n",
             ),
             ("a.cl", "(defmacro m [] (r/f))\n(defn g [] (m))\n"),
             ("r.cl", REEXPORT_R_BEFORE),
@@ -3404,12 +3402,12 @@ fn cache_qualified_reference_in_macro_clause_body_change_matches_uncached_run() 
 // LD-9: `a` is the qualified macro head `(b/m)`. `m` first expands to an empty
 // `(begin)`, then to `(defn g [] 99)`, while `main` goes from ignoring `a` to
 // calling `a/g`. `main` loads `a` through a glob import, which names no member.
-const EMPTY_EXPANSION_MAIN_BEFORE: &str = "(import [primitives [Pure]])\n\
+const EMPTY_EXPANSION_MAIN_BEFORE: &str = "(import [primitives [pure]])\n\
                                            (import [a [*]])\n\
-                                           (defn main [] (Pure 7))\n";
-const EMPTY_EXPANSION_MAIN_AFTER: &str = "(import [primitives [Pure]])\n\
+                                           (defn main [] (primitives/pure 7))\n";
+const EMPTY_EXPANSION_MAIN_AFTER: &str = "(import [primitives [pure]])\n\
                                           (import [a [*]])\n\
-                                          (defn main [] (Pure (a/g)))\n";
+                                          (defn main [] (primitives/pure (a/g)))\n";
 
 /// Cold then warm with `m` expanding to `(begin)`, then the uncached oracle and
 /// the cached run after the edit of `b` and `main`, compared as `leg`.
@@ -3464,9 +3462,9 @@ fn cache_qualified_constructor_only_home_restores_warm() {
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [a [g]])\n\
-                 (defn main [] (Pure (g)))\n",
+                 (defn main [] (primitives/pure (g)))\n",
             ),
             ("a.cl", "(defn g [] (match (d/K 7) [(d/K n) n]))\n"),
             (
@@ -3491,9 +3489,9 @@ fn cache_compiler_self_and_child_qualified_references_restore_warm() {
         &[
             (
                 "main.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [a [g]])\n\
-                 (defn main [] (Pure (g)))\n",
+                 (defn main [] (primitives/pure (g)))\n",
             ),
             (
                 "a.cl",
@@ -3512,9 +3510,9 @@ fn cache_compiler_self_and_child_qualified_references_restore_warm() {
 // DV3: a declared test child `lib.test` imports from `grp.asserts`, itself a
 // declared child. Editing only `lib.test` re-typechecks it over a restored
 // `grp.asserts`.
-const DV3_MAIN: &str = "(import [primitives [Pure]])\n\
+const DV3_MAIN: &str = "(import [primitives [pure]])\n\
                         (import [lib [v]])\n\
-                        (defn main [] (Pure (v)))\n";
+                        (defn main [] (primitives/pure (v)))\n";
 const DV3_LIB: &str = "(mod- test)\n(defn v [] 7)\n";
 
 fn fresh_test_child_over_restored_declared_child(lib_test: &str) {
@@ -3570,7 +3568,7 @@ fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
         let cold = Cranelisp::new()
             .file("P.cl", "(import [primitives [Int]])\n(deftrait Tr (tr [self] Int))\n(mod c)\n")
             .file("P/c.cl", "(import [primitives [Int]])\n(import [super [Tr]])\n(impl Tr Int (defn tr [_] 7))\n")
-            .file("app.cl", "(import [P [tr]])\n(defn main [] (primitives/Pure (tr 1)))\n")
+            .file("app.cl", "(import [P [tr]])\n(defn main [] (primitives/pure (tr 1)))\n")
             .run("app.cl")
             .output()
             .assert_exit(7);
@@ -3592,7 +3590,7 @@ fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
             .env("CRANELISP_SCHEDULER_TRACE", "1")
             .file(
                 "app.cl",
-                "(import [P [tr]])\n(defn main [] (primitives/Pure (tr 2)))\n",
+                "(import [P [tr]])\n(defn main [] (primitives/pure (tr 2)))\n",
             );
         assert_eq!(
             fs::read_to_string(builder.tmpdir_path().join(".cranelisp-cache/P.meta.json")).unwrap(),
@@ -3605,8 +3603,11 @@ fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
             _ => unreachable!(),
         };
         let parent_hit = trace_hit(&out, "P");
-        assert_eq!(parent_hit, !remove_metadata,
-            "fixture attempt {attempt}: parent hit must distinguish object-only removal from metadata removal: {}", out.stderr);
+        assert_eq!(
+            parent_hit, !remove_metadata,
+            "fixture attempt {attempt}: parent hit must distinguish object-only removal from metadata removal: {}",
+            out.stderr
+        );
         let correct = if mode == "repl" {
             out.status.success()
                 && out.stdout.contains(":primitives/Int 7")
@@ -3615,7 +3616,10 @@ fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
             out.status.code() == Some(7)
                 && (mode != "link" || out.linked_execution_elapsed.is_some())
         };
-        eprintln!("attempt {attempt} {mode} remove_metadata={remove_metadata}: status={}\nstdout:\n{}\nstderr:\n{}", out.status, out.stdout, out.stderr);
+        eprintln!(
+            "attempt {attempt} {mode} remove_metadata={remove_metadata}: status={}\nstdout:\n{}\nstderr:\n{}",
+            out.status, out.stdout, out.stderr
+        );
         if !correct {
             failures.push(format!(
                 "attempt {attempt}: status={}\nstdout:\n{}\nstderr:\n{}",
@@ -3623,9 +3627,12 @@ fn s124_restored_parent_child(mode: &str, remove_metadata: bool) {
             ));
         }
     }
-    assert!(failures.is_empty(),
+    assert!(
+        failures.is_empty(),
         "{mode}: a reader of P must see its rebuilt child's implementation and yield 7 ({} of 3 failed):\n{}",
-        failures.len(), failures.join("\n"));
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 // spec: spec/08-modules.md §8.3.8; spec/07-traits.md §7.11.1; design/int/int.md §6.11 — restored parent completion includes declared children.

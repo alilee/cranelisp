@@ -162,7 +162,7 @@ fn macro_clause_calls_imported_helper_at_expansion_works() {
         .with_prelude(PreludeVariant::None)
         .file(
             "main.cl",
-            "(import [mac [wrap]])\n(import [primitives [Pure]])\n(defn main [] (Pure (wrap 41)))",
+            "(import [mac [wrap]])\n(import [primitives [pure]])\n(defn main [] (primitives/pure (wrap 41)))",
         )
         // `mac` depends on `helper`; `helper` is typechecked-and-compiled
         // just-in-time when `wrap`'s expansion first needs `bump`.
@@ -239,8 +239,8 @@ fn fq_macro_reference_expands_without_import() {
         .file(
             "main.cl",
             // No `(import [mac [twice]])` — referenced fully-qualified.
-            "(import [primitives [add-i64 Pure]])\n\
-             (defn main [] (Pure (mac/twice 21)))",
+            "(import [primitives [add-i64 pure]])\n\
+             (defn main [] (primitives/pure (mac/twice 21)))",
         )
         .file(
             "mac.cl",
@@ -265,10 +265,10 @@ fn macro_generates_toplevel_defn() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (defmacro make-adder [] `(defn add5 [x] (add-i64 x 5)))\n\
              (make-adder)\n\
-             (defn main [] (Pure (add5 37)))",
+             (defn main [] (primitives/pure (add5 37)))",
         )
         .run("user.cl")
         .output()
@@ -388,22 +388,22 @@ fn prelude_provided_macro_expands_bare_twin() {
 (defmacro twice [x] `(add-i64 ~x ~x))
 ";
     // Leg A — the prelude macro `twice` explicitly imported (primitives imported
-    // directly so `Pure`/`add-i64` stay in scope after the prelude glob is
+    // directly so `pure`/`add-i64` stay in scope after the prelude glob is
     // suppressed by referencing `prelude`).
     let leg_a = Cranelisp::new()
         .prelude(PRELUDE_MACRO)
         .file(
             "user.cl",
-            "(import [primitives [Pure add-i64]])\n\
+            "(import [primitives [pure add-i64]])\n\
              (import [prelude [twice]])\n\
-             (defn main [] (Pure (twice 21)))",
+             (defn main [] (primitives/pure (twice 21)))",
         )
         .run("user.cl")
         .output();
     // Leg B — same program, `twice` reached via the implicit prelude.
     let leg_b = Cranelisp::new()
         .prelude(PRELUDE_MACRO)
-        .file("user.cl", "(defn main [] (Pure (twice 21)))")
+        .file("user.cl", "(defn main [] (primitives/pure (twice 21)))")
         .run("user.cl")
         .output();
     leg_a.assert_exit(42);

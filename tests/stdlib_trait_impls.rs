@@ -264,7 +264,7 @@ fn stdlib_link_mode_against_intrinsics_archive() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
-        .user("(defn main [] (Pure 0))\n")
+        .user("(defn main [] (primitives/pure 0))\n")
         .output();
     out.assert_ok()
         // Negative shape: must NOT mention cranelisp-runtime archive path.

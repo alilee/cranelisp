@@ -105,7 +105,7 @@ fn vec_push_as_value_through_hof_appends() {
 // spec: spec/04-expressions.md §4.6.2 — indirect calls; mode coverage: the same
 // defect is observable under `--run` (crosses REPL/--run modes, so the e2e is
 // warranted alongside the REPL shapes per tests/AGENTS.md §unit-test-per-fix).
-// `main` returns `(Pure 20)` ⇒ exit code 20 when fixed. RED on HEAD: SIGSEGV.
+// `main` returns `(primitives/pure 20)` ⇒ exit code 20 when fixed. RED on HEAD: SIGSEGV.
 #[test]
 fn vec_get_as_value_run_mode_returns_element() {
     Cranelisp::new()
@@ -114,7 +114,7 @@ fn vec_get_as_value_run_mode_returns_element() {
             "(import [primitives [*]])\n\
              (defn call-get [f v i] (f v i))\n\
              (defn main []\n\
-             \x20 (Pure (call-get vec-get [10 20 30] 1)))\n",
+             \x20 (primitives/pure (call-get vec-get [10 20 30] 1)))\n",
         )
         .run("main.cl")
         .output()
@@ -288,7 +288,7 @@ fn vec_get_as_value_two_instantiations_of_one_hof_run_mode() {
              (defn main []\n\
              \x20 (let [a (apply2 vec-get [10 20 30] 1)\n\
              \x20       s (apply2 vec-get [\"x\" \"yy\"] 1)]\n\
-             \x20   (Pure (add-i64 a (str-len s)))))\n",
+             \x20   (primitives/pure (add-i64 a (str-len s)))))\n",
         )
         .run("main.cl")
         .output()
@@ -309,7 +309,7 @@ fn vec_get_and_vec_push_as_values_through_one_hof_run_mode() {
              (defn main []\n\
              \x20 (let [a (apply2 vec-get [10 20 30] 1)\n\
              \x20       v3 (apply2 vec-push [10 20] 99)]\n\
-             \x20   (Pure (add-i64 a (vec-len v3)))))\n",
+             \x20   (primitives/pure (add-i64 a (vec-len v3)))))\n",
         )
         .run("main.cl")
         .output()
@@ -394,7 +394,7 @@ fn generic_write_pipeline_two_instantiations_value_used() {
              (defn main []\n\
              \x20 (let [a (mapf inc [0 1 2])\n\
              \x20       b (mapf ids [\"aa\" \"bb\"])]\n\
-             \x20   (Pure (add-i64 (vec-get a 2) (str-len (vec-get b 0))))))\n",
+             \x20   (primitives/pure (add-i64 (vec-get a 2) (str-len (vec-get b 0))))))\n",
         )
         .run("main.cl")
         .output()

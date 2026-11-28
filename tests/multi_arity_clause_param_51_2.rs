@@ -85,7 +85,7 @@ fn rp4_unannotated_backflow_accepted_and_runs() {
     // Run facet ×3 (REPL + --run + --link): the 2-arg clause returns `p`, so
     // `(rp4 3 4)` = 3. Mode-equivalent exit/value across all six permutations.
     run_through_all_modes(
-        &format!("{RP4}\n(defn main [] (Pure (rp4 3 4)))\n"),
+        &format!("{RP4}\n(defn main [] (primitives/pure (rp4 3 4)))\n"),
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
@@ -124,7 +124,7 @@ fn rp4_link_repeated_dispatch_does_not_corrupt_heap() {
             "{RP4}\n\
              (defn drive [:primitives/Int n :primitives/Int acc] \
                (if (eq-i64 n 0) acc (drive (sub-i64 n 1) (add-i64 acc (rp4 n n)))))\n\
-             (defn main [] (let [r (drive 1000 0)] (Pure 0)))\n"
+             (defn main [] (let [r (drive 1000 0)] (primitives/pure 0)))\n"
         ))
         .timeout(Duration::from_secs(60))
         .output();
@@ -182,7 +182,9 @@ fn backflow_pinned_param_call_with_wrong_type_rejected_neg() {
          String pointer as an Int (`<invalid:`); got:\n{c}"
     );
     // `--run` facet: the same program must be a compile error, not exit-with-value.
-    let run = run_prims(&format!("{RP4}\n(defn main [] (Pure (rp4 \"x\" \"y\")))\n"));
+    let run = run_prims(&format!(
+        "{RP4}\n(defn main [] (primitives/pure (rp4 \"x\" \"y\")))\n"
+    ));
     let rc = format!("{}{}", run.stdout, run.stderr);
     assert!(
         !run.status.success() && !rc.contains("<invalid"),
@@ -312,7 +314,7 @@ fn lf1_leaf_literal_poly_clause_admissible_runs() {
     );
     // Positive: `--run` computes the body → exit 42 (the clause is admissible
     // and reaches codegen at a concrete use).
-    let run = run_prims("(defn lf1 ([:a p] 42))\n(defn main [] (Pure (lf1 7)))\n");
+    let run = run_prims("(defn lf1 ([:a p] 42))\n(defn main [] (primitives/pure (lf1 7)))\n");
     assert!(
         run.status.code() == Some(42),
         "`(lf1 7)` = 42 ⇒ `--run` exits 42 (the admissible poly clause \
@@ -339,7 +341,7 @@ fn lf2_leaf_identity_poly_clause_admissible() {
         "lf2 `([:a p] p)` is the spec's admissible identity example `([:a x] x)` \
          — MUST be ACCEPTED; got:\n{c}"
     );
-    let run = run_prims("(defn lf2 ([:a p] p))\n(defn main [] (Pure (lf2 7)))\n");
+    let run = run_prims("(defn lf2 ([:a p] p))\n(defn main [] (primitives/pure (lf2 7)))\n");
     assert!(
         run.status.code() == Some(7),
         "`(lf2 7)` = 7 ⇒ `--run` exits 7; got exit {:?}:\n{}{}",
@@ -386,7 +388,7 @@ fn f3_delegation_chain_backflow_accepted_and_runs() {
     // resolves to 6 with no dangling `$Var` dispatch reaching codegen. RED at
     // HEAD (the `user/f3$Var+Var` codegen leak fails every mode).
     run_through_all_modes(
-        &format!("{F3}\n(defn main [] (Pure (f3 5)))\n"),
+        &format!("{F3}\n(defn main [] (primitives/pure (f3 5)))\n"),
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(6);
@@ -439,7 +441,7 @@ fn f3_delegation_chain_standalone_twin_compiles_and_runs() {
         "(defn f3a [a] (f3b a 0))\n\
          (defn f3b [a b] (f3c a b 1))\n\
          (defn f3c [a b c] (add-i64 a (add-i64 b c)))\n\
-         (defn main [] (Pure (f3a 5)))\n",
+         (defn main [] (primitives/pure (f3a 5)))\n",
     );
     assert!(
         run.status.code() == Some(6),

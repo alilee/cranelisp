@@ -1,5 +1,5 @@
 // platform_errors.rs — Sprint 66 Phase 5 Stage 1 (FIXME 0104),
-// reframed Sprint 77 W-Platform (R9, FIXME 0289).
+// Platform-load error reporting.
 //
 // Asserts the e2e-observable shape of platform-load failures: the binary
 // surfaces a structured `CranelispError` carrying an `ErrorLocation`
@@ -15,14 +15,8 @@
 //   - A **load failure** of a present-but-malformed DLL, and **manifest
 //     absence**, surface the requested platform name + a load/not-found
 //     message with the form span.
-//   - **ABI-version mismatch** and **layout-hash drift** are NOT
-//     e2e-triggerable against the real platforms: `stdio`/`test-capture`
-//     have no ADT-typed fns (so no `__cranelisp_layout_hash`) and always
-//     match the host ABI. The detection paths ARE wired and unit-proven in
-//     `src/platform.rs` (`abi_version_mismatch_detected`,
-//     `abi_version_match_accepts`). A true drift round-trip e2e needs a
-//     perturbed-ABI / ADT-typed `shapes` test-DLL — deferred to FIXME 0289
-//     (the platform-interface e2e walk slice).
+// ABI-version and ADT layout-hash refusals are exercised by spec_platforms_adt.rs
+// using the shapes and shapes-badabi DLLs.
 //
 // Spec basis: `spec/12-runtime.md §12.8 Platform ABI` (platform fns loaded
 // via `(platform name)`; discovery via the §8.11.3 DLL search order) +
@@ -61,7 +55,7 @@ fn ensure_platform_cdylibs_built() {
 
 // =============================================================================
 // Platform-load error reporting — e2e-observable shapes (FIXME 0104 closed;
-// reframed under FIXME 0289)
+// see spec_platforms_adt.rs for ABI and layout-hash gates)
 // =============================================================================
 
 // spec: spec/12-runtime.md §12.7 Error Model
@@ -142,8 +136,8 @@ fn platform_manifest_not_found_carries_dll_path() {
 // unit-proven in `src/platform.rs::abi_version_mismatch_detected`
 // (perturbed `ABI_VERSION + 1` → both values surface). The e2e ABI-drift
 // round-trip (build an ADT-typed / perturbed-ABI test-DLL, clean
-// round-trip, then perturb → `AbiVersionMismatch` e2e) is deferred to
-// FIXME 0289 (it needs the `shapes` test-DLL fixture).
+// round-trip and perturbed-ABI refusal) is covered by spec_platforms_adt.rs
+// and the shapes-badabi fixture below.
 #[test]
 fn platform_unknown_name_emits_structured_not_found() {
     let out = Cranelisp::new()
@@ -309,6 +303,16 @@ fn assert_dispatch_fault_surfaced(
             "test-capture fault-now: deliberate dispatch fault",
         )
     };
+    assert_named_dispatch_fault_surfaced(out, name, cause, repl, linked);
+}
+
+fn assert_named_dispatch_fault_surfaced(
+    out: &helpers::e2e::CrOutput,
+    name: &str,
+    cause: &str,
+    repl: bool,
+    linked: bool,
+) {
     let lines: Vec<_> = out
         .stderr
         .lines()
@@ -363,11 +367,11 @@ fn dispatch_output(boom: bool, mode: &str, fault: bool) -> helpers::e2e::CrOutpu
         program
             .replace(
                 "(defn main [] (crash))",
-                "(defn main [] (primitives/Pure 42))",
+                "(defn main [] (primitives/pure 42))",
             )
             .replace(
                 "(defn main [] (fault-now))",
-                "(defn main [] (primitives/Pure 42))",
+                "(defn main [] (primitives/pure 42))",
             )
     };
     let builder = Cranelisp::new().use_workspace_platforms().user(&program);
@@ -531,7 +535,7 @@ fn platform_placement(module: Option<&str>) -> helpers::e2e::CrOutput {
                 &format!("{}.cl", name.replace('.', "/")),
                 "(platform stdio) (defn value [] 0)",
             )
-            .user(&format!("(defn main [] (Pure ({name}/value)))")),
+            .user(&format!("(defn main [] (primitives/pure ({name}/value)))")),
     };
     cr.run("user.cl").output()
 }
@@ -589,7 +593,7 @@ fn s124_platform_placement(module: Option<&str>, mode: &str) {
                 &format!("{}.cl", name.replace('.', "/")),
                 "(platform stdio) (defn value [] 0)",
             )
-            .user(&format!("(defn main [] (primitives/Pure ({name}/value)))")),
+            .user(&format!("(defn main [] (primitives/pure ({name}/value)))")),
     };
     let out = match mode {
         "link" => cr.link_then_run("user.cl").output(),
@@ -661,7 +665,7 @@ fn s124_0973_cached_entry_run() {
         .use_workspace_platforms()
         .file(
             "helper.cl",
-            "(platform stdio) (defn value [] 0) (defn main [] (primitives/Pure 0))",
+            "(platform stdio) (defn value [] 0) (defn main [] (primitives/pure 0))",
         )
         .run("helper.cl")
         .output()
@@ -676,7 +680,7 @@ fn s124_0973_cached_entry_run() {
         .env("CRANELISP_MODULE_TRACE", "1")
         .file(
             "app.cl",
-            "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
+            "(import [helper [value]]) (defn main [] (primitives/pure (value)))",
         );
     let out = cr.run("app.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -700,7 +704,7 @@ fn s124_0973_cached_entry_link() {
         .use_workspace_platforms()
         .file(
             "helper.cl",
-            "(platform stdio) (defn value [] 0) (defn main [] (primitives/Pure 0))",
+            "(platform stdio) (defn value [] 0) (defn main [] (primitives/pure 0))",
         )
         .run("helper.cl")
         .output()
@@ -715,7 +719,7 @@ fn s124_0973_cached_entry_link() {
         .env("CRANELISP_MODULE_TRACE", "1")
         .file(
             "app.cl",
-            "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
+            "(import [helper [value]]) (defn main [] (primitives/pure (value)))",
         );
     let out = cr.link("app.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -738,7 +742,7 @@ fn s124_0973_cached_entry_repl() {
         .use_workspace_platforms()
         .file(
             "helper.cl",
-            "(platform stdio) (defn value [] 0) (defn main [] (primitives/Pure 0))",
+            "(platform stdio) (defn value [] 0) (defn main [] (primitives/pure 0))",
         )
         .run("helper.cl")
         .output()
@@ -753,7 +757,7 @@ fn s124_0973_cached_entry_repl() {
         .env("CRANELISP_MODULE_TRACE", "1")
         .file(
             "app.cl",
-            "(import [helper [value]]) (defn main [] (primitives/Pure (value)))",
+            "(import [helper [value]]) (defn main [] (primitives/pure (value)))",
         );
     let out = cr.cli_flag("app.cl").stdin("5\n").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -793,4 +797,50 @@ fn s124_0973_dependency_import_control() {
             out.stderr
         );
     }
+}
+
+fn overlapping_trap_output(first_ms: u64) -> helpers::e2e::CrOutput {
+    let source = format!(
+        r#"(platform pool-demo)
+(platform poll-pool)
+(import [platform.pool-demo [pool-read pool-trap]])
+(import [platform.poll-pool [poll-read]])
+(import [primitives [bind sleep select add-i64]])
+(defn main []
+  (let [x (bind (pool-read 1 1 {first_ms}) (fn [r] (bind (poll-read 9 1 5000) (fn [q] (primitives/pure (add-i64 r q))))))
+        z (bind (sleep 300) (fn [r] (pool-trap 2 1 900)))]
+    (select [x z])))
+"#
+    );
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .use_workspace_platforms()
+        .user(&source)
+        .run("user.cl")
+        .output()
+}
+
+// spec: spec/12-runtime.md §12.7.6 — T-F2: overlapping platform calls retain trap protection.
+// defect: class=shared-state-write-race locus=crates/cranelisp-intrinsics/src/io_guard.rs::force_effect_thunk_protected found=S125 owner=/dev
+#[test]
+fn overlapping_platform_trap_reports_fault_without_signal_death() {
+    assert_named_dispatch_fault_surfaced(
+        &overlapping_trap_output(800),
+        "platform.pool-demo/pool-trap",
+        "segmentation fault",
+        false,
+        false,
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.6 — T-F2 control: the first blocking call returns before the trapping call begins.
+#[test]
+fn non_overlapping_platform_trap_reports_fault_control() {
+    assert_named_dispatch_fault_surfaced(
+        &overlapping_trap_output(50),
+        "platform.pool-demo/pool-trap",
+        "segmentation fault",
+        false,
+        false,
+    );
 }

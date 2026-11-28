@@ -20,11 +20,18 @@ print
 
 (bind! [name (print "computing...")] (print "done"))
 
-; Pure lifts an ordinary value into IO so it can join an effect chain:
+; pure lifts an ordinary value into IO so it can join an effect chain:
 
-(import [primitives [Pure bind]])
-(Pure 42)
-(bind (Pure 10) (fn [x] (print (str "got " x))))
+(import [primitives [pure bind]])
+(pure 42)
+(bind (pure 10) (fn [x] (print (str "got " x))))
+
+; IO has no public constructors. Inside a collection, an unforced effect
+; displays as #io; a function value displays as #closure. These are display
+; markers, while pure and fn are the source forms that build the values:
+
+[(pure 7)]
+(let [f (fn [:Int x] x)] f)
 
 ; A function that performs an effect is inferred as returning IO — you do
 ; not annotate it; the type flows from print:
@@ -40,5 +47,5 @@ print
 ; This is the shape of the Sudoku exemplar's main: parse a form body,
 ; solve, then bind! the formatted board into print — pure computation in
 ; the middle, effects only at the edges. See the `sudoku` demo.
-(bind! [board (Pure "0 2 _ _\n_ _ _ 3")]
+(bind! [board (pure "0 2 _ _\n_ _ _ 3")]
   (print (str "puzzle:\n" board)))

@@ -166,9 +166,9 @@ fn lib_dir_search_order_cli_env_toml_stdlib() {
         .file("Cranelisp.toml", r#"lib-dirs = ["./toml-lib"]"#)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [foo [pick]])\n\
-             (defn main [] (Pure (pick)))\n",
+             (defn main [] (primitives/pure (pick)))\n",
         )
         .file("toml-lib/foo.cl", "(defn pick [] 13)\n")
         .env(
@@ -192,9 +192,9 @@ fn lib_dir_union_neg_empty_toml_does_not_suppress() {
         .file("Cranelisp.toml", "lib-dirs = []\n")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [helper [forty]])\n\
-             (defn main [] (Pure (forty)))\n",
+             (defn main [] (primitives/pure (forty)))\n",
         )
         // The {project_root}/stdlib/ default tier still contributes.
         .file("stdlib/helper.cl", "(defn forty [] 40)\n")

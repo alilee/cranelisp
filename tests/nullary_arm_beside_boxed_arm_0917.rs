@@ -57,7 +57,7 @@ fn program(step_arms: &str) -> String {
              (match (step bx 0 5)\n\
                [(Some b2) (subject-loop bx (sub-i64 n 1) (add-i64 acc 1)) None acc])))\n\
          \n\
-         (defn main [] (Pure (subject-loop (Box [(A 1) (A 2) (A 3)]) 1100 0)))\n"
+         (defn main [] (primitives/pure (subject-loop (Box [(A 1) (A 2) (A 3)]) 1100 0)))\n"
     )
 }
 
@@ -134,7 +134,7 @@ fn forwarding_fresh_option_releases_its_payload() {
                    [None 100\n\
                     (Some p) (match p [(Payload xs)\n\
                       (add-i64 (vec-get xs 0) (run-loop (sub-i64 n 1)))])])))\n\
-             (defn main [] (Pure (run-loop {count})))\n"
+             (defn main [] (primitives/pure (run-loop {count})))\n"
         )
     };
     let measurements = [8, 32].map(|count| {

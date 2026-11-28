@@ -84,7 +84,7 @@ fn matrix(program: &str) -> SafetyMatrix {
 fn if_yielded_borrowed_param_match_scrutinee_not_double_released() {
     matrix(
         "(defn f [v b] (match (if b v v) [xs (vec-get xs 0)]))\n\
-         (defn main [] (Pure (f [9 9 9] false)))\n",
+         (defn main [] (primitives/pure (f [9 9 9] false)))\n",
     )
     .assert();
 }
@@ -101,7 +101,7 @@ fn if_yielded_borrowed_param_match_scrutinee_not_double_released() {
 fn let_yielded_binding_match_scrutinee_not_double_released() {
     matrix(
         "(defn f [v] (match (let [w v] w) [xs (vec-get xs 0)]))\n\
-         (defn main [] (Pure (f [9 9 9])))\n",
+         (defn main [] (primitives/pure (f [9 9 9])))\n",
     )
     .assert();
 }
@@ -120,7 +120,7 @@ fn if_yielded_borrowed_adt_scrutinee_constructor_pattern_not_double_released() {
     matrix(
         "(deftype Wrap (MkWrap [:(Vec Int) items]))\n\
          (defn f [t b] (match (if b t t) [(MkWrap xs) (vec-get xs 0)]))\n\
-         (defn main [] (Pure (f (MkWrap [9 9 9]) false)))\n",
+         (defn main [] (primitives/pure (f (MkWrap [9 9 9]) false)))\n",
     )
     .assert();
 }
@@ -138,7 +138,7 @@ fn if_yielded_borrowed_adt_scrutinee_constructor_pattern_not_double_released() {
 fn let_yielded_binding_vec_get_container_not_released() {
     matrix(
         "(defn f [v] (vec-get (let [w v] w) 0))\n\
-         (defn main [] (Pure (f [9 9 9])))\n",
+         (defn main [] (primitives/pure (f [9 9 9])))\n",
     )
     .assert();
 }
@@ -155,7 +155,7 @@ fn let_yielded_binding_vec_get_container_not_released() {
 fn if_yielded_borrowed_param_vec_get_container_not_released() {
     matrix(
         "(defn f [v b] (vec-get (if b v v) 0))\n\
-         (defn main [] (Pure (f [9 9 9] false)))\n",
+         (defn main [] (primitives/pure (f [9 9 9] false)))\n",
     )
     .assert();
 }
@@ -171,7 +171,7 @@ fn if_yielded_borrowed_param_vec_get_container_not_released() {
 fn bare_var_match_scrutinee_control_stays_clean() {
     matrix(
         "(defn f [v] (match v [xs (vec-get xs 0)]))\n\
-         (defn main [] (Pure (f [9 9 9])))\n",
+         (defn main [] (primitives/pure (f [9 9 9])))\n",
     )
     .assert();
 }
@@ -182,7 +182,7 @@ fn bare_var_match_scrutinee_control_stays_clean() {
 fn bare_var_vec_get_container_control_stays_clean() {
     matrix(
         "(defn f [v] (vec-get v 0))\n\
-         (defn main [] (Pure (f [9 9 9])))\n",
+         (defn main [] (primitives/pure (f [9 9 9])))\n",
     )
     .assert();
 }

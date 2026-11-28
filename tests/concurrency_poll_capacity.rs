@@ -158,12 +158,12 @@ fn same_token_capacity_n_poll_admits_n_concurrent_nplus1_parks() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({read} 7 2 {d}) (fn [a]\n\
              (bind ({read} 7 2 {d}) (fn [b]\n\
                (bind ({read} 7 2 {d}) (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POLL_PLATFORM,
         read = POLL_READ,
         d = D_MS,
@@ -220,12 +220,12 @@ fn same_token_capacity_1_poll_serial_and_source_ordered() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{log}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({log} 9 1 {d} \"a\") (fn [a]\n\
              (bind ({log} 9 1 {d} \"b\") (fn [b]\n\
                (bind ({log} 9 1 {d} \"c\") (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POLL_PLATFORM,
         log = POLL_LOG,
         d = D_MS,
@@ -277,12 +277,12 @@ fn n_distinct_token_poll_capacity_leaves_overlap_max_not_sum() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({read} 1 1 {d}) (fn [a]\n\
              (bind ({read} 2 1 {d}) (fn [b]\n\
                (bind ({read} 3 1 {d}) (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POLL_PLATFORM,
         read = POLL_READ,
         d = D_MS,
@@ -313,12 +313,12 @@ fn distinct_poll_effects_sharing_one_token_share_one_pool_nplus1_parks() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read} {write}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({read} 5 2 {d}) (fn [a]\n\
              (bind ({write} 5 2 {d}) (fn [b]\n\
                (bind ({read} 5 2 {d}) (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POLL_PLATFORM,
         read = POLL_READ,
         write = POLL_WRITE,

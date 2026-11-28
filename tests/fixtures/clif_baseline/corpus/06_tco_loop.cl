@@ -8,4 +8,4 @@
     (spin (sub-i64 n 1) (add-i64 acc n))))
 
 (defn main []
-  (Pure (spin 100 0)))
+  (primitives/pure (spin 100 0)))

@@ -64,7 +64,7 @@ fn link_prims_off(src: &str) -> helpers::e2e::CrOutput {
 fn let_bound_cow_projected_into_container_green() {
     run_prims(
         "(defn f [v] (let [q (vec-set v 1 99)] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f [1 2 3]) 0) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f [1 2 3]) 0) 1)))\n",
     )
     .assert_exit(99);
 }
@@ -75,7 +75,7 @@ fn let_bound_cow_projected_into_container_green() {
 fn let_bound_cow_projected_into_container_toggle_off_green() {
     run_prims_off(
         "(defn f [v] (let [q (vec-set v 1 99)] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f [1 2 3]) 0) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f [1 2 3]) 0) 1)))\n",
     )
     .assert_exit(99);
 }
@@ -87,7 +87,7 @@ fn let_bound_cow_projected_into_container_toggle_off_green() {
 fn let_bound_fresh_vec_into_container_green() {
     run_prims(
         "(defn f [] (let [q [7 8 9]] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f) 0) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f) 0) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -98,7 +98,7 @@ fn let_bound_fresh_vec_into_container_green() {
 fn let_bound_fresh_vec_into_container_toggle_off_green() {
     run_prims_off(
         "(defn f [] (let [q [7 8 9]] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f) 0) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f) 0) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -117,7 +117,7 @@ fn let_bound_fresh_vec_into_container_toggle_off_green() {
 fn let_bind_alias_into_container_neg() {
     run_prims(
         "(defn f [v] (let [q v] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f [7 8 9]) 0) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f [7 8 9]) 0) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -134,7 +134,7 @@ fn let_bind_alias_into_container_neg() {
 fn nested_match_forward_alias_neg() {
     run_prims(
         "(defn f [v] (match (match v [r r]) [q q]))\n\
-         (defn main [] (Pure (vec-get (f [7 8 9]) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (f [7 8 9]) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -153,7 +153,7 @@ fn nested_match_forward_alias_neg() {
 fn b2_match_cow_var_pattern_toggle_off_neg() {
     run_prims_off(
         "(defn h [v] (match (vec-set v 1 99) [r r]))\n\
-         (defn main [] (Pure (vec-get (h [1 2 3]) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (h [1 2 3]) 1)))\n",
     )
     .assert_exit(99);
 }
@@ -179,7 +179,7 @@ fn b2_match_cow_var_pattern_toggle_off_neg() {
 fn bare_match_forward_scalar_green() {
     run_prims(
         "(defn f [] (match 7 [r r]))\n\
-         (defn main [] (Pure (f)))\n",
+         (defn main [] (primitives/pure (f)))\n",
     )
     .assert_exit(7);
 }
@@ -211,7 +211,7 @@ fn bare_match_forward_scalar_green() {
 fn bare_match_forward_fresh_heap_vec_inline_neg() {
     run_prims(
         "(defn f [] (match [7 8 9] [r r]))\n\
-         (defn main [] (Pure (vec-get (f) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (f) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -231,7 +231,7 @@ fn bare_match_forward_fresh_heap_vec_across_fn_return_neg() {
     run_prims(
         "(defn g [] [7 8 9])\n\
          (defn f [] (match (g) [r r]))\n\
-         (defn main [] (Pure (vec-get (f) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (f) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -255,7 +255,7 @@ fn bare_match_forward_fresh_heap_vec_across_fn_return_neg() {
 fn nested_match_forward_cow_alias_neg() {
     run_prims(
         "(defn f [v] (match (match (vec-set v 0 5) [r r]) [q q]))\n\
-         (defn main [] (Pure (vec-get (f [1 2 3]) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (f [1 2 3]) 0)))\n",
     )
     .assert_exit(5);
 }
@@ -270,7 +270,7 @@ fn nested_match_forward_cow_alias_neg() {
 fn nested_match_forward_cow_alias_toggle_off_neg() {
     run_prims_off(
         "(defn f [v] (match (match (vec-set v 0 5) [r r]) [q q]))\n\
-         (defn main [] (Pure (vec-get (f [1 2 3]) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (f [1 2 3]) 0)))\n",
     )
     .assert_exit(5);
 }
@@ -293,7 +293,7 @@ fn nested_match_forward_cow_alias_toggle_off_neg() {
 fn let_bound_cow_projected_into_container_link_green() {
     link_prims(
         "(defn f [v] (let [q (vec-set v 1 99)] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f [1 2 3]) 0) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f [1 2 3]) 0) 1)))\n",
     )
     .assert_exit(99);
 }
@@ -311,7 +311,7 @@ fn let_bound_cow_projected_into_container_link_green() {
 fn let_bind_alias_into_container_link_neg() {
     link_prims(
         "(defn f [v] (let [q v] [q]))\n\
-         (defn main [] (Pure (vec-get (vec-get (f [7 8 9]) 0) 0)))\n",
+         (defn main [] (primitives/pure (vec-get (vec-get (f [7 8 9]) 0) 0)))\n",
     )
     .assert_exit(7);
 }
@@ -328,7 +328,7 @@ fn let_bind_alias_into_container_link_neg() {
 fn b2_match_cow_var_pattern_toggle_off_link_neg() {
     link_prims_off(
         "(defn h [v] (match (vec-set v 1 99) [r r]))\n\
-         (defn main [] (Pure (vec-get (h [1 2 3]) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (h [1 2 3]) 1)))\n",
     )
     .assert_exit(99);
 }

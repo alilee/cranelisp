@@ -56,4 +56,4 @@
     (leaf-work lo (copies) 0)
     (add-i64 (reduce-tree lo (mid-of lo hi)) (reduce-tree (mid-of lo hi) hi))))
 
-(defn main [] (Pure (rmod (reduce-tree 0 (leaves)) 251)))
+(defn main [] (primitives/pure (rmod (reduce-tree 0 (leaves)) 251)))

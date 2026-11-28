@@ -17,8 +17,9 @@ these bodies still run; this corpus proves their generated code is unchanged.
 | 04 | `corpus/04_expr_disposition3.cl` | `__expr` §3.11.2-disposition-3 body | `user::__expr` | 0 |
 | 05 | `corpus/05_macro_clause.cl` | non-concretized macro-clause body | `user::twice$macro-clause$0` | 10 |
 
-Every golden also carries the `IO.Pure` Int constructor-instance frame; 05
-also carries the `SList.SCons` Sexp instance frame. The remaining lenient
+`pure` construction is inline; no golden carries an `IO.Pure`
+constructor-instance frame. Entry 05 also carries the `SList.SCons` Sexp
+instance frame. The remaining lenient
 class in the design — a generic template reached by direct compile — has no
 free-standing program that reaches codegen, so it has no e2e golden here.
 
@@ -32,7 +33,7 @@ free-standing program that reaches codegen, so it has no e2e golden here.
 - **Frames** are extracted per `; === CLIF <name> ===` …
   `; === end CLIF <name> ===` block, where `<name>` is the rest of the header
   line: canonical constructor-instance names contain spaces, for example
-  `user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))`.
+  `user::(macros/SList.SCons [macros/Sexp (macros/SList macros/Sexp)] (macros/SList macros/Sexp))`.
   Frames are sorted by name, content **byte-verbatim, NO canonicalization**.
   **Zero frames, a duplicate frame, disagreeing start/end names and a header no
   complete frame accounts for are hard errors.** The dump channel is STDERR.

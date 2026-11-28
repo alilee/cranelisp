@@ -139,13 +139,13 @@ fn trace_panic_unwind_does_not_stick_guard() {
 // extern-primitive children (2), returning count+40 == 42.
 #[test]
 fn trace_linked_binary_match_consumption_runs() {
-    let src = "(import [primitives [Trace TraceCall str-concat str-len Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall str-concat str-len pure]])\n\
          (import [macros [SCons SNil]])\n\
          (defn work [s] (str-len (str-concat \"x\" s)))\n\
          (defn slen [acc xs]\n\
            (match xs [SNil acc (SCons h t) (slen (add-i64 acc 1) t)]))\n\
          (defn main []\n\
-           (Pure (match (trace (work \"ab\"))\n\
+           (primitives/pure (match (trace (work \"ab\"))\n\
              [(TraceCall n p r c ns)\n\
                (match c [SNil 0\n\
                          (SCons h t)\n\
@@ -423,11 +423,11 @@ fn trace_nanos_accessor_resolves_in_repl() {
 // expect Ok + success.
 #[test]
 fn trace_linked_accessor_consume_runs_clean() {
-    let src = "(import [primitives [Trace TraceCall nanos Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall nanos pure]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (defn use-it [n] 0)\n\
-         (defn main [] (Pure (use-it (nanos (trace (work 41))))))\n";
+         (defn main [] (primitives/pure (use-it (nanos (trace (work 41))))))\n";
     let result = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file("prog.cl", src)
@@ -472,11 +472,11 @@ fn trace_linked_accessor_consume_runs_clean() {
 // consume path exits 0 every iteration.
 #[test]
 fn trace_run_mode_accessor_consume_runs_clean() {
-    let src = "(import [primitives [Trace TraceCall nanos Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall nanos pure]])\n\
          (defn id [x] x)\n\
          (defn work [x] (id x))\n\
          (defn use-it [n] 0)\n\
-         (defn main [] (Pure (use-it (nanos (trace (work 41))))))\n";
+         (defn main [] (primitives/pure (use-it (nanos (trace (work 41))))))\n";
     // Run a few times so a non-deterministic regression (a re-introduced
     // double-free racing the allocator) reliably surfaces; kept at 4 to bound
     // per-test wall-clock. A sound consume path exits 0 on every iteration.
@@ -690,7 +690,7 @@ fn trace_adt_names_reachable_via_qualified_path_without_import() {
 // `TraceCall` in the recorded tree; `(fib 12)` makes 465 calls of `fib`, and
 // the primitives in its body are inline, so a complete tree has 465 frames.
 
-const FIB_AND_FRAMES: &str = "(import [primitives [add-i64 sub-i64 lt-i64 Int Pure Trace TraceCall]])\n\
+const FIB_AND_FRAMES: &str = "(import [primitives [add-i64 sub-i64 lt-i64 Int pure Trace TraceCall]])\n\
      (import [macros [SCons SNil]])\n\
      (defn fib [n] (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n\
      (defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))\n";
@@ -843,7 +843,7 @@ fn traced_callee_releases_every_formatted_string_with_sparks_disabled_control() 
 #[test]
 fn trace_records_user_function_calls_in_every_mode() {
     let program = format!(
-        "{FIB_AND_FRAMES}(defn main [] (Pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))\n"
+        "{FIB_AND_FRAMES}(defn main [] (primitives/pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))\n"
     );
     let describe = |out: &helpers::e2e::CrOutput| {
         format!(
@@ -908,7 +908,7 @@ fn s124_spark_stat(stderr: &str, key: &str) -> u64 {
 fn s124_1039_imported_module_control() {
     let src = FIB_AND_FRAMES;
     for mode in ["run", "link", "repl"] {
-        let cr=Cranelisp::new().file("p.cl",src).user("(import [primitives [Pure TraceCall]]) (import [p [fib frames]]) (defn main [] (Pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))").env("CRANELISP_NO_LENIENT","1");
+        let cr=Cranelisp::new().file("p.cl",src).user("(import [primitives [pure TraceCall]]) (import [p [fib frames]]) (defn main [] (primitives/pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))").env("CRANELISP_NO_LENIENT","1");
         let out = match mode {
             "run" => cr.run("user.cl").output(),
             "link" => cr.link_then_run("user.cl").output(),
@@ -942,7 +942,7 @@ fn s124_1038_untraced_sparks_control() {
 }
 
 fn s124_cached_import_trace(mode: &str, no_cache_control: bool) {
-    let main = "(import [primitives [Pure TraceCall]]) (import [p [fib frames]]) (defn main [] (Pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))\n";
+    let main = "(import [primitives [pure TraceCall]]) (import [p [fib frames]]) (defn main [] (primitives/pure (match (trace (fib 3)) [(TraceCall n p r c ns) (frames c)])))\n";
     let invoke = |cr: Cranelisp| match mode {
         "run" => cr.run("user.cl").output(),
         "link" => cr.link_then_run("user.cl").output(),
@@ -1035,8 +1035,8 @@ fn s124_cached_trace_fewer_modules(mode: &str, trace: bool, no_cache: bool) {
     let cr = Cranelisp::new()
         .file("u.cl", &format!("(import [primitives [add-i64 Int Trace TraceCall]])\n(defn inc [:Int n] (add-i64 n 1))\n(defn traced [] {body})"))
         .file("x.cl", "(import [primitives [add-i64 Int]])\n(defn xf [:Int n] (add-i64 n 2))")
-        .file("e1.cl", "(import [primitives [Pure Int add-i64]]) (import [u [traced]]) (import [x [xf]])\n(defn main [] (Pure (add-i64 (traced) (xf 0))))")
-        .file("e2.cl", "(import [primitives [Pure]]) (import [u [traced]])\n(defn main [] (Pure (traced)))");
+        .file("e1.cl", "(import [primitives [pure Int add-i64]]) (import [u [traced]]) (import [x [xf]])\n(defn main [] (primitives/pure (add-i64 (traced) (xf 0))))")
+        .file("e2.cl", "(import [primitives [pure]]) (import [u [traced]])\n(defn main [] (primitives/pure (traced)))");
     // Separate prompt turns finish x before u is requested, without adding
     // an x dependency to u. The batch imports alone leave that order free.
     let seeded = cr
@@ -1112,7 +1112,7 @@ fn s124_1078_no_trace_control_link() {
 
 // The name counter runs after tracing, so it contributes no frames of its own.
 const S124_COUNT_NAMED: &str = r#"
-(import [primitives [Int Pure TraceCall add-i64 sub-i64 mul-i64 str-eq]])
+(import [primitives [Int pure TraceCall add-i64 sub-i64 mul-i64 str-eq]])
 (import [macros [SCons SNil]])
 (defn count-named [wanted xs]
   (match xs
@@ -1186,7 +1186,7 @@ fn s124_library_trace_scope(mode: &str) {
 (import [u [profile]])
 (defn work [] (fib 3))
 (defn main []
-  (Pure (match (profile work) [(TraceCall n p r c ns)
+  (primitives/pure (match (profile work) [(TraceCall n p r c ns)
     (add-i64 (mul-i64 10 (count-named "u/own" c))
       (sub-i64 (frames c) (count-named "u/own" c)))])))
 "#
@@ -1232,7 +1232,7 @@ fn s124_finished_module_trace(mode: &str, import_position: &str) {
 (defn g [h] (trace (h 1)))
 (defmacro boundary [x] x)
 {}
-(defn main [] (boundary (Pure (match (g x/f) [(TraceCall n p r c ns) (count-named "x/f" c)]))))
+(defn main [] (boundary (primitives/pure (match (g x/f) [(TraceCall n p r c ns) (count-named "x/f" c)]))))
 "#,
         if import_position == "above" {
             import
@@ -1326,13 +1326,13 @@ fn s124_finished_module_import_above_repl() {
 fn s124_generic_library_trace(mode: &str, typed: bool, entry_function: bool) {
     let parameter = if typed { ":(Fn [Int] Int) h" } else { "h" };
     let app = format!(
-        r#"(import [primitives [Int Pure TraceCall add-i64]])
+        r#"(import [primitives [Int pure TraceCall add-i64]])
 (import [macros [SCons SNil]])
 (import [m [run]])
 (import [z [zf]])
 (defn af [:Int n] (add-i64 n 1))
 (defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))
-(defn main [] (Pure (match (run {}) [(TraceCall n p r c ns) (add-i64 40 (frames c))])))
+(defn main [] (primitives/pure (match (run {}) [(TraceCall n p r c ns) (add-i64 40 (frames c))])))
 "#,
         if entry_function { "af" } else { "zf" }
     );
@@ -1426,7 +1426,7 @@ fn s124_prelude_child_fixture(prelude_function: bool) -> Cranelisp {
     let name = if prelude_function { "prelude/f" } else { "p/f" };
     let app = format!(
         r#"{S124_COUNT_NAMED}
-(defn main [] (Pure (match (m.c/run f) [(TraceCall n p r c ns) (add-i64 40 (count-named "{name}" c))])))
+(defn main [] (primitives/pure (match (m.c/run f) [(TraceCall n p r c ns) (add-i64 40 (count-named "{name}" c))])))
 "#
     );
     Cranelisp::new()
@@ -1518,7 +1518,7 @@ fn s124_slot_trace(mode: &str, partial: bool, imported: bool) {
         r#"{S124_COUNT_NAMED}
 {binding}
 (defn hof [:(Fn [Int] Int) h] (h 1))
-(defn main [] (Pure (match (trace (hof {value})) [(TraceCall n p r c ns)
+(defn main [] (primitives/pure (match (trace (hof {value})) [(TraceCall n p r c ns)
   (add-i64 40 (add-i64 (mul-i64 10 (count-named "app/hof" c)) (count-named "{module}/{name}" c)))])))
 "#
     );
@@ -1615,7 +1615,7 @@ fn s124_generic_helper_trace(mode: &str) {
 (import [m [run]])
 (import [z [zf]])
 (defn frames [l] (match l [(SCons h t) (add-i64 (match h [(TraceCall n p r c ns) (add-i64 1 (frames c))]) (frames t)) SNil 0]))
-(defn main [] (Pure (match (run zf) [(TraceCall n p r c ns)
+(defn main [] (primitives/pure (match (run zf) [(TraceCall n p r c ns)
   (add-i64 40 (add-i64 (frames c) (mul-i64 10 (add-i64 (count-named "z/zf" c) (count-named "z/zg" c)))))])))
 "#
     );
@@ -1653,7 +1653,7 @@ fn s124_template_frame_name(mode: &str) {
         r#"{S124_COUNT_NAMED}
 (import [m [run]])
 (import [z [zf]])
-(defn main [] (Pure (match (run zf) [(TraceCall n p r c ns)
+(defn main [] (primitives/pure (match (run zf) [(TraceCall n p r c ns)
   (add-i64 40 (count-named "m/helper" c))])))
 "#
     );
@@ -1804,7 +1804,7 @@ fn s124_root_program(body: &str, child: bool) -> String {
         r#"(if (str-eq r "42") 41 40)"#
     };
     format!(
-        r#"(import [primitives [Pure TraceCall str-eq]])
+        r#"(import [primitives [pure TraceCall str-eq]])
 (import [macros [SCons SNil]])
 (defn ident [x] x)
 (defn score [] (match (trace {body}) [(TraceCall n p r c ns) {result}]))
@@ -1817,7 +1817,7 @@ fn s124_root_mode(body: &str, child: bool, mode: &str) {
     let b = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .file("subject.cl", &source)
-        .user("(import [subject [score]])\n(defn main [] (primitives/Pure (score)))\n");
+        .user("(import [subject [score]])\n(defn main [] (primitives/pure (score)))\n");
     match mode {
         "cold" => {
             b.run("user.cl").output().assert_exit(41);
@@ -1945,11 +1945,11 @@ fn s124_trace_root_child_control_repl() {
 // defect: class=unrecorded-value locus=crates/cranelisp-backend/src/compiler/trace_codegen.rs::compile_trace found=S124 owner=/dev fixed=S124/3c5e41ca
 #[test]
 fn s124_trace_root_heap_result_and_balance() {
-    let source = r#"(import [primitives [Pure TraceCall str-eq str-concat]])
+    let source = r#"(import [primitives [pure TraceCall str-eq str-concat]])
 (import [macros [SCons SNil]])
 (defn ident [:primitives/String x] x)
 (defn main []
-  (Pure (match (trace (ident (str-concat "heap-" "result")))
+  (primitives/pure (match (trace (ident (str-concat "heap-" "result")))
     [(TraceCall n p r c ns)
      (match c
        [(SCons child rest)
@@ -2018,7 +2018,7 @@ fn s124_trace_owning(shape: &str, mode: &str, built_inside: bool) {
     };
     let constructed = value.replace("\"heap-\"", "a");
     let source = format!(
-        r#"(import [primitives [Pure String Vec TraceCall str-eq str-concat]])
+        r#"(import [primitives [pure String Vec TraceCall str-eq str-concat]])
 (import [macros [SCons SNil]])
 {declaration}
 (defn ident [:{ty} x] x)
@@ -2029,7 +2029,7 @@ fn s124_trace_owning(shape: &str, mode: &str, built_inside: bool) {
     let b = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .file("subject.cl", &source)
-        .user("(import [subject [score]])\n(defn main [] (primitives/Pure (score)))\n")
+        .user("(import [subject [score]])\n(defn main [] (primitives/pure (score)))\n")
         .env("CRANELISP_RC_STATS", "1")
         .env("CRANELISP_NO_LENIENT", "1");
     let out = match mode {

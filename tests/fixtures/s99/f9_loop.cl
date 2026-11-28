@@ -35,4 +35,4 @@
       (drive (sub-i64 k 1) (add-i64 acc v)))))
 
 (defn main []
-  (Pure (rmod (drive (iters) 0) 1000)))
+  (primitives/pure (rmod (drive (iters) 0) 1000)))

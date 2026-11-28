@@ -15,4 +15,4 @@
   (if (eq-i64 n 0) (Circle 2) (Rect 3 4)))
 
 (defn main []
-  (Pure (add-i64 (area (pick 0)) (area (pick 1)))))
+  (primitives/pure (add-i64 (area (pick 0)) (area (pick 1)))))

@@ -250,7 +250,7 @@ fn assert_run_contract(label: &str, program: &str, expect_exit: i32) {
 #[test]
 fn repro_b_single_sconcat_tail_embed_balances() {
     let program = format!(
-        "{SLIST_PLUMBING}(defn main [] (Pure (slen {})))\n",
+        "{SLIST_PLUMBING}(defn main [] (primitives/pure (slen {})))\n",
         steps(1)
     );
     assert_run_contract("B1 one sconcat, |ys|=2", &program, 2);
@@ -267,12 +267,12 @@ fn repro_b_single_sconcat_tail_embed_balances() {
 #[test]
 fn repro_b_chained_sconcat_residual_does_not_grow_per_call() {
     let two = format!(
-        "{SLIST_PLUMBING}(defn main [] (Pure (slen {})))\n",
+        "{SLIST_PLUMBING}(defn main [] (primitives/pure (slen {})))\n",
         steps(2)
     );
     assert_run_contract("B2 two sconcat calls", &two, 4);
     let three = format!(
-        "{SLIST_PLUMBING}(defn main [] (Pure (slen {})))\n",
+        "{SLIST_PLUMBING}(defn main [] (primitives/pure (slen {})))\n",
         steps(3)
     );
     assert_run_contract("B3 three sconcat calls", &three, 6);
@@ -294,7 +294,7 @@ fn repro_b_longer_embedded_tail_balances() {
          (defn slen [xs] (sfold (fn [n _] (add-i64 n 1)) 0 xs))\n\
          (defn four [] (SCons (SexpSym \"x\") (SCons (SexpBool true) \
          (SCons (SexpSym \"y\") (SCons (SexpBool false) SNil)))))\n\
-         (defn main [] (Pure (slen (macros/sconcat SNil (four)))))\n"
+         (defn main [] (primitives/pure (slen (macros/sconcat SNil (four)))))\n"
     );
     assert_run_contract("B4 one sconcat, |ys|=4", &program, 4);
 }
@@ -397,7 +397,7 @@ fn repro_a_top_level_six_cell_slist_teardown_does_not_abort() {
 // longer reachable, and MUST NOT be freed while it is.
 #[test]
 fn control_slist_built_without_sconcat_balances_green() {
-    let program = format!("{SLIST_PLUMBING}(defn main [] (Pure (slen (two))))\n");
+    let program = format!("{SLIST_PLUMBING}(defn main [] (primitives/pure (slen (two))))\n");
     assert_run_contract("C1 no sconcat", &program, 2);
 }
 

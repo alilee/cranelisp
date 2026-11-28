@@ -1,22 +1,3 @@
-; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
-function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
     gv0 = symbol colocated userextname0
@@ -24,7 +5,6 @@ function %main() -> i64 system_v {
     gv2 = symbol userextname3
     gv3 = symbol userextname3
     gv4 = symbol userextname3
-    gv5 = symbol userextname2
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
@@ -32,6 +12,7 @@ function %main() -> i64 system_v {
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     fn0 = u0:9 sig0
+    fn1 = u0:0 sig5
 
 block0:
     jump block1
@@ -41,7 +22,7 @@ block1:
     v1 = iconst.i64 3
     v2 = call fn0(v0, v1)  ; v1 = 3
     v3 = global_value.i64 gv1
-    v4 = iadd_imm v3, 8
+    v4 = iadd_imm v3, 0
     v5 = load.i64 notrap aligned v4
     v6 = call_indirect sig1, v5(v2)
     v7 = iadd_imm v6, 8
@@ -62,11 +43,14 @@ block1:
     v22 = load.i64 notrap aligned v21
     v23 = call_indirect sig4, v22(v19)
     v24 = iadd v13, v23
-    v25 = global_value.i64 gv5
-    v26 = iadd_imm v25, 0
-    v27 = load.i64 notrap aligned v26
-    v28 = call_indirect sig5, v27(v24)
-    return v28
+    v25 = iconst.i64 0
+    v26 = iconst.i64 24
+    v27 = call fn1(v26)  ; v26 = 24
+    v28 = iconst.i64 0
+    store notrap aligned v28, v27+16  ; v28 = 0
+    store notrap aligned v24, v27+24
+    store notrap aligned v25, v27+32  ; v25 = 0
+    return v27
 }
 ; === end CLIF user::main ===
 ; === CLIF user::shout ===

@@ -33,7 +33,7 @@ fn got_trace_emits_jit_write_event() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (Pure 0))\n")
+        .user("(defn main [] (primitives/pure 0))\n")
         .env("CRANELISP_GOT_TRACE", "1")
         .output();
     out.assert_stderr_contains("JitWrite");
@@ -56,7 +56,7 @@ fn got_trace_emits_linker_write_event_on_cache_hit() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .file("helper.cl", "(defn helper-fn [] 7)\n")
-        .user("(import [helper [helper-fn]])\n(defn main [] (Pure (helper-fn)))\n")
+        .user("(import [helper [helper-fn]])\n(defn main [] (primitives/pure (helper-fn)))\n")
         .output();
     let out = warm
         .run_again()
@@ -96,7 +96,7 @@ fn got_trace_off_path_zero_overhead_neg() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (Pure 0))\n")
+        .user("(defn main [] (primitives/pure 0))\n")
         .output();
     let stderr = &out.stderr;
     assert!(

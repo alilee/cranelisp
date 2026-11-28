@@ -60,13 +60,13 @@ use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 const PAR_CONT_HEAP_CAPTURE: &str = "\
 (platform test-capture)
 (import [platform.test-capture [commutative-noop]])
-(import [primitives [bind Pure str-len str-concat]])
+(import [primitives [bind pure str-len str-concat]])
 (defn g [x] (str-len x))
 (defn main []
   (let [s (str-concat \"ab\" \"cd\")]
     (bind (commutative-noop) (fn [a]
       (bind (commutative-noop) (fn [b]
-        (Pure (primitives/add-i64 (primitives/add-i64 a b)
+        (primitives/pure (primitives/add-i64 (primitives/add-i64 a b)
                                   (primitives/add-i64 (g s) (g s))))))))))
 ";
 
@@ -77,13 +77,13 @@ const PAR_CONT_HEAP_CAPTURE: &str = "\
 const C1_BOUND_INSIDE_CONTINUATION: &str = "\
 (platform test-capture)
 (import [platform.test-capture [commutative-noop]])
-(import [primitives [bind Pure str-len str-concat]])
+(import [primitives [bind pure str-len str-concat]])
 (defn g [x] (str-len x))
 (defn main []
   (bind (commutative-noop) (fn [a]
     (bind (commutative-noop) (fn [b]
       (let [s (str-concat \"ab\" \"cd\")]
-        (Pure (primitives/add-i64 (primitives/add-i64 a b)
+        (primitives/pure (primitives/add-i64 (primitives/add-i64 a b)
                                   (primitives/add-i64 (g s) (g s))))))))))
 ";
 
@@ -93,13 +93,13 @@ const C1_BOUND_INSIDE_CONTINUATION: &str = "\
 const C2_SCALAR_CAPTURE: &str = "\
 (platform test-capture)
 (import [platform.test-capture [commutative-noop]])
-(import [primitives [bind Pure]])
+(import [primitives [bind pure]])
 (defn h [x] (primitives/add-i64 x 0))
 (defn main []
   (let [s 4]
     (bind (commutative-noop) (fn [a]
       (bind (commutative-noop) (fn [b]
-        (Pure (primitives/add-i64 (primitives/add-i64 a b)
+        (primitives/pure (primitives/add-i64 (primitives/add-i64 a b)
                                   (primitives/add-i64 (h s) (h s))))))))))
 ";
 
@@ -110,12 +110,12 @@ const C2_SCALAR_CAPTURE: &str = "\
 const C3_SINGLE_BIND_NO_PAR: &str = "\
 (platform test-capture)
 (import [platform.test-capture [commutative-noop]])
-(import [primitives [bind Pure str-len str-concat]])
+(import [primitives [bind pure str-len str-concat]])
 (defn g [x] (str-len x))
 (defn main []
   (let [s (str-concat \"ab\" \"cd\")]
     (bind (commutative-noop) (fn [a]
-      (Pure (primitives/add-i64 a (primitives/add-i64 (g s) (g s))))))))
+      (primitives/pure (primitives/add-i64 a (primitives/add-i64 (g s) (g s))))))))
 ";
 
 /// The automatic-IO-scheduling opt-out. C4 runs the SUBJECT with it set, so the

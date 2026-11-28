@@ -21,8 +21,8 @@ use helpers::marginal::{Child, Marginal, MarginalPair};
 /// The measured program is deliberately trivial and IDENTICAL on both sides:
 /// the workload under measurement is the prelude's macro invocation, not
 /// anything the program does.
-const TRIVIAL_PROGRAM: &str = "(import [primitives [Pure]])\n\
-     (defn main [] (Pure 0))\n";
+const TRIVIAL_PROGRAM: &str = "(import [primitives [pure]])\n\
+     (defn main [] (primitives/pure 0))\n";
 
 /// A two-module mini-prelude. `macdef.cl` defines the macro, `macuse.cl` is the
 /// only thing that differs between control and subject. Both open with the null

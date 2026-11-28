@@ -445,10 +445,10 @@ fn tr5_program(with_helper: bool) -> String {
         ""
     };
     format!(
-        "(import [primitives [discover-tests Pure None Some]])\n\
+        "(import [primitives [discover-tests pure None Some]])\n\
          {helper}\
          (defn test-t [] (if true None (Some \"t\")))\n\
-         (defn main [] (Pure 7))\n"
+         (defn main [] (primitives/pure 7))\n"
     )
 }
 
@@ -552,8 +552,8 @@ fn run_neg_refuses_discover_tests_reference_restored_from_cache() {
         .file("h.cl", h)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [h [label]])\n\
-             (defn main [] (Pure (label 7)))\n",
+            "(import [primitives [pure]])\n(import [h [label]])\n\
+             (defn main [] (primitives/pure (label 7)))\n",
         )
         .repl()
         .stdin("(import [h [label]])\n")
@@ -867,7 +867,7 @@ fn s124_1063_discover_direct_control() {
 fn s124_discover_batch_location_run() {
     let cr = Cranelisp::new().file(
         "p.cl",
-        "\n\n(defn main [] (primitives/Pure (primitives/vec-len (primitives/discover-tests []))))",
+        "\n\n(defn main [] (primitives/pure (primitives/vec-len (primitives/discover-tests []))))",
     );
     let out = cr.run("p.cl").output();
     assert!(!out.status.success(), "{}{}", out.stdout, out.stderr);
@@ -886,7 +886,7 @@ fn s124_discover_batch_location_run() {
 fn s124_discover_batch_location_link() {
     let cr = Cranelisp::new().file(
         "p.cl",
-        "\n\n(defn main [] (primitives/Pure (primitives/vec-len (primitives/discover-tests []))))",
+        "\n\n(defn main [] (primitives/pure (primitives/vec-len (primitives/discover-tests []))))",
     );
     let out = cr.link("p.cl").output();
     assert!(!out.status.success(), "{}{}", out.stdout, out.stderr);

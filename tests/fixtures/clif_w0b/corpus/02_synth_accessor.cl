@@ -12,4 +12,4 @@
 (deftype Point [:Int x :Int y])
 
 (defn main []
-  (Pure (add-i64 (Point.x (Point 3 7)) (Point.y (Point 3 7)))))
+  (primitives/pure (add-i64 (Point.x (Point 3 7)) (Point.y (Point 3 7)))))

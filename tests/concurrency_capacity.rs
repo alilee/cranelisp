@@ -175,7 +175,7 @@ fn linked_execution_duration_excludes_compilation_and_observes_the_child() {
 
     let run = Cranelisp::new()
         .run("user.cl")
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure 0))\n")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure 0))\n")
         .output()
         .assert_exit(0);
     assert!(
@@ -255,12 +255,12 @@ fn n_distinct_token_poll_leaves_overlap_max_not_sum() {
     let prog = format!(
         "(platform async-demo)\n\
          (import [platform.async-demo [async-read]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind (async-read {d}) (fn [a]\n\
              (bind (async-read {d}) (fn [b]\n\
                (bind (async-read {d}) (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         d = D_MS,
     );
     run_prog(&prog).assert_exit(180);
@@ -292,12 +292,12 @@ fn same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({read} 7 2 {d}) (fn [a]\n\
              (bind ({read} 7 2 {d}) (fn [b]\n\
                (bind ({read} 7 2 {d}) (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POOL_PLATFORM,
         read = POOL_READ,
         d = D_MS,
@@ -341,12 +341,12 @@ fn same_token_capacity_1_blocking_serial_and_source_ordered() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{log}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({log} 9 1 {d} \"a\") (fn [a]\n\
              (bind ({log} 9 1 {d} \"b\") (fn [b]\n\
                (bind ({log} 9 1 {d} \"c\") (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POOL_PLATFORM,
         log = POOL_LOG,
         d = D_MS,
@@ -393,12 +393,12 @@ fn distinct_blocking_effects_sharing_one_token_share_one_pool_nplus1_parks() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read} {write}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({read} 5 2 {d}) (fn [a]\n\
              (bind ({write} 5 2 {d}) (fn [b]\n\
                (bind ({read} 5 2 {d}) (fn [c]\n\
-                 (Pure (add-i64 a (add-i64 b c)))))))))) \n",
+                 (primitives/pure (add-i64 a (add-i64 b c)))))))))) \n",
         plat = POOL_PLATFORM,
         read = POOL_READ,
         write = POOL_WRITE,
@@ -448,11 +448,11 @@ fn mixed_blocking_and_poll_par_overlaps_on_both_pools() {
          (platform async-demo)\n\
          (import [platform.test-capture [commutative-sleep-ms]])\n\
          (import [platform.async-demo [async-read]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind (commutative-sleep-ms {d}) (fn [a]\n\
              (bind (async-read {d}) (fn [b]\n\
-               (Pure (add-i64 a b)))))))\n",
+               (primitives/pure (add-i64 a b)))))))\n",
         d = D_MS,
     );
     run_prog(&prog).assert_exit(120);

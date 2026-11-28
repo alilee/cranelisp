@@ -72,9 +72,9 @@ const USER_EXAMPLE_TURN: &str = "(let [a 1 a (+ a 1)] a)\n";
 /// same shape can be observed through `--run` and `--link` where the result is
 /// the process exit code.
 const USER_EXAMPLE_MODULE: &str = "\
-(import [primitives [add-i64 Pure]])
+(import [primitives [add-i64 pure]])
 (defn main []
-  (Pure (let [a 1 a (add-i64 a 1)] a)))
+  (primitives/pure (let [a 1 a (add-i64 a 1)] a)))
 ";
 
 // The ruling's own example, at the boundary it was stated at (the REPL). The
@@ -134,13 +134,13 @@ fn same_form_rebinding_initializer_reads_preceding_binding_run_and_link() {
 
 /// The two mutually-recursive definitions every program in this section shares.
 const PING_PONG: &str = "\
-(import [primitives [add-i64 sub-i64 lt-i64 Pure]])
+(import [primitives [add-i64 sub-i64 lt-i64 pure]])
 (defn pong [n] (if (lt-i64 n 1) 0 (add-i64 n (ping (sub-i64 n 1)))))
 (defn ping [n] (if (lt-i64 n 1) 0 (add-i64 n (pong (sub-i64 n 1)))))
 ";
 
 fn ping_pong_program(body: &str) -> String {
-    format!("{PING_PONG}(defn f [n]\n{body})\n(defn main [] (Pure (f 3)))\n")
+    format!("{PING_PONG}(defn f [n]\n{body})\n(defn main [] (primitives/pure (f 3)))\n")
 }
 
 // SUBJECT. `a` is bound to an expensive call, then REBOUND to the cheap literal
@@ -459,34 +459,34 @@ fn rebinding_one_spark_with_another_spark_reads_the_rebound_value() {
 // SUBJECT (the user's example shape at heap type): the second initializer reads
 // the first `s`, exactly as `(let [a 1 a (+ a 1)] a)` does.
 const HEAP_READ_PRECEDING_SUBJECT: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [s (str-concat \"h\" \"e\")
         s (str-concat s \"llo\")]
     (str-len s)))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 // SUBJECT's CONTROL, one identifier apart (the first binder `s` → `t`).
 const HEAP_READ_PRECEDING_CONTROL: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [t (str-concat \"h\" \"e\")
         s (str-concat t \"llo\")]
     (str-len s)))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 // The CONTROL's own twin, one identifier from it (`t` → `u`) and likewise
 // rebinding nothing. Paired against the control it gives the instrument's zero
 // polarity on this program shape.
 const HEAP_READ_PRECEDING_CONTROL_TWIN: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [u (str-concat \"h\" \"e\")
         s (str-concat u \"llo\")]
     (str-len s)))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 // SUBJECT, second shape: the rebinding's initializer reads NOTHING, so the
@@ -494,21 +494,21 @@ const HEAP_READ_PRECEDING_CONTROL_TWIN: &str = "\
 // it. Measured separately from the shape above so a repair cannot close one
 // while leaving the other.
 const HEAP_FRESH_REBIND_SUBJECT: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [s (str-concat \"he\" \"llo\")
         s (str-concat \"wor\" \"ld!\")]
     (str-len s)))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 const HEAP_FRESH_REBIND_CONTROL: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [t (str-concat \"he\" \"llo\")
         s (str-concat \"wor\" \"ld!\")]
     (str-len s)))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 // Face 2 — the SILENT face. Nothing aborts, the result is right, no diagnostic
@@ -620,25 +620,25 @@ fn rename_only_pair_measures_zero_marginal_control() {
 // ===========================================================================
 
 const TAIL_TRANSFER_SAME_NAME_SUBJECT: &str = "\
-(import [primitives [eq-i64 str-concat str-len sub-i64 Pure]])
+(import [primitives [eq-i64 str-concat str-len sub-i64 pure]])
 (defn go [n x]
   (if (eq-i64 n 0)
       (str-len x)
       (let [x (str-concat \"discard\" \"ed\")
             x (str-concat \"carry\" \"ing\")]
         (go (sub-i64 n 1) x))))
-(defn main [] (Pure (go 1 (str-concat \"in\" \"put\"))))
+(defn main [] (primitives/pure (go 1 (str-concat \"in\" \"put\"))))
 ";
 
 const TAIL_TRANSFER_RENAME_CONTROL: &str = "\
-(import [primitives [eq-i64 str-concat str-len sub-i64 Pure]])
+(import [primitives [eq-i64 str-concat str-len sub-i64 pure]])
 (defn go [n x]
   (if (eq-i64 n 0)
       (str-len x)
       (let [y (str-concat \"discard\" \"ed\")
             x (str-concat \"carry\" \"ing\")]
         (go (sub-i64 n 1) x))))
-(defn main [] (Pure (go 1 (str-concat \"in\" \"put\"))))
+(defn main [] (primitives/pure (go 1 (str-concat \"in\" \"put\"))))
 ";
 
 // spec: spec/04-expressions.md §4.3 — the later `x` binding shadows the
@@ -729,23 +729,23 @@ fn tail_transfer_releases_the_displaced_same_name_binder_run_and_link() {
 // SUBJECT — `s` is String, then rebound to the Int its own initializer derives
 // from the displaced String (§4.3 sequential visibility, `x1 == x2`).
 const HEAP_TYPE_CHANGING_SUBJECT: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [s (str-concat \"h\" \"e\")
         s (str-len s)]
     s))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 // CONTROL, one identifier apart (first binder `s` → `t`): the same two types in
 // the same order, binding nothing twice.
 const HEAP_TYPE_CHANGING_CONTROL: &str = "\
-(import [primitives [str-len str-concat Pure]])
+(import [primitives [str-len str-concat pure]])
 (defn f [n]
   (let [t (str-concat \"h\" \"e\")
         s (str-len t)]
     s))
-(defn main [] (Pure (f 1)))
+(defn main [] (primitives/pure (f 1)))
 ";
 
 // The value assertion is the second half of this cell and is not redundant with

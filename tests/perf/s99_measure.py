@@ -68,7 +68,7 @@ def gen_fixtures():
     ph = os.path.join(WORK, "f4_hard.cl"); open(ph, "w").write(f4.replace(COMMITTED, HARD)); files["f4_hard"] = ph
     # no-op baseline for count subtraction
     pn = os.path.join(WORK, "noop.cl")
-    open(pn, "w").write("(import [primitives [*]])\n(defn main [] (Pure 0))\n")
+    open(pn, "w").write("(import [primitives [*]])\n(defn main [] (primitives/pure 0))\n")
     files["noop"] = pn
     return files
 

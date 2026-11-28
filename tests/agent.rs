@@ -4745,7 +4745,7 @@ mod s123_defaults {
         for mode in ["run", "test", "link"] {
             let c = base().file(
                 "user.cl",
-                "(import [primitives [*]])\n(defn main [] (Pure 0))\n(defn test-ok [] None)\n",
+                "(import [primitives [*]])\n(defn main [] (primitives/pure 0))\n(defn test-ok [] None)\n",
             );
             let c = match mode {
                 "run" => c.run("user.cl"),

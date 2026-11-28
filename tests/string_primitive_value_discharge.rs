@@ -28,13 +28,13 @@ fn str_len_releases_once(label: &str, n: &str) {
         .file(
             "user.cl",
             &format!(
-                "(import [primitives [Pure add-i64 str-concat str-len]])\n\
+                "(import [primitives [pure add-i64 str-concat str-len]])\n\
                  (defn call1 [f s] (f s))\n\
                  (defn user-len [s] (str-len s))\n\
                  (defn main []\n\
                    (let [s (str-concat \"ab\" \"cd\")\n\
                          n {n}]\n\
-                     (Pure (add-i64 n (str-len s)))))\n"
+                     (primitives/pure (add-i64 n (str-len s)))))\n"
             ),
         )
         .run("user.cl")
@@ -83,7 +83,7 @@ fn user_function_value_releases_its_argument_once() {
 fn program(calls: [&str; 6]) -> Child {
     let [len, eq, neq, starts, ends, contains] = calls;
     Child::new(&format!(
-        "(import [primitives [Pure add-i64 str-concat str-len str-eq neq-string\n\
+        "(import [primitives [pure add-i64 str-concat str-len str-eq neq-string\n\
                               starts-with? ends-with? contains?]])\n\
          (defn call1 [f s] (f s))\n\
          (defn call2 [f a b] (f a b))\n\
@@ -96,7 +96,7 @@ fn program(calls: [&str; 6]) -> Child {
                    (add-i64 (b2i {neq})\n\
                    (add-i64 (b2i {starts})\n\
                    (add-i64 (b2i {ends}) (b2i {contains}))))))]\n\
-             (Pure (add-i64 n (add-i64 (str-len s) (str-len t))))))\n"
+             (primitives/pure (add-i64 n (add-i64 (str-len s) (str-len t))))))\n"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1")
 }
@@ -135,7 +135,7 @@ fn string_primitives_as_function_values_balance_against_direct_calls() {
     pair.assert_balanced("String primitives called through function values");
 }
 
-const IMPORTS: &str = "(import [primitives [Pure String add-i64 str-concat str-len str-eq \
+const IMPORTS: &str = "(import [primitives [pure String add-i64 str-concat str-len str-eq \
                                           string-identity]])\n\
                        (defn call1 [f s] (f s))\n\
                        (defn call2 [f a b] (f a b))\n\
@@ -168,7 +168,7 @@ fn both_live(u: &str) -> String {
     format!(
         "(let [s (str-concat \"ab\" \"cd\")\n\
                u {u}]\n\
-           (Pure (add-i64 (str-len u) (str-len s))))"
+           (primitives/pure (add-i64 (str-len u) (str-len s))))"
     )
 }
 
@@ -201,11 +201,11 @@ fn string_identity_over_a_temporary_balances_against_a_bound_argument() {
         4,
         child(
             "",
-            "(let [s (str-concat \"ab\" \"cd\") u (string-identity s)] (Pure (str-len u)))",
+            "(let [s (str-concat \"ab\" \"cd\") u (string-identity s)] (primitives/pure (str-len u)))",
         ),
         child(
             "",
-            "(let [u (string-identity (str-concat \"ab\" \"cd\"))] (Pure (str-len u)))",
+            "(let [u (string-identity (str-concat \"ab\" \"cd\"))] (primitives/pure (str-len u)))",
         ),
     )
     .assert_balanced("string-identity over a temporary");
@@ -266,7 +266,7 @@ fn owned_extern_as_function_value_balances_against_its_direct_call() {
             "(let [s (str-concat \"ab\" \"cd\")\n\
                    t (str-concat \"x\" \"\")\n\
                    u {u}]\n\
-               (Pure (add-i64 (str-len u) (add-i64 (str-len s) (str-len t)))))"
+               (primitives/pure (add-i64 (str-len u) (add-i64 (str-len s) (str-len t)))))"
         )
     };
     measure(
@@ -290,7 +290,7 @@ fn curried_only_read_extern_balances_against_its_direct_call() {
             "(let [s (str-concat \"ab\" \"cd\")\n\
                    t (str-concat \"ab\" \"cd\")\n\
                    n (b2i {b})]\n\
-               (Pure (add-i64 n (add-i64 (str-len s) (str-len t)))))"
+               (primitives/pure (add-i64 n (add-i64 (str-len s) (str-len t)))))"
         )
     };
     measure(

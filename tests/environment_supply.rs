@@ -1,7 +1,7 @@
 mod helpers;
 use helpers::e2e::{CrOutput, Cranelisp};
 
-const PROGRAM: &str = "(import [primitives [*]])\n(defn main [] (Pure (vec-len [10 20 30])))\n(defn test-ok [] None)\n";
+const PROGRAM: &str = "(import [primitives [*]])\n(defn main [] (primitives/pure (vec-len [10 20 30])))\n(defn test-ok [] None)\n";
 
 fn base() -> Cranelisp {
     let c = base_without_xdg();
@@ -513,7 +513,7 @@ fn multiline_model_neg_does_not_forge_second_physical_state_line() {
 }
 
 fn linked_switch(key: &str, at_link: bool, at_run: bool) -> CrOutput {
-    let spark_program = "(import [primitives [*]])\n(defn ping [n d] (if (le-i64 n 0) (div-i64 10 d) (pong (sub-i64 n 1) d)))\n(defn pong [n d] (if (le-i64 n 0) (div-i64 10 d) (ping (sub-i64 n 1) d)))\n(defn compute [d] (let [a (ping 3 d) c (ping a 1)] c))\n(defn main [] (Pure (sub-i64 (compute 1) 7)))\n";
+    let spark_program = "(import [primitives [*]])\n(defn ping [n d] (if (le-i64 n 0) (div-i64 10 d) (pong (sub-i64 n 1) d)))\n(defn pong [n d] (if (le-i64 n 0) (div-i64 10 d) (ping (sub-i64 n 1) d)))\n(defn compute [d] (let [a (ping 3 d) c (ping a 1)] c))\n(defn main [] (primitives/pure (sub-i64 (compute 1) 7)))\n";
     let program = if key == "CRANELISP_SPARK_STATS" {
         spark_program
     } else {

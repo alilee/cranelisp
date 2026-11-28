@@ -570,10 +570,10 @@ fn combined(out: &helpers::e2e::CrOutput) -> String {
 #[test]
 fn same_named_ctors_dotted_pattern_position_disambiguates() {
     run_through_all_modes(
-        "(import [primitives [Pure add-i64]])\n\
+        "(import [primitives [pure add-i64]])\n\
          (deftype (Maybe a) Nil (Some [:a v]))\n\
          (deftype (Option a) Nil (Some [:a v]))\n\
-         (defn main [] (Pure\n\
+         (defn main [] (primitives/pure\n\
            (add-i64 (match (Maybe.Some 7) [(Maybe.Some x) x Maybe.Nil 0])\n\
                     (match Maybe.Nil [(Maybe.Some x) x Maybe.Nil 3]))))\n",
         PreludeVariant::None,
@@ -594,10 +594,10 @@ fn same_named_ctors_dotted_pattern_position_disambiguates() {
 #[test]
 fn contested_bare_pattern_resolves_against_determined_scrutinee() {
     run_through_all_modes(
-        "(import [primitives [Pure add-i64]])\n\
+        "(import [primitives [pure add-i64]])\n\
          (deftype (Option a) None (Some [:a v]))\n\
          (deftype (Maybe a) None (Some [:a v]) (MOnly [:a w]))\n\
-         (defn main [] (Pure\n\
+         (defn main [] (primitives/pure\n\
            (add-i64\n\
              (add-i64\n\
                (match (Maybe.Some 7) [(Some x) x None 0 (MOnly w) w])\n\
@@ -623,11 +623,11 @@ fn contested_bare_pattern_indeterminate_scrutinee_poisoned_neg() {
     let neg = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (deftype (Maybe a) None (Some [:a v]))\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn f [m] (match m [(Some x) x None 0]))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output();
@@ -659,12 +659,12 @@ fn contested_bare_pattern_indeterminate_scrutinee_poisoned_neg() {
     Cranelisp::new()
         .file(
             "ctrl.cl",
-            "(import [primitives [Pure Int add-i64]])\n\
+            "(import [primitives [pure Int add-i64]])\n\
              (deftype (Maybe a) None (Some [:a v]))\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn f [m] (match m [(Maybe.Some x) x Maybe.None 0]))\n\
              (defn main []\n\
-               (Pure (add-i64 (f (Maybe.Some 9)) (f Maybe.None))))\n",
+               (primitives/pure (add-i64 (f (Maybe.Some 9)) (f Maybe.None))))\n",
         )
         .run("ctrl.cl")
         .output()
@@ -683,9 +683,9 @@ fn match_over_dotted_covered_ctor_not_false_nonexhaustive_neg() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (deftype (Maybe a) Nil (Some [:a v]))\n\
-             (defn main [] (Pure\n\
+             (defn main [] (primitives/pure\n\
                (match (Maybe.Some 5) [(Maybe.Some x) x Maybe.Nil 0])))\n",
         )
         .run("main.cl")
@@ -710,10 +710,10 @@ fn match_over_dotted_covered_ctor_not_false_nonexhaustive_neg() {
 #[test]
 fn type_named_like_other_types_ctor_matches_its_own_ctors() {
     run_through_all_modes(
-        "(import [primitives [Pure Int add-i64]])\n\
+        "(import [primitives [pure Int add-i64]])\n\
          (deftype Qtok (Qa [:Int n]) Qb)\n\
          (deftype Qwrap (Qtok [:Int x]))\n\
-         (defn main [] (Pure\n\
+         (defn main [] (primitives/pure\n\
            (add-i64 (match (Qtok.Qa 1) [(Qtok.Qa n) n Qtok.Qb 64])\n\
            (add-i64 (match Qtok.Qb [(Qtok.Qa n) n Qtok.Qb 2])\n\
            (add-i64 (match (Qa 4) [(Qa n) n Qb 64])\n\
@@ -731,9 +731,9 @@ fn type_named_like_other_types_ctor_matches_its_own_ctors() {
 #[test]
 fn fq_ctor_pattern_position_autoloads() {
     let aux = "(import [primitives [Int]])\n(deftype Circle [:Int r])\n";
-    let entry = "(import [primitives [Pure Int]])\n\
+    let entry = "(import [primitives [pure Int]])\n\
                  (defn area [:shapes/Circle c] :Int (match c [(shapes/Circle r) r]))\n\
-                 (defn main [] (Pure (area (shapes/Circle 8))))\n";
+                 (defn main [] (primitives/pure (area (shapes/Circle 8))))\n";
     Cranelisp::new()
         .file("shapes.cl", aux)
         .file("main.cl", entry)
@@ -773,13 +773,13 @@ fn fq_ctor_pattern_position_autoloads() {
 // defect: class=resolver-mirror locus=cranelisp-backend/src/compiler/match_codegen.rs::compile_constructor_pattern (context-free re-resolution ignores typecheck's pattern_ctors — differing tag/arity twin resolves to the wrong candidate) found=S109 owner=/dev
 #[test]
 fn contested_bare_pattern_differing_layout_twins_both_orders() {
-    let body = "(defn main [] (Pure\n\
+    let body = "(defn main [] (primitives/pure\n\
                   (add-i64 (match (Maybe.Some 5) [(Some x) x None 0])\n\
                            (match (Opt2.Some 10 20) [(Some x y) (add-i64 x y) None2 0]))))\n";
     // Leg 1 — source order: Maybe then Opt2.
     run_through_all_modes(
         &format!(
-            "(import [primitives [Pure add-i64 Int]])\n\
+            "(import [primitives [pure add-i64 Int]])\n\
              (deftype (Maybe a) None (Some [:a v]))\n\
              (deftype Opt2 (Some [:Int a :Int b]) None2)\n\
              {body}"
@@ -790,7 +790,7 @@ fn contested_bare_pattern_differing_layout_twins_both_orders() {
     // Leg 2 — source order swapped: Opt2 then Maybe. Order-invariance: identical.
     run_through_all_modes(
         &format!(
-            "(import [primitives [Pure add-i64 Int]])\n\
+            "(import [primitives [pure add-i64 Int]])\n\
              (deftype Opt2 (Some [:Int a :Int b]) None2)\n\
              (deftype (Maybe a) None (Some [:a v]))\n\
              {body}"
@@ -827,10 +827,10 @@ fn xmod_same_named_ctor_pattern_deterministic_across_runs() {
             )
             .file(
                 "xmod.cl",
-                "(import [primitives [Pure]])\n\
+                "(import [primitives [pure]])\n\
                  (import [maybemod [Maybe]])\n\
                  (import [optmod [Option]])\n\
-                 (defn main [] (Pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
+                 (defn main [] (primitives/pure (match (Maybe.Some 7) [(Some x) x MNone 0])))\n",
             )
             .run("xmod.cl")
             .output();

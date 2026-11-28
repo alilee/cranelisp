@@ -36,7 +36,7 @@ fn s124_splice_without_prelude_or_import_run() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .user(
-            "(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))\n(defn main [] (primitives/Pure (add-all 3 4)))\n",
+            "(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))\n(defn main [] (primitives/pure (add-all 3 4)))\n",
         )
         .run("user.cl")
         .output()
@@ -48,7 +48,7 @@ fn s124_splice_without_prelude_or_import_run() {
 fn s124_splice_without_prelude_or_import_repl() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
-        .stdin("(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))\n(defn main [] (primitives/Pure (add-all 3 4)))\n(main)\n/quit\n")
+        .stdin("(defmacro add-all [& xs] `(primitives/add-i64 ~@xs))\n(defn main [] (primitives/pure (add-all 3 4)))\n(main)\n/quit\n")
         .output()
         .assert_ok()
         .assert_stdout_contains(":primitives/Int 7")
@@ -477,11 +477,11 @@ fn batch_defmacro_begin_splicing() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (defmacro define-pair [name a b] \
                `(begin (defn ~name [] (add-i64 ~a ~b))))\n\
              (define-pair add-them 20 22)\n\
-             (defn main [] (Pure (add-them)))",
+             (defn main [] (primitives/pure (add-them)))",
         )
         .output()
         .assert_exit(42);
@@ -499,10 +499,10 @@ fn batch_macro_uses_earlier_macro() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (defmacro inc [x] `(add-i64 ~x 1))\n\
              (defmacro inc2 [x] `(inc (inc ~x)))\n\
-             (defn main [] (Pure (inc2 40)))",
+             (defn main [] (primitives/pure (inc2 40)))",
         )
         .output()
         .assert_exit(42);
@@ -672,7 +672,7 @@ fn runtime_error_during_expansion_clean_report() {
         repl_prims("(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(boom 42)\n(add-i64 800 13)\n");
     let run = Cranelisp::new()
         .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
-        .user("(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(defn main [] (Pure (boom 42)))\n")
+        .user("(defmacro boom [x] (let [_ (div-i64 1 0)] x))\n(defn main [] (primitives/pure (boom 42)))\n")
         .run("user.cl")
         .output();
     let mut failures = Vec::new();
@@ -708,10 +708,10 @@ fn runtime_error_during_expansion_clean_report() {
 fn macro_body_calls_helper_function_in_run_mode() {
     Cranelisp::new()
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn make-seven [] 7)\n\
              (defmacro lucky [] `(make-seven))\n\
-             (defn main [] (Pure (lucky)))",
+             (defn main [] (primitives/pure (lucky)))",
         )
         .run("user.cl")
         .output()
@@ -726,10 +726,10 @@ fn macro_body_calls_helper_function_in_run_mode() {
 fn macro_calls_another_macro_reaches_fixed_point() {
     Cranelisp::new()
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defmacro wrap-add [a b] `(primitives/add-i64 ~a ~b))\n\
              (defmacro add-three [x] `(wrap-add ~x 3))\n\
-             (defn main [] (Pure (add-three 39)))",
+             (defn main [] (primitives/pure (add-three 39)))",
         )
         .run("user.cl")
         .output()
@@ -744,12 +744,12 @@ fn macro_calls_another_macro_reaches_fixed_point() {
 fn multiple_macros_interleaved_with_defns_compose() {
     Cranelisp::new()
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn triple [x] (primitives/add-i64 x (primitives/add-i64 x x)))\n\
              (defmacro apply-triple [x] `(triple ~x))\n\
              (defn six [] (apply-triple 2))\n\
              (defmacro make-six [] `(six))\n\
-             (defn main [] (Pure (make-six)))",
+             (defn main [] (primitives/pure (make-six)))",
         )
         .run("user.cl")
         .output()
@@ -806,11 +806,11 @@ fn macro_used_before_defmacro_is_unresolved() {
 fn macro_body_drives_three_level_call_graph() {
     Cranelisp::new()
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn a [] 10)\n\
              (defn b [] (primitives/add-i64 (a) 11))\n\
              (defmacro get-b [] `(b))\n\
-             (defn main [] (Pure (get-b)))",
+             (defn main [] (primitives/pure (get-b)))",
         )
         .run("user.cl")
         .output()
@@ -838,7 +838,7 @@ fn cross_module_macro_calls_helper_in_other_module() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [wrap-seven]])\n(import [primitives [Pure]])\n(defn main [] (Pure (wrap-seven)))",
+            "(import [macmod [wrap-seven]])\n(import [primitives [pure]])\n(defn main [] (primitives/pure (wrap-seven)))",
         )
         .file(
             "macmod.cl",
@@ -861,7 +861,7 @@ fn cross_module_macro_transitive_via_reexport_chain() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [get-val]])\n(import [primitives [Pure]])\n(defn main [] (Pure (get-val)))",
+            "(import [macmod [get-val]])\n(import [primitives [pure]])\n(defn main [] (primitives/pure (get-val)))",
         )
         .file(
             "macmod.cl",
@@ -887,7 +887,7 @@ fn cross_module_macro_emits_qualified_reference() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [call-util]])\n(import [primitives [Pure]])\n(defn main [] (Pure (call-util)))",
+            "(import [macmod [call-util]])\n(import [primitives [pure]])\n(defn main [] (primitives/pure (call-util)))",
         )
         .file(
             "macmod.cl",
@@ -913,7 +913,7 @@ fn cross_module_macro_drives_transitive_call_graph() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [macmod [get-result]])\n(import [primitives [Pure]])\n(defn main [] (Pure (get-result)))",
+            "(import [macmod [get-result]])\n(import [primitives [pure]])\n(defn main [] (primitives/pure (get-result)))",
         )
         .file(
             "macmod.cl",
@@ -1111,7 +1111,7 @@ fn unquote_splicing_at_top_level_desugars() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend found=S110 owner=/dev
 #[test]
 fn quote_desugars_in_run_mode() {
-    run_prims("(defn f [] '(1 2))\n(defn main [] (Pure 0))\n").assert_ok();
+    run_prims("(defn f [] '(1 2))\n(defn main [] (primitives/pure 0))\n").assert_ok();
 }
 
 // QQ-5 — GREEN control: quasiquote in a defmacro clause body keeps working
@@ -1291,7 +1291,7 @@ fn unused_macro_run(declaration: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .file(
             "app.cl",
-            &format!("{declaration}\n(defn main [] (primitives/Pure 0))\n"),
+            &format!("{declaration}\n(defn main [] (primitives/pure 0))\n"),
         )
         .run("app.cl")
         .with_prelude(PreludeVariant::None)
@@ -1381,7 +1381,7 @@ fn macro_nullary_quoted_body_control() {
     Cranelisp::new()
         .file(
             "app.cl",
-            "(defmacro good [] (quote 7))\n(defn main [] (primitives/Pure (good)))",
+            "(defmacro good [] (quote 7))\n(defn main [] (primitives/pure (good)))",
         )
         .run("app.cl")
         .with_prelude(PreludeVariant::None)
@@ -1441,7 +1441,7 @@ fn s124_1066_scalar_run() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (quote-sexp (SexpInt 3)))))"#,
+(defn main [] (primitives/pure (k (quote-sexp (SexpInt 3)))))"#,
         "run",
         5,
     );
@@ -1455,7 +1455,7 @@ fn s124_1066_scalar_link() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (quote-sexp (SexpInt 3)))))"#,
+(defn main [] (primitives/pure (k (quote-sexp (SexpInt 3)))))"#,
         "link",
         5,
     );
@@ -1469,7 +1469,7 @@ fn s124_1066_scalar_repl() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (quote-sexp (SexpInt 3)))))"#,
+(defn main [] (primitives/pure (k (quote-sexp (SexpInt 3)))))"#,
         "repl",
         5,
     );
@@ -1482,7 +1482,7 @@ fn s124_1066_string_control_run() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (quote-sexp (SexpStr "abc")))))"#,
+(defn main [] (primitives/pure (k (quote-sexp (SexpStr "abc")))))"#,
         "run",
         5,
     );
@@ -1495,7 +1495,7 @@ fn s124_1066_string_control_link() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (quote-sexp (SexpStr "abc")))))"#,
+(defn main [] (primitives/pure (k (quote-sexp (SexpStr "abc")))))"#,
         "link",
         5,
     );
@@ -1508,7 +1508,7 @@ fn s124_1066_string_control_repl() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (quote-sexp (SexpStr "abc")))))"#,
+(defn main [] (primitives/pure (k (quote-sexp (SexpStr "abc")))))"#,
         "repl",
         5,
     );
@@ -1521,7 +1521,7 @@ fn s124_1066_value_control_run() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
+(defn main [] (primitives/pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
         "run",
         5,
     );
@@ -1534,7 +1534,7 @@ fn s124_1066_value_control_link() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
+(defn main [] (primitives/pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
         "link",
         5,
     );
@@ -1547,7 +1547,7 @@ fn s124_1066_value_control_repl() {
         Cranelisp::new(),
         r#"(import [primitives [*]]) (import [macros [*]])
 (defn k [s] (match s [(SexpList xs) 5 _ 99]))
-(defn main [] (Pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
+(defn main [] (primitives/pure (k (let [q quote-sexp] (q (SexpInt 3))))))"#,
         "repl",
         5,
     );
@@ -1561,7 +1561,7 @@ fn s124_r1_trailing() {
         .file(
             "p.cl",
             r#"(defmacro m [] (quote 7) (quote 9))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1582,7 +1582,7 @@ fn s124_r1_rest_tail() {
         .file(
             "p.cl",
             r#"(defmacro m [&r x] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1603,7 +1603,7 @@ fn s124_r1_spaced_rest() {
         .file(
             "p.cl",
             r#"(defmacro m [& r x] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1624,7 +1624,7 @@ fn s124_r1_two_rest() {
         .file(
             "p.cl",
             r#"(defmacro m [&r &s] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1645,7 +1645,7 @@ fn s124_r1_nested_tail() {
         .file(
             "p.cl",
             r#"(defmacro m [[&r x]] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1666,7 +1666,7 @@ fn s124_r1_nested_two() {
         .file(
             "p.cl",
             r#"(defmacro m [[&r &s]] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1686,7 +1686,7 @@ fn s124_r1_clause_control() {
         .file(
             "p.cl",
             r#"(defmacro m ([] (quote 1) 2))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1706,7 +1706,7 @@ fn s124_r1_missing_name_control() {
         .file(
             "p.cl",
             r#"(defmacro m [x &] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1726,7 +1726,7 @@ fn s124_r1_rest_destructure_control() {
         .file(
             "p.cl",
             r#"(defmacro m [& [a b]] (quote 7))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1746,7 +1746,7 @@ fn s124_r1_destructure_control() {
         .file(
             "p.cl",
             r#"(defmacro m [[a b] & r] (quote 7))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1760,7 +1760,7 @@ fn s124_r1_rest_control() {
         .file(
             "p.cl",
             r#"(defmacro m [x &r] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1774,7 +1774,7 @@ fn s124_r1_nested_control() {
         .file(
             "p.cl",
             r#"(defmacro m [[x &r]] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1788,7 +1788,7 @@ fn s124_r1_zero_control() {
         .file(
             "p.cl",
             r#"(defmacro m [] (quote 1))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1807,7 +1807,7 @@ fn s124_q3_clauses() {
  ([x]
  42)
  ([x y] (quote 9)))
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1824,7 +1824,7 @@ fn s124_q3_shorthand() {
             "p.cl",
             r#"(defmacro n [x]
  42)
-(defn main [] (primitives/Pure 0))"#,
+(defn main [] (primitives/pure 0))"#,
         )
         .run("p.cl")
         .output();
@@ -1993,7 +1993,7 @@ fn s124_macro_sibling(mode: &str, outer: &str, control: &str) {
         "run" | "link" => {
             let cr = cr.file(
                 "app.cl",
-                &format!("{import}\n(defn main [] (primitives/Pure ({call} 2)))\n"),
+                &format!("{import}\n(defn main [] (primitives/pure ({call} 2)))\n"),
             );
             let out = if mode == "run" {
                 cr.run("app.cl").output()
@@ -2120,7 +2120,7 @@ fn s124_macro_sibling_outer_qualified_link() {
     s124_macro_sibling("link", "outer", "qualified");
 }
 
-const S124_SCONCAT_MAIN: &str = "(defn slen [xs] (match xs [macros/SNil 0 (macros/SCons x tail) (primitives/add-i64 1 (slen tail))]))\n(defn main [] (primitives/Pure (slen (macros/sconcat (macros/SCons (macros/SexpInt 1) macros/SNil) (macros/SCons (macros/SexpInt 2) macros/SNil)))))\n";
+const S124_SCONCAT_MAIN: &str = "(defn slen [xs] (match xs [macros/SNil 0 (macros/SCons x tail) (primitives/add-i64 1 (slen tail))]))\n(defn main [] (primitives/pure (slen (macros/sconcat (macros/SCons (macros/SexpInt 1) macros/SNil) (macros/SCons (macros/SexpInt 2) macros/SNil)))))\n";
 
 // spec: spec/09-macros.md §9.7.3 — T-SCONCAT-PUBLIC no prelude or import, run
 #[test]
@@ -2147,4 +2147,623 @@ fn s124_sconcat_public_no_import_link() {
 fn s124_sconcat_public_info() {
     Cranelisp::new().stdin("/info macros/sconcat\n").output().assert_ok()
         .assert_stdout_contains("(Fn [(macros/SList macros/Sexp) (macros/SList macros/Sexp)] (macros/SList macros/Sexp))");
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_macro_private_outside_run() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defmacro- helper [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.run("user.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("private") && diag.contains("helper"),
+        "private expansion reference refused: {diag}"
+    );
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_macro_private_submodule_run() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(mod child)
+(defmacro- helper [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m.child [value]]) (defn main [] (primitives/pure (value)))"#);
+    let out = cr.run("user.cl").output();
+    out.assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_macro_public_run() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defmacro helper [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.run("user.cl").output();
+    out.assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_function_private_outside_run() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defn- helper [x] (primitives/add-i64 x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.run("user.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("private") && diag.contains("helper"),
+        "private expansion reference refused: {diag}"
+    );
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_function_private_submodule_run() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(mod child)
+(defn- helper [x] (primitives/add-i64 x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m.child [value]]) (defn main [] (primitives/pure (value)))"#);
+    let out = cr.run("user.cl").output();
+    out.assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_function_public_run() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defn helper [x] (primitives/add-i64 x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.run("user.cl").output();
+    out.assert_exit(42);
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_macro_private_outside_repl() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defmacro- helper [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.stdin("(main)\n").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("private") && diag.contains("helper"),
+        "private expansion reference refused: {diag}"
+    );
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_macro_private_submodule_repl() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(mod child)
+(defmacro- helper [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m.child [value]]) (defn main [] (primitives/pure (value)))"#);
+    let out = cr.stdin("(main)\n").output();
+    out.assert_ok().assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_macro_public_repl() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defmacro helper [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.stdin("(main)\n").output();
+    out.assert_ok().assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_function_private_outside_repl() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defn- helper [x] (primitives/add-i64 x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.stdin("(main)\n").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("private") && diag.contains("helper"),
+        "private expansion reference refused: {diag}"
+    );
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_function_private_submodule_repl() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(mod child)
+(defn- helper [x] (primitives/add-i64 x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m.child [value]]) (defn main [] (primitives/pure (value)))"#);
+    let out = cr.stdin("(main)\n").output();
+    out.assert_ok().assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/09-macros.md §9.3.4
+#[test]
+fn s125_q4_function_public_repl() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            r#"(defn helper [x] (primitives/add-i64 x 1))
+(defmacro outer [x] `(m/helper ~x))
+"#,
+        )
+        .file(
+            "m/child.cl",
+            "(import [super [outer]]) (defn value [] (outer 41))",
+        );
+    let cr = cr.user(r#"(import [m [outer]]) (defn main [] (primitives/pure (outer 41)))"#);
+    let out = cr.stdin("(main)\n").output();
+    out.assert_ok().assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: repl/spec.md §5.5, §16.6
+#[test]
+fn s125_1036_cold_written_location() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            "(defmacro make [] `(defn bad [] (primitives/discover-tests [])))
+
+(make)
+",
+        )
+        .file(
+            "p.cl",
+            "(import [m [bad]])
+(defn main [] (primitives/pure 0))
+",
+        );
+    let out = cr.run("p.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "invalid runtime discover-tests refused: {diag}"
+    );
+    assert!(
+        diag.contains("m.cl:3:"),
+        "refusal uses written expansion origin: {diag}"
+    );
+    for offset in regex::Regex::new(r"at (\d+)\.\.(\d+)")
+        .unwrap()
+        .captures_iter(&diag)
+    {
+        assert!(
+            offset[1].parse::<usize>().unwrap() < 1_000_000
+                && offset[2].parse::<usize>().unwrap() < 1_000_000,
+            "no synthetic offset: {diag}"
+        );
+    }
+}
+
+// spec: repl/spec.md §5.5, §16.6
+// defect: class=error-swallow locus=crates/cranelisp-backend/src/cache/serialize.rs found=S125 owner=/dev
+#[test]
+fn s125_1036_cached_written_location() {
+    let cr = Cranelisp::new()
+        .file(
+            "m.cl",
+            "(defmacro make [] `(defn bad [] (primitives/discover-tests [])))
+
+(make)
+",
+        )
+        .file(
+            "p.cl",
+            "(import [m [bad]])
+(defn main [] (primitives/pure 0))
+",
+        );
+    let first = cr
+        .stdin(
+            "(import [m [bad]])
+",
+        )
+        .output()
+        .assert_ok();
+    assert!(
+        first.tmp_exists(".cranelisp-cache/m.o"),
+        "macro module cached: {}{}",
+        first.stdout,
+        first.stderr
+    );
+    let cr = first.run_again().env("CRANELISP_MODULE_TRACE", "1");
+    let out = cr.run("p.cl").output();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("module-trace: cache hit (.meta valid) for m"),
+        "restore precondition: {diag}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "invalid runtime discover-tests refused: {diag}"
+    );
+    assert!(
+        diag.contains("m.cl:3:"),
+        "refusal uses written expansion origin: {diag}"
+    );
+    for offset in regex::Regex::new(r"at (\d+)\.\.(\d+)")
+        .unwrap()
+        .captures_iter(&diag)
+    {
+        assert!(
+            offset[1].parse::<usize>().unwrap() < 1_000_000
+                && offset[2].parse::<usize>().unwrap() < 1_000_000,
+            "no synthetic offset: {diag}"
+        );
+    }
+}
+
+// spec: spec/09-macros.md §9.3.4
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S125 owner=/dev
+#[test]
+fn s125_1100_expand_parity_preserves_user_argument() {
+    let out = Cranelisp::new()
+        .file(
+            "d.cl",
+            "(defmacro inner [x] `(primitives/add-i64 ~x 1))
+(defmacro outer [x] `(inner ~x))
+",
+        )
+        .stdin(
+            "(import [d [outer]])
+(defn local [] 41)
+/expand (outer (local))
+(outer (local))
+",
+        )
+        .output()
+        .assert_ok();
+    let expansion = out.stdout.split("; user> ").nth(3).unwrap_or(&out.stdout);
+    assert!(
+        expansion.contains("local") && !expansion.contains("d/local"),
+        "user argument stays bare: {}",
+        out.stdout
+    );
+    out.assert_stdout_contains(":primitives/Int 42")
+        .assert_stdout_does_not_contain("undefined");
+}
+
+// spec: spec/09-macros.md §9.3.4
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S125 owner=/dev
+#[test]
+fn s125_1100_selective_derive_stdlib_conformance() {
+    Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .stdin(
+            "(import [derive [derive]])
+(import [compare.eq [Eq =]])
+(derive [Eq] (deftype Colour Red Blue))
+(= Red Red)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Bool true")
+        .assert_stdout_does_not_contain("undefined");
+}
+
+// spec: spec/09-macros.md §9.12.1 — T-0863: a shrinking checkpoint retires surplus clauses.
+#[test]
+fn shrinking_macro_redefinition_retires_surplus_clauses_neg() {
+    let out = repl_prims(
+        "(defmacro m ([x] (macros/SexpInt 11)) ([x y] (macros/SexpInt 22)))\n\
+         (defmacro m [x] (macros/SexpInt 33))\n\
+         (m 0)\n\
+         (m 0 0)\n",
+    )
+    .assert_ok();
+    let turns: Vec<_> = out.stdout.split("user>").collect();
+    let call = turns.get(3).copied().unwrap_or("");
+    let refused = turns.get(4).copied().unwrap_or("");
+    assert!(
+        call.contains(":primitives/Int 33"),
+        "new clause must be active: {}",
+        out.stdout
+    );
+    assert!(
+        refused.contains("no matching clause")
+            && refused.contains("clauses accept 1 argument(s)")
+            && !refused.contains(":primitives/Int 22"),
+        "surplus clause must be retired, leaving arity 1: {}",
+        out.stdout
+    );
+}
+
+// spec: spec/09-macros.md §9.12.1 — T-0863: a failed multi-clause checkpoint changes no prior clause.
+#[test]
+fn failed_multi_clause_macro_redefinition_keeps_every_prior_clause_neg() {
+    let out = repl_prims(
+        "(defmacro k ([x] (macros/SexpInt 11)) ([x y] (macros/SexpInt 22)))\n\
+         (defmacro k ([x] (macros/SexpInt 33)) ([x y] (add-i64 1 \"nope\")) ([x y z] (macros/SexpInt 44)))\n\
+         (k 0)\n\
+         (k 0 0)\n\
+         (k 0 0 0)\n",
+    ).assert_ok();
+    let turns: Vec<_> = out.stdout.split("user>").collect();
+    let failed = turns.get(2).copied().unwrap_or("");
+    let one = turns.get(3).copied().unwrap_or("");
+    let two = turns.get(4).copied().unwrap_or("");
+    let three = turns.get(5).copied().unwrap_or("");
+    assert!(
+        failed.to_lowercase().contains("error"),
+        "candidate must fail its checkpoint: {}",
+        out.stdout
+    );
+    assert!(
+        one.contains(":primitives/Int 11") && !one.contains(":primitives/Int 33"),
+        "first old clause must remain: {}",
+        out.stdout
+    );
+    assert!(
+        two.contains(":primitives/Int 22"),
+        "second old clause must remain: {}",
+        out.stdout
+    );
+    assert!(
+        three.contains("no matching clause")
+            && three.contains("1 or 2")
+            && !three.contains(":primitives/Int 44"),
+        "failed third clause must never publish: {}",
+        out.stdout
+    );
+}
+
+// spec: spec/09-macros.md §9.6; spec/08-modules.md §8.7.3 — T-0863: emitted definitions retain visibility.
+#[test]
+fn macro_emitted_private_definition_not_importable_neg() {
+    let library = r#"(defmacro emit []
+  `(begin (defn pub-a [] 1) (defn- priv-b [] 42) (defn pub-c [] (primitives/add-i64 (pub-a) (priv-b)))))
+(emit)
+"#;
+    let make = || {
+        Cranelisp::new()
+            .with_prelude(PreludeVariant::PrimitivesOnly)
+            .file("lib.cl", library)
+    };
+    make()
+        .user("(import [lib [pub-c]]) (defn main [] (primitives/pure (pub-c)))")
+        .run("user.cl")
+        .output()
+        .assert_exit(43);
+    let refused = make()
+        .user("(import [lib [priv-b]]) (defn main [] (primitives/pure (priv-b)))")
+        .run("user.cl")
+        .output();
+    assert!(
+        matches!(refused.status.code(), Some(c) if c != 0),
+        "private import must fail without a signal: {:?}",
+        refused.status
+    );
+    assert!(
+        refused.stderr.contains("'priv-b' is not public in 'lib'"),
+        "private emitted name must be refused: {}{}",
+        refused.stdout,
+        refused.stderr
+    );
+}
+
+fn arg_scope_case(
+    expression: &str,
+    caller_imports_primitive: bool,
+    run: bool,
+) -> helpers::e2e::CrOutput {
+    let caller_import = if caller_imports_primitive {
+        "(import [primitives [add-i64]])\n"
+    } else {
+        ""
+    };
+    let cr = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("d.cl", "(import [primitives [add-i64]])\n(defmacro pass [x] x)\n(defmacro inc [x] `(add-i64 ~x 1))\n");
+    if run {
+        cr.user(&format!("(import [d [pass inc]])\n{caller_import}(defn main [] (primitives/pure {expression}))\n"))
+            .run("user.cl").output()
+    } else {
+        cr.stdin(&format!(
+            "(import [d [pass inc]])\n{caller_import}{expression}\n"
+        ))
+        .output()
+    }
+}
+
+fn assert_arg_scope_refused(out: &helpers::e2e::CrOutput, expression: &str, run: bool) {
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("undefined variable: add-i64")
+            && !out.stdout.contains(":primitives/Int 3")
+            && out.status.code() == Some(if run { 1 } else { 0 }),
+        "§8.6.1: an unimported caller argument must be refused, never evaluated as 3; status {:?}\n{diag}",
+        out.status
+    );
+    if run {
+        assert!(
+            diag.contains("user.cl:2:") && !diag.contains("d.cl:"),
+            "refusal must locate the caller's form: {diag}"
+        );
+    } else {
+        let spans = regex::Regex::new(r"at (\d+)\.\.(\d+)").unwrap();
+        let span = spans
+            .captures(&diag)
+            .unwrap_or_else(|| panic!("refusal must have a caller span: {diag}"));
+        let start: usize = span[1].parse().unwrap();
+        let end: usize = span[2].parse().unwrap();
+        assert!(
+            start < end && end <= expression.len(),
+            "refusal span must lie in the caller's form: {diag}"
+        );
+    }
+}
+
+fn assert_arg_scope_three(out: helpers::e2e::CrOutput, run: bool) {
+    let out = if run {
+        out.assert_exit(3)
+    } else {
+        out.assert_ok().assert_stdout_contains(":primitives/Int 3")
+    };
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        !diag.to_lowercase().contains("error:"),
+        "valid expansion must evaluate without refusals: {diag}"
+    );
+}
+
+// spec: spec/08-modules.md §8.6.1 — T-ARG-SCOPE
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S125 owner=/dev
+#[test]
+fn s125_arg_scope_unimported_argument_refused_repl() {
+    let expression = "(pass (add-i64 1 2))";
+    let out = arg_scope_case(expression, false, false);
+    assert_arg_scope_refused(&out, expression, false);
+}
+
+// spec: spec/08-modules.md §8.6.1 — T-ARG-SCOPE bare-call control
+#[test]
+fn s125_arg_scope_bare_call_refused_control_repl() {
+    let expression = "(add-i64 1 2)";
+    let out = arg_scope_case(expression, false, false);
+    assert_arg_scope_refused(&out, expression, false);
+}
+
+// spec: spec/08-modules.md §8.6.1 — T-ARG-SCOPE caller-import control
+#[test]
+fn s125_arg_scope_caller_import_control_repl() {
+    assert_arg_scope_three(arg_scope_case("(pass (add-i64 1 2))", true, false), false);
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-ARG-SCOPE template-reference control
+#[test]
+fn s125_arg_scope_template_dependency_control_repl() {
+    assert_arg_scope_three(arg_scope_case("(inc 2)", false, false), false);
+}
+
+// spec: spec/08-modules.md §8.6.1 — T-ARG-SCOPE
+// defect: class=wrong-scope-lookup locus=src/process_form/macro_resolution.rs found=S125 owner=/dev
+#[test]
+fn s125_arg_scope_unimported_argument_refused_run() {
+    let expression = "(pass (add-i64 1 2))";
+    let out = arg_scope_case(expression, false, true);
+    assert_arg_scope_refused(&out, expression, true);
+}
+
+// spec: spec/08-modules.md §8.6.1 — T-ARG-SCOPE bare-call control
+#[test]
+fn s125_arg_scope_bare_call_refused_control_run() {
+    let expression = "(add-i64 1 2)";
+    let out = arg_scope_case(expression, false, true);
+    assert_arg_scope_refused(&out, expression, true);
+}
+
+// spec: spec/08-modules.md §8.6.1 — T-ARG-SCOPE caller-import control
+#[test]
+fn s125_arg_scope_caller_import_control_run() {
+    assert_arg_scope_three(arg_scope_case("(pass (add-i64 1 2))", true, true), true);
+}
+
+// spec: spec/09-macros.md §9.3.4 — T-ARG-SCOPE template-reference control
+#[test]
+fn s125_arg_scope_template_dependency_control_run() {
+    assert_arg_scope_three(arg_scope_case("(inc 2)", false, true), true);
 }

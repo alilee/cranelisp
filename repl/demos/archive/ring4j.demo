@@ -52,7 +52,7 @@
 
 ; These prints are Sequential — the compiler preserves source order
 
-(do (print "first") (print "second") (Pure 0))
+(do (print "first") (print "second") (pure 0))
 
 ; Trait methods as first-class values — operators are ordinary symbols
 

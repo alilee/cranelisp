@@ -230,14 +230,14 @@ fn declared_trait_bound_is_checked_at_the_call_site() {
             .file(
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure Int]])\n\
+                    "(import [primitives [pure Int]])\n\
                      (import [(zz z) []])\n\
                      (deftrait Ts (ts [self] Int))\n\
                      (impl Ts Int (defn ts [x] x))\n\
                      (deftype U [:Int n])\n\
                      {u_impl}\
                      {f}\n\
-                     (defn main [] (Pure (f {arg})))\n"
+                     (defn main [] (primitives/pure (f {arg})))\n"
                 ),
             )
             .file(
@@ -256,11 +256,11 @@ fn declared_trait_bound_is_checked_at_the_call_site() {
             .file(
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure Int]])\n\
+                    "(import [primitives [pure Int]])\n\
                      (import [(zz z) []])\n\
                      (deftype U [:Int n])\n\
                      (defn g [] 1)\n\
-                     (defn main [] (Pure (z/f {arg})))\n"
+                     (defn main [] (primitives/pure (z/f {arg})))\n"
                 ),
             )
             .file(
@@ -753,7 +753,7 @@ fn trait_constraint_annotation_unaffected_by_free_var_rule() {
 fn defn_param_bare_free_var_quantifies_and_uses_at_two_types() {
     run_through_all_modes(
         "(defn id [:a x] x)\n\
-         (defn main [] (Pure (add-i64 (id 5) (str-len (id \"ab\")))))",
+         (defn main [] (primitives/pure (add-i64 (id 5) (str-len (id \"ab\")))))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -846,7 +846,7 @@ fn defn_param_free_var_nested_in_applied_type() {
     run_through_all_modes(
         "(deftype (Box a) [:a v])\n\
          (defn unbox [:(Box a) b] (v b))\n\
-         (defn main [] (Pure (add-i64 (unbox (Box 5)) (str-len (unbox (Box \"ab\"))))))",
+         (defn main [] (primitives/pure (add-i64 (unbox (Box 5)) (str-len (unbox (Box \"ab\"))))))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -927,7 +927,7 @@ fn defn_param_two_distinct_free_vars_independent() {
     // All-modes: mixed Int/String arguments type-check and return the Int.
     run_through_all_modes(
         "(defn fst2 [:a x :b y] x)\n\
-         (defn main [] (Pure (fst2 5 \"hi\")))",
+         (defn main [] (primitives/pure (fst2 5 \"hi\")))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(5);
@@ -1124,10 +1124,10 @@ fn written_var_concrete_ascription_pins() {
     );
 
     // All-modes value equivalence: the body-ascribed fn computes end-to-end.
-    // `main` returns `(Pure (str-len (f "ab")))` = `(Pure 5)` ⇒ exit 5;
-    // `success()` was the wrong assertion for a nonzero-`Pure` `main`.
+    // `main` returns `(primitives/pure (str-len (f "ab")))` = `(primitives/pure 5)` ⇒ exit 5;
+    // `success()` was the wrong assertion for a nonzero-`pure` `main`.
     run_through_all_modes(
-        "(defn f [:a x] :a \"hello\")\n(defn main [] (Pure (str-len (f \"ab\"))))",
+        "(defn f [:a x] :a \"hello\")\n(defn main [] (primitives/pure (str-len (f \"ab\"))))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(5);
@@ -1165,10 +1165,10 @@ fn bare_vars_tied_by_body_merge() {
     );
 
     // All-modes value equivalence: the merged identity computes end-to-end.
-    // `main` returns `(Pure (g 1 2))` = `(Pure 2)` ⇒ exit 2; `success()` was the
-    // wrong assertion for a nonzero-`Pure` `main`.
+    // `main` returns `(primitives/pure (g 1 2))` = `(primitives/pure 2)` ⇒ exit 2; `success()` was the
+    // wrong assertion for a nonzero-`pure` `main`.
     run_through_all_modes(
-        "(defn g [:a x :b y] :a y)\n(defn main [] (Pure (g 1 2)))",
+        "(defn g [:a x :b y] :a y)\n(defn main [] (primitives/pure (g 1 2)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(2);
@@ -1204,12 +1204,12 @@ fn applied_annotation_bare_var_pins_through_ctor() {
     );
 
     // All-modes value equivalence: `a := Int` pins through `Box` end-to-end.
-    // `main` returns `(Pure (v (h (Box 7))))` = `(Pure 7)` ⇒ exit 7; `success()`
-    // was the wrong assertion for a nonzero-`Pure` `main`.
+    // `main` returns `(primitives/pure (v (h (Box 7))))` = `(primitives/pure 7)` ⇒ exit 7; `success()`
+    // was the wrong assertion for a nonzero-`pure` `main`.
     run_through_all_modes(
         "(deftype (Box a) [:a v])\n\
          (defn h [:(Box Int) b] :(Box a) b)\n\
-         (defn main [] (Pure (v (h (Box 7)))))",
+         (defn main [] (primitives/pure (v (h (Box 7)))))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -1281,7 +1281,7 @@ fn written_var_body_use_pins_freely() {
 
     // All-modes value equivalence: the pinned identity computes end-to-end.
     run_through_all_modes(
-        "(defn f [:a x] (add-i64 1 x))\n(defn main [] (Pure (f 5)))",
+        "(defn f [:a x] (add-i64 1 x))\n(defn main [] (primitives/pure (f 5)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(6);
@@ -1320,7 +1320,7 @@ fn qualified_lowercase_annotation_unknown_type_not_minted_neg() {
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [:user/int x] x)\n(defn main [] (Pure 0))\n")
+        .user("(defn f [:user/int x] x)\n(defn main [] (primitives/pure 0))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
@@ -1412,7 +1412,7 @@ fn constraint_param_body_narrow_skolem_escape_neg() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(&format!(
-            "{NUM2_FIXTURE}(defn f6 [:Num2 x] (add-i64 1 x))\n(defn main [] (Pure 0))\n"
+            "{NUM2_FIXTURE}(defn f6 [:Num2 x] (add-i64 1 x))\n(defn main [] (primitives/pure 0))\n"
         ))
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
@@ -1499,7 +1499,7 @@ fn returned_rank1_polymorphic_fn_accepted() {
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn mk [] (fn [:b y] y))\n(defn main [] (Pure 0))\n")
+        .user("(defn mk [] (fn [:b y] y))\n(defn main [] (primitives/pure 0))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
@@ -1576,7 +1576,7 @@ fn lambda_applied_in_place_at_generic_arg_accepted() {
 
     // All-modes value: the in-place-instantiated identity computes end-to-end.
     run_through_all_modes(
-        "(defn f1 [x] ((fn [:b y] y) x))\n(defn main [] (Pure (f1 7)))",
+        "(defn f1 [x] ((fn [:b y] y) x))\n(defn main [] (primitives/pure (f1 7)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -1621,7 +1621,7 @@ fn let_stored_rank1_fn_returned_accepted() {
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn mk3 [] (let [g (fn [:b y] y)] g))\n(defn main [] (Pure 0))\n")
+        .user("(defn mk3 [] (let [g (fn [:b y] y)] g))\n(defn main [] (primitives/pure 0))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
@@ -1669,7 +1669,7 @@ fn passed_uninstantiated_poly_fn_unpinned_ambiguity_neg() {
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn takes [g] 0)\n(defn mk4 [] (takes (fn [:b y] y)))\n(defn main [] (Pure 0))\n")
+        .user("(defn takes [g] 0)\n(defn mk4 [] (takes (fn [:b y] y)))\n(defn main [] (primitives/pure 0))\n")
         .output();
     let rcomb = format!("{}{}", run.stdout, run.stderr);
     assert!(
@@ -1718,7 +1718,7 @@ fn let_stored_polymorphic_fn_applied_in_place_accepted() {
     );
 
     run_through_all_modes(
-        "(defn f3 [] (let [g (fn [:b y] y)] (g 3)))\n(defn main [] (Pure (f3)))",
+        "(defn f3 [] (let [g (fn [:b y] y)] (g 3)))\n(defn main [] (primitives/pure (f3)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
@@ -1755,7 +1755,7 @@ fn single_poly_instance_used_at_two_types_value_restriction_neg() {
             cl.stdin(&format!("{definitions}{expression}\n")).output()
         } else {
             let cl = cl.user(&format!(
-                "{definitions}(defn main [] (Pure (let [pair {expression}] 0)))\n"
+                "{definitions}(defn main [] (primitives/pure (let [pair {expression}] 0)))\n"
             ));
             let cl = if mode == "run" {
                 cl.run("user.cl")
@@ -1825,7 +1825,7 @@ fn rank2_argument_applied_at_two_types_neg() {
 fn result_only_var_unused_named_wrapper_accepted() {
     let program = "(defn constf [x] (fn [y] x))\n\
                    (defn g [] (constf 5))\n\
-                   (defn main [] (Pure 0))\n";
+                   (defn main [] (primitives/pure 0))\n";
     let repl = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin(&format!("{program}(main)\n"))
@@ -1866,7 +1866,7 @@ fn result_only_var_unresolved_use_ambiguity_not_rank1_neg() {
             cl.stdin(&format!("{definitions}{expression}\n")).output()
         } else {
             let cl = cl.user(&format!(
-                "{definitions}(defn main [] (Pure {expression}))\n"
+                "{definitions}(defn main [] (primitives/pure {expression}))\n"
             ));
             let cl = if mode == "run" {
                 cl.run("user.cl")
@@ -1932,7 +1932,7 @@ fn bare_var_value_position_pins_to_concrete() {
     );
 
     run_through_all_modes(
-        "(defn f [] :a 5)\n(defn main [] (Pure (f)))",
+        "(defn f [] :a 5)\n(defn main [] (primitives/pure (f)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(5);
@@ -2012,7 +2012,7 @@ fn concrete_ascription_resolves_return_type_dispatch_int() {
         out.stdout
     );
     run_through_all_modes(
-        &format!("{ZEROABLE_FIXTURE}(defn main [] (Pure :Int (zed)))"),
+        &format!("{ZEROABLE_FIXTURE}(defn main [] (primitives/pure :Int (zed)))"),
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(0);
@@ -2042,7 +2042,7 @@ fn concrete_ascription_resolves_return_type_dispatch_float() {
             cl.link("user.cl")
         }
         .user(&format!(
-            "{ZEROABLE_FIXTURE}(defn main [] (Pure :Float (zed)))\n"
+            "{ZEROABLE_FIXTURE}(defn main [] (primitives/pure :Float (zed)))\n"
         ))
         .output();
         let c = format!("{}{}", built.stdout, built.stderr);
@@ -2069,7 +2069,7 @@ fn context_resolves_return_type_dispatch() {
         out.stdout
     );
     run_through_all_modes(
-        &format!("{ZEROABLE_FIXTURE}(defn main [] (Pure (add-i64 (zed) 5)))"),
+        &format!("{ZEROABLE_FIXTURE}(defn main [] (primitives/pure (add-i64 (zed) 5)))"),
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(5);
@@ -2124,7 +2124,9 @@ fn unresolved_return_type_dispatch_ambiguity_error_neg() {
         } else {
             cl.link("user.cl")
         }
-        .user(&format!("{ZEROABLE_FIXTURE}(defn main [] (Pure (zed)))\n"))
+        .user(&format!(
+            "{ZEROABLE_FIXTURE}(defn main [] (primitives/pure (zed)))\n"
+        ))
         .output();
         let c = format!("{}{}", out.stdout, out.stderr);
         assert!(
@@ -2258,12 +2260,12 @@ fn multi_arity_overload_call_in_let_not_spuriously_ambiguous() {
         .run("user.cl")
         .user(
             "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
-             (defn main [] (let [r (h 7)] (Pure r)))\n",
+             (defn main [] (let [r (h 7)] (primitives/pure r)))\n",
         )
         .output();
     assert!(
         run.status.code() == Some(7),
-        "B1 mode control: `main` = `(Pure (h 7))` via `let` MUST compile+run to \
+        "B1 mode control: `main` = `(primitives/pure (h 7))` via `let` MUST compile+run to \
          exit 7 under `--run` (it does today — hence the REPL reject is a \
          mode-divergent spurious rejection); got exit {:?}:\n{}{}",
         run.status.code(),
@@ -2274,7 +2276,7 @@ fn multi_arity_overload_call_in_let_not_spuriously_ambiguous() {
 
 // spec: spec/03-types.md §3.11.1 — MUST: an unpinned polymorphic value in a
 // codegen-reaching position is REJECTED ("add an annotation"). BLOCKER B2
-// (wrong-accept). Under `--run`, `(defn main [] (let [u []] (Pure (h 7))))` —
+// (wrong-accept). Under `--run`, `(defn main [] (let [u []] (primitives/pure (h 7))))` —
 // with the unpinned `(Vec a)` binding `u` — exits 7 instead of dying with the
 // §3.11.1 ambiguity: the spec-MUST reject is BYPASSED. `regeneralize_only_
 // polymorphic` runs AFTER the §3.11 gate, so a `main` spuriously-polymorphic at
@@ -2293,13 +2295,13 @@ fn unpinned_vec_in_main_calling_overload_rejected_run_neg() {
         .run("user.cl")
         .user(
             "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
-             (defn main [] (let [u []] (Pure (h 7))))\n",
+             (defn main [] (let [u []] (primitives/pure (h 7))))\n",
         )
         .output();
     let bc = format!("{}{}", bad.stdout, bad.stderr);
     assert!(
         bad.status.code() != Some(7),
-        "B2: `(defn main [] (let [u []] (Pure (h 7))))` binds an UNPINNED \
+        "B2: `(defn main [] (let [u []] (primitives/pure (h 7))))` binds an UNPINNED \
          `(Vec a)` (`u`) — §3.11.1 MUST reject it; it MUST NOT silently exit 7 \
          (wrong-accept); got exit {:?}:\n{bc}",
         bad.status.code()
@@ -2311,13 +2313,13 @@ fn unpinned_vec_in_main_calling_overload_rejected_run_neg() {
     );
 
     // Concrete control (GREEN now): the SAME shape without the overload call —
-    // `(Pure 3)` in place of `(Pure (h 7))` — correctly dies §3.11.1 (exit 1,
+    // `(primitives/pure 3)` in place of `(primitives/pure (h 7))` — correctly dies §3.11.1 (exit 1,
     // "ambiguous … polymorphic value bound in `main`"). This proves the gate
     // fires for the non-overload case; only the deferred-overload variant leaks.
     let ctrl = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (let [u []] (Pure 3)))\n")
+        .user("(defn main [] (let [u []] (primitives/pure 3)))\n")
         .output();
     let cc = format!("{}{}", ctrl.stdout, ctrl.stderr);
     assert!(
@@ -2350,7 +2352,7 @@ fn multi_clause_body_let_bound_resolved_overload_dropped_compiles() {
     run_through_all_modes(
         "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
          (defn g ([:Int a] (let [r (h 7)] a)) ([:Int a :Int b] a))\n\
-         (defn main [] (Pure (g 3)))\n",
+         (defn main [] (primitives/pure (g 3)))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
@@ -2363,7 +2365,7 @@ fn multi_clause_body_let_bound_resolved_overload_returned_compiles() {
     run_through_all_modes(
         "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
          (defn g ([:Int a] (let [r (h 7)] r)) ([:Int a :Int b] a))\n\
-         (defn main [] (Pure (g 3)))\n",
+         (defn main [] (primitives/pure (g 3)))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -2467,7 +2469,7 @@ fn s124_trait_scalar_program(declaration: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .user(&format!(
-            "{declaration}\n(defn main [] (primitives/Pure 0))\n"
+            "{declaration}\n(defn main [] (primitives/pure 0))\n"
         ))
         .run("user.cl")
         .output()

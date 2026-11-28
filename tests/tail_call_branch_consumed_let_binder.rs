@@ -30,7 +30,7 @@ use helpers::marginal::{Child, Marginal, MarginalPair};
 
 fn program(keep: &str) -> String {
     format!(
-        "(import [primitives [Pair Some None Pure str-concat add-i64 eq-i64 vec-len \
+        "(import [primitives [Pair Some None pure str-concat add-i64 eq-i64 vec-len \
                               vec-get vec-push]])\n\
          (defn t [] (if true None (Some \"x\")))\n\
          (defn run-one [pair] (match pair [(Pair name run) name]))\n\
@@ -43,7 +43,7 @@ fn program(keep: &str) -> String {
          (defn main []\n\
            (let [pairs [(Pair (str-concat \"a\" \"b\") t)]\n\
                  out (sel pairs {keep} 0 [])]\n\
-             (Pure (vec-len out))))\n"
+             (primitives/pure (vec-len out))))\n"
     )
 }
 
@@ -101,7 +101,7 @@ fn let_binder_consumed_on_the_taken_branch_of_a_tail_argument_control() {
 // ACT-1021 marginal pairs
 // ---------------------------------------------------------------------------
 
-const IMPORTS: &str = "(import [primitives [Pair Some None Pure str-concat add-i64 eq-i64 \
+const IMPORTS: &str = "(import [primitives [Pair Some None pure str-concat add-i64 eq-i64 \
                                           vec-len vec-get vec-push]])\n";
 
 /// A `--run` child of `IMPORTS` + `defs`, with the seam checks armed.
@@ -141,7 +141,7 @@ fn d1(keep: &str) -> Child {
          (defn main []\n\
            (let [pairs [(Pair (str-concat \"a\" \"b\") t)]\n\
                  out (sel pairs {keep} 0 [])]\n\
-             (Pure (vec-len out))))\n"
+             (primitives/pure (vec-len out))))\n"
     ))
 }
 
@@ -176,7 +176,7 @@ fn d2(keep: &str) -> Child {
          (defn main []\n\
            (let [pairs [(Pair (str-concat \"a\" \"b\") t)]\n\
                  out (sel pairs {keep} 0 [])]\n\
-             (Pure (vec-len out))))\n"
+             (primitives/pure (vec-len out))))\n"
     ))
 }
 
@@ -225,7 +225,7 @@ fn two_slots_with(base: &str, step: &str) -> Child {
            (if (eq-i64 n 0)\n\
                {base}\n\
                {step}))\n\
-         (defn main [] (Pure (go 3 true (vec-push [] 1) (vec-push [] 9))))\n"
+         (defn main [] (primitives/pure (go 3 true (vec-push [] 1) (vec-push [] 9))))\n"
     ))
 }
 
@@ -280,7 +280,7 @@ fn match_forward(arm: &str) -> Child {
                (go (add-i64 n -1) o\n\
                  (match o [(Some s) {arm} None (vec-push lines \"z\")]))))\n\
          (defn main []\n\
-           (Pure (go 3 (Some (str-concat \"a\" \"b\"))\n\
+           (primitives/pure (go 3 (Some (str-concat \"a\" \"b\"))\n\
                        (vec-push (vec-push (vec-push [] \"a\") \"b\") \"c\"))))\n"
     ))
 }
@@ -408,7 +408,7 @@ fn build_loop(steps: i64) -> Child {
            (if (eq-i64 i n) v (build (vec-push v i) (add-i64 i 1) n)))\n\
          (defn main []\n\
            (let [out (build (vec-push (vec-push [] 7) 7) 0 {steps})]\n\
-             (Pure (add-i64 (vec-len out) (vec-get out (add-i64 (vec-len out) -1))))))\n"
+             (primitives/pure (add-i64 (vec-len out) (vec-get out (add-i64 (vec-len out) -1))))))\n"
     ))
 }
 

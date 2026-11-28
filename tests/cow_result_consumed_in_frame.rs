@@ -34,7 +34,7 @@ use helpers::marginal::{Child, Marginal, MarginalPair};
 /// checks armed.
 fn armed(defs: &str) -> Child {
     Child::new(&format!(
-        "(import [primitives [Pure add-i64 eq-i64 vec-len vec-push vec-set]])\n{defs}"
+        "(import [primitives [pure add-i64 eq-i64 vec-len vec-push vec-set]])\n{defs}"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1")
 }
@@ -60,7 +60,7 @@ fn measure(label: &str, control: (Child, i32), subject: (Child, i32)) -> Margina
 /// `f` applied to a fresh [1].
 fn on_fresh_vec(body: &str) -> Child {
     armed(&format!(
-        "(defn f [p] {body})\n(defn main [] (Pure (f (vec-push [] 1))))\n"
+        "(defn f [p] {body})\n(defn main [] (primitives/pure (f (vec-push [] 1))))\n"
     ))
 }
 
@@ -88,7 +88,7 @@ fn parameter_pushed_at_its_last_use_and_consumed_in_frame_balances() {
 fn let_chain(body: &str) -> Child {
     armed(&format!(
         "(defn f [] (let [v (vec-push [] 1) w (vec-push v 0)] {body}))\n\
-         (defn main [] (Pure (f)))\n"
+         (defn main [] (primitives/pure (f)))\n"
     ))
 }
 
@@ -117,7 +117,7 @@ fn let_intermediate_loop(steps: i64) -> Child {
            (if (eq-i64 n 0)\n\
                (vec-len (vec-push v 0))\n\
                (let [w (vec-push v n)] (go (add-i64 n -1) w))))\n\
-         (defn main [] (Pure (go {steps} (vec-push [] 1))))\n"
+         (defn main [] (primitives/pure (go {steps} (vec-push [] 1))))\n"
     ))
 }
 
@@ -172,7 +172,7 @@ fn parameter_set_at_its_last_use_and_forwarded_by_a_match_arm_balances() {
     let on_two_elements = |body: &str| {
         armed(&format!(
             "(defn f [v] {body})\n\
-             (defn main [] (Pure (f (vec-push (vec-push [] 1) 2))))\n"
+             (defn main [] (primitives/pure (f (vec-push (vec-push [] 1) 2))))\n"
         ))
     };
     measure(

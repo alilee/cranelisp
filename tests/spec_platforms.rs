@@ -69,7 +69,7 @@ fn workspace_stdio_dll() -> PathBuf {
 // stdout-bound output into an in-memory capture buffer rather than writing to
 // stdout. The integration is observable via differential stdout: nothing from
 // the captured `print` reaches stdout, while the program completes cleanly
-// and exits with the value-returning `Pure`.
+// and exits with the value-returning `pure`.
 // (carry: legacy/sketch_port.rs::sketch_platform_capture_print_hello)
 #[test]
 fn platform_print_via_test_capture() {
@@ -78,8 +78,8 @@ fn platform_print_via_test_capture() {
             "main.cl",
             "(platform test-capture)\n\
              (import [platform.test-capture [*]])\n\
-             (import [primitives [bind Pure]])\n\
-             (defn main [] (bind (print \"hello\") (fn [_] (Pure 42))))\n",
+             (import [primitives [bind pure]])\n\
+             (defn main [] (bind (print \"hello\") (fn [_] (primitives/pure 42))))\n",
         )
         .use_workspace_platforms()
         .run("main.cl")
@@ -103,8 +103,8 @@ fn platform_read_line_via_test_capture() {
             "main.cl",
             "(platform test-capture)\n\
              (import [platform.test-capture [*]])\n\
-             (import [primitives [bind Pure str-len]])\n\
-             (defn main [] (bind (read-line) (fn [s] (Pure (str-len s)))))\n",
+             (import [primitives [bind pure str-len]])\n\
+             (defn main [] (bind (read-line) (fn [s] (primitives/pure (str-len s)))))\n",
         )
         .use_workspace_platforms()
         .run("main.cl")
@@ -140,7 +140,7 @@ fn cranelisp_toml_lib_dirs_resolves_module() {
         .file("Cranelisp.toml", r#"lib-dirs = ["./mylib"]"#)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [foo [forty-two]])\n(defn main [] (Pure (forty-two)))\n",
+            "(import [primitives [pure]])\n(import [foo [forty-two]])\n(defn main [] (primitives/pure (forty-two)))\n",
         )
         .file("mylib/foo.cl", "(defn forty-two [] 42)\n")
         .run("main")
@@ -175,7 +175,7 @@ fn cranelisp_lib_env_searched_before_toml_lib_dirs() {
         .file("Cranelisp.toml", r#"lib-dirs = ["./conflict-lib"]"#)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [foo [pick]])\n(defn main [] (Pure (pick)))\n",
+            "(import [primitives [pure]])\n(import [foo [pick]])\n(defn main [] (primitives/pure (pick)))\n",
         )
         .file("conflict-lib/foo.cl", "(defn pick [] 99)\n")
         .env(
@@ -209,7 +209,7 @@ fn cranelisp_lib_env_searched_before_toml_lib_dirs() {
         .file("Cranelisp.toml", r#"lib-dirs = ["./conflict-lib"]"#)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [bar [val]])\n(defn main [] (Pure (val)))\n",
+            "(import [primitives [pure]])\n(import [bar [val]])\n(defn main [] (primitives/pure (val)))\n",
         )
         .file("conflict-lib/bar.cl", "(defn val [] 42)\n")
         .env(
@@ -243,7 +243,7 @@ fn cranelisp_toml_missing_falls_through_to_env_var() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [foo [val]])\n(defn main [] (Pure (val)))\n",
+            "(import [primitives [pure]])\n(import [foo [val]])\n(defn main [] (primitives/pure (val)))\n",
         )
         .env(
             "CRANELISP_LIB",
@@ -344,11 +344,11 @@ fn platform_path_env_searched_before_toml_platform_dirs() {
     );
     let dll_name = stdio_dll_filename();
 
-    // The program prints via stdio (observable on stdout) and returns Pure 0.
+    // The program prints via stdio (observable on stdout) and returns pure 0.
     let prog = "(platform stdio)\n\
                 (import [platform.stdio [print]])\n\
-                (import [primitives [bind Pure]])\n\
-                (defn main [] (bind (print \"plat-union\") (fn [_] (Pure 0))))\n";
+                (import [primitives [bind pure]])\n\
+                (defn main [] (bind (print \"plat-union\") (fn [_] (primitives/pure 0))))\n";
 
     // (1) Config tier alone resolves — `platform-dirs` CONTRIBUTES to the union
     //     even with NO `CRANELISP_PLATFORM_PATH` set. (Proves the union is not
@@ -537,7 +537,7 @@ fn io_trampoline_executes_print_to_stdout() {
 #[test]
 fn no_platform_form_program_runs_with_empty_registry() {
     Cranelisp::new()
-        .user("(defn main [] (primitives/Pure (primitives/add-i64 100 200)))")
+        .user("(defn main [] (primitives/pure (primitives/add-i64 100 200)))")
         .run("user.cl")
         .output()
         // 300 mod 256 = 44 on Unix (exit codes are bytes).
@@ -555,7 +555,7 @@ fn no_platform_form_program_runs_with_empty_registry() {
 // ORDER. The e2e equivalent uses the `stdio` platform under `--run`: each
 // `print` emits to real stdout (one line each), so source-order sequencing is
 // directly observable as ordered stdout. The exit code carries the final
-// `(Pure N)` inner value, proving the trampoline returns after all effects.
+// `(primitives/pure N)` inner value, proving the trampoline returns after all effects.
 // =============================================================================
 
 // spec: spec/10-io.md §10.3 — `(bind (print a) (fn [_] (print b)))` sequences
@@ -616,14 +616,14 @@ fn read_line_bind_print_echo() {
 }
 
 // spec: spec/10-io.md §10.4.1 — a `do`/`bind!`-shaped print-sequence with a
-// `(Pure N)` terminator, expressed via the primitive `bind` it desugars to
+// `(primitives/pure N)` terminator, expressed via the primitive `bind` it desugars to
 // (tests MUST NOT depend on stdlib — root AGENTS.md "Design Principles"). The
 // stdlib `do`/`bind!` macro desugaring is covered separately in
 // `tests/spec_11_stdlib.rs`; here the bind-chain trampoline path is the target.
 //
 // REGRESSION-GUARD: the Sprint 57 Wave 6 ring4b/ring4j demo crash emitted the
 // first print but terminated the process before the second. The full
-// `print … print … Pure` chain here re-pins that all intermediate effects fire
+// `print … print … pure` chain here re-pins that all intermediate effects fire
 // before the terminal value returns and the process exits cleanly with it.
 #[test]
 fn bind_chain_print_sequence_with_pure_terminator_emits_all() {
@@ -633,10 +633,10 @@ fn bind_chain_print_sequence_with_pure_terminator_emits_all() {
             "main.cl",
             "(platform stdio)\n\
              (import [platform.stdio [print]])\n\
-             (import [primitives [bind Pure]])\n\
+             (import [primitives [bind pure]])\n\
              (defn main []\n\
                (bind (print \"one\") (fn [_]\n\
-                 (bind (print \"two\") (fn [_] (Pure 42))))))\n",
+                 (bind (print \"two\") (fn [_] (primitives/pure 42))))))\n",
         )
         .run("main.cl")
         .output()

@@ -17,7 +17,7 @@ enum Mode {
 fn child(body: &str, mode: Mode, moves_off: bool) -> Child {
     let program = format!(
         "(import [primitives [*]])\n\
-         (defn k [v] (Pure 49))\n\
+         (defn k [v] (primitives/pure 49))\n\
          (defn main [] {body})\n"
     );
     let c = match mode {
@@ -34,7 +34,8 @@ fn child(body: &str, mode: Mode, moves_off: bool) -> Child {
 }
 
 fn check(subject: &str, payload: &str, mode: Mode, moves_off: bool) {
-    let control = format!("(let [k (fn [v] (Pure 49))] (bind (Pure {payload}) k))");
+    let control =
+        format!("(let [k (fn [v] (primitives/pure 49))] (bind (primitives/pure {payload}) k))");
     let m = MarginalPair::new(
         &format!("U-19 {mode:?} moves_off={moves_off}: {subject}"),
         child(&control, mode, moves_off),
@@ -67,7 +68,7 @@ fn check(subject: &str, payload: &str, mode: Mode, moves_off: bool) {
 #[test]
 fn unused_heap_argument_is_released_run_moves_on() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure 49)))",
         "[49]",
         Mode::Run,
         false,
@@ -79,7 +80,7 @@ fn unused_heap_argument_is_released_run_moves_on() {
 #[test]
 fn nested_unused_heap_argument_is_released_run_moves_on() {
     check(
-        "(bind (Pure [[49]]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [[49]]) (fn [v] (primitives/pure 49)))",
         "[[49]]",
         Mode::Run,
         false,
@@ -90,12 +91,12 @@ fn nested_unused_heap_argument_is_released_run_moves_on() {
 #[test]
 fn used_and_named_continuations_balance_run_moves_on() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure (vec-get v 0))))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure (vec-get v 0))))",
         "[49]",
         Mode::Run,
         false,
     );
-    check("(bind (Pure [49]) k)", "[49]", Mode::Run, false);
+    check("(bind (primitives/pure [49]) k)", "[49]", Mode::Run, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
@@ -103,7 +104,7 @@ fn used_and_named_continuations_balance_run_moves_on() {
 #[test]
 fn unused_heap_argument_is_released_run_moves_off() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure 49)))",
         "[49]",
         Mode::Run,
         true,
@@ -115,7 +116,7 @@ fn unused_heap_argument_is_released_run_moves_off() {
 #[test]
 fn nested_unused_heap_argument_is_released_run_moves_off() {
     check(
-        "(bind (Pure [[49]]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [[49]]) (fn [v] (primitives/pure 49)))",
         "[[49]]",
         Mode::Run,
         true,
@@ -126,12 +127,12 @@ fn nested_unused_heap_argument_is_released_run_moves_off() {
 #[test]
 fn used_and_named_continuations_balance_run_moves_off() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure (vec-get v 0))))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure (vec-get v 0))))",
         "[49]",
         Mode::Run,
         true,
     );
-    check("(bind (Pure [49]) k)", "[49]", Mode::Run, true);
+    check("(bind (primitives/pure [49]) k)", "[49]", Mode::Run, true);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
@@ -139,7 +140,7 @@ fn used_and_named_continuations_balance_run_moves_off() {
 #[test]
 fn unused_heap_argument_is_released_link_moves_on() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure 49)))",
         "[49]",
         Mode::Link,
         false,
@@ -151,7 +152,7 @@ fn unused_heap_argument_is_released_link_moves_on() {
 #[test]
 fn nested_unused_heap_argument_is_released_link_moves_on() {
     check(
-        "(bind (Pure [[49]]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [[49]]) (fn [v] (primitives/pure 49)))",
         "[[49]]",
         Mode::Link,
         false,
@@ -162,12 +163,12 @@ fn nested_unused_heap_argument_is_released_link_moves_on() {
 #[test]
 fn used_and_named_continuations_balance_link_moves_on() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure (vec-get v 0))))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure (vec-get v 0))))",
         "[49]",
         Mode::Link,
         false,
     );
-    check("(bind (Pure [49]) k)", "[49]", Mode::Link, false);
+    check("(bind (primitives/pure [49]) k)", "[49]", Mode::Link, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
@@ -175,7 +176,7 @@ fn used_and_named_continuations_balance_link_moves_on() {
 #[test]
 fn unused_heap_argument_is_released_link_moves_off() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure 49)))",
         "[49]",
         Mode::Link,
         true,
@@ -187,7 +188,7 @@ fn unused_heap_argument_is_released_link_moves_off() {
 #[test]
 fn nested_unused_heap_argument_is_released_link_moves_off() {
     check(
-        "(bind (Pure [[49]]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [[49]]) (fn [v] (primitives/pure 49)))",
         "[[49]]",
         Mode::Link,
         true,
@@ -198,12 +199,12 @@ fn nested_unused_heap_argument_is_released_link_moves_off() {
 #[test]
 fn used_and_named_continuations_balance_link_moves_off() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure (vec-get v 0))))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure (vec-get v 0))))",
         "[49]",
         Mode::Link,
         true,
     );
-    check("(bind (Pure [49]) k)", "[49]", Mode::Link, true);
+    check("(bind (primitives/pure [49]) k)", "[49]", Mode::Link, true);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
@@ -211,7 +212,7 @@ fn used_and_named_continuations_balance_link_moves_off() {
 #[test]
 fn unused_heap_argument_is_released_repl_moves_on() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure 49)))",
         "[49]",
         Mode::Repl,
         false,
@@ -223,7 +224,7 @@ fn unused_heap_argument_is_released_repl_moves_on() {
 #[test]
 fn nested_unused_heap_argument_is_released_repl_moves_on() {
     check(
-        "(bind (Pure [[49]]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [[49]]) (fn [v] (primitives/pure 49)))",
         "[[49]]",
         Mode::Repl,
         false,
@@ -234,12 +235,12 @@ fn nested_unused_heap_argument_is_released_repl_moves_on() {
 #[test]
 fn used_and_named_continuations_balance_repl_moves_on() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure (vec-get v 0))))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure (vec-get v 0))))",
         "[49]",
         Mode::Repl,
         false,
     );
-    check("(bind (Pure [49]) k)", "[49]", Mode::Repl, false);
+    check("(bind (primitives/pure [49]) k)", "[49]", Mode::Repl, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1 — unreachable bind arguments are freed.
@@ -247,7 +248,7 @@ fn used_and_named_continuations_balance_repl_moves_on() {
 #[test]
 fn unused_heap_argument_is_released_repl_moves_off() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure 49)))",
         "[49]",
         Mode::Repl,
         true,
@@ -259,7 +260,7 @@ fn unused_heap_argument_is_released_repl_moves_off() {
 #[test]
 fn nested_unused_heap_argument_is_released_repl_moves_off() {
     check(
-        "(bind (Pure [[49]]) (fn [v] (Pure 49)))",
+        "(bind (primitives/pure [[49]]) (fn [v] (primitives/pure 49)))",
         "[[49]]",
         Mode::Repl,
         true,
@@ -270,18 +271,17 @@ fn nested_unused_heap_argument_is_released_repl_moves_off() {
 #[test]
 fn used_and_named_continuations_balance_repl_moves_off() {
     check(
-        "(bind (Pure [49]) (fn [v] (Pure (vec-get v 0))))",
+        "(bind (primitives/pure [49]) (fn [v] (primitives/pure (vec-get v 0))))",
         "[49]",
         Mode::Repl,
         true,
     );
-    check("(bind (Pure [49]) k)", "[49]", Mode::Repl, true);
+    check("(bind (primitives/pure [49]) k)", "[49]", Mode::Repl, true);
 }
 
 fn s124_two_step_bind_balance(mode: Mode, moves_off: bool) {
-    let control =
-        "(let [k2 (fn [w] (Pure 49)) k1 (fn [v] (bind (Pure [2]) k2))] (bind (Pure [1]) k1))";
-    let subject = "(bind (Pure [1]) (fn [v] (bind (Pure [2]) (fn [w] (Pure 49)))))";
+    let control = "(let [k2 (fn [w] (primitives/pure 49)) k1 (fn [v] (bind (primitives/pure [2]) k2))] (bind (primitives/pure [1]) k1))";
+    let subject = "(bind (primitives/pure [1]) (fn [v] (bind (primitives/pure [2]) (fn [w] (primitives/pure 49)))))";
     let m = MarginalPair::new(
         "T-1050-a two rewritten continuations",
         child(&control, mode, moves_off),

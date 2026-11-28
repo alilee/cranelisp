@@ -42,7 +42,7 @@ const R1_MODULE: &str = "\
 (defn main []
   (let [v1 [(MkDuo 1 \"one\")]
         v2 [(MkDuo \"two\" 2)]]
-    (Pure (add-i64 (vec-len v1) (vec-len v2)))))
+    (primitives/pure (add-i64 (vec-len v1) (vec-len v2)))))
 ";
 
 // Count `[RC] alloc` / `[RC]  free` lines in the RC trace stderr (the alloc/free
@@ -134,7 +134,7 @@ fn adt_vec_drop_glue_concrete_args_axis_link_r1() {
 // RE-ATTRIBUTION (PLAN §I.4, /qa 2026-07-17 — DG-R2 4th re-attribution): the
 // alloc/free imbalance this fixture witnesses is NOT the drop-glue collision
 // (CS-1.1 proved) — it survives with ONE ADT / ONE module / no vec
-// (`(defn main [] (let [s "hi"] (Pure 9)))` → 2 allocs / 1 free), is ownership-
+// (`(defn main [] (let [s "hi"] (primitives/pure 9)))` → 2 allocs / 1 free), is ownership-
 // independent, and the leaked box is always the chronologically-LAST allocation
 // (the IO result box). It is an ENTRY-`main` teardown leak of the final IO/result
 // allocation, triggered by any heap-valued let in `main`'s body. The narrow 2-line
@@ -152,13 +152,13 @@ fn adt_vec_drop_glue_module_axis_leak_r2() {
         .file("mb.cl", "(deftype Thing (MkB [:Int n]))\n")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [ma [MkA]])\n\
              (import [mb [MkB]])\n\
              (defn main []\n\
                (let [va [(MkA \"hi\")]\n\
                      vb [(MkB 7)]]\n\
-                 (Pure (add-i64 (vec-len va) (vec-len vb)))))\n",
+                 (primitives/pure (add-i64 (vec-len va) (vec-len vb)))))\n",
         )
         .run("main.cl")
         .output();
@@ -184,7 +184,7 @@ fn adt_vec_drop_glue_module_axis_leak_r2() {
 
 // F-R1 (§1.6) — the NARROW 2-line guard for the DG-R2 re-attribution (PLAN §I.4):
 // an entry-`main` teardown leak of the final IO/result allocation, triggered by
-// ANY heap-valued let in `main`'s body. `(defn main [] (let [s "hi"] (Pure 9)))`
+// ANY heap-valued let in `main`'s body. `(defn main [] (let [s "hi"] (primitives/pure 9)))`
 // leaks the LAST allocation (the IO result box) — 2 allocs / 1 free today —
 // ownership-independent; the heap let value `s` IS freed, only the result box
 // leaks. No ADTs, no vecs, no modules: this isolates the leak from the drop-glue
@@ -213,7 +213,7 @@ fn entry_main_heap_let_teardown_balances_r2() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .env("CRANELISP_RC_TRACE", "1")
-        .user("(defn main [] (let [s \"hi\"] (Pure 9)))\n")
+        .user("(defn main [] (let [s \"hi\"] (primitives/pure 9)))\n")
         .run("user.cl")
         .output();
     assert_eq!(
@@ -233,27 +233,27 @@ fn entry_main_heap_let_teardown_balances_r2() {
     );
 }
 
-// The TOGGLE-OFF entry-return `Pure` heap payload (FIXME 0745, retired), the F-R1
+// The TOGGLE-OFF entry-return `pure` heap payload (FIXME 0745, retired), the F-R1
 // family sibling under the conservative all-Owned lowering
 // (`CRANELISP_NO_OWNERSHIP=1`). That lowering is the differential oracle's
 // REFERENCE semantics (memory-safety-coverage.md §1.2 signals 1–2), so an
 // entry-frame leak there would poison every `allocs==deallocs` oracle cell.
 //
 // When this cell was authored (S114 W7), the scalar shape
-// `(defn main [] (let [s "hi"] (Pure 9)))` already balanced under both toggles;
+// `(defn main [] (let [s "hi"] (primitives/pure 9)))` already balanced under both toggles;
 // the heap-payload shape below leaked one allocation (2 allocs / 1 free) under
 // both. The toggle-ON face is covered by `program_result_owner_s116.rs`. The
 // leak was the entry result being observed and never released, not the
 // `protect_return_value` seam first suspected.
 // spec: spec/12-runtime.md §12.3.1 — heap value freed when no longer reachable
-// defect: class=rc-miscount locus=src program-result typed-context exit — entry-main IO-return heap payload, toggle-off arm; RE-LOCUSED S118 W4 off the provisional `crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value` attribution, which §9.1 falsified (both mechanisms at that seam were disproved). The defect lived at the int result-value lifetime seam: the entry result was observed and never released. Read `design/int/result-owner.md` §4.3 + `src/result_owner.rs` today. found=S114 owner=/dev fixed=S118/fc3375f9
+// defect: class=rc-miscount locus=src::program-result-typed-context-exit — entry-main IO-return heap payload, toggle-off arm; RE-LOCUSED S118 W4 off the provisional `crates/cranelisp-backend compiler/rc_emission.rs::protect_return_value` attribution, which §9.1 falsified (both mechanisms at that seam were disproved). The defect lived at the int result-value lifetime seam: the entry result was observed and never released. Read `design/int/result-owner.md` §4.3 + `src/result_owner.rs` today. found=S114 owner=/dev fixed=S118/fc3375f9
 #[test]
 fn entry_main_ioresult_heap_payload_toggle_off_leak_r2() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .env("CRANELISP_NO_OWNERSHIP", "1")
         .env("CRANELISP_RC_TRACE", "1")
-        .user("(defn main [] (let [s \"hi\"] (Pure s)))\n")
+        .user("(defn main [] (let [s \"hi\"] (primitives/pure s)))\n")
         .run("user.cl")
         .output();
     // The program runs clean (exit 0) under the leak — the only witness is the
@@ -299,7 +299,7 @@ const R1_0640_NAME_AXIS_MODULE: &str = "\
 (defn main []
   (let [va [(MkA 1 \"one\")]
         vb [(MkB \"two\" 2)]]
-    (Pure (add-i64 (vec-len va) (vec-len vb)))))
+    (primitives/pure (add-i64 (vec-len va) (vec-len vb)))))
 ";
 
 // spec: spec/12-runtime.md §12.3.1 — no UAF / no corruption at ADT-in-Vec drop
@@ -365,13 +365,13 @@ fn adt_vec_drop_glue_module_sanitize_axis_run_0640() {
         .file("a_b.cl", "(deftype Thing (MkB [:String s :Int n]))\n")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [a-b [MkA]])\n\
              (import [a_b [MkB]])\n\
              (defn main []\n\
                (let [va [(MkA 1 \"one\")]\n\
                      vb [(MkB \"two\" 2)]]\n\
-                 (Pure (add-i64 (vec-len va) (vec-len vb)))))\n",
+                 (primitives/pure (add-i64 (vec-len va) (vec-len vb)))))\n",
         )
         .run("main.cl")
         .output()

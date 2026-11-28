@@ -42,5 +42,5 @@
       [(Some b2) (control-loop bx (sub-i64 n 1) (add-i64 acc 1)) None acc])))
 
 (defn main []
-  (Pure (add-i64 (subject-loop (Box [(A 1) (A 2) (A 3)]) 100 0)
+  (primitives/pure (add-i64 (subject-loop (Box [(A 1) (A 2) (A 3)]) 100 0)
                  (control-loop (Box [(A 1) (A 2) (A 3)]) 100 0))))

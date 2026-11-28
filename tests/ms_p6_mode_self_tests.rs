@@ -29,9 +29,9 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 // it expired every time that defect was fixed — twice:
 //
 //   1. Original plant, the entry-`main` teardown shape
-//      `(defn main [] (let [s "hi"] (Pure 9)))` — DRAINED by the S114 W4 F-R1 fix
+//      `(defn main [] (let [s "hi"] (primitives/pure 9)))` — DRAINED by the S114 W4 F-R1 fix
 //      (`rc_emission.rs::protect_return_value`); re-planted per FIXME 0690.
-//   2. Re-plant, the non-`main` sibling `(defn g [] (let [s "hi"] (Pure 9)))
+//   2. Re-plant, the non-`main` sibling `(defn g [] (let [s "hi"] (primitives/pure 9)))
 //      (defn main [] (g))` — DRAINED by the S115 W3 item-26 generalisation (no
 //      protective inc for a fresh-construction return in ANY function), which
 //      superseded the `main`-keyed F-R1 special case. The test's own FLIP-HAZARD
@@ -66,7 +66,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 //     subprocess env plumbing that unit tests are structurally blind to.
 //
 // A memory-clean program — a vec build + indexed read, balanced. → 20.
-const CLEAN_PROG: &str = "(defn main [] (Pure (vec-get [10 20 30] 1)))\n";
+const CLEAN_PROG: &str = "(defn main [] (primitives/pure (vec-get [10 20 30] 1)))\n";
 
 fn run_with(prog: &str, envs: &[(&str, &str)]) -> helpers::e2e::CrOutput {
     let mut b = Cranelisp::new()

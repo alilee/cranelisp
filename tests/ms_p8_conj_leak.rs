@@ -35,7 +35,7 @@
 //
 //   conj loop  (CONJ_LOOP, RC_STATS)   allocs=1219 deallocs=76  residual=1143
 //   int  loop  (INT_LOOP,  RC_STATS)   allocs=1198 deallocs=55  residual=1143
-//   trivial `(defn main [] (Pure 0))`  allocs=1198 deallocs=55  residual=1143
+//   trivial `(defn main [] (primitives/pure 0))`  allocs=1198 deallocs=55  residual=1143
 //
 // The residual is byte-identical across a persistent-collection workload, an
 // int-accumulator workload, and NO workload at all: it is a program-independent
@@ -56,7 +56,7 @@
 // MEASURED AT THIS HEAD (2026-07-26, `c8cee45e` + this change-set):
 //
 //   cell                         control                subject      marginal
-//   int_loop_control_balances…   trivial `(Pure 0)`     INT_LOOP     allocs +0  deallocs +0  residual 0
+//   int_loop_control_balances…   trivial `(primitives/pure 0)`     INT_LOOP     allocs +0  deallocs +0  residual 0
 //   conj_loop_does_not_leak      INT_LOOP               CONJ_LOOP    allocs +21 deallocs +21 residual 0
 //   conj_loop_parity_no_abort    INT_LOOP               CONJ_LOOP    allocs +21 deallocs +21 residual 0
 //
@@ -89,17 +89,17 @@ use std::time::Duration;
 /// The no-workload control: same prelude, same env, a program that computes
 /// nothing. Its residual IS the ambient stdlib-session term (FIXME 0889) and
 /// nothing else.
-const AMBIENT_ONLY: &str = "(import [primitives [Pure]])\n\
-     (defn main [] (Pure 0))\n";
+const AMBIENT_ONLY: &str = "(import [primitives [pure]])\n\
+     (defn main [] (primitives/pure 0))\n";
 
 const CONJ_LOOP: &str = "(import [collections.vec [conj count]])\n\
-     (import [primitives [add-i64 eq-i64 Pure]])\n\
+     (import [primitives [add-i64 eq-i64 pure]])\n\
      (defn go [n v] (if (eq-i64 n 0) v (go (add-i64 n -1) (conj v n))))\n\
-     (defn main [] (Pure (count (go 20 [0]))))\n";
+     (defn main [] (primitives/pure (count (go 20 [0]))))\n";
 
-const INT_LOOP: &str = "(import [primitives [add-i64 eq-i64 Pure]])\n\
+const INT_LOOP: &str = "(import [primitives [add-i64 eq-i64 pure]])\n\
      (defn go [n acc] (if (eq-i64 n 0) acc (go (add-i64 n -1) (add-i64 acc 1))))\n\
-     (defn main [] (Pure (go 20 0)))\n";
+     (defn main [] (primitives/pure (go 20 0)))\n";
 
 /// Every child here compiles against the workspace `stdlib/` — the persistent
 /// collection verbs are the subject and they live nowhere else (the ONE

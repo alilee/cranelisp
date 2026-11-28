@@ -24,7 +24,7 @@
 // alloc adjacent). Owner /dev (int marshal/invoke seam first).
 //
 // CORRECT RESULT: `count-ctors` counts the three constructors (Red/Green/Blue) →
-// the macro expands to the integer 3 → `main` returns `(Pure 3)` → exit 3. The
+// the macro expands to the integer 3 → `main` returns `(primitives/pure 3)` → exit 3. The
 // pin asserts exit 3 and no double-free/panic; today it corrupts → RED.
 //
 // Modules are stdlib-free: `primitives` + the synthetic `macros` module (Sexp
@@ -94,11 +94,11 @@ const MAC: &str = "\
 
 // usemac.cl — `--run` this → double-free at alloc.rs:222 (correct answer: exit 3).
 const USEMAC: &str = "\
-(import [primitives [Pure]])
+(import [primitives [pure]])
 (import [mac [count-ctors]])
 
 (defn main []
-  (Pure (count-ctors (deftype Color Red Green Blue))))
+  (primitives/pure (count-ctors (deftype Color Red Green Blue))))
 ";
 
 fn build(mode: &str) -> helpers::e2e::CrOutput {
@@ -133,7 +133,7 @@ fn out_assert_exit(out: &helpers::e2e::CrOutput, code: i32, mode: &str, c: &str)
         out.status.code(),
         Some(code),
         "[{mode}] `count-ctors (deftype Color Red Green Blue)` counts 3 \
-         constructors → `main` returns `(Pure 3)` → exit 3; got exit {:?}:\n{c}",
+         constructors → `main` returns `(primitives/pure 3)` → exit 3; got exit {:?}:\n{c}",
         out.status.code()
     );
 }

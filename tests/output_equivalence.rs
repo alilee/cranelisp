@@ -27,7 +27,7 @@ use helpers::e2e::{PreludeVariant, run_through_all_modes_output};
 /// Common header: declare `stdio`, import `print` + the IO constructors.
 const HDR: &str = "(platform stdio)\n\
      (import [platform.stdio [print]])\n\
-     (import [primitives [Pure bind]])\n";
+     (import [primitives [pure bind]])\n";
 
 /// Build a full program from the header + the given body.
 fn prog(body: &str) -> String {
@@ -88,7 +88,7 @@ fn output_equiv_recursion() {
     let program = prog(
         "(defn loop-print [n] \
             (if (eq-i64 n 0) \
-                (Pure 0) \
+                (primitives/pure 0) \
                 (bind (print \"x\") (fn [_] (loop-print (sub-i64 n 1))))))\n\
          (defn main [] (loop-print 3))\n",
     );
@@ -102,7 +102,7 @@ fn output_equiv_closure_capture() {
     let program = prog(
         "(defn main [] \
             (let [msg \"captured\"] \
-                (bind (Pure 0) (fn [_] (print msg)))))\n",
+                (bind (primitives/pure 0) (fn [_] (print msg)))))\n",
     );
     run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
         .assert_output_eq("captured");
@@ -121,10 +121,11 @@ fn output_equiv_bind_threads_value() {
         .assert_output_eq("first\nsecond");
 }
 
-// spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (Pure then print)
+// spec: spec/10-io.md §10.6.3 — Mode-Output Equivalence (primitives/pure then print)
 #[test]
 fn output_equiv_pure_then_print() {
-    let program = prog("(defn main [] (bind (Pure 7) (fn [_] (print \"after-pure\"))))\n");
+    let program =
+        prog("(defn main [] (bind (primitives/pure 7) (fn [_] (print \"after-pure\"))))\n");
     run_through_all_modes_output(&program, PreludeVariant::PrimitivesOnly)
         .assert_output_eq("after-pure");
 }

@@ -16,7 +16,7 @@ fn program(second_type: &str) -> String {
          (deftype {second_type} [:primitives/Int q])\n\
          (defn f [v] (let [g (fn [] v)] (g)))\n\
          (defn main []\n\
-           (Pure (add-i64 (p (f (A-B 3))) (q (f ({second_type} 4))))))\n"
+           (primitives/pure (add-i64 (p (f (A-B 3))) (q (f ({second_type} 4))))))\n"
     )
 }
 

@@ -71,5 +71,5 @@
 (defn main []
   (let [g (build-grid [] 0 81)]
     (match (search-tree g 0 (leaves))
-      [(Hit v)  (Pure (rem-i64 v 251))
-       (Miss _) (Pure 0)])))
+      [(Hit v)  (primitives/pure (rem-i64 v 251))
+       (Miss _) (primitives/pure 0)])))

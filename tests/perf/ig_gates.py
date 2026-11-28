@@ -119,7 +119,7 @@ def cold_compile_seconds(binp, clfile, off, reps):
         r = subprocess.run([binp, "--run", "user.cl"], cwd=d, env=e,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         walls.append(time.perf_counter() - t0)
-        # The corpus programs use main's returned Pure(int) as the process exit
+        # The corpus programs use main's returned pure(int) as the process exit
         # code (e.g. corpus 01 computes 24), so a nonzero exit is EXPECTED and
         # is not a failure. Only a signal kill (negative returncode in Python =
         # -signum) is a real crash worth aborting the probe.

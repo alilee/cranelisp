@@ -1112,7 +1112,7 @@ fn s124_return_diagnostic_roles(mode: &str, leg: &str) {
     let out = if mode == "run" {
         cr.file(
             "app.cl",
-            &format!("{program}\n(defn main [] (primitives/Pure 0))"),
+            &format!("{program}\n(defn main [] (primitives/pure 0))"),
         )
         .run("app.cl")
         .output()

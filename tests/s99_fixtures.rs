@@ -172,19 +172,21 @@ fn s99_f4_solved_grid_releases_repeated_workloads() {
         format!(
             "{declarations}(defn solve-once []{body}\n\
              (defn repeat-work [n]\n\
-               (if (eq-i64 n 0) 0\n\
-                 (match (solve-once)\n\
-                   [(Pure value)\n\
-                    (add-i64 (if (eq-i64 value 154) 1 0)\n\
-                             (repeat-work (sub-i64 n 1)))\n\
-                    _ 0])))\n\
-             (defn main [] (Pure (repeat-work {count})))\n"
+               (if (eq-i64 n 0)\n\
+                 (primitives/pure 0)\n\
+                 (primitives/bind (solve-once)\n\
+                   (fn [value]\n\
+                     (primitives/bind (repeat-work (sub-i64 n 1))\n\
+                       (fn [total]\n\
+                         (primitives/pure\n\
+                           (add-i64 (if (eq-i64 value 154) 1 0) total))))))))\n\
+             (defn main [] (repeat-work {count}))\n"
         )
     };
     let [once, twice] = [1, 2].map(|count| {
         let m = MarginalPair::new(
             &format!("solved-grid workload versus no-work driver, {count} executions"),
-            Child::new(&program(" (Pure 154))", count)),
+            Child::new(&program(" (primitives/pure 154))", count)),
             Child::new(&program(main_body, count)),
         )
         .instrument(Instrument::RcStats)
@@ -240,7 +242,7 @@ fn nested_result_vec_builder_releases_repeated_workloads() {
                    [(Some g) (match g [(Grid xs)\n\
                      (add-i64 (vec-len xs) (repeat-work (sub-i64 n 1)))])\n\
                     None 0])))\n\
-             (defn main [] (Pure (repeat-work {count})))\n"
+             (defn main [] (primitives/pure (repeat-work {count})))\n"
         )
     };
     let [once, twice] = [1, 2].map(|count| {
@@ -309,7 +311,7 @@ fn nested_result_vec_builder_releases_repeated_workloads() {
 //   callable in the module publish the ⊤ ownership summary
 //   (`modes=[Owned…] result=Fresh flow=[Retained…]`, under
 //   `CRANELISP_OWNERSHIP_TRACE=1`) — 5/5 callables on the reduction below,
-//   including Int-only helpers and `primitives/IO.Pure$Int`; 41/41 on the
+//   including Int-only helpers and the public `primitives/pure` lift; 41/41 on the
 //   committed `fixtures/s99/f4_sudoku.cl` (`qa`). Un-permuting that one
 //   self-call converged the same cluster instead (`mk: result=MayAliasOf(1)`;
 //   the control cell below). A PRESENT `result=Fresh` is the documented
@@ -441,11 +443,11 @@ fn s99_f4_recursive_peer_list_builder_returns_the_solved_checksum() {
          (defn efp-mk [g idx d] (eliminate-from-peers-helper g (mk 0 []) d 0))\n\
          (defn main []\n\
          \x20 (match (make-grid \"{puzzle}\")\n\
-         \x20   [None (Pure 0)\n\
+         \x20   [None (primitives/pure 0)\n\
          \x20    (Some g)\n\
          \x20      (match (efp-mk g 0 0)\n\
-         \x20        [None (Pure 1)\n\
-         \x20         (Some g2) (Pure (rem-i64 (checksum g2) 251))])]))\n"
+         \x20        [None (primitives/pure 1)\n\
+         \x20         (Some g2) (primitives/pure (rem-i64 (checksum g2) 251))])]))\n"
     );
     assert_run_exit(
         "f4_peer_list_reduction.cl",
@@ -497,7 +499,8 @@ fn parameter_permuting_self_call_repl_yields_the_builder_sum() {
 // defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/fixpoint.rs::compute_cluster_with_cap found=S121 owner=/dev
 #[test]
 fn parameter_permuting_self_call_run_yields_the_builder_sum() {
-    let program = permuting_self_call_program("(defn main [] (Pure (sum (mk 0 []) 0 0)))\n");
+    let program =
+        permuting_self_call_program("(defn main [] (primitives/pure (sum (mk 0 []) 0 0)))\n");
     for attempt in 1..=8 {
         assert_run_exit(
             "permuting_self_call.cl",
@@ -535,7 +538,7 @@ fn non_permuting_self_call_control_yields_the_builder_sum() {
     let program = format!(
         "(import [primitives [*]])\n\
          (defn f [:Int i :Int b] (if (eq-i64 i 0) b (f i b)))\n\
-         {S121_BUILDER_AND_CONSUMER}(defn main [] (Pure (sum (mk 0 []) 0 0)))\n"
+         {S121_BUILDER_AND_CONSUMER}(defn main [] (primitives/pure (sum (mk 0 []) 0 0)))\n"
     );
     assert_run_exit(
         "non_permuting_self_call.cl",

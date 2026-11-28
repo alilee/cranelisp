@@ -5,7 +5,7 @@ mod helpers;
 use helpers::marginal::{Child, MarginalPair};
 
 const IMPORT: &str =
-    "(import [primitives [Pure add-i64 eq-i64 vec-len vec-push vec-set vec-get]])\n";
+    "(import [primitives [pure add-i64 eq-i64 vec-len vec-push vec-set vec-get]])\n";
 fn child(defs: &str, mode: &str) -> Child {
     let program = format!("{IMPORT}{defs}");
     let child = match mode {
@@ -49,7 +49,7 @@ fn check(label: &str, control: &str, subject: &str, expected: i32, mode: &str) {
 }
 fn tail(arg: &str) -> String {
     format!(
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) {arg})])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))\n"
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) {arg})])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))\n"
     )
 }
 const OWNED: &str = "(let [t (match p [b b]) u (vec-push [] 0)] alias)";
@@ -92,8 +92,8 @@ fn tail_owned_binder_control_run() {
 fn forwarding_match_balances_run() {
     check(
         "U-2 match",
-        "(defn f [] (match [1 2] [r r]))\n(defn main [] (Pure (vec-len (f))))",
-        "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (Pure (f)))",
+        "(defn f [] (match [1 2] [r r]))\n(defn main [] (primitives/pure (vec-len (f))))",
+        "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (primitives/pure (f)))",
         2,
         "run",
     );
@@ -105,8 +105,8 @@ fn forwarding_match_balances_run() {
 fn forwarding_let_balances_run() {
     check(
         "U-2 let",
-        "(defn f [] (let [r [1 2]] r))\n(defn main [] (Pure (vec-len (f))))",
-        "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (Pure (f)))",
+        "(defn f [] (let [r [1 2]] r))\n(defn main [] (primitives/pure (vec-len (f))))",
+        "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (primitives/pure (f)))",
         2,
         "run",
     );
@@ -119,8 +119,8 @@ fn forwarding_let_balances_run() {
 fn forwarding_set_balances_run() {
     check(
         "U-2 set",
-        "(defn f [v] (vec-set v 0 5))\n(defn main [] (Pure (vec-len (f (vec-push [] 1)))))",
-        "(defn f [v] (let [w (vec-set v 0 5)] w))\n(defn main [] (Pure (vec-len (f (vec-push [] 1)))))",
+        "(defn f [v] (vec-set v 0 5))\n(defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))",
+        "(defn f [v] (let [w (vec-set v 0 5)] w))\n(defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))",
         1,
         "run",
     );
@@ -164,8 +164,8 @@ fn tail_owned_binder_control_link() {
 fn forwarding_match_balances_link() {
     check(
         "U-2 match",
-        "(defn f [] (match [1 2] [r r]))\n(defn main [] (Pure (vec-len (f))))",
-        "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (Pure (f)))",
+        "(defn f [] (match [1 2] [r r]))\n(defn main [] (primitives/pure (vec-len (f))))",
+        "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (primitives/pure (f)))",
         2,
         "link",
     );
@@ -177,8 +177,8 @@ fn forwarding_match_balances_link() {
 fn forwarding_let_balances_link() {
     check(
         "U-2 let",
-        "(defn f [] (let [r [1 2]] r))\n(defn main [] (Pure (vec-len (f))))",
-        "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (Pure (f)))",
+        "(defn f [] (let [r [1 2]] r))\n(defn main [] (primitives/pure (vec-len (f))))",
+        "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (primitives/pure (f)))",
         2,
         "link",
     );
@@ -191,8 +191,8 @@ fn forwarding_let_balances_link() {
 fn forwarding_set_balances_link() {
     check(
         "U-2 set",
-        "(defn f [v] (vec-set v 0 5))\n(defn main [] (Pure (vec-len (f (vec-push [] 1)))))",
-        "(defn f [v] (let [w (vec-set v 0 5)] w))\n(defn main [] (Pure (vec-len (f (vec-push [] 1)))))",
+        "(defn f [v] (vec-set v 0 5))\n(defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))",
+        "(defn f [v] (let [w (vec-set v 0 5)] w))\n(defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))",
         1,
         "link",
     );
@@ -236,8 +236,8 @@ fn tail_owned_binder_control_repl() {
 fn forwarding_match_balances_repl() {
     check(
         "U-2 match",
-        "(defn f [] (match [1 2] [r r]))\n(defn main [] (Pure (vec-len (f))))",
-        "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (Pure (f)))",
+        "(defn f [] (match [1 2] [r r]))\n(defn main [] (primitives/pure (vec-len (f))))",
+        "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (primitives/pure (f)))",
         2,
         "repl",
     );
@@ -249,8 +249,8 @@ fn forwarding_match_balances_repl() {
 fn forwarding_let_balances_repl() {
     check(
         "U-2 let",
-        "(defn f [] (let [r [1 2]] r))\n(defn main [] (Pure (vec-len (f))))",
-        "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (Pure (f)))",
+        "(defn f [] (let [r [1 2]] r))\n(defn main [] (primitives/pure (vec-len (f))))",
+        "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (primitives/pure (f)))",
         2,
         "repl",
     );
@@ -263,8 +263,8 @@ fn forwarding_let_balances_repl() {
 fn forwarding_set_balances_repl() {
     check(
         "U-2 set",
-        "(defn f [v] (vec-set v 0 5))\n(defn main [] (Pure (vec-len (f (vec-push [] 1)))))",
-        "(defn f [v] (let [w (vec-set v 0 5)] w))\n(defn main [] (Pure (vec-len (f (vec-push [] 1)))))",
+        "(defn f [v] (vec-set v 0 5))\n(defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))",
+        "(defn f [v] (let [w (vec-set v 0 5)] w))\n(defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))",
         1,
         "repl",
     );
@@ -273,7 +273,7 @@ fn forwarding_set_balances_repl() {
 fn loop_program(update: &str, wrapper: &str, shared: bool, push: bool, n: usize) -> String {
     if shared {
         format!(
-            "{wrapper}\n(defn go [n v keep] (if (eq-i64 n 0) (add-i64 (vec-len v) (vec-len keep)) (go (add-i64 n -1) {update} keep)))\n(defn main [] (Pure (let [a (vec-push [] 0)] (go {n} a a))))\n"
+            "{wrapper}\n(defn go [n v keep] (if (eq-i64 n 0) (add-i64 (vec-len v) (vec-len keep)) (go (add-i64 n -1) {update} keep)))\n(defn main [] (primitives/pure (let [a (vec-push [] 0)] (go {n} a a))))\n"
         )
     } else {
         let init = if push && wrapper.is_empty() {
@@ -282,7 +282,7 @@ fn loop_program(update: &str, wrapper: &str, shared: bool, push: bool, n: usize)
             "(vec-push [] 0)"
         };
         format!(
-            "{wrapper}\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) {update})))\n(defn main [] (Pure (go {n} {init})))\n"
+            "{wrapper}\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) {update})))\n(defn main [] (primitives/pure (go {n} {init})))\n"
         )
     }
 }
@@ -387,8 +387,8 @@ fn in_place_l3_after_first_iteration() {
 fn lead_r1_control() {
     check(
         "U-3 r1 control",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [b (vec-len b)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [b (vec-len b)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [b (vec-len b)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [b (vec-len b)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
         3,
         "run",
     );
@@ -402,8 +402,8 @@ fn lead_r1_control() {
 fn lead_r1_subject() {
     check(
         "U-3 r1 subject",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [b (vec-len b)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [alias (vec-len alias)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [b (vec-len b)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (let [k (match p [alias (vec-len alias)])] (go (add-i64 n -1) (vec-push q k) alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
         3,
         "run",
     );
@@ -415,8 +415,8 @@ fn lead_r1_subject() {
 fn lead_l2_control() {
     check(
         "U-3 l2 control",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
         3,
         "run",
     );
@@ -430,8 +430,8 @@ fn lead_l2_control() {
 fn lead_l2_subject() {
     check(
         "U-3 l2 subject",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (if (eq-i64 n 1) alias alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (if (eq-i64 n 1) alias alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
         3,
         "run",
     );
@@ -443,8 +443,8 @@ fn lead_l2_subject() {
 fn lead_l6_control() {
     check(
         "U-3 l6 control",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1 u (vec-push [] 0)] alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1 u (vec-push [] 0)] alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1 u (vec-push [] 0)] alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1 u (vec-push [] 0)] alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
         3,
         "run",
     );
@@ -458,8 +458,8 @@ fn lead_l6_control() {
 fn lead_l6_subject() {
     check(
         "U-3 l6 subject",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1 u (vec-push [] 0)] alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1] alias))])))\n(defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1 u (vec-push [] 0)] alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) (let [k 1] alias))])))\n(defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))",
         3,
         "run",
     );
@@ -471,8 +471,8 @@ fn lead_l6_subject() {
 fn lead_l5_control() {
     check(
         "U-3 l5 control",
-        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) v)))\n(defn main [] (Pure (go 3 [7])))",
-        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) v)))\n(defn main [] (Pure (go 3 [7])))",
+        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) v)))\n(defn main [] (primitives/pure (go 3 [7])))",
+        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) v)))\n(defn main [] (primitives/pure (go 3 [7])))",
         1,
         "run",
     );
@@ -486,8 +486,8 @@ fn lead_l5_control() {
 fn lead_l5_subject() {
     check(
         "U-3 l5 subject",
-        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) v)))\n(defn main [] (Pure (go 3 [7])))",
-        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) (match Off [Off v On v]))))\n(defn main [] (Pure (go 3 [7])))",
+        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) v)))\n(defn main [] (primitives/pure (go 3 [7])))",
+        "(deftype Flag Off On)\n(defn go [n v] (if (eq-i64 n 0) (vec-len v) (go (add-i64 n -1) (match Off [Off v On v]))))\n(defn main [] (primitives/pure (go 3 [7])))",
         1,
         "run",
     );
@@ -495,7 +495,7 @@ fn lead_l5_subject() {
 
 fn l4_tail(q_arg: &str) -> String {
     format!(
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (go (add-i64 n -1) p {q_arg})))\n(defn main [] (Pure (go 3 [7] [8])))"
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (go (add-i64 n -1) p {q_arg})))\n(defn main [] (primitives/pure (go 3 [7] [8])))"
     )
 }
 
@@ -554,8 +554,8 @@ fn lead_l4_branch_subject() {
 fn lead_l7_let_control() {
     check(
         "U-3 l7_let control",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (Pure (go 3 [7])))",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (Pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (primitives/pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (primitives/pure (go 3 [7])))",
         4,
         "run",
     );
@@ -567,8 +567,8 @@ fn lead_l7_let_control() {
 fn lead_l7_let_subject() {
     check(
         "U-3 l7_let subject",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (Pure (go 3 [7])))",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (let [v p] (go (add-i64 n -1) (vec-push v 1)))))\n(defn main [] (Pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (primitives/pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (let [v p] (go (add-i64 n -1) (vec-push v 1)))))\n(defn main [] (primitives/pure (go 3 [7])))",
         4,
         "run",
     );
@@ -580,8 +580,8 @@ fn lead_l7_let_subject() {
 fn lead_l7_branch_control() {
     check(
         "U-3 l7_branch control",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (Pure (go 3 [7])))",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (Pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (primitives/pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (primitives/pure (go 3 [7])))",
         4,
         "run",
     );
@@ -593,8 +593,8 @@ fn lead_l7_branch_control() {
 fn lead_l7_branch_subject() {
     check(
         "U-3 l7_branch subject",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (Pure (go 3 [7])))",
-        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (if (eq-i64 n 1) (vec-push p 1) (vec-push p 1)))))\n(defn main [] (Pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (vec-push p 1))))\n(defn main [] (primitives/pure (go 3 [7])))",
+        "(defn go [n p] (if (eq-i64 n 0) (vec-len p) (go (add-i64 n -1) (if (eq-i64 n 1) (vec-push p 1) (vec-push p 1)))))\n(defn main [] (primitives/pure (go 3 [7])))",
         4,
         "run",
     );
@@ -606,8 +606,8 @@ fn lead_l7_branch_subject() {
 fn lead_l9_control() {
     check(
         "U-3 l9 control",
-        "(defn f [v] (vec-push v 3))\n(defn main [] (Pure (vec-len (f [7 8 9]))))",
-        "(defn f [v] (vec-push v 3))\n(defn main [] (Pure (vec-len (f [7 8 9]))))",
+        "(defn f [v] (vec-push v 3))\n(defn main [] (primitives/pure (vec-len (f [7 8 9]))))",
+        "(defn f [v] (vec-push v 3))\n(defn main [] (primitives/pure (vec-len (f [7 8 9]))))",
         4,
         "run",
     );
@@ -619,8 +619,8 @@ fn lead_l9_control() {
 fn lead_l9_subject() {
     check(
         "U-3 l9 subject",
-        "(defn f [v] (vec-push v 3))\n(defn main [] (Pure (vec-len (f [7 8 9]))))",
-        "(defn f [v] (vec-push v (vec-len v)))\n(defn main [] (Pure (vec-len (f [7 8 9]))))",
+        "(defn f [v] (vec-push v 3))\n(defn main [] (primitives/pure (vec-len (f [7 8 9]))))",
+        "(defn f [v] (vec-push v (vec-len v)))\n(defn main [] (primitives/pure (vec-len (f [7 8 9]))))",
         4,
         "run",
     );
@@ -632,8 +632,8 @@ fn lead_l9_subject() {
 fn lead_l10_control() {
     check(
         "U-3 l10 control",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 [7] [9])))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 [7] [9])))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 [7] [9])))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 [7] [9])))",
         3,
         "run",
     );
@@ -647,8 +647,8 @@ fn lead_l10_control() {
 fn lead_l10_subject() {
     check(
         "U-3 l10 subject",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 [7] [9])))",
-        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match (if (eq-i64 n 1) q q) [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (Pure (go 3 [7] [9])))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match q [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 [7] [9])))",
+        "(defn go [n p q] (if (eq-i64 n 0) (add-i64 (vec-len p) (vec-len q)) (match (if (eq-i64 n 1) q q) [alias (go (add-i64 n -1) (vec-push q 1) alias)])))\n(defn main [] (primitives/pure (go 3 [7] [9])))",
         3,
         "run",
     );
@@ -660,8 +660,8 @@ fn lead_l10_subject() {
 fn lead_consume_if_control() {
     check(
         "U-3 consume_if control",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
         2,
         "run",
     );
@@ -673,8 +673,8 @@ fn lead_consume_if_control() {
 fn lead_consume_if_subject() {
     check(
         "U-3 consume_if subject",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
-        "(defn f [n v] (vec-len (if (eq-i64 n 0) v v)))\n(defn main [] (Pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len (if (eq-i64 n 0) v v)))\n(defn main [] (primitives/pure (f 0 [7 8])))",
         2,
         "run",
     );
@@ -686,8 +686,8 @@ fn lead_consume_if_subject() {
 fn lead_consume_let_control() {
     check(
         "U-3 consume_let control",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
         2,
         "run",
     );
@@ -699,8 +699,8 @@ fn lead_consume_let_control() {
 fn lead_consume_let_subject() {
     check(
         "U-3 consume_let subject",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
-        "(defn f [n v] (vec-len (let [a v] a)))\n(defn main [] (Pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len (let [a v] a)))\n(defn main [] (primitives/pure (f 0 [7 8])))",
         2,
         "run",
     );
@@ -712,8 +712,8 @@ fn lead_consume_let_subject() {
 fn lead_consume_match_control() {
     check(
         "U-3 consume_match control",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
         2,
         "run",
     );
@@ -725,8 +725,8 @@ fn lead_consume_match_control() {
 fn lead_consume_match_subject() {
     check(
         "U-3 consume_match subject",
-        "(defn f [n v] (vec-len v))\n(defn main [] (Pure (f 0 [7 8])))",
-        "(defn f [n v] (vec-len (match v [a a])))\n(defn main [] (Pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len v))\n(defn main [] (primitives/pure (f 0 [7 8])))",
+        "(defn f [n v] (vec-len (match v [a a])))\n(defn main [] (primitives/pure (f 0 [7 8])))",
         2,
         "run",
     );
@@ -738,8 +738,8 @@ fn lead_consume_match_subject() {
 fn lead_shadowed_root_control() {
     check(
         "U-3 shadowed_root control",
-        "(defn f [p q] (let [n (match q [view (vec-len view)])] (add-i64 n (vec-len p))))\n(defn main [] (Pure (f [7] [8 9])))",
-        "(defn f [p q] (let [n (match q [view (vec-len view)])] (add-i64 n (vec-len p))))\n(defn main [] (Pure (f [7] [8 9])))",
+        "(defn f [p q] (let [n (match q [view (vec-len view)])] (add-i64 n (vec-len p))))\n(defn main [] (primitives/pure (f [7] [8 9])))",
+        "(defn f [p q] (let [n (match q [view (vec-len view)])] (add-i64 n (vec-len p))))\n(defn main [] (primitives/pure (f [7] [8 9])))",
         3,
         "run",
     );
@@ -751,8 +751,8 @@ fn lead_shadowed_root_control() {
 fn lead_shadowed_root_subject() {
     check(
         "U-3 shadowed_root subject",
-        "(defn f [p q] (let [n (match q [view (vec-len view)])] (add-i64 n (vec-len p))))\n(defn main [] (Pure (f [7] [8 9])))",
-        "(defn f [p q] (let [n (match q [p (vec-len p)])] (add-i64 n (vec-len p))))\n(defn main [] (Pure (f [7] [8 9])))",
+        "(defn f [p q] (let [n (match q [view (vec-len view)])] (add-i64 n (vec-len p))))\n(defn main [] (primitives/pure (f [7] [8 9])))",
+        "(defn f [p q] (let [n (match q [p (vec-len p)])] (add-i64 n (vec-len p))))\n(defn main [] (primitives/pure (f [7] [8 9])))",
         3,
         "run",
     );
@@ -765,7 +765,7 @@ fn ordered_or_wrapped(label: &str, defs: &str, body: &str, expected: i32) {
                 "(import [primitives [*]])\n{defs}\n(defn work [] {body})\n(defn main [] (work))\n"
             )
         };
-        let control = program(&format!("(Pure {expected})"));
+        let control = program(&format!("(primitives/pure {expected})"));
         let subject = program(body);
         let armed = |program: &str| {
             let c = Child::new(program).env("CRANELISP_RC_DEC_CHECK", "1");
@@ -797,7 +797,7 @@ fn operand_order_apply_duplicates_before_moving() {
     ordered_or_wrapped(
         "U-15 Apply",
         "",
-        "(Pure (let [v [1 2 3]] (add-i64 (vec-len v) (vec-len v))))",
+        "(primitives/pure (let [v [1 2 3]] (add-i64 (vec-len v) (vec-len v))))",
         6,
     );
 }
@@ -808,7 +808,7 @@ fn operand_order_closure_call_duplicates_before_moving() {
     ordered_or_wrapped(
         "U-15 closure call",
         "(defn call [f v] (f (vec-len v) v))",
-        "(Pure (call (fn [n xs] (add-i64 n (vec-len xs))) [1 2 3]))",
+        "(primitives/pure (call (fn [n xs] (add-i64 n (vec-len xs))) [1 2 3]))",
         6,
     );
 }
@@ -819,7 +819,7 @@ fn operand_order_tail_call_duplicates_before_moving() {
     ordered_or_wrapped(
         "U-15 tail call",
         "(defn go [n acc v] (if (eq-i64 n 0) (add-i64 acc (vec-len v)) (go (add-i64 n -1) (add-i64 acc (vec-len v)) v)))",
-        "(Pure (go 4 0 [1 2 3]))",
+        "(primitives/pure (go 4 0 [1 2 3]))",
         15,
     );
 }
@@ -830,7 +830,7 @@ fn operand_order_vec_literal_duplicates_before_moving() {
     ordered_or_wrapped(
         "U-15 Vec literal",
         "",
-        "(Pure (let [v [1 2 3] both [v v]] (add-i64 (vec-len (vec-get both 0)) (vec-len (vec-get both 1)))))",
+        "(primitives/pure (let [v [1 2 3] both [v v]] (add-i64 (vec-len (vec-get both 0)) (vec-len (vec-get both 1)))))",
         6,
     );
 }
@@ -841,7 +841,7 @@ fn operand_order_constructor_duplicates_before_moving() {
     ordered_or_wrapped(
         "U-15 constructor",
         "(deftype Both [:(Vec Int) left :(Vec Int) right])",
-        "(Pure (let [v [1 2 3]] (match (Both v v) [(Both a b) (add-i64 (vec-len a) (vec-len b))])))",
+        "(primitives/pure (let [v [1 2 3]] (match (Both v v) [(Both a b) (add-i64 (vec-len a) (vec-len b))])))",
         6,
     );
 }
@@ -852,7 +852,7 @@ fn operand_order_par_binding_duplicates_before_continuation_capture() {
     ordered_or_wrapped(
         "U-15 ParBind",
         "(platform test-capture)\n(import [platform.test-capture [commutative-sleep-ms commutative-noop]])",
-        "(let [v [1 2 3]] (bind (commutative-sleep-ms (vec-len v)) (fn [a] (bind (commutative-noop) (fn [b] (Pure (add-i64 (add-i64 a b) (vec-len v))))))))",
+        "(let [v [1 2 3]] (bind (commutative-sleep-ms (vec-len v)) (fn [a] (bind (commutative-noop) (fn [b] (primitives/pure (add-i64 (add-i64 a b) (vec-len v))))))))",
         6,
     );
 }
@@ -863,7 +863,7 @@ fn wrapper_curried_heap_capture_survives_two_calls() {
     ordered_or_wrapped(
         "U-16 curried heap capture",
         "(defn f [v n] (add-i64 (vec-len v) n))",
-        "(Pure (let [g (f [1 2])] (add-i64 (g 1) (g 2))))",
+        "(primitives/pure (let [g (f [1 2])] (add-i64 (g 1) (g 2))))",
         7,
     );
 }
@@ -874,7 +874,7 @@ fn wrapper_curried_closure_value_forwards_capture() {
     ordered_or_wrapped(
         "U-16 curried closure target",
         "(defn curry [:(Fn [(Vec Int) Int] Int) f v] (f v))",
-        "(Pure (let [bias [9] f (fn [v n] (add-i64 (vec-len bias) (add-i64 (vec-len v) n))) g (curry f [1 2])] (add-i64 (g 1) (g 2))))",
+        "(primitives/pure (let [bias [9] f (fn [v n] (add-i64 (vec-len bias) (add-i64 (vec-len v) n))) g (curry f [1 2])] (add-i64 (g 1) (g 2))))",
         9,
     );
 }
@@ -885,7 +885,7 @@ fn wrapper_function_value_consumes_heap_argument() {
     ordered_or_wrapped(
         "U-16 function value",
         "(defn ap [f x] (f x))",
-        "(Pure (ap vec-len [1 2 3]))",
+        "(primitives/pure (ap vec-len [1 2 3]))",
         3,
     );
 }
@@ -896,7 +896,7 @@ fn wrapper_constructor_value_forwards_heap_field() {
     ordered_or_wrapped(
         "U-16 constructor value",
         "(deftype Box [:(Vec Int) items])\n(defn ap [f x] (f x))",
-        "(Pure (match (ap Box [1 2 3]) [(Box xs) (vec-len xs)]))",
+        "(primitives/pure (match (ap Box [1 2 3]) [(Box xs) (vec-len xs)]))",
         3,
     );
 }
@@ -907,7 +907,7 @@ fn wrapper_trait_method_value_consumes_heap_argument() {
     ordered_or_wrapped(
         "U-16 trait method value",
         "(deftrait Sizeable (size [a] Int))\n(impl Sizeable String (defn size [s] (str-len s)))\n(defn ap [f x] (f x))",
-        "(Pure (ap size (str-concat \"ab\" \"cde\")))",
+        "(primitives/pure (ap size (str-concat \"ab\" \"cde\")))",
         5,
     );
 }

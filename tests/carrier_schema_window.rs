@@ -19,7 +19,7 @@ use std::time::Duration;
 // The B-2 shape: a COW `vec-set` bound by a match var-pattern, projected by the
 // caller. `(vec-set [1 2 3] 1 99)` = `[1 99 3]`; `(vec-get (h [1 2 3]) 1)` = 99.
 const B2_PROG: &str = "(defn h [v] (match (vec-set v 1 99) [r r]))\n\
-     (defn main [] (Pure (vec-get (h [1 2 3]) 1)))\n";
+     (defn main [] (primitives/pure (vec-get (h [1 2 3]) 1)))\n";
 
 fn nap() {
     std::thread::sleep(Duration::from_millis(50));
@@ -91,8 +91,7 @@ fn b2_match_cow_warm_cache_correct_both_toggles() {
 // CS-2 — schema-gate wholesale-refusal fence (mechanism, not per-version).
 // -----------------------------------------------------------------------------
 
-const CS2_MAIN: &str =
-    "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
+const CS2_MAIN: &str = "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper 21)))";
 const CS2_UTIL: &str = "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))";
 
 /// Rewrite an integer JSON field's value in raw text (mirrors cache.rs's helper).

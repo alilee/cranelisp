@@ -76,7 +76,7 @@ fn param_distance_recursive_consumer_seed_zero_green() {
             "{PEERS_SEED_ZERO}\
              (defn sum-from [v i acc] (if (eq-i64 i (vec-len v)) acc (sum-from v (add-i64 i 1) (add-i64 acc (vec-get v i)))))\n\
              (defn consume [v] (sum-from v 0 0))\n\
-             (defn main [] (Pure (consume (peers 3))))\n"
+             (defn main [] (primitives/pure (consume (peers 3))))\n"
         ),
         6,
     );
@@ -93,7 +93,7 @@ fn param_distance_recursive_consumer_seed_empty_green() {
             "{PEERS_SEED_EMPTY}\
              (defn sum-from [v i acc] (if (eq-i64 i (vec-len v)) acc (sum-from v (add-i64 i 1) (add-i64 acc (vec-get v i)))))\n\
              (defn consume [v] (sum-from v 0 0))\n\
-             (defn main [] (Pure (consume (peers 3))))\n"
+             (defn main [] (primitives/pure (consume (peers 3))))\n"
         ),
         6,
     );
@@ -114,7 +114,7 @@ fn untyped_adt_field_distance_green() {
              \x20 ([idx acc] (if (eq-i64 idx 0) (Bx acc) (peers (add-i64 idx -1) (vec-push acc idx)))))\n\
              (defn sum-from [v i acc] (if (eq-i64 i (vec-len v)) acc (sum-from v (add-i64 i 1) (add-i64 acc (vec-get v i)))))\n\
              (defn consume [b] (match b [(Bx v) (sum-from v 0 0)]))\n\
-             (defn main [] (Pure (consume (peers 3))))\n"
+             (defn main [] (primitives/pure (consume (peers 3))))\n"
         ),
         6,
     );
@@ -134,7 +134,7 @@ fn cross_module_untyped_field_distance_green() {
     let user = "(import [bld [Box Bx peers]])\n\
          (defn sum-from [v i acc] (if (eq-i64 i (vec-len v)) acc (sum-from v (add-i64 i 1) (add-i64 acc (vec-get v i)))))\n\
          (defn consume [b] (match b [(Bx v) (sum-from v 0 0)]))\n\
-         (defn main [] (Pure (consume (peers 3))))\n";
+         (defn main [] (primitives/pure (consume (peers 3))))\n";
     for link in [false, true] {
         let b = Cranelisp::new()
             .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -174,7 +174,7 @@ fn multi_sig_return_through_wrapper_indirection_infers() {
         &format!(
             "{PEERS_SEED_EMPTY}\
              (defn run-elim [idx] (vec-len (peers idx)))\n\
-             (defn main [] (Pure (run-elim 3)))\n"
+             (defn main [] (primitives/pure (run-elim 3)))\n"
         ),
         3,
     );
@@ -193,7 +193,7 @@ fn two_function_equivalent_through_wrapper_indirection_green() {
         "(defn peers-helper [idx acc] (if (eq-i64 idx 0) acc (peers-helper (add-i64 idx -1) (vec-push acc idx))))\n\
          (defn peers [idx] (peers-helper idx []))\n\
          (defn run-elim [idx] (vec-len (peers idx)))\n\
-         (defn main [] (Pure (run-elim 3)))\n",
+         (defn main [] (primitives/pure (run-elim 3)))\n",
         3,
     );
 }

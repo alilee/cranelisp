@@ -47,7 +47,7 @@ fn run_prims(src: &str) -> helpers::e2e::CrOutput {
 fn hkt_sig_unknown_named_type_rejected_not_silently_minted() {
     let out = run_prims(
         "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(Bogus a) x] (f b)))\n\
-         (defn main [] (Pure 0))\n",
+         (defn main [] (primitives/pure 0))\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -68,7 +68,7 @@ fn hkt_sig_unknown_named_type_rejected_not_silently_minted() {
 fn hkt_valid_functor_declaration_green() {
     run_prims(
         "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
-         (defn main [] (Pure 0))\n",
+         (defn main [] (primitives/pure 0))\n",
     )
     .assert_exit(0);
 }

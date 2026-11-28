@@ -27,12 +27,12 @@ use helpers::marginal::{Child, MarginalPair};
 /// [9 1], so either `forward` computes 3.
 fn alias_loop(forward: &str) -> Child {
     Child::new(&format!(
-        "(import [primitives [Pure add-i64 eq-i64 vec-len vec-push]])\n\
+        "(import [primitives [pure add-i64 eq-i64 vec-len vec-push]])\n\
          (defn go [n p q]\n\
            (if (eq-i64 n 0)\n\
                (add-i64 (vec-len p) (vec-len q))\n\
                (match q [alias (go (add-i64 n -1) (vec-push q 1) {forward})])))\n\
-         (defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))\n"
+         (defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))\n"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1")
 }
@@ -70,9 +70,9 @@ fn push_on_a_vector_forwarded_through_a_match_binder_balances() {
 #[test]
 fn push_on_a_vector_viewed_by_a_match_binder_leaves_the_binder_unchanged() {
     run_through_all_modes(
-        "(import [primitives [Pure vec-len vec-push]])\n\
+        "(import [primitives [pure vec-len vec-push]])\n\
          (defn main []\n\
-           (Pure (let [v (vec-push [] 9)]\n\
+           (primitives/pure (let [v (vec-push [] 9)]\n\
                    (match v [a (let [w (vec-push v 1)] (vec-len a))]))))\n",
         PreludeVariant::None,
     )

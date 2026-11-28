@@ -51,10 +51,10 @@ fn colliding_defn_param_with_foreign_macro_compiles_and_runs() {
         .run("user.cl")
         .file("mlib.cl", MLIB)
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [mlib [wrap]])\n\
              (defn greet [label] (wrap label))\n\
-             (defn main [] (Pure (greet 21)))\n",
+             (defn main [] (primitives/pure (greet 21)))\n",
         )
         .output()
         .assert_exit(42);
@@ -72,10 +72,10 @@ fn colliding_let_binder_with_foreign_macro_compiles_and_runs() {
         .run("user.cl")
         .file("mlib.cl", MLIB)
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [mlib [wrap]])\n\
              (defn f [] (let [label 21] (wrap label)))\n\
-             (defn main [] (Pure (f)))\n",
+             (defn main [] (primitives/pure (f)))\n",
         )
         .output()
         .assert_exit(42);
@@ -93,10 +93,10 @@ fn greet_name_param_with_str_macro_compiles() {
         .use_workspace_stdlib_for_stdlib_conformance_only()
         .run("user.cl")
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [text.string [str]])\n\
              (defn greet [name] (str \"hello, \" name))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -127,7 +127,7 @@ fn defn_param_qualified_binder_rejected_neg() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [a/b] a/b)\n(defn main [] (Pure (f 5)))\n")
+        .user("(defn f [a/b] a/b)\n(defn main [] (primitives/pure (f 5)))\n")
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -146,7 +146,7 @@ fn defn_param_bare_binder_twin() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [ab] ab)\n(defn main [] (Pure (f 5)))\n")
+        .user("(defn f [ab] ab)\n(defn main [] (primitives/pure (f 5)))\n")
         .output()
         .assert_exit(5);
 }
@@ -159,7 +159,7 @@ fn fn_param_qualified_binder_rejected_neg() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [] (let [g (fn [a/b] a/b)] (g 5)))\n(defn main [] (Pure (f)))\n")
+        .user("(defn f [] (let [g (fn [a/b] a/b)] (g 5)))\n(defn main [] (primitives/pure (f)))\n")
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -178,7 +178,7 @@ fn let_name_qualified_binder_rejected_neg() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [] (let [a/b 5] a/b))\n(defn main [] (Pure (f)))\n")
+        .user("(defn f [] (let [a/b 5] a/b))\n(defn main [] (primitives/pure (f)))\n")
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -198,7 +198,7 @@ fn match_var_pattern_qualified_binder_rejected_neg() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [v] (match v [a/b a/b]))\n(defn main [] (Pure (f 5)))\n")
+        .user("(defn f [v] (match v [a/b a/b]))\n(defn main [] (primitives/pure (f 5)))\n")
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(

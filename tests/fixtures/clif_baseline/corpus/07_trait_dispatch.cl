@@ -12,4 +12,4 @@
 (impl Sizeable Tag (defn size [t] (match t [(MkTag s) (str-len s)])))
 
 (defn main []
-  (Pure (add-i64 (size (MkBox 5)) (size (MkTag "abc")))))
+  (primitives/pure (add-i64 (size (MkBox 5)) (size (MkTag "abc")))))

@@ -90,7 +90,7 @@ fn multi_sig_poly_callee_reached_cross_arity_emits_mono_instance() {
 
     // `--run` facet: same program computes 6 ⇒ exit 6.
     let run = run_prims(&format!(
-        "{BUILD}\n(import [primitives [Pure]])\n(defn main [] (Pure (build 3)))\n"
+        "{BUILD}\n(import [primitives [pure]])\n(defn main [] (primitives/pure (build 3)))\n"
     ));
     let rc = format!("{}{}", run.stdout, run.stderr);
     assert!(
@@ -116,12 +116,12 @@ fn multi_sig_poly_callee_reached_cross_arity_emits_mono_instance() {
 #[test]
 fn poly_callee_cross_arity_two_single_defns_twin_runs_green_fence() {
     let run = run_prims(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (defn idpoly [x] x)\n\
          (defn build1 [n] (build2 n 0))\n\
          (defn build2 [n acc] (if (eq-i64 n 0) acc \
              (build2 (sub-i64 n 1) (add-i64 acc (idpoly n)))))\n\
-         (defn main [] (Pure (build1 3)))\n",
+         (defn main [] (primitives/pure (build1 3)))\n",
     );
     assert!(
         run.status.code() == Some(6),
@@ -136,18 +136,18 @@ fn poly_callee_cross_arity_two_single_defns_twin_runs_green_fence() {
 
 // GREEN fence 2 — the SAME multi-sig `build` shape but with NO poly callee: the
 // 2-arg clause sums `n` directly (`(add-i64 acc n)`) instead of `(idpoly n)`.
-// Pure-Int multi-sig cross-arity delegation with a concrete body works (exit 6),
+// pure-Int multi-sig cross-arity delegation with a concrete body works (exit 6),
 // isolating the POLY CALLEE as the other load-bearing element of D3.
 // spec: spec/05-definitions.md §5.1.2 — a multi-signature cross-arity delegation
 // with a fully-concrete clause body reaches codegen cleanly.
 #[test]
 fn multi_sig_cross_arity_no_poly_callee_runs_green_fence() {
     let run = run_prims(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (defn build ([n] (build n 0)) \
                      ([n acc] (if (eq-i64 n 0) acc \
                          (build (sub-i64 n 1) (add-i64 acc n)))))\n\
-         (defn main [] (Pure (build 3)))\n",
+         (defn main [] (primitives/pure (build 3)))\n",
     );
     assert!(
         run.status.code() == Some(6),

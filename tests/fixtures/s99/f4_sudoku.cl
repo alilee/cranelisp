@@ -219,8 +219,8 @@
 ;; spark/search path itself.
 (defn main []
   (match (make-grid "483921657967345821251876493548132976729564138136798245372689514814253769695417382")
-    [None (Pure 0)
+    [None (primitives/pure 0)
      (Some g)
        (match (solve g)
-         [(Success solution) (Pure (rem-i64 (checksum solution) 251))
-          Unsolvable (Pure 0)])]))
+         [(Success solution) (primitives/pure (rem-i64 (checksum solution) 251))
+          Unsolvable (primitives/pure 0)])]))

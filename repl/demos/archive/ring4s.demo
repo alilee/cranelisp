@@ -41,11 +41,11 @@ str-concat
 ; `then` discards 999 and runs the captured IO value 42.
 ; The following bind adds 8, producing 50.
 
-(import [primitives [Pure bind]])
+(import [primitives [pure bind]])
 
 (defn then [a b] (bind a (fn [_] b)))
 
-(defn test-then [] (bind (then (Pure 999) (Pure 42)) (fn [x] (Pure (add-i64 x 8)))))
+(defn test-then [] (bind (then (pure 999) (pure 42)) (fn [x] (pure (add-i64 x 8)))))
 
 (test-then)
 

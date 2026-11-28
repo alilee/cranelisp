@@ -155,7 +155,7 @@ fn popcount_basic_and_full_width() {
 // identically in every mode. `(bit-or (shl 1 3) (bit-and 12 10))` = 8 | 8 = 8.
 //
 // `main` MUST return `(Fn [] (IO _))` for `--run`/`--link` (a bare `Int` return
-// type-errors in batch mode), so the bitwise result is wrapped in `(Pure …)` —
+// type-errors in batch mode), so the bitwise result is wrapped in `(primitives/pure …)` —
 // the same `main` shape `tests/build_confidence.rs::mode_equiv_primitive_arithmetic`
 // uses. The `run_through_all_modes` helper observes the wrapped value as the exit
 // code in `--run`/`--link` and as the `:primitives/Int` echo in the REPL; the
@@ -163,7 +163,7 @@ fn popcount_basic_and_full_width() {
 #[test]
 fn bitwise_run_through_all_modes() {
     helpers::e2e::run_through_all_modes(
-        "(defn main [] (Pure (bit-or (shl 1 3) (bit-and 12 10))))",
+        "(defn main [] (primitives/pure (bit-or (shl 1 3) (bit-and 12 10))))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(8);

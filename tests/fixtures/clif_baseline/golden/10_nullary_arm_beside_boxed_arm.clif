@@ -1,22 +1,3 @@
-; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
-function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
 ; === CLIF user::(primitives/Option.Some [user/Box] (primitives/Option user/Box)) ===
 function %(primitives/Option.Some [user/Box] (primitives/Option user/Box))(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
@@ -56,7 +37,7 @@ function %Box.items(i64) -> i64 system_v {
     gv0 = symbol colocated userextname1
     sig0 = (i64) system_v
     sig1 = (i64, i64) system_v
-    fn0 = colocated u0:48 sig0
+    fn0 = colocated u0:47 sig0
     fn1 = u0:2 sig1
 
 block0(v0: i64):
@@ -135,9 +116,9 @@ function %control-loop(i64, i64, i64) -> i64 system_v {
     sig2 = (i64) system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:48 sig0
-    fn1 = colocated u0:47 sig2
-    fn2 = colocated u0:48 sig3
+    fn0 = colocated u0:47 sig0
+    fn1 = colocated u0:46 sig2
+    fn2 = colocated u0:47 sig3
     fn3 = u0:2 sig4
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -163,7 +144,7 @@ block3:
     v13 = iconst.i64 0
     v14 = iconst.i64 5
     v15 = global_value.i64 gv0
-    v16 = iadd_imm v15, 72
+    v16 = iadd_imm v15, 64
     v17 = load.i64 notrap aligned v16
     v18 = call_indirect sig1, v17(v3, v13, v14)  ; v13 = 0, v14 = 5
     jump block7
@@ -236,9 +217,9 @@ function %control-step(i64, i64, i64) -> i64 system_v {
     sig6 = (i64) system_v
     sig7 = (i64) -> i64 system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:50 sig1
+    fn0 = colocated u0:49 sig1
     fn1 = u0:0 sig3
-    fn2 = colocated u0:50 sig6
+    fn2 = colocated u0:49 sig6
     fn3 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -249,7 +230,7 @@ block1(v3: i64, v4: i64, v5: i64):
     v7 = iconst.i64 1
     v8 = atomic_rmw.i64 add v6, v7  ; v7 = 1
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 48
+    v10 = iadd_imm v9, 40
     v11 = load.i64 notrap aligned v10
     v12 = call_indirect sig0, v11(v3, v4)
     jump block4
@@ -284,7 +265,7 @@ block9:
     store notrap aligned v27, v26+16  ; v27 = 0
     store.i64 notrap aligned v5, v26+24
     v28 = global_value.i64 gv2
-    v29 = iadd_imm v28, 56
+    v29 = iadd_imm v28, 48
     v30 = load.i64 notrap aligned v29
     v31 = call_indirect sig4, v30(v3, v4, v26)
     v32 = global_value.i64 gv3
@@ -333,9 +314,9 @@ function %item-at(i64, i64) -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:48 sig0
+    fn0 = colocated u0:47 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:51 sig2
+    fn2 = colocated u0:50 sig2
     fn3 = u0:11 sig3
     fn4 = u0:2 sig4
 
@@ -411,7 +392,6 @@ block2(v4: i64):
 function %main() -> i64 system_v {
     gv0 = symbol userextname2
     gv1 = symbol userextname2
-    gv2 = symbol userextname2
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
@@ -435,6 +415,7 @@ function %main() -> i64 system_v {
     fn7 = u0:0 sig8
     fn8 = u0:10 sig9
     fn9 = u0:0 sig10
+    fn10 = u0:0 sig12
 
 block0:
     jump block1
@@ -474,7 +455,7 @@ block1:
     v19 = iconst.i64 100
     v20 = iconst.i64 0
     v21 = global_value.i64 gv0
-    v22 = iadd_imm v21, 80
+    v22 = iadd_imm v21, 72
     v23 = load.i64 notrap aligned v22
     v24 = call_indirect sig5, v23(v17, v19, v20)  ; v19 = 100, v20 = 0
     v25 = iconst.i64 1
@@ -511,15 +492,18 @@ block1:
     v44 = iconst.i64 100
     v45 = iconst.i64 0
     v46 = global_value.i64 gv1
-    v47 = iadd_imm v46, 88
+    v47 = iadd_imm v46, 80
     v48 = load.i64 notrap aligned v47
     v49 = call_indirect sig11, v48(v42, v44, v45)  ; v44 = 100, v45 = 0
     v50 = iadd v24, v49
-    v51 = global_value.i64 gv2
-    v52 = iadd_imm v51, 40
-    v53 = load.i64 notrap aligned v52
-    v54 = call_indirect sig12, v53(v50)
-    return v54
+    v51 = iconst.i64 0
+    v52 = iconst.i64 24
+    v53 = call fn10(v52)  ; v52 = 24
+    v54 = iconst.i64 0
+    store notrap aligned v54, v53+16  ; v54 = 0
+    store notrap aligned v50, v53+24
+    store notrap aligned v51, v53+32  ; v51 = 0
+    return v53
 }
 ; === end CLIF user::main ===
 ; === CLIF user::set-item ===
@@ -535,11 +519,11 @@ function %set-item(i64, i64, i64) -> i64 system_v {
     sig6 = (i64, i64) system_v
     sig7 = (i64) -> i64 system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:48 sig0
-    fn1 = colocated u0:52 sig1
-    fn2 = colocated u0:51 sig2
+    fn0 = colocated u0:47 sig0
+    fn1 = colocated u0:51 sig1
+    fn2 = colocated u0:50 sig2
     fn3 = u0:2 sig3
-    fn4 = colocated u0:51 sig4
+    fn4 = colocated u0:50 sig4
     fn5 = u0:20 sig5
     fn6 = u0:11 sig6
     fn7 = u0:0 sig7
@@ -640,9 +624,9 @@ function %subject-loop(i64, i64, i64) -> i64 system_v {
     sig2 = (i64) system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64) system_v
-    fn0 = colocated u0:48 sig0
-    fn1 = colocated u0:47 sig2
-    fn2 = colocated u0:48 sig3
+    fn0 = colocated u0:47 sig0
+    fn1 = colocated u0:46 sig2
+    fn2 = colocated u0:47 sig3
     fn3 = u0:2 sig4
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -668,7 +652,7 @@ block3:
     v13 = iconst.i64 0
     v14 = iconst.i64 5
     v15 = global_value.i64 gv0
-    v16 = iadd_imm v15, 64
+    v16 = iadd_imm v15, 56
     v17 = load.i64 notrap aligned v16
     v18 = call_indirect sig1, v17(v3, v13, v14)  ; v13 = 0, v14 = 5
     jump block7
@@ -739,11 +723,11 @@ function %subject-step(i64, i64, i64) -> i64 system_v {
     sig6 = (i64) system_v
     sig7 = (i64) system_v
     sig8 = (i64, i64) system_v
-    fn0 = colocated u0:50 sig1
-    fn1 = colocated u0:48 sig2
+    fn0 = colocated u0:49 sig1
+    fn1 = colocated u0:47 sig2
     fn2 = u0:0 sig3
-    fn3 = colocated u0:50 sig6
-    fn4 = colocated u0:48 sig7
+    fn3 = colocated u0:49 sig6
+    fn4 = colocated u0:47 sig7
     fn5 = u0:2 sig8
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -754,7 +738,7 @@ block1(v3: i64, v4: i64, v5: i64):
     v7 = iconst.i64 1
     v8 = atomic_rmw.i64 add v6, v7  ; v7 = 1
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 48
+    v10 = iadd_imm v9, 40
     v11 = load.i64 notrap aligned v10
     v12 = call_indirect sig0, v11(v3, v4)
     jump block4
@@ -787,7 +771,7 @@ block9:
     store notrap aligned v24, v23+16  ; v24 = 0
     store.i64 notrap aligned v5, v23+24
     v25 = global_value.i64 gv1
-    v26 = iadd_imm v25, 56
+    v26 = iadd_imm v25, 48
     v27 = load.i64 notrap aligned v26
     v28 = call_indirect sig4, v27(v3, v4, v23)
     v29 = global_value.i64 gv2

@@ -60,7 +60,7 @@
 (defn rem-i64 [a b] (sub-i64 a (mul-i64 (div-i64 a b) b)))
 (defn mid-of [lo hi] (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))
 
-;; Heavy leaf: a TAIL-recursive LCG integer loop. Pure (no alloc, no shared
+;; Heavy leaf: a TAIL-recursive LCG integer loop. pure (no alloc, no shared
 ;; state), tail-recursive (so M-static declines to spark inside it), deterministic
 ;; for a given seed. This is the ~120ms sequential compute unit.
 (defn spin [i n acc]
@@ -85,4 +85,4 @@
              (reduce-tree (mid-of lo hi) hi))))
 
 (defn main []
-  (Pure (rem-i64 (reduce-tree 0 (leaves)) 251)))
+  (primitives/pure (rem-i64 (reduce-tree 0 (leaves)) 251)))

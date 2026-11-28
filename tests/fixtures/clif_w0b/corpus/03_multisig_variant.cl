@@ -11,4 +11,4 @@
   ([:Int x :Int y] (add-i64 x y)))
 
 (defn main []
-  (Pure (add-i64 (pick 5) (pick 3 4))))
+  (primitives/pure (add-i64 (pick 5) (pick 3 4))))

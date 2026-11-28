@@ -421,9 +421,9 @@ fn elim_arm_parts(t: &OwningType) -> (String, String) {
 /// multiplied by this, so a rate of 1 is unmissable in the reported numbers.
 const ITERS: i64 = 25;
 
-/// `main` ALWAYS returns `(Pure <Int>)`.
+/// `main` ALWAYS returns `(primitives/pure <Int>)`.
 ///
-/// STRUCTURAL EXCLUSION: there is no `Pure <heap>` template, so the
+/// STRUCTURAL EXCLUSION: there is no `pure <heap>` template, so the
 /// program-RESULT-heap face — `main` returning an `IO` whose payload is a heap
 /// value — is not generated here. It was excluded while that result leaked
 /// (FIXME 0745, fixed in S118 by the program-result owner). Its evidence is
@@ -432,13 +432,17 @@ const ITERS: i64 = 25;
 /// Whether this product should gain a `main`-returns-heap variant is QA's
 /// allocation.
 fn single_program(t: &OwningType, p: &Position) -> String {
-    format!("{}{}(defn main [] (Pure (cell)))\n", t.defs, (p.emit)(t))
+    format!(
+        "{}{}(defn main [] (primitives/pure (cell)))\n",
+        t.defs,
+        (p.emit)(t)
+    )
 }
 
 fn scaled_program(t: &OwningType, p: &Position) -> String {
     format!(
         "{}{}(defn rep [:Int n :Int acc] (if (le-i64 n 0) acc (rep (sub-i64 n 1) (cell))))\n\
-         (defn main [] (Pure (rep {} 0)))\n",
+         (defn main [] (primitives/pure (rep {} 0)))\n",
         t.defs,
         (p.emit)(t),
         ITERS
@@ -832,13 +836,13 @@ fn uniform_product(consume: &str) {
                 };
                 let program = |n: i32| {
                     format!(
-                        "(import [primitives [Pure Int add-i64 eq-i64 vec-len vec-push vec-set]])\n\
+                        "(import [primitives [pure Int add-i64 eq-i64 vec-len vec-push vec-set]])\n\
                      (deftype (Hold t) (MkHold [:t value]))\n\
                      (defn read [v] (vec-len v))\n\
                      (defn go [n v spare] (if (eq-i64 n 0) {result}\n\
                        (match v [a (let [k (match spare [{binder} (vec-len {binder})]) next {update}]\n\
                          (go (add-i64 n -1) {argument} spare))])))\n\
-                     (defn main [] (Pure (go {n} [7 8 9] [1 2])))\n"
+                     (defn main [] (primitives/pure (go {n} [7 8 9] [1 2])))\n"
                     )
                 };
                 for n in [1, 7] {

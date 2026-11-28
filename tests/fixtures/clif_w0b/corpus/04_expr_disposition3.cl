@@ -6,6 +6,6 @@
 ;; Free-standing (primitives only).
 (import [primitives [*]])
 
-(Pure (add-i64 1 2))
+(primitives/pure (add-i64 1 2))
 
-(defn main [] (Pure 0))
+(defn main [] (primitives/pure 0))

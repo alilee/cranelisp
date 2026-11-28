@@ -1,22 +1,3 @@
-; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
-function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
 ; === CLIF user::add3 ===
 function %add3(i64, i64, i64) -> i64 system_v {
 block0(v0: i64, v1: i64, v2: i64):
@@ -30,7 +11,6 @@ block1(v3: i64, v4: i64, v5: i64):
 ; === end CLIF user::add3 ===
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
-    gv0 = symbol userextname3
     sig0 = (i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 system_v
@@ -38,8 +18,9 @@ function %main() -> i64 system_v {
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:37 sig1
+    fn1 = colocated u0:36 sig1
     fn2 = u0:1 sig4
+    fn3 = u0:0 sig5
 
 block0:
     jump block1
@@ -80,10 +61,13 @@ block5:
     jump block2
 
 block2:
-    v17 = global_value.i64 gv0
-    v18 = iadd_imm v17, 0
-    v19 = load.i64 notrap aligned v18
-    v20 = call_indirect sig5, v19(v8)
-    return v20
+    v17 = iconst.i64 0
+    v18 = iconst.i64 24
+    v19 = call fn3(v18)  ; v18 = 24
+    v20 = iconst.i64 0
+    store notrap aligned v20, v19+16  ; v20 = 0
+    store.i64 notrap aligned v8, v19+24
+    store notrap aligned v17, v19+32  ; v17 = 0
+    return v19
 }
 ; === end CLIF user::main ===

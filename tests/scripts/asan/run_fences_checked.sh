@@ -35,27 +35,27 @@ run_shape s1_borrowed_param '(import [primitives [*]])
 (defn spin [:Int n :Int acc :String s]
   (if (eq-i64 n 0) acc
     (spin (sub-i64 n 1) (add-i64 acc (add-i64 (use-len s) (str-len s))) s)))
-(defn main [] (Pure (spin 2000 0 "hello")))
+(defn main [] (primitives/pure (spin 2000 0 "hello")))
 ' || fail=1
 run_shape s2_projection_reads '(import [primitives [*]])
 (defn walk [v :Int n :Int acc]
   (if (eq-i64 n 0) acc
     (walk v (sub-i64 n 1)
       (add-i64 acc (add-i64 (str-len (vec-get v 0)) (vec-len v))))))
-(defn main [] (Pure (walk ["aa" "bbb"] 2000 0)))
+(defn main [] (primitives/pure (walk ["aa" "bbb"] 2000 0)))
 ' || fail=1
 run_shape s3_temporaries '(import [primitives [*]])
 (defn use-len [:String s] (str-len s))
 (defn spin [:Int n :Int acc]
   (if (eq-i64 n 0) acc
     (spin (sub-i64 n 1) (add-i64 acc (use-len (str-concat "ab" "cd"))))))
-(defn main [] (Pure (spin 2000 0)))
+(defn main [] (primitives/pure (spin 2000 0)))
 ' || fail=1
 run_shape l_c2a_tco_backedge '(import [primitives [*]])
 (defn spin [:Int n :String s]
   (if (eq-i64 n 0) (str-len s)
     (spin (sub-i64 n 1) (substring (str-concat s "ab") 0 3))))
-(defn main [] (Pure (spin 10000 "xy")))
+(defn main [] (primitives/pure (spin 10000 "xy")))
 ' || fail=1
 run_shape l_d3c_suspension_borrow '(import [primitives [*]])
 (defn leaf [v :Int i] (str-len (vec-get v 0)))
@@ -64,6 +64,6 @@ run_shape l_d3c_suspension_borrow '(import [primitives [*]])
   (if (eq-i64 (sub-i64 hi lo) 1) (leaf v lo)
     (let [m (mid-of lo hi)]
       (add-i64 (reduce-range v lo m) (reduce-range v m hi)))))
-(defn main [] (Pure (reduce-range ["hello" "bb"] 0 256)))
+(defn main [] (primitives/pure (reduce-range ["hello" "bb"] 0 256)))
 ' || fail=1
 exit $fail

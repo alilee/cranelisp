@@ -1,4 +1,4 @@
-// Compares the seven library API baselines with the default-feature surface.
+// Compares the library API baselines with the default-feature surface.
 // The disposable-crate proof exercises the same generator and drift check.
 
 use std::path::{Path, PathBuf};
@@ -20,12 +20,13 @@ fn crates_with_baselines() -> &'static [&'static str] {
         "cranelisp-platform",
         "cranelisp-primitives",
         "cranelisp-intrinsics",
+        "cranelisp-exe-bundle",
     ]
 }
 
 // spec: tests/AGENTS.md §"Public-API enforcement" — repository surface drift.
 #[test]
-fn public_api_check_runs_against_all_seven_crates() {
+fn public_api_check_runs_against_every_baselined_crate() {
     let probe = Command::new("cargo")
         .args(["+nightly", "public-api", "--version"])
         .output();
@@ -52,6 +53,20 @@ fn public_api_check_runs_against_all_seven_crates() {
 }
 
 fn check_public_api(root: &Path, crate_names: &[&str]) {
+    let crates_dir = root.join("crates");
+    let mut unlisted_baselines = Vec::new();
+    for entry in std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", crates_dir.display()))
+    {
+        let entry = entry.expect("read crate directory entry");
+        if entry.path().join("public-api.txt").is_file() {
+            let crate_name = entry.file_name().into_string().expect("UTF-8 crate name");
+            if !crate_names.contains(&crate_name.as_str()) {
+                unlisted_baselines.push(crate_name);
+            }
+        }
+    }
+    unlisted_baselines.sort();
     let mut missing_baseline: Vec<&str> = Vec::new();
     let mut missing_crate: Vec<&str> = Vec::new();
     let mut drifted: Vec<(String, String)> = Vec::new();
@@ -78,11 +93,20 @@ fn check_public_api(root: &Path, crate_names: &[&str]) {
             .unwrap_or_else(|e| panic!("read {}: {e}", baseline.display()));
         if normalise(&actual) != normalise(&expected) {
             drifted.push((crate_name.to_string(), diff_summary(&expected, &actual)));
+        } else {
+            println!("{crate_name}: +0 additions, -0 removals");
         }
     }
 
-    if !missing_crate.is_empty() || !missing_baseline.is_empty() || !drifted.is_empty() {
+    if !unlisted_baselines.is_empty()
+        || !missing_crate.is_empty()
+        || !missing_baseline.is_empty()
+        || !drifted.is_empty()
+    {
         let mut msg = String::from("public-api conformance check failed:\n");
+        if !unlisted_baselines.is_empty() {
+            msg.push_str(&format!("  unlisted baselines: {unlisted_baselines:?}\n"));
+        }
         if !missing_crate.is_empty() {
             msg.push_str(&format!("  missing crates: {:?}\n", missing_crate));
         }
@@ -127,7 +151,7 @@ fn generate_public_api(root: &Path, crate_name: &str) -> Result<String, String> 
 }
 
 // spec: tests/AGENTS.md §"Public-API enforcement" — generated auto-traits
-// are omitted; a public-item change still fails the executing drift guard.
+// are omitted; unlisted baselines and public-item changes fail the guard.
 #[test]
 fn public_api_detection_proof_catches_public_item_and_accepts_clean_surface() {
     let fixture = tempfile::tempdir().expect("private API proof workspace");
@@ -154,6 +178,12 @@ fn public_api_detection_proof_catches_public_item_and_accepts_clean_surface() {
         "new baseline format must omit generated auto-trait implementations\n{baseline}"
     );
     std::fs::write(crate_dir.join("public-api.txt"), baseline).unwrap();
+    let failure = std::panic::catch_unwind(|| check_public_api(root, &[]))
+        .expect_err("guard must reject an unlisted baseline");
+    let diagnostic = failure.downcast_ref::<String>().expect("guard diagnostic");
+    assert!(diagnostic.contains("public-api conformance check failed:"));
+    assert!(diagnostic.contains("unlisted baselines: [\"api-proof\"]"));
+    assert!(!diagnostic.contains("cargo public-api failed"));
     check_public_api(root, &["api-proof"]);
 
     std::fs::write(

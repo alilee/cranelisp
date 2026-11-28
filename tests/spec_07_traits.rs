@@ -19,7 +19,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{run_through_all_modes, Cranelisp, PreludeVariant};
+use helpers::e2e::{Cranelisp, PreludeVariant, run_through_all_modes};
 
 fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
@@ -60,7 +60,7 @@ fn link_prims(src: &str) -> helpers::e2e::CrOutput {
 fn s124_trait_program(declarations: &str, expression: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
-        .user(&format!("(import [primitives [Int Bool String Vec Option]])\n{declarations}\n(defn main [] (primitives/Pure {expression}))\n"))
+        .user(&format!("(import [primitives [Int Bool String Vec Option]])\n{declarations}\n(defn main [] (primitives/pure {expression}))\n"))
         .run("user.cl")
         .output()
 }
@@ -256,7 +256,7 @@ fn qualified_impl_trait_reference_resolves_canonical_home_and_dispatches() {
                (import [tlib [show]])\n\
                (deftype Widget (MkWidget [:Int n]))\n\
                (impl tlib/Show Widget (defn show [_] 41))\n\
-               (defn main [] (Pure (show (MkWidget 0))))\n";
+               (defn main [] (primitives/pure (show (MkWidget 0))))\n";
     let stdin = format!("{src}\n(main)\n");
 
     let repl_fresh = repl_prims(&stdin);
@@ -439,11 +439,11 @@ fn impl_for_same_named_type_in_another_module_does_not_satisfy_trait_neg() {
             .file(
                 "main.cl",
                 &format!(
-                    "(import [primitives [Pure String]])\n\
+                    "(import [primitives [pure String]])\n\
                      (import [zz [tr]])\n\
                      (import [m [anchor]])\n\
                      (deftype {ty} [:String s])\n\
-                     (defn main [] (Pure (tr ({ty} \"x\"))))\n"
+                     (defn main [] (primitives/pure (tr ({ty} \"x\"))))\n"
                 ),
             )
             .file(
@@ -909,9 +909,9 @@ fn trait_deftrait_impl_in_child_module_imported_dispatch_from_parent() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [types [Classify classify Color Red Green Blue]])\n\
-             (defn main [] (Pure (classify Green)))",
+             (defn main [] (primitives/pure (classify Green)))",
         )
         // b1-migration (S112): the conventional (kind-`*`) trait moves off the
         // never-applied `(Classify a)`-head mismodel to the settled bare-head +
@@ -1058,7 +1058,7 @@ fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
             "user.cl",
             "(import [prelude [Zed Functor]])\n\
              (impl (Functor f) (Functor Zed) (defn fmap [func x] x))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("user.cl")
         .output();
@@ -1087,7 +1087,7 @@ fn impl_hkt_arity_neg_prelude_provided_target_wrong_arity_rejected() {
         .file(
             "user.cl",
             "(impl (Functor f) (Functor Zed) (defn fmap [func x] x))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("user.cl")
         .output();
@@ -1189,8 +1189,8 @@ fn hkt_on_primitive_no_backend_undefined_function_leak_neg() {
         "REPL: HK impl on primitive `Int` MUST be a clean §7.2.3 check-side reject; got:\n{rc}"
     );
     // `--run` + `--link` facets — same class of rejection (AG-2 mode-uniformity).
-    let run = run_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
-    let link = link_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    let run = run_prims(&format!("{SRC}(defn main [] (primitives/pure 0))\n"));
+    let link = link_prims(&format!("{SRC}(defn main [] (primitives/pure 0))\n"));
     for (label, out) in [("--run", &run), ("--link", &link), ("repl", &repl)] {
         let c = format!("{}{}", out.stdout, out.stderr).to_lowercase();
         assert!(
@@ -1435,8 +1435,8 @@ fn hkt_impl_on_user_well_kinded_adt_dispatches() {
 fn never_applied_head_declaration_reject_is_mode_uniform_neg() {
     const DECL: &str = "(deftrait (Zeroable a) (zed [] a))\n";
     let repl = repl_prims(DECL);
-    let run = run_prims(&format!("{DECL}(defn main [] (Pure 0))\n"));
-    let link = link_prims(&format!("{DECL}(defn main [] (Pure 0))\n"));
+    let run = run_prims(&format!("{DECL}(defn main [] (primitives/pure 0))\n"));
+    let link = link_prims(&format!("{DECL}(defn main [] (primitives/pure 0))\n"));
     for (label, out) in [("repl", &repl), ("--run", &run), ("--link", &link)] {
         let c = format!("{}{}", out.stdout, out.stderr);
         assert!(
@@ -1465,8 +1465,8 @@ fn hkt_echo_shape_mismatch_reject_is_mode_uniform_neg() {
     const SRC: &str = "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
                        (impl Functor Option (defn fmap [func x] x))\n";
     let repl = repl_prims(SRC);
-    let run = run_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
-    let link = link_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    let run = run_prims(&format!("{SRC}(defn main [] (primitives/pure 0))\n"));
+    let link = link_prims(&format!("{SRC}(defn main [] (primitives/pure 0))\n"));
     for (label, out) in [("repl", &repl), ("--run", &run), ("--link", &link)] {
         let c = format!("{}{}", out.stdout, out.stderr);
         assert!(
@@ -1554,8 +1554,8 @@ fn hkt_impl_pairing_head_nonexistent_trait_rejected_no_dispatch_neg() {
         repl.stdout
     );
     // Cross-mode facet (AG-2): the reject fires uniformly under --run and --link.
-    let run = run_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
-    let link = link_prims(&format!("{SRC}(defn main [] (Pure 0))\n"));
+    let run = run_prims(&format!("{SRC}(defn main [] (primitives/pure 0))\n"));
+    let link = link_prims(&format!("{SRC}(defn main [] (primitives/pure 0))\n"));
     for (label, out) in [("--run", &run), ("--link", &link)] {
         let c = format!("{}{}", out.stdout, out.stderr);
         assert!(
@@ -1939,9 +1939,9 @@ fn stacked_trait_bounds_single_param_compiles() {
         .with_prelude(PreludeVariant::TestStandard)
         .file(
             "user.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn g [:Eq :Display a] a)\n\
-             (defn main [] (Pure (g 7)))",
+             (defn main [] (primitives/pure (g 7)))",
         )
         .run("user.cl")
         .output()
@@ -1959,9 +1959,9 @@ fn stacked_trait_bounds_two_params_compiles() {
         .with_prelude(PreludeVariant::TestStandard)
         .file(
             "user.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn f [:Eq :Display a :Eq :Display b] a)\n\
-             (defn main [] (Pure (f 1 2)))",
+             (defn main [] (primitives/pure (f 1 2)))",
         )
         .run("user.cl")
         .output();
@@ -2020,9 +2020,9 @@ fn cross_module_stacked_trait_bound_call_runs_to_clean_exit() {
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure str-len]])\n\
+            "(import [primitives [pure str-len]])\n\
              (import [helper [cmp]])\n\
-             (defn main [] (Pure (str-len (cmp 1 1))))",
+             (defn main [] (primitives/pure (str-len (cmp 1 1))))",
         )
         .run("entry.cl")
         .output()
@@ -2048,9 +2048,9 @@ fn cross_module_stacked_trait_bound_call_links_to_exit_2() {
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure str-len]])\n\
+            "(import [primitives [pure str-len]])\n\
              (import [helper [cmp]])\n\
-             (defn main [] (Pure (str-len (cmp 1 1))))",
+             (defn main [] (primitives/pure (str-len (cmp 1 1))))",
         )
         .link_then_run("entry.cl")
         .output()
@@ -2110,9 +2110,9 @@ fn default_method_body_resolves_in_trait_defining_module() {
         // default body is synthesized and checked here.
         .user(
             "(import [trait_mod [Foo req bar]])\n\
-             (import [primitives [Int Pure]])\n\
+             (import [primitives [Int pure]])\n\
              (impl Foo Int (defn req [a] a))\n\
-             (defn main [] (Pure (bar 40 2)))",
+             (defn main [] (primitives/pure (bar 40 2)))",
         )
         .run("user.cl")
         .output()
@@ -2151,7 +2151,7 @@ fn eq_string_neq_evaluates_run() {
     // exists) — only `!=`/neq-string is missing.
     Cranelisp::new()
         .with_prelude(PreludeVariant::TestStandard)
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure (if (!= \"a\" \"b\") 42 0)))")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure (if (!= \"a\" \"b\") 42 0)))")
         .run("user.cl")
         .output()
         .assert_exit(42);
@@ -2390,7 +2390,7 @@ fn return_type_dispatch_annotation_context_all_modes() {
         "(deftrait Zeroable (zed [] self))\n\
          (impl Zeroable Int (defn zed [] 0))\n\
          (impl Zeroable Float (defn zed [] 0.0))\n\
-         (defn main [] (Pure (let [a :Int (zed)] (add-i64 a 7))))\n",
+         (defn main [] (primitives/pure (let [a :Int (zed)] (add-i64 a 7))))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -2407,7 +2407,7 @@ fn return_type_dispatch_argument_context_all_modes() {
         "(deftrait Zeroable (zed [] self))\n\
          (impl Zeroable Int (defn zed [] 0))\n\
          (impl Zeroable Float (defn zed [] 0.0))\n\
-         (defn main [] (Pure (add-i64 (zed) 7)))\n",
+         (defn main [] (primitives/pure (add-i64 (zed) 7)))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(7);
@@ -2423,7 +2423,7 @@ fn return_type_dispatch_float_impl_selected_all_modes() {
         "(deftrait Zeroable (zed [] self))\n\
          (impl Zeroable Int (defn zed [] 0))\n\
          (impl Zeroable Float (defn zed [] 0.0))\n\
-         (defn main [] (Pure (let [a :Float (zed)] (if (lt-f64 a 1.0) 3 9))))\n",
+         (defn main [] (primitives/pure (let [a :Float (zed)] (if (lt-f64 a 1.0) 3 9))))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
@@ -2582,7 +2582,7 @@ fn constrained_applied_user_ctor_impl_target_unknown_trait_rejected_neg() {
 // (ACT-1034), and a later parametric impl beside a concrete one (ACT-1035)
 // =============================================================================
 //
-// Each program's `main` returns `(Pure n)`. The parametric impls are declared
+// Each program's `main` returns `(primitives/pure n)`. The parametric impls are declared
 // before `impl Size Int`, except where a cell says otherwise; this isolated
 // ACT-1034 from the crash that ACT-1035 caused before its S123 correction.
 
@@ -2687,7 +2687,7 @@ fn assert_main_value_with_timeout(
 fn parametric_impl_instance_calls_same_impl_at_nested_type_all_modes() {
     let src = format!(
         "{OPT_SIZE_HEADER}{OPT_SIZE_CONSTRAINED_IMPL}{SIZE_INT_IMPL}\
-         (defn main [] (Pure (size (Yep (Yep 3)))))\n"
+         (defn main [] (primitives/pure (size (Yep (Yep 3)))))\n"
     );
     assert_main_value_in_modes("A1 `(size (Yep (Yep 3)))`", &src, 5, &[REPL, RUN, LINK]);
 }
@@ -2703,7 +2703,7 @@ fn parametric_impl_instance_calls_other_parametric_impl_all_modes() {
         "{OPT_SIZE_HEADER}(deftype (Box a) (MkBox [:a v]))\n\
          (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 10 (size x))])))\n\
          {OPT_SIZE_CONSTRAINED_IMPL}{SIZE_INT_IMPL}\
-         (defn main [] (Pure (size (Yep (MkBox 3)))))\n"
+         (defn main [] (primitives/pure (size (Yep (MkBox 3)))))\n"
     );
     assert_main_value_in_modes("A2 `(size (Yep (MkBox 3)))`", &src, 14, &[REPL, RUN, LINK]);
 }
@@ -2718,7 +2718,7 @@ fn unconstrained_parametric_impl_instance_calls_generic_free_fn_all_modes() {
     let src = format!(
         "{OPT_SIZE_HEADER}(defn k7 [x] 7)\n\
          (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (k7 x)])))\n\
-         (defn main [] (Pure (size (Yep 3))))\n"
+         (defn main [] (primitives/pure (size (Yep 3))))\n"
     );
     assert_main_value_in_modes(
         "A3 `(size (Yep 3))` through `k7`",
@@ -2738,7 +2738,7 @@ fn generic_fn_instance_calls_parametric_impl_all_modes() {
     let src = format!(
         "{OPT_SIZE_HEADER}{OPT_SIZE_CONSTRAINED_IMPL}{SIZE_INT_IMPL}\
          (defn twice [x] (add-i64 (size x) (size x)))\n\
-         (defn main [] (Pure (twice (Yep 3))))\n"
+         (defn main [] (primitives/pure (twice (Yep 3))))\n"
     );
     assert_main_value_in_modes("C3 `(twice (Yep 3))`", &src, 8, &[REPL, RUN, LINK]);
 }
@@ -2747,7 +2747,7 @@ fn parametric_impl_with_monomorphic_target_program() -> String {
     format!(
         "{OPT_SIZE_HEADER}{SIZE_INT_IMPL}\
          (impl Size (Opt a) (defn size [o] (match o [Nope 0 (Yep x) (size 42)])))\n\
-         (defn main [] (Pure (size (Yep 3))))\n"
+         (defn main [] (primitives/pure (size (Yep 3))))\n"
     )
 }
 
@@ -2783,7 +2783,7 @@ fn monomorphic_impl_same_body_all_modes_control() {
     let src = format!(
         "{OPT_SIZE_HEADER}{SIZE_INT_IMPL}\
          (impl Size (Opt Int) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size x))])))\n\
-         (defn main [] (Pure (size (Yep 41))))\n"
+         (defn main [] (primitives/pure (size (Yep 41))))\n"
     );
     assert_main_value_in_modes("C2 `(size (Yep 41))`", &src, 42, &[REPL, RUN, LINK]);
 }
@@ -2837,7 +2837,7 @@ fn repl_concrete_impl_call_with_parametric_impl_first_control() {
 #[test]
 fn concrete_then_parametric_impl_dispatch_run_control() {
     run_prims(&format!(
-        "{CONCRETE_THEN_PARAMETRIC}(defn main [] (Pure (size 5)))\n"
+        "{CONCRETE_THEN_PARAMETRIC}(defn main [] (primitives/pure (size 5)))\n"
     ))
     .assert_exit(5);
 }
@@ -3307,7 +3307,7 @@ fn s124_q7_a_int_repl() {
     assert_main_value_in_modes(
         "q7_a_int",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "),
         7,
         &[REPL],
@@ -3321,7 +3321,7 @@ fn s124_q7_a_int_run() {
     assert_main_value_in_modes(
         "q7_a_int",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "),
         7,
         &[RUN],
@@ -3335,7 +3335,7 @@ fn s124_q7_a_int_link() {
     assert_main_value_in_modes(
         "q7_a_int",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "),
         7,
         &[LINK],
@@ -3349,7 +3349,7 @@ fn s124_q7_a_bool_repl() {
     assert_main_value_in_modes(
         "q7_a_bool",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pb 0))))
+(defn main [] (primitives/pure (size (pb 0))))
 "),
         7,
         &[REPL],
@@ -3363,7 +3363,7 @@ fn s124_q7_a_bool_run() {
     assert_main_value_in_modes(
         "q7_a_bool",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pb 0))))
+(defn main [] (primitives/pure (size (pb 0))))
 "),
         7,
         &[RUN],
@@ -3377,7 +3377,7 @@ fn s124_q7_a_bool_link() {
     assert_main_value_in_modes(
         "q7_a_bool",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pb 0))))
+(defn main [] (primitives/pure (size (pb 0))))
 "),
         7,
         &[LINK],
@@ -3391,7 +3391,7 @@ fn s124_q7_a_shrink_repl() {
     assert_main_value_in_modes(
         "q7_a_shrink",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (none2 0))))
+(defn main [] (primitives/pure (size (none2 0))))
 "),
         7,
         &[REPL],
@@ -3405,7 +3405,7 @@ fn s124_q7_a_shrink_run() {
     assert_main_value_in_modes(
         "q7_a_shrink",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (none2 0))))
+(defn main [] (primitives/pure (size (none2 0))))
 "),
         7,
         &[RUN],
@@ -3419,7 +3419,7 @@ fn s124_q7_a_shrink_link() {
     assert_main_value_in_modes(
         "q7_a_shrink",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (none2 0))))
+(defn main [] (primitives/pure (size (none2 0))))
 "),
         7,
         &[LINK],
@@ -3433,7 +3433,7 @@ fn s124_q7_a_grow_once_repl() {
     assert_main_value_in_modes(
         "q7_a_grow_once",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep (Yep 7))) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "),
         7,
         &[REPL],
@@ -3447,7 +3447,7 @@ fn s124_q7_a_grow_once_run() {
     assert_main_value_in_modes(
         "q7_a_grow_once",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep (Yep 7))) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "),
         7,
         &[RUN],
@@ -3461,7 +3461,7 @@ fn s124_q7_a_grow_once_link() {
     assert_main_value_in_modes(
         "q7_a_grow_once",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep (Yep 7))) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "),
         7,
         &[LINK],
@@ -3474,7 +3474,7 @@ fn s124_q7_a_uncalled_control_repl() {
     assert_main_value_in_modes(
         "q7_a_uncalled_control",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure 5))
+(defn main [] (primitives/pure 5))
 "),
         5,
         &[REPL],
@@ -3487,7 +3487,7 @@ fn s124_q7_a_uncalled_control_run() {
     assert_main_value_in_modes(
         "q7_a_uncalled_control",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure 5))
+(defn main [] (primitives/pure 5))
 "),
         5,
         &[RUN],
@@ -3500,7 +3500,7 @@ fn s124_q7_a_uncalled_control_link() {
     assert_main_value_in_modes(
         "q7_a_uncalled_control",
         &format!("{S124_Q7_HEADER}(impl Size (Opt :Size a) (defn size [o] (match o [Nope (size (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure 5))
+(defn main [] (primitives/pure 5))
 "),
         5,
         &[LINK],
@@ -3515,7 +3515,7 @@ fn s124_q7_c_helper_repl() {
         &format!(
             "{S124_Q7_HEADER}(defn wsize [:Size x] (size x))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope (wsize (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "
         ),
         7,
@@ -3531,7 +3531,7 @@ fn s124_q7_c_helper_run() {
         &format!(
             "{S124_Q7_HEADER}(defn wsize [:Size x] (size x))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope (wsize (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "
         ),
         7,
@@ -3547,7 +3547,7 @@ fn s124_q7_c_helper_link() {
         &format!(
             "{S124_Q7_HEADER}(defn wsize [:Size x] (size x))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope (wsize (Yep 7)) (Yep x) (size x)])))
-(defn main [] (Pure (size (pick 0))))
+(defn main [] (primitives/pure (size (pick 0))))
 "
         ),
         7,
@@ -3565,7 +3565,7 @@ fn s124_1034_d_self_repl() {
             "{S124_Q7_HEADER}(deftype (L a) LNil (LCons [:a h :(L a) t]))
 (deftrait Len (len [self] Int))
 (impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))
-(defn main [] (Pure (len (LCons 1 (LCons 2 LNil)))))
+(defn main [] (primitives/pure (len (LCons 1 (LCons 2 LNil)))))
 "
         ),
         2,
@@ -3583,7 +3583,7 @@ fn s124_1034_d_self_run() {
             "{S124_Q7_HEADER}(deftype (L a) LNil (LCons [:a h :(L a) t]))
 (deftrait Len (len [self] Int))
 (impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))
-(defn main [] (Pure (len (LCons 1 (LCons 2 LNil)))))
+(defn main [] (primitives/pure (len (LCons 1 (LCons 2 LNil)))))
 "
         ),
         2,
@@ -3601,7 +3601,7 @@ fn s124_1034_d_self_link() {
             "{S124_Q7_HEADER}(deftype (L a) LNil (LCons [:a h :(L a) t]))
 (deftrait Len (len [self] Int))
 (impl Len (L a) (defn len [l] (match l [LNil 0 (LCons h t) (add-i64 1 (len t))])))
-(defn main [] (Pure (len (LCons 1 (LCons 2 LNil)))))
+(defn main [] (primitives/pure (len (LCons 1 (LCons 2 LNil)))))
 "
         ),
         2,
@@ -3616,7 +3616,7 @@ fn s124_fr_monomorphic_control_repl() {
         "fr_monomorphic_control",
         &format!(
             "{S124_Q7_HEADER}(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
-(defn main [] (Pure (f (pick 0))))
+(defn main [] (primitives/pure (f (pick 0))))
 "
         ),
         1,
@@ -3631,7 +3631,7 @@ fn s124_fr_monomorphic_control_run() {
         "fr_monomorphic_control",
         &format!(
             "{S124_Q7_HEADER}(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
-(defn main [] (Pure (f (pick 0))))
+(defn main [] (primitives/pure (f (pick 0))))
 "
         ),
         1,
@@ -3646,7 +3646,7 @@ fn s124_fr_monomorphic_control_link() {
         "fr_monomorphic_control",
         &format!(
             "{S124_Q7_HEADER}(defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
-(defn main [] (Pure (f (pick 0))))
+(defn main [] (primitives/pure (f (pick 0))))
 "
         ),
         1,
@@ -3664,7 +3664,7 @@ fn s124_1034_e_sibling_repl() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[REPL],
@@ -3681,7 +3681,7 @@ fn s124_1034_e_sibling_run() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[RUN],
@@ -3698,7 +3698,7 @@ fn s124_1034_e_sibling_link() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size o))))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[LINK],
@@ -3715,7 +3715,7 @@ fn s124_1034_e_sibling_reversed_repl() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[REPL],
@@ -3732,7 +3732,7 @@ fn s124_1034_e_sibling_reversed_run() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[RUN],
@@ -3749,7 +3749,7 @@ fn s124_1034_e_sibling_reversed_link() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size o))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[LINK],
@@ -3766,7 +3766,7 @@ fn s124_q7_b_sibling_repl() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size (Yep 0)))))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[REPL],
@@ -3783,7 +3783,7 @@ fn s124_q7_b_sibling_run() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size (Yep 0)))))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[RUN],
@@ -3800,7 +3800,7 @@ fn s124_q7_b_sibling_link() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn size [o] (match o [Nope 0 (Yep x) 1])) (defn describe [o] (add-i64 4 (size (Yep 0)))))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[LINK],
@@ -3817,7 +3817,7 @@ fn s124_q7_b_sibling_reversed_repl() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size (Yep 0)))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[REPL],
@@ -3834,7 +3834,7 @@ fn s124_q7_b_sibling_reversed_run() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size (Yep 0)))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[RUN],
@@ -3851,7 +3851,7 @@ fn s124_q7_b_sibling_reversed_link() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (deftrait Cont (size [self] Int) (describe [self] Int))
 (impl Cont (Opt a) (defn describe [o] (add-i64 4 (size (Yep 0)))) (defn size [o] (match o [Nope 0 (Yep x) 1])))
-(defn main [] (Pure (describe (Yep "s"))))
+(defn main [] (primitives/pure (describe (Yep "s"))))
 "#,
         5,
         &[LINK],
@@ -3867,7 +3867,7 @@ fn s124_q7_d_box_first_repl() {
         &format!(
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
 (begin (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))]))) (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))]))))
-(defn main [] (Pure (size (Yep 3))))
+(defn main [] (primitives/pure (size (Yep 3))))
 "
         ),
         4,
@@ -3885,7 +3885,7 @@ fn s124_q7_d_box_first_run() {
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
 (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
-(defn main [] (Pure (size (Yep 3))))
+(defn main [] (primitives/pure (size (Yep 3))))
 "
         ),
         4,
@@ -3903,7 +3903,7 @@ fn s124_q7_d_box_first_link() {
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
 (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
-(defn main [] (Pure (size (Yep 3))))
+(defn main [] (primitives/pure (size (Yep 3))))
 "
         ),
         4,
@@ -3920,7 +3920,7 @@ fn s124_q7_d_opt_first_repl() {
         &format!(
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
 (begin (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))]))) (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))]))))
-(defn main [] (Pure (size (Yep 3))))
+(defn main [] (primitives/pure (size (Yep 3))))
 "
         ),
         4,
@@ -3938,7 +3938,7 @@ fn s124_q7_d_opt_first_run() {
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
 (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
-(defn main [] (Pure (size (Yep 3))))
+(defn main [] (primitives/pure (size (Yep 3))))
 "
         ),
         4,
@@ -3956,7 +3956,7 @@ fn s124_q7_d_opt_first_link() {
             "{S124_Q7_HEADER}(deftype (Box a) (MkBox [:a v]))
 (impl Size (Opt :Size a) (defn size [o] (match o [Nope 0 (Yep x) (add-i64 1 (size (MkBox x)))])))
 (impl Size (Box :Size a) (defn size [b] (match b [(MkBox x) (add-i64 (size x) (size (pick 0)))])))
-(defn main [] (Pure (size (Yep 3))))
+(defn main [] (primitives/pure (size (Yep 3))))
 "
         ),
         4,
@@ -3966,7 +3966,9 @@ fn s124_q7_d_opt_first_link() {
 
 fn s124_imported_trait_value(module: &str, expr: &str, expected: i32, mode: &str) {
     let cr = Cranelisp::new().file("p.cl", module);
-    let entry = format!("(import [primitives [*]]) (import [p [*]]) (defn main [] (Pure {expr}))");
+    let entry = format!(
+        "(import [primitives [*]]) (import [p [*]]) (defn main [] (primitives/pure {expr}))"
+    );
     let out = match mode {
         "run" => cr.file("entry.cl", &entry).run("entry.cl").output(),
         "link" => cr
@@ -4144,7 +4146,7 @@ fn s124_depth_program(depth: usize) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "{S124_DEPTH_HEADER}{S124_DEPTH_IMPL}(defn main [] (let [{bindings}] (Pure (size v{}))))\n",
+        "{S124_DEPTH_HEADER}{S124_DEPTH_IMPL}(defn main [] (let [{bindings}] (primitives/pure (size v{}))))\n",
         depth - 1
     )
 }
@@ -4241,7 +4243,7 @@ fn s124_f_pr_run() {
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x)
  (add-i64 1 (size (Yep o)))])))
-(defn main [] (Pure (size (Yep 3))))"#,
+(defn main [] (primitives/pure (size (Yep 3))))"#,
         &[7],
         "run",
     );
@@ -4259,7 +4261,7 @@ fn s124_f_pr_link() {
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x)
  (add-i64 1 (size (Yep o)))])))
-(defn main [] (Pure (size (Yep 3))))"#,
+(defn main [] (primitives/pure (size (Yep 3))))"#,
         &[7],
         "link",
     );
@@ -4277,7 +4279,7 @@ fn s124_f_pr_uncalled_control_run() {
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x)
  (add-i64 1 (size (Yep o)))])))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
         5,
         &[RUN],
     );
@@ -4295,7 +4297,7 @@ fn s124_f_pr_uncalled_control_link() {
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x)
  (add-i64 1 (size (Yep o)))])))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
         5,
         &[LINK],
     );
@@ -4313,7 +4315,7 @@ fn s124_f_pr_uncalled_control_repl() {
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x)
  (add-i64 1 (size (Yep o)))])))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
         5,
         &[REPL],
     );
@@ -4358,7 +4360,7 @@ fn s124_f_pr_helper_run() {
 (defn wrap [:Size x] (size (Yep x)))
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
-(defn main [] (Pure (size (Yep 3))))"#,
+(defn main [] (primitives/pure (size (Yep 3))))"#,
         &[5, 7],
         "run",
     );
@@ -4376,7 +4378,7 @@ fn s124_f_pr_helper_link() {
 (defn wrap [:Size x] (size (Yep x)))
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
-(defn main [] (Pure (size (Yep 3))))"#,
+(defn main [] (primitives/pure (size (Yep 3))))"#,
         &[5, 7],
         "link",
     );
@@ -4394,7 +4396,7 @@ fn s124_f_pr_helper_uncalled_control_run() {
 (defn wrap [:Size x] (size (Yep x)))
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
         5,
         &[RUN],
     );
@@ -4412,7 +4414,7 @@ fn s124_f_pr_helper_uncalled_control_link() {
 (defn wrap [:Size x] (size (Yep x)))
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x) (wrap o)])))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
         5,
         &[LINK],
     );
@@ -4430,7 +4432,7 @@ fn s124_f_pr_helper_uncalled_control_repl() {
 (begin (defn wrap [:Size x] (size (Yep x)))
 (impl Size (Opt :Size a)
  (defn size [o] (match o [Nope 0 (Yep x) (wrap o)]))))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
         5,
         &[REPL],
     );
@@ -4444,7 +4446,7 @@ fn s124_fr_growing_run() {
         r#"(import [primitives [*]])
 (deftype (Opt a) Nope (Yep [:a v]))
 (defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
     );
     let out = cr.run("p.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -4463,7 +4465,7 @@ fn s124_fr_growing_link() {
         r#"(import [primitives [*]])
 (deftype (Opt a) Nope (Yep [:a v]))
 (defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
     );
     let out = cr.link("p.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -4482,7 +4484,7 @@ fn s124_fr_growing_repl() {
         r#"(import [primitives [*]])
 (deftype (Opt a) Nope (Yep [:a v]))
 (defn g [o n] (if (eq-i64 n 0) 0 (g (Yep o) (sub-i64 n 1))))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
     );
     let out = cr.cli_flag("p.cl").stdin("5\n").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -4502,7 +4504,7 @@ fn s124_fr_second_type_run() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
 (defn use [] (f (Yep "s")))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
     );
     let out = cr.run("p.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -4522,7 +4524,7 @@ fn s124_fr_second_type_link() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
 (defn use [] (f (Yep "s")))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
     );
     let out = cr.link("p.cl").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -4542,7 +4544,7 @@ fn s124_fr_second_type_repl() {
 (deftype (Opt a) Nope (Yep [:a v]))
 (defn f [o] (match o [Nope (f (Yep 7)) (Yep x) 1]))
 (defn use [] (f (Yep "s")))
-(defn main [] (Pure 5))"#,
+(defn main [] (primitives/pure 5))"#,
     );
     let out = cr.cli_flag("p.cl").stdin("5\n").output();
     let diag = format!("{}{}", out.stdout, out.stderr);
@@ -4630,7 +4632,7 @@ fn s124_1034_e_imported_reverse_repl() {
 fn s124_sibling_nonparametric_control_repl() {
     assert_main_value_in_modes(
         "nonparametric sibling",
-        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (Pure (describe (MkPlain 3))))"#,
+        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (primitives/pure (describe (MkPlain 3))))"#,
         5,
         &[REPL],
     );
@@ -4641,7 +4643,7 @@ fn s124_sibling_nonparametric_control_repl() {
 fn s124_sibling_nonparametric_control_run() {
     assert_main_value_in_modes(
         "nonparametric sibling",
-        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (Pure (describe (MkPlain 3))))"#,
+        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (primitives/pure (describe (MkPlain 3))))"#,
         5,
         &[RUN],
     );
@@ -4652,7 +4654,7 @@ fn s124_sibling_nonparametric_control_run() {
 fn s124_sibling_nonparametric_control_link() {
     assert_main_value_in_modes(
         "nonparametric sibling",
-        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (Pure (describe (MkPlain 3))))"#,
+        r#"(import [primitives [*]]) (deftype Plain (MkPlain [:Int x])) (deftrait Cont (size [self] Int) (describe [self] Int)) (impl Cont Plain (defn size [o] 1) (defn describe [o] (add-i64 4 (size o)))) (defn main [] (primitives/pure (describe (MkPlain 3))))"#,
         5,
         &[LINK],
     );
@@ -4793,7 +4795,7 @@ fn s124_imported_impl_overload(leg: &str, mode: &str) {
         }
     );
     let entry = format!(
-        "(import [lib [*]])\n{}(defn main [] (Pure (size (Yep 41))))\n",
+        "(import [lib [*]])\n{}(defn main [] (primitives/pure (size (Yep 41))))\n",
         if leg == "local_control" {
             &implementation
         } else {
@@ -5020,11 +5022,17 @@ fn s124_sibling_members(count: usize, self_first: bool, mode: &str) {
     let cr = Cranelisp::new();
     let out = match mode {
         "run" => cr
-            .file("p.cl", &format!("{program}(defn main [] (Pure {call}))\n"))
+            .file(
+                "p.cl",
+                &format!("{program}(defn main [] (primitives/pure {call}))\n"),
+            )
             .run("p.cl")
             .output(),
         "link" => cr
-            .file("p.cl", &format!("{program}(defn main [] (Pure {call}))\n"))
+            .file(
+                "p.cl",
+                &format!("{program}(defn main [] (primitives/pure {call}))\n"),
+            )
             .link_then_run("p.cl")
             .output(),
         "repl" => cr
@@ -5147,7 +5155,7 @@ fn s124_f_pr_two_impls(reverse: bool, uncalled: bool, mode: &str) {
         }
     );
     let body = if uncalled { "5" } else { "(size (Yep 3))" };
-    let program = format!("{definitions}(defn main [] (Pure {body}))\n");
+    let program = format!("{definitions}(defn main [] (primitives/pure {body}))\n");
     if !uncalled && mode != "repl" {
         s124_type_refusal(&program, &[6, 7], mode);
         return;
@@ -5327,7 +5335,7 @@ fn s124_self_position(leg: &str, self_first: bool, mode: &str) {
         "run" | "link" => {
             let cr = cr.file(
                 "user.cl",
-                &format!("{definitions}(defn main [] (Pure {expression}))\n"),
+                &format!("{definitions}(defn main [] (primitives/pure {expression}))\n"),
             );
             if mode == "run" {
                 cr.cli_flag("--no-cache").run("user.cl").output()
@@ -5583,7 +5591,7 @@ fn s124_default_undefined_declaration_accepted() {
 // spec: spec/07-traits.md §7.1.5 — T-DEFAULT-UNDEFINED inheriting impl reports undefined name
 #[test]
 fn s124_default_undefined_inherited_reports_name() {
-    Cranelisp::new().file("main.cl", &format!("{S124_DEFAULT_UNDEFINED}(deftype X Mk)\n(impl T X (defn req [self] 5))\n(defn main [] (primitives/Pure (req Mk)))\n"))
+    Cranelisp::new().file("main.cl", &format!("{S124_DEFAULT_UNDEFINED}(deftype X Mk)\n(impl T X (defn req [self] 5))\n(defn main [] (primitives/pure (req Mk)))\n"))
         .run("main.cl").output().assert_exit(1).assert_stderr_contains("error:").assert_stderr_contains("nosuch");
 }
 
@@ -5594,4 +5602,230 @@ fn s124_default_undefined_override_dispatches() {
         "(deftrait T (req [self] Int) (dflt [self] (nosuch self)))\n(deftype X Mk)\n(impl T X (defn req [self] 5) (defn dflt [self] 7))",
         "(dflt Mk)",
     ).assert_exit(7);
+}
+
+// spec: spec/07-traits.md §7.1.1
+#[test]
+fn s125_0785_missing_return_expression_refused_at_colon() {
+    let out = Cranelisp::new()
+        .stdin(
+            "(deftrait Bad (show [x] :String))
+Bad
+(deftrait Good (show [x] String))
+Good
+",
+        )
+        .output()
+        .assert_ok();
+    let text = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        text.contains("24..25") && text.contains("annotation missing expression"),
+        "colon location and parse error: {text}"
+    );
+    assert!(
+        text.contains("undefined variable: Bad") || text.contains("Unknown symbol: Bad"),
+        "failed trait stays undefined: {text}"
+    );
+    assert!(
+        text.contains("Good") && text.contains("show"),
+        "valid return annotation accepted: {text}"
+    );
+}
+
+// spec: spec/07-traits.md §7.2.3
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S125 owner=/dev
+#[test]
+fn s125_0985_float_value() {
+    let out = Cranelisp::new()
+        .user(
+            r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun Float) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+        )
+        .run("user.cl")
+        .output();
+    out.assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.2.3
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S125 owner=/dev
+#[test]
+fn s125_0985_user_float_value() {
+    let out = Cranelisp::new()
+        .user(
+            r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun user/Float) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+        )
+        .run("user.cl")
+        .output();
+    out.assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.2.3
+#[test]
+fn s125_0985_flt_value() {
+    let out = Cranelisp::new()
+        .user(
+            r#"(import [primitives [Int pure]])
+(deftype (Flt a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun Flt) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+        )
+        .run("user.cl")
+        .output();
+    out.assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.2.3
+#[test]
+fn s125_0985_primitives_int_neg() {
+    let out = Cranelisp::new()
+        .user(
+            r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun primitives/Int) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+        )
+        .run("user.cl")
+        .output();
+    assert!(
+        out.status.code() == Some(1) && out.stderr.contains("not a type constructor"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/07-traits.md §7.2.3
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S125 owner=/dev
+#[test]
+fn s125_0985_float_link() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun Float) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    cr.link_then_run("user.cl").output().assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.2.3
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S125 owner=/dev
+#[test]
+fn s125_0985_float_repl() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun Float) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    cr.stdin("(main)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/07-traits.md §7.2.3
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S125 owner=/dev
+#[test]
+fn s125_0985_user_float_link() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun user/Float) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    cr.link_then_run("user.cl").output().assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.2.3
+// defect: class=spelling-keyed-decision locus=crates/cranelisp-typecheck/src/traits/impl_check.rs found=S125 owner=/dev
+#[test]
+fn s125_0985_user_float_repl() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun user/Float) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    cr.stdin("(main)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/07-traits.md §7.2.3
+#[test]
+fn s125_0985_flt_link() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Flt a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun Flt) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    cr.link_then_run("user.cl").output().assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.2.3
+#[test]
+fn s125_0985_flt_repl() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Flt a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun Flt) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    cr.stdin("(main)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/07-traits.md §7.2.3
+#[test]
+fn s125_0985_primitives_int_link_neg() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun primitives/Int) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    let out = cr.link("user.cl").output();
+    let text = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        text.contains("not a type constructor"),
+        "invalid primitive constructor refused: {text}"
+    );
+}
+
+// spec: spec/07-traits.md §7.2.3
+#[test]
+fn s125_0985_primitives_int_repl_neg() {
+    let cr = Cranelisp::new().user(
+        r#"(import [primitives [Int pure]])
+(deftype (Float a) (Wrap [:a v]))
+(deftrait (Fun f) (get [:(f Int) x] Int))
+(impl (Fun f) (Fun primitives/Int) (defn get [x] (match x [(Wrap v) v])))
+(defn main [] (primitives/pure (get (Wrap 42))))"#,
+    );
+    let out = cr.stdin("7\n").output();
+    let text = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        text.contains("not a type constructor"),
+        "invalid primitive constructor refused: {text}"
+    );
 }

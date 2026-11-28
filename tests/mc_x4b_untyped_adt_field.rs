@@ -22,7 +22,7 @@ fn program(type_head: &str, field_decl: &str) -> String {
          (defn build\n\
          \x20 ([n]   (build n (MkBox 0)))\n\
          \x20 ([n b] (if (eq-i64 n 0) b (build (add-i64 n -1) (MkBox (add-i64 n 40))))))\n\
-         (defn main [] (Pure (unwrap (build 3))))\n"
+         (defn main [] (primitives/pure (unwrap (build 3))))\n"
     )
 }
 

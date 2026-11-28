@@ -10,7 +10,7 @@ fn child(defs: &str, value: &str, linked: bool) -> Child {
          (defn go [n acc]\n\
            (if (eq-i64 n 0) acc\n\
              (go (add-i64 n -1) (add-i64 acc {value}))))\n\
-         (defn main [] (Pure (go 100 0)))\n"
+         (defn main [] (primitives/pure (go 100 0)))\n"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1");
     if linked { c.link_then_run() } else { c }

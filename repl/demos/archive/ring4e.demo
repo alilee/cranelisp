@@ -1,11 +1,11 @@
 ; Cranelisp Ring 4E — Trace, IO Display, Module Switching
 
-(import [primitives [Pure str-concat mul-i64]])
+(import [primitives [pure str-concat mul-i64]])
 
-; Corrected IO display — constructor is now visible
+; IO display — the REPL runs the action and shows its result
 
-(Pure 42)
-(Pure "hello")
+(pure 42)
+(pure "hello")
 
 ; Import trace values and SList for tree traversal. trace itself is a special
 ; form, so it needs no import.

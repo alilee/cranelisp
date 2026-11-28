@@ -558,8 +558,8 @@ fn dotted_module_path_in_import_stays_legal_green() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod util)\n(import [main.util [helper]])\n\
-             (defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(mod util)\n(import [main.util [helper]])\n\
+             (defn main [] (primitives/pure (helper)))",
         )
         .file("main/util.cl", "(defn helper [] 99)")
         .run("main.cl")
@@ -605,9 +605,9 @@ fn dotted_module_half_in_qualified_reference_stays_legal_run_green() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod util)\n\
+            "(import [primitives [pure]])\n(mod util)\n\
              (defn width [:main.util/Wid w] 7)\n\
-             (defn main [] (Pure (add-i64 (main.util/helper) (width (main.util/MkWid 1)))))",
+             (defn main [] (primitives/pure (add-i64 (main.util/helper) (width (main.util/MkWid 1)))))",
         )
         .file(
             "main/util.cl",
@@ -660,8 +660,8 @@ fn dotted_module_path_in_export_stays_legal_green() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod util)\n(export [main.util [helper]])\n\
-             (defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(mod util)\n(export [main.util [helper]])\n\
+             (defn main [] (primitives/pure (helper)))",
         )
         .file("main/util.cl", "(defn helper [] 99)")
         .run("main.cl")
@@ -679,8 +679,8 @@ fn dotted_module_alias_form_in_import_stays_legal_green() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod util)\n(import [(main.util u) [helper]])\n\
-             (defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(mod util)\n(import [(main.util u) [helper]])\n\
+             (defn main [] (primitives/pure (helper)))",
         )
         .file("main/util.cl", "(defn helper [] 99)")
         .run("main.cl")

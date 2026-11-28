@@ -3,9 +3,8 @@
 //! Proves the `web` platform front-end ACTUALLY SERVES over HTTP: a real
 //! `--run exemplar/main.cl` server process is spawned, an HTTP client connects
 //! to its listening port, and the GET-form / POST-solve / 404 round-trips are
-//! asserted against the rendered HTML. `/arch §3a` specified a
-//! "one-request-then-exit" guard; until that lands, this test drives the
-//! infinite serve loop (Model A) directly and KILLS the process when done.
+//! asserted against the rendered HTML. The test drives the persistent serve
+//! loop and terminates its owned server process after the assertions.
 //!
 //! Why NOT the `Cranelisp` builder (`tests/helpers/e2e.rs`): that harness runs
 //! the child to completion (it polls `try_wait` and kills only on a 30s

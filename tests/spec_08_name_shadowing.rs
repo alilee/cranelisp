@@ -18,7 +18,7 @@ mod helpers;
 
 use helpers::e2e::{CrOutput, Cranelisp, PreludeVariant};
 
-// A prelude that re-exports primitives (so bare `Pure`/`vec-len`/`add-i64`
+// A prelude that re-exports primitives (so bare `pure`/`vec-len`/`add-i64`
 // resolve) and defines a sentinel prelude-provided function `gulp`.
 const PRELUDE_GULP: &str = "\
 (export [primitives [*]])
@@ -135,7 +135,7 @@ fn def_over_import_run_rejected() {
             "main.cl",
             "(import [util [measure]])\n\
              (defn measure [v] 99)\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -153,7 +153,7 @@ fn def_over_import_link_rejected() {
             "main.cl",
             "(import [util [measure]])\n\
              (defn measure [v] 99)\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .link_then_run("main.cl")
         .output();
@@ -171,7 +171,7 @@ fn import_over_def_run_rejected() {
             "main.cl",
             "(defn measure [v] 99)\n\
              (import [util [measure]])\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -193,7 +193,7 @@ fn def_over_glob_import_run_rejected() {
             "main.cl",
             "(import [util [*]])\n\
              (defn measure [v] 99)\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -232,7 +232,7 @@ fn def_over_export_run_rejected() {
             "main.cl",
             "(export [util [measure]])\n\
              (defn measure [v] 99)\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -267,7 +267,7 @@ fn def_over_prelude_run_rejected() {
         .file(
             "main.cl",
             "(defn gulp [x] (add-i64 x 100))\n\
-             (defn main [] (Pure (gulp 5)))\n",
+             (defn main [] (primitives/pure (gulp 5)))\n",
         )
         .run("main.cl")
         .output();
@@ -282,7 +282,7 @@ fn def_over_prelude_link_rejected() {
         .file(
             "main.cl",
             "(defn gulp [x] (add-i64 x 100))\n\
-             (defn main [] (Pure (gulp 5)))\n",
+             (defn main [] (primitives/pure (gulp 5)))\n",
         )
         .link_then_run("main.cl")
         .output();
@@ -322,7 +322,7 @@ fn mode_parity_def_over_import_same_rejection_all_modes() {
             "main.cl",
             "(import [util [measure]])\n\
              (defn measure [v] 99)\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -340,7 +340,7 @@ fn mode_parity_def_over_import_same_rejection_all_modes() {
             "main.cl",
             "(import [util [measure]])\n\
              (defn measure [v] 99)\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .link_then_run("main.cl")
         .output();
@@ -363,7 +363,7 @@ fn import_over_def_repl_separate_turn_rejected() {
             "main.cl",
             "(defn measure [v] 99)\n\
              (import [util [measure]])\n\
-             (defn main [] (Pure (measure [1 2 3])))\n",
+             (defn main [] (primitives/pure (measure [1 2 3])))\n",
         )
         .run("main.cl")
         .output();
@@ -405,9 +405,9 @@ fn fq_reference_reaches_shadowed_prelude_name() {
         .file(
             "main.cl",
             "(import [prelude []])\n\
-             (import [primitives [Pure add-i64]])\n\
+             (import [primitives [pure add-i64]])\n\
              (defn gulp [x] (add-i64 x 100))\n\
-             (defn main [] (Pure (prelude/gulp 5)))\n",
+             (defn main [] (primitives/pure (prelude/gulp 5)))\n",
         )
         .run("main.cl")
         .output()
@@ -424,9 +424,9 @@ fn suppressed_prelude_allows_local_def_of_prelude_name() {
         .file(
             "main.cl",
             "(import [prelude []])\n\
-             (import [primitives [Pure add-i64]])\n\
+             (import [primitives [pure add-i64]])\n\
              (defn gulp [x] (add-i64 x 100))\n\
-             (defn main [] (Pure (gulp 5)))\n",
+             (defn main [] (primitives/pure (gulp 5)))\n",
         )
         .run("main.cl")
         .output()
@@ -440,9 +440,9 @@ fn no_prelude_allows_local_def_of_would_be_prelude_name() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure add-i64]])\n\
+            "(import [primitives [pure add-i64]])\n\
              (defn gulp [x] (add-i64 x 100))\n\
-             (defn main [] (Pure (gulp 5)))\n",
+             (defn main [] (primitives/pure (gulp 5)))\n",
         )
         .run("main.cl")
         .output()
@@ -461,7 +461,7 @@ fn reuse_by_reexport_same_terminal_dedups() {
             "main.cl",
             "(import [libc [helper]])\n\
              (export [libc [helper]])\n\
-             (defn main [] (Pure (helper 41)))\n",
+             (defn main [] (primitives/pure (helper 41)))\n",
         )
         .run("main.cl")
         .output()
@@ -475,7 +475,10 @@ fn reuse_by_reexport_same_terminal_dedups() {
 fn lexical_let_binding_of_prelude_name_allowed() {
     Cranelisp::new()
         .prelude(PRELUDE_GULP)
-        .file("main.cl", "(defn main [] (let [gulp 7] (Pure gulp)))\n")
+        .file(
+            "main.cl",
+            "(defn main [] (let [gulp 7] (primitives/pure gulp)))\n",
+        )
         .run("main.cl")
         .output()
         .assert_exit(7);
@@ -490,7 +493,7 @@ fn lexical_fn_param_of_prelude_name_allowed() {
         .file(
             "main.cl",
             "(defn use-it [gulp] (add-i64 gulp 1))\n\
-             (defn main [] (Pure (use-it 41)))\n",
+             (defn main [] (primitives/pure (use-it 41)))\n",
         )
         .run("main.cl")
         .output()
@@ -514,9 +517,9 @@ fn deftrait_over_explicitly_imported_trait_rejected_neg() {
         .prelude(PRELUDE_SHOW)
         .file(
             "main.cl",
-            "(import [prelude [Show Pure]])\n\
+            "(import [prelude [Show pure]])\n\
              (deftrait Show (shw2 [x] Int))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -532,7 +535,7 @@ fn deftrait_over_prelude_provided_trait_rejected_neg() {
         .file(
             "main.cl",
             "(deftrait Show (shw2 [x] Int))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -562,7 +565,7 @@ fn deftrait_over_prelude_mode_parity_all_modes() {
         .file(
             "main.cl",
             "(deftrait Show (shw2 [x] Int))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -573,7 +576,7 @@ fn deftrait_over_prelude_mode_parity_all_modes() {
         .file(
             "main.cl",
             "(deftrait Show (shw2 [x] Int))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .link_then_run("main.cl")
         .output()
@@ -590,7 +593,7 @@ fn defmacro_over_prelude_provided_name_rejected_neg() {
         .file(
             "main.cl",
             "(defmacro gulp [x] x)\n\
-             (defn main [] (Pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
+             (defn main [] (primitives/pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
         )
         .run("main.cl")
         .output()
@@ -605,9 +608,9 @@ fn defmacro_over_explicit_import_rejected_neg() {
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
-            "(import [prelude [gulp Pure add-i64]])\n\
+            "(import [prelude [gulp pure add-i64]])\n\
              (defmacro gulp [x] x)\n\
-             (defn main [] (Pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
+             (defn main [] (primitives/pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
         )
         .run("main.cl")
         .output()
@@ -623,7 +626,7 @@ fn deftrait_method_name_over_prelude_provided_name_rejected_neg() {
         .file(
             "main.cl",
             "(deftrait Zork (gulp [x] Int))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -638,9 +641,9 @@ fn deftrait_method_name_over_explicit_import_rejected_neg() {
         .prelude(PRELUDE_GULP)
         .file(
             "main.cl",
-            "(import [prelude [gulp Pure]])\n\
+            "(import [prelude [gulp pure]])\n\
              (deftrait Zork (gulp [x] Int))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -656,8 +659,8 @@ fn import_over_local_deftrait_rejected_neg() {
         .file(
             "main.cl",
             "(deftrait Show (shw-local [x] Int))\n\
-             (import [prelude [Show Pure]])\n\
-             (defn main [] (Pure 0))\n",
+             (import [prelude [Show pure]])\n\
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -674,8 +677,8 @@ fn import_over_local_defmacro_rejected_neg() {
         .file(
             "main.cl",
             "(defmacro gulp [x] x)\n\
-             (import [prelude [gulp Pure add-i64]])\n\
-             (defn main [] (Pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
+             (import [prelude [gulp pure add-i64]])\n\
+             (defn main [] (primitives/pure (add-i64 (gulp 3) (prelude/gulp 3))))\n",
         )
         .run("main.cl")
         .output()
@@ -695,7 +698,7 @@ fn deftype_over_prelude_provided_type_rejected_neg() {
         .file(
             "main.cl",
             "(deftype Zed (Other [:Int m]))\n\
-             (defn main [] (Pure 0))\n",
+             (defn main [] (primitives/pure 0))\n",
         )
         .run("main.cl")
         .output()
@@ -711,7 +714,7 @@ fn private_defn_over_prelude_provided_name_rejected_neg() {
         .file(
             "main.cl",
             "(defn- gulp [x] (add-i64 x 100))\n\
-             (defn main [] (Pure (gulp 5)))\n",
+             (defn main [] (primitives/pure (gulp 5)))\n",
         )
         .run("main.cl")
         .output();

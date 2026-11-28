@@ -34,7 +34,7 @@ fn run_prims(src: &str) -> helpers::e2e::CrOutput {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_let (body position not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn let_body_ascription_accepted() {
-    let out = run_prims("(defn f [] (let [x 41] :Int x))\n(defn main [] (Pure (f)))\n");
+    let out = run_prims("(defn f [] (let [x 41] :Int x))\n(defn main [] (primitives/pure (f)))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.contains("parse error"),
@@ -47,7 +47,7 @@ fn let_body_ascription_accepted() {
 // spec: spec/03-types.md §3.9 — bare let body twin (GREEN).
 #[test]
 fn let_body_bare_twin() {
-    run_prims("(defn f [] (let [x 41] x))\n(defn main [] (Pure (f)))\n").assert_exit(41);
+    run_prims("(defn f [] (let [x 41] x))\n(defn main [] (primitives/pure (f)))\n").assert_exit(41);
 }
 
 // IMPL-METHOD BODY position. `(impl T Int (defn m [x] :Int x))` — the method body
@@ -59,7 +59,7 @@ fn impl_method_body_ascription_accepted() {
     let out = run_prims(
         "(deftrait T (m [self] Int))\n\
          (impl T Int (defn m [x] :Int x))\n\
-         (defn main [] (Pure (m 41)))\n",
+         (defn main [] (primitives/pure (m 41)))\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -76,7 +76,7 @@ fn impl_method_body_bare_twin() {
     run_prims(
         "(deftrait T (m [self] Int))\n\
          (impl T Int (defn m [x] x))\n\
-         (defn main [] (Pure (m 41)))\n",
+         (defn main [] (primitives/pure (m 41)))\n",
     )
     .assert_exit(41);
 }
@@ -89,7 +89,7 @@ fn impl_method_body_bare_twin() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_method_sig (default body not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn trait_default_method_body_ascription_accepted() {
-    let out = run_prims("(deftrait T (m [x] :Int x))\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(deftrait T (m [x] :Int x))\n(defn main [] (primitives/pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.contains("parse error"),
@@ -102,7 +102,7 @@ fn trait_default_method_body_ascription_accepted() {
 // spec: spec/03-types.md §3.9 — bare trait default-method body twin (GREEN).
 #[test]
 fn trait_default_method_body_bare_twin() {
-    run_prims("(deftrait T (m [x] x))\n(defn main [] (Pure 0))\n").assert_exit(0);
+    run_prims("(deftrait T (m [x] x))\n(defn main [] (primitives/pure 0))\n").assert_exit(0);
 }
 
 // TRACE OPERAND position. `(trace :Int 5)` ascribes the traced operand; wrongly
@@ -111,7 +111,7 @@ fn trait_default_method_body_bare_twin() {
 // defect: class=wrong-reject locus=crates/cranelisp-frontend/src/ast_builder.rs::build_trace (operand not routed through build_one_expr_at) found=S113 owner=/dev
 #[test]
 fn trace_operand_ascription_accepted() {
-    let out = run_prims("(defn f [] (trace :Int 5))\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] (trace :Int 5))\n(defn main [] (primitives/pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.contains("parse error"),
@@ -124,7 +124,7 @@ fn trace_operand_ascription_accepted() {
 // spec: spec/03-types.md §3.9 — bare trace operand twin (GREEN).
 #[test]
 fn trace_operand_bare_twin() {
-    run_prims("(defn f [] (trace 5))\n(defn main [] (Pure 0))\n").assert_exit(0);
+    run_prims("(defn f [] (trace 5))\n(defn main [] (primitives/pure 0))\n").assert_exit(0);
 }
 
 // ---- BD-A2: trailing-form silent-drop siblings ×2 (RED, silent-accept) ---------
@@ -140,7 +140,7 @@ fn impl_method_trailing_form_rejected_neg() {
     let out = run_prims(
         "(deftrait T (m [self] Int))\n\
          (impl T Int (defn m [x] x 999))\n\
-         (defn main [] (Pure (m 5)))\n",
+         (defn main [] (primitives/pure (m 5)))\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -158,7 +158,8 @@ fn impl_method_trailing_form_rejected_neg() {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::build_method_sig (trailing form silently dropped) found=S113 owner=/dev
 #[test]
 fn trait_method_sig_trailing_form_rejected_neg() {
-    let out = run_prims("(deftrait T (show [x] Int 999 888))\n(defn main [] (Pure 0))\n");
+    let out =
+        run_prims("(deftrait T (show [x] Int 999 888))\n(defn main [] (primitives/pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.to_lowercase().contains("error"),
@@ -185,8 +186,10 @@ fn trait_method_sig_trailing_form_rejected_neg() {
 // spec: spec/03-types.md §3.9 — an annotation may appear in an `fn` body.
 #[test]
 fn m1_fn_body_ascription_accepted_spot() {
-    run_prims("(defn f [] (let [g (fn [n] :Int n)] (g 7)))\n(defn main [] (Pure (f)))\n")
-        .assert_exit(7);
+    run_prims(
+        "(defn f [] (let [g (fn [n] :Int n)] (g 7)))\n(defn main [] (primitives/pure (f)))\n",
+    )
+    .assert_exit(7);
 }
 
 // M1 ascribed spot-pin — IF BRANCHES. `(if c :Int 10 :Int 20)` — both branches
@@ -194,8 +197,10 @@ fn m1_fn_body_ascription_accepted_spot() {
 // spec: spec/03-types.md §3.9 — an annotation may appear in an `if` branch.
 #[test]
 fn m1_if_branch_ascription_accepted_spot() {
-    run_prims("(defn f [c] (if (eq-i64 c 0) :Int 10 :Int 20))\n(defn main [] (Pure (f 0)))\n")
-        .assert_exit(10);
+    run_prims(
+        "(defn f [c] (if (eq-i64 c 0) :Int 10 :Int 20))\n(defn main [] (primitives/pure (f 0)))\n",
+    )
+    .assert_exit(10);
 }
 
 // M1 ascribed spot-pin — MATCH ARM BODY. `(match v [x :Int x])` — the arm body
@@ -203,7 +208,8 @@ fn m1_if_branch_ascription_accepted_spot() {
 // spec: spec/03-types.md §3.9 — an annotation may appear in a match arm body.
 #[test]
 fn m1_match_arm_ascription_accepted_spot() {
-    run_prims("(defn f [v] (match v [x :Int x]))\n(defn main [] (Pure (f 7)))\n").assert_exit(7);
+    run_prims("(defn f [v] (match v [x :Int x]))\n(defn main [] (primitives/pure (f 7)))\n")
+        .assert_exit(7);
 }
 
 // M1 ascribed spot-pin — LET VALUE. `(let [x :Int 7] x)` — the binding value
@@ -211,7 +217,8 @@ fn m1_match_arm_ascription_accepted_spot() {
 // spec: spec/03-types.md §3.9 — an annotation may appear in a `let` binding value.
 #[test]
 fn m1_let_value_ascription_accepted_spot() {
-    run_prims("(defn f [] (let [x :Int 7] x))\n(defn main [] (Pure (f)))\n").assert_exit(7);
+    run_prims("(defn f [] (let [x :Int 7] x))\n(defn main [] (primitives/pure (f)))\n")
+        .assert_exit(7);
 }
 
 // M1 ascribed spot-pin — APPLY ARG. `(add-i64 :Int 3 4)` — an application argument
@@ -219,7 +226,8 @@ fn m1_let_value_ascription_accepted_spot() {
 // spec: spec/03-types.md §3.9 — an annotation may appear in an application argument.
 #[test]
 fn m1_apply_arg_ascription_accepted_spot() {
-    run_prims("(defn f [] (add-i64 :Int 3 4))\n(defn main [] (Pure (f)))\n").assert_exit(7);
+    run_prims("(defn f [] (add-i64 :Int 3 4))\n(defn main [] (primitives/pure (f)))\n")
+        .assert_exit(7);
 }
 
 // M1 REQUIRED trailing cell — LET BODY. `(let [x 1] x 9)` — a trailing form after
@@ -230,7 +238,7 @@ fn m1_apply_arg_ascription_accepted_spot() {
 // is rejected.
 #[test]
 fn m1_let_body_trailing_form_rejected_neg() {
-    let out = run_prims("(defn f [] (let [x 1] x 9))\n(defn main [] (Pure (f)))\n");
+    let out = run_prims("(defn f [] (let [x 1] x 9))\n(defn main [] (primitives/pure (f)))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.to_lowercase().contains("error"),
@@ -247,7 +255,7 @@ fn m1_let_body_trailing_form_rejected_neg() {
 // trailing form is rejected.
 #[test]
 fn m1_trace_trailing_form_rejected_neg() {
-    let out = run_prims("(defn f [] (trace 5 9))\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(defn f [] (trace 5 9))\n(defn main [] (primitives/pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.to_lowercase().contains("error"),
@@ -263,7 +271,9 @@ fn m1_trace_trailing_form_rejected_neg() {
 // is rejected.
 #[test]
 fn m1_fn_body_trailing_form_rejected_neg() {
-    let out = run_prims("(defn f [] (let [g (fn [n] n 9)] (g 7)))\n(defn main [] (Pure (f)))\n");
+    let out = run_prims(
+        "(defn f [] (let [g (fn [n] n 9)] (g 7)))\n(defn main [] (primitives/pure (f)))\n",
+    );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.to_lowercase().contains("error"),

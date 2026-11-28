@@ -106,7 +106,7 @@ fn local_defn_over_prelude_is_rejected() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (Pure (gulp 5)))",
+            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (primitives/pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -126,7 +126,7 @@ fn local_defn_over_prelude_neg_emits_collision_diagnostic() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (Pure (gulp 5)))",
+            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (primitives/pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -162,7 +162,7 @@ fn explicit_glob_import_over_prelude_distinct_terminal_poisons() {
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
             "user.cl",
-            "(import [libc [*]])\n(defn main [] (Pure (gulp 5)))",
+            "(import [libc [*]])\n(defn main [] (primitives/pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -182,7 +182,7 @@ fn explicit_specific_import_over_prelude_distinct_terminal_poisons() {
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
             "user.cl",
-            "(import [libc [gulp]])\n(defn main [] (Pure (gulp 5)))",
+            "(import [libc [gulp]])\n(defn main [] (primitives/pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -203,7 +203,7 @@ fn explicit_import_over_prelude_neg_emits_ambiguity() {
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
             "user.cl",
-            "(import [libc [*]])\n(defn main [] (Pure (gulp 5)))",
+            "(import [libc [*]])\n(defn main [] (primitives/pure (gulp 5)))",
         )
         .run("user.cl")
         .output();
@@ -313,7 +313,7 @@ fn explicit_import_no_collision_resolves() {
         .file("libc.cl", "(defn other [x] (add-i64 x 7))")
         .file(
             "user.cl",
-            "(import [libc [other]])\n(defn main [] (Pure (other 5)))",
+            "(import [libc [other]])\n(defn main [] (primitives/pure (other 5)))",
         )
         .run("user.cl")
         .output()
@@ -368,7 +368,7 @@ fn prelude_refusal_qualified_primitive_still_resolves() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(import [prelude []])\n(defn main [] (primitives/Pure (primitives/add-i64 2 3)))",
+            "(import [prelude []])\n(defn main [] (primitives/pure (primitives/add-i64 2 3)))",
         )
         .run("user.cl")
         .output()
@@ -387,7 +387,7 @@ fn selective_prelude_import_brings_named_name() {
         .prelude(PRELUDE_WITH_GULP)
         .file(
             "user.cl",
-            "(import [prelude [gulp]])\n(defn main [] (primitives/Pure (gulp 10)))",
+            "(import [prelude [gulp]])\n(defn main [] (primitives/pure (gulp 10)))",
         )
         .run("user.cl")
         .output()
@@ -445,7 +445,7 @@ fn bare_primitive_resolves_via_prelude_reexport() {
     // add-i64 40 2 = 42.
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file("user.cl", "(defn main [] (Pure (add-i64 40 2)))")
+        .file("user.cl", "(defn main [] (primitives/pure (add-i64 40 2)))")
         .run("user.cl")
         .output()
         .assert_exit(42);
@@ -459,7 +459,10 @@ fn bare_primitive_resolves_via_prelude_reexport() {
 fn qualified_primitive_resolves_in_normal_module() {
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file("user.cl", "(defn main [] (Pure (primitives/add-i64 40 2)))")
+        .file(
+            "user.cl",
+            "(defn main [] (primitives/pure (primitives/add-i64 40 2)))",
+        )
         .run("user.cl")
         .output()
         .assert_exit(42);
@@ -475,7 +478,10 @@ fn bare_primitive_and_prelude_defn_coexist() {
     // (gulp (add-i64 40 1)) = (gulp 41) = 42.
     Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
-        .file("user.cl", "(defn main [] (Pure (gulp (add-i64 40 1))))")
+        .file(
+            "user.cl",
+            "(defn main [] (primitives/pure (gulp (add-i64 40 1))))",
+        )
         .run("user.cl")
         .output()
         .assert_exit(42);
@@ -506,7 +512,7 @@ const PRELUDE_WITH_ZED: &str = "\
 //   `(import [primitives [add-i64]])` while the implicit prelude re-exports the
 //   SAME terminal `primitives/add-i64` MUST dedup silently: no false collision,
 //   the bare name resolves. (Importing from `primitives` does NOT suppress the
-//   implicit prelude glob — only referencing `prelude` does — so `Pure` still
+//   implicit prelude glob — only referencing `prelude` does — so `pure` still
 //   flows through the glob.)
 //
 // CLASSIFICATION: GREEN pin (G1). The terminal-source comparison sees one
@@ -518,7 +524,7 @@ fn prelude_and_explicit_import_same_terminal_dedup() {
         .file(
             "user.cl",
             "(import [primitives [add-i64]])\n\
-             (defn main [] (Pure (add-i64 40 2)))",
+             (defn main [] (primitives/pure (add-i64 40 2)))",
         )
         .run("user.cl")
         .output()
@@ -536,15 +542,15 @@ fn prelude_and_explicit_import_same_terminal_dedup() {
 #[test]
 fn type_annotation_prelude_provided_type_twin() {
     // Leg A — `Zed`/`ZedC` explicitly imported (primitives imported directly so
-    // `Int`/`Pure` remain in scope, since the prelude import suppresses the glob).
+    // `Int`/`pure` remain in scope, since the prelude import suppresses the glob).
     let leg_a = Cranelisp::new()
         .prelude(PRELUDE_WITH_ZED)
         .file(
             "user.cl",
-            "(import [primitives [Int Pure add-i64]])\n\
+            "(import [primitives [Int pure add-i64]])\n\
              (import [prelude [Zed ZedC]])\n\
              (defn takes [:Zed z] :Int (match z [(ZedC n) n]))\n\
-             (defn main [] (Pure (takes (ZedC 7))))",
+             (defn main [] (primitives/pure (takes (ZedC 7))))",
         )
         .run("user.cl")
         .output();
@@ -554,7 +560,7 @@ fn type_annotation_prelude_provided_type_twin() {
         .file(
             "user.cl",
             "(defn takes [:Zed z] :Int (match z [(ZedC n) n]))\n\
-             (defn main [] (Pure (takes (ZedC 7))))",
+             (defn main [] (primitives/pure (takes (ZedC 7))))",
         )
         .run("user.cl")
         .output();
@@ -573,11 +579,11 @@ fn deftype_field_type_prelude_provided_twin() {
         .prelude(PRELUDE_WITH_ZED)
         .file(
             "user.cl",
-            "(import [primitives [Int Pure]])\n\
+            "(import [primitives [Int pure]])\n\
              (import [prelude [Zed ZedC]])\n\
              (deftype Wrap (WrapC [:Zed z]))\n\
              (defn unwrap [:Wrap w] :Int (match w [(WrapC inner) (match inner [(ZedC n) n])]))\n\
-             (defn main [] (Pure (unwrap (WrapC (ZedC 9)))))",
+             (defn main [] (primitives/pure (unwrap (WrapC (ZedC 9)))))",
         )
         .run("user.cl")
         .output();
@@ -587,7 +593,7 @@ fn deftype_field_type_prelude_provided_twin() {
             "user.cl",
             "(deftype Wrap (WrapC [:Zed z]))\n\
              (defn unwrap [:Wrap w] :Int (match w [(WrapC inner) (match inner [(ZedC n) n])]))\n\
-             (defn main [] (Pure (unwrap (WrapC (ZedC 9)))))",
+             (defn main [] (primitives/pure (unwrap (WrapC (ZedC 9)))))",
         )
         .run("user.cl")
         .output();
@@ -608,9 +614,9 @@ fn ctor_value_and_pattern_position_prelude_provided_twin() {
         .prelude(PRELUDE_WITH_ZED)
         .file(
             "user.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [prelude [ZedC]])\n\
-             (defn main [] (Pure (match (ZedC 7) [(ZedC n) n])))",
+             (defn main [] (primitives/pure (match (ZedC 7) [(ZedC n) n])))",
         )
         .run("user.cl")
         .output();
@@ -618,7 +624,7 @@ fn ctor_value_and_pattern_position_prelude_provided_twin() {
         .prelude(PRELUDE_WITH_ZED)
         .file(
             "user.cl",
-            "(defn main [] (Pure (match (ZedC 7) [(ZedC n) n])))",
+            "(defn main [] (primitives/pure (match (ZedC 7) [(ZedC n) n])))",
         )
         .run("user.cl")
         .output();
@@ -680,9 +686,9 @@ fn super_import_wrapper_over_specific_prelude_compiles_clean() {
         .file(
             "bits.cl",
             "(import [prelude []])\n\
-             (import [primitives [Int Pure]])\n\
+             (import [primitives [Int pure]])\n\
              (defn bit-and \"AND of a and b\" [:Int a :Int b] :Int (primitives/bit-and a b))\n\
-             (defn main [] (Pure (bit-and 12 10)))\n\
+             (defn main [] (primitives/pure (bit-and 12 10)))\n\
              (mod- test)",
         )
         .file(
@@ -719,9 +725,9 @@ fn super_import_wrapper_collides_when_prelude_globs_primitive_neg() {
         .file(
             "bits.cl",
             "(import [prelude []])\n\
-             (import [primitives [Int Pure]])\n\
+             (import [primitives [Int pure]])\n\
              (defn bit-and \"AND of a and b\" [:Int a :Int b] :Int (primitives/bit-and a b))\n\
-             (defn main [] (Pure (bit-and 12 10)))\n\
+             (defn main [] (primitives/pure (bit-and 12 10)))\n\
              (mod- test)",
         )
         .file(

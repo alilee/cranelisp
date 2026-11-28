@@ -355,12 +355,12 @@ fn e3_token0_discarded_subtree_not_launched_stays_source_ordered() {
     // launch-shaped; E3: token 0 ⇒ MUST be REFUSED ⇒ stays serial + ordered).
     let prog = "(platform poll-pool)\n\
          (import [platform.poll-pool [poll-log]])\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (defn main []\n\
            (bind (poll-log 0 1 30 \"a\") (fn [_]\n\
              (bind (poll-log 0 1 30 \"b\") (fn [_]\n\
                (bind (poll-log 0 1 30 \"c\") (fn [_]\n\
-                 (Pure 0))))))))\n";
+                 (primitives/pure 0))))))))\n";
     let out: CrOutput = Cranelisp::new()
         .use_workspace_platforms()
         .run("user.cl")

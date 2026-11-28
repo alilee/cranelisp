@@ -36,7 +36,7 @@ fn qualified_own_module_self_ref_batch_no_codegen_leak() {
         .user(
             "(defn qloop [x] 0)\n\
              (defn qloop [x] (if true 0 (user/qloop 5)))\n\
-             (defn main [] (Pure (qloop 1)))\n",
+             (defn main [] (primitives/pure (qloop 1)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -102,7 +102,7 @@ fn qualified_self_recursive_equals_bare_twin() {
     let prog = |call: &str| {
         format!(
             "(defn qloop [x] (if (eq-i64 x 0) 42 ({call} (add-i64 x -1))))\n\
-             (defn main [] (Pure (qloop 3)))\n"
+             (defn main [] (primitives/pure (qloop 3)))\n"
         )
     };
     let run = |src: &str| {
@@ -159,7 +159,7 @@ fn qualified_absent_own_member_uniform_diagnostic_neg() {
     let batch = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn f [] (user/nosuch 5))\n(defn main [] (Pure 0))\n")
+        .user("(defn f [] (user/nosuch 5))\n(defn main [] (primitives/pure 0))\n")
         .output();
     let bc = format!("{}{}", batch.stdout, batch.stderr);
     // REPL-fresh
@@ -205,7 +205,7 @@ fn multi_sig_self_qualified_self_call_equals_bare() {
             "(defn msig\n\
              \x20 ([n]     (user/msig n 0))\n\
              \x20 ([n acc] (if (eq-i64 n 0) acc (msig (add-i64 n -1) (add-i64 acc n)))))\n\
-             (defn main [] (Pure (msig 3)))\n",
+             (defn main [] (primitives/pure (msig 3)))\n",
         )
         .output();
     out.assert_exit(6);
@@ -223,7 +223,7 @@ fn multi_sig_bare_self_call_control_green() {
             "(defn msig\n\
              \x20 ([n]     (msig n 0))\n\
              \x20 ([n acc] (if (eq-i64 n 0) acc (msig (add-i64 n -1) (add-i64 acc n)))))\n\
-             (defn main [] (Pure (msig 3)))\n",
+             (defn main [] (primitives/pure (msig 3)))\n",
         )
         .output()
         .assert_exit(6);

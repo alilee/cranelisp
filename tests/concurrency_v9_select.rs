@@ -46,8 +46,8 @@ const EMPTY_SELECT_MSG: &str = "select over empty collection";
 /// SIGSEGV the 0475 fix removes. The explicit `:(Vec (IO String))` annotation pins
 /// `a := String` (a heap type) so the empty literal is not ambiguous.
 const EMPTY_SELECT_HEAP_UNCAUGHT: &str = "\
-(import [primitives [select Pure bind String]])\n\
-(defn use-str [:primitives/String s] (Pure 0))\n\
+(import [primitives [select pure bind String]])\n\
+(defn use-str [:primitives/String s] (primitives/pure 0))\n\
 (defn main []\n\
   (bind (select :(primitives/Vec (primitives/IO primitives/String)) [])\n\
     (fn [s] (use-str s))))\n";
@@ -157,7 +157,7 @@ fn empty_select_does_not_hang() {
 /// it (`:primitives/Int 0`), which is the unsound-null violation this test
 /// pins — a divergence a heap-typed repro (which crashes) can't observe.
 const EMPTY_SELECT_REPL_INPUT: &str = "\
-(import [primitives [select Pure bind Int]])\n\
+(import [primitives [select pure bind Int]])\n\
 (select :(primitives/Vec (primitives/IO primitives/Int)) [])\n";
 
 // spec: spec/10-io.md §10.12.8 — P-4/C-1: empty select exits both hosts.
@@ -221,8 +221,8 @@ fn unarmed_oneshot_suspend_trips_promptly_neg() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{unarmed}]])\n\
-         (import [primitives [bind Pure]])\n\
-         (defn main [] (bind ({unarmed} 0 1 0) (fn [_] (Pure 7))))\n",
+         (import [primitives [bind pure]])\n\
+         (defn main [] (bind ({unarmed} 0 1 0) (fn [_] (primitives/pure 7))))\n",
         plat = POLL_PLATFORM,
         unarmed = POLL_UNARMED,
     );

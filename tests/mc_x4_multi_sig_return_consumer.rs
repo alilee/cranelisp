@@ -61,7 +61,7 @@ fn poly_consumer_of_multi_sig_return_mono_miss() {
         &format!(
             "(defn mycount [v] (vec-len v))\n\
              {BUILD_MULTISIG}\
-             (defn main [] (Pure (mycount (build 3))))\n"
+             (defn main [] (primitives/pure (mycount (build 3))))\n"
         ),
         4,
     );
@@ -78,7 +78,7 @@ fn poly_consumer_of_single_sig_return_control_green() {
         "(defn mycount [v] (vec-len v))\n\
          (defn bh [n acc] (if (eq-i64 n 0) acc (bh (add-i64 n -1) (vec-push acc n))))\n\
          (defn build [n] (bh n [0]))\n\
-         (defn main [] (Pure (mycount (build 3))))\n",
+         (defn main [] (primitives/pure (mycount (build 3))))\n",
         4,
     );
 }
@@ -97,7 +97,7 @@ fn adt_wrapped_multi_sig_return_consumer_green() {
          (defn build\n\
          \x20 ([n]     (build n [0]))\n\
          \x20 ([n acc] (if (eq-i64 n 0) (MkVBox acc) (build (add-i64 n -1) (vec-push acc n)))))\n\
-         (defn main [] (Pure (mycount (build 3))))\n",
+         (defn main [] (primitives/pure (mycount (build 3))))\n",
         4,
     );
 }

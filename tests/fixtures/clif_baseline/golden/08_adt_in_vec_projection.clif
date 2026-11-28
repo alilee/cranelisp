@@ -1,22 +1,3 @@
-; === CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
-function %(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int))(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v2 = iconst.i64 0
-    v3 = iconst.i64 24
-    v4 = call fn0(v3)  ; v3 = 24
-    v5 = iconst.i64 0
-    store notrap aligned v5, v4+16  ; v5 = 0
-    store notrap aligned v1, v4+24
-    store notrap aligned v2, v4+32  ; v2 = 0
-    return v4
-}
-; === end CLIF user::(primitives/IO.Pure [primitives/Int] (primitives/IO primitives/Int)) ===
 ; === CLIF user::Cell.Given ===
 function %Cell.Given(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
@@ -60,8 +41,8 @@ function %build(i64, i64, i64) -> i64 system_v {
     sig4 = (i64, i64, i64) -> i64 system_v
     sig5 = (i64, i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:44 sig1
-    fn2 = colocated u0:43 sig2
+    fn1 = colocated u0:43 sig1
+    fn2 = colocated u0:42 sig2
     fn3 = u0:22 sig3
     fn4 = u0:21 sig4
     fn5 = u0:11 sig5
@@ -151,8 +132,8 @@ function %cell-value(i64) -> i64 system_v {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) system_v
-    fn0 = colocated u0:42 sig0
-    fn1 = colocated u0:42 sig1
+    fn0 = colocated u0:41 sig0
+    fn1 = colocated u0:41 sig1
     fn2 = u0:2 sig2
 
 block0(v0: i64):
@@ -203,7 +184,6 @@ block2(v2: i64):
 function %main() -> i64 system_v {
     gv0 = symbol userextname1
     gv1 = symbol userextname1
-    gv2 = symbol userextname1
     sig0 = (i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
@@ -211,8 +191,9 @@ function %main() -> i64 system_v {
     sig4 = (i64, i64, i64, i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
     fn0 = u0:10 sig0
-    fn1 = colocated u0:43 sig2
+    fn1 = colocated u0:42 sig2
     fn2 = u0:11 sig3
+    fn3 = u0:0 sig5
 
 block0:
     jump block1
@@ -226,7 +207,7 @@ block1:
     v4 = iconst.i64 0
     v5 = iconst.i64 9
     v6 = global_value.i64 gv0
-    v7 = iadd_imm v6, 32
+    v7 = iadd_imm v6, 24
     v8 = load.i64 notrap aligned v7
     v9 = call_indirect sig1, v8(v1, v4, v5)  ; v4 = 0, v5 = 9
     v10 = iadd_imm v9, 8
@@ -249,14 +230,17 @@ block3:
 block2:
     v20 = iconst.i64 0
     v21 = global_value.i64 gv1
-    v22 = iadd_imm v21, 40
+    v22 = iadd_imm v21, 32
     v23 = load.i64 notrap aligned v22
     v24 = call_indirect sig4, v23(v9, v13, v14, v20)  ; v13 = 0, v20 = 0
-    v25 = global_value.i64 gv2
-    v26 = iadd_imm v25, 16
-    v27 = load.i64 notrap aligned v26
-    v28 = call_indirect sig5, v27(v24)
-    return v28
+    v25 = iconst.i64 0
+    v26 = iconst.i64 24
+    v27 = call fn3(v26)  ; v26 = 24
+    v28 = iconst.i64 0
+    store notrap aligned v28, v27+16  ; v28 = 0
+    store notrap aligned v24, v27+24
+    store notrap aligned v25, v27+32  ; v25 = 0
+    return v27
 }
 ; === end CLIF user::main ===
 ; === CLIF user::total ===
@@ -268,9 +252,9 @@ function %total(i64, i64, i64, i64) -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64) -> i64 system_v
-    fn0 = colocated u0:41 sig0
+    fn0 = colocated u0:40 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:43 sig2
+    fn2 = colocated u0:42 sig2
     fn3 = u0:11 sig3
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
@@ -327,7 +311,7 @@ block8:
 
 block7:
     v36 = global_value.i64 gv1
-    v37 = iadd_imm v36, 24
+    v37 = iadd_imm v36, 16
     v38 = load.i64 notrap aligned v37
     v39 = call_indirect sig4, v38(v27)
     v40 = iadd.i64 v7, v39

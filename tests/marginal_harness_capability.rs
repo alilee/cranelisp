@@ -35,8 +35,8 @@ mod helpers;
 use helpers::marginal::{Child, MarginalPair};
 
 /// Trivial program; the mini-prelude children below compile in milliseconds.
-const TRIVIAL: &str = "(import [primitives [Pure]])\n\
-     (defn main [] (Pure 0))\n";
+const TRIVIAL: &str = "(import [primitives [pure]])\n\
+     (defn main [] (primitives/pure 0))\n";
 
 /// A one-module library tree with nothing in it but an empty prelude — the
 /// cheapest possible child that still exercises the full `--run` path.

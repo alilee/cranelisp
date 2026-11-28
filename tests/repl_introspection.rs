@@ -31,7 +31,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{repl_output_lines, Cranelisp, PreludeVariant, REPL_IO_NOTICE};
+use helpers::e2e::{Cranelisp, PreludeVariant, REPL_IO_NOTICE, repl_output_lines};
 
 // Test-authoring shortcuts: `Cranelisp::repl_capture(lines)` for bare REPL,
 // `Cranelisp::repl_prims_capture(lines)` for REPL with PrimitivesOnly prelude.
@@ -2573,7 +2573,7 @@ fn mem_with_expr_emits_signed_delta_line() {
 // spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
 #[test]
 fn mem_with_io_expr_prints_notice_then_payload_then_delta() {
-    let out = repl_prims("/mem (Pure 42)\n");
+    let out = repl_prims("/mem (primitives/pure 42)\n");
     let lines = repl_output_lines(&out.stdout);
     let notices = lines.iter().filter(|l| *l == REPL_IO_NOTICE).count();
     assert_eq!(
@@ -2676,14 +2676,7 @@ fn data_constructor_product_no_dot_notation_display() {
     );
 }
 
-// spec: repl/spec.md §1.2, §1.5 — closure-as-value MUST display with the
-// `<closure>` token in the value position (the `<closure>` shape appears in
-// both the §1.2 value-line and the §1.5 Closure row). Only the negative companion
-// `defn_display_neg_not_closure` exists (asserting top-level defns do
-// NOT show "closure"); the positive `<closure>` formatter assertion was
-// uncovered. The closure produced by `(make-adder 5)` returns a fn value,
-// which is the canonical positive `<closure>` shape.
-// (carry: legacy/ring1.rs::repl_closure_display)
+// spec: repl/spec.md §1.2, §1.5 — closure values display #closure.
 #[test]
 fn closure_value_display_shows_closure_token() {
     let out = repl_prims(
@@ -2691,8 +2684,8 @@ fn closure_value_display_shows_closure_token() {
          (make-adder 5)\n",
     );
     assert!(
-        out.stdout.contains("<closure>"),
-        "closure value MUST display with `<closure>` token per §1.2; got:\n{}",
+        out.stdout.contains("#closure"),
+        "closure value MUST display with `#closure` token per §1.2; got:\n{}",
         out.stdout
     );
 }
@@ -3805,7 +3798,7 @@ fn info_and_source_show_defn_form_without_prior_bare_lookup_control() {
 
 // spec: repl/spec.md §1.5 — a lazy/infinite user-defined Seq value displays
 // without HANGING: the head element renders and the thunked tail shows as
-// `<closure>` (the tail is NOT forced). The key invariant is termination.
+// `#closure` (the tail is NOT forced). The key invariant is termination.
 // (harvest: legacy/repl_experience.rs::display_seq_infinite_does_not_hang)
 #[test]
 fn display_infinite_seq_value_does_not_hang() {
@@ -3815,7 +3808,7 @@ fn display_infinite_seq_value_does_not_hang() {
          (range-from 7)\n",
     );
     // Did not hang (the harness has a timeout); head element 7 is present and
-    // the thunked tail is shown unforced as `<closure>`.
+    // the thunked tail is shown unforced as `#closure`.
     assert!(
         out.stdout.contains("7"),
         "Seq display MUST show the head element without forcing the tail per \
@@ -3823,8 +3816,8 @@ fn display_infinite_seq_value_does_not_hang() {
         out.stdout
     );
     assert!(
-        out.stdout.contains("<closure>"),
-        "Seq thunked tail MUST display unforced as `<closure>` per §1.5; got:\n{}",
+        out.stdout.contains("#closure"),
+        "Seq thunked tail MUST display unforced as `#closure` per §1.5; got:\n{}",
         out.stdout
     );
 }
@@ -4764,7 +4757,7 @@ fn private_fq_member_errors_not_displays_mode_uniform_neg() {
         .file("mathx.cl", mathx)
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure (mathx/helper 5)))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure (mathx/helper 5)))\n",
         )
         .run("main.cl")
         .output();
@@ -5331,6 +5324,67 @@ fn nullary_ctor_and_function_candidates_both_list_at_bare_lookup() {
     );
 }
 
+fn assert_type_macro_error_location_matches_evaluation(expansion: &str, category: &str) {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .stdin(&format!(
+            "(defmacro bad [] `{expansion})\n/type (bad)\n(bad)\n"
+        ))
+        .output()
+        .assert_ok();
+    let lines = repl_output_lines(&out.stdout);
+    let diagnostics: Vec<_> = lines
+        .iter()
+        .filter(|line| line.starts_with("Error:"))
+        .collect();
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "macro definition must succeed; query and evaluation must each diagnose: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    let location =
+        regex::Regex::new(&format!(r"^Error: {category} error at (\d+)\.\.(\d+): \S")).unwrap();
+    let spans: Vec<(usize, usize)> = diagnostics
+        .iter()
+        .map(|line| {
+            let captures = location
+                .captures(line)
+                .unwrap_or_else(|| panic!("expected a located {category} diagnostic: {line}"));
+            (captures[1].parse().unwrap(), captures[2].parse().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        (
+            spans[0] == spans[1],
+            spans
+                .iter()
+                .all(|&(start, end)| start < 1_000_000 && end < 1_000_000),
+        ),
+        (true, true),
+        "/type location must equal evaluation's, with no virtual offsets; query={:?}, evaluation={:?}: {}{}",
+        spans[0],
+        spans[1],
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §5.1, §5.3 — T-TY-LOC parse face
+// defect: class=display-envelope-mirror locus=src/process_form/type_query.rs found=S125 owner=/dev
+#[test]
+fn s125_type_macro_parse_error_location_matches_evaluation() {
+    assert_type_macro_error_location_matches_evaluation("(if true)", "parse");
+}
+
+// spec: repl/spec.md §5.1, §5.3 — T-TY-LOC type face
+// defect: class=display-envelope-mirror locus=src/process_form/type_query.rs found=S125 owner=/dev
+#[test]
+fn s125_type_macro_type_error_location_matches_evaluation() {
+    assert_type_macro_error_location_matches_evaluation("(primitives/add-i64 true 1)", "type");
+}
+
 fn s124_type_session(turns: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
@@ -5797,4 +5851,293 @@ fn s124_markers_input_refused_session_continues() {
         );
         out.assert_stdout_contains(":primitives/Int 10");
     }
+}
+
+// spec: repl/spec.md §3
+// defect: class=partial-record-update locus=src/repl/commands.rs found=S125 owner=/dev
+#[test]
+fn s125_ty2_type_leaves_no_expr() {
+    let out = Cranelisp::new()
+        .stdin(
+            "/type 1
+/info user/__expr
+",
+        )
+        .output()
+        .assert_ok();
+    let response = out.stdout.rsplit("; user> ").nth(1).unwrap_or(&out.stdout);
+    assert!(
+        response.contains("not found")
+            || response.contains("Unknown")
+            || response.contains("unknown")
+            || response.contains("undefined"),
+        "type must leave no __expr: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §3
+#[test]
+fn s125_ty3_definition_refused_no_binding() {
+    let out = Cranelisp::new()
+        .stdin(
+            "(defmacro def [n v] `(defn ~n [] ~v))
+/type (def x 1)
+x
+",
+        )
+        .output()
+        .assert_ok();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        (diag.contains("Error:") || diag.contains("error:"))
+            && diag.contains("undefined variable: x"),
+        "definition refused without commit: {diag}"
+    );
+}
+
+// spec: repl/spec.md §3
+// defect: class=wrong-reject locus=src/repl/commands.rs::typecheck_only found=S125 owner=/dev
+#[test]
+fn s125_ty4_cached_macro_type() {
+    let first = Cranelisp::new()
+        .file("m.cl", "(defmacro answer [] `42)")
+        .stdin(
+            "(m/answer)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 42");
+    assert!(
+        first.tmp_exists(".cranelisp-cache/m.o"),
+        "macro home cached"
+    );
+    first
+        .run_again()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .stdin(
+            "(import [m [answer]])
+/type (answer)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("primitives/Int")
+        .assert_stdout_does_not_contain("Error:");
+}
+
+// spec: repl/spec.md §3
+#[test]
+fn s125_ty5_unloaded_reference_located_loads_nothing() {
+    let out = Cranelisp::new()
+        .file("m.cl", "(defn value [] 42)")
+        .stdin(
+            "/type (m/value)
+/modules
+",
+        )
+        .output()
+        .assert_ok();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("error") || diag.contains("Error"),
+        "unloaded reference refused: {diag}"
+    );
+    assert!(
+        diag.contains("at ") || diag.contains(":1:"),
+        "located error: {diag}"
+    );
+    let modules = out.stdout.rsplit("; user> ").nth(1).unwrap_or(&out.stdout);
+    assert!(
+        !modules
+            .lines()
+            .any(|l| l.trim().starts_with("m ") || l.trim() == "m"),
+        "type must not load m: {modules}"
+    );
+}
+
+// spec: repl/spec.md §4.1.3
+// defect: class=wrong-scope-lookup locus=src/repl/format_type.rs found=S125 owner=/dev
+#[test]
+fn s125_1003_forward_lists_constructors() {
+    let out = Cranelisp::new()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(deftype Qtok Qa Qb)
+(deftype Qwrap (Qtok [:primitives/Int n]))
+Qtok
+"#,
+        )
+        .output()
+        .assert_ok();
+    let response = out.stdout.rsplit("; user> ").nth(1).unwrap_or(&out.stdout);
+    assert!(
+        response.contains("Qa") && response.contains("Qb") && response.contains("match:"),
+        "Qtok must list its own constructors: {response}
+{}",
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §4.1.3
+// defect: class=wrong-scope-lookup locus=src/repl/format_type.rs found=S125 owner=/dev
+#[test]
+fn s125_1003_reverse_lists_constructors() {
+    let out = Cranelisp::new()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(deftype Qwrap (Qtok [:primitives/Int n]))
+(deftype Qtok Qa Qb)
+Qtok
+"#,
+        )
+        .output()
+        .assert_ok();
+    let response = out.stdout.rsplit("; user> ").nth(1).unwrap_or(&out.stdout);
+    assert!(
+        response.contains("Qa") && response.contains("Qb") && response.contains("match:"),
+        "Qtok must list its own constructors: {response}
+{}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.matches("match:").count() >= 2,
+        "declaration echo must list constructors too: {}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3
+#[test]
+fn s125_1003_control_lists_constructors() {
+    let out = Cranelisp::new()
+        .cli_flag("--no-cache")
+        .stdin(
+            r#"(deftype Qtok Qa Qb)
+(deftype Qwrap2 (Qother [:primitives/Int n]))
+Qtok
+"#,
+        )
+        .output()
+        .assert_ok();
+    let response = out.stdout.rsplit("; user> ").nth(1).unwrap_or(&out.stdout);
+    assert!(
+        response.contains("Qa") && response.contains("Qb") && response.contains("match:"),
+        "Qtok must list its own constructors: {response}
+{}",
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §1.5
+// defect: class=display-envelope-mirror locus=src/display.rs found=S125 owner=/dev
+#[test]
+fn s125_d2_option_closure_marker() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin(
+            "(Some (fn [:primitives/Int x] x))
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("Option.Some #closure")
+        .assert_stdout_does_not_contain("<closure>");
+}
+
+// spec: repl/spec.md §1.5
+// defect: class=spelling-keyed-decision locus=src/display.rs::push_adt_value_form found=S125 owner=/dev
+#[test]
+fn s125_d3_user_vec_displays_own_constructor() {
+    Cranelisp::new()
+        .stdin(
+            "(deftype Vec (Mine [:primitives/Int value]))
+(Mine 42)
+",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains("Vec.Mine 42");
+}
+
+// spec: repl/spec.md §1.5, §1.5.1 — T-RESID-DISPLAY
+// defect: class=check-domain-overreach locus=src/display.rs found=S125 owner=/dev
+#[test]
+fn s125_resid_display_unused_user_type_parameter() {
+    let out =
+        repl_prims("(deftype (Two a b) (L [:a x]) (R [:b y]))\n(L 5)\n(R \"s\")\n").assert_ok();
+    assert_residual_value_forms(
+        &out,
+        &[
+            ":(user/Two primitives/Int a) (Two.L 5)",
+            ":(user/Two a primitives/String) (Two.R \"s\")",
+        ],
+    );
+}
+
+// spec: repl/spec.md §1.5, §1.5.1 — T-RESID-DISPLAY
+// defect: class=check-domain-overreach locus=src/display.rs found=S125 owner=/dev
+#[test]
+fn s125_resid_display_unused_result_type_parameter() {
+    let out = repl_prims("(primitives/Err \"boom\")\n(primitives/Ok 1)\n").assert_ok();
+    assert_residual_value_forms(
+        &out,
+        &[
+            ":(primitives/Result a primitives/String) (Result.Err \"boom\")",
+            ":(primitives/Result primitives/Int a) (Result.Ok 1)",
+        ],
+    );
+}
+
+fn assert_residual_value_forms(out: &helpers::e2e::CrOutput, forms: &[&str]) {
+    let missing: Vec<_> = forms
+        .iter()
+        .filter(|form| !out.stdout.contains(**form))
+        .collect();
+    assert!(
+        missing.is_empty() && !out.stdout.contains("unavailable") && !out.stdout.contains("Var("),
+        "§1.5/§1.5.1: constructor fields must follow their polymorphic type, without opaque markers; missing {missing:?}\n{}\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §1.5 — T-RESID-DISPLAY pinned controls
+#[test]
+fn s125_resid_display_pinned_values_control() {
+    let out = repl_prims(
+        r#"(deftype (Two a b) (L [:a x]) (R [:b y]))
+:(Two Int String) (L 5)
+:(Two Int String) (R "s")
+:(primitives/Result Int String) (primitives/Err "boom")
+:(primitives/Result Int String) (primitives/Ok 1)
+"#,
+    )
+    .assert_ok();
+    assert_residual_value_forms(
+        &out,
+        &[
+            ":(user/Two primitives/Int primitives/String) (Two.L 5)",
+            ":(user/Two primitives/Int primitives/String) (Two.R \"s\")",
+            ":(primitives/Result primitives/Int primitives/String) (Result.Err \"boom\")",
+            ":(primitives/Result primitives/Int primitives/String) (Result.Ok 1)",
+        ],
+    );
+}
+
+// spec: spec/03-types.md §3.11; repl/spec.md §1.5.1 — T-RESID-DISPLAY ambiguous-field control
+#[test]
+fn s125_resid_display_ambiguous_field_refused_control() {
+    let out = repl_prims("(primitives/Some [])\n").assert_ok();
+    let diag = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        diag.contains("ambiguous"),
+        "residual field must be refused: {diag}"
+    );
+    assert!(
+        !out.stdout.contains("(Option.Some []"),
+        "must not guess the residual field representation: {diag}"
+    );
 }

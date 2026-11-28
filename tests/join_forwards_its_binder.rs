@@ -29,7 +29,7 @@ use helpers::marginal::{Child, Marginal, MarginalPair};
 /// checks armed.
 fn armed(defs: &str) -> Child {
     Child::new(&format!(
-        "(import [primitives [Pure add-i64 vec-len vec-push vec-set]])\n{defs}"
+        "(import [primitives [pure add-i64 vec-len vec-push vec-set]])\n{defs}"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1")
 }
@@ -64,11 +64,15 @@ fn match_yielding_its_binder_consumed_in_frame_releases_the_value() {
     measure(
         "(vec-len (match [1 2] [r r])) in f",
         (
-            armed("(defn f [] (match [1 2] [r r]))\n(defn main [] (Pure (vec-len (f))))\n"),
+            armed(
+                "(defn f [] (match [1 2] [r r]))\n(defn main [] (primitives/pure (vec-len (f))))\n",
+            ),
             2,
         ),
         (
-            armed("(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (Pure (f)))\n"),
+            armed(
+                "(defn f [] (vec-len (match [1 2] [r r])))\n(defn main [] (primitives/pure (f)))\n",
+            ),
             2,
         ),
     )
@@ -86,11 +90,15 @@ fn let_yielding_its_binder_consumed_in_frame_releases_the_value() {
     measure(
         "(vec-len (let [r [1 2]] r)) in f",
         (
-            armed("(defn f [] (let [r [1 2]] r))\n(defn main [] (Pure (vec-len (f))))\n"),
+            armed(
+                "(defn f [] (let [r [1 2]] r))\n(defn main [] (primitives/pure (vec-len (f))))\n",
+            ),
             2,
         ),
         (
-            armed("(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (Pure (f)))\n"),
+            armed(
+                "(defn f [] (vec-len (let [r [1 2]] r)))\n(defn main [] (primitives/pure (f)))\n",
+            ),
             2,
         ),
     )
@@ -102,7 +110,7 @@ fn let_yielding_its_binder_consumed_in_frame_releases_the_value() {
 fn bound_then(value: &str, bindings: &str) -> Child {
     armed(&format!(
         "(defn f [v] (let [w {value}{bindings}] w))\n\
-         (defn main [] (Pure (vec-len (f (vec-push [] 1)))))\n"
+         (defn main [] (primitives/pure (vec-len (f (vec-push [] 1)))))\n"
     ))
 }
 
@@ -151,12 +159,12 @@ fn match_arm_forwarding_a_runtime_cow_copy_keeps_it_live() {
     measure(
         "(match (vec-set v 0 5) [r r]) on a shared v",
         (
-            set_forwarded_by_callee("(Pure (vec-len (f (vec-push [] 1))))"),
+            set_forwarded_by_callee("(primitives/pure (vec-len (f (vec-push [] 1))))"),
             1,
         ),
         (
             set_forwarded_by_callee(
-                "(let [v (vec-push [] 1) w (f v)] (Pure (add-i64 (vec-len w) (vec-len v))))",
+                "(let [v (vec-push [] 1) w (f v)] (primitives/pure (add-i64 (vec-len w) (vec-len v))))",
             ),
             2,
         ),

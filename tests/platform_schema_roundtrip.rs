@@ -112,7 +112,6 @@ fn register_type(
                 type_name: fqtn(module, type_name),
                 tag: *tag,
                 field_count: field_types.len(),
-                internal: false,
                 type_def: is_product.then(|| Box::new(type_info.clone())),
             },
             Realization::Body {

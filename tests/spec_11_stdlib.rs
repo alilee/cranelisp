@@ -159,7 +159,7 @@ fn function_valued_def_retains_zero_argument_macro_semantics() {
     );
     assert!(
         out.stdout
-            .contains(":(Fn [primitives/Int primitives/Int] primitives/Int) <closure>"),
+            .contains(":(Fn [primitives/Int primitives/Int] primitives/Int) #closure"),
         "bare `k` must expand to its function value; {details}"
     );
     assert!(
@@ -627,18 +627,18 @@ fn option_none_exists() {
 #[test]
 fn macro_do_returns_last() {
     assert_repl_eval_contains(
-        "(import [primitives [Pure]]) (do (Pure 1) (Pure 2) (Pure 3))",
+        "(import [primitives [pure]]) (do (primitives/pure 1) (primitives/pure 2) (primitives/pure 3))",
         ":primitives/Int 3",
     );
 }
 
 // spec: spec/10-io.md §10.5 — bind! macro: single binding desugars to
-// `(bind (Pure 42) (fn [x] (Pure x)))`, body returns the bound value.
+// `(bind (primitives/pure 42) (fn [x] (primitives/pure x)))`, body returns the bound value.
 // (harvest: legacy/io.rs::io_bind_bang_single_binding_desugared)
 #[test]
 fn macro_bind_bang_single_binding() {
     assert_repl_eval_contains(
-        "(import [primitives [Pure]]) (bind! [x (Pure 42)] (Pure x))",
+        "(import [primitives [pure]]) (bind! [x (primitives/pure 42)] (primitives/pure x))",
         ":primitives/Int 42",
     );
 }
@@ -650,8 +650,8 @@ fn macro_bind_bang_single_binding() {
 #[test]
 fn macro_bind_bang_multiple_bindings() {
     assert_repl_eval_contains(
-        "(import [primitives [Pure add-i64]]) \
-         (bind! [x (Pure 10) y (Pure 20)] (Pure (add-i64 x y)))",
+        "(import [primitives [pure add-i64]]) \
+         (bind! [x (primitives/pure 10) y (primitives/pure 20)] (primitives/pure (add-i64 x y)))",
         ":primitives/Int 30",
     );
 }
@@ -660,8 +660,8 @@ fn macro_bind_bang_multiple_bindings() {
 #[test]
 fn macro_bind_bang_sequential_reference() {
     assert_repl_eval_contains(
-        "(import [primitives [Pure add-i64]]) \
-         (bind! [x (Pure 5) y (Pure (add-i64 x x))] (Pure y))",
+        "(import [primitives [pure add-i64]]) \
+         (bind! [x (primitives/pure 5) y (primitives/pure (add-i64 x x))] (primitives/pure y))",
         ":primitives/Int 10",
     );
 }
@@ -841,7 +841,7 @@ fn macro_do_single() {
 #[test]
 fn macro_do_multi() {
     assert_repl_eval_contains(
-        "(import [primitives [Pure]]) (do (Pure 1) (Pure 2) (Pure 3) (Pure 42))",
+        "(import [primitives [pure]]) (do (primitives/pure 1) (primitives/pure 2) (primitives/pure 3) (primitives/pure 42))",
         ":primitives/Int 42",
     );
 }

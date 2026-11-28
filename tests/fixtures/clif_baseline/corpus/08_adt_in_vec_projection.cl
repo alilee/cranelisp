@@ -18,4 +18,4 @@
 
 (defn main []
   (let [g (build [] 0 9)]
-    (Pure (total g 0 (vec-len g) 0))))
+    (primitives/pure (total g 0 (vec-len g) 0))))

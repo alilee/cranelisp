@@ -99,11 +99,11 @@ const V9_WEB_CL: &str = "\
 
 /// Build + `--run` a compile-only v9 program: drop the opaque `web.cl`, load the
 /// workspace `web` platform, prepend `(platform web)` + the given imports, append a
-/// trivial `(defn main [] (Pure 0))`. The leaves need not RUN (the assertion is on
+/// trivial `(defn main [] (primitives/pure 0))`. The leaves need not RUN (the assertion is on
 /// the typecheck result), so no live server / socket is needed.
 fn run_v9(imports: &str, defns: &str) -> CrOutput {
     let src = format!(
-        "(platform web)\n{imports}\n(import [primitives [Pure]])\n{defns}\n(defn main [] (Pure 0))\n"
+        "(platform web)\n{imports}\n(import [primitives [pure]])\n{defns}\n(defn main [] (primitives/pure 0))\n"
     );
     Cranelisp::new()
         .use_workspace_platforms()
@@ -220,7 +220,7 @@ fn accept_conn_listener_only_typechecks() {
     let out = run_v9(
         "(import [web [Listener Connection]])\n(import [platform.web [accept-conn]])\n\
          (import [primitives [bind]])",
-        "(defn acc [:web/Listener l] (bind (accept-conn l) (fn [:web/Connection c] (Pure 0))))",
+        "(defn acc [:web/Listener l] (bind (accept-conn l) (fn [:web/Connection c] (primitives/pure 0))))",
     );
     assert_v9_typechecks(out, "accept_conn_listener_only_typechecks");
 }
@@ -362,10 +362,10 @@ fn produce_consume_descriptor_no_rc_leak() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{produce} {consume}]])\n\
-         (import [primitives [bind Pure sub-i64 eq-i64]])\n\
+         (import [primitives [bind pure sub-i64 eq-i64]])\n\
          (defn cycle [n]\n\
            (if (eq-i64 n 0)\n\
-               (Pure 0)\n\
+               (primitives/pure 0)\n\
                (bind ({produce} n) (fn [h]\n\
                  (bind ({consume} h) (fn [_]\n\
                    (cycle (sub-i64 n 1))))))))\n\

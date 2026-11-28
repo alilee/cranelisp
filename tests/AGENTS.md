@@ -52,7 +52,8 @@ The support collection comprises [isolation evidence](plan/0488-isolation.md),
 [helper reference](plan/helpers-api.md), [memory-safety coverage](plan/memory-safety-coverage.md),
 [risks](plan/risks.md), [S122 evidence](plan/s122-evidence-delta.md),
 [S123 evidence](plan/s123-evidence-delta.md),
-[S124 evidence](plan/s124-evidence-delta.md), and
+[S124 evidence](plan/s124-evidence-delta.md),
+[S125 evidence](plan/s125-evidence-delta.md), and
 [checker reconciliation](plan/s122-document-checker-reconciliation/README.md).
 
 Retained `plan/s{NN}-*.md` files are dated records listed in
@@ -427,9 +428,10 @@ adds the spec-side `[Tested …]` annotation. Two structural verifiers live in
 
 ## Public-API enforcement
 
-`tests/public_api_relocations.rs` is the executing drift guard for the seven
+`tests/public_api_relocations.rs` is the executing drift guard for the
 library crates enumerated in that file. It compares live `cargo-public-api`
-output with each committed `crates/<crate>/public-api.txt`; the retired
+output with each committed `crates/<crate>/public-api.txt` and rejects any
+baseline whose crate is absent from the list; the retired
 `tests/facade_compliance.rs` is a tombstone and carries no public-surface
 authority.
 
@@ -442,7 +444,8 @@ The format omits blanket impls (one `-s`), derived impls and generated
 auto-trait impls. Explicit `Send`/`Sync` implementations remain; the
 `PlatformFn` check in `facade_pif_rows.rs` pins those rows. The disposable-crate
 detection proof in `public_api_relocations.rs` uses the guard's generator and
-comparison: a clean surface passes, a planted public function fails with its
+comparison: an unlisted baseline fails naming its crate, listing it passes,
+and a planted public function fails with its
 added row in the diagnostic, and removing it passes again. The fixture and its
 baseline live only in a private temporary directory.
 
@@ -545,6 +548,7 @@ never pollutes the frequency counts.
 | `diagnostic-role-swap` | A diagnostic states the right facts in exchanged roles, so it reads as the opposite claim. Instance: a return-annotation mismatch reports the body's type as expected and the annotation as actual (S124, ACT-1080). Class the site that orders the operands. Distinct from `display-envelope-mirror` (two formatters over one fact disagree) and `error-swallow` (the diagnostic is lost) (added S124, /qa) |
 | `slot-bypass` | An emitted call reaches a slotted callable by a route other than a load of its slot, so whatever acts by replacing slot contents does not reach that call. Instance: the wrapper for a function used as a value called a same-unit target directly, so a trace recorded no frame for it and a redefinition left the old body running behind the value, while the same value taken in a later unit loaded the slot (S124, ACT-1088 (closed S124)). Class the emission site. Distinct from `null-got-slot` (a call through a slot that holds nothing) and `mode-divergence` (the face here, when the units differ by mode) (added S124, /qa) |
 | `unrecorded-value` | A producer holds a value the specification requires a user-visible result to carry, and releases it without writing it there, so the field keeps its initial placeholder. Nothing fails and every mode agrees. Instance: the trace form discards its body's value and collects the root frame with no result, so the root's result is the empty string where the formatted value is required (S124, ACT-1094 (closed S124)). Class the PRODUCER that drops the value. Distinct from `carrier-loss` (a compiler-internal keyed carrier never written, met by a loud consumer miss; here the result is a runtime value and the miss is silent), `partial-record-update` (carriers of one record disagree after a commit decision) and `error-swallow` (a raised diagnostic lost in flight) (added S124, /qa) |
+| `consuming-force` | Forcing an `IO` value writes to its published node, so a later or concurrent force of the same value reads what the first left behind, where the specification makes an `IO` value a reusable description ([§10.8.1](../spec/10-io.md)). Instance: a force of a launch node moves its sub-tree out and stores a zero in its place; a second force of the same value ends the process on a signal (S125, `tests/plan/s125-evidence-delta.md` §27.3). Class the WRITE in the force path. Distinct from `uaf` (no freed value is read), `rc-miscount` (the heap balances) and `shared-state-write-race` (a sequential second force fails; no interleaving is needed) (added S125, /qa) |
 | `spelling-keyed-decision` | A compiler decision is keyed on a declaration's bare spelling where its resolved identity is required, so an unrelated declaration that shares the spelling takes the decision. Instance: a trait spelled `Num`, `Eq`, `Ord` or `Display`, declared in the user's own module, has its implementation for a primitive type replaced by a primitive, whatever the body says (S124, ACT-1103). Class the DECISION site. Distinct from `wrong-scope-lookup` (a lookup rooted at the wrong scope; here no lookup happens), `binder-name-underkey` (two lexical binders share one entry) and `artifact-underkey` (a compiled artifact served under an incomplete key) (added S124, /qa) |
 
 **Rules:**

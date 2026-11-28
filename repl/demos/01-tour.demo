@@ -45,6 +45,12 @@ let
 (defn double [x] (* x 2))
 (double 21)
 
+; /type expands a macro expression and reports its type without evaluating it:
+
+(defmacro twice [x] `(+ ~x ~x))
+(twice 2)
+/type (twice 2)
+
 ; Type errors are caught before anything runs:
 
 (double "oops")

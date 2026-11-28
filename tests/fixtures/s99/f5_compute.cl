@@ -61,4 +61,4 @@
              (reduce-tree (mid-of lo hi) hi))))
 
 (defn main []
-  (Pure (rem-i64 (reduce-tree 0 (leaves)) 251)))
+  (primitives/pure (rem-i64 (reduce-tree 0 (leaves)) 251)))

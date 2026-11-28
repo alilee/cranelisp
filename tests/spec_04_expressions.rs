@@ -865,7 +865,7 @@ fn polymorphic_accumulator_fold_does_not_over_unify() {
         .file(
             "user.cl",
             "(import [primitives \
-                [add-i64 ge-i64 vec-len vec-get vec-push Pure]])\n\
+                [add-i64 ge-i64 vec-len vec-get vec-push pure]])\n\
              (defn reduce [f init v] (reduce-loop f init v (vec-len v) 0))\n\
              (defn reduce-loop \
                 [f acc v :primitives/Int len :primitives/Int i]\n  \
@@ -874,7 +874,7 @@ fn polymorphic_accumulator_fold_does_not_over_unify() {
              ;; sibling use with a (Vec a) accumulator — this is what collapses\n\
              ;; `reduce`'s scheme today.\n\
              (defn collect [vv] (reduce vec-push [] vv))\n\
-             (defn main [] (Pure (reduce add-i64 0 [1 2 3])))",
+             (defn main [] (primitives/pure (reduce add-i64 0 [1 2 3])))",
         )
         .run("user.cl")
         .output()
@@ -935,7 +935,7 @@ fn fn_multi_arity_clause_form_parse_error_neg() {
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(import [primitives [Pure]])\n(def bad (fn ([x] x) ([x y] x)))\n(defn main [] (Pure 0))\n")
+        .user("(import [primitives [pure]])\n(def bad (fn ([x] x) ([x y] x)))\n(defn main [] (primitives/pure 0))\n")
         .output();
     assert!(
         !run.status.success(),
@@ -993,7 +993,7 @@ fn fn_lambda_param_free_var_annotation() {
 
     // Pos: all-modes value equivalence for the lambda-annotated identity.
     run_through_all_modes(
-        "(defn main [] (Pure ((fn [:a x] x) 3)))",
+        "(defn main [] (primitives/pure ((fn [:a x] x) 3)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
@@ -1026,7 +1026,7 @@ fn lambda_owned_var_instantiated_in_place() {
 
     // All-modes: the in-place instantiation computes end-to-end.
     run_through_all_modes(
-        "(defn h [x] ((fn [:b y] y) 3))\n(defn main [] (Pure (h 7)))",
+        "(defn h [x] ((fn [:b y] y) 3))\n(defn main [] (primitives/pure (h 7)))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(3);
@@ -1138,11 +1138,11 @@ fn nested_fn_corefering_var_pinned_by_body() {
     );
 
     // All-modes value equivalence: the co-referring pinned identity computes
-    // end-to-end. `main` returns `(Pure (str-len (outer "z")))` — `(outer "z")`
+    // end-to-end. `main` returns `(primitives/pure (str-len (outer "z")))` — `(outer "z")`
     // yields the body's "s", `str-len "s"` = 1 ⇒ exit 1; `success()` was the
-    // wrong assertion for a nonzero-`Pure` `main`.
+    // wrong assertion for a nonzero-`pure` `main`.
     run_through_all_modes(
-        "(defn outer [:a x] ((fn [:a y] y) \"s\"))\n(defn main [] (Pure (str-len (outer \"z\"))))",
+        "(defn outer [:a x] ((fn [:a y] y) \"s\"))\n(defn main [] (primitives/pure (str-len (outer \"z\"))))",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(1);

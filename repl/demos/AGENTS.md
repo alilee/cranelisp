@@ -39,7 +39,7 @@ only: `./repl/showcase tour` (bare name) resolves to `01-tour.demo` just as
 | `04-functions.demo` | `defn`/`fn`; closures; higher-order functions; `compose`; threading (`->`/`->>`); accumulator recursion. |
 | `05-traits.demo` | Operators as trait methods; inferred trait bounds; `deftrait`/`impl`; constrained polymorphism over a user trait. |
 | `06-modules.demo` | `/imports`; import-on-demand; fully-qualified origins; unbound-name discoverability; how the exemplar's modules fit together. |
-| `07-io-and-effects.demo` | `(IO a)` values; `platform stdio`/`print`; `do`/`bind!` sequencing; `Pure`/`bind`; effects in control flow; the exemplar's main shape. |
+| `07-io-and-effects.demo` | `(IO a)` values; `platform stdio`/`print`; `do`/`bind!` sequencing; `pure`/`bind`; effects in control flow; the exemplar's main shape. |
 | `08-sudoku.demo` | The centerpiece: ADT domain types, grid geometry, a backtracking solver, formatted output, and a single `print` effect — a 4×4 sibling of `exemplar/user.cl`. |
 | `09-library-discovery.demo` | `/search` across reachable public non-macro symbols; "is there already a function for this?" answered before importing, with exact in-scope matches marked as already available. |
 | `10-redefinition.demo` | Live-editing with guarded publication: body edits late-bind; a blocked type change is rejected atomically with the prior callable intact; an unblocked change publishes as one replacement. |
@@ -50,12 +50,10 @@ The language arc deliberately ends at `08-sudoku.demo`, which reuses every conce
 the prior demos introduced. The demos after it showcase the development *workflow*
 around that language — library discovery, live redefinition and file reload.
 
-Known-defect output in the active set stays visible and attributed. The
-`def` echoes in `08-sudoku.demo` show the singular definition result that
-[FIXME 0800](../../design/arch/fixmes/0800-def-macro-expansion-leaks-internal-thunk-name-and-blocks-call.md)
-records as non-conformant. Do not filter, respell or narrate them as intended
-output. Do not add a segment that triggers a known defect merely to show
-recovery from it; the permanent e2e guards carry that evidence.
+Known-defect output in the active set stays visible and attributed. Do not
+filter, respell or narrate it as intended output. Do not add a segment that
+triggers a known defect merely to show recovery from it; the permanent e2e
+guards carry that evidence.
 
 ## Under-the-hood demo (not part of the guided arc)
 
@@ -135,7 +133,8 @@ CRANELISP_LIB=$PWD/stdlib CRANELISP_PLATFORM_PATH=$PWD/target/debug
 
 - **Bare via the prelude**: operators `+ - * / = != < > <= >=`; `show`, `str`;
   types `Int Bool Float String Option Some None Result Ok Err List Nil Cons`;
-  macros `vec list when unless cond case -> ->> def def- const const- do bind! pure`.
+  `pure` (re-exported from `primitives`);
+  macros `vec list when unless cond case -> ->> def def- const const- do bind!`.
 - **Import-on-demand** (NOT bare): `count`/`get`/`assoc` from `collections.vec`,
   `first`/`rest` from `collections.list`. Import by name, then use unqualified.
 - **Avoid `conj` for Vecs of heap ADTs** (carried defect DEF-2 — refcount bug in

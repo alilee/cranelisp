@@ -60,7 +60,7 @@
 
 ;;S105-F10-MAIN-BOTH
 (defn main []
-  (Pure (rmod (add-i64 (drive-sl (iters) 0) (drive-loop (iters) 0)) 251)))
+  (primitives/pure (rmod (add-i64 (drive-sl (iters) 0) (drive-loop (iters) 0)) 251)))
 ;;S105-F10-MAIN-BOTH-END
-;;S105-F10-MAIN-SL   (defn main [] (Pure (rmod (drive-sl (iters) 0) 251)))
-;;S105-F10-MAIN-LOOP   (defn main [] (Pure (rmod (drive-loop (iters) 0) 251)))
+;;S105-F10-MAIN-SL   (defn main [] (primitives/pure (rmod (drive-sl (iters) 0) 251)))
+;;S105-F10-MAIN-LOOP   (defn main [] (primitives/pure (rmod (drive-loop (iters) 0) 251)))

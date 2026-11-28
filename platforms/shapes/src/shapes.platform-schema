@@ -7,20 +7,11 @@
 ;; Closure: the generator walks the `area` sig
 ;; `(Fn [shapes/Rectangle] (primitives/IO primitives/Int))`. The root
 ;; `shapes/Rectangle` (single-ctor product, tag 0, named fields `w`/`h` per
-;; FIXME 0319) PLUS the `(primitives/IO _)` / `(primitives/IO primitives/Int)`
-;; instantiations reached through the return type are all in the closed-over
-;; set. The header below is the FNV-1a digest of the canonical body — the
-;; `extract_layout_hash` const fn exports it as `__cranelisp_layout_hash_shapes`
-;; for the host's load/`--link` hash gate.
-;; layout-hash: 239228b4b2e2ecb1
+;; FIXME 0319) is the closed-over set: `primitives/IO` has no constructors, so
+;; like `primitives/Vec` it contributes no entry. The header below is the FNV-1a
+;; digest of the canonical body — the `extract_layout_hash` const fn exports it
+;; as `__cranelisp_layout_hash_shapes` for the host's load/`--link` hash gate.
+;; layout-hash: 924a63d4da83bfe6
 (schema
-  ((primitives/IO _)
-    (Pure 0 ((ioval _)))
-    (Effect 1 ((thunk _)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
-  ((primitives/IO primitives/Int)
-    (Pure 0 ((ioval primitives/Int)))
-    (Effect 1 ((thunk primitives/Int)))
-    (Bind 2 ((inner (primitives/IO _)) (cont _))))
   (shapes/Rectangle
     (Rectangle 0 ((w primitives/Int) (h primitives/Int)))))

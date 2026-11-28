@@ -8,4 +8,4 @@
 (deftype Box (MkBox [:Int w]))
 
 (defn main []
-  (Pure (match (MkBox 5) [(MkBox w) w])))
+  (primitives/pure (match (MkBox 5) [(MkBox w) w])))

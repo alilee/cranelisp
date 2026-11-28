@@ -31,7 +31,7 @@ use std::process::Command;
 /// prelude, no stdlib (free-standing).
 fn fib_program(main_body: &str) -> String {
     format!(
-        "(import [primitives [Pure add-i64 sub-i64 lt-i64]])\n\
+        "(import [primitives [pure add-i64 sub-i64 lt-i64]])\n\
          (defn fib [n]\n\
            (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n\
          (defn main [] {main_body})\n"
@@ -79,7 +79,7 @@ fn par_map_shaped_inline_results_identical_to_sequential() {
     let out = Cranelisp::new()
         .run("user.cl")
         .user(&fib_program(
-            "(Pure (add-i64 (add-i64 (fib 26) (fib 26)) (add-i64 (fib 26) (fib 26))))",
+            "(primitives/pure (add-i64 (add-i64 (fib 26) (fib 26)) (add-i64 (fib 26) (fib 26))))",
         ))
         .output();
     // Parallel-eligible sum == the known sequential sum (never wrong).
@@ -105,7 +105,7 @@ fn par_reduce_shaped_inline_results_identical_to_sequential() {
             "(let [a (fib 26)\n\
                    b (add-i64 a (fib 26))\n\
                    c (add-i64 b (fib 26))]\n\
-               (Pure c))",
+               (primitives/pure c))",
         ))
         .output();
     // Dependent-accumulator fold == the known sequential fold (never wrong).
@@ -130,12 +130,12 @@ fn par_reduce_shaped_inline_results_identical_to_sequential() {
 #[test]
 fn par_map_shaped_inline_not_slower_than_sequential() {
     let parallel_body = "(let [a (fib 30) b (fib 30) c (fib 30) d (fib 30)]\n\
-                          (Pure (add-i64 (add-i64 a b) (add-i64 c d))))";
+                          (primitives/pure (add-i64 (add-i64 a b) (add-i64 c d))))";
     let sequential_body = "(let [a (fib 30)\n\
                b (fib (add-i64 30 (sub-i64 a a)))\n\
                c (fib (add-i64 30 (sub-i64 b b)))\n\
                d (fib (add-i64 30 (sub-i64 c c)))]\n\
-           (Pure (add-i64 (add-i64 a b) (add-i64 c d))))";
+           (primitives/pure (add-i64 (add-i64 a b) (add-i64 c d))))";
 
     let parallel_ms = best_of_n_ms(5, || run_exit_ms(parallel_body, 160));
     let sequential_ms = best_of_n_ms(3, || run_exit_ms(sequential_body, 160));
@@ -207,14 +207,14 @@ const DEP_WORK_DEF: &str = "(defn work [:Int n :Int acc]\n\
 /// (limit #2). `a=b=5000`, `c=10000`, sum `20000`, `/5000 = 4`.
 fn dep_clean_program() -> String {
     format!(
-        "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
+        "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int pure]])\n\
          {DEP_WORK_DEF}\
          (defn compute []\n\
            (let [a (work 5000 0)\n\
                  b (work 5000 0)\n\
                  c (add-i64 a (work 5000 0))]\n\
              (add-i64 (add-i64 a b) c)))\n\
-         (defn main [] (Pure (div-i64 (compute) 5000)))\n"
+         (defn main [] (primitives/pure (div-i64 (compute) 5000)))\n"
     )
 }
 
@@ -223,7 +223,7 @@ const DEP_PANIC_UNCAUGHT_PROGRAM: &str = "(import [primitives [*]])
 (defn ping [n d] (if (le-i64 n 0) (div-i64 10 d) (pong (sub-i64 n 1) d)))
 (defn pong [n d] (if (le-i64 n 0) (div-i64 10 d) (ping (sub-i64 n 1) d)))
 (defn compute [d] (let [a (ping 3 d) c (ping a 1)] c))
-(defn main [] (Pure (compute 0)))
+(defn main [] (primitives/pure (compute 0)))
 ";
 
 // =============================================================================
@@ -245,7 +245,7 @@ fn dependent_spark_three_regime_result_equivalence() {
     let body = "(let [a (fib 26)\n\
                       b (fib 26)\n\
                       c (add-i64 a (fib 26))]\n\
-                  (Pure (add-i64 (add-i64 a b) c)))";
+                  (primitives/pure (add-i64 (add-i64 a b) c)))";
     let lenient = run_exit_env(body, &[]);
     let no_lenient = run_exit_env(body, &[("CRANELISP_NO_LENIENT", "1")]);
     let budget_zero = run_exit_env(body, &[("CRANELISP_SPARK_BUDGET", "0")]);
@@ -387,7 +387,7 @@ fn run_prog_ms(prog: &str, expect_exit: i32, envs: &[(&str, &str)]) -> u128 {
 /// parallelism is the top-level `let`. `compute = a+b+d+c = 4·N`; `/N = 4`.
 fn win_program(n: i64) -> String {
     format!(
-        "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
+        "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int pure]])\n\
          {DEP_WORK_DEF}\
          (defn compute []\n\
            (let [a (work {n} 0)\n\
@@ -395,7 +395,7 @@ fn win_program(n: i64) -> String {
                  d (work {n} 0)\n\
                  c (add-i64 (work {n} 0) (sub-i64 a a))]\n\
              (add-i64 (add-i64 a b) (add-i64 d c))))\n\
-         (defn main [] (Pure (div-i64 (compute) {n})))\n"
+         (defn main [] (primitives/pure (div-i64 (compute) {n})))\n"
     )
 }
 
@@ -536,7 +536,7 @@ fn churn_dac_program(vec_len: usize, leaves: i64, iters: i64) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-set Pure]])\n\
+        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-set pure]])\n\
          (deftype Box [:Int v])\n\
          (defn unbox [b] (match b [(Box x) x]))\n\
          (defn churn [v :Int iters :Int acc]\n\
@@ -552,7 +552,7 @@ fn churn_dac_program(vec_len: usize, leaves: i64, iters: i64) -> String {
                  (add-i64 left right))))\n\
          (defn main []\n\
            (let [v [{boxes}]]\n\
-             (Pure (dac v 0 {leaves} {iters}))))\n"
+             (primitives/pure (dac v 0 {leaves} {iters}))))\n"
     )
 }
 

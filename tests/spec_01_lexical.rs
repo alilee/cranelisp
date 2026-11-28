@@ -8,7 +8,7 @@ fn s124_r3_plus() {
     let out = Cranelisp::new()
         .file(
             "p.cl",
-            r#"(defn main [] (primitives/Pure (let [+* 5] (primitives/add-i64 +*1))))"#,
+            r#"(defn main [] (primitives/pure (let [+* 5] (primitives/add-i64 +*1))))"#,
         )
         .run("p.cl")
         .output();
@@ -33,7 +33,7 @@ fn s124_r3_minus() {
     let out = Cranelisp::new()
         .file(
             "p.cl",
-            r#"(defn main [] (primitives/Pure (let [-* 5] (primitives/add-i64 -*1))))"#,
+            r#"(defn main [] (primitives/pure (let [-* 5] (primitives/add-i64 -*1))))"#,
         )
         .run("p.cl")
         .output();
@@ -58,7 +58,7 @@ fn s124_r3_arrow() {
     let out = Cranelisp::new()
         .file(
             "p.cl",
-            r#"(defn main [] (primitives/Pure (let [-> 5] (primitives/add-i64 ->1))))"#,
+            r#"(defn main [] (primitives/pure (let [-> 5] (primitives/add-i64 ->1))))"#,
         )
         .run("p.cl")
         .output();
@@ -82,7 +82,7 @@ fn s124_r3_star_control() {
     let out = Cranelisp::new()
         .file(
             "p.cl",
-            r#"(defn main [] (primitives/Pure (let [** 5] (primitives/add-i64 **1))))"#,
+            r#"(defn main [] (primitives/pure (let [** 5] (primitives/add-i64 **1))))"#,
         )
         .run("p.cl")
         .output();
@@ -110,7 +110,7 @@ fn s124_r3_risk_controls() {
         "(let [-> (fn [x f] (f x))] (-> 0 (fn [x] x)))",
     ] {
         Cranelisp::new()
-            .file("p.cl", &format!("(defn main [] (primitives/Pure {body}))"))
+            .file("p.cl", &format!("(defn main [] (primitives/pure {body}))"))
             .run("p.cl")
             .output()
             .assert_exit(0);

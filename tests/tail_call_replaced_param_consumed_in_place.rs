@@ -29,12 +29,12 @@ use helpers::marginal::{Child, MarginalPair};
 /// length of `(vec-push p 0)`. Both halves compute 2.
 fn loop_with(step: &str) -> Child {
     Child::new(&format!(
-        "(import [primitives [Pure add-i64 eq-i64 vec-len vec-push]])\n\
+        "(import [primitives [pure add-i64 eq-i64 vec-len vec-push]])\n\
          (defn go [n p]\n\
            (if (eq-i64 n 0)\n\
                (vec-len (vec-push p 0))\n\
                (go (add-i64 n -1) {step})))\n\
-         (defn main [] (Pure (go 3 (vec-push [] 1))))\n"
+         (defn main [] (primitives/pure (go 3 (vec-push [] 1))))\n"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1")
 }

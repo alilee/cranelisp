@@ -58,7 +58,7 @@ fn rc_alloc_dealloc(stderr: &str) -> (i64, i64) {
 // freed the carried box. The base case returns `(vec-get a 0)` = 1.
 const CROSS_POSITION_UAF: &str = "(defn go [a v n]\n\
      (if (eq-i64 n 0)\n\
-         (Pure (vec-get a 0))\n\
+         (primitives/pure (vec-get a 0))\n\
          (go (vec-set v 0 n) [1 2 3] (add-i64 n -1))))\n\
      (defn main [] (go [9 9] [5 5] 3))\n";
 
@@ -89,13 +89,13 @@ fn cross_position_inplace_cow_oracle_toggle_off_green() {
 // `(vec-set v 0 n)` on param `v` in its OWN position. Under toggle-off the COW
 // always copies, so each iteration's old `v` is superseded by a fresh box and
 // its slot reference is owed a dec — which the exemption wrongly skipped. `go`
-// returns the Int and `main` wraps `Pure`, isolating the persistent-op RC path
+// returns the Int and `main` wraps `pure`, isolating the persistent-op RC path
 // from the entry-return teardown (the same shape the balanced conj loop uses).
 const INPLACE_COW_LOOP: &str = "(defn go [v n]\n\
      (if (eq-i64 n 0)\n\
          (vec-get v 0)\n\
          (go (vec-set v 0 n) (add-i64 n -1))))\n\
-     (defn main [] (Pure (go [5 5] 3)))\n";
+     (defn main [] (primitives/pure (go [5 5] 3)))\n";
 
 // 0695 pin — under `CRANELISP_NO_OWNERSHIP` the loop MUST balance exactly. Before
 // the fix the exemption skipped the superseded-param dec on the copy path: 1 leak

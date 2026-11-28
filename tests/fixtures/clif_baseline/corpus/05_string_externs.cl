@@ -7,4 +7,4 @@
 
 (defn main []
   (let [s (shout "abc")]
-    (Pure (add-i64 (str-len s) (str-len (substring s 0 2))))))
+    (primitives/pure (add-i64 (str-len s) (str-len (substring s 0 2))))))

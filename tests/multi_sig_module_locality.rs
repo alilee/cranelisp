@@ -53,9 +53,9 @@ fn assert_run_and_link_exit(user: &str, code: i32) {
 #[test]
 fn imported_multi_sig_base_direct_call_dispatches() {
     assert_run_and_link_exit(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (import [mlib [h]])\n\
-         (defn main [] (Pure (h 1)))\n",
+         (defn main [] (primitives/pure (h 1)))\n",
         2,
     );
 }
@@ -69,9 +69,9 @@ fn imported_multi_sig_base_direct_call_dispatches() {
 #[test]
 fn imported_multi_sig_base_dispatch_requiring_call() {
     assert_run_and_link_exit(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (import [mlib [h]])\n\
-         (defn main [] (Pure (h 3 4)))\n",
+         (defn main [] (primitives/pure (h 3 4)))\n",
         7,
     );
 }
@@ -107,9 +107,9 @@ fn local_multi_sig_base_direct_and_dispatch_green_twin() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(import [primitives [Pure add-i64]])\n\
+            "(import [primitives [pure add-i64]])\n\
              (defn h ([x] (add-i64 x 1)) ([a b] (add-i64 a b)))\n\
-             (defn main [] (Pure (add-i64 (h 1) (h 3 4))))\n",
+             (defn main [] (primitives/pure (add-i64 (h 1) (h 3 4))))\n",
         )
         .output();
     // (h 1) = 2, (h 3 4) = 7, sum = 9.

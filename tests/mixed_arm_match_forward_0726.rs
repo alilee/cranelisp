@@ -99,7 +99,7 @@ fn mixed_arm_program(selector: bool) -> String {
         "(deftype (O a) (Non [:a left]) (Jus [:a right]))\n\
          (defn norm [f] (if f (Jus [1 2 3]) (Non [4 5 6])))\n\
          (defn pick [f] (match (norm f) [(Jus g) (Non g) x x]))\n\
-         (defn main [] (Pure (match (pick {selector}) \
+         (defn main [] (primitives/pure (match (pick {selector}) \
          [(Jus g) (vec-len g) (Non g) (vec-len g)])))\n"
     )
 }

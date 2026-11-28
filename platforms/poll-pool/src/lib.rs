@@ -218,7 +218,7 @@ fn signal_poll_fault() {
 /// web/HTTP machinery: three launched-and-not-joined `poll-fault`s on distinct
 /// tokens each fault, the supervisor captures each via `take_runtime_error()` +
 /// emits `StrandFailed` + drops the strand, and the launching strand survives to
-/// reach `(Pure 42)`
+/// reach `(pure 42)`
 /// (`tests/concurrency_fanout.rs::detached_faulting_effect_does_not_abort_the_launch_loop`,
 /// FIXME 0468).
 ///

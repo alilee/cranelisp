@@ -7,9 +7,9 @@ use helpers::e2e::{PreludeVariant, run_through_all_modes};
 fn assert_immediate_winner(body: &str) {
     let program = format!(
         "(import [primitives [*]])\n\
-         (defn g [n] (bind (sleep 1000) (fn [u] (Pure 7))))\n\
+         (defn g [n] (bind (sleep 1000) (fn [u] (primitives/pure 7))))\n\
          (defn f [n] (if (eq-i64 n 0)\n\
-           (bind (sleep 1000) (fn [u] (Pure 7)))\n\
+           (bind (sleep 1000) (fn [u] (primitives/pure 7)))\n\
            {body}))\n\
          (defn main [] (f 1))\n"
     );
@@ -24,7 +24,7 @@ fn assert_immediate_winner(body: &str) {
 // built (exit 7 instead of 99).
 #[test]
 fn race_with_self_call_first_returns_the_immediate_winner() {
-    assert_immediate_winner("(race (f (add-i64 n -1)) (Pure 99))");
+    assert_immediate_winner("(race (f (add-i64 n -1)) (primitives/pure 99))");
 }
 
 // spec: spec/10-io.md §10.12.8 — either race operand can be the first to complete.
@@ -33,17 +33,17 @@ fn race_with_self_call_first_returns_the_immediate_winner() {
 // operand would miss this case.
 #[test]
 fn race_with_self_call_second_returns_the_immediate_winner() {
-    assert_immediate_winner("(race (Pure 99) (f (add-i64 n -1)))");
+    assert_immediate_winner("(race (primitives/pure 99) (f (add-i64 n -1)))");
 }
 
 // spec: spec/10-io.md §10.12.8 — a tail-position race returns its winning value.
 #[test]
 fn race_with_non_self_call_returns_the_immediate_winner() {
-    assert_immediate_winner("(race (g (add-i64 n -1)) (Pure 99))");
+    assert_immediate_winner("(race (g (add-i64 n -1)) (primitives/pure 99))");
 }
 
 // spec: spec/10-io.md §10.12.8 — a let-bound recursive effect participates in race.
 #[test]
 fn race_with_let_bound_self_call_returns_the_immediate_winner() {
-    assert_immediate_winner("(let [slow (f (add-i64 n -1))] (race slow (Pure 99)))");
+    assert_immediate_winner("(let [slow (f (add-i64 n -1))] (race slow (primitives/pure 99)))");
 }

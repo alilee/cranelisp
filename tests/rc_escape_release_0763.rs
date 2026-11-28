@@ -19,7 +19,7 @@
 //   D  plain lambda returned through TWO lets  301/301   (was 301/101)
 //   E  VecLit returned through one let         201/201   (was 201/101)
 //   F  lambda capturing another closure        301/301   (was 301/1)
-//   G  (Pure (peek (Gr [5 5]))) — 0753          3/3      (was ON 3/2, OFF 3/3)
+//   G  (primitives/pure (peek (Gr [5 5]))) — 0753          3/3      (was ON 3/2, OFF 3/3)
 //   G2 the String-field twin of G               3/3
 //
 // These are REGRESSION GUARDS on freshly-fixed behaviour, not defect repros: the
@@ -46,7 +46,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 /// per-call leak shows as ~N missing deallocs rather than an O(1) residue.
 const DRIVER: &str = "(defn go [n acc] (if (eq-i64 n 0) acc \
      (go (sub-i64 n 1) (add-i64 acc (one)))))\n\
-     (defn main [] (Pure (go 100 0)))\n";
+     (defn main [] (primitives/pure (go 100 0)))\n";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -229,7 +229,7 @@ fn lambda_capturing_a_closure_balances() {
            (let [g (fn [b] (add-i64 b (str-len s)))] (fn [c] (g c)))))\n\
          (defn one [] ((mk) 2))\n{DRIVER}"
     );
-    assert_balanced("F (lambda capturing a closure)", &src, 188, RUN_ONLY);
+    assert_balanced("F (lambda capturing a closure)", &src, 188, BOTH_MODES);
 }
 
 // =============================================================================
@@ -247,7 +247,7 @@ fn lambda_capturing_a_closure_balances() {
 fn adt_wrapped_vec_argument_balances_both_toggles() {
     let src = "(deftype (G2 a) (Gr [:a cells]))\n\
                (defn peek [g] 7)\n\
-               (defn main [] (Pure (peek (Gr [5 5]))))\n";
+               (defn main [] (primitives/pure (peek (Gr [5 5]))))\n";
     assert_balanced("G (0753 reduced shape)", src, 7, RUN_ONLY);
 }
 
@@ -260,6 +260,6 @@ fn adt_wrapped_vec_argument_balances_both_toggles() {
 fn adt_wrapped_string_argument_balances_both_toggles() {
     let src = "(deftype (G2 a) (Gr [:a s]))\n\
                (defn peek [g] (match g [(Gr s) (str-len s)]))\n\
-               (defn main [] (Pure (peek (Gr \"hi\"))))\n";
+               (defn main [] (primitives/pure (peek (Gr \"hi\"))))\n";
     assert_balanced("G2 (0753 String-field twin)", src, 2, RUN_ONLY);
 }

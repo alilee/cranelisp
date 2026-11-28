@@ -19,7 +19,7 @@ use helpers::marginal::{Child, MarginalPair};
 
 fn shadowed_alias_loop(inner_binder: &str) -> Child {
     Child::new(&format!(
-        "(import [primitives [Pure add-i64 eq-i64 vec-len vec-push]])\n\
+        "(import [primitives [pure add-i64 eq-i64 vec-len vec-push]])\n\
          (defn go [n p q]\n\
            (if (eq-i64 n 0)\n\
                (add-i64 (vec-len p) (vec-len q))\n\
@@ -27,7 +27,7 @@ fn shadowed_alias_loop(inner_binder: &str) -> Child {
                  (go (add-i64 n -1)\n\
                      (vec-push q 1)\n\
                      (let [t (match p [{inner_binder} {inner_binder}])] alias))])))\n\
-         (defn main [] (Pure (go 3 (vec-push [] 1) (vec-push [] 9))))\n"
+         (defn main [] (primitives/pure (go 3 (vec-push [] 1) (vec-push [] 9))))\n"
     ))
     .env("CRANELISP_RC_DEC_CHECK", "1")
 }

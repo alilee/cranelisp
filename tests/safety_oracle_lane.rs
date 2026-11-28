@@ -37,7 +37,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant, SafetyMatrix, assert_safety_matrix
 // returns its own param `v` via a fresh-container projection; the ownership walk
 // publishes a false `result=Fresh`, the return protect is elided, and the alias
 // is freed before the caller reads it. `(vec-get (f [1 2 3]) 1)` MUST yield 2
-// (`main` returns `(Pure 2)` → exit 2). Under ownership ON the elision corrupts
+// (`main` returns `(primitives/pure 2)` → exit 2). Under ownership ON the elision corrupts
 // (the `--link` binary deterministically aborts, 6/6; the differential diverges);
 // toggle-off is clean. The lane catches it → RED, flips when 0641's false-`Fresh`
 // class closes by mechanism (§3 frame, W5).
@@ -48,7 +48,7 @@ use helpers::e2e::{Cranelisp, PreludeVariant, SafetyMatrix, assert_safety_matrix
 fn safety_lane_b1_false_fresh_returned_alias_differential_red() {
     SafetyMatrix::new(
         "(defn f [v] (vec-get [v] 0))\n\
-         (defn main [] (Pure (vec-get (f [1 2 3]) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (f [1 2 3]) 1)))\n",
     )
     .prelude(PreludeVariant::PrimitivesOnly)
     .expect_exit(2)
@@ -63,7 +63,7 @@ fn safety_lane_b1_false_fresh_returned_alias_differential_red() {
 #[test]
 fn safety_lane_clean_vec_read_green() {
     assert_safety_matrix(
-        "(defn main [] (Pure (vec-get [10 20 30] 1)))\n",
+        "(defn main [] (primitives/pure (vec-get [10 20 30] 1)))\n",
         PreludeVariant::PrimitivesOnly,
         20,
     );
@@ -74,22 +74,22 @@ fn safety_lane_clean_vec_read_green() {
 // DETERMINISTICALLY ABORTS ("corrupted double-linked list"). The §3.7 `MayAliasOf`
 // COW-truth work (S111) did NOT cover this direct COW-set→project shape.
 const COW_SET_READ_PROG: &str = "(defn f [v] (vec-get (vec-set v 0 9) 0))\n\
-     (defn main [] (Pure (f [1 2 3])))\n";
+     (defn main [] (primitives/pure (f [1 2 3])))\n";
 
 // 0706 face (a) — nested COW projected out in one frame: inner (vec-set v 0 1) is the
 // unprotected inner may-alias link; f [9 9 9] → 1.
 const CHAINED_NESTED_COW_PROG: &str = "(defn f [v] (vec-get (vec-set (vec-set v 0 1) 1 2) 0))\n\
-     (defn main [] (Pure (f [9 9 9])))\n";
+     (defn main [] (primitives/pure (f [9 9 9])))\n";
 
 // 0706 face (b) — let-bound intermediate `w`, single set over the alias, projected
 // out; `w` is the unprotected inner may-alias link; f [9 9 9] → 1.
 const CHAINED_LET_COW_PROG: &str = "(defn f [v] (let [w (vec-set v 0 1)] (vec-get (vec-set w 1 2) 0)))\n\
-     (defn main [] (Pure (f [9 9 9])))\n";
+     (defn main [] (primitives/pure (f [9 9 9])))\n";
 
 // 0706 negative control — whole-value nested transfer, caller-projected; CLEAN both
 // modes. f [9 9 9] → [1 2 9]; (vec-get (f …) 0) → 1.
 const WHOLE_VALUE_NESTED_TRANSFER_PROG: &str = "(defn f [v] (vec-set (vec-set v 0 1) 1 2))\n\
-     (defn main [] (Pure (vec-get (f [9 9 9]) 0)))\n";
+     (defn main [] (primitives/pure (vec-get (f [9 9 9]) 0)))\n";
 
 // MS-P7 (immediate-link face FIXED S114 W7; chained faces carry — 0706 pins below)
 // — the SPEC-CORRECT CONTRACT for the FLAT/single-link shape, now a GREEN regression
@@ -286,21 +286,21 @@ fn safety_lane_whole_value_nested_transfer_clean_green() {
 
 // 0772 A1 — bare `If`, COW producer in the SECOND (else) arm. RED (`--link` 134).
 const IF_JOINED_COW_ARM_SECOND_PROG: &str = "(defn f [v b] (vec-get (if b v (vec-set v 0 1)) 0))\n\
-     (defn main [] (Pure (f [9 9 9] false)))\n";
+     (defn main [] (primitives/pure (f [9 9 9] false)))\n";
 
 // 0772 A2 — the ARM-SWAPPED TWIN of A1. Same runtime path, same contract; only
 // the static arm order differs. GREEN today — which is the finding, not comfort.
 const IF_JOINED_COW_ARM_FIRST_PROG: &str = "(defn f [v b] (vec-get (if b (vec-set v 0 1) v) 0))\n\
-     (defn main [] (Pure (f [9 9 9] true)))\n";
+     (defn main [] (primitives/pure (f [9 9 9] true)))\n";
 
 // 0772 B1/B2 — the `let`-mediated `If` join: the COW result is bound to `w`, and
 // the join is over {param `v`, binding `w`}. Aborts in BOTH arm orders, so this
 // face is not covered by the row-4 union at all (row 2 / row 4 composition
 // through the binding env).
 const LET_IF_JOINED_COW_ARM_SECOND_PROG: &str = "(defn f [v b] (let [w (vec-set v 0 1)] (vec-get (if b v w) 0)))\n\
-     (defn main [] (Pure (f [9 9 9] false)))\n";
+     (defn main [] (primitives/pure (f [9 9 9] false)))\n";
 const LET_IF_JOINED_COW_ARM_FIRST_PROG: &str = "(defn f [v b] (let [w (vec-set v 0 1)] (vec-get (if b w v) 0)))\n\
-     (defn main [] (Pure (f [9 9 9] true)))\n";
+     (defn main [] (primitives/pure (f [9 9 9] true)))\n";
 
 // 0772 A1 — `If`-joined COW container, COW producer in the SECOND arm.
 // `(vec-get (if b v (vec-set v 0 1)) 0)` on `[9 9 9]` with `b` = false MUST
@@ -496,9 +496,9 @@ fn safety_lane_let_bound_if_joined_cow_arm_first_returns_set_value_abort_free_re
 #[test]
 fn safety_lane_if_joined_whole_value_transfer_clean_green() {
     const ARM_SECOND: &str = "(defn f [v b] (if b v (vec-set v 0 1)))\n\
-         (defn main [] (Pure (vec-get (f [9 9 9] false) 0)))\n";
+         (defn main [] (primitives/pure (vec-get (f [9 9 9] false) 0)))\n";
     const ARM_FIRST: &str = "(defn f [v b] (if b (vec-set v 0 1) v))\n\
-         (defn main [] (Pure (vec-get (f [9 9 9] true) 0)))\n";
+         (defn main [] (primitives/pure (vec-get (f [9 9 9] true) 0)))\n";
     for prog in [ARM_SECOND, ARM_FIRST] {
         Cranelisp::new()
             .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -532,13 +532,13 @@ fn safety_lane_if_joined_whole_value_transfer_clean_green() {
 #[test]
 fn safety_lane_chained_cow_generalization_shapes_clean_green() {
     const THREE_LINK_NESTED: &str = "(defn f [v] (vec-get (vec-set (vec-set (vec-set v 0 1) 1 2) 2 3) 0))\n\
-         (defn main [] (Pure (f [9 9 9])))\n";
+         (defn main [] (primitives/pure (f [9 9 9])))\n";
     const ACROSS_FN_BOUNDARY: &str = "(defn g [v] (vec-set v 0 1))\n\
          (defn f [v] (vec-get (vec-set (g v) 1 2) 0))\n\
-         (defn main [] (Pure (f [9 9 9])))\n";
+         (defn main [] (primitives/pure (f [9 9 9])))\n";
     const NESTED_LET_THREE_LINK: &str = "(defn f [v] (let [w (vec-set v 0 1)] \
            (let [x (vec-set w 1 2)] (vec-get (vec-set x 2 3) 0))))\n\
-         (defn main [] (Pure (f [9 9 9])))\n";
+         (defn main [] (primitives/pure (f [9 9 9])))\n";
     for prog in [THREE_LINK_NESTED, ACROSS_FN_BOUNDARY, NESTED_LET_THREE_LINK] {
         Cranelisp::new()
             .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -562,7 +562,7 @@ fn safety_lane_chained_cow_generalization_shapes_clean_green() {
 // stopped tripping and this cell INVERTED to RED — the exact coupling the §4.1
 // ruling names. Per memory-safety-coverage.md §4.1 prong 2 it is re-planted on a
 // SYNTHETIC fault constructible regardless of compiler health: a CLEAN program
-// (`(Pure 5)` → exit 5) run through the matrix with a deliberately-FALSIFIED clean
+// (`(primitives/pure 5)` → exit 5) run through the matrix with a deliberately-FALSIFIED clean
 // expectation (`expect_exit(2)`). That is the shape a value-corrupting elision
 // presents to the lane — ownership-ON's observed value diverging from the asserted
 // clean result — and it trips the SAME Face-1 value-equivalence guard
@@ -580,7 +580,7 @@ fn safety_lane_detects_falsified_clean_expectation_capability_green() {
     let detected = std::panic::catch_unwind(|| {
         // A clean program that exits 5, asserted (falsely) as clean-exit 2. The
         // lane's Face-1 value-equivalence guard MUST catch the divergence and panic.
-        SafetyMatrix::new("(defn main [] (Pure 5))\n")
+        SafetyMatrix::new("(defn main [] (primitives/pure 5))\n")
             .prelude(PreludeVariant::PrimitivesOnly)
             .expect_exit(2)
             .without_rc_balance()
@@ -616,13 +616,13 @@ fn safety_lane_detects_falsified_clean_expectation_capability_green() {
 fn safety_lane_module_axis_same_name_adt_corruption_face() {
     let ma = "(deftype Thing (MkA [:String s]))\n";
     let mb = "(deftype Thing (MkB [:Int n]))\n";
-    let main = "(import [primitives [Pure]])\n\
+    let main = "(import [primitives [pure]])\n\
          (import [ma [MkA]])\n\
          (import [mb [MkB]])\n\
          (defn main []\n\
            (let [va [(MkA \"hi\")]\n\
                  vb [(MkB 7)]]\n\
-             (Pure (add-i64 (vec-len va) (vec-len vb)))))\n";
+             (primitives/pure (add-i64 (vec-len va) (vec-len vb)))))\n";
 
     // --run: correct value, no abort.
     let run = Cranelisp::new()

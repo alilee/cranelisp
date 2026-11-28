@@ -11,4 +11,4 @@
 (defn make-adder [:Int n] (fn [m] (add-i64 n m)))
 
 (defn main []
-  (Pure (add-i64 (call1 incr 4) ((make-adder 10) 7))))
+  (primitives/pure (add-i64 (call1 incr 4) ((make-adder 10) 7))))

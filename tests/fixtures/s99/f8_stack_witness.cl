@@ -77,7 +77,7 @@
 
 ;;S105-F8-MAIN-BOTH
 (defn main []
-  (Pure (rmod (add-i64 (drive-serial (leaves) 0) (drive-parallel 0 (leaves))) 1000)))
+  (primitives/pure (rmod (add-i64 (drive-serial (leaves) 0) (drive-parallel 0 (leaves))) 1000)))
 ;;S105-F8-MAIN-BOTH-END
-;;S105-F8-MAIN-SERIAL   (defn main [] (Pure (rmod (drive-serial (leaves) 0) 1000)))
-;;S105-F8-MAIN-PARALLEL (defn main [] (Pure (rmod (drive-parallel 0 (leaves)) 1000)))
+;;S105-F8-MAIN-SERIAL   (defn main [] (primitives/pure (rmod (drive-serial (leaves) 0) 1000)))
+;;S105-F8-MAIN-PARALLEL (defn main [] (primitives/pure (rmod (drive-parallel 0 (leaves)) 1000)))

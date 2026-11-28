@@ -402,9 +402,9 @@ fn search_neg_batch_mode_inert_no_index_no_meta_writes() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [mathx [gcd2]])\n\
-             (defn main [] (Pure (gcd2 1 2)))",
+             (defn main [] (primitives/pure (gcd2 1 2)))",
         )
         .lib_dir("lib")
         .run("main")
@@ -561,9 +561,9 @@ fn flush_neg_does_not_block_on_index_work() {
         )
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [mathx [gcd2]])\n\
-             (defn main [] (Pure (gcd2 4 5)))",
+             (defn main [] (primitives/pure (gcd2 4 5)))",
         )
         .lib_dir("lib")
         .link_then_run("main")
@@ -1447,6 +1447,7 @@ fn s124_child_index_turn(out: &helpers::e2e::CrOutput, turn: usize) -> &str {
 
 // spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 1
 // defect: class=wrong-scope-lookup locus=src/session_v4/index_worker.rs::enumerate_cl_modules_excluding found=S124 owner=/dev (ACT-1096)
+// The historical locus was deleted; read pipeline::module_file_target today.
 #[test]
 fn s124_child_index_not_offering_project_file() {
     let out = s124_child_index_session(true).assert_ok();
@@ -1460,6 +1461,7 @@ fn s124_child_index_not_offering_project_file() {
 
 // spec: spec/08-modules.md §8.11.2 — T-MOD-CHILD-INDEX clause 2
 // defect: class=wrong-scope-lookup locus=src/session_v4/index_worker.rs::enumerate_cl_modules_excluding found=S124 owner=/dev (ACT-1096)
+// The historical locus was deleted; read pipeline::module_file_target today.
 #[test]
 fn s124_child_index_offering_library_child() {
     let out = s124_child_index_session(true).assert_ok();
@@ -1570,4 +1572,68 @@ fn s124_child_index_library_only_control() {
             out.stdout
         );
     }
+}
+
+// spec: repl/spec/17a-agent-language-awareness.md §17.19
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs found=S125 owner=/dev
+#[test]
+fn s125_1092_unloaded_macro_import_keeps_ordinary_definitions() {
+    let out = Cranelisp::new()
+        .file("p.cl", "(defn pf [:primitives/Int n] n)")
+        .file("mac.cl", "(defmacro identity [x] x)")
+        .file(
+            "m.cl",
+            "(import [mac [identity]])
+(defn indexed-zq [:primitives/Int n] n)
+",
+        )
+        .staged_output(&[
+            helpers::e2e::Stage::LineUntilOutput("/search pf", "(import [p [pf]])"),
+            helpers::e2e::Stage::Line("/search indexed-zq"),
+            helpers::e2e::Stage::Line("/search indexed-zq"),
+        ])
+        .assert_ok();
+    assert!(
+        out.stdout.contains("(import [m [indexed-zq]])"),
+        "ordinary definitions must be indexed despite unloaded macro dependency: {}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+fn s125_empty_import_search(target: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("existing.cl", "(defn value [] 7)")
+        .file(
+            "m.cl",
+            &format!("(import [{target} []])\n(defn null-marker [x] x)\n"),
+        )
+        .staged_output(&[Stage::Line("/search marker"), Stage::Line("/search marker")])
+        .assert_ok()
+}
+
+// spec: spec/08-modules.md §8.3.7 — indexing must neither resolve nor load an empty import.
+// defect: class=enumeration-miss locus=src/session_v4/index_worker.rs found=S125 owner=/dev (W8 F2)
+#[test]
+fn s125_empty_import_search_missing_module_keeps_definition() {
+    let out = s125_empty_import_search("does-not-exist");
+    let listed = out.stdout.contains("(import [m [null-marker]])");
+    let names_missing_module =
+        out.stdout.contains("does-not-exist") || out.stderr.contains("does-not-exist");
+    assert!(
+        listed && !names_missing_module,
+        "empty import must leave null-marker searchable and name no missing module; \
+         listed={listed}, names_missing_module={names_missing_module}\n{}{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.3.7 — existing-target control for empty-import indexing.
+#[test]
+fn s125_empty_import_search_existing_module_control() {
+    s125_empty_import_search("existing")
+        .assert_stdout_contains("(import [m [null-marker]])")
+        .assert_stderr_empty();
 }

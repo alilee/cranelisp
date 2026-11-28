@@ -46,14 +46,14 @@ fn best_elapsed_ms(prog: &str) -> u128 {
 }
 
 // spec: spec/10-io.md §10.12.8 / reactor.md §2.18 — `(sleep d)` parks for ≈d ms then
-// resumes with `0`. `main` is `(bind (sleep d) (fn [_] (Pure 7)))`, so the program
+// resumes with `0`. `main` is `(bind (sleep d) (fn [_] (primitives/pure 7)))`, so the program
 // exits 7 (proving the bind continuation ran AFTER the timer resumed) and takes at
 // least ≈d ms wall-clock (proving the leaf genuinely parked on the reactor timer).
 #[test]
 fn sleep_parks_for_duration_then_resumes_and_continues() {
     let prog = format!(
-        "(import [primitives [bind sleep Pure]])\n\
-         (defn main [] (bind (sleep {SLEEP_MS}) (fn [_] (Pure 7))))\n",
+        "(import [primitives [bind sleep pure]])\n\
+         (defn main [] (bind (sleep {SLEEP_MS}) (fn [_] (primitives/pure 7))))\n",
     );
     // The continuation ran AFTER the timer resumed ⇒ exit 7.
     run_prog(&prog).assert_exit(7);
@@ -80,8 +80,8 @@ fn sleep_parks_for_duration_then_resumes_and_continues() {
 #[test]
 fn sleep_links_and_runs_through_link_mode() {
     let prog = format!(
-        "(import [primitives [bind sleep Pure]])\n\
-         (defn main [] (bind (sleep {SLEEP_MS}) (fn [_] (Pure 7))))\n",
+        "(import [primitives [bind sleep pure]])\n\
+         (defn main [] (bind (sleep {SLEEP_MS}) (fn [_] (primitives/pure 7))))\n",
     );
     Cranelisp::new()
         .link_then_run("user.cl")
@@ -96,8 +96,8 @@ fn sleep_links_and_runs_through_link_mode() {
 // process/startup overhead.
 #[test]
 fn no_sleep_returns_promptly_neg() {
-    let prog = "(import [primitives [Pure]])\n\
-                (defn main [] (Pure 7))\n";
+    let prog = "(import [primitives [pure]])\n\
+                (defn main [] (primitives/pure 7))\n";
     run_prog(prog).assert_exit(7);
     let ms = best_elapsed_ms(prog);
     assert!(

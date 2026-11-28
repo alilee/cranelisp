@@ -44,7 +44,7 @@ fn link_hello_produces_executable_with_main_exit_code() {
         .link_then_run("hello.cl")
         .file(
             "hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 42))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 42))",
         )
         .output()
         .assert_exit(42);
@@ -60,14 +60,14 @@ fn link_main_returning_zero_exits_zero() {
         .link_then_run("zero.cl")
         .file(
             "zero.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 0))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 0))",
         )
         .output()
         .assert_exit(0);
 }
 
 // spec: design/backend/executable-generation.md §7 — main :: () -> IO _.
-// spec: spec/10-io.md §10.6.1 — an IO main returning `Pure 0`, with `Pure`
+// spec: spec/10-io.md §10.6.1 — an IO main returning `pure 0`, with `pure`
 //   supplied by a prelude rather than an explicit import, links and exits 0.
 //
 // (carry: legacy/sprint23.rs::link_main_returns_io)
@@ -75,7 +75,7 @@ fn link_main_returning_zero_exits_zero() {
 fn link_main_returning_io_pure_zero_with_prelude_exits_zero() {
     Cranelisp::new()
         .link_then_run("io_main.cl")
-        .file("io_main.cl", "(defn main [] (Pure 0))")
+        .file("io_main.cl", "(defn main [] (primitives/pure 0))")
         .with_prelude(e2e::PreludeVariant::TestStandard)
         .output()
         .assert_exit(0);
@@ -97,7 +97,7 @@ fn link_default_output_is_entry_stem_no_extension() {
         .link("examples/hello.cl")
         .file(
             "examples/hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 0))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 0))",
         )
         .output()
         .assert_ok();
@@ -121,7 +121,7 @@ fn link_output_long_form_writes_named_path_not_default() {
         .link("hello.cl")
         .file(
             "hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 23))",
         )
         .file("out/.keep", "")
         .cli_flag("--output")
@@ -159,7 +159,7 @@ fn link_then_run_executes_artifact_beside_nested_source() {
     let out = Cranelisp::new()
         .file(
             "sub/hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 23))",
         )
         .link_then_run("sub/hello.cl")
         .output();
@@ -192,7 +192,7 @@ fn link_then_run_without_expected_artifact_is_a_harness_error() {
     let result = Cranelisp::new()
         .file(
             "hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 23))",
         )
         .file("out/.keep", "")
         .link_then_run("hello.cl")
@@ -223,7 +223,7 @@ fn run_with_output_path_is_rejected_with_usage_and_no_artifact() {
         .run("hello.cl")
         .file(
             "hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 23))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 23))",
         )
         .cli_flag("-o")
         .cli_flag("x")
@@ -329,7 +329,7 @@ fn link_error_when_bundle_library_missing_names_it() {
         .link("hello.cl")
         .file(
             "hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 0))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 0))",
         )
         .env("CRANELISP_BUNDLE_PATH", "")
         .output();
@@ -377,7 +377,7 @@ fn object_pass_project(obstruct_lib: bool) -> Cranelisp {
         .file("lib.cl", "(defn f [] 41)\n")
         .file(
             "app.cl",
-            "(import [primitives [Pure]])\n(import [lib [f]])\n(defn main [] (Pure (f)))\n",
+            "(import [primitives [pure]])\n(import [lib [f]])\n(defn main [] (primitives/pure (f)))\n",
         );
     if obstruct_lib {
         project.file(".cranelisp-cache/lib.o/keep", "object-path obstruction\n")
@@ -458,7 +458,7 @@ fn link_second_invocation_reuses_cached_objects_and_re_emits_exe() {
         .link_then_run("hello.cl")
         .file(
             "hello.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 7))",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 7))",
         )
         .output()
         .assert_exit(7);
@@ -496,8 +496,8 @@ fn link_extern_primitive_str_ops_exits_with_computed_length() {
         .with_prelude(PreludeVariant::None)
         .file(
             "sc.cl",
-            "(import [primitives [str-concat str-len Pure]])\n\
-             (defn main [] (Pure (str-len (str-concat \"ab\" \"cd\"))))\n",
+            "(import [primitives [str-concat str-len pure]])\n\
+             (defn main [] (primitives/pure (str-len (str-concat \"ab\" \"cd\"))))\n",
         )
         .link_then_run("sc.cl")
         .output()
@@ -517,8 +517,8 @@ fn link_extern_primitive_str_len_of_literal_exits_with_length() {
         .with_prelude(PreludeVariant::None)
         .file(
             "sl.cl",
-            "(import [primitives [str-len Pure]])\n\
-             (defn main [] (Pure (str-len \"hello\")))\n",
+            "(import [primitives [str-len pure]])\n\
+             (defn main [] (primitives/pure (str-len \"hello\")))\n",
         )
         .link_then_run("sl.cl")
         .output()
@@ -544,7 +544,7 @@ fn link_extern_primitive_str_len_of_literal_exits_with_length() {
 // (FIXME 0286 part (a) — the cheap traced extern-primitive --link variant.)
 #[test]
 fn link_traced_extern_primitives_appear_as_children_exit_42() {
-    let src = "(import [primitives [Trace TraceCall str-concat str-len Pure]])\n\
+    let src = "(import [primitives [Trace TraceCall str-concat str-len pure]])\n\
          (import [macros [SCons SNil]])\n\
          (defn greet [s] (str-len (str-concat \"hi \" s)))\n\
          (defn slen [acc xs]\n\
@@ -552,7 +552,7 @@ fn link_traced_extern_primitives_appear_as_children_exit_42() {
          ; c = root's children = [user/greet]; descend into greet, count ITS\n\
          ; children (str-concat + str-len, both extern primitives) → 2.\n\
          (defn main []\n\
-           (Pure (match (trace (greet \"bob\"))\n\
+           (primitives/pure (match (trace (greet \"bob\"))\n\
              [(TraceCall n p r c ns)\n\
                (match c [SNil 0\n\
                          (SCons h t)\n\
@@ -590,7 +590,7 @@ fn link_multi_module_project_with_cross_module_call_exits_with_main_value() {
         .file("prelude.cl", "(export [primitives [*]])\n")
         .file(
             "main.cl",
-            "(import [helper [add-one]])\n(defn main [] (Pure (add-one 41)))",
+            "(import [helper [add-one]])\n(defn main [] (primitives/pure (add-one 41)))",
         )
         .file("helper.cl", "(defn add-one [:Int x] (add-i64 x 1))")
         .output()
@@ -618,15 +618,15 @@ fn link_module_referencing_discover_tests_extern_fails_with_friendly_message() {
         .link_then_run("entry.cl")
         .file(
             "runner.cl",
-            "(import [primitives [discover-tests Pure String]])\n\
+            "(import [primitives [discover-tests pure String]])\n\
              (defn run-all [] (discover-tests []))\n\
              (defn label [:String s] :String s)",
         )
         .file(
             "entry.cl",
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (import [runner [label]])\n\
-             (defn main [] (Pure (label \"hi\")))",
+             (defn main [] (primitives/pure (label \"hi\")))",
         )
         .output();
 
@@ -690,9 +690,9 @@ fn link_after_run_reuses_cache_and_resolves_cross_module_got() {
         )
         .file(
             "user.cl",
-            "(import [primitives [Pure Int]])\n\
+            "(import [primitives [pure Int]])\n\
              (import [helper [add3]])\n\
-             (defn main [] (Pure (add3 39)))",
+             (defn main [] (primitives/pure (add3 39)))",
         )
         .run("user.cl")
         .output()
@@ -800,11 +800,11 @@ fn link_multi_module_platform_emits_single_layout_hash_gate_symbol() {
     // 8079)` forces a real cross-module call so the helper module is genuinely
     // part of the link set.
     let entry = "(platform web)\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (import [platform.web [bind-listener]])\n\
          (import [web [Listener Request Response]])\n\
          (import [helper [add-one]])\n\
-         (defn main [] (bind (bind-listener (add-one 8079) 64) (fn [_] (Pure 0))))\n";
+         (defn main [] (bind (bind-listener (add-one 8079) 64) (fn [_] (primitives/pure 0))))\n";
 
     let out = Cranelisp::new()
         .use_workspace_platforms()
@@ -894,11 +894,11 @@ fn link_two_distinct_platforms_namespaced_manifest_coexist() {
     // The entry: declare BOTH platforms, import ONE effect from EACH so both
     // manifests are force-loaded, and a `main` that sequences them. `print` from
     // stdio (`(Fn [String] (IO Int))`) and `area` from shapes
-    // (`(Fn [shapes/Rectangle] (IO Int))`). `bind`/`Pure` thread the two IOs;
+    // (`(Fn [shapes/Rectangle] (IO Int))`). `bind`/`pure` thread the two IOs;
     // `main : (Fn [] (IO _))` is spec-conformant. Exit = inner Int = 12.
     let entry = "(platform stdio)\n\
          (platform shapes)\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (import [platform.stdio [print]])\n\
          (import [platform.shapes [area]])\n\
          (import [shapes [Rectangle]])\n\
@@ -943,13 +943,13 @@ fn link_two_distinct_platforms_namespaced_manifest_coexist() {
 //   and the per-iteration corruption reached the heap-consistency abort.
 //
 // ISOLATION (verified /qa, 2026-06-18; the S86 DEF-6 bisection):
-//   - web platform ALONE, trivial non-serving main (`(bind (listen p) (Pure 0))`)
+//   - web platform ALONE, trivial non-serving main (`(bind (listen p) (primitives/pure 0))`)
 //     on a FREE port: links + runs CLEAN (exit 0). So web-platform static init /
 //     module init is NOT the trigger.
 //   - TWO distinct platforms (web + stdio) + trivial main: links + runs CLEAN.
 //     So this is NOT the DEF-5 two-platform shape, and NOT a multi-platform
 //     startup-stub bug.
-//   - All 5 exemplar modules linked in + a trivial `(defn main [] (Pure 0))`:
+//   - All 5 exemplar modules linked in + a trivial `(defn main [] (primitives/pure 0))`:
 //     runs CLEAN. So multi-module presence is NOT the trigger.
 //   - A bounded loop calling a platform effect that marshals a heap ADT
 //     N times: CLEAN at N≤30, ABORTS (`double free or corruption (!prev)`,
@@ -980,7 +980,7 @@ fn link_two_distinct_platforms_namespaced_manifest_coexist() {
 //
 // FAILING-NOT-IGNORED (RED today, flips GREEN when /dev fixes the platform-ABI
 // ADT-marshaling corruption): the CORRECT behaviour is that the bounded loop
-// runs to completion and `main` returns `(Pure 0)` → the binary exits 0. The
+// runs to completion and `main` returns `(primitives/pure 0)` → the binary exits 0. The
 // oracle asserts that correct outcome (exit 0), so it is RED today (SIGABRT /
 // double-free, exit 134) and flips GREEN the moment the corruption is fixed. The
 // loop count (200) is chosen well above the observed ~40 threshold so the repro
@@ -1005,18 +1005,18 @@ fn link_repeated_platform_adt_marshal_does_not_corrupt_heap() {
 
     // A bounded serve-loop analogue: construct a Rectangle and pass it across the
     // host↔DLL boundary to `area` (`(Fn [shapes/Rectangle] (IO Int))`) 200 times,
-    // then return `(Pure 0)`. No prelude — `bind`/`Pure`/`sub-i64`/`eq-i64` are
+    // then return `(primitives/pure 0)`. No prelude — `bind`/`pure`/`sub-i64`/`eq-i64` are
     // primitives. `area` CONSUMES the heap ADT each iteration; the per-iteration
     // platform-ABI marshaling corruption accumulates to the heap-abort by N≥40,
     // so 200 reproduces deterministically. Post-fix, the loop completes and the
     // binary exits 0.
     let entry = "(platform shapes)\n\
-         (import [primitives [bind Pure sub-i64 eq-i64]])\n\
+         (import [primitives [bind pure sub-i64 eq-i64]])\n\
          (import [platform.shapes [area]])\n\
          (import [shapes [Rectangle]])\n\
          (defn srv-loop [:primitives/Int n] :(primitives/IO primitives/Int)\n\
            (if (eq-i64 n 0)\n\
-             (Pure 0)\n\
+             (primitives/pure 0)\n\
              (bind (area (Rectangle 3 4))\n\
                (fn [_] (srv-loop (sub-i64 n 1))))))\n\
          (defn main [] (srv-loop 200))\n";
@@ -1061,7 +1061,7 @@ fn link_output_artifact_named_after_entry_stem_beside_source() {
         .with_prelude(PreludeVariant::None)
         .file(
             "proj/user.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 5))\n",
         )
         .link("proj")
         .output();
@@ -1085,7 +1085,7 @@ fn link_output_collision_with_directory_diagnoses_not_raw_ld_error() {
         .with_prelude(PreludeVariant::None)
         .file(
             "proj/user.cl",
-            "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n",
+            "(import [primitives [pure]])\n(defn main [] (primitives/pure 5))\n",
         )
         // Make the resolved output path `proj/user` an existing DIRECTORY.
         .file("proj/user/keep.txt", "placeholder\n")

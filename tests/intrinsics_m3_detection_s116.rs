@@ -21,9 +21,9 @@
 // PROGRAM-INDEPENDENT prelude-load residue, not this child's result value:
 //
 //   child program                                CRANELISP_LIB   delta
-//   (Pure (sub-i64 (str-len s) 11))  [this file] stdlib/         1143
-//   (Pure (sub-i64 3 3))             [trivial]   stdlib/         1143
-//   (Pure (sub-i64 3 3))             [trivial]   empty prelude      0  exit 0
+//   (primitives/pure (sub-i64 (str-len s) 11))  [this file] stdlib/         1143
+//   (primitives/pure (sub-i64 3 3))             [trivial]   stdlib/         1143
+//   (primitives/pure (sub-i64 3 3))             [trivial]   empty prelude      0  exit 0
 //   ms_p8_conj_leak's INT_LOOP / CONJ_LOOP       stdlib/         1143
 //
 // The identical 1143 for a trivial `Int`-returning program and for an empty
@@ -58,8 +58,8 @@
 // is attributed to this child" — and it is a statement about the M3 wiring
 // rather than about the ambient prelude. Measured at this HEAD:
 //
-//   control  (Pure 0)                    ALLOC_COUNT=1198 DEALLOC_COUNT=55  residual 1143
-//   subject  (Pure (sub-i64 (str-len s) 11))
+//   control  (primitives/pure 0)                    ALLOC_COUNT=1198 DEALLOC_COUNT=55  residual 1143
+//   subject  (primitives/pure (sub-i64 (str-len s) 11))
 //                                        ALLOC_COUNT=1199 DEALLOC_COUNT=56  residual 1143
 //   MARGINAL                             allocs +1  deallocs +1  residual 0
 //
@@ -76,13 +76,13 @@ use std::process::{Command, Output};
 
 /// The production compiler child both faces of the proof use. Single-sourced so
 /// the plant cell and the clean control can never drift apart.
-const M3_CHILD_PROGRAM: &str = "(import [primitives [Pure str-len sub-i64]])\n\
-     (defn main [] (let [s \"owned-local\"] (Pure (sub-i64 (str-len s) 11))))\n";
+const M3_CHILD_PROGRAM: &str = "(import [primitives [pure str-len sub-i64]])\n\
+     (defn main [] (let [s \"owned-local\"] (primitives/pure (sub-i64 (str-len s) 11))))\n";
 
 /// The no-workload control for the marginal clean-control cell: same prelude,
 /// same env, a program that computes nothing.
-const M3_AMBIENT_ONLY: &str = "(import [primitives [Pure]])\n\
-     (defn main [] (Pure 0))\n";
+const M3_AMBIENT_ONLY: &str = "(import [primitives [pure]])\n\
+     (defn main [] (primitives/pure 0))\n";
 
 fn child(fault: Option<&str>) -> Output {
     let td = tempfile::tempdir().expect("tempdir");

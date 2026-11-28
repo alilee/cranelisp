@@ -26,6 +26,7 @@
 //! documented in `examples/AGENTS.md` (training guidance), not in any spec/*.md file. The convention is a project-level
 //! testing pattern, not a language-level normative requirement.
 
+use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -82,26 +83,54 @@ fn ensure_platform_cdylibs_built() {
     BUILT.call_once(|| {});
 }
 
+const ECHO_INPUT: &str = "Ada\nLove\nlace\nhello\n";
+
+fn example_input(path: &Path) -> Option<&'static str> {
+    (path.file_name().and_then(|name| name.to_str()) == Some("24-io-echo.cl")).then_some(ECHO_INPUT)
+}
+
+fn execute_with_stdin(command: &mut Command, input: Option<&str>) -> Output {
+    let mut child = command
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn example");
+    if let Some(input) = input {
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .expect("write example stdin");
+    }
+    child.wait_with_output().expect("failed to run example")
+}
+
 fn run_example(path: &Path) -> Output {
+    run_example_with_stdin(path, example_input(path))
+}
+
+fn run_example_with_stdin(path: &Path, input: Option<&str>) -> Output {
     let binary = binary_path();
     assert!(
         binary.exists(),
         "cranelisp binary not found at {binary:?} — run `cargo build` first"
     );
     ensure_platform_cdylibs_built();
-    Command::new(&binary)
-        .args(["--no-cache", "--run", path.to_str().unwrap()])
-        // Put target/debug on the platform search path so the IO examples
-        // resolve `libcranelisp_{stdio,test-capture}.{ext}` directly.
-        .env("CRANELISP_PLATFORM_PATH", platform_search_path())
-        .current_dir(examples_dir())
-        // Null stdin so the stdin-reading example `24-io-echo` is
-        // deterministic (it lands on exit 20 with closed stdin).
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to run cranelisp")
+    execute_with_stdin(
+        Command::new(&binary)
+            .args(["--no-cache", "--run", path.to_str().unwrap()])
+            // Put target/debug on the platform search path so the IO examples
+            // resolve `libcranelisp_{stdio,test-capture}.{ext}` directly.
+            .env("CRANELISP_PLATFORM_PATH", platform_search_path())
+            .current_dir(examples_dir()),
+        input,
+    )
 }
 
 /// Expected exit-code table — one entry per top-level `examples/*.cl`.
@@ -141,12 +170,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // stdout is pinned by `hello_io_example_prints_its_lines_in_order`.
         ("21-hello-io.cl", &[250]),
         ("22-io-hello.cl", &[99]),
-        ("23-io-sequence.cl", &[178]),
-        // 24: read-line on closed (null) stdin lands on exit 20. With the
-        // platform search path wired (`CRANELISP_PLATFORM_PATH=target/debug`)
-        // + stdin nulled in `run_example`, the run is a clean 20. The old
-        // 133/141 (SIGTRAP/SIGPIPE) were artifacts of the symlink-era harness.
-        ("24-io-echo.cl", &[20]),
+        // 24: scripted stdin passes greeting, combination, nonempty response
+        // and exhaustion checks: 1 + 1 + 1 + 1 = 4. Closed stdin passes only
+        // exhaustion (exit 1); both transcripts are pinned below.
+        ("24-io-echo.cl", &[4]),
         // 25: curry. S115 6b added two sub-tests — currying a local closure
         // VALUE (`((g 1) 2)` = 13) and a trait-operator partial (`(+ 5)` then
         // applied = 8) — and the example now consumes `examples/lib/operators.cl`
@@ -225,7 +252,7 @@ fn collect_example_files() -> Vec<PathBuf> {
 //
 // (carry: legacy/examples.rs::example_NN_* x15 + legacy/examples_run.rs::every_example_file_runs_under_examples_prelude)
 // defect: class=wrong-reject locus=crates/cranelisp-backend/src/drop_glue.rs::ctor_shapes found=S118 owner=/dev
-//   At S118 close, `21-hello-io.cl` and `23-io-sequence.cl` were rejected
+//   At S118 close, `21-hello-io.cl` was rejected
 //   because concrete IO releases disagreed on Bind's declared parameter
 //   identity. Historical census: tests/plan/s118-test-plan.md §11.1;
 //   minimal repro: spec_10_io::pure_pattern_accepted.
@@ -285,9 +312,17 @@ const MODULES_EXIT: i32 = 47;
 const METHOD_IMPORT_EXIT: i32 = 5;
 
 /// Link the entry `path` from `examples/` into `artifact`, then execute it with
-/// the cwd, platform path and null stdin `run_example` uses. A link that fails
+/// the cwd, platform path and scripted stdin `run_example` uses. A link that fails
 /// or produces no executable is returned as its diagnostic.
 fn link_and_execute_example(path: &Path, artifact: &Path) -> Result<Output, String> {
+    link_and_execute_example_with_stdin(path, artifact, example_input(path))
+}
+
+fn link_and_execute_example_with_stdin(
+    path: &Path,
+    artifact: &Path,
+    input: Option<&str>,
+) -> Result<Output, String> {
     fn copy_sources(src: &Path, dst: &Path) {
         std::fs::create_dir_all(dst).expect("create example scratch directory");
         for entry in std::fs::read_dir(src).expect("read example sources") {
@@ -333,14 +368,12 @@ fn link_and_execute_example(path: &Path, artifact: &Path) -> Result<Output, Stri
             stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("")
         ));
     }
-    Ok(Command::new(artifact)
-        .env("CRANELISP_PLATFORM_PATH", platform_search_path())
-        .current_dir(scratch.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to execute the linked example"))
+    Ok(execute_with_stdin(
+        Command::new(artifact)
+            .env("CRANELISP_PLATFORM_PATH", platform_search_path())
+            .current_dir(scratch.path()),
+        input,
+    ))
 }
 
 // spec: examples/plan-examples.md §"Learning Sequence Design" — the
@@ -480,10 +513,10 @@ fn multi_file_nested_directory_example_runs_with_documented_exit() {
     std::fs::create_dir_all(root.join("main")).expect("mkdir main/");
     std::fs::write(
         root.join("main.cl"),
-        "(import [primitives [Pure add-i64]])\n\
+        "(import [primitives [pure add-i64]])\n\
          (mod math)\n\
          (mod util)\n\
-         (defn main [] (Pure (add-i64 (math/square 5) (util/double 4))))\n",
+         (defn main [] (primitives/pure (add-i64 (math/square 5) (util/double 4))))\n",
     )
     .expect("write main.cl");
     std::fs::write(
@@ -589,12 +622,52 @@ fn hello_io_example_prints_its_lines_in_order() {
                 "Cranelisp",
                 "again",
                 "again",
+                "3",
+                "2",
+                "1",
+                "go!",
             ]
             .as_slice()
         ),
-        "21-hello-io MUST exit 250 and print exactly its seven lines in order\nstderr: {}",
+        "21-hello-io MUST exit 250 and print exactly its eleven lines in order\nstderr: {}",
         String::from_utf8_lossy(&out.stderr),
     );
+}
+
+// spec: examples/plan-examples.md §"Learning Sequence Design" — example 24's
+//       scripted and closed-stdin transcripts, including input exhaustion.
+#[test]
+fn echo_example_reads_scripted_input_and_handles_closed_stdin() {
+    // read-only on project_root — runs/copies the checked-in example project.
+    let path = examples_dir().join("24-io-echo.cl");
+    let artifacts = tempfile::tempdir().expect("echo example artifacts");
+    for (label, input, exit, stdout) in [
+        (
+            "scripted",
+            Some(ECHO_INPUT),
+            4,
+            "hello, Ada\nLovelace\nyou said: hello\nno input received\n",
+        ),
+        (
+            "closed",
+            None,
+            1,
+            "hello, \n\nno input received\nno input received\n",
+        ),
+    ] {
+        let run = run_example_with_stdin(&path, input);
+        let linked =
+            link_and_execute_example_with_stdin(&path, &artifacts.path().join(label), input)
+                .unwrap_or_else(|diag| panic!("{label}: {diag}"));
+        for (mode, out) in [("--run", run), ("linked", linked)] {
+            assert_eq!(
+                (out.status.code(), out.stdout.as_slice()),
+                (Some(exit), stdout.as_bytes()),
+                "24-io-echo {label} {mode}: stderr:\n{}",
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+    }
 }
 
 // spec: repl/spec/00-cli-invocation.md §0.2.2 Test Mode (`--test`) — the

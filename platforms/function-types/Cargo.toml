@@ -1,0 +1,12 @@
+[package]
+name = "cranelisp-function-types"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cranelisp-platform = { path = "../../crates/cranelisp-platform" }

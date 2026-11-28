@@ -16,4 +16,4 @@
 (defn main []
   (let [v (build [] 0 16)
         w (vec-set v 0 100)]
-    (Pure (add-i64 (sum v 0 (vec-len v) 0) (vec-get w 0)))))
+    (primitives/pure (add-i64 (sum v 0 (vec-len v) 0) (vec-get w 0)))))

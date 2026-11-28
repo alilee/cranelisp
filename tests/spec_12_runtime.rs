@@ -377,7 +377,7 @@ fn removed_catch_runtime_error_is_unbound_in_every_mode() {
     let mut failures = Vec::new();
     for mode in ["repl", "run", "link"] {
         let cr = Cranelisp::new().with_prelude(PreludeVariant::PrimitivesOnly);
-        let program = "(defn main [] (Pure (catch-runtime-error (fn [] 7))))\n";
+        let program = "(defn main [] (primitives/pure (catch-runtime-error (fn [] 7))))\n";
         let out = match mode {
             "repl" => cr.stdin("(catch-runtime-error (fn [] 7))\n").output(),
             "run" => cr.user(program).run("user.cl").output(),
@@ -418,8 +418,8 @@ fn removed_catch_runtime_error_is_unbound_in_every_mode() {
 
 // The minimal free-standing div-by-zero entry (per FIXME 0399). Zero stdlib;
 // explicit `primitives` imports. An uncaught `(div-i64 1 0)` inside `main`.
-const UNCAUGHT_PANIC_PROGRAM: &str = "(import [primitives [Pure div-i64]])\n\
-     (defn main [] (Pure (div-i64 1 0)))\n";
+const UNCAUGHT_PANIC_PROGRAM: &str = "(import [primitives [pure div-i64]])\n\
+     (defn main [] (primitives/pure (div-i64 1 0)))\n";
 
 // spec: spec/12-runtime.md §12.7.4.2 — batch-mode CONTROL (the `--run` leg).
 // An uncaught div-by-zero panic in `main` under `--run` MUST terminate the
@@ -535,8 +535,8 @@ fn uncaught_runtime_panic_surfaces_message_and_clean_exit_link() {
 // (per FIXME 0401). Zero stdlib; explicit `primitives` imports. The `div-i64`
 // runs in the `(fn [x] ...)` passed to `bind` — i.e. during the IO trampoline,
 // not in `main`'s body before IO.
-const UNCAUGHT_PANIC_IN_IO_PROGRAM: &str = "(import [primitives [Pure bind div-i64 Int]])\n\
-     (defn main [] (bind (Pure 1) (fn [x] (Pure (div-i64 x 0)))))\n";
+const UNCAUGHT_PANIC_IN_IO_PROGRAM: &str = "(import [primitives [pure bind div-i64 Int]])\n\
+     (defn main [] (bind (primitives/pure 1) (fn [x] (primitives/pure (div-i64 x 0)))))\n";
 
 // spec: spec/12-runtime.md §12.7.4.2 — a runtime panic raised inside an IO
 // `bind` continuation under `--run` MUST terminate the process with a clean
@@ -803,7 +803,7 @@ fn lenient_no_lenient_env_var_preserves_correctness() {
         .user(
             "(defn double [x] (mul-i64 x 2))\n\
              (defn triple [x] (mul-i64 x 3))\n\
-             (defn main [] (Pure (let [a (double 5) b (triple 7)] (add-i64 a b))))\n",
+             (defn main [] (primitives/pure (let [a (double 5) b (triple 7)] (add-i64 a b))))\n",
         )
         .env("CRANELISP_NO_LENIENT", "1")
         .output()
@@ -988,7 +988,7 @@ fn pmr_run_elapsed_ms(src: &str, lenient_off: bool) -> (u128, Option<i32>, Optio
         b = b.env("CRANELISP_NO_LENIENT", "1");
     }
     let out = b.output();
-    // A clean run terminates via the exit code from `(defn main [] (Pure n))`;
+    // A clean run terminates via the exit code from `(defn main [] (primitives/pure n))`;
     // a panic / compile failure would surface on stderr. Guard against the
     // latter so a crash can't read as a fast (and therefore "parallel") run.
     assert!(
@@ -1022,7 +1022,7 @@ fn lenient_vec_map_reduce_parallelizes() {
     // whose free vars reference NO earlier binding in that block => both
     // sparkable => the halves run in parallel.
     let src = format!(
-        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len Pure]])\n\
+        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len pure]])\n\
          (defn work [:Int n :Int acc]\n\
            (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
          (defn pmr [v :Int lo :Int hi]\n\
@@ -1033,7 +1033,7 @@ fn lenient_vec_map_reduce_parallelizes() {
                  (add-i64 left right))))\n\
          (defn main []\n\
            (let [v [{PMR_VEC}]]\n\
-             (Pure (div-i64 (pmr v 0 (vec-len v)) {PMR_DIVISOR}))))\n",
+             (primitives/pure (div-i64 (pmr v 0 (vec-len v)) {PMR_DIVISOR}))))\n",
         PMR_VEC = PMR_VEC,
     );
     let _ = PMR_LEAF; // documents the per-leaf cost baked into PMR_VEC.
@@ -1116,7 +1116,7 @@ fn lenient_vec_map_reduce_prior_binding_result_identical_to_sequential() {
     // witness — only the block shape differs — so the value is identical: the
     // 8-element Vec sums to 8·300_000_000 = 2_400_000_000; div by 10_000_000 = 240.
     let src = format!(
-        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len Pure]])\n\
+        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len pure]])\n\
          (defn work [:Int n :Int acc]\n\
            (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
          (defn pmr [v :Int lo :Int hi]\n\
@@ -1128,7 +1128,7 @@ fn lenient_vec_map_reduce_prior_binding_result_identical_to_sequential() {
                  (add-i64 left right))))\n\
          (defn main []\n\
            (let [v [{PMR_VEC}]]\n\
-             (Pure (div-i64 (pmr v 0 (vec-len v)) {PMR_DIVISOR}))))\n",
+             (primitives/pure (div-i64 (pmr v 0 (vec-len v)) {PMR_DIVISOR}))))\n",
         PMR_VEC = PMR_VEC,
     );
 
@@ -1357,25 +1357,25 @@ fn tco_self_recursion_with_fn_typed_parameter() {
 // `main`; only the `--run` driver does.
 // =============================================================================
 
-// spec: spec/12-runtime.md §12.6 — `(defn main [] (Pure Int))` exits with the
+// spec: spec/12-runtime.md §12.6 — `(defn main [] (primitives/pure Int))` exits with the
 // inner Int. A batch main returns `IO _`; the exit code is the inner Int.
 // (carry: legacy/v4_pipeline.rs::test_v4_integer_literal)
 #[test]
 fn main_returning_int_produces_int_exit_code() {
     Cranelisp::new()
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure 42))")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure 42))")
         .run("user.cl")
         .output()
         .assert_exit(42);
 }
 
 // spec: spec/12-runtime.md §12.6 — non-Int IO main result → exit 0. The main
-// returns `IO Bool` (`(Pure true)`); a non-Int inner value maps to exit 0.
+// returns `IO Bool` (`(primitives/pure true)`); a non-Int inner value maps to exit 0.
 // (carry: legacy/v4_pipeline.rs::test_v4_boolean_literal)
 #[test]
 fn main_returning_non_int_produces_zero_exit_code() {
     Cranelisp::new()
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure true))")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure true))")
         .run("user.cl")
         .output()
         .assert_exit(0);
@@ -1387,7 +1387,7 @@ fn main_returning_non_int_produces_zero_exit_code() {
 #[test]
 fn main_invokes_primitive_call_for_exit_code() {
     Cranelisp::new()
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure (primitives/add-i64 1 2)))")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure (primitives/add-i64 1 2)))")
         .run("user.cl")
         .output()
         .assert_exit(3);
@@ -1401,9 +1401,9 @@ fn main_invokes_primitive_call_for_exit_code() {
 fn main_invokes_sibling_user_defn_for_exit_code() {
     Cranelisp::new()
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn double [x] (primitives/add-i64 x x))\n\
-             (defn main [] (Pure (double 5)))",
+             (defn main [] (primitives/pure (double 5)))",
         )
         .run("user.cl")
         .output()
@@ -1418,12 +1418,12 @@ fn main_invokes_sibling_user_defn_for_exit_code() {
 fn main_invokes_recursive_user_defn_for_exit_code() {
     Cranelisp::new()
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (defn fact [n]\n\
                (if (primitives/eq-i64 n 0)\n\
                  1\n\
                  (primitives/mul-i64 n (fact (primitives/sub-i64 n 1)))))\n\
-             (defn main [] (Pure (fact 5)))",
+             (defn main [] (primitives/pure (fact 5)))",
         )
         .run("user.cl")
         .output()
@@ -1548,7 +1548,7 @@ fn dependency_type_error_cascade_preserves_root_cause_neg() {
 #[test]
 fn clean_program_produces_no_error_in_run_mode() {
     let out = Cranelisp::new()
-        .user("(import [primitives [Pure]])\n(defn main [] (Pure (primitives/add-i64 10 20)))")
+        .user("(import [primitives [pure]])\n(defn main [] (primitives/pure (primitives/add-i64 10 20)))")
         .run("user.cl")
         .output();
     // Filter benign nice-worker warnings from stderr before assertion.
@@ -1619,7 +1619,7 @@ fn integer_div_value_use_min_by_one_does_not_panic_control() {
 fn assert_min_division_in_every_mode(form: &str) {
     // Batch modes compare the full quotient before exit truncation to a byte.
     let program = format!(
-        "(import [primitives [*]])\n(defn main [] (Pure (if (eq-i64 {form} -9223372036854775808) 0 97)))\n"
+        "(import [primitives [*]])\n(defn main [] (primitives/pure (if (eq-i64 {form} -9223372036854775808) 0 97)))\n"
     );
     let mut failures = Vec::new();
     for mode in ["repl", "run", "link"] {
@@ -1700,7 +1700,7 @@ const DEF2_BOX_VEC_TEMPLATE: &str = "\
 (defn push2 [v x] (vec-push v x))
 (defn bw [v i n] (if (lt-i64 i n) (bw ($BUILDER v (Box i)) (add-i64 i 1) n) v))
 (defn sv [v i n acc] (if (lt-i64 i n) (sv v (add-i64 i 1) n (add-i64 acc (unbox (vec-get v i)))) acc))
-(defn main [] (Pure (sv (bw [] 0 2) 0 2 0)))
+(defn main [] (primitives/pure (sv (bw [] 0 2) 0 2 0)))
 ";
 
 // spec: spec/12-runtime.md §12.3.3 — Vec COW is semantically invisible; routing
@@ -1745,7 +1745,7 @@ fn def2_vec_push_wrapper_scalar_element_unaffected_control() {
 (defn push2 [v x] (vec-push v x))
 (defn bw [v i n] (if (lt-i64 i n) (bw (push2 v i) (add-i64 i 1) n) v))
 (defn sv [v i n acc] (if (lt-i64 i n) (sv v (add-i64 i 1) n (add-i64 acc (vec-get v i))) acc))
-(defn main [] (Pure (sv (bw [] 0 2) 0 2 0)))
+(defn main [] (primitives/pure (sv (bw [] 0 2) 0 2 0)))
 ";
     Cranelisp::new()
         .with_prelude(PreludeVariant::None)
@@ -1829,7 +1829,7 @@ fn def3_vec_set_temporary_heap_element_rc_balanced() {
 (import [primitives [*]])
 (deftype Box [:Int v])
 (defn unbox [b] (match b [(Box v) v]))
-(defn main [] (Pure (unbox (vec-get (vec-set [(Box 0) (Box 0)] 1 (Box 7)) 1))))
+(defn main [] (primitives/pure (unbox (vec-get (vec-set [(Box 0) (Box 0)] 1 (Box 7)) 1))))
 ";
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
@@ -1858,7 +1858,7 @@ fn def3_vec_set_temporary_heap_element_rc_balanced() {
 fn def3_vec_set_scalar_element_rc_balanced_control() {
     let src = "\
 (import [primitives [*]])
-(defn main [] (Pure (vec-get (vec-set [10 20] 1 99) 1)))
+(defn main [] (primitives/pure (vec-get (vec-set [10 20] 1 99) 1)))
 ";
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
@@ -1886,7 +1886,7 @@ fn def3_heap_element_vec_no_vecset_rc_balanced_control() {
 (import [primitives [*]])
 (deftype Box [:Int v])
 (defn unbox [b] (match b [(Box v) v]))
-(defn main [] (Pure (unbox (vec-get [(Box 5) (Box 7)] 1))))
+(defn main [] (primitives/pure (unbox (vec-get [(Box 5) (Box 7)] 1))))
 ";
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
@@ -1912,7 +1912,7 @@ fn def3_heap_element_vec_no_vecset_rc_balanced_control() {
 // NOT a property of the evaluation model. So these tests build a lazy stream
 // free-standing: an ADT cell `(SCons head tail-thunk)` whose tail is a
 // `(Fn [] Stream)` thunk that is only invoked (`(tf)`) on demand. The exit
-// code carries the witnessed Int (per `(defn main [] (Pure N))` → exit N).
+// code carries the witnessed Int (per `(defn main [] (primitives/pure N))` → exit N).
 
 // A free-standing lazy stream over Int: SCons holds a head and a tail THUNK
 // (zero-arg closure). `from` is infinite — each `(tf)` lazily produces the next
@@ -1924,7 +1924,7 @@ const LAZY_STREAM_PROGRAM: &str = "\
 (defn take-nth [k s]
   (match s [SNil 0
             (SCons h tf) (if (eq-i64 k 0) h (take-nth (sub-i64 k 1) (tf)))]))
-(defn main [] (Pure (take-nth 5 (from 37))))
+(defn main [] (primitives/pure (take-nth 5 (from 37))))
 ";
 
 // spec: spec/12-runtime.md §12.4.2 — take-from-infinite: a lazy stream `(from
@@ -1955,7 +1955,7 @@ fn lazy_stream_construction_does_not_force_tail() {
 (deftype Stream SNil (SCons [:Int h :(Fn [] Stream) tailf]))
 (defn from [n] (SCons n (fn [] (from (add-i64 n 1)))))
 (defn head [s] (match s [SNil 0 (SCons h tf) h]))
-(defn main [] (Pure (head (from 37))))
+(defn main [] (primitives/pure (head (from 37))))
 ";
     Cranelisp::new()
         .file("user.cl", src)
@@ -2023,12 +2023,12 @@ fn vec_push_heap_element_borrowed_recursive_source_no_uaf_run() {
     Cranelisp::new()
         .file(
             "user.cl",
-            "(import [primitives [vec-push vec-get str-len add-i64 sub-i64 le-i64 Pure]])\n\
+            "(import [primitives [vec-push vec-get str-len add-i64 sub-i64 le-i64 pure]])\n\
              (defn loop [v n acc] \
                (if (le-i64 n 0) acc \
                  (loop v (sub-i64 n 1) \
                    (add-i64 acc (str-len (vec-get (vec-push v \"z\") 0))))))\n\
-             (defn main [] (Pure (loop [\"aaa\"] 2 0)))",
+             (defn main [] (primitives/pure (loop [\"aaa\"] 2 0)))",
         )
         .run("user.cl")
         .output()
@@ -2069,12 +2069,12 @@ fn vec_set_heap_element_borrowed_recursive_source_no_uaf_run() {
     Cranelisp::new()
         .file(
             "user.cl",
-            "(import [primitives [vec-set vec-get str-len add-i64 sub-i64 le-i64 Pure]])\n\
+            "(import [primitives [vec-set vec-get str-len add-i64 sub-i64 le-i64 pure]])\n\
              (defn loop [v n acc] \
                (if (le-i64 n 0) acc \
                  (loop v (sub-i64 n 1) \
                    (add-i64 acc (str-len (vec-get (vec-set v 0 \"zz\") 0))))))\n\
-             (defn main [] (Pure (loop [\"aaa\"] 2 0)))",
+             (defn main [] (primitives/pure (loop [\"aaa\"] 2 0)))",
         )
         .run("user.cl")
         .output()
@@ -2110,11 +2110,11 @@ fn vec_set_heap_var_element_borrowed_recursive_source_no_uaf_run() {
     Cranelisp::new()
         .file(
             "user.cl",
-            "(import [primitives [vec-set vec-get str-len sub-i64 le-i64 Pure]])\n\
+            "(import [primitives [vec-set vec-get str-len sub-i64 le-i64 pure]])\n\
              (defn loop [v s n] \
                (if (le-i64 n 0) (str-len (vec-get v 0)) \
                  (loop (vec-set v 0 s) s (sub-i64 n 1))))\n\
-             (defn main [] (Pure (loop [\"aaa\"] \"bbbb\" 3)))",
+             (defn main [] (primitives/pure (loop [\"aaa\"] \"bbbb\" 3)))",
         )
         .run("user.cl")
         .output()
@@ -2183,7 +2183,7 @@ fn conj_wrapper_heap_adt_element_sum_run() {
     Cranelisp::new()
         .file(
             "user.cl",
-            "(import [primitives [vec-push vec-get vec-len add-i64 sub-i64 le-i64 Int Pure]])\n\
+            "(import [primitives [vec-push vec-get vec-len add-i64 sub-i64 le-i64 Int pure]])\n\
              (deftype Box [:Int v])\n\
              (defn unbox [b] (match b [(Box x) x]))\n\
              (defn conj [v x] (vec-push v x))\n\
@@ -2192,7 +2192,7 @@ fn conj_wrapper_heap_adt_element_sum_run() {
              (defn sumv [v i acc] \
                (if (le-i64 (vec-len v) i) acc \
                  (sumv v (add-i64 i 1) (add-i64 acc (unbox (vec-get v i))))))\n\
-             (defn main [] (Pure (sumv (build-conj [] 30) 0 0)))",
+             (defn main [] (primitives/pure (sumv (build-conj [] 30) 0 0)))",
         )
         .run("user.cl")
         .output()
@@ -2213,7 +2213,7 @@ fn conj_wrapper_multivariant_cell_vec_built_correctly_run() {
     Cranelisp::new()
         .file(
             "user.cl",
-            "(import [primitives [vec-push vec-set vec-get vec-len add-i64 sub-i64 le-i64 Int Pure]])\n\
+            "(import [primitives [vec-push vec-set vec-get vec-len add-i64 sub-i64 le-i64 Int pure]])\n\
              (deftype Cell (Given [:Int given-value]) (Solved [:Int solved-value]) (Candidates [:Int bitmask]))\n\
              (defn cval [c] (match c [(Given x) x (Solved x) x (Candidates m) m]))\n\
              (defn conj [v x] (vec-push v x))\n\
@@ -2221,7 +2221,7 @@ fn conj_wrapper_multivariant_cell_vec_built_correctly_run() {
              (defn sumv [v i acc] \
                (if (le-i64 (vec-len v) i) acc \
                  (sumv v (add-i64 i 1) (add-i64 acc (cval (vec-get v i))))))\n\
-             (defn main [] (Pure (sumv (vec-set (build [] 30) 0 (Solved 100)) 0 0)))",
+             (defn main [] (primitives/pure (sumv (vec-set (build [] 30) 0 (Solved 100)) 0 0)))",
         )
         .run("user.cl")
         .output()
@@ -2355,7 +2355,7 @@ fn strip_repl_timing(s: &str) -> String {
 #[test]
 fn apply_arg_pair_equiv_run() {
     // fib(10)=55, fib(9)=34 → 89. Both args are fib Applys → ≥2 sparkable.
-    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n");
+    let src = format!("{AA_FIB_DEF}(defn main [] (primitives/pure (add-i64 (fib 10) (fib 9))))\n");
     let on = aa_run_exit(&src, &[]);
     let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
     assert_eq!(
@@ -2370,7 +2370,7 @@ fn apply_arg_pair_equiv_run() {
 // (ferry + barrier sound across modes).
 #[test]
 fn apply_arg_pair_equiv_link() {
-    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n");
+    let src = format!("{AA_FIB_DEF}(defn main [] (primitives/pure (add-i64 (fib 10) (fib 9))))\n");
     let on = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .user(&src)
@@ -2429,7 +2429,7 @@ fn apply_arg_dc_map_reduce_equiv_run() {
                (fib (vec-get v lo))\n\
                (add-i64 (pmr v lo (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\
                         (pmr v (add-i64 lo (div-i64 (sub-i64 hi lo) 2)) hi))))\n\
-         (defn main [] (let [v [10 10 10 10]] (Pure (pmr v 0 (vec-len v)))))\n"
+         (defn main [] (let [v [10 10 10 10]] (primitives/pure (pmr v 0 (vec-len v)))))\n"
     );
     let on = aa_run_exit(&src, &[]);
     let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
@@ -2468,7 +2468,7 @@ fn apply_arg_no_lenient_determinism_oracle() {
 #[test]
 fn apply_arg_single_expensive_preserves_result_parity() {
     let src = format!(
-        "{AA_WORK_DEF}(defn main [] (Pure (div-i64 (add-i64 (work 40000000 0) 7) 1000000)))\n"
+        "{AA_WORK_DEF}(defn main [] (primitives/pure (div-i64 (add-i64 (work 40000000 0) 7) 1000000)))\n"
     );
     let on = aa_run_exit(&src, &[]);
     let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
@@ -2495,7 +2495,7 @@ fn apply_arg_single_expensive_preserves_result_parity() {
 #[test]
 fn apply_arg_all_cheap_stays_serial() {
     let src = "(defn cheapsum [:Int a :Int b] (add-i64 a b))\n\
-               (defn main [] (Pure (cheapsum 20 22)))\n";
+               (defn main [] (primitives/pure (cheapsum 20 22)))\n";
     let on = aa_run_exit(src, &[]);
     let off = aa_run_exit(src, &[("CRANELISP_NO_LENIENT", "1")]);
     assert_eq!(
@@ -2515,11 +2515,11 @@ const AA_PANIC_DEFS: &str = "(import [primitives [*]])
 fn spark_argument_program(tail: bool, divisor: i64, index: i64) -> String {
     if tail {
         format!(
-            "{AA_PANIC_DEFS}(defn f [d i] (add-i64 (ping 3 d) (left 3 i)))\n(defn main [] (Pure (f {divisor} {index})))\n"
+            "{AA_PANIC_DEFS}(defn f [d i] (add-i64 (ping 3 d) (left 3 i)))\n(defn main [] (primitives/pure (f {divisor} {index})))\n"
         )
     } else {
         format!(
-            "{AA_PANIC_DEFS}(defn main [] (Pure (add-i64 (ping 3 {divisor}) (left 3 {index}))))\n"
+            "{AA_PANIC_DEFS}(defn main [] (primitives/pure (add-i64 (ping 3 {divisor}) (left 3 {index}))))\n"
         )
     }
 }
@@ -2601,12 +2601,12 @@ fn apply_arg_non_panicking_twins_spawn() {
 fn apply_arg_tco_self_call_not_sparked() {
     // work(x,0)=x, work(y,0)=y; x,y are invariant → loop2 just counts n down,
     // returning x+y=7 after 1,000,000 TCO iterations. No TCO ⇒ stack overflow.
-    let src = "(import [primitives [add-i64 sub-i64 le-i64 Int Pure]])\n\
+    let src = "(import [primitives [add-i64 sub-i64 le-i64 Int pure]])\n\
                (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
                (defn loop2 [:Int n :Int x :Int y]\n\
                  (if (le-i64 n 0) (add-i64 x y)\n\
                      (loop2 (sub-i64 n 1) (work x 0) (work y 0))))\n\
-               (defn main [] (Pure (loop2 1000000 3 4)))\n";
+               (defn main [] (primitives/pure (loop2 1000000 3 4)))\n";
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file("user.cl", src)
@@ -2636,7 +2636,7 @@ fn apply_arg_par_map_parallelizes() {
                         (pmr v (add-i64 lo (div-i64 (sub-i64 hi lo) 2)) hi))))\n\
          (defn main []\n\
            (let [v [{N} {N} {N} {N} {N} {N} {N} {N}]]\n\
-             (Pure (div-i64 (pmr v 0 (vec-len v)) 1000000))))\n",
+             (primitives/pure (div-i64 (pmr v 0 (vec-len v)) 1000000))))\n",
         N = AA_PERF_N,
     );
     // BEST-vs-BEST (min ON vs min OFF), NOT "any attempt qualifies". A
@@ -2699,7 +2699,7 @@ const BUDGET_FLOOR_DEN: u128 = 10;
 // in an apply-arg-sparking-WITHOUT-budget intermediate state.
 #[test]
 fn budget_naive_fib_floor_not_slower_than_serial() {
-    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (div-i64 (fib 30) 1)))\n");
+    let src = format!("{AA_FIB_DEF}(defn main [] (primitives/pure (div-i64 (fib 30) 1)))\n");
     // BEST-OF-N (not majority): an O(2ⁿ) spark explosion is SYSTEMATIC — it makes
     // ON many-× OFF in EVERY attempt, so it fails best-of-N too. On a bounded
     // (HEAD-serial or budget-capped) run, a FAIR attempt has ON < 5.0·OFF (fib(30)
@@ -2741,7 +2741,7 @@ fn budget_naive_fib_floor_not_slower_than_serial() {
 // equivalence): inline-vs-spawned never changes the answer.
 #[test]
 fn budget_three_regime_result_equivalence() {
-    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 12) (fib 11))))\n");
+    let src = format!("{AA_FIB_DEF}(defn main [] (primitives/pure (add-i64 (fib 12) (fib 11))))\n");
     let inline = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "1")]);
     let under_cap = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "1000000000")]);
     let serial = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
@@ -2787,7 +2787,7 @@ fn budget_zero_equiv_no_lenient() {
 // P+N: the garbage value must not crash and must still produce the right answer.
 #[test]
 fn budget_knob_default_override_and_garbage() {
-    let src = format!("{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n");
+    let src = format!("{AA_FIB_DEF}(defn main [] (primitives/pure (add-i64 (fib 10) (fib 9))))\n");
     let unset = aa_run_exit(&src, &[]);
     let override_n = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "8")]);
     let garbage = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "banana")]);
@@ -2913,11 +2913,13 @@ fn vec_set_index_past_length_on_heap_element_vec_panics() {
 /// `main` returns 77 when `(f index)` panics and `(f index)`'s value otherwise.
 /// `f` receives the index as a parameter, so no mode can fold the bounds test.
 fn vec_set_dynamic_index_program(index: i64) -> String {
-    format!("(defn f [i] (vec-len (vec-set [1 2 3] i 99)))\n(defn main [] (Pure (f {index})))\n")
+    format!(
+        "(defn f [i] (vec-len (vec-set [1 2 3] i 99)))\n(defn main [] (primitives/pure (f {index})))\n"
+    )
 }
 
 /// `(main)`'s value in the REPL, `--run` and `--link`, each with its output.
-/// `program` imports what it uses and defines `main` returning `(Pure <Int>)`.
+/// `program` imports what it uses and defines `main` returning `(primitives/pure <Int>)`.
 fn main_value_in_every_mode(program: &str) -> Vec<(&'static str, Option<i32>, String)> {
     let describe = |out: &helpers::e2e::CrOutput| {
         format!(
@@ -3009,7 +3011,9 @@ fn panic_in_every_mode(defs: &str, form: &str, message: &str) {
                 if defs.is_empty() { "" } else { "\n" }
             ))
         } else {
-            let cr = cr.user(&format!("{defs}\n(defn main [] (Pure {form}))\n"));
+            let cr = cr.user(&format!(
+                "{defs}\n(defn main [] (primitives/pure {form}))\n"
+            ));
             if mode == "run" {
                 cr.run("user.cl")
             } else {
@@ -3098,8 +3102,9 @@ fn callee_bounds_panic_with_scalar_consumer_is_reported_control() {
 // spec: spec/12-runtime.md §12.7.8 — P-8/C3, in-range consumer in every mode.
 #[test]
 fn callee_in_range_get_with_string_consumer_does_not_panic_neg() {
-    let program =
-        format!("{PANICKING_GET}\n(defn main [] (Pure (str-len (h [\"a\" \"bc\"] 1))))\n");
+    let program = format!(
+        "{PANICKING_GET}\n(defn main [] (primitives/pure (str-len (h [\"a\" \"bc\"] 1))))\n"
+    );
     assert_main_value_in_every_mode(&program, 2, "in-range C3");
 }
 
@@ -3155,7 +3160,8 @@ fn callee_panic_with_scalar_result_stops_the_calling_loop() {
 // spec: spec/12-runtime.md §12.7.2 — Q1 control: in-range loop gives 2.
 #[test]
 fn callee_in_range_scalar_result_loop_terminates_control() {
-    let program = format!("{LOOKUP}\n{SCAN}\n(defn main [] (Pure (scan [1 2 300] 0)))\n");
+    let program =
+        format!("{LOOKUP}\n{SCAN}\n(defn main [] (primitives/pure (scan [1 2 300] 0)))\n");
     assert_main_value_in_every_mode(&program, 2, "in-range scan");
 }
 
@@ -3207,12 +3213,6 @@ fn uncaught_panic_report_is_not_a_codegen_error_link_control() {
 #[test]
 fn panic_sources_report_exact_messages_run() {
     let sources = [
-        // A bind-built IO value reaches the match fallback through public operations.
-        (
-            "(defn make [] (bind (Pure 1) (fn [x] (Pure x))))",
-            "(match (make) [(Pure n) n (Effect e) 0])",
-            "match failed",
-        ),
         ("", "(div-i64 1 0)", "division by zero"),
         ("", "(vec-get [1 2] 9)", "vec-get: index out of bounds"),
         ("", "(vec-set [1 2] 9 7)", "vec-get: index out of bounds"),
@@ -3221,7 +3221,9 @@ fn panic_sources_report_exact_messages_run() {
     for (defs, form, message) in sources {
         let out = Cranelisp::new()
             .with_prelude(PreludeVariant::PrimitivesOnly)
-            .user(&format!("{defs}\n(defn main [] (Pure {form}))\n"))
+            .user(&format!(
+                "{defs}\n(defn main [] (primitives/pure {form}))\n"
+            ))
             .run("user.cl")
             .output();
         let problems = helpers::e2e::panic_exit_problems(&out, message, None, false);
@@ -3319,16 +3321,6 @@ fn in_frame_heap_consumer_panic_exits_control() {
     );
 }
 
-// spec: spec/12-runtime.md §12.7.2.1 — P-3's matched-IO control returns normally.
-#[test]
-fn matched_io_value_has_no_match_panic_control() {
-    assert_main_value_in_every_mode(
-        "(defn make [] (Pure 7))\n(defn main [] (Pure (match (make) [(Pure n) n (Effect e) 0])))\n",
-        7,
-        "matched IO control",
-    );
-}
-
 // spec: spec/12-runtime.md §12.7.3 — P-10: checked division returns None or a quotient truncated toward zero.
 #[test]
 fn checked_quot_returns_option_without_panicking_run() {
@@ -3340,7 +3332,7 @@ fn checked_quot_returns_option_without_panicking_run() {
     ];
     let mut failures = Vec::new();
     for (n, d, variant, value) in cases {
-        let out = Cranelisp::new().user(&format!("(import [primitives [*]])\n(defn main [] (Pure (match (checked-quot {n} {d}) [None {} (Some q) {}])))\n", if variant == "None" { "0" } else { "99" }, if variant == "Some" { format!("(if (eq-i64 q {value}) 0 98)") } else { "97".into() })).run("user.cl").output();
+        let out = Cranelisp::new().user(&format!("(import [primitives [*]])\n(defn main [] (primitives/pure (match (checked-quot {n} {d}) [None {} (Some q) {}])))\n", if variant == "None" { "0" } else { "99" }, if variant == "Some" { format!("(if (eq-i64 q {value}) 0 98)") } else { "97".into() })).run("user.cl").output();
         if !out.status.success() || out.stderr.contains("runtime panic:") {
             failures.push(format!(
                 "{n}/{d} expected {variant} {value}: status:{:?}\nstdout:{}\nstderr:{}",
@@ -3393,7 +3385,7 @@ fn checked_quot_option_observation_control() {
         .assert_ok();
     out.assert_stdout_contains(":(primitives/Option primitives/Int) Option.None")
         .assert_stdout_contains(":(primitives/Option primitives/Int) (Option.Some -3)");
-    Cranelisp::new().user("(import [primitives [*]])\n(defn main [] (Pure (add-i64 (match (parse-int \"invalid\") [None 0 (Some q) 97]) (match (parse-int \"-3\") [None 99 (Some q) (if (eq-i64 q -3) 0 98)]))))\n")
+    Cranelisp::new().user("(import [primitives [*]])\n(defn main [] (primitives/pure (add-i64 (match (parse-int \"invalid\") [None 0 (Some q) 97]) (match (parse-int \"-3\") [None 99 (Some q) (if (eq-i64 q -3) 0 98)]))))\n")
         .run("user.cl").output().assert_ok();
 }
 
@@ -3401,4 +3393,117 @@ fn checked_quot_option_observation_control() {
 #[test]
 fn integer_div_min_by_one_does_not_panic_control() {
     assert_min_division_in_every_mode("(div-i64 -9223372036854775808 1)");
+}
+
+// The add after the recursive call keeps this fixture outside tail position.
+const STACK_EXHAUSTION_DEFS: &str = "(import [primitives [*]])\n(defn deep [n] (if (eq-i64 n 0) 0 (add-i64 1 (deep (sub-i64 n 1)))))\n";
+
+fn stack_exhaustion_child(mode: &str, depth: u64) -> helpers::e2e::CrOutput {
+    let cr = Cranelisp::new().timeout(std::time::Duration::from_secs(20));
+    match mode {
+        "repl" => cr.stdin(&format!("{STACK_EXHAUSTION_DEFS}(deep {depth})\n(add-i64 800 13)\n")).output(),
+        "macro" => cr.file("recursion.cl", STACK_EXHAUSTION_DEFS).user(&format!("(import [primitives [*]])\n(import [recursion [deep]])\n(defmacro big [] (macros/SexpInt (deep {depth})))\n(defn main [] (pure (let [n (big)] 0)))\n")).run("user.cl").output(),
+        "platform" => cr.use_workspace_platforms().user(&format!("{STACK_EXHAUSTION_DEFS}(platform stdio)\n(import [platform.stdio [print]])\n(defn main [] (bind (print \"x\") (fn [_] (pure (let [n (deep {depth})] 0)))))\n")).run("user.cl").output(),
+        _ => {
+            let cr = cr.user(&format!("{STACK_EXHAUSTION_DEFS}(defn main [] (pure (let [n (deep {depth})] 0)))\n"));
+            if mode == "link" { cr.link_then_run("user.cl").output() } else { cr.run("user.cl").output() }
+        }
+    }
+}
+
+fn assert_stack_exhaustion_report(mode: &str) {
+    let out = stack_exhaustion_child(mode, 100_000_000);
+    let mut problems = Vec::new();
+    if !matches!(out.status.code(), Some(code) if code != 0) {
+        problems.push("expected nonzero exit without signal death");
+    }
+    let stderr = out.linked_stderr.as_deref().unwrap_or(&out.stderr);
+    let lines: Vec<_> = stderr.lines().collect();
+    if lines.len() != 1 || !lines[0].starts_with("error: runtime panic: ") {
+        problems.push("expected exactly one stderr line with runtime-panic prefix");
+    }
+    if mode == "link" && out.linked_execution_elapsed.is_none() {
+        problems.push("linked executable did not run");
+    }
+    if mode == "repl" {
+        if out.stdout.matches("user> ").count() != 3 || out.stdout.contains(":primitives/Int") {
+            problems.push("REPL must produce no value or prompt after the exhausting call");
+        }
+    } else if out.stdout != if mode == "platform" { "x\n" } else { "" } {
+        problems.push("stdout must contain only the preceding platform print, if any");
+    }
+    assert!(
+        problems.is_empty(),
+        "{mode}: {problems:?}\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.2.1; §12.7.5 — T-STACK run
+// defect: class=missing-runtime-check locus=crates/cranelisp-intrinsics/src/panic.rs found=S125 owner=/dev
+#[test]
+fn s125_stack_exhaustion_run_reports_runtime_panic() {
+    assert_stack_exhaustion_report("run");
+}
+
+// spec: spec/12-runtime.md §12.7.2.1; §12.7.5; §12.7.4.1 — T-STACK REPL
+// defect: class=missing-runtime-check locus=crates/cranelisp-intrinsics/src/panic.rs found=S125 owner=/dev
+#[test]
+fn s125_stack_exhaustion_repl_reports_runtime_panic_without_resuming() {
+    assert_stack_exhaustion_report("repl");
+}
+
+// spec: spec/12-runtime.md §12.7.2.1; §12.7.5; spec/09-macros.md §9.12 — T-STACK macro clause
+// defect: class=missing-runtime-check locus=crates/cranelisp-intrinsics/src/panic.rs found=S125 owner=/dev
+#[test]
+fn s125_stack_exhaustion_macro_clause_reports_runtime_panic() {
+    assert_stack_exhaustion_report("macro");
+}
+
+// spec: spec/12-runtime.md §12.7.2.1; §12.7.5 — T-STACK linked startup
+// defect: class=missing-runtime-check locus=crates/cranelisp-exe-bundle/src/lib.rs found=S125 owner=/dev
+#[test]
+fn s125_stack_exhaustion_link_reports_runtime_panic() {
+    assert_stack_exhaustion_report("link");
+}
+
+// spec: spec/12-runtime.md §12.7.2.1; §12.7.5 — T-STACK after a platform force
+// defect: class=missing-runtime-check locus=crates/cranelisp-intrinsics/src/panic.rs found=S125 owner=/dev
+#[test]
+fn s125_stack_exhaustion_after_platform_print_reports_runtime_panic() {
+    assert_stack_exhaustion_report("platform");
+}
+
+// spec: spec/12-runtime.md §12.7.2.1 — T-STACK shallow control, same five modes
+#[test]
+fn s125_stack_exhaustion_shallow_control_completes_in_every_mode() {
+    for mode in ["run", "repl", "macro", "link", "platform"] {
+        let out = stack_exhaustion_child(mode, 1_000);
+        eprintln!(
+            "{mode}: {:?} stdout={:?} stderr={:?}",
+            out.status, out.stdout, out.stderr
+        );
+        let out = out.assert_ok();
+        assert!(
+            !out.stdout.contains("Error:") && !out.stderr.contains("error:"),
+            "{mode}: {}{}",
+            out.stdout,
+            out.stderr
+        );
+        if mode == "repl" {
+            out.assert_stdout_contains(":primitives/Int 1000")
+                .assert_stdout_contains(":primitives/Int 813");
+        } else {
+            assert_eq!(
+                out.stdout,
+                if mode == "platform" { "x\n" } else { "" },
+                "{mode}"
+            );
+            if mode == "link" {
+                assert!(out.linked_execution_elapsed.is_some());
+            }
+        }
+    }
 }

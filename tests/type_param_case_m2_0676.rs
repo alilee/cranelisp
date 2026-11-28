@@ -44,7 +44,7 @@ fn run_prims(src: &str) -> helpers::e2e::CrOutput {
 // defect: class=silent-accept locus=crates/cranelisp-frontend/src/ast_builder.rs::build_type_head type-param loop (accepts any-case symbol; §2.2.2 requires lowercase) found=S114 owner=/dev
 #[test]
 fn deftype_uppercase_type_param_rejected_neg() {
-    let out = run_prims("(deftype (Box A) [:Int val])\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(deftype (Box A) [:Int val])\n(defn main [] (primitives/pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         c.to_lowercase().contains("lowercase"),
@@ -60,7 +60,7 @@ fn deftype_uppercase_type_param_rejected_neg() {
 // spec: spec/02-grammar.md §2.2.2 — a lowercase type parameter is accepted.
 #[test]
 fn deftype_lowercase_type_param_accepted_green() {
-    let out = run_prims("(deftype (Box a) [:Int val])\n(defn main [] (Pure 0))\n");
+    let out = run_prims("(deftype (Box a) [:Int val])\n(defn main [] (primitives/pure 0))\n");
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
         !c.to_lowercase().contains("lowercase") && out.status.code() == Some(0),
@@ -82,7 +82,7 @@ fn deftype_lowercase_type_param_accepted_green() {
 fn deftrait_uppercase_type_param_rejected_green() {
     let out = run_prims(
         "(deftrait (Functor F)\n  (fmap [:(Fn [a] b) g :(F a) x] (F b)))\n\
-         (defn main [] (Pure 0))\n",
+         (defn main [] (primitives/pure 0))\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(
@@ -100,7 +100,7 @@ fn deftrait_uppercase_type_param_rejected_green() {
 fn deftrait_lowercase_type_param_accepted_green() {
     let out = run_prims(
         "(deftrait (Functor f)\n  (fmap [:(Fn [a] b) g :(f a) x] (f b)))\n\
-         (defn main [] (Pure 0))\n",
+         (defn main [] (primitives/pure 0))\n",
     );
     let c = format!("{}{}", out.stdout, out.stderr);
     assert!(

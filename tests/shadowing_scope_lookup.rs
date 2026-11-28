@@ -45,7 +45,7 @@ use std::time::Duration;
 #[test]
 fn result_only_returned_closure_specializes_at_int_and_string() {
     let program = "(defn g [] (fn [y] 100))\n\
-                   (defn main [] (Pure (add-i64 ((g) 5) ((g) \"heap\"))))\n";
+                   (defn main [] (primitives/pure (add-i64 ((g) 5) ((g) \"heap\"))))\n";
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin(&format!("{program}(main)\n"))
@@ -70,7 +70,7 @@ fn result_only_returned_closure_specializes_at_int_and_string() {
 #[test]
 fn concrete_returned_closure_annotation_control() {
     let program = "(defn g [] (fn [:Int y] 100))\n\
-                   (defn main [] (Pure ((g) 5)))\n";
+                   (defn main [] (primitives/pure ((g) 5)))\n";
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .stdin(&format!("{program}(main)\n"))
@@ -228,7 +228,7 @@ fn let_shadowed_multi_sig_base_value_ref_resolves_to_local_not_overload() {
             "(defn h ([x] (add-i64 x 1)) ([a b] a))\n\
              (defn use-hof [f] (f 5))\n\
              (defn g [] (let [h (fn [y] 100)] (use-hof h)))\n\
-             (defn main [] (Pure (g)))\n",
+             (defn main [] (primitives/pure (g)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -260,7 +260,7 @@ fn let_shadowed_multi_sig_base_value_ref_returned_resolves_to_local_not_overload
         .user(
             "(defn h ([x] x) ([a b] a))\n\
              (defn g [] (let [h (fn [y] 100)] h))\n\
-             (defn main [] (Pure ((g) 5)))\n",
+             (defn main [] (primitives/pure ((g) 5)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -290,7 +290,7 @@ fn let_shadowed_multi_sig_base_value_ref_in_container_resolves_to_local_not_over
         .user(
             "(defn h ([x] x) ([a b] a))\n\
              (defn g [] (let [h (fn [y] 100)] [h]))\n\
-             (defn main [] (Pure ((vec-get (g) 0) 5)))\n",
+             (defn main [] (primitives/pure ((vec-get (g) 0) 5)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -320,7 +320,7 @@ fn let_shadowed_single_sig_defn_value_ref_hof_resolves_to_local() {
             "(defn h [x] (add-i64 x 1))\n\
              (defn use-hof [f] (f 5))\n\
              (defn g [] (let [h (fn [y] 100)] (use-hof h)))\n\
-             (defn main [] (Pure (g)))\n",
+             (defn main [] (primitives/pure (g)))\n",
         )
         .output()
         .assert_exit(100);
@@ -359,7 +359,7 @@ fn let_shadowed_trait_operator_call_resolves_to_local_not_dispatch() {
         .run("user.cl")
         .user(
             "(defn f [] (let [+ (fn [a b] 0)] (+ 1 2)))\n\
-             (defn main [] (Pure (f)))\n",
+             (defn main [] (primitives/pure (f)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -425,7 +425,7 @@ fn let_shadowed_trait_operator_auto_curry_resolves_to_local() {
         .run("user.cl")
         .user(
             "(defn f [] (let [+ (fn [a b] 0)] ((+ 1) 2)))\n\
-             (defn main [] (Pure (f)))\n",
+             (defn main [] (primitives/pure (f)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -458,7 +458,7 @@ fn local_closure_auto_curry_non_trait_control_resolves_to_local() {
         .run("user.cl")
         .user(
             "(defn f [] (let [g (fn [a b] 0)] ((g 1) 2)))\n\
-             (defn main [] (Pure (f)))\n",
+             (defn main [] (primitives/pure (f)))\n",
         )
         .output();
     let c = format!("{}{}", out.stdout, out.stderr);
@@ -488,7 +488,7 @@ fn let_shadowed_trait_operator_value_ref_passed_to_hof_resolves_to_local() {
         .user(
             "(defn ap [g] (g 1 2))\n\
              (defn f [] (let [+ (fn [a b] 0)] (ap +)))\n\
-             (defn main [] (Pure (f)))\n",
+             (defn main [] (primitives/pure (f)))\n",
         )
         .output()
         .assert_exit(0);

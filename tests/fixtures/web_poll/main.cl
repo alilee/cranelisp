@@ -14,10 +14,10 @@
 (platform web)
 
 ;; Friendly serve verbs (serve.cl destructures the handles + supplies the poll
-;; leading pair) + the Request/Response ADTs (web.cl). bind/Pure from primitives.
+;; leading pair) + the Request/Response ADTs (web.cl). bind/pure from primitives.
 (import [serve [listen accept read send]])
 (import [web [Request Response]])
-(import [primitives [bind Pure]])
+(import [primitives [bind pure]])
 
 ;; The pure router -- fixed response (no routing, so no `=`/stdlib needed). The
 ;; body is the marker the e2e asserts.

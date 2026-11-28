@@ -42,7 +42,7 @@ fn adt_wrapped_loop(n: usize) -> String {
         "(deftype (G2 a) (Gr [:a cells]))\n\
          (defn set0 [g m] (match g [(Gr cells) (Gr (vec-set cells 0 m))]))\n\
          (defn go [g m] (if (eq-i64 m 0) (match g [(Gr cells) (vec-get cells 0)]) (go (set0 g m) (add-i64 m -1))))\n\
-         (defn main [] (Pure (go (Gr [5 5]) {n})))\n"
+         (defn main [] (primitives/pure (go (Gr [5 5]) {n})))\n"
     )
 }
 
@@ -126,7 +126,7 @@ fn adt_wrapped_supersede_residue_does_not_scale_with_n() {
 fn bare_vec_supersede_loop_balances_green() {
     let bare = "(defn set0 [cells m] (vec-set cells 0 m))\n\
          (defn go [cells m] (if (eq-i64 m 0) (vec-get cells 0) (go (set0 cells m) (add-i64 m -1))))\n\
-         (defn main [] (Pure (go [5 5] 200)))\n";
+         (defn main [] (primitives/pure (go [5 5] 200)))\n";
     for ownership_off in [false, true] {
         let (allocs, deallocs) = rc_alloc_dealloc(bare, ownership_off);
         assert_eq!(

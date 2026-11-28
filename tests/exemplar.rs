@@ -42,7 +42,7 @@ fn batch_const_macro_in_main() {
         .run("main.cl")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(defmacro size [] `9)\n(defn main [] (Pure (size)))",
+            "(import [primitives [pure]])\n(defmacro size [] `9)\n(defn main [] (primitives/pure (size)))",
         )
         .output()
         .assert_exit(9);
@@ -58,7 +58,7 @@ fn batch_cross_module_function_import() {
         .file("util.cl", "(defn helper [] 42)")
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper)))",
+            "(import [primitives [pure]])\n(import [util [helper]])\n(defn main [] (primitives/pure (helper)))",
         )
         .output()
         .assert_exit(42);
@@ -79,9 +79,9 @@ fn batch_cross_module_adt_export_and_pattern_match() {
         )
         .file(
             "main.cl",
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (import [types [Color Red Green Blue color-val]])\n\
-             (defn main [] (Pure (add-i64 (color-val Red) (color-val Blue))))",
+             (defn main [] (primitives/pure (add-i64 (color-val Red) (color-val Blue))))",
         )
         .output()
         .assert_exit(4); // 1 + 3
@@ -152,7 +152,7 @@ fn t_s2_1_eliminate_contract_on_given_returns_none() {
        (Some c)]))
 
 (defn main []
-  (Pure (let [c (Given 5)]
+  (primitives/pure (let [c (Given 5)]
     (match c
       [(Given v)
          (if (eq-i64 v 5)
@@ -190,7 +190,7 @@ fn s124_exemplar_runner(serial: bool) {
     if serial {
         b = b.env("CRANELISP_NO_LENIENT", "1");
     }
-    b.run("tests.cl").output().assert_exit(43);
+    b.run("tests.cl").output().assert_exit(46);
 }
 
 // spec: exemplar/AGENTS.md — T-EXEMPLAR-TESTS maintenance check, default lenient runner

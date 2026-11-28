@@ -22,7 +22,7 @@ fn run_prims(src: &str) -> String {
 // spec: spec/05-definitions.md §5.2 — a deftype head names a type (uppercase).
 #[test]
 fn deftype_lowercase_parenthesized_head_rejected_neg() {
-    let c = run_prims("(deftype (point a) (MkP [:a v]))\n(defn main [] (Pure 0))\n");
+    let c = run_prims("(deftype (point a) (MkP [:a v]))\n(defn main [] (primitives/pure 0))\n");
     assert!(
         c.contains("type name must start with uppercase"),
         "a lowercase parenthesized deftype head `(point a)` MUST be rejected — a \
@@ -84,7 +84,7 @@ fn mod_private_dotted_head_rejected_neg() {
 // spec: spec/05-definitions.md §5.8 — a simple `mod` head is accepted.
 #[test]
 fn mod_simple_head_accepts_name_validation_twin() {
-    let c = run_prims("(mod good)\n(defn main [] (Pure 0))\n");
+    let c = run_prims("(mod good)\n(defn main [] (primitives/pure 0))\n");
     assert!(
         !c.contains("not a valid module name"),
         "a simple `mod` head `good` MUST pass binder-name validation (NOT be \
@@ -101,7 +101,7 @@ fn mod_simple_head_accepts_name_validation_twin() {
 // defect: class=silent-accept locus=crates/cranelisp-typecheck type-var minting excluded qualified names in compound positions (0589 sibling) found=S113 owner=/dev
 #[test]
 fn compound_qualified_lowercase_type_arg_errors_not_mints_neg() {
-    let c = run_prims("(defn f [:(Option user/x) a] a)\n(defn main [] (Pure 0))\n");
+    let c = run_prims("(defn f [:(Option user/x) a] a)\n(defn main [] (primitives/pure 0))\n");
     assert!(
         c.contains("unknown type"),
         "a qualified-lowercase type arg `user/x` in the compound position \

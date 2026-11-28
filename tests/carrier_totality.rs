@@ -32,9 +32,9 @@ use helpers::e2e::{PreludeVariant, run_through_all_modes};
 #[test]
 fn totality_all_local_body_resolves_local_all_modes() {
     run_through_all_modes(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (defn f [x] (let [y x] y))\n\
-         (defn main [] (Pure (f 42)))",
+         (defn main [] (primitives/pure (f 42)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);
@@ -51,10 +51,10 @@ fn totality_all_local_body_resolves_local_all_modes() {
 #[test]
 fn local_defn_param_shadows_global_resolves_local_all_modes() {
     run_through_all_modes(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (defn base [] 100)\n\
          (defn f [base] base)\n\
-         (defn main [] (Pure (f 42)))",
+         (defn main [] (primitives/pure (f 42)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);
@@ -70,10 +70,10 @@ fn local_defn_param_shadows_global_resolves_local_all_modes() {
 #[test]
 fn callable_param_shadows_same_named_top_level_function_all_modes() {
     run_through_all_modes(
-        "(import [primitives [Pure add-i64]])\n\
+        "(import [primitives [pure add-i64]])\n\
          (defn f [f] (f 41))\n\
          (defn inc [n] (add-i64 n 1))\n\
-         (defn main [] (Pure (f inc)))",
+         (defn main [] (primitives/pure (f inc)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);
@@ -86,10 +86,10 @@ fn callable_param_shadows_same_named_top_level_function_all_modes() {
 #[test]
 fn local_let_shadows_global_resolves_local_all_modes() {
     run_through_all_modes(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (defn base [] 100)\n\
          (defn f [] (let [base 42] base))\n\
-         (defn main [] (Pure (f)))",
+         (defn main [] (primitives/pure (f)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);
@@ -104,10 +104,10 @@ fn local_let_shadows_global_resolves_local_all_modes() {
 #[test]
 fn local_match_var_shadows_global_resolves_local_all_modes() {
     run_through_all_modes(
-        "(import [primitives [Pure]])\n\
+        "(import [primitives [pure]])\n\
          (defn base [] 100)\n\
          (defn f [v] (match v [base base]))\n\
-         (defn main [] (Pure (f 42)))",
+         (defn main [] (primitives/pure (f 42)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);
@@ -123,10 +123,10 @@ fn local_match_var_shadows_global_resolves_local_all_modes() {
 #[test]
 fn viacallee_param_callee_apply_runs_all_modes() {
     run_through_all_modes(
-        "(import [primitives [Pure add-i64]])\n\
+        "(import [primitives [pure add-i64]])\n\
          (defn ap [g x] (g x))\n\
          (defn inc [n] (add-i64 n 1))\n\
-         (defn main [] (Pure (ap inc 41)))",
+         (defn main [] (primitives/pure (ap inc 41)))",
         PreludeVariant::None,
     )
     .assert_all_equal(42);

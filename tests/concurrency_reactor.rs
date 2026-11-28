@@ -71,7 +71,7 @@ fn link_io_program_runs_without_executor() {
     let out = Cranelisp::new()
         .with_prelude(PreludeVariant::TestStandard)
         .link_then_run("io_main.cl")
-        .file("io_main.cl", "(defn main [] (Pure 7))")
+        .file("io_main.cl", "(defn main [] (primitives/pure 7))")
         .output();
     // The produced standalone binary RAN (not just linked): exit code carries the
     // computed value (§10.6.1). No executor is linked, yet the IO trampoline drives.
@@ -109,8 +109,8 @@ fn real_leaf_suspends_and_resumes_through_run_io() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{eff}]])\n\
-         (import [primitives [bind Pure]])\n\
-         (defn main [] (bind ({eff} 55) (fn [r] (Pure r))))\n",
+         (import [primitives [bind pure]])\n\
+         (defn main [] (bind ({eff} 55) (fn [r] (primitives/pure r))))\n",
         plat = ASYNC_LEAF_PLATFORM,
         eff = ASYNC_LEAF_EFFECT,
     );
@@ -149,11 +149,11 @@ fn two_real_leaves_in_par_overlap_max_not_sum_one_thread() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{eff}]])\n\
-         (import [primitives [bind Pure add-i64]])\n\
+         (import [primitives [bind pure add-i64]])\n\
          (defn main []\n\
            (bind ({eff} {d}) (fn [a]\n\
              (bind ({eff} {d}) (fn [b]\n\
-               (Pure (add-i64 a b)))))))\n",
+               (primitives/pure (add-i64 a b)))))))\n",
         plat = ASYNC_LEAF_PLATFORM,
         eff = ASYNC_LEAF_EFFECT,
         d = delay_ms,
@@ -189,8 +189,8 @@ fn real_leaf_i64_result_reads_back_correctly() {
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{eff}]])\n\
-         (import [primitives [bind Pure]])\n\
-         (defn main [] (bind ({eff} 42) (fn [r] (Pure r))))\n",
+         (import [primitives [bind pure]])\n\
+         (defn main [] (bind ({eff} 42) (fn [r] (primitives/pure r))))\n",
         plat = ASYNC_LEAF_PLATFORM,
         eff = ASYNC_LEAF_EFFECT,
     );

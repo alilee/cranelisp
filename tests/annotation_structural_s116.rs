@@ -56,7 +56,7 @@ fn structural_annotation_cold_warm_cache_round_trip() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .user(
             "(defmacro pass ([x] x))\n\
-             (defn main [] (Pure (pass :Int (add-i64 20 22))))\n",
+             (defn main [] (primitives/pure (pass :Int (add-i64 20 22))))\n",
         )
         .run("user.cl")
         .output();

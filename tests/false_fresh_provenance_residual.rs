@@ -29,7 +29,7 @@
 //! For EVERY vector the DETERMINISTIC signal pinned is the `--link` face: the
 //! default-compiled binary deterministically ABORTS (`corrupted double-linked
 //! list`, glibc heap-header integrity trip → SIGABRT, exit code None). Each
-//! `--link` test asserts the CORRECT clean exit (`main` returns `(Pure N)` →
+//! `--link` test asserts the CORRECT clean exit (`main` returns `(primitives/pure N)` →
 //! exit N); the SIGABRT (code None ≠ N) is a reliable RED that flips GREEN when
 //! the fix lands. Verified deterministic 6/6 runs per vector (S111 Phase-5).
 //!
@@ -117,7 +117,7 @@ fn container_element_provenance_returned_param_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the `--link` face (the DETERMINISTIC signal):
-// the linked binary MUST run to a clean exit (`main` returns `(Pure 2)` → exit
+// the linked binary MUST run to a clean exit (`main` returns `(primitives/pure 2)` → exit
 // 2). Today the premature free corrupts the heap and the binary
 // deterministically ABORTS (`corrupted double-linked list`, SIGABRT; 6/6 runs).
 // defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::VecLit-element-store-ProjectionOf-composition found=S111 owner=/dev
@@ -127,7 +127,7 @@ fn container_element_provenance_returned_param_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{B1_F}(defn main [] (Pure (vec-get (f [1 2 3]) 1)))\n"
+            "{B1_F}(defn main [] (primitives/pure (vec-get (f [1 2 3]) 1)))\n"
         ))
         .output()
         .assert_exit(2);
@@ -175,7 +175,7 @@ fn match_scrutinee_cow_var_pattern_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the `--link` face (the DETERMINISTIC signal):
-// `main` returns `(Pure 99)` → exit 99. Today the shape deterministically ABORTS
+// `main` returns `(primitives/pure 99)` → exit 99. Today the shape deterministically ABORTS
 // (`corrupted double-linked list`, SIGABRT; 6/6 runs, INCLUDING toggle-off — the
 // stacked backend crash).
 // defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::match-var-pattern-unconditional-ProjectionOf found=S111 owner=/dev
@@ -185,7 +185,7 @@ fn match_scrutinee_cow_var_pattern_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{B2_F}(defn main [] (Pure (vec-get (f [1 2 3]) 1)))\n"
+            "{B2_F}(defn main [] (primitives/pure (vec-get (f [1 2 3]) 1)))\n"
         ))
         .output()
         .assert_exit(99);
@@ -243,7 +243,7 @@ fn capture_let_bound_param_alias_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the `--link` face (the DETERMINISTIC signal):
-// `main` returns `(Pure 2)` → exit 2. Today the shape deterministically ABORTS
+// `main` returns `(primitives/pure 2)` → exit 2. Today the shape deterministically ABORTS
 // (`corrupted double-linked list`, SIGABRT; 6/6 runs).
 // defect: class=uaf locus=crates/cranelisp-backend let-bind-alias / closure-capture consume seam (FIXME 0668; 0669 re-attribution) found=S111 owner=/dev
 #[test]
@@ -251,7 +251,9 @@ fn capture_let_bound_param_alias_link_does_not_corrupt_heap() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
-        .user(&format!("{I1_MK}(defn main [] (Pure ((mk [1 2 3]))))\n"))
+        .user(&format!(
+            "{I1_MK}(defn main [] (primitives/pure ((mk [1 2 3]))))\n"
+        ))
         .output()
         .assert_exit(2);
 }
@@ -294,7 +296,7 @@ fn fresh_container_holding_cow_aliased_element_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the `--link` face (the DETERMINISTIC signal):
-// `main` returns `(Pure 9)` → exit 9. Today the shape deterministically ABORTS
+// `main` returns `(primitives/pure 9)` → exit 9. Today the shape deterministically ABORTS
 // (`corrupted double-linked list`, SIGABRT; 6/6 runs).
 // defect: class=uaf locus=crates/cranelisp-typecheck/src/ownership/transfer.rs::VecLit-element-store-holding-COW-alias found=S111 owner=/dev
 #[test]
@@ -303,7 +305,7 @@ fn fresh_container_holding_cow_aliased_element_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{I2_F}(defn main [] (Pure (vec-get (vec-get (f [1 2 3]) 0) 0)))\n"
+            "{I2_F}(defn main [] (primitives/pure (vec-get (vec-get (f [1 2 3]) 0) 0)))\n"
         ))
         .output()
         .assert_exit(9);

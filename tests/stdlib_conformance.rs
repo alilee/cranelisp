@@ -161,13 +161,14 @@ fn stdlib_all_public_modules_compile_and_run() {
     let mut failures: Vec<(String, String)> = Vec::new();
     for m in &public_modules {
         // `main` must return `IO _` under the workspace prelude (batch main
-        // shape); `Pure` wraps the trivial `0` exit code. `Pure` is imported
+        // shape); `pure` wraps the trivial `0` exit code. `pure` is imported
         // explicitly from `primitives` because a module with an explicit
         // `(import …)` does not receive the implicit prelude glob, so a bare
-        // `Pure` would be `undefined variable` — an artefact of the probe, not a
+        // `pure` would be `undefined variable` — an artefact of the probe, not a
         // module defect.
-        let probe =
-            format!("(import [{m} [*]])\n(import [primitives [Pure]])\n(defn main [] (Pure 0))\n");
+        let probe = format!(
+            "(import [{m} [*]])\n(import [primitives [pure]])\n(defn main [] (primitives/pure 0))\n"
+        );
         let out = Cranelisp::new()
             .use_workspace_stdlib_for_stdlib_conformance_only()
             .file("main.cl", &probe)
@@ -227,7 +228,7 @@ fn stdlib_all_public_modules_compile_and_run() {
 // A REPL session with the workspace stdlib (its prelude auto-loads, so `def`/
 // `const` are in scope without an explicit import — an explicit `(import …)` would
 // suppress the implicit prelude glob and lose the macros). REPL mode also sidesteps
-// the batch-`main` shape (`Pure` is not in the prelude glob).
+// the batch-`main` shape (`pure` is not in the prelude glob).
 fn stdlib_repl(stdin: &str) -> helpers::e2e::CrOutput {
     Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
@@ -344,7 +345,7 @@ fn timeout_mode_failures(label: &str, source: &str) -> Vec<String> {
 /// Keep the process alive after a timer win, so a non-cancelled losing action
 /// would have time to emit its marker rather than merely being cut off at exit.
 fn timeout_cancellation_mode_failures() -> Vec<String> {
-    const SOURCE: &str = "(platform stdio)\n(import [core.io [timeout]])\n(import [platform.stdio [print]])\n(import [primitives [Pure bind sleep Some None]])\n(defn losing-action [] (bind (sleep 50) (fn [_] (print \"S121_TIMEOUT_CANCELLED_LOSER_SHOULD_NOT_PRINT\"))))\n(defn main [] (bind (timeout 10 (losing-action)) (fn [r] (bind (sleep 100) (fn [_] (match r [None (Pure 0) (Some _) (Pure 1)]))))))\n";
+    const SOURCE: &str = "(platform stdio)\n(import [core.io [timeout]])\n(import [platform.stdio [print]])\n(import [primitives [pure bind sleep Some None]])\n(defn losing-action [] (bind (sleep 50) (fn [_] (print \"S121_TIMEOUT_CANCELLED_LOSER_SHOULD_NOT_PRINT\"))))\n(defn main [] (bind (timeout 10 (losing-action)) (fn [r] (bind (sleep 100) (fn [_] (match r [None (primitives/pure 0) (Some _) (primitives/pure 1)]))))))\n";
     let repl_input = format!("{SOURCE}(main)\n");
     let repl = Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
@@ -497,8 +498,8 @@ fn timeout_counterfactual_mode_failures(source: &str) -> Vec<String> {
 #[test]
 fn stdlib_timeout_public_concrete_call_and_lambda_control_across_modes() {
     // Retained verbatim from docs' S121 timeout.cl artifact.
-    const PUBLIC_SUBJECT: &str = "(import [core.io [timeout]])\n(import [primitives [Pure bind sleep Some None]])\n(defn main [] (bind (timeout 10 (sleep 1000)) (fn [r] (match r [(Some v) (Pure 1) None (Pure 0)]))))\n";
-    const LAMBDA_CONTROL: &str = "(import [primitives [Pure bind race sleep Some None]])\n(defn map-io [f io-val] (bind io-val (fn [x] (Pure (f x)))))\n(defn timeout [d io] (race (map-io (fn [x] (Some x)) io) (map-io (fn [_] None) (sleep d))))\n(defn main [] (bind (timeout 10 (sleep 1000)) (fn [r] (match r [(Some v) (Pure 1) None (Pure 0)]))))\n";
+    const PUBLIC_SUBJECT: &str = "(import [core.io [timeout]])\n(import [primitives [pure bind sleep Some None]])\n(defn main [] (bind (timeout 10 (sleep 1000)) (fn [r] (match r [(Some v) (primitives/pure 1) None (primitives/pure 0)]))))\n";
+    const LAMBDA_CONTROL: &str = "(import [primitives [pure bind race sleep Some None]])\n(defn map-io [f io-val] (bind io-val (fn [x] (primitives/pure (f x)))))\n(defn timeout [d io] (race (map-io (fn [x] (Some x)) io) (map-io (fn [_] None) (sleep d))))\n(defn main [] (bind (timeout 10 (sleep 1000)) (fn [r] (match r [(Some v) (primitives/pure 1) None (primitives/pure 0)]))))\n";
 
     let control_failures = timeout_mode_failures("lambda control", LAMBDA_CONTROL);
     let counterfactual_failures = timeout_counterfactual_mode_failures(PUBLIC_SUBJECT);
@@ -533,19 +534,19 @@ fn stdlib_core_io_ordered_two_action_sequence_reduction_across_modes() {
     const SOURCE: &str = r#"
 (import [core.io [sequence-io]])
 (import [collections.list [List Nil Cons]])
-(import [primitives [IO Pure bind eq-i64]])
+(import [primitives [IO pure bind eq-i64]])
 
-(defn nested-action [x] (bind (Pure x) (fn [v] (Pure v))))
+(defn nested-action [x] (bind (primitives/pure x) (fn [v] (primitives/pure v))))
 
 (defn main []
   (bind (sequence-io (Cons (nested-action 1) (Cons (nested-action 2) Nil)))
         (fn [xs]
           (match xs [(Cons a rest-a)
                        (match rest-a [(Cons b rest-b)
-                                      (match rest-b [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) 0 1) 1))
-                                                     _ (Pure 1)])
-                                      _ (Pure 1)])
-                     _ (Pure 1)]))))
+                                      (match rest-b [Nil (primitives/pure (if (eq-i64 a 1) (if (eq-i64 b 2) 0 1) 1))
+                                                     _ (primitives/pure 1)])
+                                      _ (primitives/pure 1)])
+                     _ (primitives/pure 1)]))))
 "#;
     let failures = core_io_mode_failures("ordered two-action sequence reduction", SOURCE);
     assert!(
@@ -565,9 +566,9 @@ fn stdlib_core_io_ordered_two_action_explicit_bind_control_across_modes() {
     const SOURCE: &str = r#"
 (import [core.io [sequence-io]])
 (import [collections.list [List Nil Cons]])
-(import [primitives [IO Pure bind eq-i64]])
+(import [primitives [IO pure bind eq-i64]])
 
-(defn nested-action [x] (bind (Pure x) (fn [v] (Pure v))))
+(defn nested-action [x] (bind (primitives/pure x) (fn [v] (primitives/pure v))))
 
 (defn main []
   (bind (nested-action 1)
@@ -577,10 +578,10 @@ fn stdlib_core_io_ordered_two_action_explicit_bind_control_across_modes() {
                   (let [xs (Cons a (Cons b Nil))]
                     (match xs [(Cons x rest-x)
                                  (match rest-x [(Cons y rest-y)
-                                                (match rest-y [Nil (Pure (if (eq-i64 x 1) (if (eq-i64 y 2) 0 1) 1))
-                                                               _ (Pure 1)])
-                                                _ (Pure 1)])
-                               _ (Pure 1)])))))))
+                                                (match rest-y [Nil (primitives/pure (if (eq-i64 x 1) (if (eq-i64 y 2) 0 1) 1))
+                                                               _ (primitives/pure 1)])
+                                                _ (primitives/pure 1)])
+                               _ (primitives/pure 1)])))))))
 "#;
     let failures = core_io_mode_failures("ordered two-action explicit-bind control", SOURCE);
     assert!(
@@ -599,17 +600,17 @@ fn stdlib_core_io_one_nested_action_sequence_control_across_modes() {
     const SOURCE: &str = r#"
 (import [core.io [sequence-io]])
 (import [collections.list [List Nil Cons]])
-(import [primitives [IO Pure bind eq-i64]])
+(import [primitives [IO pure bind eq-i64]])
 
-(defn nested-action [x] (bind (Pure x) (fn [v] (Pure v))))
+(defn nested-action [x] (bind (primitives/pure x) (fn [v] (primitives/pure v))))
 
 (defn main []
   (bind (sequence-io (Cons (nested-action 1) Nil))
         (fn [xs]
           (match xs [(Cons x rest)
-                       (match rest [Nil (Pure (if (eq-i64 x 1) 0 1))
-                                    _ (Pure 1)])
-                     _ (Pure 1)]))))
+                       (match rest [Nil (primitives/pure (if (eq-i64 x 1) 0 1))
+                                    _ (primitives/pure 1)])
+                     _ (primitives/pure 1)]))))
 "#;
     let failures = core_io_mode_failures("one nested-action sequence control", SOURCE);
     assert!(
@@ -628,11 +629,11 @@ fn stdlib_core_io_empty_sequence_returns_empty_across_modes() {
     const SOURCE: &str = r#"
 (import [core.io [sequence-io]])
 (import [collections.list [List Nil]])
-(import [primitives [IO Pure bind]])
+(import [primitives [IO pure bind]])
 
 (defn main []
   (bind (sequence-io :(List (IO Int)) Nil)
-        (fn [xs] (match xs [Nil (Pure 0) _ (Pure 1)]))))
+        (fn [xs] (match xs [Nil (primitives/pure 0) _ (primitives/pure 1)]))))
 "#;
     let failures = core_io_mode_failures("empty sequence result", SOURCE);
     assert!(
@@ -643,50 +644,52 @@ fn stdlib_core_io_empty_sequence_returns_empty_across_modes() {
 }
 
 // spec: spec/10-io.md §10.3 + §10.12.8 — `>>`/mapping/conditional/sequence IO composition and both derived-timeout outcomes execute through a public `core.io` import; spec/11-stdlib.md §11 — public stdlib imports remain usable.
-// defect: class=rc-miscount locus=public `core.io` composition boundary (internal source/locus unassigned) — the valid all-family program aborts with `STALE RC DEC` before its required zero result in REPL, `--run`, and `--link`.
+// defect: class=rc-miscount locus=crates/cranelisp-intrinsics/src/io.rs::run_io_trampoline_inner_async found=S121 owner=/dev fixed=S122/7f834bf6
+// Shared Bind field transfer caused the all-family program to abort with
+// `STALE RC DEC` before its required zero result in REPL, `--run`, and `--link`.
 #[test]
 fn stdlib_core_io_public_scalar_driver_across_modes() {
     const SOURCE: &str = r#"
 (import [core.io [>> map-io when-io unless-io sequence-io timeout]])
 (import [collections.list [List Nil Cons]])
-(import [primitives [IO Pure bind sleep Some None add-i64 eq-i64]])
+(import [primitives [IO pure bind sleep Some None add-i64 eq-i64]])
 
 (defn all-zero [xs]
   (match xs [Nil true
              (Cons x rest) (if (eq-i64 x 0) (all-zero rest) false)]))
 
 (defn check-then []
-  (bind (>> (Pure 1) (Pure 2)) (fn [x] (Pure (if (eq-i64 x 2) 0 1)))))
+  (bind (>> (primitives/pure 1) (primitives/pure 2)) (fn [x] (primitives/pure (if (eq-i64 x 2) 0 1)))))
 (defn check-map []
-  (bind (map-io (fn [x] (add-i64 x 1)) (Pure 2))
-        (fn [x] (Pure (if (eq-i64 x 3) 0 1)))))
+  (bind (map-io (fn [x] (add-i64 x 1)) (primitives/pure 2))
+        (fn [x] (primitives/pure (if (eq-i64 x 3) 0 1)))))
 (defn check-when-true []
-  (bind (when-io true (Pure 4)) (fn [x] (Pure (if (eq-i64 x 4) 0 1)))))
+  (bind (when-io true (primitives/pure 4)) (fn [x] (primitives/pure (if (eq-i64 x 4) 0 1)))))
 (defn check-when-false []
-  (bind (when-io false (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+  (bind (when-io false (primitives/pure 99)) (fn [x] (primitives/pure (if (eq-i64 x 0) 0 1)))))
 (defn check-unless-true []
-  (bind (unless-io true (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+  (bind (unless-io true (primitives/pure 99)) (fn [x] (primitives/pure (if (eq-i64 x 0) 0 1)))))
 (defn check-unless-false []
-  (bind (unless-io false (Pure 5)) (fn [x] (Pure (if (eq-i64 x 5) 0 1)))))
+  (bind (unless-io false (primitives/pure 5)) (fn [x] (primitives/pure (if (eq-i64 x 5) 0 1)))))
 (defn check-empty-sequence []
   (bind (sequence-io :(List (IO Int)) Nil)
-        (fn [xs] (match xs [Nil (Pure 0) _ (Pure 1)]))))
+        (fn [xs] (match xs [Nil (primitives/pure 0) _ (primitives/pure 1)]))))
 (defn check-ordered-sequence []
-  (bind (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil))))
+  (bind (sequence-io (Cons (primitives/pure 1) (Cons (primitives/pure 2) (Cons (primitives/pure 3) Nil))))
         (fn [xs] (match xs [(Cons a rest-a)
                              (match rest-a [(Cons b rest-b)
                                            (match rest-b [(Cons c rest-c)
-                                                         (match rest-c [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 0 1) 1) 1))
-                                                                        _ (Pure 1)])
-                                                         _ (Pure 1)])
-                                           _ (Pure 1)])
-                             _ (Pure 1)]))))
+                                                         (match rest-c [Nil (primitives/pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 0 1) 1) 1))
+                                                                        _ (primitives/pure 1)])
+                                                         _ (primitives/pure 1)])
+                                           _ (primitives/pure 1)])
+                             _ (primitives/pure 1)]))))
 (defn check-fast-timeout []
-  (bind (timeout 100 (Pure 9))
-        (fn [r] (match r [(Some v) (Pure (if (eq-i64 v 9) 0 1)) None (Pure 1)]))))
+  (bind (timeout 100 (primitives/pure 9))
+        (fn [r] (match r [(Some v) (primitives/pure (if (eq-i64 v 9) 0 1)) None (primitives/pure 1)]))))
 (defn check-timed-timeout []
   (bind (timeout 10 (sleep 1000))
-        (fn [r] (match r [None (Pure 0) (Some _) (Pure 1)]))))
+        (fn [r] (match r [None (primitives/pure 0) (Some _) (primitives/pure 1)]))))
 
 (defn main []
   (bind (sequence-io (Cons (check-then)
@@ -699,7 +702,7 @@ fn stdlib_core_io_public_scalar_driver_across_modes() {
                       (Cons (check-ordered-sequence)
                       (Cons (check-fast-timeout)
                       (Cons (check-timed-timeout) Nil)))))))))))
-        (fn [results] (Pure (if (all-zero results) 0 1)))))
+        (fn [results] (primitives/pure (if (all-zero results) 0 1)))))
 "#;
     let repl = stdlib_repl(&format!("{SOURCE}(main)\n"));
     let run = Cranelisp::new()
@@ -753,44 +756,44 @@ fn stdlib_core_io_nested_bind_outer_aggregation_control_across_modes() {
     const SOURCE: &str = r#"
 (import [core.io [>> map-io when-io unless-io sequence-io timeout]])
 (import [collections.list [List Nil Cons]])
-(import [primitives [IO Pure bind sleep Some None add-i64 eq-i64]])
+(import [primitives [IO pure bind sleep Some None add-i64 eq-i64]])
 
 (defn all-zero [xs]
   (match xs [Nil true
              (Cons x rest) (if (eq-i64 x 0) (all-zero rest) false)]))
 
 (defn check-then []
-  (bind (>> (Pure 1) (Pure 2)) (fn [x] (Pure (if (eq-i64 x 2) 0 1)))))
+  (bind (>> (primitives/pure 1) (primitives/pure 2)) (fn [x] (primitives/pure (if (eq-i64 x 2) 0 1)))))
 (defn check-map []
-  (bind (map-io (fn [x] (add-i64 x 1)) (Pure 2))
-        (fn [x] (Pure (if (eq-i64 x 3) 0 1)))))
+  (bind (map-io (fn [x] (add-i64 x 1)) (primitives/pure 2))
+        (fn [x] (primitives/pure (if (eq-i64 x 3) 0 1)))))
 (defn check-when-true []
-  (bind (when-io true (Pure 4)) (fn [x] (Pure (if (eq-i64 x 4) 0 1)))))
+  (bind (when-io true (primitives/pure 4)) (fn [x] (primitives/pure (if (eq-i64 x 4) 0 1)))))
 (defn check-when-false []
-  (bind (when-io false (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+  (bind (when-io false (primitives/pure 99)) (fn [x] (primitives/pure (if (eq-i64 x 0) 0 1)))))
 (defn check-unless-true []
-  (bind (unless-io true (Pure 99)) (fn [x] (Pure (if (eq-i64 x 0) 0 1)))))
+  (bind (unless-io true (primitives/pure 99)) (fn [x] (primitives/pure (if (eq-i64 x 0) 0 1)))))
 (defn check-unless-false []
-  (bind (unless-io false (Pure 5)) (fn [x] (Pure (if (eq-i64 x 5) 0 1)))))
+  (bind (unless-io false (primitives/pure 5)) (fn [x] (primitives/pure (if (eq-i64 x 5) 0 1)))))
 (defn check-empty-sequence []
   (bind (sequence-io :(List (IO Int)) Nil)
-        (fn [xs] (match xs [Nil (Pure 0) _ (Pure 1)]))))
+        (fn [xs] (match xs [Nil (primitives/pure 0) _ (primitives/pure 1)]))))
 (defn check-ordered-sequence []
-  (bind (sequence-io (Cons (Pure 1) (Cons (Pure 2) (Cons (Pure 3) Nil))))
+  (bind (sequence-io (Cons (primitives/pure 1) (Cons (primitives/pure 2) (Cons (primitives/pure 3) Nil))))
         (fn [xs] (match xs [(Cons a rest-a)
                              (match rest-a [(Cons b rest-b)
                                            (match rest-b [(Cons c rest-c)
-                                                         (match rest-c [Nil (Pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 0 1) 1) 1))
-                                                                        _ (Pure 1)])
-                                                         _ (Pure 1)])
-                                           _ (Pure 1)])
-                             _ (Pure 1)]))))
+                                                         (match rest-c [Nil (primitives/pure (if (eq-i64 a 1) (if (eq-i64 b 2) (if (eq-i64 c 3) 0 1) 1) 1))
+                                                                        _ (primitives/pure 1)])
+                                                         _ (primitives/pure 1)])
+                                           _ (primitives/pure 1)])
+                             _ (primitives/pure 1)]))))
 (defn check-fast-timeout []
-  (bind (timeout 100 (Pure 9))
-        (fn [r] (match r [(Some v) (Pure (if (eq-i64 v 9) 0 1)) None (Pure 1)]))))
+  (bind (timeout 100 (primitives/pure 9))
+        (fn [r] (match r [(Some v) (primitives/pure (if (eq-i64 v 9) 0 1)) None (primitives/pure 1)]))))
 (defn check-timed-timeout []
   (bind (timeout 10 (sleep 1000))
-        (fn [r] (match r [None (Pure 0) (Some _) (Pure 1)]))))
+        (fn [r] (match r [None (primitives/pure 0) (Some _) (primitives/pure 1)]))))
 
 (defn main []
   (bind (check-then)
@@ -813,7 +816,7 @@ fn stdlib_core_io_nested_bind_outer_aggregation_control_across_modes() {
                                                                         (fn [fast-timeout-result]
                                                                           (bind (check-timed-timeout)
                                                                                 (fn [timed-timeout-result]
-                                                                                  (Pure (if (all-zero (Cons then-result
+                                                                                  (primitives/pure (if (all-zero (Cons then-result
                                                                                                             (Cons map-result
                                                                                                             (Cons when-true-result
                                                                                                             (Cons when-false-result
@@ -875,7 +878,7 @@ fn stdlib_core_io_nested_bind_outer_aggregation_control_across_modes() {
 // spec: spec/09-macros.md §9.1.2 + §9.2 — macros receive `SexpAnnotated` for a reader-folded annotation and may return its subject as expansion output; spec/11-stdlib.md §11 — public stdlib helpers are reachable by explicit import.
 #[test]
 fn stdlib_core_syntax_annotated_helpers_macro_client_across_modes() {
-    const SOURCE: &str = "(import [core.syntax [annotated? annotation unannotate]])\n(import [macros [SexpAnnotated SexpSym SexpInt]])\n(import [primitives [Pure Some None add-i64]])\n(defmacro annotation-client [x] (if (annotated? x) (match (annotation x) [(Some _) (unannotate x) None (SexpInt 90)]) (match (annotation x) [None (unannotate x) (Some _) (SexpInt 91)])))\n(defmacro raw-annotation-control [] (let [raw (SexpAnnotated (SexpSym \"Int\") (SexpInt 4))] (if (annotated? raw) (match (annotation raw) [(Some _) (unannotate raw) None (SexpInt 92)]) (SexpInt 93))))\n(defn main [] (Pure (add-i64 (add-i64 (annotation-client :Int 7) (annotation-client 8)) (raw-annotation-control))))\n";
+    const SOURCE: &str = "(import [core.syntax [annotated? annotation unannotate]])\n(import [macros [SexpAnnotated SexpSym SexpInt]])\n(import [primitives [pure Some None add-i64]])\n(defmacro annotation-client [x] (if (annotated? x) (match (annotation x) [(Some _) (unannotate x) None (SexpInt 90)]) (match (annotation x) [None (unannotate x) (Some _) (SexpInt 91)])))\n(defmacro raw-annotation-control [] (let [raw (SexpAnnotated (SexpSym \"Int\") (SexpInt 4))] (if (annotated? raw) (match (annotation raw) [(Some _) (unannotate raw) None (SexpInt 92)]) (SexpInt 93))))\n(defn main [] (primitives/pure (add-i64 (add-i64 (annotation-client :Int 7) (annotation-client 8)) (raw-annotation-control))))\n";
     let repl = stdlib_repl(&format!("{SOURCE}(main)\n"));
     let run = Cranelisp::new()
         .use_workspace_stdlib_for_stdlib_conformance_only()
@@ -1163,7 +1166,7 @@ fn s124_stdlib_adt_traits_across_modes() {
     let source = format!(
         r#"(defn left [:Int n] :(collections.either/Either Int Int) (collections.either/Left n))
 (defn right [:Int n] :(collections.either/Either Int Int) (collections.either/Right n))
-(defn main [] (primitives/Pure {score}))
+(defn main [] (primitives/pure {score}))
 "#
     );
     let failures = core_io_mode_failures("T-STDLIB-ADT-TRAITS", &source);
@@ -1198,24 +1201,30 @@ fn stdlib_selftest_passes(out: &helpers::e2e::CrOutput) -> bool {
         && &tallies[0][2] == "0"
 }
 
-fn s124_stdlib_selftests(shell: &str) {
-    let started = std::time::Instant::now();
+fn stdlib_selftest_modules() -> Vec<PathBuf> {
     let stdlib = stdlib_dir(); // read-only on project_root
     let mut files = Vec::new();
     collect_cl_files(&stdlib, &mut files);
     files.sort();
+    files.retain(|file| declares_private_child(file, "test"));
+    files
+}
+
+fn stdlib_selftest_shell(module: &str) -> &str {
+    module.split_once('.').map_or("root", |(parent, _)| parent)
+}
+
+fn s124_stdlib_selftests(shell: &str) {
+    let started = std::time::Instant::now();
+    let stdlib = stdlib_dir(); // read-only on project_root
     let public = regex::Regex::new(r"(?m)^\((?:defn|defmacro|deftrait)\s+([^\s()]+)").unwrap();
     let export = regex::Regex::new(r"(?m)^\(export\s+\[[^\s]+\s+\[([^\s\]]+)").unwrap();
     let mut modules = 0;
     let mut failures = Vec::new();
-    for file in files {
+    for file in stdlib_selftest_modules() {
         let source = fs::read_to_string(&file).unwrap();
-        if !declares_private_child(&file, "test") {
-            continue;
-        }
         let module = module_path(&file, &stdlib);
-        let module_shell = module.split_once('.').map_or("root", |(parent, _)| parent);
-        if module_shell != shell {
+        if stdlib_selftest_shell(&module) != shell {
             continue;
         }
         let symbol = public
@@ -1274,50 +1283,101 @@ fn s124_stdlib_selftest_check_detects_empty_and_failed_discovery() {
     }
 }
 
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
-#[test]
-fn s124_stdlib_selftests_root() {
-    s124_stdlib_selftests("root");
+// Generate the covered-shell list and its executing cells together so a list
+// entry cannot claim coverage without creating a runner.
+macro_rules! stdlib_selftest_cells {
+    ($($name:ident => $shell:literal),+ $(,)?) => {
+        const STDLIB_SELFTEST_SHELLS: &[&str] = &[$($shell),+];
+
+        $(
+            // spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+            #[test]
+            fn $name() {
+                s124_stdlib_selftests($shell);
+            }
+        )+
+    };
 }
 
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
-#[test]
-fn s124_stdlib_selftests_collections() {
-    s124_stdlib_selftests("collections");
+stdlib_selftest_cells! {
+    s124_stdlib_selftests_root => "root",
+    s124_stdlib_selftests_collections => "collections",
+    s124_stdlib_selftests_compare => "compare",
+    s124_stdlib_selftests_core => "core",
+    s124_stdlib_selftests_fn => "fn",
+    s124_stdlib_selftests_io => "io",
+    s124_stdlib_selftests_num => "num",
+    s124_stdlib_selftests_testing => "testing",
+    s124_stdlib_selftests_text => "text",
 }
 
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+// spec: stdlib/AGENTS.md §Loading and running self-tests; AGENTS.md §Assurance — T-SELFTEST-IO shell-coverage maintenance check
 #[test]
-fn s124_stdlib_selftests_compare() {
-    s124_stdlib_selftests("compare");
+fn s125_stdlib_selftest_shell_coverage() {
+    let stdlib = stdlib_dir(); // read-only on project_root
+    let shells: std::collections::BTreeSet<_> = stdlib_selftest_modules()
+        .iter()
+        .map(|file| module_path(file, &stdlib))
+        .map(|module| stdlib_selftest_shell(&module).to_owned())
+        .collect();
+    assert!(
+        !shells.is_empty(),
+        "must discover shells declaring test children"
+    );
+    let uncovered: Vec<_> = shells
+        .iter()
+        .filter(|shell| !STDLIB_SELFTEST_SHELLS.contains(&shell.as_str()))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "stdlib self-test shells without runner cells: {uncovered:?}"
+    );
 }
 
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+// spec: repl/spec.md §3.4; spec/10-io.md §10.2 — T-PURE-ID stdlib identity maintenance.
 #[test]
-fn s124_stdlib_selftests_core() {
-    s124_stdlib_selftests("core");
+fn s125_pure_identity_repl_neg_no_library_ambiguity() {
+    let out = stdlib_repl("/info pure\n(import [primitives [pure]])\n/info pure\n(pure 1)\n");
+    let out = out.assert_ok().assert_stdout_contains(":primitives/Int 1");
+    let rows = helpers::e2e::repl_output_lines(&out.stdout);
+    let identities: Vec<_> = rows
+        .iter()
+        .filter(|line| line.contains("; primitive"))
+        .collect();
+    assert_eq!(
+        identities.len(),
+        2,
+        "both /info queries must name the primitive: {}\n{}",
+        out.stdout,
+        out.stderr
+    );
+    for row in identities {
+        assert!(row.contains(" primitives/pure ; primitive"), "{row}");
+    }
+    let diagnostics = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !diagnostics.contains("error") && !diagnostics.contains("ambiguous"),
+        "stdout:{}\nstderr:{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
+// spec: spec/10-io.md §10.2; spec/08-modules.md §8.8.1 — T-PURE-ID stdlib identity maintenance.
 #[test]
-fn s124_stdlib_selftests_fn() {
-    s124_stdlib_selftests("fn");
-}
-
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
-#[test]
-fn s124_stdlib_selftests_num() {
-    s124_stdlib_selftests("num");
-}
-
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
-#[test]
-fn s124_stdlib_selftests_testing() {
-    s124_stdlib_selftests("testing");
-}
-
-// spec: stdlib/AGENTS.md §Loading and running self-tests — T-STDLIB-SELFTESTS maintenance check
-#[test]
-fn s124_stdlib_selftests_text() {
-    s124_stdlib_selftests("text");
+fn s125_pure_identity_run_neg_no_library_ambiguity() {
+    let out = Cranelisp::new()
+        .use_workspace_stdlib_for_stdlib_conformance_only()
+        .user("(import [primitives [pure]])\n(defn main [] (pure 1))\n")
+        .run("user.cl")
+        .timeout(Duration::from_secs(90))
+        .output();
+    let out = out.assert_exit(1);
+    let diagnostics = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !diagnostics.contains("error") && !diagnostics.contains("ambiguous"),
+        "stdout:{}\nstderr:{}",
+        out.stdout,
+        out.stderr
+    );
 }

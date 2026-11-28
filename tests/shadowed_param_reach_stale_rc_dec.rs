@@ -72,48 +72,48 @@ use helpers::marginal::{Child, MarginalPair};
 // Row C — SUBJECT. The inner `let` rebinds the name `a` to parameter `n`
 // (an `Int`). `x` was minted from parameter `a` BEFORE the shadow.
 const C_SHADOWED_PARAM: &str = "\
-(import [primitives [str-len Pure]])
+(import [primitives [str-len pure]])
 (defn f [a n]
   (let [x a]
     (let [a n]
       x)))
 (defn main []
-  (Pure (str-len (f \"m\" 1))))
+  (primitives/pure (str-len (f \"m\" 1))))
 ";
 
 // Row C — CONTROL. Identical but for the inner binder's name (`a` → `z`).
 const D_RENAMED_CONTROL: &str = "\
-(import [primitives [str-len Pure]])
+(import [primitives [str-len pure]])
 (defn f [a n]
   (let [x a]
     (let [z n]
       x)))
 (defn main []
-  (Pure (str-len (f \"m\" 1))))
+  (primitives/pure (str-len (f \"m\" 1))))
 ";
 
 // Row C′ — SUBJECT. The shadow binder's RHS is a FRESH LITERAL reaching no
 // parameter at all, and the same wrong ABI half was published for it. This face
 // never aborted; it freed the argument string early and silently.
 const C_PRIME_FRESH_RHS_SHADOW: &str = "\
-(import [primitives [str-len Pure]])
+(import [primitives [str-len pure]])
 (defn f [a n]
   (let [x a]
     (let [a \"q\"]
       x)))
 (defn main []
-  (Pure (str-len (f \"m\" 1))))
+  (primitives/pure (str-len (f \"m\" 1))))
 ";
 
 // Row C′ — CONTROL. Identical but for the inner binder's name (`a` → `w`).
 const G_PRIME_RENAMED_CONTROL: &str = "\
-(import [primitives [str-len Pure]])
+(import [primitives [str-len pure]])
 (defn f [a n]
   (let [x a]
     (let [w \"q\"]
       x)))
 (defn main []
-  (Pure (str-len (f \"m\" 1))))
+  (primitives/pure (str-len (f \"m\" 1))))
 ";
 
 fn run_with_rc_stats(src: &str) -> helpers::e2e::CrOutput {
@@ -349,25 +349,25 @@ fn binder_rename_must_not_change_rc_counters() {
 // name `b` to the `Int` parameter INSIDE ITS OWN SCOPE. Once that scope closes,
 // `b` denotes "hello" again, so `(str-len b)` is 5 and `main` exits 5.
 const OUTER_REF_AFTER_SHADOW: &str = "\
-(import [primitives [str-len Pure]])
+(import [primitives [str-len pure]])
 (defn f [n]
   (let [b \"hello\"]
     (let [z (let [b n] b)]
       (str-len b))))
 (defn main []
-  (Pure (f 7)))
+  (primitives/pure (f 7)))
 ";
 
 // Face D — CONTROL. Identical but for the innermost binder's name (`b` → `c`),
 // which shadows nothing.
 const OUTER_REF_AFTER_RENAME_CONTROL: &str = "\
-(import [primitives [str-len Pure]])
+(import [primitives [str-len pure]])
 (defn f [n]
   (let [b \"hello\"]
     (let [z (let [c n] c)]
       (str-len b))))
 (defn main []
-  (Pure (f 7)))
+  (primitives/pure (f 7)))
 ";
 
 // Face E — SUBJECT. The same shadow, but the outer `b` is never referenced
@@ -375,24 +375,24 @@ const OUTER_REF_AFTER_RENAME_CONTROL: &str = "\
 // the `Int` 7, so `main` exits 7 whether or not the string is freed — the exit
 // code is NOT an oracle for this face, which is why it is measured marginally.
 const OUTER_LOCAL_RELEASE_SHADOWED: &str = "\
-(import [primitives [Pure]])
+(import [primitives [pure]])
 (defn f [n]
   (let [b \"hello\"]
     (let [z (let [b n] b)]
       z)))
 (defn main []
-  (Pure (f 7)))
+  (primitives/pure (f 7)))
 ";
 
 // Face E — CONTROL. Innermost binder `b` → `c`; shadows nothing.
 const OUTER_LOCAL_RELEASE_RENAME_CONTROL: &str = "\
-(import [primitives [Pure]])
+(import [primitives [pure]])
 (defn f [n]
   (let [b \"hello\"]
     (let [z (let [c n] c)]
       z)))
 (defn main []
-  (Pure (f 7)))
+  (primitives/pure (f 7)))
 ";
 
 // Face E — the CONTROL's own twin, one identifier from it (`c` → `w`) and
@@ -400,13 +400,13 @@ const OUTER_LOCAL_RELEASE_RENAME_CONTROL: &str = "\
 // instrument's zero polarity on this program shape: a rename BY ITSELF must
 // measure nothing, so the subject cell's reading is attributable to the shadow.
 const OUTER_LOCAL_RELEASE_RENAME_CONTROL_TWIN: &str = "\
-(import [primitives [Pure]])
+(import [primitives [pure]])
 (defn f [n]
   (let [b \"hello\"]
     (let [z (let [w n] w)]
       z)))
 (defn main []
-  (Pure (f 7)))
+  (primitives/pure (f 7)))
 ";
 
 /// Drive `src` through `--run` and through `--link`-then-run, returning both

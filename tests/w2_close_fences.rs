@@ -55,7 +55,7 @@ fn non_tail_shadowed_self_call_local_wins_repl() {
 fn non_tail_shadowed_self_call_local_wins_run() {
     run_prims_exit(
         "(defn s1 [x] (let [s1 (fn [y] y)] (add-i64 (s1 x) 1)))\n\
-         (defn main [] (Pure (s1 5)))\n",
+         (defn main [] (primitives/pure (s1 5)))\n",
         6,
     );
 }
@@ -195,7 +195,7 @@ fn fix_b_unshadowed_constrained_still_dispatches_control() {
 fn genuine_deep_tail_self_recursion_tco_no_stack_growth() {
     run_prims_exit(
         "(defn countdown [n] (if (eq-i64 n 0) 0 (countdown (sub-i64 n 1))))\n\
-         (defn main [] (Pure (countdown 100000)))\n",
+         (defn main [] (primitives/pure (countdown 100000)))\n",
         0,
     );
 }

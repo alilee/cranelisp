@@ -577,6 +577,9 @@ pub enum Stage<'a> {
     Remove(&'a str),
     /// Rename a test-owned file within the TempDir at the prompt.
     Rename(&'a str, &'a str),
+    /// Observe the owned project while the child is idle at a prompt.
+    /// An error terminates and reaps the child before the harness reports it.
+    Observe(fn(&Path) -> Result<(), String>),
     /// Leave the REPL idle to allow filesystem events and save coalescing.
     Wait(Duration),
     /// Write the bytes to a path under the TempDir once the duration has
@@ -758,6 +761,13 @@ impl CrInvocationOwned {
                     .unwrap_or_else(|e| panic!("staged remove {rel}: {e}")),
                 Stage::Rename(from, to) => fs::rename(self.cwd.join(from), self.cwd.join(to))
                     .unwrap_or_else(|e| panic!("staged rename {from} to {to}: {e}")),
+                Stage::Observe(observe) => {
+                    if let Err(message) = observe(&self.cwd) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(CrError::SpawnFailed(io::Error::other(message)));
+                    }
+                }
                 Stage::Wait(delay) => std::thread::sleep(*delay),
                 Stage::WriteAfterSpawn(..) => unreachable!("timed stages precede the rest"),
             }

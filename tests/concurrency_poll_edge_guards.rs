@@ -1,17 +1,8 @@
 //! Sprint 96 — effect-concurrency Chunk A: the poll-capacity edge guard, REVISED
 //! for the single-ABI cutover (A4c).
 //!
-//! SUPERSEDED PREMISE: the pre-pivot ruling ("Chunk A adds ZERO edges, NO ABI
-//! bump, v7 stays unfrozen") is RETIRED by the single-ABI cutover
-//! (`design/arch/platform-interface.md` §6.8.0/§6.8.0a): the ABI was bumped 7→8
-//! (the current stamp is 11, after the S122 `Effect` thunk-contract change) and
-//! the host-reactor ABI contracts ARE promoted to the default edge. This
-//! guard is updated accordingly. What still holds: poll-shape live capacity rides
-//! the IN-PROCESS node `(token, capacity)` convention — there is NO `effect_on_poll`
-//! public constructor (the platform writes the leading-pair operands, not a new
-//! ctor). Companion: `tests/facade_pif_rows.rs::unified_abi_contracts_present_dual_channel_deleted`.
-//!
-//! Posture: stays-green (RED if a poll-ctor leaks or the ABI stamp drifts off 11).
+//! Guards the public constructor inventory and ABI stamp. Runtime node layout
+//! is outside this source-level observation.
 
 use std::path::PathBuf;
 
@@ -27,16 +18,13 @@ fn read_pub_api(crate_name: &str) -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
-// spec: design/arch/platform-interface.md §6.8.0 — poll-shape live capacity rides
-// the in-process node `(token, capacity)` convention (NO new public constructor),
-// and the current platform ABI stamp is `ABI_VERSION = 11`. RED if a
-// poll-capacity ctor leaks onto the default edge or the ABI stamp drifts off 11.
+// spec: design/arch/platform-interface.md §6.8.0 — public edge and ABI compatibility.
 #[test]
 fn poll_capacity_rides_node_convention_and_abi_is_v11() {
     // (1) No NEW poll-shape public constructor on the default `cranelisp-platform`
     // edge. The S95 blocking `effect_on_resource_with_capacity` is allowed; a
     // `poll`-named capacity constructor on the default edge would be the leak this
-    // guards (poll capacity must ride the in-process node convention, gated).
+    // guards (runtime node representation is not observed here).
     let platform_api = read_pub_api("cranelisp-platform");
     for leaked in [
         "effect_on_poll",

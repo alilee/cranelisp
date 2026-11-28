@@ -102,7 +102,7 @@ fn vec_set_on_param_returned_and_consumed_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the same shape under `--link`: the linked
-// binary MUST run to a clean exit (`main` returns `(Pure 99)` → exit 99). Today
+// binary MUST run to a clean exit (`main` returns `(primitives/pure 99)` → exit 99). Today
 // the premature free corrupts the heap and the binary deterministically ABORTS
 // (SIGABRT) — the `--link` face of the same defect. A mode divergence in symptom
 // (REPL garbage value vs `--link` crash) is itself part of the record.
@@ -112,7 +112,7 @@ fn vec_set_on_param_returned_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{ASSOC_PARAM_RETURN}(defn main [] (Pure (vec-get (assoc [1 2 3] 1 99) 1)))\n"
+            "{ASSOC_PARAM_RETURN}(defn main [] (primitives/pure (vec-get (assoc [1 2 3] 1 99) 1)))\n"
         ))
         .output()
         .assert_exit(99);
@@ -194,7 +194,7 @@ fn vec_set_let_wrapped_param_returned_and_consumed_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the let-wrapped shape under `--link`: the
-// linked binary MUST run to a clean exit (`main` returns `(Pure 99)` → exit 99).
+// linked binary MUST run to a clean exit (`main` returns `(primitives/pure 99)` → exit 99).
 // Today the premature free corrupts the heap and the binary deterministically
 // ABORTS (`corrupted double-linked list`, SIGABRT) — the `--link` face of the
 // same S111-carried defect.
@@ -205,7 +205,7 @@ fn vec_set_let_wrapped_param_returned_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{LET_WRAPPED_PARAM_RETURN}(defn main [] (Pure (vec-get (f [1 2 3] 1 99) 1)))\n"
+            "{LET_WRAPPED_PARAM_RETURN}(defn main [] (primitives/pure (vec-get (f [1 2 3] 1 99) 1)))\n"
         ))
         .output()
         .assert_exit(99);
@@ -239,7 +239,7 @@ fn vec_set_match_arm_param_returned_and_consumed_repl_yields_correct_value() {
 }
 
 // spec: spec/12-runtime.md §12.1 — the match-arm shape under `--link`: the
-// linked binary MUST run to a clean exit (`main` returns `(Pure 99)` → exit 99).
+// linked binary MUST run to a clean exit (`main` returns `(primitives/pure 99)` → exit 99).
 // Today the premature free deterministically ABORTS (`corrupted double-linked
 // list`, SIGABRT) — the `--link` face of the same S111-carried defect.
 // defect: class=rc-miscount locus=crates/cranelisp-typecheck/src/ownership/transfer.rs:590 found=S110 owner=/dev
@@ -249,7 +249,7 @@ fn vec_set_match_arm_param_returned_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{MATCH_ARM_PARAM_RETURN}(defn main [] (Pure (vec-get (m [1 2 3] 1 99) 1)))\n"
+            "{MATCH_ARM_PARAM_RETURN}(defn main [] (primitives/pure (vec-get (m [1 2 3] 1 99) 1)))\n"
         ))
         .output()
         .assert_exit(99);
@@ -280,7 +280,7 @@ fn vec_set_match_arm_param_returned_link_does_not_corrupt_heap() {
 fn vec_set_if_branch_param_returned_yields_correct_value() {
     run_through_all_modes(
         "(defn f [v i x] (if (lt-i64 i 0) v (vec-set v i x)))\n\
-         (defn main [] (Pure (vec-get (f [1 2 3] 1 99) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (f [1 2 3] 1 99) 1)))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(99);
@@ -301,7 +301,7 @@ fn vec_set_if_branch_param_returned_yields_correct_value() {
 fn vec_push_chained_cow_returns_correct_vec() {
     run_through_all_modes(
         "(defn g [v] (vec-push (vec-push v 4) 5))\n\
-         (defn main [] (Pure (vec-get (g [1 2 3]) 4)))\n",
+         (defn main [] (primitives/pure (vec-get (g [1 2 3]) 4)))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(5);
@@ -331,7 +331,7 @@ fn vec_push_let_wrapped_param_returned_link_does_not_corrupt_heap() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
         .user(&format!(
-            "{LET_WRAPPED_PUSH_RETURN}(defn main [] (Pure (vec-get (fp [1 2 3] 99) 3)))\n"
+            "{LET_WRAPPED_PUSH_RETURN}(defn main [] (primitives/pure (vec-get (fp [1 2 3] 99) 3)))\n"
         ))
         .output()
         .assert_exit(99);
@@ -398,7 +398,7 @@ fn vec_set_match_arm_shared_source_copies_neg() {
 fn vec_set_let_wrapped_param_returned_all_modes_yield_correct_value() {
     run_through_all_modes(
         "(defn f [v i x] (let [r (vec-set v i x)] r))\n\
-         (defn main [] (Pure (vec-get (f [1 2 3] 1 99) 1)))\n",
+         (defn main [] (primitives/pure (vec-get (f [1 2 3] 1 99) 1)))\n",
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(99);

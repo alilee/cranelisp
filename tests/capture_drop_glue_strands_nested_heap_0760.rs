@@ -57,19 +57,31 @@ use helpers::e2e::{Cranelisp, PreludeVariant};
 /// The 100-iteration driver: a per-closure leak shows as ~N missing deallocs.
 const DRIVER: &str = "(defn go [n acc] (if (eq-i64 n 0) acc \
      (go (sub-i64 n 1) (add-i64 acc (one)))))\n\
-     (defn main [] (Pure (go 100 0)))\n";
+     (defn main [] (primitives/pure (go 100 0)))\n";
 
-fn rc_balance(src: &str, ownership_off: bool) -> (i64, i64) {
+fn rc_balance(src: &str, ownership_off: bool, linked: bool) -> (i64, i64) {
     let mut b = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
-        .run("user.cl")
         .user(src)
         .env("CRANELISP_RC_STATS", "1")
         .env("CRANELISP_NO_LENIENT", "1");
+    b = if linked {
+        b.link_then_run("user.cl")
+    } else {
+        b.run("user.cl")
+    };
     if ownership_off {
         b = b.env("CRANELISP_NO_OWNERSHIP", "1");
     }
     let out = b.output();
+    if linked {
+        assert_eq!(
+            out.status.code(),
+            Some(144),
+            "linked capture must execute: {}",
+            out.stderr
+        );
+    }
     let line = out
         .stderr
         .lines()
@@ -82,15 +94,21 @@ fn rc_balance(src: &str, ownership_off: bool) -> (i64, i64) {
             .find_map(|t| t.strip_prefix(k).and_then(|v| v.parse().ok()))
             .unwrap_or_else(|| panic!("no {k} in: {line}"))
     };
-    (field("allocs="), field("deallocs="))
+    let allocs = field("allocs=");
+    assert!(allocs > 0, "capture workload must allocate");
+    (allocs, field("deallocs="))
 }
 
 /// Assert EXACT balance in BOTH ownership-toggle states. Every shape in this file
 /// is toggle-independent, so a divergence between the two states would itself be
 /// news — the assertion states the invariant, not the current numbers.
 fn assert_balanced(shape: &str, src: &str) {
+    assert_balanced_mode(shape, src, false);
+}
+
+fn assert_balanced_mode(shape: &str, src: &str, linked: bool) {
     for ownership_off in [false, true] {
-        let (allocs, deallocs) = rc_balance(src, ownership_off);
+        let (allocs, deallocs) = rc_balance(src, ownership_off, linked);
         let toggle = if ownership_off {
             "CRANELISP_NO_OWNERSHIP=1"
         } else {
@@ -212,7 +230,7 @@ fn borrowed_argument_twins_of_k_and_l_balance_green() {
 // =============================================================================
 
 // The `solve-range` shape from the f4_sudoku golden drift: an ADT whose field is a
-// Vec of ADTs — one level deeper than the 0753 reduced `(Pure (peek (Gr [5 5])))`
+// Vec of ADTs — one level deeper than the 0753 reduced `(primitives/pure (peek (Gr [5 5])))`
 // pinned in `rc_escape_release_0763.rs`. GREEN in both toggles, with a scalar leaf
 // (401/401) and with a String leaf (601/601): the W3b type-directed release recurses
 // through ADT → Vec → ADT → String correctly. Pinned because "the fix handles the
@@ -269,7 +287,7 @@ fn nested_adt_chain_past_glue_depth_limit_does_not_leak() {
     let mut residues: Vec<(usize, bool, i64, i64)> = Vec::new();
     for depth in [5usize, 6] {
         for ownership_off in [false, true] {
-            let (allocs, deallocs) = rc_balance(&nested_chain(depth), ownership_off);
+            let (allocs, deallocs) = rc_balance(&nested_chain(depth), ownership_off, false);
             residues.push((depth, ownership_off, allocs, deallocs));
         }
     }
@@ -290,4 +308,13 @@ fn nested_adt_chain_past_glue_depth_limit_does_not_leak() {
          rest, so the leak grows one object per level past the limit.",
         leaking.join("; ")
     );
+}
+
+// spec: spec/12-runtime.md §12.3.1 — linked nested capture releases its vector and strings.
+#[test]
+fn closure_capturing_vec_of_strings_link_balances() {
+    let src = format!(
+        "(defn mk [] (let [v [\"aa\" \"bbb\"]] (fn [c] (add-i64 c (str-len (vec-get v 0))))))\n(defn one [] ((mk) 2))\n{DRIVER}"
+    );
+    assert_balanced_mode("K linked", &src, true);
 }

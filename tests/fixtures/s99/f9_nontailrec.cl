@@ -33,4 +33,4 @@
     (add-i64 (drive lo (mid-of lo hi)) (drive (mid-of lo hi) hi))))
 
 (defn main []
-  (Pure (rmod (drive 0 (extent)) 1000)))
+  (primitives/pure (rmod (drive 0 (extent)) 1000)))

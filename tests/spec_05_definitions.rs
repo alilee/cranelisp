@@ -692,11 +692,11 @@ fn single_ctor_product_constructor_passed_as_higher_order_arg() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Int add-i64 Pure]])\n\
+            "(import [primitives [Int add-i64 pure]])\n\
              (deftype R [:Int w :Int h])\n\
              (defn apply2 [f a b] (f a b))\n\
              (defn area [c] (match c [(R w h) (add-i64 w h)]))\n\
-             (defn main [] (Pure (area (apply2 R 3 4))))",
+             (defn main [] (primitives/pure (area (apply2 R 3 4))))",
         )
         .run("main.cl")
         .output()
@@ -779,8 +779,8 @@ fn forward_reference_between_defns() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n\
-             (defn main [] (Pure (use-helper)))\n\
+            "(import [primitives [pure]])\n\
+             (defn main [] (primitives/pure (use-helper)))\n\
              (defn use-helper [] (helper-fn))\n\
              (defn helper-fn [] 5)",
         )
@@ -809,7 +809,7 @@ fn defns_mutual_forward_references() {
             "(import [primitives [*]])\n\
              (defn is-positive [n] (if (gt-i64 n 0) 1 0))\n\
              (defn classify [n] (if (eq-i64 (is-positive n) 1) (add-i64 n 10) (sub-i64 0 n)))\n\
-             (defn main [] (Pure (add-i64 (classify 5) (classify (sub-i64 0 3)))))",
+             (defn main [] (primitives/pure (add-i64 (classify 5) (classify (sub-i64 0 3)))))",
         )
         .run("main.cl")
         .output()
@@ -831,7 +831,7 @@ fn impl_body_needing_other_impl_program(int_impl_first: bool) -> String {
         "(deftype (Opt a) Nope (Yep [:a v]))\n\
          (deftrait Size (size [self] Int))\n\
          {first}{second}\
-         (defn main [] (Pure (size (Yep 3))))\n"
+         (defn main [] (primitives/pure (size (Yep 3))))\n"
     )
 }
 
@@ -1013,7 +1013,7 @@ fn accessor_cross_type_duplicate_field_name() {
         .user(
             "(deftype Box [:primitives/Int v])\n\
              (deftype Cup [:primitives/Int v])\n\
-             (defn main [] (Pure (v (Box 5))))",
+             (defn main [] (primitives/pure (v (Box 5))))",
         )
         .output()
         .assert_exit(5);
@@ -1026,7 +1026,7 @@ fn accessor_cross_type_duplicate_field_name() {
         .user(
             "(deftype Box [:primitives/Int v])\n\
              (deftype Cup [:primitives/Int v])\n\
-             (defn main [] (Pure (match (Box 5) [(Box v) v])))",
+             (defn main [] (primitives/pure (match (Box 5) [(Box v) v])))",
         )
         .output()
         .assert_exit(5);
@@ -1037,7 +1037,7 @@ fn accessor_cross_type_duplicate_field_name() {
         .user(
             "(deftype Box [:primitives/Int v])\n\
              (deftype Cup [:primitives/Int v])\n\
-             (defn main [] (Pure (match (Cup 9) [(Cup v) v])))",
+             (defn main [] (primitives/pure (match (Cup 9) [(Cup v) v])))",
         )
         .output()
         .assert_exit(9);
@@ -1322,7 +1322,7 @@ fn multi_clause_defn_self_call_run_computes_15() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(&format!(
-            "{SUM_TO_FACE_B}\n(defn main [] (Pure (sum-to 5)))"
+            "{SUM_TO_FACE_B}\n(defn main [] (primitives/pure (sum-to 5)))"
         ))
         .output();
     let combined = format!("{}{}", out.stdout, out.stderr);
@@ -1354,7 +1354,7 @@ fn multi_clause_defn_self_call_run_computes_15() {
 #[test]
 fn multi_clause_defn_self_call_repl_equals_run_neg() {
     run_through_all_modes(
-        &format!("{SUM_TO_FACE_B}\n(defn main [] (Pure (sum-to 5)))\n"),
+        &format!("{SUM_TO_FACE_B}\n(defn main [] (primitives/pure (sum-to 5)))\n"),
         PreludeVariant::PrimitivesOnly,
     )
     .assert_all_equal(15);
@@ -1640,13 +1640,13 @@ fn defn_multi_arity_unannotated_delegating_clause_backflow_compiles() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(import [primitives [Pure Int add-i64]])\n\
+            "(import [primitives [pure Int add-i64]])\n\
              (deftype Position PZero)\n\
              (deftype Rotation RZero)\n\
              (defn rp\n\
                ([p rot] (rp p rot 0))\n\
                ([:Position p :Rotation rot :Int idx] idx))\n\
-             (defn main [] (Pure (add-i64 (rp PZero RZero) 7)))\n",
+             (defn main [] (primitives/pure (add-i64 (rp PZero RZero) 7)))\n",
         )
         .output();
     let text = format!("{}\n{}", out.stdout, out.stderr);
@@ -1670,13 +1670,13 @@ fn defn_multi_arity_annotated_clauses_compile() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(import [primitives [Pure Int add-i64]])\n\
+            "(import [primitives [pure Int add-i64]])\n\
              (deftype Position PZero)\n\
              (deftype Rotation RZero)\n\
              (defn rp\n\
                ([:Position p :Rotation rot] (rp p rot 0))\n\
                ([:Position p :Rotation rot :Int idx] idx))\n\
-             (defn main [] (Pure (add-i64 (rp PZero RZero) (rp PZero RZero 7))))\n",
+             (defn main [] (primitives/pure (add-i64 (rp PZero RZero) (rp PZero RZero 7))))\n",
         )
         .output()
         .assert_exit(7);
@@ -1762,7 +1762,7 @@ fn multi_arity_same_written_var_independent_per_clause() {
 //   - was mode-divergent as a SYMPTOM — `(defn h (…) (…))` + `(h 7)` evaluated
 //     correctly in the REPL while batch `--run` failed — but the root cause was
 //     the typecheck finalize gate/reslot ordering, not an int/backend GOT slot.
-// The correct behaviour is exit 7 (`(h 7)` → clause 1 → 7 → `(Pure 7)`); this
+// The correct behaviour is exit 7 (`(h 7)` → clause 1 → 7 → `(primitives/pure 7)`); this
 // guard is now GREEN and guards against regression of the finalize reslot.
 // defect: class=wrong-reject locus=crates/cranelisp-typecheck/src/program/finalize.rs::finalize_check_result_inner found=S110 owner=/dev
 #[test]
@@ -1772,7 +1772,7 @@ fn multi_arity_call_from_main_batch_no_main_neg() {
         .run("user.cl")
         .user(
             "(defn h ([:Int x] x) ([:Int x :Int y] x))\n\
-             (defn main [] (Pure (h 7)))\n",
+             (defn main [] (primitives/pure (h 7)))\n",
         )
         .output();
     let text = format!("{}\n{}", out.stdout, out.stderr);
@@ -1782,12 +1782,12 @@ fn multi_arity_call_from_main_batch_no_main_neg() {
          `entry module has no \\`main\\` function` — `main` is plainly defined \
          (C-4, §5.1.2); got:\n{text}"
     );
-    // A `(Pure n)` `main` exits with code `n`, so the correct disposition is
+    // A `(primitives/pure n)` `main` exits with code `n`, so the correct disposition is
     // exit 7 — NOT `status.success()` (which requires exit 0). The bug currently
     // yields exit 1 with the bogus no-`main` error.
     assert!(
         out.status.code() == Some(7),
-        "`main` returns `(Pure (h 7))` = `(Pure 7)` ⇒ exit 7; got exit {:?}:\n{text}",
+        "`main` returns `(primitives/pure (h 7))` = `(primitives/pure 7)` ⇒ exit 7; got exit {:?}:\n{text}",
         out.status.code()
     );
 }
@@ -1808,11 +1808,11 @@ fn multi_arity_unpinned_free_var_variant_delegation_pins_accepts() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(import [primitives [Pure Int add-i64]])\n\
+            "(import [primitives [pure Int add-i64]])\n\
              (defn rp\n\
                ([:a p :a rot] (rp p rot 0))\n\
                ([:Int p :Int rot :Int idx] idx))\n\
-             (defn main [] (Pure (add-i64 (rp 1 2) 5)))\n",
+             (defn main [] (primitives/pure (add-i64 (rp 1 2) 5)))\n",
         )
         .output();
     let text = format!("{}\n{}", out.stdout, out.stderr);
@@ -1860,7 +1860,8 @@ fn same_arity_unifiable_clauses_call_site_ambiguous_neg() {
          and `[:a x]` clauses can unify (§5.1.1); got:\n{c}"
     );
     // `--run` facet: the ambiguity is mode-uniform.
-    let run = run_prims_05("(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure (f 1)))\n");
+    let run =
+        run_prims_05("(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (primitives/pure (f 1)))\n");
     assert!(
         !run.status.success(),
         "the same-arity-unifiable call ambiguity MUST also fire under `--run` \
@@ -1892,7 +1893,8 @@ fn same_arity_unifiable_clauses_definition_site_error_neg() {
          (§5.1.2 MUST), NOT accepted silently and deferred to the call; got:\n{c}"
     );
     // `--run` facet: the definition-site rejection is mode-uniform.
-    let run = run_prims_05("(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (Pure 0))\n");
+    let run =
+        run_prims_05("(defn f ([:Int x] x) ([:a x] x))\n(defn main [] (primitives/pure 0))\n");
     assert!(
         !run.status.success(),
         "the same-arity-unifiable definition-site rejection MUST also fire under \
@@ -2014,8 +2016,9 @@ fn ambiguous_clause_diagnostic_cites_standalone_equivalence() {
 // instantiations: `(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))`;
 // `(g 3)` → 6 (Int instance), `(g 1.5)` → 3.0 (Float instance — the SECOND mono
 // instance of the same clause template), `(g 2 3)` → 5 (concrete 2-arg clause).
-// RED at HEAD (the constrained clause is rejected-by-construction). GREEN when
-// the §11.4 constrained-cell rework lands.
+// All legs pass except the cached-REPL leg, one of T-NARROW's cells
+// (tests/plan/s125-evidence-delta.md §17.3). It turns green with the carried
+// constrained_file_cluster_narrowing::s125_t_narrow_file_int_use_preserves_float_{repl,run} cells.
 // spec: spec/05-definitions.md §5.1.2 — a constrained-polymorphic clause is
 // admissible when non-overlapping; monomorphised per concrete use.
 #[test]
@@ -2033,7 +2036,7 @@ fn constrained_clause_nonoverlapping_arity_dispatches_two_instantiations() {
     // Mode-×3 facet: the Int-summable observation is equivalent across modes.
     run_through_all_modes(
         "(defn g ([:a x] (+ x x)) ([:Int x :Int y] (add-i64 x y)))\n\
-         (defn main [] (Pure (add-i64 (g 3) (g 2 3))))\n",
+         (defn main [] (primitives/pure (add-i64 (g 3) (g 2 3))))\n",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(11); // (g 3)=6, (g 2 3)=5 → 11
@@ -2119,7 +2122,7 @@ fn constrained_clause_same_arity_concrete_overlap_ambiguous_neg() {
     let run = Cranelisp::new()
         .with_prelude(PreludeVariant::TestStandard)
         .run("user.cl")
-        .user("(defn g ([:a x] (+ x x)) ([:Int x] x))\n(defn main [] (Pure (g 5)))\n")
+        .user("(defn g ([:a x] (+ x x)) ([:Int x] x))\n(defn main [] (primitives/pure (g 5)))\n")
         .output();
     assert!(
         !run.status.success(),
@@ -2275,7 +2278,7 @@ fn s124_same_cluster_overload(reverse: bool, free_control: bool, mode: &str) {
         format!("{header}{helper}{caller}")
     };
     let name = if free_control { "g" } else { "size" };
-    let main = format!("(defn main [] (Pure (add-i64 40 ({name} (Yep 3)))))");
+    let main = format!("(defn main [] (primitives/pure (add-i64 40 ({name} (Yep 3)))))");
     let program = format!("(import [primitives [*]])\n{definitions}{main}\n");
     let cr = Cranelisp::new();
     let out = match mode {

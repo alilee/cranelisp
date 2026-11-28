@@ -54,7 +54,7 @@ fn t_s2_2_inline_adt_arg_wrapping_vec_preserves_len() {
     let source = r#"(platform stdio)
 (import [primitives [*]])
 (import [platform.stdio [print]])
-(import [primitives [bind Pure]])
+(import [primitives [bind pure]])
 
 (deftype (Box a) [:a cells])
 
@@ -158,7 +158,7 @@ fn nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg() {
     // inner Vec, and rewraps — identical in shape to t_s2_2's `box-set`. The loop
     // binds g2 then uses it TWICE per step (threaded forward + inner-Vec read).
     // Primitives + special forms only — free-standing, ZERO stdlib.
-    let source = r#"(import [primitives [Int add-i64 sub-i64 le-i64 vec-get vec-set Pure]])
+    let source = r#"(import [primitives [Int add-i64 sub-i64 le-i64 vec-get vec-set pure]])
 (deftype Cell [:Int v])
 (deftype (Grid a) [:a cells])
 (defn unc [c] (match c [(Cell x) x]))
@@ -169,7 +169,7 @@ fn nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg() {
     acc
     (let [g2 (set-cell g 0 i)]
       (loop g2 (sub-i64 i 1) (add-i64 acc (unc (vec-get (gcells g2) 0)))))))
-(defn main [] (Pure (loop (Grid [(Cell 0) (Cell 1) (Cell 2)]) 50 0)))
+(defn main [] (primitives/pure (loop (Grid [(Cell 0) (Cell 1) (Cell 2)]) 50 0)))
 "#;
     let out = Cranelisp::new()
         .run("user.cl")
@@ -2684,9 +2684,8 @@ fn s60_run_tests_reduction_1_exemplar_batched_failing() {
     let exit = out.status.code();
     let combined = combined_out(&out);
 
-    // Wave-E `html.cl` additions raised the exemplar's in-language test count
-    // from 10 to 12 (re-measured /qa 2026-06-18 — `12 passed in`).
-    let tests_all_ran = combined.contains("12 passed in");
+    // Sprint 125's 404-escaping test raised the exemplar's html test count to 13.
+    let tests_all_ran = combined.contains("13 passed in");
     let load_err = combined.contains("no parsed sexps for module 'user'");
     let clean_exit = exit == Some(0);
 
@@ -3128,14 +3127,14 @@ fn regression_0179_cluster_union_read_staging_and_live() {
 //       codegen-regression guard for the inner-descent discriminator fix.
 #[test]
 fn regression_s92_mono_doubly_nested_lambda_no_symbol_collision() {
-    let src = "(import [primitives [add-i64 not Pure]])\n\
+    let src = "(import [primitives [add-i64 not pure]])\n\
                (defn twice-thunk [f x]\n\
                  (let [g (fn [] (fn [] (f x)))]\n\
                    ((g))))\n\
                (defn main []\n\
                  (let [a (twice-thunk (fn [n] (add-i64 n 1)) 10)\n\
                        b (twice-thunk (fn [p] (not p)) false)]\n\
-                   (Pure (if b a 0))))\n";
+                   (primitives/pure (if b a 0))))\n";
     Cranelisp::new()
         .run("user.cl")
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -3164,7 +3163,7 @@ fn regression_s92_mono_doubly_nested_lambda_no_symbol_collision() {
 //     a recursive `do` macro DEFINED-but-unused does not overflow; a
 //     non-recursive macro does not overflow.
 //   - `pure` (the imported fn) IS the trigger, but NOT because of its name or
-//     the `Pure` constructor: an imported `(defn lift [x] (Pure x))` overflows,
+//     the `pure` lift: an imported `(defn lift [x] (primitives/pure x))` overflows,
 //     and so does an imported `(defn pure [x] x)`.
 //   - The razor: an imported one-arg fn that returns a CONSTANT does NOT
 //     overflow; an imported one-arg fn that returns its PARAMETER (i.e. is
@@ -3336,9 +3335,9 @@ fn s79_quasiquote_macro_resolves_macros_scons_in_clause_body() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [add-i64 Pure]])\n\
+            "(import [primitives [add-i64 pure]])\n\
              (defmacro inc [x] `(add-i64 ~x 1))\n\
-             (defn main [] (Pure (inc 40)))",
+             (defn main [] (primitives/pure (inc 40)))",
         )
         .output()
         .assert_exit(41);
@@ -3364,10 +3363,10 @@ fn s79_fq_field_type_primitives_int_resolves_without_import() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [Pure]])\n\
+            "(import [primitives [pure]])\n\
              (deftype Box (ABox [:primitives/Int n]))\n\
              (defn unbox [b] (match b [(ABox n) n]))\n\
-             (defn main [] (Pure (unbox (ABox 7))))",
+             (defn main [] (primitives/pure (unbox (ABox 7))))",
         )
         .output()
         .assert_exit(7);
@@ -3432,11 +3431,11 @@ fn fixme_0373_polymorphic_result_fn_value_two_hops_no_crash() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int sub-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64]])\n\
              (defn neg [:Int x] :Int (sub-i64 0 x))\n\
              (defn h1 [f] (h2 f))\n\
              (defn h2 [f] (f 5))\n\
-             (defn main [] :(IO Int) (Pure (h1 neg)))",
+             (defn main [] :(IO Int) (primitives/pure (h1 neg)))",
         )
         .output()
         // Currently SIGSEGVs (status.code() == None) — this assertion FAILS
@@ -3519,10 +3518,10 @@ fn fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash() {
              (defn h2 [f] (f 5))",
         )
         .user(
-            "(import [primitives [IO Pure Int sub-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64]])\n\
              (import [hop [h1]])\n\
              (defn neg [:Int x] :Int (sub-i64 0 x))\n\
-             (defn main [] :(IO Int) (Pure (h1 neg)))",
+             (defn main [] :(IO Int) (primitives/pure (h1 neg)))",
         )
         .output()
         // Currently SIGSEGVs (status.code() == None) — this assertion FAILS
@@ -3585,12 +3584,12 @@ fn mono_tier2_generic_adt_field_through_hof_no_crash() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int sub-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64]])\n\
              (deftype (Box a) (Box [:a val]))\n\
              (defn mk [x] (Box x))\n\
              (defn thru [g x] (g x))\n\
              (defn get [b] (match b [(Box v) v]))\n\
-             (defn main [] :(IO Int) (Pure (get (thru mk (sub-i64 0 5)))))",
+             (defn main [] :(IO Int) (primitives/pure (get (thru mk (sub-i64 0 5)))))",
         )
         .output()
         // RED today (SIGSEGV): `mk`'s `(Box a)` result through the HOF `thru`
@@ -3615,10 +3614,10 @@ fn mono_tier2_hof_polymorphic_fn_arg_no_crash() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int sub-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64]])\n\
              (defn neg [:Int x] :Int (sub-i64 0 x))\n\
              (defn apply2 [g x] (g x))\n\
-             (defn main [] :(IO Int) (Pure (apply2 neg 5)))",
+             (defn main [] :(IO Int) (primitives/pure (apply2 neg 5)))",
         )
         .output()
         // GREEN today AND after 0374: the bare-Int HOF instance is enumerated;
@@ -3643,11 +3642,11 @@ fn mono_tier2_nested_generic_concrete_parent_no_crash() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int sub-i64 add-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64 add-i64]])\n\
              (defn neg [:Int x] :Int (sub-i64 0 x))\n\
              (defn inner [f] (f 5))\n\
              (defn outer [f] :Int (add-i64 (inner f) 0))\n\
-             (defn main [] :(IO Int) (Pure (outer neg)))",
+             (defn main [] :(IO Int) (primitives/pure (outer neg)))",
         )
         .output()
         // GREEN today AND after 0374: roots-forward enumeration reaches `inner`
@@ -3669,10 +3668,10 @@ fn mono_tier2_polymorphic_in_arg_position_no_crash() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int sub-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64]])\n\
              (defn consume [x] (id x))\n\
              (defn id [y] y)\n\
-             (defn main [] :(IO Int) (Pure (consume (sub-i64 0 5))))",
+             (defn main [] :(IO Int) (primitives/pure (consume (sub-i64 0 5))))",
         )
         .output()
         // RED today: `consume`'s parameter is polymorphic at the reachable
@@ -3699,12 +3698,12 @@ fn mono_tier2_same_def_two_instantiations_no_crash() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int String sub-i64 str-len]])\n\
+            "(import [primitives [IO pure Int String sub-i64 str-len]])\n\
              (defn id [y] y)\n\
              (defn neg [:Int x] :Int (sub-i64 0 x))\n\
              (defn use-str [:String s] :Int (str-len (id s)))\n\
              (defn main [] :(IO Int)\n\
-               (Pure (sub-i64 (id (neg 5)) (use-str \"hi\"))))",
+               (primitives/pure (sub-i64 (id (neg 5)) (use-str \"hi\"))))",
         )
         .output()
         // GREEN today AND after 0374: `id` is enumerated as two distinct
@@ -3732,10 +3731,10 @@ fn mono_tier2_cross_module_hof_arg_no_crash() {
              (defn apply2 [g x] (g x))",
         )
         .user(
-            "(import [primitives [IO Pure Int sub-i64]])\n\
+            "(import [primitives [IO pure Int sub-i64]])\n\
              (import [hof [apply2]])\n\
              (defn neg [:Int x] :Int (sub-i64 0 x))\n\
-             (defn main [] :(IO Int) (Pure (apply2 neg 5)))",
+             (defn main [] :(IO Int) (primitives/pure (apply2 neg 5)))",
         )
         .output()
         // GREEN today AND after 0374: cross-module HOF instances are enumerated;
@@ -3764,12 +3763,12 @@ fn mono_tier2_cross_module_hof_arg_no_crash() {
 //   GREEN on 0374: all three modes agree the value is -5.
 #[test]
 fn mono_tier2_all_modes_concreteness_equivalence() {
-    const PROGRAM: &str = "(import [primitives [IO Pure Int sub-i64]])\n\
+    const PROGRAM: &str = "(import [primitives [IO pure Int sub-i64]])\n\
              (deftype (Box a) (Box [:a val]))\n\
              (defn mk [x] (Box x))\n\
              (defn thru [g x] (g x))\n\
              (defn get [b] (match b [(Box v) v]))\n\
-             (defn main [] :(IO Int) (Pure (get (thru mk (sub-i64 0 5)))))";
+             (defn main [] :(IO Int) (primitives/pure (get (thru mk (sub-i64 0 5)))))";
 
     // --run leg: value-bearing exit code. RED today (SIGSEGV); GREEN → 251.
     Cranelisp::new()
@@ -3821,12 +3820,12 @@ fn mono_tier2_fold_accumulator_not_over_monomorphised() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int add-i64]])\n\
+            "(import [primitives [IO pure Int add-i64]])\n\
              (deftype (Lst a) Nil (Cons [:a head :(Lst a) tail]))\n\
              (defn fold-r [f acc xs]\n\
                (match xs [Nil acc (Cons h t) (f h (fold-r f acc t))]))\n\
              (defn main [] :(IO Int)\n\
-               (Pure (fold-r add-i64 0 (Cons 1 (Cons 2 (Cons 3 Nil))))))",
+               (primitives/pure (fold-r add-i64 0 (Cons 1 (Cons 2 (Cons 3 Nil))))))",
         )
         .output()
         // GREEN today AND after 0374: the kept accumulator scheme is not
@@ -3895,12 +3894,12 @@ fn mono_ambiguous_unconstrained_top_level_var_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn main [] :(IO Int)\n\
                (let [x (identity None)]\n\
-                 (Pure (match x [None 0 (Some _) 1]))))",
+                 (primitives/pure (match x [None 0 (Some _) 1]))))",
         )
         .output();
     // RED today: the codegen-forced ambiguity check is dormant, so the
@@ -3944,10 +3943,10 @@ fn mono_ambiguous_neg_does_not_reach_codegen() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn ambig [] None)\n\
-             (defn main [] :(IO Int) (Pure 0))",
+             (defn main [] :(IO Int) (primitives/pure 0))",
         )
         .output();
     // §3.11.3: `(defn ambig [] None)` ((Fn [] (Option a)), `a` result-only) is
@@ -4004,12 +4003,12 @@ fn mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int String add-i64 str-len]])\n\
+            "(import [primitives [IO pure Int String add-i64 str-len]])\n\
              (deftype (Bag a) Empty (Full [:a v]))\n\
              (defn bag-len [b]\n\
                (match b [Empty 0 (Full v) (str-len v)]))\n\
              (defn main [] :(IO Int)\n\
-               (Pure (add-i64 (bag-len Empty) (bag-len (Full \"abc\")))))",
+               (primitives/pure (add-i64 (bag-len Empty) (bag-len (Full \"abc\")))))",
         )
         .output()
         // GREEN now AND after 0375: 0 + 3 = 3. The kept nullary-tag guard still
@@ -4085,11 +4084,11 @@ fn mono_ambiguous_match_scrutinee_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (match (identity None) [None 0 (Some _) 1])))",
+               (primitives/pure (match (identity None) [None 0 (Some _) 1])))",
         )
         .output();
     assert!(
@@ -4128,12 +4127,12 @@ fn mono_ambiguous_call_arg_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn consume [y] 7)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (consume (identity None))))",
+               (primitives/pure (consume (identity None))))",
         )
         .output();
     assert!(
@@ -4172,13 +4171,13 @@ fn mono_ambiguous_ctor_field_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (deftype (Box a) (Wrap [:a w]))\n\
              (defn identity [x] x)\n\
              (defn consume [b] 0)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (consume (Wrap (identity None)))))",
+               (primitives/pure (consume (Wrap (identity None)))))",
         )
         .output();
     assert!(
@@ -4217,12 +4216,12 @@ fn mono_ambiguous_if_branch_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int Bool eq-i64]])\n\
+            "(import [primitives [IO pure Int Bool eq-i64]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn identity [x] x)\n\
              (defn use-it [y] 0)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (use-it (if (eq-i64 1 1) (identity None) None))))",
+               (primitives/pure (use-it (if (eq-i64 1 1) (identity None) None))))",
         )
         .output();
     assert!(
@@ -4265,11 +4264,11 @@ fn mono_vec_free_var_value_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (defn identity [x] x)\n\
              (defn use-vec [v] 0)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (use-vec (identity []))))",
+               (primitives/pure (use-vec (identity []))))",
         )
         .output();
     assert!(
@@ -4316,11 +4315,11 @@ fn mono_fn_free_var_value_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (defn identity [x] x)\n\
              (defn use-fn [f] 0)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (use-fn (identity identity))))",
+               (primitives/pure (use-fn (identity identity))))",
         )
         .output();
     assert!(
@@ -4377,11 +4376,11 @@ fn mono_option_none_annotation_pins_and_compiles_pos() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int add-i64]])\n\
+            "(import [primitives [IO pure Int add-i64]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn is-some [o] (match o [None 0 (Some _) 1]))\n\
              (defn main [] :(IO Int)\n\
-               (Pure (add-i64 (is-some :(Option Int) None)\n\
+               (primitives/pure (add-i64 (is-some :(Option Int) None)\n\
                               (is-some :(Option Int) (Some 9)))))",
         )
         .output()
@@ -4404,10 +4403,10 @@ fn mono_vec_empty_annotation_pins_and_compiles_pos() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int Vec vec-len]])\n\
+            "(import [primitives [IO pure Int Vec vec-len]])\n\
              (defn id [x] x)\n\
              (defn main [] :(IO Int)\n\
-               (Pure (vec-len (id :(Vec Int) []))))",
+               (primitives/pure (vec-len (id :(Vec Int) []))))",
         )
         .output();
     // The empty vec annotated `(Vec Int)` has length 0; the program must compile
@@ -4439,10 +4438,10 @@ fn mono_bare_annotated_value_pins_and_compiles_pos() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn main [] :(IO Int)\n\
-               (Pure (match :(Option Int) None [None 0 (Some _) 1])))",
+               (primitives/pure (match :(Option Int) None [None 0 (Some _) 1])))",
         )
         .output()
         // bare-annotated None → match → 0. Compiles + runs (the annotation pins).
@@ -4453,9 +4452,9 @@ fn mono_bare_annotated_value_pins_and_compiles_pos() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int Vec vec-len]])\n\
+            "(import [primitives [IO pure Int Vec vec-len]])\n\
              (defn main [] :(IO Int)\n\
-               (Pure (vec-len :(Vec Int) [])))",
+               (primitives/pure (vec-len :(Vec Int) [])))",
         )
         .output();
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
@@ -4486,11 +4485,11 @@ fn mono_is_some_unannotated_none_rejected_neg() {
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
         .user(
-            "(import [primitives [IO Pure Int]])\n\
+            "(import [primitives [IO pure Int]])\n\
              (deftype (Option a) None (Some [:a v]))\n\
              (defn is-some [o] (match o [None 0 (Some _) 1]))\n\
              (defn main [] :(IO Int)\n\
-               (Pure (is-some None)))",
+               (primitives/pure (is-some None)))",
         )
         .output();
     assert!(
@@ -4540,10 +4539,10 @@ fn mono_is_some_unannotated_none_rejected_neg() {
 // DefKind::Constructor reaching codegen as a value).
 #[test]
 fn constructor_as_fn_value_applied_indirectly_does_not_segfault() {
-    let source = r#"(import [primitives [Pure Some None]])
+    let source = r#"(import [primitives [pure Some None]])
 (defn apply-it [f x] (f x))
 (defn main []
-  (match (apply-it Some 7) [(Some v) (Pure v) None (Pure 2)]))
+  (match (apply-it Some 7) [(Some v) (primitives/pure v) None (primitives/pure 2)]))
 "#;
     Cranelisp::new()
         .run("main.cl")
@@ -4559,10 +4558,10 @@ fn constructor_as_fn_value_applied_indirectly_does_not_segfault() {
 // specific to the bare-constructor-as-value path, not the closure-call path.
 #[test]
 fn constructor_wrapped_in_lambda_applied_indirectly_works() {
-    let source = r#"(import [primitives [Pure Some None]])
+    let source = r#"(import [primitives [pure Some None]])
 (defn apply-it [f x] (f x))
 (defn main []
-  (match (apply-it (fn [y] (Some y)) 7) [(Some v) (Pure v) None (Pure 2)]))
+  (match (apply-it (fn [y] (Some y)) 7) [(Some v) (primitives/pure v) None (primitives/pure 2)]))
 "#;
     Cranelisp::new()
         .run("main.cl")
@@ -4577,7 +4576,7 @@ fn constructor_wrapped_in_lambda_applied_indirectly_works() {
 // eval (S96 Phase 6 user-proxy validation).
 // =============================================================================
 //
-// `(race (bind (Pure 0) (fn [_] (Pure 111))) (Pure 222))` under DEFAULT lenient
+// `(race (bind (primitives/pure 0) (fn [_] (primitives/pure 111))) (primitives/pure 222))` under DEFAULT lenient
 // eval fails in codegen with:
 //   failed to declare lambda function: Function __lambda_main__…__ signature
 //   {2 params} is incompatible with previous declaration {1 param}
@@ -4588,7 +4587,7 @@ fn constructor_wrapped_in_lambda_applied_indirectly_works() {
 //
 // Established by isolation (`tests/AGENTS.md §"Isolating Cross-Crate Failures"`):
 //   - `CRANELISP_NO_LENIENT=1` ⇒ compiles + runs clean, exit 111 (the bound
-//     branch wins; both branches are immediate `Pure`s, `race` returns the
+//     branch wins; both branches are immediate `pure`s, `race` returns the
 //     first). So the codegen path is correct; only the lenient-sparking
 //     lambda-naming collides.
 //   - `select` with the identical inline `(bind … (fn …))` branch is
@@ -4608,8 +4607,8 @@ fn constructor_wrapped_in_lambda_applied_indirectly_works() {
 // paths declare the same `__lambda_…__` name with incompatible signatures).
 #[test]
 fn race_with_inline_bind_lambda_branch_compiles_under_lenient() {
-    let source = r#"(import [primitives [Pure bind race]])
-(defn main [] (race (bind (Pure 0) (fn [_] (Pure 111))) (Pure 222)))
+    let source = r#"(import [primitives [pure bind race]])
+(defn main [] (race (bind (primitives/pure 0) (fn [_] (primitives/pure 111))) (primitives/pure 222)))
 "#;
     Cranelisp::new()
         .run("main.cl")
@@ -4627,7 +4626,7 @@ fn s124_1067_subject() {
     for _ in 0..64 {
         expr = format!("(add-i64 1 {expr})");
     }
-    let src = format!("(import [primitives [*]]) (defn main [] (Pure {expr}))");
+    let src = format!("(import [primitives [*]]) (defn main [] (primitives/pure {expr}))");
     let out = Cranelisp::new().file("p.cl", &src).run("p.cl").output();
     assert!(
         !out.stderr.contains("overflowed its stack"),
@@ -4645,7 +4644,8 @@ fn s124_1067_uncalled() {
     for _ in 0..100 {
         expr = format!("(add-i64 1 {expr})");
     }
-    let src = format!("(import [primitives [*]]) (defn f [x] {expr}) (defn main [] (Pure 5))");
+    let src =
+        format!("(import [primitives [*]]) (defn f [x] {expr}) (defn main [] (primitives/pure 5))");
     let out = Cranelisp::new().file("p.cl", &src).run("p.cl").output();
     assert!(
         !out.stderr.contains("overflowed its stack"),
@@ -4662,7 +4662,7 @@ fn s124_1067_control() {
     for _ in 0..48 {
         expr = format!("(add-i64 1 {expr})");
     }
-    let src = format!("(import [primitives [*]]) (defn main [] (Pure {expr}))");
+    let src = format!("(import [primitives [*]]) (defn main [] (primitives/pure {expr}))");
     let out = Cranelisp::new().file("p.cl", &src).run("p.cl").output();
     assert!(
         !out.stderr.contains("overflowed its stack"),
@@ -4686,7 +4686,7 @@ fn s124_1067_type_depth_control() {
         .collect::<Vec<_>>()
         .join(" ");
     let src = format!(
-        "(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (defn main [] (let [{bindings}] (Pure 5)))"
+        "(import [primitives [*]]) (deftype (Opt a) Nope (Yep [:a v])) (defn main [] (let [{bindings}] (primitives/pure 5)))"
     );
     Cranelisp::new()
         .file("p.cl", &src)

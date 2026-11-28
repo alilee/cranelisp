@@ -35,10 +35,10 @@ use e2e::{Cranelisp, PreludeVariant};
 
 fn s124_refused_save_seed() -> e2e::CrOutput {
     Cranelisp::new()
-        .stdin("(deftype (P2 a b) [:a x :b y])\n(P2 1 2)\n(defn f [] 1)\n(f)\n/quit\n")
+        .user("(defn old [] 1)\n(mod nested (defn child [] 1))\n")
+        .stdin("(defn f [] 1)\n(f)\n/quit\n")
         .output()
         .assert_ok()
-        .assert_stdout_contains("(P2 1 2)")
         .assert_stdout_contains(":primitives/Int 1")
 }
 
@@ -48,6 +48,10 @@ fn s124_refused_save_seed() -> e2e::CrOutput {
 fn s124_refused_save_cached_restart_survives_call_and_next_turn() {
     let first = s124_refused_save_seed();
     let saved = first.read_tmp("user.cl");
+    assert!(
+        !saved.contains("(defn f "),
+        "inline-mod guard must refuse the seed's save: {saved}"
+    );
     assert!(first.tmp_exists(".cranelisp-cache"), "cache seed exists");
     let seed_diagnostics = transcript(&first);
     // Prompt-gated input stops when the child dies, capturing its signal status
@@ -64,8 +68,8 @@ fn s124_refused_save_cached_restart_survives_call_and_next_turn() {
     let mut legs = Legs::default();
     legs.check(second.status.code() == Some(0), "restart exits 0");
     legs.check(
-        call.contains(":primitives/Int 1") || call.contains("undefined variable: f"),
-        "(f) gives 1 or is refused as undefined",
+        call.contains("undefined variable: f") && !call.contains(":primitives/Int 1"),
+        "(f) is refused as undefined, without restoring the unsaved function",
     );
     legs.check(
         next.contains(":primitives/Int 10"),
@@ -80,7 +84,17 @@ fn s124_refused_save_cached_restart_survives_call_and_next_turn() {
 // spec: repl/spec/15-session-persistence.md §15.2 — T-REFUSED-SAVE-CACHE cold control
 #[test]
 fn s124_refused_save_cold_restart_refuses_unsaved_function_control() {
-    s124_cold_session(s124_refused_save_seed())
+    let first = Cranelisp::new()
+        .user("(defn old [] 1)\n(mod nested (defn child [] 1))\n")
+        .stdin("(defn f [] 1)\n(f)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1");
+    assert!(
+        !first.read_tmp("user.cl").contains("(defn f "),
+        "inline-mod guard must refuse the save"
+    );
+    s124_cold_session(first)
         .stdin("(f)\n/quit\n")
         .output()
         .assert_ok()
@@ -1128,7 +1142,7 @@ fn persist_defining_turn_preserves_hand_authored_macro_source_text() {
             ";; hand-authored batch module\n\
              (defmacro twice [e] `(add-i64 ~e ~e))\n\
              (defn square [x] (mul-i64 x x))\n\
-             (defn main [] (Pure (twice (square 4))))\n",
+             (defn main [] (primitives/pure (twice (square 4))))\n",
         )
         .stdin("(defn extra [y] (add-i64 y 10))\n/quit\n")
         .output();
@@ -1153,7 +1167,7 @@ fn persist_expression_only_session_leaves_hand_authored_user_cl_untouched() {
     let original = ";; hand-authored batch module\n\
                     (defmacro twice [e] `(add-i64 ~e ~e))\n\
                     (defn square [x] (mul-i64 x x))\n\
-                    (defn main [] (Pure (twice (square 4))))\n";
+                    (defn main [] (primitives/pure (twice (square 4))))\n";
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -1223,7 +1237,7 @@ fn persist_bad_import_then_run_succeeds_e2e() {
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .user("(defn seed [] 1)\n")
-        .stdin("(import [platforms.stdio [*]])\n(defn main [] (Pure 6))\n/quit\n")
+        .stdin("(import [platforms.stdio [*]])\n(defn main [] (primitives/pure 6))\n/quit\n")
         .output();
     assert!(
         first.status.success(),
@@ -1327,7 +1341,7 @@ fn persist_bare_expr_then_run_module_clean_e2e() {
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .user("(defn seed [] 1)\n")
-        .stdin("(add-i64 1 2)\n(defn main [] (Pure 6))\n/quit\n")
+        .stdin("(add-i64 1 2)\n(defn main [] (primitives/pure 6))\n/quit\n")
         .output();
     assert!(
         first.status.success(),
@@ -1910,7 +1924,7 @@ fn assert_replacement_persists_through_restart(define: fn(i64) -> String) {
         .file(
             "main.cl",
             "(import [primitives [*]])\n(import [user [k]])\n\
-             (defn main [] (Pure (add-i64 7 (k))))\n",
+             (defn main [] (primitives/pure (add-i64 7 (k))))\n",
         )
         .run("main.cl")
         .cli_flag("--no-cache")
@@ -2101,7 +2115,7 @@ fn persist_file_loaded_declarations_survive_repl_edit_regen() {
 }
 
 // =============================================================================
-// §15.4 — a `begin` spanning declaration sections is written once
+// §15.4 — spanning `begin` members persist independently
 // =============================================================================
 
 const SHOW_TRAIT: &str = "(deftrait Show (show [self] primitives/Int))";
@@ -2110,11 +2124,6 @@ const SHOW_TRAIT: &str = "(deftrait Show (show [self] primitives/Int))";
 const SPANNING_BEGIN: &str = "(begin (deftype Token MkToken) (impl Show Token (defn show [_] 41)))";
 const G: &str = "(defn g [] 1)";
 
-/// After `session` defined `g`, the backing file MUST hold the spanning
-/// `begin` exactly once, and a cold restart from that file alone MUST still
-/// dispatch `show` and call `g`. The restart discriminates a fix that drops
-/// the form instead of writing it once; a duplicate reloads cleanly, so the
-/// count, not the round trip, discriminates duplication.
 fn assert_spanning_begin_written_once(session: e2e::CrOutput) {
     let saved = session.read_tmp("user.cl");
     let count = |form: &str| saved.matches(form).count();
@@ -2128,12 +2137,16 @@ fn assert_spanning_begin_written_once(session: e2e::CrOutput) {
         1,
         "control: the single-section trait MUST be written once; user.cl:\n{saved}"
     );
-    assert_eq!(
-        (count("(begin"), count(SPANNING_BEGIN)),
-        (1, 1),
-        "a `begin` spanning the type and impl sections MUST be written once \
-         (design/int/session-persistence.md §1.4); user.cl:\n{saved}"
+    let mut legs = Legs::default();
+    legs.check(
+        count("(deftype Token MkToken)") == 1,
+        "deftype member written once",
     );
+    legs.check(
+        count("(impl Show Token (defn show [_] 41))") == 1,
+        "impl member written once",
+    );
+    legs.check(!saved.contains("(begin"), "saved source has no (begin");
 
     std::fs::remove_dir_all(session.tmpdir.join(".cranelisp-cache")).expect("rm .cranelisp-cache");
     let restarted = session
@@ -2142,36 +2155,26 @@ fn assert_spanning_begin_written_once(session: e2e::CrOutput) {
         .stdin("(show MkToken)\n(g)\n/quit\n")
         .output()
         .assert_ok();
-    assert!(
+    legs.check(
         !restarted.stdout.contains("Error") && !restarted.stderr.contains("Error"),
-        "cold restart MUST load the regenerated file cleanly; stdout:\n{}\nstderr:\n{}",
-        restarted.stdout,
-        restarted.stderr
+        "cold restart loads without errors",
     );
     let t = turns(&restarted.stdout);
-    for (i, value) in [":primitives/Int 41", ":primitives/Int 1"]
-        .iter()
-        .enumerate()
-    {
-        assert!(
-            t.get(i + 1).is_some_and(|turn| turn.contains(value)),
-            "cold restart turn {} MUST yield {value}; stdout:\n{}",
-            i + 1,
-            restarted.stdout
-        );
-    }
+    legs.check(
+        t.get(1)
+            .is_some_and(|turn| turn.contains(":primitives/Int 41")),
+        "cold restart show is 41",
+    );
+    legs.check(
+        t.get(2)
+            .is_some_and(|turn| turn.contains(":primitives/Int 1")),
+        "cold restart g is 1",
+    );
+    legs.assert_all(&format!("saved:\n{saved}\n{}", transcript(&restarted)));
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4 — rule 1 round trip, with
-// §15.1's regeneration from the module's current state: a REPL-entered `begin`
-// whose members span the type and impl sections is regenerated as the one form
-// the user typed. PC-8, REPL leg.
-// RED before the S122 F2 fix: the file held the `begin` twice; the cold
-// restart still gave 41 and 1.
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122/63605970
-// The shared-authored-form dedup (design §1.4) was scoped to
-// `generate_fns_and_macros`, so the type and impl sections each rendered the
-// shared `begin`.
+// spec: repl/spec/15-session-persistence.md §15.4 — dissolve REPL begin members, once each, then cold restart.
+// defect: class=authored-order-loss locus=src/save.rs found=S125 owner=/dev
 #[test]
 fn persist_repl_begin_spanning_sections_written_once() {
     let first = Cranelisp::new()
@@ -2187,14 +2190,8 @@ fn persist_repl_begin_spanning_sections_written_once() {
     assert_spanning_begin_written_once(first);
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4 — rule 6 over rule 1, with
-// §15.1: the same spanning `begin`, loaded uncached from the backing file
-// rather than entered at the REPL, is regenerated once. PC-8, seeded-file leg. RED before
-// the S122 F2 fix: the file held the `begin` twice; the cold restart still gave
-// 41 and 1.
-// defect: class=enumeration-miss locus=src/save.rs::generate_module_source found=S122 owner=/dev fixed=S122/63605970
-// As for the REPL leg; `rehydrate_introspection_from_source` records the outer
-// `begin` under each member, which is the shape §1.4 dedups.
+// spec: spec/09-macros.md §9.6 — SHOULD-level legacy-file leniency; repl/spec/15-session-persistence.md §15.4 — next save dissolves the begin.
+// defect: class=authored-order-loss locus=src/save.rs found=S125 owner=/dev
 #[test]
 fn persist_file_loaded_begin_spanning_sections_written_once() {
     // A fresh TempDir holds no cache, so the session loads user.cl from source.
@@ -6918,19 +6915,20 @@ fn s124_1064_control_loaded() {
 }
 
 // spec: repl/spec/15-session-persistence.md §15.4
-// defect: class=partial-record-update locus=src/save.rs::multi_definition_record found=S124 owner=/dev
+// defect: class=partial-record-update locus=src/eval.rs::record_defining_turn_source found=S124 owner=/dev
 #[test]
 fn s124_1005_a_begin() {
     let first = Cranelisp::new()
         .stdin(
-            r#"(import [primitives [add-i64 Pure Int]])
+            r#"(import [primitives [add-i64 pure Int]])
 (begin (defn f [] 1) (defn g [] 10))
 (defn g [] 20)
 "#,
         )
         .output()
         .assert_ok();
-    first
+    let saved = first.read_tmp("user.cl");
+    let restarted = first
         .run_again()
         .cli_flag("--no-cache")
         .stdin("(f)\n(g)\n")
@@ -6939,31 +6937,39 @@ fn s124_1005_a_begin() {
         .assert_stdout_contains(":primitives/Int 1")
         .assert_stdout_contains(":primitives/Int 20")
         .assert_stdout_does_not_contain("[errors:");
+    let mut legs = Legs::default();
+    legs.check(
+        saved
+            .find("(defn f [] 1)")
+            .zip(saved.find("(defn g [] 20)"))
+            .is_some_and(|(f, g)| f < g),
+        "saved f precedes latest g",
+    );
+    legs.check(!saved.contains("(begin"), "saved source has no (begin");
+    legs.check(
+        !transcript(&restarted).contains("Error:"),
+        "restart has no errors",
+    );
+    legs.assert_all(&format!("saved:\n{saved}\n{}", transcript(&restarted)));
 }
 
-// spec: repl/spec/15-session-persistence.md §15.4
-// defect: class=partial-record-update locus=src/save.rs::multi_definition_record found=S124 owner=/dev
+// spec: spec/09-macros.md §9.6.1; repl/spec.md §15.6 — generated names refuse written replacement.
+// defect: class=silent-accept locus=src/process_form/form_dispatch.rs found=S125 owner=/dev
 #[test]
 fn s124_1005_a_macro() {
-    let first = Cranelisp::new()
-        .stdin(
-            r#"(import [primitives [add-i64 Pure Int]])
-(defmacro mk2 [a b] `(begin (defn ~a [] 1) (defn ~b [] 10)))
-(mk2 f g)
-(defn g [] 20)
-"#,
-        )
-        .output()
-        .assert_ok();
-    first
-        .run_again()
-        .cli_flag("--no-cache")
-        .stdin("(f)\n(g)\n")
-        .output()
-        .assert_ok()
-        .assert_stdout_contains(":primitives/Int 1")
-        .assert_stdout_contains(":primitives/Int 20")
-        .assert_stdout_does_not_contain("[errors:");
+    let out = Cranelisp::new().stdin("(defmacro mk2 [a b] `(begin (defn ~a [] 1) (defn ~b [] 10)))\n(mk2 f g)\n(defn g [] 20)\n(g)\n").output().assert_ok();
+    assert!(
+        out.stdout.contains("redefin") || out.stdout.contains("macro-generated"),
+        "generated name must refuse replacement: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 10"),
+        "original generated g survives: {}",
+        out.stdout
+    );
+    assert!(!out.read_tmp("user.cl").contains("(defn g [] 20)"));
 }
 
 // spec: repl/spec/15-session-persistence.md §15.4
@@ -6971,7 +6977,7 @@ fn s124_1005_a_macro() {
 fn s124_1005_a_unchanged_control() {
     let first = Cranelisp::new()
         .stdin(
-            r#"(import [primitives [add-i64 Pure Int]])
+            r#"(import [primitives [add-i64 pure Int]])
 (begin (defn f [] 1) (defn g [] 10))
 
 "#,
@@ -6994,7 +7000,7 @@ fn s124_1005_a_unchanged_control() {
 fn s124_1005_a_plain_control() {
     let first = Cranelisp::new()
         .stdin(
-            r#"(import [primitives [add-i64 Pure Int]])
+            r#"(import [primitives [add-i64 pure Int]])
 (defn f [] 1)
 (defn g [] 10)
 (defn g [] 20)
@@ -7018,7 +7024,7 @@ fn s124_1005_a_plain_control() {
 fn s124_1005_a_both_control() {
     let first = Cranelisp::new()
         .stdin(
-            r#"(import [primitives [add-i64 Pure Int]])
+            r#"(import [primitives [add-i64 pure Int]])
 (begin (defn f [] 1) (defn g [] 10))
 (defn f [] 2)
 (defn g [] 20)
@@ -7122,7 +7128,7 @@ fn s124_1005_b_redefine() {
 // defect: class=authored-order-loss locus=src/save.rs::generate_module_source found=S124 owner=/dev
 #[test]
 fn s124_1005_c_structural_order() {
-    let out=Cranelisp::new().file("user/sub.cl", "(defn q [] 2)").stdin("(import [primitives [add-i64]])\n(defn z [] 1)\n(export [primitives [add-i64]])\n(mod sub)\n(import [primitives [Pure]])\n").output().assert_ok();
+    let out=Cranelisp::new().file("user/sub.cl", "(defn q [] 2)").stdin("(import [primitives [add-i64]])\n(defn z [] 1)\n(export [primitives [add-i64]])\n(mod sub)\n(import [primitives [pure]])\n").output().assert_ok();
     let s = out.read_tmp("user.cl");
     let m = s.find("(mod ").expect(&s);
     let e = s.find("(export ").expect(&s);
@@ -7153,7 +7159,7 @@ fn s124_1064_batch_control() {
     Cranelisp::new()
         .file("a.cl", "(deftype Box [:primitives/Int v]) (defn mk [] (Box 3))")
         .file("b.cl", "(deftype Box [:primitives/Int v]) (defn mk [] (Box 4))")
-        .file("p.cl", "(import [primitives [*]]) (import [a []]) (import [b []]) (deftrait Sz (sz [x] Int)) (impl Sz a/Box (defn sz [_] 1)) (impl Sz b/Box (defn sz [_] 20)) (defn main [] (Pure (add-i64 (sz (a/mk)) (sz (b/mk)))))")
+        .file("p.cl", "(import [primitives [*]]) (import [a []]) (import [b []]) (deftrait Sz (sz [x] Int)) (impl Sz a/Box (defn sz [_] 1)) (impl Sz b/Box (defn sz [_] 20)) (defn main [] (primitives/pure (add-i64 (sz (a/mk)) (sz (b/mk)))))")
         .run("p.cl").output().assert_exit(21);
 }
 
@@ -7371,7 +7377,7 @@ fn s124_selective_star_restart(export: bool, names: &str) {
         let second = s124_cold_session(first)
             .file(
                 "consumer.cl",
-                &format!("{consumer}(defn main [] (primitives/Pure (*)))"),
+                &format!("{consumer}(defn main [] (primitives/pure (*)))"),
             )
             .run("consumer.cl")
             .output()
@@ -7379,7 +7385,7 @@ fn s124_selective_star_restart(export: bool, names: &str) {
         let third = s124_cold_session(second)
             .file(
                 "consumer.cl",
-                &format!("{consumer}(defn main [] (primitives/Pure (other)))"),
+                &format!("{consumer}(defn main [] (primitives/pure (other)))"),
             )
             .run("consumer.cl")
             .output();
@@ -7430,4 +7436,429 @@ fn s124_star_in_multi_name_import_cold_restart_control() {
 #[test]
 fn s124_star_in_multi_name_export_cold_restart_control() {
     s124_selective_star_restart(true, "[* f]");
+}
+
+// spec: repl/spec.md §15.4, §15.6 — R1 retains surviving begin members and the latest redefinition.
+// defect: class=partial-record-update locus=src/save.rs found=S125 owner=/dev
+#[test]
+fn s125_w7_r1_begin_macro_member_survives_redefinition_and_restarts() {
+    let first = Cranelisp::new()
+        .stdin("(defmacro make [n] `(defn ~n [] 10))\n(begin (make f) (defn a [] 1))\n(defn a [] 20)\n(a)\n(f)\n")
+        .output().assert_ok()
+        .assert_stdout_contains(":primitives/Int 20")
+        .assert_stdout_contains(":primitives/Int 10");
+    let saved = first.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(!saved.contains("(begin"), "saved source has no (begin");
+    legs.check(
+        saved.matches("(make f)").count() == 1
+            && saved
+                .lines()
+                .filter(|line| line.trim() == "(make f)")
+                .count()
+                == 1,
+        "saved source holds standalone (make f) exactly once",
+    );
+    legs.check(
+        saved.matches("(defn a [] 20)").count() == 1 && !saved.contains("(defn a [] 1)"),
+        "saved source holds latest a once and no old a",
+    );
+    let cached = first.run_again().stdin("(a)\n(f)\n").output();
+    let cached_ok = cached.status.success();
+    let cached_text = transcript(&cached);
+    let cold = cached
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(a)\n(f)\n")
+        .output();
+    legs.check(
+        cold.stdout.contains(":primitives/Int 20"),
+        "cold restart a is 20",
+    );
+    legs.check(
+        cold.stdout.contains(":primitives/Int 10"),
+        "cold restart f is 10",
+    );
+    legs.check(
+        cold.status.success()
+            && !transcript(&cold).contains("[errors:")
+            && !transcript(&cold).contains("locked"),
+        "cold restart has no lock",
+    );
+    legs.check(
+        cached_text.contains(":primitives/Int 20"),
+        "cached restart a is 20",
+    );
+    legs.check(
+        cached_text.contains(":primitives/Int 10"),
+        "cached restart f is 10",
+    );
+    legs.check(
+        cached_ok && !cached_text.contains("[errors:") && !cached_text.contains("locked"),
+        "cached restart has no lock",
+    );
+    legs.assert_all(&format!(
+        "saved:\n{saved}\ncached:\n{cached_text}\ncold:\n{}",
+        transcript(&cold)
+    ));
+}
+
+fn s125_w7_generated_macro_refusal(from_file: bool) {
+    let source = "(defmacro maker [] (quote (defmacro g [] (quote 10))))\n(maker)\n";
+    let cr = Cranelisp::new();
+    let out = if from_file { cr.user(source) } else { cr }
+        .stdin(&format!(
+            "{}(defmacro g [] (quote 20))\n(g)\n/sh cp user.cl refusal.cl\n(maker)\n(g)\n(begin (defmacro h [] (quote 1)) (defmacro g [] (quote 20)))\n(h)\n(g)\n",
+            if from_file { "" } else { source }
+        ))
+        .output()
+        .assert_ok();
+    let t = turns(&out.stdout);
+    let offset = if from_file { 0 } else { 2 };
+    assert!(
+        t.iter()
+            .take(offset + 1)
+            .all(|s| !s.contains("Error:") && !s.contains("[errors:")),
+        "setup: maker and its call compile without errors: {}",
+        transcript(&out)
+    );
+    let refusal = t.get(offset + 1).copied().unwrap_or("");
+    let saved = out.read_tmp("refusal.cl");
+    let final_saved = out.read_tmp("user.cl");
+    let mut legs = Legs::default();
+    legs.check(
+        refusal.contains("g")
+            && (refusal.contains("redefin") || refusal.contains("macro-generated")),
+        "redefining generated macro g is refused on its own turn",
+    );
+    legs.check(
+        refusal.contains("at ") || refusal.contains(":1:") || refusal.contains(":3:"),
+        "refusal is located at the redefinition",
+    );
+    legs.check(
+        t.get(offset + 2)
+            .is_some_and(|s| s.contains(":primitives/Int 10") && !s.contains(":primitives/Int 20")),
+        "g remains 10 after refused redefinition",
+    );
+    legs.check(
+        saved
+            .lines()
+            .filter(|line| line.trim() == "(maker)")
+            .count()
+            == 1,
+        "saved source retains the generating (maker) call once",
+    );
+    legs.check(
+        !saved
+            .lines()
+            .any(|line| line.trim_start().starts_with("(defmacro g ")),
+        "saved source has no written g definition",
+    );
+    legs.check(
+        t.get(offset + 4).is_some_and(|s| {
+            !s.contains("Error:") && !s.contains("[errors:") && !s.contains("refus")
+        }) && t
+            .get(offset + 5)
+            .is_some_and(|s| s.contains(":primitives/Int 10")),
+        "identical (maker) re-entry accepted and g remains 10",
+    );
+    let checkpoint_refusal = t.get(offset + 6).copied().unwrap_or("");
+    legs.check(
+        checkpoint_refusal.contains("g")
+            && (checkpoint_refusal.contains("redefin")
+                || checkpoint_refusal.contains("macro-generated")),
+        "begin refuses generated g after h checkpoint",
+    );
+    legs.check(
+        t.get(offset + 7)
+            .is_some_and(|s| s.contains(":primitives/Int 1")),
+        "h checkpoint remains live after g refusal",
+    );
+    legs.check(
+        t.get(offset + 8)
+            .is_some_and(|s| s.contains(":primitives/Int 10") && !s.contains(":primitives/Int 20")),
+        "g remains 10 after begin refusal",
+    );
+    legs.check(
+        final_saved
+            .lines()
+            .filter(|line| line.trim() == "(maker)")
+            .count()
+            == 1,
+        "begin refusal retains generating (maker) call once",
+    );
+    legs.assert_all(&format!(
+        "{}\nafter direct refusal:\n{saved}\nafter begin refusal:\n{final_saved}",
+        transcript(&out)
+    ));
+}
+
+// spec: spec/09-macros.md §9.6.1; repl/spec.md §15.6 — R2 macro checkpoints obey generated-name refusal.
+// defect: class=partial-record-update locus=src/process_form.rs found=S125 owner=/dev
+#[test]
+fn s125_w7_r2_generated_macro_turn_redefinition_refused() {
+    s125_w7_generated_macro_refusal(false);
+}
+
+// spec: spec/09-macros.md §9.6.1; repl/spec.md §15.6 — R2 includes file-generated macros.
+// defect: class=partial-record-update locus=src/process_form.rs found=S125 owner=/dev
+#[test]
+fn s125_w7_r2_generated_macro_file_redefinition_refused() {
+    s125_w7_generated_macro_refusal(true);
+}
+
+// spec: repl/spec.md §15.4 rule 2 — R3 dissolves begin members in authored order.
+// defect: class=authored-order-loss locus=src/save.rs found=S125 owner=/dev
+#[test]
+fn s125_w7_r3_begin_member_redefinition_keeps_order() {
+    let out = Cranelisp::new()
+        .stdin("(begin (defn z [] 1) (defn a [] 2) (defn m [] 3))\n(defn a [] 20)\n(a)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 20");
+    let saved = out.read_tmp("user.cl");
+    let forms: Vec<_> = saved
+        .lines()
+        .map(str::trim)
+        .filter(|s| s.starts_with("(defn "))
+        .collect();
+    let mut legs = Legs::default();
+    legs.check(
+        forms == ["(defn z [] 1)", "(defn a [] 20)", "(defn m [] 3)"],
+        "saved member order is z, latest a, m",
+    );
+    legs.check(!saved.contains("(begin"), "saved source has no (begin");
+    legs.assert_all(&format!("saved:\n{saved}"));
+}
+
+// spec: repl/spec.md §15.4 rule 4 — R4 keeps separate import turns in authorship order.
+// defect: class=authored-order-loss locus=src/save.rs found=S125 owner=/dev
+#[test]
+fn s125_w7_r4_import_turns_keep_order_and_forms() {
+    let out = Cranelisp::new()
+        .file("aa.cl", "(defn a [] 1)\n(defn c [] 3)\n")
+        .file("bb.cl", "(defn b [] 2)\n")
+        .stdin("(import [aa [a]])\n(import [bb [b]])\n(import [aa [c]])\n(a)\n(b)\n(c)\n(defn marker [] 4)\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 2")
+        .assert_stdout_contains(":primitives/Int 3");
+    let saved = out.read_tmp("user.cl");
+    let forms: Vec<_> = saved
+        .lines()
+        .map(str::trim)
+        .filter(|s| s.starts_with("(import "))
+        .collect();
+    let mut legs = Legs::default();
+    legs.check(
+        forms
+            == [
+                "(import [aa [a]])",
+                "(import [bb [b]])",
+                "(import [aa [c]])",
+            ],
+        "separate import turns remain in authored order, once each after later save",
+    );
+    let restarted = out
+        .run_again()
+        .stdin("(defn marker [] 4)\n(a)\n(b)\n(c)\n")
+        .output()
+        .assert_ok();
+    legs.check(
+        saved == restarted.read_tmp("user.cl"),
+        "import save-restart-save is byte-identical",
+    );
+    legs.check(
+        !transcript(&restarted).contains("Error:")
+            && [1, 2, 3]
+                .iter()
+                .all(|n| restarted.stdout.contains(&format!(":primitives/Int {n}"))),
+        "restart retains all three imports",
+    );
+
+    let multi = Cranelisp::new()
+        .file("aa.cl", "(defn a [] 1)\n")
+        .file("bb.cl", "(defn b [] 2)\n")
+        .stdin("(import [aa [a] bb [b]])\n(a)\n(b)\n(defn marker [] 4)\n")
+        .output()
+        .assert_ok();
+    assert!(
+        !transcript(&multi).contains("Error:")
+            && multi.stdout.contains(":primitives/Int 1")
+            && multi.stdout.contains(":primitives/Int 2"),
+        "multi-spec setup: {}",
+        transcript(&multi)
+    );
+    let multi_saved = multi.read_tmp("user.cl");
+    let multi_forms: Vec<_> = multi_saved
+        .lines()
+        .map(str::trim)
+        .filter(|s| s.starts_with("(import "))
+        .collect();
+    legs.check(
+        multi_forms == ["(import [aa [a]])", "(import [bb [b]])"],
+        "one import form per spec, aa then bb, once each after later save",
+    );
+    let multi_restart = multi
+        .run_again()
+        .stdin("(defn marker [] 4)\n")
+        .output()
+        .assert_ok();
+    legs.check(
+        multi_saved == multi_restart.read_tmp("user.cl"),
+        "multi-spec import save-restart-save is byte-identical",
+    );
+    legs.assert_all(&format!(
+        "saved:\n{saved}\nrestart:\n{}\nmulti saved:\n{multi_saved}\nmulti restart:\n{}",
+        transcript(&restarted),
+        transcript(&multi_restart)
+    ));
+}
+
+// spec: repl/spec.md §15.4 rule 4 — R4 platform section follows entered order.
+// defect: class=authored-order-loss locus=src/save.rs found=S125 owner=/dev
+#[test]
+fn s125_w7_r4_platform_turns_keep_order() {
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .stdin("(platform test-capture)\n(platform stdio)\n(defn marker [] 4)\n")
+        .output()
+        .assert_ok();
+    let text = transcript(&out);
+    assert!(!text.contains("error:"), "platform setup: {text}");
+    let saved = out.read_tmp("user.cl");
+    let forms: Vec<_> = saved
+        .lines()
+        .map(str::trim)
+        .filter(|s| s.starts_with("(platform ") || s.starts_with("(declare-platform "))
+        .collect();
+    let mut legs = Legs::default();
+    legs.check(
+        forms == ["(platform test-capture)", "(platform stdio)"],
+        "platforms retain authored order, once each after later save",
+    );
+    let restarted = out
+        .run_again()
+        .use_workspace_platforms()
+        .stdin("(defn marker [] 4)\n")
+        .output()
+        .assert_ok();
+    legs.check(
+        saved == restarted.read_tmp("user.cl"),
+        "platform save-restart-save is byte-identical",
+    );
+    legs.check(
+        !transcript(&restarted).contains("Error:")
+            && !transcript(&restarted).contains("[errors:")
+            && !transcript(&restarted).contains("locked"),
+        "platform restart loads cleanly",
+    );
+    legs.assert_all(&format!(
+        "saved:\n{saved}\n{text}\nrestart:\n{}",
+        transcript(&restarted)
+    ));
+}
+
+fn s125_w7_macro_call_takeover_restarts(setup: &str) {
+    let first = Cranelisp::new()
+        .stdin(&format!("{setup}(two)\n(p)\n(q)\n/quit\n"))
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 1")
+        .assert_stdout_contains(":primitives/Int 2");
+    let saved = first.read_tmp("user.cl");
+    let seed_text = transcript(&first);
+    assert!(
+        !seed_text.contains("Error:") && !seed_text.contains("[errors:"),
+        "setup must accept the macro call and both definitions: {seed_text}"
+    );
+    assert!(
+        first.tmp_exists(".cranelisp-cache/user.meta.json"),
+        "cache seed exists"
+    );
+    let mut legs = Legs::default();
+    legs.check(
+        saved.matches("(two)").count() == 1
+            && saved.lines().filter(|line| line.trim() == "(two)").count() == 1,
+        "saved source holds standalone (two) exactly once",
+    );
+    legs.check(
+        !saved.contains("(defn p [] 0)"),
+        "saved source retires the replaced written p",
+    );
+    legs.check(
+        saved
+            .find("(defmacro two")
+            .zip(saved.find("(two)"))
+            .is_some_and(|(definition, call)| definition < call),
+        "saved macro definition precedes its call",
+    );
+    let cached = first.run_again().stdin("(p)\n(q)\n/quit\n").output();
+    legs.check(
+        cached.stdout.contains(":primitives/Int 1"),
+        "cached restart p is 1",
+    );
+    legs.check(
+        cached.stdout.contains(":primitives/Int 2"),
+        "cached restart q is 2",
+    );
+    let cached_text = transcript(&cached);
+    legs.check(
+        cached.status.success()
+            && !cached_text.contains("Error:")
+            && !cached_text.contains("[errors:")
+            && !cached_text.contains("locked"),
+        "cached restart has no errors or lock",
+    );
+    let cold = cached
+        .run_again()
+        .cli_flag("--no-cache")
+        .stdin("(p)\n(q)\n/quit\n")
+        .output();
+    legs.check(
+        cold.stdout.contains(":primitives/Int 1"),
+        "cold restart p is 1",
+    );
+    legs.check(
+        cold.stdout.contains(":primitives/Int 2"),
+        "cold restart q is 2",
+    );
+    let cold_text = transcript(&cold);
+    legs.check(
+        cold.status.success()
+            && !cold_text.contains("Error:")
+            && !cold_text.contains("[errors:")
+            && !cold_text.contains("locked"),
+        "cold restart has no errors or lock",
+    );
+    legs.assert_all(&format!(
+        "saved:\n{saved}\nseed:\n{seed_text}\ncached:\n{cached_text}\ncold:\n{cold_text}"
+    ));
+}
+
+// spec: repl/spec.md §15.4 — R5 a macro call takes over a written definition as one entry.
+// defect: class=partial-record-update locus=src/session_v4/types.rs::install_authored found=S125 owner=/dev
+#[test]
+fn s125_w7_r5_macro_call_replaces_written_definition_once_and_restarts() {
+    s125_w7_macro_call_takeover_restarts(
+        "(defn p [] 0)\n(defmacro two [] '(begin (defn p [] 1) (defn q [] 2)))\n",
+    );
+}
+
+// spec: repl/spec.md §15.4 — R5 takeover also holds when the macro precedes the written definition.
+// defect: class=partial-record-update locus=src/session_v4/types.rs::install_authored found=S125 owner=/dev
+#[test]
+fn s125_w7_r5_macro_before_written_definition_saved_once_and_restarts() {
+    s125_w7_macro_call_takeover_restarts(
+        "(defmacro two [] '(begin (defn p [] 1) (defn q [] 2)))\n(defn p [] 0)\n",
+    );
+}
+
+// spec: repl/spec.md §15.4 — R5 control: a macro call with no written predecessor survives both restarts.
+#[test]
+fn s125_w7_r5_macro_call_without_written_definition_control() {
+    s125_w7_macro_call_takeover_restarts(
+        "(defmacro two [] '(begin (defn p [] 1) (defn q [] 2)))\n",
+    );
 }

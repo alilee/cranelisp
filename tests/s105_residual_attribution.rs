@@ -62,7 +62,7 @@ const F7_MINI: &str = "(import [primitives [*]])\n\
   (defn leaf-work [lo k acc] (if (le-i64 k 0) acc (leaf-work lo (sub-i64 k 1) (add-i64 acc (one (add-i64 lo k))))))\n\
   (defn reduce-tree [lo hi] (if (le-i64 (sub-i64 hi lo) 1) (leaf-work lo 32 0)\n\
     (add-i64 (reduce-tree lo (mid-of lo hi)) (reduce-tree (mid-of lo hi) hi))))\n\
-  (defn main [] (Pure (rmod (reduce-tree 0 16) 251)))\n";
+  (defn main [] (primitives/pure (rmod (reduce-tree 0 16) 251)))\n";
 
 // F8 serial arm: non-recursive phi-P construction.
 const F8_SERIAL: &str = "(import [primitives [*]])\n\
@@ -71,7 +71,7 @@ const F8_SERIAL: &str = "(import [primitives [*]])\n\
   (defn one [n] (let [p (if (eq-i64 (rmod n 2) 0) (A n (add-i64 n 1)) (B (add-i64 n 2) n))]\n\
     (match p [(A x y) (add-i64 x y)  (B x y) (sub-i64 x y)])))\n\
   (defn drive [k acc] (if (le-i64 k 0) acc (drive (sub-i64 k 1) (add-i64 acc (one k)))))\n\
-  (defn main [] (Pure (rmod (drive 256 0) 1000)))\n";
+  (defn main [] (primitives/pure (rmod (drive 256 0) 1000)))\n";
 
 // F8 parallel arm: phi-P construction inside a recursive divide-and-conquer.
 const F8_PARALLEL: &str = "(import [primitives [*]])\n\
@@ -86,7 +86,7 @@ const F8_PARALLEL: &str = "(import [primitives [*]])\n\
       (let [r (drive (mid-of lo hi) hi)\n\
             q (if (eq-i64 (rmod r 2) 0) (A r (add-i64 r 1)) (B (add-i64 r 2) r))]\n\
         (match q [(A x y) (add-i64 x y)  (B x y) (sub-i64 x y)])))))\n\
-  (defn main [] (Pure (rmod (drive 0 256) 1000)))\n";
+  (defn main [] (primitives/pure (rmod (drive 0 256) 1000)))\n";
 
 // A minimal shared-grid parallel reduce (F3/F2 miniature): cells read across
 // strands. The conservative analysis marks the shared cells Crossing ⇒ atomic RC.
@@ -99,7 +99,7 @@ const F3_SHARED_READ: &str = "(import [primitives [*]])\n\
   (defn leaf [g lo] (cell-value (vec-get g (rmod lo (vec-len g)))))\n\
   (defn reduce-tree [g lo hi] (if (le-i64 (sub-i64 hi lo) 1) (leaf g lo)\n\
     (add-i64 (reduce-tree g lo (mid-of lo hi)) (reduce-tree g (mid-of lo hi) hi))))\n\
-  (defn main [] (let [g (build-grid [] 0 27)] (Pure (rmod (reduce-tree g 0 64) 251))))\n";
+  (defn main [] (let [g (build-grid [] 0 27)] (primitives/pure (rmod (reduce-tree g 0 64) 251))))\n";
 
 // =============================================================================
 // Correctness record (GREEN) — parallel ≡ serial exit-match (§9.1 last para).

@@ -45,7 +45,7 @@ fn balance(src: &str) -> (i64, i64, String) {
 
 const RECURSIVE: &str = "(deftype List Nil (Cons [:String head :List tail]))\n\
      (defn build [n xs] (if (eq-i64 n 0) xs (build (sub-i64 n 1) (Cons \"x\" xs))))\n\
-     (defn main [] (let [empty (build 0 Nil) one (build 1 Nil) many (build 9 Nil)] (Pure 0)))\n";
+     (defn main [] (let [empty (build 0 Nil) one (build 1 Nil) many (build 9 Nil)] (primitives/pure 0)))\n";
 
 // Named/per-concrete glue generation must terminate on the recursive definition,
 // while runtime recursion follows and releases each finite chain.

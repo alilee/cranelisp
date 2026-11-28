@@ -4,23 +4,23 @@
 // from the legacy integration-tier `tests/io.rs`, `tests/io_minimal.rs`,
 // `tests/sprint61_io_closure_regression.rs`. Per
 // the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), default canonical mode is
-// REPL — Pure / bind / IO trampoline observable behaviour is asserted via
+// REPL — pure / bind / IO trampoline observable behaviour is asserted via
 // stdout substring against the REPL.
 //
 // Mode-specific exceptions (cited per-test):
 //   - Tests asserting on `--run` IO sequencing (file output from
-//     `(print ...)`, exit code from `(defn main [] (Pure N))`) use `--run`
+//     `(print ...)`, exit code from `(defn main [] (primitives/pure N))`) use `--run`
 //     because the IO sequencing semantics ARE what's under test.
 //
 // What this file covers:
-//   - Pure constructor wraps Int/Bool/String (§10.2)
+//   - pure lifts Int/Bool/String (§10.2)
 //   - bind primitive forms IO chains (§10.3)
 //   - bind with identity continuation, with computation, polymorphic
 //   - Internal Bind constructor / pattern rejection (§10.1 — Bind is internal,
 //     not user-invocable per the runtime representation)
 //   - IO type inference / propagation (§10.7)
 //   - REPL execution notice and payload display (repl/spec/01-display-format.md §1.2.1)
-//   - --run mode: main returns IO, exit code from Pure / from bind chain (§10.6.1)
+//   - --run mode: main returns IO, exit code from pure / from bind chain (§10.6.1)
 //   - Closure-capture inc regression (Sprint 61 Wave 4 — `emit_capture_return_inc`)
 //   - bind! desugaring (§10.5 macro form)
 //
@@ -49,38 +49,38 @@ fn repl(lines: &str) -> helpers::e2e::CrOutput {
 }
 
 // =============================================================================
-// Pure constructor — spec/10-io.md §10.2
+// Public pure lift — spec/10-io.md §10.2
 // =============================================================================
 
-// spec: spec/10-io.md §10.2 — Pure wraps Int; REPL trampolines inline
+// spec: spec/10-io.md §10.2 — pure wraps Int; REPL trampolines inline
 #[test]
 fn pure_int_unwraps_inline() {
-    repl("(Pure 42)\n").assert_stdout_contains(":primitives/Int 42");
+    repl("(primitives/pure 42)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
-// spec: spec/10-io.md §10.2.3 — Pure wraps Bool
+// spec: spec/10-io.md §10.2.3 — pure wraps Bool
 #[test]
 fn pure_bool_unwraps_inline() {
-    repl("(Pure true)\n").assert_stdout_contains(":primitives/Bool true");
+    repl("(primitives/pure true)\n").assert_stdout_contains(":primitives/Bool true");
 }
 
 fn platform_pure_program(body: &str) -> Child {
     Child::new(&format!(
         "(platform test-capture)\n\
          (import [platform.test-capture [pure-string pure-int]])\n\
-         (import [primitives [Pure bind str-eq]])\n\
+         (import [primitives [pure bind str-eq]])\n\
          (defn main [] {body})\n"
     ))
 }
 
-// spec: spec/10-io.md §10.12.9 — discarding unforced platform Pure releases
+// spec: spec/10-io.md §10.12.9 — discarding unforced platform pure releases
 // the DLL-allocated owning result as well as its IO node (S121 R4 E1).
 #[test]
 fn platform_pure_string_unforced_discard_balances() {
     let pair = MarginalPair::new(
-        "unforced DLL Pure String",
-        platform_pure_program("(Pure 0)"),
-        platform_pure_program("(let [_ (pure-string)] (Pure 0))"),
+        "unforced DLL pure String",
+        platform_pure_program("(primitives/pure 0)"),
+        platform_pure_program("(let [_ (pure-string)] (primitives/pure 0))"),
     )
     .measure();
     assert_eq!(pair.control().exit_code(), Some(0), "{}", pair.report());
@@ -90,18 +90,18 @@ fn platform_pure_string_unforced_discard_balances() {
         "DLL workload must allocate: {}",
         pair.report()
     );
-    pair.assert_balanced("discarded DLL Pure String");
+    pair.assert_balanced("discarded DLL pure String");
 }
 
-// spec: spec/10-io.md §10.3.1 — forcing platform Pure hands the exact live
+// spec: spec/10-io.md §10.3.1 — forcing platform pure hands the exact live
 // string to its continuation and releases it exactly once (S121 R4 E2).
 #[test]
 fn platform_pure_string_forced_transfers_exact_value_and_balances() {
     let pair = MarginalPair::new(
-        "forced DLL Pure String",
-        platform_pure_program("(Pure 17)"),
+        "forced DLL pure String",
+        platform_pure_program("(primitives/pure 17)"),
         platform_pure_program(
-            "(bind (pure-string) (fn [s] (Pure (if (str-eq s \"s121-platform-pure\") 17 99))))",
+            "(bind (pure-string) (fn [s] (primitives/pure (if (str-eq s \"s121-platform-pure\") 17 99))))",
         ),
     )
     .measure();
@@ -112,17 +112,17 @@ fn platform_pure_string_forced_transfers_exact_value_and_balances() {
         "DLL workload must allocate: {}",
         pair.report()
     );
-    pair.assert_balanced("forced DLL Pure String");
+    pair.assert_balanced("forced DLL pure String");
 }
 
-// spec: spec/10-io.md §10.12.9 — unforced scalar platform Pure tears down
+// spec: spec/10-io.md §10.12.9 — unforced scalar platform pure tears down
 // safely without a heap-result disposer call (S121 R4 E3).
 #[test]
 fn platform_pure_int_unforced_discard_balances_without_disposer() {
     let pair = MarginalPair::new(
-        "unforced DLL Pure Int",
-        platform_pure_program("(Pure 0)"),
-        platform_pure_program("(let [_ (pure-int)] (Pure 0))"),
+        "unforced DLL pure Int",
+        platform_pure_program("(primitives/pure 0)"),
+        platform_pure_program("(let [_ (pure-int)] (primitives/pure 0))"),
     )
     .measure();
     assert_eq!(pair.control().exit_code(), Some(0), "{}", pair.report());
@@ -132,10 +132,10 @@ fn platform_pure_int_unforced_discard_balances_without_disposer() {
         "DLL workload must allocate: {}",
         pair.report()
     );
-    pair.assert_balanced("discarded DLL Pure Int");
+    pair.assert_balanced("discarded DLL pure Int");
 }
 
-// spec: spec/10-io.md §10.8.1 — one heap-payload `Pure`, bound once and forced
+// spec: spec/10-io.md §10.8.1 — one heap-payload `pure`, bound once and forced
 // twice, hands its live String to each force; spec/12-runtime.md §12.3.1 — and
 // leaks nothing its fresh-node twin does not (IOR-2; allocation:
 // `tests/plan/s122-evidence-delta.md`, "Reuse of an IO value — defect allocation").
@@ -157,29 +157,29 @@ fn platform_pure_string_reused_node_yields_payload_to_each_force_and_balances() 
             "(let [p (pure-string)]\n\
                (bind p (fn [s]\n\
                  (bind {second} (fn [t]\n\
-                   (Pure (if (str-eq s \"s121-platform-pure\")\n\
+                   (primitives/pure (if (str-eq s \"s121-platform-pure\")\n\
                              (if (str-eq t \"s121-platform-pure\") 17 91)\n\
                              92)))))))"
         )
     };
     let pair = MarginalPair::new(
-        "reused DLL Pure String",
+        "reused DLL pure String",
         platform_pure_program(&body("(pure-string)")).env("CRANELISP_RC_DEC_CHECK", "1"),
         platform_pure_program(&body("p")).env("CRANELISP_RC_DEC_CHECK", "1"),
     )
     .measure();
     assert_eq!(pair.control().exit_code(), Some(17), "{}", pair.report());
     assert_eq!(pair.subject().exit_code(), Some(17), "{}", pair.report());
-    pair.assert_balanced("reused DLL Pure String");
+    pair.assert_balanced("reused DLL pure String");
 }
 
 // spec: spec/12-runtime.md §12.3.1 — a `bind` returned from a scope that owns the
-// `let`-bound forced platform `Pure` releases its whole tree: the bound operand
+// `let`-bound forced platform `pure` releases its whole tree: the bound operand
 // balances against its inline twin (IOR-5 trigger).
 // defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev fixed=S122/57253cf2
 #[test]
 fn platform_pure_let_bound_bind_operand_balances() {
-    let continuation = "(fn [s] (Pure (if (str-eq s \"s121-platform-pure\") 17 99)))";
+    let continuation = "(fn [s] (primitives/pure (if (str-eq s \"s121-platform-pure\") 17 99)))";
     let pair = MarginalPair::new(
         "let-bound bind operand",
         platform_pure_program(&format!("(bind (pure-string) {continuation})")),
@@ -197,7 +197,7 @@ fn platform_pure_let_bound_bind_operand_balances() {
 // defect: class=rc-miscount locus=crates/cranelisp-backend/src/compiler/rc_emission.rs::protect_return_value found=S122 owner=/dev fixed=S122/57253cf2
 #[test]
 fn platform_pure_unused_heap_binding_beside_bind_balances() {
-    let result = "(bind (pure-int) (fn [_] (Pure 17)))";
+    let result = "(bind (pure-int) (fn [_] (primitives/pure 17)))";
     let pair = MarginalPair::new(
         "unused heap binding beside bind",
         platform_pure_program(result),
@@ -230,8 +230,8 @@ fn platform_effect_unforced_discard_balances() {
         Child::new(&format!(
             "(platform stdio)\n\
              (import [platform.stdio [print]])\n\
-             (import [primitives [Pure add-i64 str-len]])\n\
-             (defn main [] (let [s \"p-e\" n {n}] (Pure (add-i64 n (str-len s)))))\n"
+             (import [primitives [pure add-i64 str-len]])\n\
+             (defn main [] (let [s \"p-e\" n {n}] (primitives/pure (add-i64 n (str-len s)))))\n"
         ))
         .env("CRANELISP_RC_DEC_CHECK", "1")
     };
@@ -257,10 +257,10 @@ fn platform_effect_unforced_discard_balances() {
 /// whether each step goes through the trait instance.
 fn functor_io_program(body: &str) -> Child {
     Child::new(&format!(
-        "(import [primitives [IO Pure bind add-i64]])\n\
+        "(import [primitives [IO pure bind add-i64]])\n\
          (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
          (impl (Functor f) (Functor IO)\n\
-           (defn fmap [g io] (bind io (fn [x] (Pure (g x))))))\n\
+           (defn fmap [g io] (bind io (fn [x] (primitives/pure (g x))))))\n\
          (defn inc [x] (add-i64 x 1))\n\
          (defn main [] {body})\n"
     ))
@@ -275,13 +275,13 @@ fn functor_io_program(body: &str) -> Child {
 // read as a positive multiple of three. Exit 42 requires every step to run.
 #[test]
 fn functor_io_instance_calls_balance_against_inline_bind() {
-    let step = "(fn [x] (Pure (inc x)))";
+    let step = "(fn [x] (primitives/pure (inc x)))";
     let pair = MarginalPair::new(
         "three fmap calls through the Functor IO instance",
         functor_io_program(&format!(
-            "(bind (bind (bind (Pure 39) {step}) {step}) {step})"
+            "(bind (bind (bind (primitives/pure 39) {step}) {step}) {step})"
         )),
-        functor_io_program("(fmap inc (fmap inc (fmap inc (Pure 39))))"),
+        functor_io_program("(fmap inc (fmap inc (fmap inc (primitives/pure 39))))"),
     )
     .measure();
     assert_eq!(pair.control().exit_code(), Some(42), "{}", pair.report());
@@ -291,7 +291,7 @@ fn functor_io_instance_calls_balance_against_inline_bind() {
 
 // spec: spec/10-io.md §10.8 — an IO value that is never forced performs
 // nothing; spec/12-runtime.md §12.3.1 — discarding it releases the heap payload
-// of the `Pure` inside its unrun `Bind` exactly once (FIXME 0934; S122 K2).
+// of the `pure` inside its unrun `Bind` exactly once (FIXME 0934; S122 K2).
 //
 // The payload is a runtime `str-concat` result, so it is a counted heap block.
 // A stranded payload reads +1; a second release meets a freed block under the
@@ -300,17 +300,17 @@ fn functor_io_instance_calls_balance_against_inline_bind() {
 fn unrun_bind_over_heap_payload_pure_discard_balances() {
     let program = |body: &str| {
         Child::new(&format!(
-            "(import [primitives [Pure bind str-concat str-len]])\n\
+            "(import [primitives [pure bind str-concat str-len]])\n\
              (defn main [] {body})\n"
         ))
         .env("CRANELISP_RC_DEC_CHECK", "1")
     };
     let pair = MarginalPair::new(
-        "discarded unrun Bind over a heap-payload Pure",
-        program("(Pure 0)"),
+        "discarded unrun Bind over a heap-payload pure",
+        program("(primitives/pure 0)"),
         program(
-            "(let [_ (bind (Pure (str-concat \"ab\" \"cd\")) (fn [s] (Pure (str-len s))))]\n\
-               (Pure 0))",
+            "(let [_ (bind (primitives/pure (str-concat \"ab\" \"cd\")) (fn [s] (primitives/pure (str-len s))))]\n\
+               (primitives/pure 0))",
         ),
     )
     .measure();
@@ -318,35 +318,36 @@ fn unrun_bind_over_heap_payload_pure_discard_balances() {
     assert_eq!(pair.subject().exit_code(), Some(0), "{}", pair.report());
     assert!(
         pair.allocs() >= 3,
-        "the subject must build the payload, its Pure and the Bind: {}",
+        "the subject must build the payload, its pure and the Bind: {}",
         pair.report()
     );
-    pair.assert_balanced("discarded unrun Bind over a heap-payload Pure");
+    pair.assert_balanced("discarded unrun Bind over a heap-payload pure");
 }
 
 // =============================================================================
 // bind primitive — spec/10-io.md §10.3
 // =============================================================================
 
-// spec: spec/10-io.md §10.3.1 — bind chains Pure(42) into +1
+// spec: spec/10-io.md §10.3.1 — bind chains pure(42) into +1
 #[test]
 fn bind_pure_to_pure_plus_one() {
-    repl("(bind (Pure 42) (fn [x] (Pure (add-i64 x 1))))\n")
+    repl("(bind (primitives/pure 42) (fn [x] (primitives/pure (add-i64 x 1))))\n")
         .assert_stdout_contains(":primitives/Int 43");
 }
 
 // spec: spec/10-io.md §10.3.1 — bind with identity continuation
 #[test]
 fn bind_identity_continuation() {
-    repl("(bind (Pure 77) (fn [x] (Pure x)))\n").assert_stdout_contains(":primitives/Int 77");
+    repl("(bind (primitives/pure 77) (fn [x] (primitives/pure x)))\n")
+        .assert_stdout_contains(":primitives/Int 77");
 }
 
 // spec: spec/10-io.md §10.3.3 — nested bind chains
 #[test]
 fn bind_nested_chain() {
-    // (bind (bind (Pure 10) (fn [x] (Pure (+ x 20)))) (fn [y] (Pure (+ y 100))))
+    // (bind (bind (primitives/pure 10) (fn [x] (primitives/pure (+ x 20)))) (fn [y] (primitives/pure (+ y 100))))
     repl(
-        "(bind (bind (Pure 10) (fn [x] (Pure (add-i64 x 20)))) (fn [y] (Pure (add-i64 y 100))))\n",
+        "(bind (bind (primitives/pure 10) (fn [x] (primitives/pure (add-i64 x 20)))) (fn [y] (primitives/pure (add-i64 y 100))))\n",
     )
     .assert_stdout_contains(":primitives/Int 130");
 }
@@ -354,7 +355,7 @@ fn bind_nested_chain() {
 // spec: spec/10-io.md §10.3 — triple bind chain
 #[test]
 fn bind_triple_chain() {
-    repl("(bind (Pure 1) (fn [a] (bind (Pure 2) (fn [b] (bind (Pure 3) (fn [c] (Pure (add-i64 a (add-i64 b c)))))))))\n")
+    repl("(bind (primitives/pure 1) (fn [a] (bind (primitives/pure 2) (fn [b] (bind (primitives/pure 3) (fn [c] (primitives/pure (add-i64 a (add-i64 b c)))))))))\n")
         .assert_stdout_contains(":primitives/Int 6");
 }
 
@@ -362,8 +363,8 @@ fn bind_triple_chain() {
 #[test]
 fn bind_named_defn_continuation() {
     repl(
-        "(defn my-pure [x] (Pure x))
-(bind (Pure 99) my-pure)
+        "(defn my-pure [x] (primitives/pure x))
+(bind (primitives/pure 99) my-pure)
 ",
     )
     .assert_stdout_contains(":primitives/Int 99");
@@ -376,7 +377,7 @@ fn bind_named_defn_continuation() {
 // spec: spec/10-io.md §10.1 (Bind is internal, not user-invocable) — Bind cannot be constructed directly
 #[test]
 fn bind_constructor_rejected() {
-    let out = repl("(Bind (Pure 1) (fn [x] (Pure x)))\n");
+    let out = repl("(Bind (primitives/pure 1) (fn [x] (primitives/pure x)))\n");
     // The internal Bind constructor MUST NOT be invocable from user code.
     assert!(
         out.stdout.to_lowercase().contains("error") || out.stdout.contains("undefined"),
@@ -388,7 +389,7 @@ fn bind_constructor_rejected() {
 // spec: spec/10-io.md §10.1 (Bind is internal, not user-invocable) — Bind cannot be matched
 #[test]
 fn bind_pattern_rejected() {
-    let out = repl("(match (Pure 1) [(Bind a b) 0 _ 99])\n");
+    let out = repl("(match (primitives/pure 1) [(Bind a b) 0 _ 99])\n");
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "Bind pattern must NOT be matchable; got:\n{}",
@@ -396,39 +397,31 @@ fn bind_pattern_rejected() {
     );
 }
 
-// spec: spec/10-io.md §10.2 (positive) — Pure CAN be matched (it's a public ctor)
-#[test]
-fn pure_pattern_accepted() {
-    // Match on IO type must cover both Pure and Effect (Bind is private).
-    repl("(match (Pure 5) [(Pure x) x (Effect e) 0])\n")
-        .assert_stdout_contains(":primitives/Int 5");
-}
-
 // =============================================================================
 // IO type inference — spec/10-io.md §10.7 (Effect Tracking)
 // =============================================================================
 
-// spec: spec/10-io.md §10.7.1 — defn returning Pure has type with IO marker (propagation)
+// spec: spec/10-io.md §10.7.1 — defn returning pure has type with IO marker (propagation)
 #[test]
 fn defn_returning_pure_displays_fn_type() {
-    let out = repl("(defn pure-int [] (Pure 42))\n");
+    let out = repl("(defn pure-int [] (primitives/pure 42))\n");
     // Display should show `(Fn [] ... Int)` — the IO wrapper unwraps to Int.
     assert!(
         out.stdout.contains("user/pure-int ; defn"),
-        "defn returning Pure must show defn classification; got:\n{}",
+        "defn returning pure must show defn classification; got:\n{}",
         out.stdout
     );
 }
 
 // spec: spec/10-io.md §10.1.1 — Type System Integration: IO propagates upward
 // through the call graph automatically via HM inference, with no special rules.
-// A fn that produces an IO value (here `(Pure 5)`) has `IO` in its inferred
+// A fn that produces an IO value (here `(primitives/pure 5)`) has `IO` in its inferred
 // return type WITHOUT any annotation. The REPL display shows
 // `(Fn [] (primitives/IO primitives/Int))` — the IO marker is present, proving
 // propagation is type-inferred, not annotated.
 #[test]
 fn io_propagates_into_inferred_return_type() {
-    let out = repl("(defn mk [] (Pure 5))\nmk\n");
+    let out = repl("(defn mk [] (primitives/pure 5))\nmk\n");
     assert!(
         out.stdout
             .contains("(Fn [] (primitives/IO primitives/Int))"),
@@ -446,7 +439,7 @@ fn io_propagates_into_inferred_return_type() {
 // This is the negative enforcing the purity boundary.
 #[test]
 fn io_value_in_pure_position_is_type_error_neg() {
-    let out = repl("(defn mk [] (Pure 5))\n(add-i64 1 (mk))\n");
+    let out = repl("(defn mk [] (primitives/pure 5))\n(add-i64 1 (mk))\n");
     assert!(
         out.stdout.contains("type error") || out.stdout.contains("type mismatch"),
         "using an IO-typed value where a pure value is expected MUST be a type \
@@ -464,7 +457,8 @@ fn io_value_in_pure_position_is_type_error_neg() {
 // spec: spec/10-io.md §10.3 — bind result inferred as polymorphic
 #[test]
 fn bind_polymorphic_inference() {
-    repl("(bind (Pure 99) (fn [x] (Pure x)))\n").assert_stdout_contains(":primitives/Int 99");
+    repl("(bind (primitives/pure 99) (fn [x] (primitives/pure x)))\n")
+        .assert_stdout_contains(":primitives/Int 99");
 }
 
 // =============================================================================
@@ -509,24 +503,27 @@ fn assert_io_notice_then_payload(out: helpers::e2e::CrOutput, payload_line: &str
 // spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
 #[test]
 fn repl_pure_int_result_prints_io_notice_then_payload() {
-    assert_io_notice_then_payload(repl("(Pure 42)\n"), ":primitives/Int 42");
+    assert_io_notice_then_payload(repl("(primitives/pure 42)\n"), ":primitives/Int 42");
 }
 
 // spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
-// spec: spec/10-io.md §10.2.3 — Pure wraps String
+// spec: spec/10-io.md §10.2.3 — pure wraps String
 #[test]
 fn repl_pure_string_result_prints_io_notice_then_payload() {
-    assert_io_notice_then_payload(repl("(Pure \"hello\")\n"), ":primitives/String \"hello\"");
+    assert_io_notice_then_payload(
+        repl("(primitives/pure \"hello\")\n"),
+        ":primitives/String \"hello\"",
+    );
 }
 
 // spec: repl/spec/01-display-format.md §1.2.1 — IO Expression Results
 // The input is also the S61 capture-return-inc double-free guard
 // (`emit_capture_return_inc`). Its result comes from `bind`, not from a
-// literal `(Pure …)` form, so the notice must follow the type.
+// literal `(primitives/pure …)` form, so the notice must follow the type.
 #[test]
 fn repl_bind_pure_lambda_result_prints_io_notice_then_payload_without_double_free() {
     assert_io_notice_then_payload(
-        repl("(bind (Pure 42) (fn [x] (Pure x)))\n"),
+        repl("(bind (primitives/pure 42) (fn [x] (primitives/pure x)))\n"),
         ":primitives/Int 42",
     );
 }
@@ -585,12 +582,12 @@ fn repl_io_notice_precedes_effect_output_neg_not_on_pure_defn_or_lookup_turns() 
 // =============================================================================
 //
 // Per the [current mode-canonicalisation guidance](plan/PLAN.md#mode-canonicalisation--repl-is-the-canonical-surface-for-language-conformance), --run mode is the
-// canonical home for "main returns Pure(N), exit code = N" semantics. The
+// canonical home for "main returns pure(N), exit code = N" semantics. The
 // REPL form would observe Int N as well, but the spec says batch mode
 // returns IO via the trampoline before exiting. These tests exercise that
 // path explicitly.
 
-// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning Pure: exit code = inner Int
+// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning pure: exit code = inner Int
 // spec: repl/spec/00-cli-invocation.md §0.5.3 — the options-first order
 // `--run <target>` executes the target. The target-first order's equivalence is
 // unit-pinned at `src/main.rs::tests::target_before_or_after_mode_flag_parses_identically`.
@@ -599,18 +596,18 @@ fn run_mode_main_returns_pure_exit_code() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (Pure 42))")
+        .user("(defn main [] (primitives/pure 42))")
         .output()
         .assert_exit(42);
 }
 
-// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning Pure with non-zero exit code
+// spec: spec/10-io.md §10.6.1 (Exit Code) — main returning pure with non-zero exit code
 #[test]
 fn run_mode_main_returns_pure_nonzero() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (Pure 99))")
+        .user("(defn main [] (primitives/pure 99))")
         .output()
         .assert_exit(99);
 }
@@ -621,23 +618,25 @@ fn run_mode_main_returns_bind_exit_code() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (bind (Pure 10) (fn [x] (Pure (add-i64 x 32)))))")
+        .user(
+            "(defn main [] (bind (primitives/pure 10) (fn [x] (primitives/pure (add-i64 x 32)))))",
+        )
         .output()
         .assert_exit(42);
 }
 
 // IOR-1 / IOR-C — reuse of an IO value (spec/10-io.md §10.8.1: "forcing an IO
 // value does not consume it"). The two sources differ in exactly one token: the
-// continuation returns `p` (reuse) or `(Pure a)` (control). Allocation:
+// continuation returns `p` (reuse) or `(primitives/pure a)` (control). Allocation:
 // `tests/plan/s122-evidence-delta.md` §"Reuse of an IO value — defect allocation".
 // The heap-payload cell of that allocation (IOR-2) sits with the
 // `platform_pure_string_*` marginal pairs above, on their harness.
 
-// spec: spec/10-io.md §10.8.1 — a description is reusable: one `Pure` bound once
+// spec: spec/10-io.md §10.8.1 — a description is reusable: one `pure` bound once
 // and forced twice in sequence yields its value each time.
 // defect: class=wrong-reject locus=crates/cranelisp-intrinsics/src/io.rs::force_pure_node found=S122 owner=/dev fixed=S122/57253cf2
 //
-// Pre-fix this exited 1 with `runtime panic: Pure node forced more than once`.
+// Pre-fix this exited 1 with `runtime panic: pure node forced more than once`.
 // The refusal aborted the program, so exit 7 was unreachable while it stood and
 // discriminated it without matching on the message; 7 rather than 0 also
 // discriminates a correction that yields a stale or zero second value.
@@ -646,13 +645,13 @@ fn run_mode_reused_pure_yields_its_value_on_each_force() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (let [p (Pure 7)] (bind p (fn [a] p))))")
+        .user("(defn main [] (let [p (primitives/pure 7)] (bind p (fn [a] p))))")
         .output()
         .assert_exit(7);
 }
 
 // spec: spec/10-io.md §10.8.1 — control for the cell above: a continuation
-// returning a FRESH `Pure` forces two distinct nodes, so it must pass both
+// returning a FRESH `pure` forces two distinct nodes, so it must pass both
 // before and after the reuse correction. A red here is a harness, import or
 // exit-path fault posing as the defect or as its fix, not the defect.
 #[test]
@@ -660,7 +659,7 @@ fn run_mode_fresh_pure_per_force_yields_its_value_control() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (let [p (Pure 7)] (bind p (fn [a] (Pure a)))))")
+        .user("(defn main [] (let [p (primitives/pure 7)] (bind p (fn [a] (primitives/pure a)))))")
         .output()
         .assert_exit(7);
 }
@@ -671,7 +670,7 @@ fn effect_reuse_program(continuation_body: &str) -> String {
     format!(
         "(platform stdio)\n\
          (import [platform.stdio [print]])\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (defn main [] (let [e (print \"p-e\")] (bind e (fn [_] {continuation_body}))))\n"
     )
 }
@@ -705,32 +704,221 @@ fn run_mode_fresh_effect_per_force_performs_its_effect_control() {
     assert_effect_performed_twice(&effect_reuse_program("(print \"p-e\")"));
 }
 
+fn poll_step_reuse_output(body: &str, awaited: bool) -> helpers::e2e::CrOutput {
+    let result = if awaited {
+        "(add-i64 1 (sub-i64 r r))"
+    } else {
+        "1"
+    };
+    let source = format!(
+        r#"(platform poll-pool)
+(import [platform.poll-pool [poll-log]])
+(import [primitives [bind add-i64 sub-i64]])
+(defn mk [] (bind (poll-log 7 1 20 "L") (fn [r] (primitives/pure {result}))))
+(defn main [] {body})
+"#
+    );
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .use_workspace_platforms()
+        .user(&source)
+        .run("user.cl")
+        .output()
+}
+
+fn assert_poll_step_result(out: helpers::e2e::CrOutput, expected: &str) {
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "each force must yield 1 and exit normally; status:{}\nstdout:{}\nstderr:{}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_eq(expected);
+}
+
+// spec: spec/10-io.md §10.8.1 — T-F3: a launched description is reusable.
+// defect: class=consuming-force locus=crates/cranelisp-intrinsics/src/io.rs::launch_continue found=S125 owner=/dev
+#[test]
+fn run_mode_reused_launched_poll_step_performs_each_force() {
+    assert_poll_step_result(
+        poll_step_reuse_output(
+            "(let [io (mk)] (bind io (fn [a] (bind io (fn [b] (primitives/pure (add-i64 a b)))))))",
+            false,
+        ),
+        "LL",
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — T-F3 control A: a fresh launched step per force.
+#[test]
+fn run_mode_fresh_launched_poll_step_per_force_control() {
+    assert_poll_step_result(
+        poll_step_reuse_output(
+            "(bind (mk) (fn [a] (bind (mk) (fn [b] (primitives/pure (add-i64 a b))))))",
+            false,
+        ),
+        "LL",
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — T-F3 control B: a launched step forced once.
+#[test]
+fn run_mode_launched_poll_step_single_force_control() {
+    assert_poll_step_result(
+        poll_step_reuse_output(
+            "(let [io (mk)] (bind io (fn [a] (primitives/pure (add-i64 a 1)))))",
+            false,
+        ),
+        "L",
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — T-F3 control C: sequential reuse of an awaited poll leaf.
+#[test]
+fn run_mode_reused_awaited_poll_step_control() {
+    assert_poll_step_result(
+        poll_step_reuse_output(
+            "(let [io (mk)] (bind io (fn [a] (bind io (fn [b] (primitives/pure (add-i64 a b)))))))",
+            true,
+        ),
+        "LL",
+    );
+}
+
+// T-POLL-REUSE (plan/s125-evidence-delta.md §28.2). Keeping each branch
+// alive for 1 s after its output prevents select's cancellation from hiding it.
+fn poll_leaf_reuse_output(body: &str) -> helpers::e2e::CrOutput {
+    let source = format!(
+        r#"(platform poll-pool)
+(import [platform.poll-pool [poll-log]])
+(import [primitives [bind sleep select add-i64 sub-i64]])
+(defn hold [r] (bind (sleep 1000) (fn [_] (primitives/pure (sub-i64 r r)))))
+(defn tagged [io token tag]
+  (bind io (fn [r]
+    (bind (poll-log token 1 100 tag) (fn [q] (hold (add-i64 r q)))))))
+(defn main [] {body})
+"#
+    );
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .use_workspace_platforms()
+        .user(&source)
+        .run("user.cl")
+        .output()
+}
+
+fn sequential_poll_leaf_output(second: &str) -> helpers::e2e::CrOutput {
+    poll_leaf_reuse_output(&format!(
+        r#"(let [io (poll-log 7 1 300 "L")]
+  (bind io (fn [a]
+    (select [(bind {second} (fn [b] (hold (add-i64 a b))))
+             (bind (poll-log 8 1 100 "m") (fn [m] (hold m)))]))))"#
+    ))
+}
+
+// spec: spec/10-io.md §10.8.1 — each sequential force must suspend again, not reuse a completed timer.
+// defect: class=consuming-force locus=crates/cranelisp-intrinsics/src/io.rs::await_poll_node found=S125 owner=/dev
+#[test]
+fn run_mode_reused_poll_leaf_suspends_on_each_sequential_force() {
+    sequential_poll_leaf_output("io")
+        .assert_exit(0)
+        .assert_stdout_eq("LmL");
+}
+
+// spec: spec/10-io.md §10.8.1 — fresh-leaf control for the sequential second-force wait.
+#[test]
+fn run_mode_fresh_poll_leaf_per_sequential_force_control() {
+    sequential_poll_leaf_output("(poll-log 7 1 300 \"L\")")
+        .assert_exit(0)
+        .assert_stdout_eq("LmL");
+}
+
+fn in_flight_poll_leaf_output(second: &str, capacity: u32) -> helpers::e2e::CrOutput {
+    poll_leaf_reuse_output(&format!(
+        r#"(let [io (poll-log 7 {capacity} 300 "L")]
+  (select [(tagged io 8 "x") (tagged {second} 9 "z")]))"#
+    ))
+}
+
+// spec: spec/10-io.md §10.8.1, §10.12.4.1 items 2 and 4 — concurrent forces share the capacity-1 pool in source order.
+// defect: class=consuming-force locus=crates/cranelisp-intrinsics/src/io.rs::await_poll_node found=S125 owner=/dev
+#[test]
+fn run_mode_reused_poll_leaf_in_flight_capacity_one_serialises() {
+    in_flight_poll_leaf_output("io", 1)
+        .assert_exit(0)
+        .assert_stdout_eq("LxLz");
+}
+
+// spec: spec/10-io.md §10.12.4.1 items 2 and 4 — fresh-leaf control: capacity 1 serialises in source order.
+#[test]
+fn run_mode_fresh_poll_leaf_per_in_flight_force_control() {
+    in_flight_poll_leaf_output("(poll-log 7 1 300 \"L\")", 1)
+        .assert_exit(0)
+        .assert_stdout_eq("LxLz");
+}
+
+// spec: spec/10-io.md §10.8.1, §10.12.4.1 item 5 — reuse control: capacity 2 permits both forces together.
+#[test]
+fn run_mode_reused_poll_leaf_in_flight_capacity_two_control() {
+    in_flight_poll_leaf_output("io", 2)
+        .assert_exit(0)
+        .assert_stdout_eq("LLxz");
+}
+
+// spec: spec/10-io.md §10.8.1 — a reused read-line leaf reads the next input, as its fresh twin does.
+#[test]
+fn run_mode_reused_read_line_reads_each_input_with_fresh_control() {
+    for second in ["io", "(read-line)"] {
+        let source = format!(
+            r#"(platform stdio)
+(import [platform.stdio [read-line print]])
+(import [primitives [bind str-concat]])
+(defn main []
+  (let [io (read-line)]
+    (bind io (fn [a]
+      (bind {second} (fn [b] (print (str-concat a (str-concat "|" b)))))))))
+"#
+        );
+        Cranelisp::new()
+            .with_prelude(PreludeVariant::None)
+            .use_workspace_platforms()
+            .user(&source)
+            .run("user.cl")
+            .stdin("one\ntwo\n")
+            .output()
+            .assert_exit(0)
+            .assert_stdout_eq("one|two\n");
+    }
+}
+
 // spec: spec/10-io.md §10.6.1 (Exit Code) — a batch `main` returning `(IO Int)`
 // exits with the inner Int. A bare-`Int` main is REJECTED (see
 // `batch_main_pure_int_return_is_rejected`); the conformant shape wraps the
-// exit code in `(Pure …)`, and the inner Int (7) is the process exit code.
+// exit code in `(primitives/pure …)`, and the inner Int (7) is the process exit code.
 #[test]
 fn run_mode_main_returns_int_exit_code() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
-        .user("(defn main [] (Pure 7))")
+        .user("(defn main [] (primitives/pure 7))")
         .output()
         .assert_exit(7);
 }
 
-/// Asserts that `main` returning `(Pure <value>)` exits 0 and writes nothing to
+/// Asserts that `main` returning `(primitives/pure <value>)` exits 0 and writes nothing to
 /// stdout, under `--run` and when the executable produced by `--link` is run.
 /// The linked executable is spawned directly so the compiler's `; Linking:`
 /// progress line does not mix into its stdout.
 fn assert_non_int_main_exits_zero_silently(value: &str) {
-    let source = format!("(import [primitives [Pure]])\n(defn main [] (Pure {value}))");
+    let source = format!("(import [primitives [pure]])\n(defn main [] (primitives/pure {value}))");
 
     let run = Cranelisp::new().run("user.cl").user(&source).output();
     assert_eq!(
         (run.status.code(), run.stdout.as_str()),
         (Some(0), ""),
-        "--run: `(Pure {value})` main must exit 0 with empty stdout\nstderr:\n{}",
+        "--run: `(primitives/pure {value})` main must exit 0 with empty stdout\nstderr:\n{}",
         run.stderr
     );
 
@@ -751,7 +939,7 @@ fn assert_non_int_main_exits_zero_silently(value: &str) {
             String::from_utf8_lossy(&ran.stdout).as_ref()
         ),
         (Some(0), ""),
-        "--link: `(Pure {value})` executable must exit 0 with empty stdout\nstderr:\n{}",
+        "--link: `(primitives/pure {value})` executable must exit 0 with empty stdout\nstderr:\n{}",
         String::from_utf8_lossy(&ran.stderr)
     );
 }
@@ -940,29 +1128,30 @@ fn batch_main_non_io_return_refusal_is_located_at_main() {
 // spec: spec/10-io.md §10.7.2 — both branches IO (branch consistency)
 #[test]
 fn if_both_branches_io() {
-    repl("(if (eq-i64 1 1) (Pure 10) (Pure 20))\n").assert_stdout_contains(":primitives/Int 10");
+    repl("(if (eq-i64 1 1) (primitives/pure 10) (primitives/pure 20))\n")
+        .assert_stdout_contains(":primitives/Int 10");
 }
 
-// spec: spec/10-io.md §10.7.2 — branch consistency (mixed Pure / non-Pure errors)
+// spec: spec/10-io.md §10.7.2 — branch consistency (mixed pure / non-pure errors)
 #[test]
 fn if_branch_consistency_neg_mixed() {
-    let out = repl("(if (eq-i64 1 1) (Pure 10) 20)\n");
-    // Mixing Pure(Int) with bare Int in branches is a type error.
+    let out = repl("(if (eq-i64 1 1) (primitives/pure 10) 20)\n");
+    // Mixing pure(Int) with bare Int in branches is a type error.
     assert!(
         out.stdout.to_lowercase().contains("error"),
-        "mixing Pure(Int) with Int in if branches must error; got:\n{}",
+        "mixing pure(Int) with Int in if branches must error; got:\n{}",
         out.stdout
     );
 }
 
 // =============================================================================
-// match on IO values — spec/10-io.md §10.7.2 + spec/06-pattern-matching.md §6.1
+// match arms returning IO — spec/10-io.md §10.7.2 + spec/06-pattern-matching.md §6.1
 // =============================================================================
 
 // spec: spec/10-io.md §10.7.2 — match arms all IO (branch consistency)
 #[test]
 fn match_arms_all_io_pure() {
-    repl("(match (Pure 1) [(Pure x) (Pure (add-i64 x 100)) (Effect e) (Pure 0)])\n")
+    repl("(match (primitives/Some 1) [(Some x) (primitives/pure (add-i64 x 100)) None (primitives/pure 0)])\n")
         .assert_stdout_contains(":primitives/Int 101");
 }
 
@@ -973,7 +1162,7 @@ fn match_arms_all_io_pure() {
 // spec: spec/10-io.md §10.7.1 — let with IO body inherits IO type (effect propagation)
 #[test]
 fn let_io_body() {
-    repl("(let [x 5] (Pure x))\n").assert_stdout_contains(":primitives/Int 5");
+    repl("(let [x 5] (primitives/pure x))\n").assert_stdout_contains(":primitives/Int 5");
 }
 
 // =============================================================================
@@ -994,7 +1183,7 @@ fn capture_return_inc_does_not_double_free() {
     // The 7-line minimum repro from the Sprint 61 investigation:
     // a string captured by a lambda, returned via the lambda, no double-free.
     repl(
-        r#"(defn make-bind [s] (bind (Pure s) (fn [x] (Pure x))))
+        r#"(defn make-bind [s] (bind (primitives/pure s) (fn [x] (primitives/pure x))))
 (make-bind "hello")
 "#,
     )
@@ -1018,9 +1207,9 @@ fn capture_return_inc_does_not_double_free() {
 // spec: spec/10-io.md §10.8 — IO values are deferred data (not eager)
 #[test]
 fn io_values_deferred() {
-    // Defining a fn that returns Pure does not run any side effects.
+    // Defining a fn that returns pure does not run any side effects.
     repl(
-        "(defn deferred [] (Pure 99))
+        "(defn deferred [] (primitives/pure 99))
 (deferred)
 ",
     )
@@ -1035,7 +1224,7 @@ fn io_values_deferred() {
 #[test]
 fn auto_curry_io_returning_fn() {
     let out = repl(
-        "(defn add-pure [x y] (Pure (add-i64 x y)))
+        "(defn add-pure [x y] (primitives/pure (add-i64 x y)))
 (add-pure 5)
 ",
     );
@@ -1056,7 +1245,7 @@ fn auto_curry_io_returning_fn() {
 // Int is a type error.
 #[test]
 fn bind_first_arg_must_be_io_neg() {
-    let out = repl("(bind 42 (fn [x] (Pure x)))\n");
+    let out = repl("(bind 42 (fn [x] (primitives/pure x)))\n");
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "bind with non-IO first arg MUST be a type error; got:\n{}",
@@ -1068,7 +1257,7 @@ fn bind_first_arg_must_be_io_neg() {
 // `(Fn [a] (IO b))`; a bare Int is a type error.
 #[test]
 fn bind_second_arg_must_be_function_neg() {
-    let out = repl("(bind (Pure 42) 99)\n");
+    let out = repl("(bind (primitives/pure 42) 99)\n");
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "bind with non-function second arg MUST be a type error; got:\n{}",
@@ -1080,7 +1269,7 @@ fn bind_second_arg_must_be_function_neg() {
 // continuation returning a bare value (here `x`, an Int) is a type error.
 #[test]
 fn bind_continuation_must_return_io_neg() {
-    let out = repl("(bind (Pure 42) (fn [x] x))\n");
+    let out = repl("(bind (primitives/pure 42) (fn [x] x))\n");
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "bind continuation returning non-IO MUST be a type error; got:\n{}",
@@ -1089,10 +1278,10 @@ fn bind_continuation_must_return_io_neg() {
 }
 
 // spec: spec/10-io.md §10.1 — IO is parametric: `IO Int` and `IO Bool` do not
-// unify, so an `if` with one Pure-Int branch and one Pure-Bool branch errors.
+// unify, so an `if` with one pure-Int branch and one pure-Bool branch errors.
 #[test]
 fn io_int_vs_io_bool_mismatch_neg() {
-    let out = repl("(if (eq-i64 1 1) (Pure 1) (Pure true))\n");
+    let out = repl("(if (eq-i64 1 1) (primitives/pure 1) (primitives/pure true))\n");
     assert!(
         out.stdout.to_lowercase().contains("error"),
         "IO Int vs IO Bool branches MUST be a type error; got:\n{}",
@@ -1106,7 +1295,7 @@ fn io_int_vs_io_bool_mismatch_neg() {
 fn match_arms_mixed_io_and_bare_neg() {
     let out = repl(
         "(deftype Color Red Green Blue)\n\
-         (match Red [Red (Pure 1) Green 2 Blue (Pure 3)])\n",
+         (match Red [Red (primitives/pure 1) Green 2 Blue (primitives/pure 3)])\n",
     );
     assert!(
         out.stdout.to_lowercase().contains("error"),
@@ -1128,7 +1317,8 @@ fn match_arms_mixed_io_and_bare_neg() {
 // spec: spec/10-io.md §10.3 — discard a NeverHeap Int result, keep the next.
 #[test]
 fn then_discard_int_result() {
-    repl("(bind (Pure 999) (fn [_] (Pure 42)))\n").assert_stdout_contains(":primitives/Int 42");
+    repl("(bind (primitives/pure 999) (fn [_] (primitives/pure 42)))\n")
+        .assert_stdout_contains(":primitives/Int 42");
 }
 
 // spec: spec/10-io.md §10.3 — discard an AlwaysHeap String result, keep an Int.
@@ -1136,7 +1326,7 @@ fn then_discard_int_result() {
 #[test]
 fn then_discard_string_result() {
     repl(
-        r#"(bind (Pure "discarded") (fn [_] (Pure 42)))
+        r#"(bind (primitives/pure "discarded") (fn [_] (primitives/pure 42)))
 "#,
     )
     .assert_stdout_contains(":primitives/Int 42");
@@ -1150,7 +1340,9 @@ fn linked_bind_owning_result_disposer_relocates_and_runs() {
     Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .link_then_run("user.cl")
-        .user(r#"(defn main [] (bind (Pure "discarded") (fn [_] (Pure 17))))"#)
+        .user(
+            r#"(defn main [] (bind (primitives/pure "discarded") (fn [_] (primitives/pure 17))))"#,
+        )
         .output()
         .assert_exit(17);
 }
@@ -1161,7 +1353,7 @@ fn then_discard_adt_result() {
     // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
     // deftype under the Option-providing prelude is a define-over-prelude
     // collision). Discarding a Mixed-heap ADT result is unaffected.
-    repl("(bind (Pure (Some 99)) (fn [_] (Pure 42)))\n")
+    repl("(bind (primitives/pure (Some 99)) (fn [_] (primitives/pure 42)))\n")
         .assert_stdout_contains(":primitives/Int 42");
 }
 
@@ -1169,7 +1361,7 @@ fn then_discard_adt_result() {
 #[test]
 fn then_chained_discards() {
     repl(
-        r#"(bind (Pure "first") (fn [_] (bind (Pure "second") (fn [_] (Pure 0)))))
+        r#"(bind (primitives/pure "first") (fn [_] (bind (primitives/pure "second") (fn [_] (primitives/pure 0)))))
 "#,
     )
     .assert_stdout_contains(":primitives/Int 0");
@@ -1180,7 +1372,7 @@ fn then_chained_discards() {
 #[test]
 fn then_unused_named_heap_param() {
     repl(
-        r#"(bind (Pure "unused") (fn [x] (Pure 77)))
+        r#"(bind (primitives/pure "unused") (fn [x] (primitives/pure 77)))
 "#,
     )
     .assert_stdout_contains(":primitives/Int 77");
@@ -1191,24 +1383,24 @@ fn then_unused_named_heap_param() {
 // (harvest: legacy/io.rs::io_pure_option_none / io_pure_option_some)
 // =============================================================================
 
-// spec: spec/10-io.md §10.2.3 — Pure wraps an Option None; eval unwraps the IO
+// spec: spec/10-io.md §10.2.3 — pure wraps an Option None; eval unwraps the IO
 // inline and the Option ADT is the displayed value.
 #[test]
 fn pure_wraps_option_none() {
     // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl(
-        "(defn mk [] (Pure None))\n\
+        "(defn mk [] (primitives/pure None))\n\
          (mk)\n",
     )
     .assert_stdout_contains("Option");
 }
 
-// spec: spec/10-io.md §10.2.3 — Pure wraps an Option (Some 42).
+// spec: spec/10-io.md §10.2.3 — pure wraps an Option (Some 42).
 #[test]
 fn pure_wraps_option_some() {
     // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl(
-        "(defn mk [] (Pure (Some 42)))\n\
+        "(defn mk [] (primitives/pure (Some 42)))\n\
          (mk)\n",
     )
     .assert_stdout_contains("Some");
@@ -1219,12 +1411,12 @@ fn pure_wraps_option_some() {
 // (harvest: legacy/io.rs::io_pure_as_higher_order)
 // =============================================================================
 
-// spec: spec/10-io.md §10.2 — a user `pure` (defn wrapping Pure) is an ordinary
+// spec: spec/10-io.md §10.2 — a user `pure` (defn wrapping pure) is an ordinary
 // function: it can be passed as a higher-order argument and applied.
 #[test]
 fn pure_as_higher_order_function() {
     repl(
-        "(defn my-pure [x] (Pure x))\n\
+        "(defn my-pure [x] (primitives/pure x))\n\
          (defn apply-to-42 [f] (f 42))\n\
          (apply-to-42 my-pure)\n",
     )
@@ -1245,9 +1437,9 @@ fn run_mode_deep_bind_chain_named_continuation() {
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
         .user(
-            "(defn add-one [x] (Pure (add-i64 x 1)))\n\
+            "(defn add-one [x] (primitives/pure (add-i64 x 1)))\n\
              (defn main []\n\
-               (bind (Pure 0)\n\
+               (bind (primitives/pure 0)\n\
                  (fn [a] (bind (add-one a)\n\
                  (fn [b] (bind (add-one b)\n\
                  (fn [c] (bind (add-one c)\n\
@@ -1256,7 +1448,7 @@ fn run_mode_deep_bind_chain_named_continuation() {
                  (fn [f] (bind (add-one f)\n\
                  (fn [g] (bind (add-one g)\n\
                  (fn [h] (bind (add-one h)\n\
-                 (fn [i] (Pure i))))))))))))))))))))",
+                 (fn [i] (primitives/pure i))))))))))))))))))))",
         )
         .output()
         // 0, then add-one applied 8 times = 8.
@@ -1412,7 +1604,7 @@ fn io_observer_registration_lives_in_intrinsics() {
 // free in the second effect, `b` not free in the first) so the independence
 // analysis can Par-group them (spec §10.12.1; ResourceSerial groups identically
 // to the Commutative pair whose Par emission is pinned by
-// `control_flow.rs::par_codegen_tests`). The terminal `Pure (add-i64 a b)`
+// `control_flow.rs::par_codegen_tests`). The terminal `pure (add-i64 a b)`
 // makes `main : IO Int`, and the summed sleep durations become the exit code
 // (§10.6.1) — `2*200 = 400 -> 400 mod 256 = 144` (Unix exit byte).
 //
@@ -1484,11 +1676,11 @@ fn rs_program(t1: i64, t2: i64) -> String {
     format!(
         "(platform test-capture)\n\
          (import [platform.test-capture [resource-serial-sleep-ms]])\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (defn main []\n\
            (bind (resource-serial-sleep-ms {t1} {RS_SLEEP_MS}) (fn [a]\n\
              (bind (resource-serial-sleep-ms {t2} {RS_SLEEP_MS}) (fn [b]\n\
-               (Pure (primitives/add-i64 a b)))))))\n"
+               (primitives/pure (primitives/add-i64 a b)))))))\n"
     )
 }
 
@@ -1663,17 +1855,17 @@ fn resource_serial_diff_token_parallelizes() {
 /// A two-binding Commutative `bind` chain. Both `commutative-sleep-ms` calls
 /// are data-independent (`a` not free in the second, `b` not free in the first)
 /// and Commutative → spec §10.12.1 REQUIRES a `Par` node. The terminal
-/// `Pure (add-i64 a b)` makes `main : IO Int`; summed sleeps = exit code.
+/// `pure (add-i64 a b)` makes `main : IO Int`; summed sleeps = exit code.
 /// `2*200 = 400 -> 400 mod 256 = 144`.
 fn commutative_indep_program() -> String {
     format!(
         "(platform test-capture)\n\
          (import [platform.test-capture [commutative-sleep-ms]])\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (defn main []\n\
            (bind (commutative-sleep-ms {RS_SLEEP_MS}) (fn [a]\n\
              (bind (commutative-sleep-ms {RS_SLEEP_MS}) (fn [b]\n\
-               (Pure (primitives/add-i64 a b)))))))\n"
+               (primitives/pure (primitives/add-i64 a b)))))))\n"
     )
 }
 
@@ -1689,11 +1881,11 @@ fn resource_dependent_program() -> String {
     format!(
         "(platform test-capture)\n\
          (import [platform.test-capture [resource-serial-sleep-ms]])\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (defn main []\n\
            (bind (resource-serial-sleep-ms 1 {RS_SLEEP_MS}) (fn [a]\n\
              (bind (resource-serial-sleep-ms (primitives/add-i64 a 1) {RS_SLEEP_MS}) (fn [b]\n\
-               (Pure (primitives/add-i64 a b)))))))\n"
+               (primitives/pure (primitives/add-i64 a b)))))))\n"
     )
 }
 
@@ -1702,16 +1894,16 @@ fn resource_dependent_program() -> String {
 /// observable in the captured process stdout; the `test-capture` `print` routes
 /// into an internal FFI buffer and is NOT visible in process stdout). Sequential
 /// effects MUST execute in source order and MUST NOT be Par-grouped (spec
-/// §10.12.1 / §10.12.2). Terminal `Pure 0` → exit 0; the witness is ORDERED
+/// §10.12.1 / §10.12.2). Terminal `pure 0` → exit 0; the witness is ORDERED
 /// stdout ("first" before "second").
 fn sequential_class_program() -> String {
     "(platform stdio)\n\
      (import [platform.stdio [print]])\n\
-     (import [primitives [bind Pure]])\n\
+     (import [primitives [bind pure]])\n\
      (defn main []\n\
        (bind (print \"first\") (fn [a]\n\
          (bind (print \"second\") (fn [b]\n\
-           (Pure 0))))))\n"
+           (primitives/pure 0))))))\n"
         .to_string()
 }
 
@@ -1954,17 +2146,17 @@ fn auto_io_par_grouping_uniform_across_modes() {
 /// raises a div-by-zero runtime panic: `(commutative-sleep-ms (div-i64 200 0))`.
 /// The other branch is a clean 200ms sleep. Data-independent (`a` not free in
 /// the second binding) → 0367 Par-groups it; the panic fires inside the first
-/// branch's spark. The terminal `Pure (add-i64 a b)` would make `main : IO Int`
+/// branch's spark. The terminal `pure (add-i64 a b)` would make `main : IO Int`
 /// were both branches to complete — but the panic must abort first.
 fn par_branch_panic_program() -> String {
     format!(
         "(platform test-capture)\n\
          (import [platform.test-capture [commutative-sleep-ms]])\n\
-         (import [primitives [bind Pure]])\n\
+         (import [primitives [bind pure]])\n\
          (defn main []\n\
            (bind (commutative-sleep-ms (primitives/div-i64 {RS_SLEEP_MS} 0)) (fn [a]\n\
              (bind (commutative-sleep-ms {RS_SLEEP_MS}) (fn [b]\n\
-               (Pure (primitives/add-i64 a b)))))))\n"
+               (primitives/pure (primitives/add-i64 a b)))))))\n"
     )
 }
 
@@ -1992,33 +2184,6 @@ fn auto_io_par_branch_panic_no_slot_pollution_neg() {
         .stdin(&session)
         .output();
     helpers::e2e::assert_panic_exit(&out, "division by zero", Some(5), false);
-}
-
-// =============================================================================
-// Sprint 109 — BR-2: IO internal-ctor exclusion from exhaustiveness
-// (arch-pre-flagged blast radius, design §4.2). A user `match` over an IO-typed
-// value covering only its public surface (`Pure`/`Effect`) MUST compile WITHOUT
-// "non-exhaustive: missing Bind" — the internal `Bind` ctor stays excluded from
-// exhaustiveness. This is a PERMANENT fail-on-revert guard: when the bare ctor
-// key becomes an alias under the dotted-`Type.Ctor` change, the per-ctor
-// `internal` flag must chain-follow the bare alias to the terminal ctor `Def`,
-// keeping `Bind` internal. It is GREEN today (the exclusion holds) and FAILS if
-// the registration change regresses the exclusion.
-// The [historical QA allocation](https://github.com/alilee/cranelisp/blob/dc78ddbee3107043925505531798667dc61f7a03/tests/plan/PLAN.md)
-// records S109 D / BR-2. The e2e idiom IS expressible
-// (verified this pass); the enumerated /dev unit fallback (assert `internal ==
-// true` for Bind/Pure/Effect AFTER the bare key becomes an alias) is the
-// deterministic complement in cranelisp-typecheck.
-// =============================================================================
-
-// spec: spec/06-pattern-matching.md §6.5 × spec/10-io.md §10.1 — internal-ctor
-// exclusion: a Pure+Effect match compiles without demanding the internal `Bind`.
-#[test]
-fn io_internal_ctors_stay_excluded_from_exhaustiveness_neg() {
-    let out = repl("(match (Pure 5) [(Pure x) x (Effect e) 0])\n");
-    // The match must be accepted and evaluate — no "missing Bind" flag.
-    out.assert_stdout_contains(":primitives/Int 5")
-        .assert_stdout_does_not_contain("Bind");
 }
 
 fn s124_value(cr: helpers::e2e::Cranelisp, program: &str, mode: &str, expected: i32) {
@@ -2053,9 +2218,9 @@ fn s124_1063_p_bind_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (bind (Pure 5))] (k (fn [v] (Pure v)))))"#,
+(defn main [] (let [k (bind (primitives/pure 5))] (k (fn [v] (primitives/pure v)))))"#,
         "run",
         5,
     );
@@ -2068,9 +2233,9 @@ fn s124_1063_p_bind_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (bind (Pure 5))] (k (fn [v] (Pure v)))))"#,
+(defn main [] (let [k (bind (primitives/pure 5))] (k (fn [v] (primitives/pure v)))))"#,
         "link",
         5,
     );
@@ -2083,9 +2248,9 @@ fn s124_1063_p_bind_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (bind (Pure 5))] (k (fn [v] (Pure v)))))"#,
+(defn main [] (let [k (bind (primitives/pure 5))] (k (fn [v] (primitives/pure v)))))"#,
         "repl",
         5,
     );
@@ -2098,9 +2263,9 @@ fn s124_1063_p_bind_ap_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (ap (bind (Pure 5))))"#,
+(defn main [] (ap (bind (primitives/pure 5))))"#,
         "run",
         5,
     );
@@ -2113,9 +2278,9 @@ fn s124_1063_p_bind_ap_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (ap (bind (Pure 5))))"#,
+(defn main [] (ap (bind (primitives/pure 5))))"#,
         "link",
         5,
     );
@@ -2128,9 +2293,9 @@ fn s124_1063_p_bind_ap_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (ap (bind (Pure 5))))"#,
+(defn main [] (ap (bind (primitives/pure 5))))"#,
         "repl",
         5,
     );
@@ -2143,9 +2308,9 @@ fn s124_1063_p_bind_vec_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (bind (Pure [1 2 3 4 5]))] (k (fn [v] (Pure (vec-len v))))))"#,
+(defn main [] (let [k (bind (primitives/pure [1 2 3 4 5]))] (k (fn [v] (primitives/pure (vec-len v))))))"#,
         "run",
         5,
     );
@@ -2158,9 +2323,9 @@ fn s124_1063_p_bind_vec_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (bind (Pure [1 2 3 4 5]))] (k (fn [v] (Pure (vec-len v))))))"#,
+(defn main [] (let [k (bind (primitives/pure [1 2 3 4 5]))] (k (fn [v] (primitives/pure (vec-len v))))))"#,
         "link",
         5,
     );
@@ -2173,9 +2338,9 @@ fn s124_1063_p_bind_vec_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (bind (Pure [1 2 3 4 5]))] (k (fn [v] (Pure (vec-len v))))))"#,
+(defn main [] (let [k (bind (primitives/pure [1 2 3 4 5]))] (k (fn [v] (primitives/pure (vec-len v))))))"#,
         "repl",
         5,
     );
@@ -2188,9 +2353,9 @@ fn s124_1063_p_race_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (race (Pure 5))] (k (Pure 5))))"#,
+(defn main [] (let [k (race (primitives/pure 5))] (k (primitives/pure 5))))"#,
         "run",
         5,
     );
@@ -2203,9 +2368,9 @@ fn s124_1063_p_race_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (race (Pure 5))] (k (Pure 5))))"#,
+(defn main [] (let [k (race (primitives/pure 5))] (k (primitives/pure 5))))"#,
         "link",
         5,
     );
@@ -2218,9 +2383,9 @@ fn s124_1063_p_race_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (race (Pure 5))] (k (Pure 5))))"#,
+(defn main [] (let [k (race (primitives/pure 5))] (k (primitives/pure 5))))"#,
         "repl",
         5,
     );
@@ -2232,9 +2397,9 @@ fn s124_1063_p_add_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (add-i64 2)] (Pure (k 3))))"#,
+(defn main [] (let [k (add-i64 2)] (primitives/pure (k 3))))"#,
         "run",
         5,
     );
@@ -2246,9 +2411,9 @@ fn s124_1063_p_add_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (add-i64 2)] (Pure (k 3))))"#,
+(defn main [] (let [k (add-i64 2)] (primitives/pure (k 3))))"#,
         "link",
         5,
     );
@@ -2260,9 +2425,9 @@ fn s124_1063_p_add_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (add-i64 2)] (Pure (k 3))))"#,
+(defn main [] (let [k (add-i64 2)] (primitives/pure (k 3))))"#,
         "repl",
         5,
     );
@@ -2274,9 +2439,9 @@ fn s124_1063_p_user_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (then (Pure 5))] (k (fn [v] (Pure v)))))"#,
+(defn main [] (let [k (then (primitives/pure 5))] (k (fn [v] (primitives/pure v)))))"#,
         "run",
         5,
     );
@@ -2288,9 +2453,9 @@ fn s124_1063_p_user_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (then (Pure 5))] (k (fn [v] (Pure v)))))"#,
+(defn main [] (let [k (then (primitives/pure 5))] (k (fn [v] (primitives/pure v)))))"#,
         "link",
         5,
     );
@@ -2302,9 +2467,9 @@ fn s124_1063_p_user_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [k] (k (fn [v] (Pure v))))
+(defn ap [k] (k (fn [v] (primitives/pure v))))
 (defn then [io f] (bind io f))
-(defn main [] (let [k (then (Pure 5))] (k (fn [v] (Pure v)))))"#,
+(defn main [] (let [k (then (primitives/pure 5))] (k (fn [v] (primitives/pure v)))))"#,
         "repl",
         5,
     );
@@ -2318,8 +2483,8 @@ fn s124_1065_a_bind() {
         Cranelisp::new().use_workspace_platforms(),
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
-(import [primitives [Pure add-i64]])
-(defn bind [io f] (primitives/bind io (fn [x] (f (add-i64 x 100))))) (defn main [] (bind (poll-read 1 1 3) (fn [a] (bind (poll-read 2 1 4) (fn [b] (Pure (add-i64 a b)))))))"#,
+(import [primitives [pure add-i64]])
+(defn bind [io f] (primitives/bind io (fn [x] (f (add-i64 x 100))))) (defn main [] (bind (poll-read 1 1 3) (fn [a] (bind (poll-read 2 1 4) (fn [b] (primitives/pure (add-i64 a b)))))))"#,
         "run",
         207,
     );
@@ -2332,8 +2497,8 @@ fn s124_1065_a_then() {
         Cranelisp::new().use_workspace_platforms(),
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
-(import [primitives [Pure add-i64]])
-(defn then [io f] (primitives/bind io (fn [x] (f (add-i64 x 100))))) (defn main [] (then (poll-read 1 1 3) (fn [a] (then (poll-read 2 1 4) (fn [b] (Pure (add-i64 a b)))))))"#,
+(import [primitives [pure add-i64]])
+(defn then [io f] (primitives/bind io (fn [x] (f (add-i64 x 100))))) (defn main [] (then (poll-read 1 1 3) (fn [a] (then (poll-read 2 1 4) (fn [b] (primitives/pure (add-i64 a b)))))))"#,
         "run",
         207,
     );
@@ -2345,7 +2510,7 @@ fn s124_1065_a_then() {
 fn s124_1065_bare_bind_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
         "run",
         106,
     );
@@ -2356,7 +2521,7 @@ fn s124_1065_bare_bind_run() {
 fn s124_1065_bare_then_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (then 5 (fn [x] (add-i64 x 1)))))"#,
         "run",
         106,
     );
@@ -2367,7 +2532,7 @@ fn s124_1065_bare_then_run() {
 fn s124_1065_let_control_bind_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
         "run",
         106,
     );
@@ -2378,7 +2543,7 @@ fn s124_1065_let_control_bind_run() {
 fn s124_1065_arity_control_bind_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
         "run",
         106,
     );
@@ -2393,7 +2558,7 @@ fn s124_1065_imported_bind_run() {
             "m.cl",
             r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
         ),
-        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m []]) (defn main [] (primitives/pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
         "run",
         106,
     );
@@ -2407,7 +2572,7 @@ fn s124_1065_imported_then_run() {
             "m.cl",
             r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
         ),
-        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m []]) (defn main [] (primitives/pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
         "run",
         106,
     );
@@ -2424,7 +2589,7 @@ fn s124_1065_prelude_bind_run() {
                 r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
             )
             .prelude("(export [primitives [bind]])"),
-        r#"(import [primitives [Pure add-i64]]) (import [m [bind]]) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m [bind]]) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
         "run",
         106,
     );
@@ -2440,7 +2605,7 @@ fn s124_1065_prelude_then_run() {
                 r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
             )
             .prelude("(export [primitives [bind]])"),
-        r#"(import [primitives [Pure add-i64]]) (import [m [then]]) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m [then]]) (defn main [] (primitives/pure (then 5 (fn [x] (add-i64 x 1)))))"#,
         "run",
         106,
     );
@@ -2452,7 +2617,7 @@ fn s124_1065_prelude_then_run() {
 fn s124_1065_bare_bind_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
         "link",
         106,
     );
@@ -2463,7 +2628,7 @@ fn s124_1065_bare_bind_link() {
 fn s124_1065_bare_then_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (then 5 (fn [x] (add-i64 x 1)))))"#,
         "link",
         106,
     );
@@ -2474,7 +2639,7 @@ fn s124_1065_bare_then_link() {
 fn s124_1065_let_control_bind_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
         "link",
         106,
     );
@@ -2485,7 +2650,7 @@ fn s124_1065_let_control_bind_link() {
 fn s124_1065_arity_control_bind_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
         "link",
         106,
     );
@@ -2500,7 +2665,7 @@ fn s124_1065_imported_bind_link() {
             "m.cl",
             r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
         ),
-        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m []]) (defn main [] (primitives/pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
         "link",
         106,
     );
@@ -2514,7 +2679,7 @@ fn s124_1065_imported_then_link() {
             "m.cl",
             r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
         ),
-        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m []]) (defn main [] (primitives/pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
         "link",
         106,
     );
@@ -2531,7 +2696,7 @@ fn s124_1065_prelude_bind_link() {
                 r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
             )
             .prelude("(export [primitives [bind]])"),
-        r#"(import [primitives [Pure add-i64]]) (import [m [bind]]) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m [bind]]) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
         "link",
         106,
     );
@@ -2547,7 +2712,7 @@ fn s124_1065_prelude_then_link() {
                 r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
             )
             .prelude("(export [primitives [bind]])"),
-        r#"(import [primitives [Pure add-i64]]) (import [m [then]]) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m [then]]) (defn main [] (primitives/pure (then 5 (fn [x] (add-i64 x 1)))))"#,
         "link",
         106,
     );
@@ -2559,7 +2724,7 @@ fn s124_1065_prelude_then_link() {
 fn s124_1065_bare_bind_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
         "repl",
         106,
     );
@@ -2570,7 +2735,7 @@ fn s124_1065_bare_bind_repl() {
 fn s124_1065_bare_then_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]])(defn then [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (then 5 (fn [x] (add-i64 x 1)))))"#,
         "repl",
         106,
     );
@@ -2581,7 +2746,7 @@ fn s124_1065_bare_then_repl() {
 fn s124_1065_let_control_bind_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (Pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (let [k (fn [x] (add-i64 x 1))] (bind 5 k))))"#,
         "repl",
         106,
     );
@@ -2592,7 +2757,7 @@ fn s124_1065_let_control_bind_repl() {
 fn s124_1065_arity_control_bind_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [Pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
+        r#"(import [primitives [pure add-i64]])(defn bind [a f unused] (f (primitives/add-i64 a 100))) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)) 0)))"#,
         "repl",
         106,
     );
@@ -2607,7 +2772,7 @@ fn s124_1065_imported_bind_repl() {
             "m.cl",
             r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
         ),
-        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m []]) (defn main [] (primitives/pure (m/bind 5 (fn [x] (add-i64 x 1)))))"#,
         "repl",
         106,
     );
@@ -2621,7 +2786,7 @@ fn s124_1065_imported_then_repl() {
             "m.cl",
             r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
         ),
-        r#"(import [primitives [Pure add-i64]]) (import [m []]) (defn main [] (Pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m []]) (defn main [] (primitives/pure (m/then 5 (fn [x] (add-i64 x 1)))))"#,
         "repl",
         106,
     );
@@ -2638,7 +2803,7 @@ fn s124_1065_prelude_bind_repl() {
                 r#"(defn bind [a f] (f (primitives/add-i64 a 100)))"#,
             )
             .prelude("(export [primitives [bind]])"),
-        r#"(import [primitives [Pure add-i64]]) (import [m [bind]]) (defn main [] (Pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m [bind]]) (defn main [] (primitives/pure (bind 5 (fn [x] (add-i64 x 1)))))"#,
         "repl",
         106,
     );
@@ -2654,7 +2819,7 @@ fn s124_1065_prelude_then_repl() {
                 r#"(defn then [a f] (f (primitives/add-i64 a 100)))"#,
             )
             .prelude("(export [primitives [bind]])"),
-        r#"(import [primitives [Pure add-i64]]) (import [m [then]]) (defn main [] (Pure (then 5 (fn [x] (add-i64 x 1)))))"#,
+        r#"(import [primitives [pure add-i64]]) (import [m [then]]) (defn main [] (primitives/pure (then 5 (fn [x] (add-i64 x 1)))))"#,
         "repl",
         106,
     );
@@ -2669,8 +2834,8 @@ fn s124_1065_e_poll_read() {
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn slow [t c d] (bind (poll-read t c d) (fn [x] (bind (poll-read t c d) (fn [y] (Pure (add-i64 x y)))))))
-(defn go [poll-read] (bind (poll-read 1 1 150) (fn [a] (bind (poll-read 2 1 150) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))) (defn main [] (go slow))"#,
+(defn slow [t c d] (bind (poll-read t c d) (fn [x] (bind (poll-read t c d) (fn [y] (primitives/pure (add-i64 x y)))))))
+(defn go [poll-read] (bind (poll-read 1 1 150) (fn [a] (bind (poll-read 2 1 150) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 600))))))) (defn main [] (go slow))"#,
         "run",
         0,
     );
@@ -2684,8 +2849,8 @@ fn s124_1065_e_rd() {
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn slow [t c d] (bind (poll-read t c d) (fn [x] (bind (poll-read t c d) (fn [y] (Pure (add-i64 x y)))))))
-(defn go [rd] (bind (rd 1 1 150) (fn [a] (bind (rd 2 1 150) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))) (defn main [] (go slow))"#,
+(defn slow [t c d] (bind (poll-read t c d) (fn [x] (bind (poll-read t c d) (fn [y] (primitives/pure (add-i64 x y)))))))
+(defn go [rd] (bind (rd 1 1 150) (fn [a] (bind (rd 2 1 150) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 600))))))) (defn main [] (go slow))"#,
         "run",
         0,
     );
@@ -2709,27 +2874,27 @@ fn s124_scheduling_sample_with_bind(
     attempts: usize,
 ) -> u128 {
     let b = if dependent {
-        "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 a) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
+        "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 a) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 600))))))"
     } else {
-        "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 d) (fn [b] (Pure (sub-i64 (add-i64 a b) 600))))))"
+        "(bind (poll-read 1 1 d) (fn [a] (bind (poll-read 2 1 d) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 600))))))"
     };
     let b = match unrelated_local {
-        Some(name) => format!("(if (eq-i64 d 0) (let [{name} 1] (Pure {name})) {b})"),
+        Some(name) => format!("(if (eq-i64 d 0) (let [{name} 1] (primitives/pure {name})) {b})"),
         None => b.to_owned(),
     };
     let b = b.replace("(bind ", &format!("({bind_name} "));
     let def = if !multi {
         format!("(defn f [d] {b})")
     } else if second {
-        format!("(defn f ([d] (Pure d)) ([d e] {b}))")
+        format!("(defn f ([d] (primitives/pure d)) ([d e] {b}))")
     } else {
-        format!("(defn f ([d] {b}) ([d e] (Pure e)))")
+        format!("(defn f ([d] {b}) ([d e] (primitives/pure e)))")
     };
     let args = if second { "300 0" } else { "300" };
     let bind_import = if bind_name == "bind" {
         "*".to_owned()
     } else {
-        format!("Pure sub-i64 add-i64 eq-i64 (bind {bind_name})")
+        format!("pure sub-i64 add-i64 eq-i64 (bind {bind_name})")
     };
     let src = format!(
         "(platform poll-pool) (import [platform.poll-pool [poll-read]]) (import [primitives [{bind_import}]]) {def} (defn main [] (f {args}))"
@@ -2796,9 +2961,9 @@ fn s124_1063_value_bind_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k bind] (k (Pure 5) (fn [v] (Pure v)))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k bind] (k (primitives/pure 5) (fn [v] (primitives/pure v)))))"#,
         "run",
         5,
     );
@@ -2811,9 +2976,9 @@ fn s124_1063_value_bind_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k bind] (k (Pure 5) (fn [v] (Pure v)))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k bind] (k (primitives/pure 5) (fn [v] (primitives/pure v)))))"#,
         "link",
         5,
     );
@@ -2826,9 +2991,9 @@ fn s124_1063_value_bind_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k bind] (k (Pure 5) (fn [v] (Pure v)))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k bind] (k (primitives/pure 5) (fn [v] (primitives/pure v)))))"#,
         "repl",
         5,
     );
@@ -2841,8 +3006,8 @@ fn s124_1063_value_bind_ap_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
 (defn main [] (ap bind))"#,
         "run",
         5,
@@ -2856,8 +3021,8 @@ fn s124_1063_value_bind_ap_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
 (defn main [] (ap bind))"#,
         "link",
         5,
@@ -2871,8 +3036,8 @@ fn s124_1063_value_bind_ap_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
 (defn main [] (ap bind))"#,
         "repl",
         5,
@@ -2886,9 +3051,9 @@ fn s124_1063_value_race_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k race] (k (Pure 5) (Pure 5))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k race] (k (primitives/pure 5) (primitives/pure 5))))"#,
         "run",
         5,
     );
@@ -2901,9 +3066,9 @@ fn s124_1063_value_race_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k race] (k (Pure 5) (Pure 5))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k race] (k (primitives/pure 5) (primitives/pure 5))))"#,
         "link",
         5,
     );
@@ -2916,9 +3081,9 @@ fn s124_1063_value_race_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k race] (k (Pure 5) (Pure 5))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k race] (k (primitives/pure 5) (primitives/pure 5))))"#,
         "repl",
         5,
     );
@@ -2931,9 +3096,9 @@ fn s124_1063_value_select_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k select] (k [(Pure 5) (Pure 5)])))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k select] (k [(primitives/pure 5) (primitives/pure 5)])))"#,
         "run",
         5,
     );
@@ -2946,9 +3111,9 @@ fn s124_1063_value_select_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k select] (k [(Pure 5) (Pure 5)])))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k select] (k [(primitives/pure 5) (primitives/pure 5)])))"#,
         "link",
         5,
     );
@@ -2961,9 +3126,9 @@ fn s124_1063_value_select_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k select] (k [(Pure 5) (Pure 5)])))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k select] (k [(primitives/pure 5) (primitives/pure 5)])))"#,
         "repl",
         5,
     );
@@ -2976,8 +3141,8 @@ fn s124_1063_value_select_ap_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
 (defn main [] (aps select))"#,
         "run",
         5,
@@ -2991,8 +3156,8 @@ fn s124_1063_value_select_ap_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
 (defn main [] (aps select))"#,
         "link",
         5,
@@ -3006,8 +3171,8 @@ fn s124_1063_value_select_ap_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
 (defn main [] (aps select))"#,
         "repl",
         5,
@@ -3021,9 +3186,9 @@ fn s124_1063_value_sleep_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k sleep] (bind (k 1) (fn [_] (Pure 5)))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k sleep] (bind (k 1) (fn [_] (primitives/pure 5)))))"#,
         "run",
         5,
     );
@@ -3036,9 +3201,9 @@ fn s124_1063_value_sleep_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k sleep] (bind (k 1) (fn [_] (Pure 5)))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k sleep] (bind (k 1) (fn [_] (primitives/pure 5)))))"#,
         "link",
         5,
     );
@@ -3051,9 +3216,9 @@ fn s124_1063_value_sleep_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k sleep] (bind (k 1) (fn [_] (Pure 5)))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k sleep] (bind (k 1) (fn [_] (primitives/pure 5)))))"#,
         "repl",
         5,
     );
@@ -3066,9 +3231,9 @@ fn s124_1063_value_name_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k name t (trace (add-i64 1 2))] (Pure (if (str-eq (k t) (name t)) 5 99))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k name t (trace (add-i64 1 2))] (primitives/pure (if (str-eq (k t) (name t)) 5 99))))"#,
         "run",
         5,
     );
@@ -3081,9 +3246,9 @@ fn s124_1063_value_name_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k name t (trace (add-i64 1 2))] (Pure (if (str-eq (k t) (name t)) 5 99))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k name t (trace (add-i64 1 2))] (primitives/pure (if (str-eq (k t) (name t)) 5 99))))"#,
         "link",
         5,
     );
@@ -3096,9 +3261,9 @@ fn s124_1063_value_name_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k name t (trace (add-i64 1 2))] (Pure (if (str-eq (k t) (name t)) 5 99))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k name t (trace (add-i64 1 2))] (primitives/pure (if (str-eq (k t) (name t)) 5 99))))"#,
         "repl",
         5,
     );
@@ -3111,9 +3276,9 @@ fn s124_1063_value_nanos_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k nanos t (trace (add-i64 1 2))] (Pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k nanos t (trace (add-i64 1 2))] (primitives/pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#,
         "run",
         5,
     );
@@ -3126,9 +3291,9 @@ fn s124_1063_value_nanos_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k nanos t (trace (add-i64 1 2))] (Pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k nanos t (trace (add-i64 1 2))] (primitives/pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#,
         "link",
         5,
     );
@@ -3141,9 +3306,9 @@ fn s124_1063_value_nanos_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k nanos t (trace (add-i64 1 2))] (Pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k nanos t (trace (add-i64 1 2))] (primitives/pure (if (eq-i64 (k t) (nanos t)) 5 99))))"#,
         "repl",
         5,
     );
@@ -3155,9 +3320,9 @@ fn s124_1063_value_add_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k add-i64] (Pure (k 2 3))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k add-i64] (primitives/pure (k 2 3))))"#,
         "run",
         5,
     );
@@ -3169,9 +3334,9 @@ fn s124_1063_value_add_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k add-i64] (Pure (k 2 3))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k add-i64] (primitives/pure (k 2 3))))"#,
         "link",
         5,
     );
@@ -3183,9 +3348,9 @@ fn s124_1063_value_add_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k add-i64] (Pure (k 2 3))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k add-i64] (primitives/pure (k 2 3))))"#,
         "repl",
         5,
     );
@@ -3197,9 +3362,9 @@ fn s124_1063_value_str_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k str-len] (Pure (k "abcde"))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k str-len] (primitives/pure (k "abcde"))))"#,
         "run",
         5,
     );
@@ -3211,9 +3376,9 @@ fn s124_1063_value_str_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k str-len] (Pure (k "abcde"))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k str-len] (primitives/pure (k "abcde"))))"#,
         "link",
         5,
     );
@@ -3225,9 +3390,9 @@ fn s124_1063_value_str_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k str-len] (Pure (k "abcde"))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k str-len] (primitives/pure (k "abcde"))))"#,
         "repl",
         5,
     );
@@ -3239,9 +3404,9 @@ fn s124_1063_value_vec_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k vec-len] (Pure (k [1 2 3 4 5]))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k vec-len] (primitives/pure (k [1 2 3 4 5]))))"#,
         "run",
         5,
     );
@@ -3253,9 +3418,9 @@ fn s124_1063_value_vec_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k vec-len] (Pure (k [1 2 3 4 5]))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k vec-len] (primitives/pure (k [1 2 3 4 5]))))"#,
         "link",
         5,
     );
@@ -3267,9 +3432,9 @@ fn s124_1063_value_vec_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (let [k vec-len] (Pure (k [1 2 3 4 5]))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (let [k vec-len] (primitives/pure (k [1 2 3 4 5]))))"#,
         "repl",
         5,
     );
@@ -3281,9 +3446,9 @@ fn s124_1063_value_bind_direct_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (bind (primitives/pure 5) (fn [v] (primitives/pure v))))"#,
         "run",
         5,
     );
@@ -3295,9 +3460,9 @@ fn s124_1063_value_bind_direct_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (bind (primitives/pure 5) (fn [v] (primitives/pure v))))"#,
         "link",
         5,
     );
@@ -3309,9 +3474,9 @@ fn s124_1063_value_bind_direct_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (bind (primitives/pure 5) (fn [v] (primitives/pure v))))"#,
         "repl",
         5,
     );
@@ -3323,9 +3488,9 @@ fn s124_1063_value_race_direct_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (race (Pure 5) (Pure 5)))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (race (primitives/pure 5) (primitives/pure 5)))"#,
         "run",
         5,
     );
@@ -3337,9 +3502,9 @@ fn s124_1063_value_race_direct_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (race (Pure 5) (Pure 5)))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (race (primitives/pure 5) (primitives/pure 5)))"#,
         "link",
         5,
     );
@@ -3351,9 +3516,9 @@ fn s124_1063_value_race_direct_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (race (Pure 5) (Pure 5)))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (race (primitives/pure 5) (primitives/pure 5)))"#,
         "repl",
         5,
     );
@@ -3365,9 +3530,9 @@ fn s124_1063_value_select_direct_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (select [(Pure 5) (Pure 5)]))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (select [(primitives/pure 5) (primitives/pure 5)]))"#,
         "run",
         5,
     );
@@ -3379,9 +3544,9 @@ fn s124_1063_value_select_direct_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (select [(Pure 5) (Pure 5)]))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (select [(primitives/pure 5) (primitives/pure 5)]))"#,
         "link",
         5,
     );
@@ -3393,9 +3558,9 @@ fn s124_1063_value_select_direct_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (select [(Pure 5) (Pure 5)]))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (select [(primitives/pure 5) (primitives/pure 5)]))"#,
         "repl",
         5,
     );
@@ -3407,9 +3572,9 @@ fn s124_1063_value_sleep_direct_control_run() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (bind (sleep 1) (fn [_] (primitives/pure 5))))"#,
         "run",
         5,
     );
@@ -3421,9 +3586,9 @@ fn s124_1063_value_sleep_direct_control_link() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (bind (sleep 1) (fn [_] (primitives/pure 5))))"#,
         "link",
         5,
     );
@@ -3435,9 +3600,9 @@ fn s124_1063_value_sleep_direct_control_repl() {
     s124_value(
         Cranelisp::new(),
         r#"(import [primitives [*]])
-(defn ap [f] (f (Pure 5) (fn [v] (Pure v))))
-(defn aps [f] (f [(Pure 5) (Pure 5)]))
-(defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,
+(defn ap [f] (f (primitives/pure 5) (fn [v] (primitives/pure v))))
+(defn aps [f] (f [(primitives/pure 5) (primitives/pure 5)]))
+(defn main [] (bind (sleep 1) (fn [_] (primitives/pure 5))))"#,
         "repl",
         5,
     );
@@ -3505,7 +3670,7 @@ fn s124_main_missing_definitions_run() {
 #[test]
 fn s124_main_missing_trait_method_run() {
     s124_missing_main(
-        r#"(import [primitives [*]]) (deftrait Entry (main [self] (IO Int))) (impl Entry Int (defn main [n] (Pure n)))"#,
+        r#"(import [primitives [*]]) (deftrait Entry (main [self] (IO Int))) (impl Entry Int (defn main [n] (primitives/pure n)))"#,
         "run",
     );
 }
@@ -3517,7 +3682,7 @@ fn s124_main_location_arity_run() {
     s124_located_entry_refusal(
         r#"
 
-(defn main [x] (primitives/Pure x))"#,
+(defn main [x] (primitives/pure x))"#,
         3,
         "zero-argument",
         "run",
@@ -3544,7 +3709,7 @@ fn s124_main_location_macro_run() {
 fn s124_main_location_macro_produced_run() {
     s124_located_entry_refusal(
         r#"
-(defmacro mk [n] `(defn ~n [x] (primitives/Pure x)))
+(defmacro mk [n] `(defn ~n [x] (primitives/pure x)))
 
 (mk main)"#,
         4,
@@ -3560,7 +3725,7 @@ fn s124_main_location_overload_run() {
     s124_located_entry_refusal(
         r#"
 
-(defn main ([] (primitives/Pure 7)) ([x] (primitives/Pure x)))"#,
+(defn main ([] (primitives/pure 7)) ([x] (primitives/pure x)))"#,
         3,
         "main",
         "run",
@@ -3572,7 +3737,7 @@ fn s124_main_location_overload_run() {
 fn s124_main_control_5_run() {
     s124_value(
         Cranelisp::new(),
-        "(defn main [] (primitives/Pure 5))",
+        "(defn main [] (primitives/pure 5))",
         "run",
         5,
     );
@@ -3583,7 +3748,7 @@ fn s124_main_control_5_run() {
 fn s124_main_control_7_run() {
     s124_value(
         Cranelisp::new(),
-        "(defn main [] (primitives/Pure 7))",
+        "(defn main [] (primitives/pure 7))",
         "run",
         7,
     );
@@ -3608,7 +3773,7 @@ fn s124_main_missing_definitions_link() {
 #[test]
 fn s124_main_missing_trait_method_link() {
     s124_missing_main(
-        r#"(import [primitives [*]]) (deftrait Entry (main [self] (IO Int))) (impl Entry Int (defn main [n] (Pure n)))"#,
+        r#"(import [primitives [*]]) (deftrait Entry (main [self] (IO Int))) (impl Entry Int (defn main [n] (primitives/pure n)))"#,
         "link",
     );
 }
@@ -3620,7 +3785,7 @@ fn s124_main_location_arity_link() {
     s124_located_entry_refusal(
         r#"
 
-(defn main [x] (primitives/Pure x))"#,
+(defn main [x] (primitives/pure x))"#,
         3,
         "zero-argument",
         "link",
@@ -3647,7 +3812,7 @@ fn s124_main_location_macro_link() {
 fn s124_main_location_macro_produced_link() {
     s124_located_entry_refusal(
         r#"
-(defmacro mk [n] `(defn ~n [x] (primitives/Pure x)))
+(defmacro mk [n] `(defn ~n [x] (primitives/pure x)))
 
 (mk main)"#,
         4,
@@ -3663,7 +3828,7 @@ fn s124_main_location_overload_link() {
     s124_located_entry_refusal(
         r#"
 
-(defn main ([] (primitives/Pure 7)) ([x] (primitives/Pure x)))"#,
+(defn main ([] (primitives/pure 7)) ([x] (primitives/pure x)))"#,
         3,
         "main",
         "link",
@@ -3675,7 +3840,7 @@ fn s124_main_location_overload_link() {
 fn s124_main_control_5_link() {
     s124_value(
         Cranelisp::new(),
-        "(defn main [] (primitives/Pure 5))",
+        "(defn main [] (primitives/pure 5))",
         "link",
         5,
     );
@@ -3686,7 +3851,7 @@ fn s124_main_control_5_link() {
 fn s124_main_control_7_link() {
     s124_value(
         Cranelisp::new(),
-        "(defn main [] (primitives/Pure 7))",
+        "(defn main [] (primitives/pure 7))",
         "link",
         7,
     );
@@ -3709,9 +3874,9 @@ fn s124_rc_counts(stderr: &str) -> (i64, i64) {
 fn s124_0934_balance(combinator: &str, mode: &str) {
     let child = |heap: bool| {
         let operands = if heap {
-            "(Pure (str-concat \"a\" \"bc\")) (Pure (str-concat \"d\" \"ef\"))"
+            "(primitives/pure (str-concat \"a\" \"bc\")) (primitives/pure (str-concat \"d\" \"ef\"))"
         } else {
-            "(Pure 3) (Pure 3)"
+            "(primitives/pure 3) (primitives/pure 3)"
         };
         let io = if combinator == "select" {
             format!("(select [{operands}])")
@@ -3720,7 +3885,7 @@ fn s124_0934_balance(combinator: &str, mode: &str) {
         };
         let result = if heap { "(str-len x)" } else { "x" };
         let program = format!(
-            "(import [primitives [*]]) (defn main [] (bind {io} (fn [x] (Pure {result}))))"
+            "(import [primitives [*]]) (defn main [] (bind {io} (fn [x] (primitives/pure {result}))))"
         );
         let cr = Cranelisp::new()
             .env("CRANELISP_RC_STATS", "1")
@@ -3763,37 +3928,37 @@ fn s124_0934_balance(combinator: &str, mode: &str) {
     );
 }
 
-// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+// spec: spec/10-io.md §10.12.9 — F-0934, losing pure payload disposal
 #[test]
 fn s124_f_0934_race_run() {
     s124_0934_balance("race", "run");
 }
 
-// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+// spec: spec/10-io.md §10.12.9 — F-0934, losing pure payload disposal
 #[test]
 fn s124_f_0934_race_link() {
     s124_0934_balance("race", "link");
 }
 
-// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+// spec: spec/10-io.md §10.12.9 — F-0934, losing pure payload disposal
 #[test]
 fn s124_f_0934_race_repl() {
     s124_0934_balance("race", "repl");
 }
 
-// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+// spec: spec/10-io.md §10.12.9 — F-0934, losing pure payload disposal
 #[test]
 fn s124_f_0934_select_run() {
     s124_0934_balance("select", "run");
 }
 
-// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+// spec: spec/10-io.md §10.12.9 — F-0934, losing pure payload disposal
 #[test]
 fn s124_f_0934_select_link() {
     s124_0934_balance("select", "link");
 }
 
-// spec: spec/10-io.md §10.12.9 — F-0934, losing Pure payload disposal
+// spec: spec/10-io.md §10.12.9 — F-0934, losing pure payload disposal
 #[test]
 fn s124_f_0934_select_repl() {
     s124_0934_balance("select", "repl");
@@ -3807,8 +3972,8 @@ fn s124_f_0975_inline_bind() {
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n] (if (eq-i64 n 0) (Pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
-(defn main [] (bind (bind (poll-read 1 1 20) (fn [x] (bind (poll-read 2 1 30) (fn [y] (Pure (add-i64 x y)))))) (fn [a] (bind (poll-read 8 1 10) (fn [b] (Pure (sub-i64 (add-i64 a b) 60)))))))"#,
+(defn fan [n] (if (eq-i64 n 0) (primitives/pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
+(defn main [] (bind (bind (poll-read 1 1 20) (fn [x] (bind (poll-read 2 1 30) (fn [y] (primitives/pure (add-i64 x y)))))) (fn [a] (bind (poll-read 8 1 10) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 60)))))))"#,
         "run",
         0,
     );
@@ -3822,8 +3987,8 @@ fn s124_f_0975_race() {
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n] (if (eq-i64 n 0) (Pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
-(defn main [] (bind (race (poll-read 1 1 20) (poll-read 2 1 20)) (fn [a] (bind (poll-read 8 1 10) (fn [b] (Pure (sub-i64 (add-i64 a b) 30)))))))"#,
+(defn fan [n] (if (eq-i64 n 0) (primitives/pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
+(defn main [] (bind (race (poll-read 1 1 20) (poll-read 2 1 20)) (fn [a] (bind (poll-read 8 1 10) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 30)))))))"#,
         "run",
         0,
     );
@@ -3837,8 +4002,8 @@ fn s124_f_0975_launch() {
         r#"(platform poll-pool)
 (import [platform.poll-pool [poll-read poll-log]])
 (import [primitives [*]])
-(defn fan [n] (if (eq-i64 n 0) (Pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
-(defn main [] (bind (fan 3) (fn [a] (bind (poll-read 8 1 10) (fn [b] (Pure (sub-i64 (add-i64 a b) 10)))))))"#,
+(defn fan [n] (if (eq-i64 n 0) (primitives/pure 0) (let [m (sub-i64 n 1)] (bind (poll-log n 1 20 "") (fn [r] (fan m))))))
+(defn main [] (bind (fan 3) (fn [a] (bind (poll-read 8 1 10) (fn [b] (primitives/pure (sub-i64 (add-i64 a b) 10)))))))"#,
         "run",
         0,
     );
@@ -3849,7 +4014,7 @@ fn s124_f_0975_launch() {
 fn s124_1063_direct_bind_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,
+        r#"(import [primitives [*]]) (defn main [] (bind (primitives/pure 5) (fn [v] (primitives/pure v))))"#,
         "run",
         5,
     );
@@ -3860,7 +4025,7 @@ fn s124_1063_direct_bind_control_run() {
 fn s124_1063_direct_bind_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,
+        r#"(import [primitives [*]]) (defn main [] (bind (primitives/pure 5) (fn [v] (primitives/pure v))))"#,
         "link",
         5,
     );
@@ -3871,7 +4036,7 @@ fn s124_1063_direct_bind_control_link() {
 fn s124_1063_direct_bind_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (bind (Pure 5) (fn [v] (Pure v))))"#,
+        r#"(import [primitives [*]]) (defn main [] (bind (primitives/pure 5) (fn [v] (primitives/pure v))))"#,
         "repl",
         5,
     );
@@ -3882,7 +4047,7 @@ fn s124_1063_direct_bind_control_repl() {
 fn s124_1063_direct_race_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (race (Pure 5) (Pure 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (race (primitives/pure 5) (primitives/pure 5)))"#,
         "run",
         5,
     );
@@ -3893,7 +4058,7 @@ fn s124_1063_direct_race_control_run() {
 fn s124_1063_direct_race_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (race (Pure 5) (Pure 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (race (primitives/pure 5) (primitives/pure 5)))"#,
         "link",
         5,
     );
@@ -3904,7 +4069,7 @@ fn s124_1063_direct_race_control_link() {
 fn s124_1063_direct_race_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (race (Pure 5) (Pure 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (race (primitives/pure 5) (primitives/pure 5)))"#,
         "repl",
         5,
     );
@@ -3915,7 +4080,7 @@ fn s124_1063_direct_race_control_repl() {
 fn s124_1063_direct_select_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (select [(Pure 5) (Pure 5)]))"#,
+        r#"(import [primitives [*]]) (defn main [] (select [(primitives/pure 5) (primitives/pure 5)]))"#,
         "run",
         5,
     );
@@ -3926,7 +4091,7 @@ fn s124_1063_direct_select_control_run() {
 fn s124_1063_direct_select_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (select [(Pure 5) (Pure 5)]))"#,
+        r#"(import [primitives [*]]) (defn main [] (select [(primitives/pure 5) (primitives/pure 5)]))"#,
         "link",
         5,
     );
@@ -3937,7 +4102,7 @@ fn s124_1063_direct_select_control_link() {
 fn s124_1063_direct_select_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (select [(Pure 5) (Pure 5)]))"#,
+        r#"(import [primitives [*]]) (defn main [] (select [(primitives/pure 5) (primitives/pure 5)]))"#,
         "repl",
         5,
     );
@@ -3948,7 +4113,7 @@ fn s124_1063_direct_select_control_repl() {
 fn s124_1063_direct_sleep_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,
+        r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (primitives/pure 5))))"#,
         "run",
         5,
     );
@@ -3959,7 +4124,7 @@ fn s124_1063_direct_sleep_control_run() {
 fn s124_1063_direct_sleep_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,
+        r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (primitives/pure 5))))"#,
         "link",
         5,
     );
@@ -3970,7 +4135,7 @@ fn s124_1063_direct_sleep_control_link() {
 fn s124_1063_direct_sleep_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (Pure 5))))"#,
+        r#"(import [primitives [*]]) (defn main [] (bind (sleep 1) (fn [_] (primitives/pure 5))))"#,
         "repl",
         5,
     );
@@ -3981,7 +4146,7 @@ fn s124_1063_direct_sleep_control_repl() {
 fn s124_1063_direct_name_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (Pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (primitives/pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,
         "run",
         5,
     );
@@ -3992,7 +4157,7 @@ fn s124_1063_direct_name_control_run() {
 fn s124_1063_direct_name_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (Pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (primitives/pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,
         "link",
         5,
     );
@@ -4003,7 +4168,7 @@ fn s124_1063_direct_name_control_link() {
 fn s124_1063_direct_name_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (Pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (primitives/pure (if (str-eq (name (trace (add-i64 1 2))) "trace") 99 5)))"#,
         "repl",
         5,
     );
@@ -4014,7 +4179,7 @@ fn s124_1063_direct_name_control_repl() {
 fn s124_1063_direct_nanos_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (Pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (primitives/pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,
         "run",
         5,
     );
@@ -4025,7 +4190,7 @@ fn s124_1063_direct_nanos_control_run() {
 fn s124_1063_direct_nanos_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (Pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (primitives/pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,
         "link",
         5,
     );
@@ -4036,7 +4201,7 @@ fn s124_1063_direct_nanos_control_link() {
 fn s124_1063_direct_nanos_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (Pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,
+        r#"(import [primitives [*]]) (defn main [] (primitives/pure (if (lt-i64 (nanos (trace (add-i64 1 2))) 0) 99 5)))"#,
         "repl",
         5,
     );
@@ -4047,7 +4212,7 @@ fn s124_1063_direct_nanos_control_repl() {
 fn s124_1063_direct_vec_control_run() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,
+        r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (primitives/pure (f [1 2 3 4 5]))))"#,
         "run",
         5,
     );
@@ -4058,7 +4223,7 @@ fn s124_1063_direct_vec_control_run() {
 fn s124_1063_direct_vec_control_link() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,
+        r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (primitives/pure (f [1 2 3 4 5]))))"#,
         "link",
         5,
     );
@@ -4069,7 +4234,7 @@ fn s124_1063_direct_vec_control_link() {
 fn s124_1063_direct_vec_control_repl() {
     s124_value(
         Cranelisp::new(),
-        r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (Pure (f [1 2 3 4 5]))))"#,
+        r#"(import [primitives [*]]) (defn main [] (let [f vec-len] (primitives/pure (f [1 2 3 4 5]))))"#,
         "repl",
         5,
     );
@@ -4094,12 +4259,18 @@ fn s124_1065_d_renamed_primitive_bind_keeps_overlap() {
 fn s124_1063_heap_payload_balance(primitive: &str, mode: &str) {
     use helpers::marginal::{Child, MarginalPair};
     let application = |callee: &str| match primitive {
-        "bind" => format!("({callee} (Pure [1 2 3]) (fn [v] (Pure (vec-len v))))"),
+        "bind" => {
+            format!("({callee} (primitives/pure [1 2 3]) (fn [v] (primitives/pure (vec-len v))))")
+        }
         "race" => {
-            format!("(bind ({callee} (Pure [1 2 3]) (Pure [1 2 3])) (fn [v] (Pure (vec-len v))))")
+            format!(
+                "(bind ({callee} (primitives/pure [1 2 3]) (primitives/pure [1 2 3])) (fn [v] (primitives/pure (vec-len v))))"
+            )
         }
         "select" => {
-            format!("(bind ({callee} [(Pure [1 2 3]) (Pure [1 2 3])]) (fn [v] (Pure (vec-len v))))")
+            format!(
+                "(bind ({callee} [(primitives/pure [1 2 3]) (primitives/pure [1 2 3])]) (fn [v] (primitives/pure (vec-len v))))"
+            )
         }
         _ => unreachable!(),
     };
@@ -4205,7 +4376,7 @@ fn s124_1063_balance_select_repl() {
 fn result_polymorphic_main_is_located_ambiguity(mode: &str) {
     let cr = Cranelisp::new().file(
         "p.cl",
-        "\n\n\n(defn main [] (primitives/Pure primitives/None))\n",
+        "\n\n\n(defn main [] (primitives/pure primitives/None))\n",
     );
     let out = if mode == "link" {
         cr.link("p.cl").output()
@@ -4244,7 +4415,7 @@ fn s124_concrete_option_main_control_run() {
     let out = Cranelisp::new()
         .file(
             "p.cl",
-            "(defn main [] (primitives/Pure (primitives/Some 7)))\n",
+            "(defn main [] (primitives/pure (primitives/Some 7)))\n",
         )
         .run("p.cl")
         .output()
@@ -4257,13 +4428,13 @@ fn main_macro_before_dependency_retry(mode: &str, retry: bool) {
     let tail = if retry {
         "(defn helper [] (late/id 0))"
     } else {
-        "(defn helper [] (primitives/Pure 0))"
+        "(defn helper [] (primitives/pure 0))"
     };
     let source =
-        format!("\n(defmacro mk [n] `(defn ~n [x] (primitives/Pure x)))\n\n(mk main)\n{tail}\n");
+        format!("\n(defmacro mk [n] `(defn ~n [x] (primitives/pure x)))\n\n(mk main)\n{tail}\n");
     let cr = Cranelisp::new()
         .file("p.cl", &source)
-        .file("late.cl", "(defn id [x] (primitives/Pure x))\n");
+        .file("late.cl", "(defn id [x] (primitives/pure x))\n");
     let out = if mode == "link" {
         cr.link("p.cl").output()
     } else {
@@ -4311,7 +4482,9 @@ fn s124_main_macro_without_dependency_retry_location_control_link() {
 }
 
 fn s124_print_balance(body: &str, linked: bool) {
-    let source = format!("(platform test-capture)\n(import [platform.test-capture [print]])\n(import [primitives [Pure bind str-concat]])\n(defn main [] {body})\n");
+    let source = format!(
+        "(platform test-capture)\n(import [platform.test-capture [print]])\n(import [primitives [pure bind str-concat]])\n(defn main [] {body})\n"
+    );
     let b = Cranelisp::new()
         .with_prelude(PreludeVariant::None)
         .use_workspace_platforms()
@@ -4378,25 +4551,28 @@ fn s124_print_balance_concat_link() {
 // spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE continuation_control run
 #[test]
 fn s124_print_balance_continuation_control_run() {
-    s124_print_balance(r#"(bind (Pure "abc") (fn [s] (print s)))"#, false);
+    s124_print_balance(
+        r#"(bind (primitives/pure "abc") (fn [s] (print s)))"#,
+        false,
+    );
 }
 
 // spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE continuation_control link
 #[test]
 fn s124_print_balance_continuation_control_link() {
-    s124_print_balance(r#"(bind (Pure "abc") (fn [s] (print s)))"#, true);
+    s124_print_balance(r#"(bind (primitives/pure "abc") (fn [s] (print s)))"#, true);
 }
 
 // spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE pure_control run
 #[test]
 fn s124_print_balance_pure_control_run() {
-    s124_print_balance(r#"(Pure 0)"#, false);
+    s124_print_balance(r#"(primitives/pure 0)"#, false);
 }
 
 // spec: spec/12-runtime.md §12.3.1; platforms/stdio/spec.md — T-PRINT-BALANCE pure_control link
 #[test]
 fn s124_print_balance_pure_control_link() {
-    s124_print_balance(r#"(Pure 0)"#, true);
+    s124_print_balance(r#"(primitives/pure 0)"#, true);
 }
 
 // T-IO-OPAQUE: tests/plan/s124-evidence-delta.md §14.3.

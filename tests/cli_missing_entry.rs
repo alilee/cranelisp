@@ -336,7 +336,7 @@ fn repl_unreadable_entry_first_readable_save_releases_lock() {
 }
 
 fn w4_mapped_entry(target: &str, mode: &str) -> CrOutput {
-    let source = "(import [primitives [*]])\n(defn main [] (Pure 37))\n\
+    let source = "(import [primitives [*]])\n(defn main [] (primitives/pure 37))\n\
                   (defn test-mapped [] (if true None (Some \"unreachable\")))\n";
     let builder = Cranelisp::new()
         .file("core/str.cl", source)

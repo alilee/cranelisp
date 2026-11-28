@@ -149,9 +149,9 @@ fn warm_cache_hit_control_carries_no_ambient_residual() {
         // Same platform + prelude surface as smoke.cl, same module graph
         // (importing `solve` compiles the whole exemplar tree), zero solve work.
         "(platform stdio)\n\
-         (import [primitives [Pure]])\n\
+         (import [primitives [pure]])\n\
          (import [solver [solve]])\n\
-         (defn main [] (Pure 0))\n",
+         (defn main [] (primitives/pure 0))\n",
     )
     .expect("write warm control entry");
     let (retained, stderr) = warm_residue_of(td.path(), "warm_control.cl");
