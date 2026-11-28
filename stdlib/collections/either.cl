@@ -76,7 +76,7 @@
        (Right u) (str-concat "Right(" (str-concat (show u) ")"))])))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): exercises the Either eliminators
+;; Backing file `collections/either/test.cl`: exercises the Either eliminators
 ;; with the in-language harness.
 
 (mod- test)  ;; body in either/test.cl (extraction-stable backing file, spec §8.2.5)

@@ -1,6 +1,6 @@
 ;; num/float.cl — Float operations
 ;;
-;; Float-specific functions built on Ring 0/1 primitives.
+;; Float-specific functions built on the Float primitives.
 ;; No floor/ceil/round primitives exist yet — these would require
 ;; runtime extern functions. This module provides what can be built
 ;; from existing primitives.
@@ -37,7 +37,7 @@
     (if (gt-f64 x hi) hi x)))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): exercises the Float helpers with
+;; Backing file `num/float/test.cl`: exercises the Float helpers with
 ;; the in-language harness (Float has Eq + Display).
 
 (mod- test)  ;; body in float/test.cl (extraction-stable backing file, spec §8.2.5)

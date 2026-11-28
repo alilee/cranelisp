@@ -2,8 +2,7 @@
 ;;
 ;; `par-map`, `par-reduce`, and `par-map-reduce` are ORDINARY library
 ;; functions — NOT compiler primitives and NOT new syntax. They add zero
-;; language surface (arch ruling, design/arch/effect-concurrency.md §7,
-;; FIXME 0424). What makes them parallel is the inferred lenient-evaluation
+;; language surface (design/arch/effect-concurrency.md §7). What makes them parallel is the inferred lenient-evaluation
 ;; sparking substrate (design/backend/lenient-eval.md): independent,
 ;; individually-expensive work sparks automatically onto the thread pool.
 ;; A reader can open this file and see ordinary divide-and-conquer recursion
@@ -20,7 +19,7 @@
 ;;   The combine is the `let` BODY (`(vec-concat left right)` / `(f left right)`
 ;;   / `(redf left right)`), NOT a third binding. It runs AFTER the let barrier
 ;;   has forced both halves, so it is plain post-barrier code — never sparked.
-;;   This is deliberate (review S94 finding I4): a combine bound as a separate
+;;   This is deliberate: a combine bound as a separate
 ;;   `let` binding would be an INERT §2.6.2 dependent spark — it blocks
 ;;   immediately on forcing both halves with zero independent sub-work, adding
 ;;   no concurrency, while consuming a third create-gate permit per node (n=3

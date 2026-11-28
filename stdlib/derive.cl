@@ -30,14 +30,12 @@
 
 ;; ── derive-Eq macro ────────────────────────────────────
 
-;; CONFORMANCE (S115): a derived impl must supply EVERY method the trait
-;; declares, or the `impl` is rejected ("impl Eq for T: missing required method
-;; !="). `Eq` declares `=` and `!=`; `Ord` declares `<`, `>`, `<=`, `>=`. The
-;; pre-S115 macros emitted only `=` (Eq) and `<`/`>` (Ord), so EVERY use of
-;; `derive-Eq`/`derive-Ord` failed conformance. The derived companions are
-;; expressed with `if`, not `not`, because the expansion lands in the CONSUMER's
-;; module, where the raw primitive `not` is not in scope (the S86 prelude
-;; de-leak). Guarded by `derive/test.cl`.
+;; CONFORMANCE: a derived impl must supply EVERY method the trait declares, or
+;; the `impl` is rejected ("impl Eq for T: missing required method !=").
+;; `Eq` declares `=` and `!=`; `Ord` declares `<`, `>`, `<=`, `>=`. The derived
+;; companions are expressed with `if`, not `not`, because the expansion lands
+;; in the CONSUMER's module, where the prelude does not bind the raw primitive
+;; `not`. Guarded by `derive/test.cl`.
 
 (defmacro derive-Eq "Derive Eq trait implementation" [dt]
   `(impl Eq ~(build-impl-target (dt-name dt) (dt-params dt) "Eq" dt)
@@ -79,19 +77,11 @@
     (SexpList (SCons (SexpSym "begin") (SCons dt (sreverse calls))))))
 
 ;; ── Self-tests — home is a SEPARATE consumer module ────
-;; The derive macros cannot be exercised from an in-module `(mod test)` BODY: a
-;; `defmacro` is available only to the forms that FOLLOW it in the same module
-;; (§9.3.4 defmacro-before-use), and a `(derive …)` call needs its own type
-;; (`(deftype …)`) plus an `(impl …)` expansion that references the derived
-;; methods — all of which belong to a DOWNSTREAM module that imports these
-;; macros and derives on its own ADT. That downstream module is the correct
-;; test home (spec §9.3.4). Recorded in plan-stdlib.md §3.3.
-;;
-;; BUILT S115: `derive/test.cl` (module `derive.test`) is that consumer — a
-;; separate module that imports these macros from `super` and derives against
-;; its own ADTs. It is the standing guard for the derive surface, including the
-;; `derive` dispatch form; the two S115 conformance fixes above (`!=` for Eq,
-;; `<=`/`>=` for Ord) are pinned there.
+;; A `defmacro` is available only to the forms that FOLLOW it in the same
+;; module (spec §9.3.4), and a `(derive …)` call needs its own `deftype`, so the
+;; derive macros are tested from `derive/test.cl` (module `derive.test`), which
+;; imports them from `super` and derives against its own ADTs (plan-stdlib.md
+;; §3.3).
 
 (mod- test)
 ;;

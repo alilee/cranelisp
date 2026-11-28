@@ -1,7 +1,7 @@
 ;; io.cl — IO module group
 ;;
 ;; Submodules:
-;;   io.monad — pure, do, bind! (IO monadic interface)
+;;   io.monad — do, bind! (IO sequencing macros)
 
 (import [prelude []])
 

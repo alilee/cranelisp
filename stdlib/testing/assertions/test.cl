@@ -7,8 +7,7 @@
 ;; THE HARNESS TESTING ITSELF. Every other stdlib self-test module reports
 ;; through `assert-eq`/`assert-true`/`assert-false`, so a bug here is invisible
 ;; in exactly the way that matters: an assertion that returned `None`
-;; unconditionally would make the whole suite report green forever. That module
-;; had no self-tests of its own until S115.
+;; unconditionally would make the whole suite report green forever.
 ;;
 ;; The cases below therefore lean on the NEGATIVE side. `assert-eq` returning
 ;; `None` for equal values is the cheap half; what actually protects the suite
@@ -17,7 +16,7 @@
 ;; directly rather than by asserting with the function under test, which would
 ;; be circular.
 
-(import [super [assert-eq assert-true assert-false]])
+(import [super [assert-eq assert-true assert-false check]])
 (import [compare.eq [=]])
 (import [primitives [Option Some None Int Bool String str-concat]])
 
@@ -91,3 +90,33 @@
   (expect (= "expected false but got true"
              (match (assert-false true) [(Some why) why _ "<passed>"]))
           "assert-false's failure reason should say what it expected"))
+
+;; ── check ──────────────────────────────────────────────────────────────
+
+(defn test-check-single-passes-through [] :(Option String)
+  (expect (= "expected 1 but got 2" (match (check (assert-eq 1 2)) [(Some why) why _ "<passed>"]))
+          "(check x) should return x"))
+
+(defn test-check-all-pass-is-none [] :(Option String)
+  (expect (passed? (check (assert-true true) (assert-eq 1 1) (assert-false false)))
+          "check over passing assertions should pass"))
+
+(defn test-check-returns-first-failure [] :(Option String)
+  (expect (= "expected 1 but got 2"
+             (match (check (assert-true true) (assert-eq 1 2) (assert-eq 3 4))
+               [(Some why) why _ "<passed>"]))
+          "check should return the first failure, not a later one"))
+
+(defn test-check-failure-after-passes [] :(Option String)
+  (expect (= "expected 3 but got 4"
+             (match (check (assert-true true) (assert-eq 1 1) (assert-eq 3 4))
+               [(Some why) why _ "<passed>"]))
+          "check should report a failure in its last position"))
+
+;; The assertion after the first failure divides by zero, which panics if it
+;; is evaluated.
+(defn test-check-short-circuits [] :(Option String)
+  (expect (= "expected 1 but got 2"
+             (match (check (assert-eq 1 2) (assert-eq 1 (primitives/div-i64 1 0)))
+               [(Some why) why _ "<passed>"]))
+          "check should not evaluate assertions after the first failure"))

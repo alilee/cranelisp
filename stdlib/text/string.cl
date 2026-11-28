@@ -1,6 +1,6 @@
 ;; text/string.cl — String operations and str macro
 ;;
-;; Higher-level string functions built on the Ring 1 string primitives.
+;; Higher-level string functions built on the string primitives.
 ;; The 11 primitives (substring, char-at, split, join, replace, trim,
 ;; starts-with?, ends-with?, contains?, to-upper, to-lower) plus
 ;; str-len, str-concat, str-eq are auto-available from the primitives
@@ -65,28 +65,16 @@
     (if (ge-i64 len width) s
       (str-concat s (repeat-str pad (sub-i64 width len))))))
 
-;; ── char<->digit — Stage C.1 gap G4 ──────────────────────────────────
+;; ── char<->digit ─────────────────────────────────────────────────────
 ;; `char-to-digit` maps a single-character decimal-digit string to its Int
 ;; value, returning the sentinel -1 for any non-digit (so callers branch on
 ;; `(< d 0)` rather than crash). `digit-to-char` is the inverse for 0..9.
 ;; Both are direct compositions over the digit table "0123456789" — no new
-;; primitive. They collapse the exemplar's N-way cond/if char-to-int ladders
-;; (form.cl parse-digit-char, grid.cl make-grid-helper).
+;; primitive.
 ;;
-;; NAMING NOTE (record updated S115 6b). The C.1 gap proposed
-;; `char->digit`/`digit->char`. These shipped as `-to-` because at S87 a `defn`
-;; NAME containing `->` did not parse — the reader treated `->` as the
-;; threading-macro head and `(defn char->digit "doc" […])` failed with
-;; `parse error … defn: expected params [...]`. **That parse failure is FIXED**
-;; (verified: `(defn char->digit "doc" [:String ch] :Int 1)` now defines
-;; `:(Fn [primitives/String] primitives/Int) user/char->digit` and calls
-;; correctly), so the constraint that forced the spelling is retired.
-;;
-;; The NAMES stay `-to-` regardless. They have been the public spelling since
-;; S87 and are used by the exemplar; renaming now would break callers to buy
-;; only a cosmetic match with a proposal that was never normative, and Clojure
-;; itself is not consistent here (`int`/`char`, not `char->int`). Recorded so
-;; the next reader does not re-litigate it from the stale blocker.
+;; The names keep the `-to-` spelling although names containing `->` now
+;; parse: renaming would break callers, including the exemplar
+;; (plan-stdlib.md §3.3).
 
 (defn char-to-digit "Decimal digit char 0-9 to its Int value, or -1 if not a digit"
   [:String ch] :Int
@@ -100,12 +88,12 @@
     (if (gt-i64 d 9) ""
       (substring "0123456789" d (add-i64 d 1)))))
 
-;; ── replace-at / str-assoc — Stage C.1 gap G5 ────────────────────────
+;; ── replace-at / str-assoc ───────────────────────────────────────────
 ;; Functional string-index set: return `s` with the character at `idx`
 ;; replaced by `ch` (a single-character string). Composed from
 ;; `substring`/`str-concat`. `str-assoc` is the Clojure-aligned alias
 ;; (matching collections `assoc`'s "set at key" shape). Out-of-range `idx`
-;; returns `s` unchanged. Collapses the exemplar's set-char-at (form.cl).
+;; returns `s` unchanged.
 
 (defn replace-at "Return s with the character at idx replaced by ch (single char)"
   [:String s :Int idx :String ch] :String
@@ -120,7 +108,6 @@
   (replace-at s idx ch))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): exercises the string helpers with
-;; the in-language harness (String has Eq + Display).
+;; Backing file `text/string/test.cl` (module `text.string.test`).
 
 (mod- test)

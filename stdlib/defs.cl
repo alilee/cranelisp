@@ -18,8 +18,11 @@
   `(defmacro- ~name [] ~(primitives/quote-sexp value)))
 
 ;; def and def- inline the name-mangling (append "-def" to symbol name)
-;; rather than calling a separate make-def-name helper, because defn-defined
-;; helpers are not available during macro compilation (Phase 3 vs Phase 4).
+;; rather than calling a helper: a macro body cannot call a `defn` of its own
+;; module at expansion time (spec §9.2.5).
+;;
+;; `(k a b)` on a `def`-bound function value fails with the zero-argument
+;; macro's arity error; FIXME 0800 carries that API choice (plan-stdlib.md §6.1).
 
 (defmacro def "Define a named value (zero-arg function, bare symbol)" [name value]
   (match name
@@ -39,6 +42,7 @@
          (defmacro- ~name [] (macros/SexpList (macros/SCons ~(primitives/quote-sexp impl-name) macros/SNil)))))
      _ name]))
 
-;; Backing self-tests include `def` in the representative stdlib macro-cache
-;; parity set. Presentation remains the known 0800/0863 issue.
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; Backing file `defs/test.cl` (module `defs.test`).
+
 (mod- test)

@@ -70,8 +70,8 @@
   (defn >= [x y] (if (< x y) false true)))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): super-imports the Ord methods
-;; and exercises Int + Bool ordering. (String ordering is omitted by design,
+;; Backing file `compare/ord/test.cl` (module `compare.ord.test`): exercises
+;; Int + Bool ordering. (String ordering is omitted by design,
 ;; see the note below, so there is no String self-test.)
 
 (mod- test)

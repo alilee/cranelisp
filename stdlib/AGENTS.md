@@ -21,8 +21,9 @@ documents (root [roles](../AGENTS.md#roles)).
 - `testing.runner` and `testing` load only in a live REPL session. The module
   compiles functions that reference `discover-tests`, so `--run`, `--link`,
   `--test` and test children refuse any program importing a name from it,
-  including a pure helper such as `run-one` ([REPL spec
-  §16.6](../repl/spec/16-test-discovery.md)).
+  including a helper such as `run-one` ([REPL spec
+  §16.6](../repl/spec/16-test-discovery.md)). Batch programs import
+  `testing.assertions`, which holds the assertions and the `check` macro.
 - Run one module's self-tests from a REPL:
 
 ```

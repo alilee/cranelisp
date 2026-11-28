@@ -4,16 +4,8 @@
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
 ;; `(mod- test)`. Exercises the Either eliminators via the in-language harness.
 ;;
-;; RETIRED RECORD (verified S115 6b). This header carried an S87 Stage-C.2
-;; defect note: running these tests through the discovery path
-;; (`discover-tests` → `run-one`) was said to SIGBUS on `test-is-right` — the
-;; `(Either String Int)` `(Right 1)` shape, a heap-ADT with String-then-Int
-;; field order — while each test passed when called directly. That crash is
-;; GONE: the full module runs 6 passed / 0 failed / 0 panicked through the
-;; discovery path, reproducibly. The note is retired rather than left standing,
-;; because a stale "this crashes" record on green code teaches the next reader
-;; to distrust a working surface. `test-is-right` below IS the standing guard
-;; for the shape that used to crash — keep it.
+;; `test-is-right` guards the `(Either String Int)` `(Right 1)` shape, a heap
+;; ADT with String-then-Int field order, through the discovery path; keep it.
 
 (import [super [Either Left Right is-left? is-right? from-left from-right
                 map-left either]])

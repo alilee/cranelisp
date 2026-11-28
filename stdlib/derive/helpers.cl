@@ -245,9 +245,7 @@
 ;; ── Ord helpers ────────────────────────────────────────
 
 ;; The "later constructors" of a ctor are exactly the TAIL of the ctor list at
-;; that point — walk it directly. (Pre-S115 this indexed into a materialised
-;; name list with `snth i` for i in [idx+1, len), an O(n²) walk with an
-;; out-of-bounds sentinel arm; the tail is already in hand at every call site.)
+;; that point, so walk it directly.
 (defn- later-arm "The (name true) arm pair for one later constructor" [c]
   (SCons (SexpSym (ctor-name c)) (SCons `true SNil)))
 

@@ -5,10 +5,9 @@
 ;;
 ;; This module is the SList substrate every macro-authoring module in the stdlib
 ;; stands on — `derive.helpers`, `defs` and `derive` all fold and reverse through
-;; `sfold`/`sreverse`. It had no self-tests before S115.
+;; `sfold`/`sreverse`.
 ;;
-;; `sreverse`, `slist`, and sfold's inductive case remain uncovered. Restoring
-;; their broader historical matrix is outside this focused self-test slice.
+;; Not covered: `sreverse`, `slist` and sfold's inductive case.
 
 (import [super [sempty? sfold make-def-name annotated? annotation unannotate]])
 (import [testing.assertions [assert-eq assert-true assert-false]])

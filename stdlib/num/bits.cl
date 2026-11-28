@@ -1,27 +1,25 @@
 ;; num/bits.cl — Bitwise operations on 64-bit integers
 ;;
-;; A curated, Clojure-aligned convenience layer over the S91 native bitwise
+;; A curated, Clojure-aligned convenience layer over the native bitwise
 ;; primitives (`bit-and`, `bit-or`, `bit-xor`, `bit-not`, `shl`, `shr`,
-;; `popcount`; spec appendix-a-builtins §A.3, FIXME 0416). The primitives do
+;; `popcount`; spec appendix-a-builtins §A.3). The primitives do
 ;; all the work — each lowers 1:1 to a CLIF op (`band`/`bor`/`bxor`/`bnot`/
 ;; `ishl`/`sshr`/`popcnt`) with no call overhead. This module is the thin
 ;; convenience shell on top.
 ;;
 ;; ── WIDTH ──────────────────────────────────────────────────────────────
 ;; Operations act on `Int` as a **full 64-bit two's-complement** value
-;; (the language `Int` is signed 64-bit, §A.1). This is a deliberate change
-;; from the pre-S91 arithmetic-simulation module, which clamped to a 30-bit
-;; one's-complement WIDTH to keep intermediates positive. With native ops
-;; there is no width limit: `bit-not` complements all 64 bits, `popcount`
+;; (the language `Int` is signed 64-bit, §A.1). There is no narrower width:
+;; `bit-not` complements all 64 bits, `popcount`
 ;; counts across all 64, and the sign bit participates like any other.
 ;;   (bit-not x)  =  (- (- x) 1)         ; full two's-complement: ~0 = -1
 ;;
 ;; ── SHIFTS ─────────────────────────────────────────────────────────────
 ;;   bit-shift-left  = shl  (zero-fills vacated low bits)
 ;;   bit-shift-right = shr  (ARITHMETIC: sign bit replicated into high bits)
-;; Clojure also has `unsigned-bit-shift-right`; S91 ships only the arithmetic
-;; `shr` (a logical/unsigned variant is a future per-integer-type concern,
-;; §A.3 note), so this module intentionally provides no unsigned variant.
+;; Clojure also has `unsigned-bit-shift-right`; the language has only the
+;; arithmetic `shr` (a logical/unsigned variant is a future per-integer-type
+;; concern, §A.3 note), so this module provides no unsigned variant.
 ;; The shift count is taken modulo 64 (§A.3).
 ;;
 ;; ── BIT-AT-POSITION HELPERS ────────────────────────────────────────────
@@ -40,14 +38,13 @@
 ;; spec/11-stdlib.md §11.4a; all are reached module-qualified / via import —
 ;; NOT bare-promoted to the prelude.
 ;;
-;; Spec: appendix-a-builtins §A.3, plan-stdlib.md §3.3, §26.8
+;; Spec: appendix-a-builtins §A.3, plan-stdlib.md §3.3
 
 (import [prelude []])
-;; Import hygiene (spec §8.6.4, FIXME 0484): this module DEFINES
+;; Import hygiene (spec §8.6.4): this module DEFINES
 ;; `bit-and`/`bit-or`/`bit-xor`/`bit-not`/`popcount` (curated pass-through
 ;; wrappers), so it must NOT also import those names from `primitives` —
-;; defining a name you import is a compile-time collision under the S102
-;; FQ-resolution ruling. It selectively imports only the non-colliding
+;; defining a name you import is a compile-time collision. It selectively imports only the non-colliding
 ;; primitive names it uses bare (`shl`/`shr`/`eq-i64`/`not` + the `Int`/`Bool`
 ;; types) and fully-qualifies every reference to the colliding primitives
 ;; (`primitives/bit-and`, `primitives/popcount`, …) in the wrapper bodies.
@@ -101,8 +98,7 @@
   (primitives/popcount x))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 hygiene): exercises every wrapper against
-;; known values via the in-language harness. Body in bits/test.cl
-;; (extraction-stable backing file, spec §8.2.5).
+;; Backing file `num/bits/test.cl` (module `num.bits.test`): exercises every
+;; wrapper against known values.
 
 (mod- test)

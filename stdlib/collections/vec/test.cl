@@ -38,15 +38,10 @@
 (defn test-vec-reverse [] :(Option String)
   (assert-eq 1 (get (vec-reverse [1 2 3]) 2)))
 
-;; vec-concat — S101 6b. The composed shapes (count/get over the result)
-;; double as the guard for the held fold-body simplification: with
-;; `(vec-reduce vec-push va vb)` as the body they fail codegen
-;; ("undefined function: count") — see vec.cl §vec-concat NOTE(0488-family).
-;; The empty-vec rows guard harder still: under the fold body they fail
-;; TYPECHECK ("ambiguous type", annotation does not pin), aborting cold
-;; prelude compile at REPL startup. Under the landed loop body both rows
-;; compile cold with OR without the :(Vec Int) pins (the sibling literal
-;; unifies `a`); the pins are kept as S84-defensive documentation.
+;; vec-concat. The composed shapes (count/get over the result) and the
+;; empty-vec rows guard the explicit loop body in vec.cl: a
+;; `(vec-reduce vec-push va vb)` body has failed both. The `:(Vec Int)` pins
+;; are not needed by the loop body.
 (defn test-vec-concat-length [] :(Option String)
   (assert-eq 5 (count (vec-concat [1 2] [3 4 5]))))
 

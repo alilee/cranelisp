@@ -4,7 +4,7 @@
 ;; `(mod- test)`.
 ;;
 ;; `->` and `->>` are bare-exported by the prelude, so they are among the most
-;; visible names in the language and had no coverage at all before S115.
+;; visible names in the language.
 ;;
 ;; The two macros differ ONLY in insertion position, so every case below is
 ;; written with a NON-COMMUTATIVE operation (`sub-i64`, `str-concat`, a

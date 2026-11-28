@@ -1,9 +1,9 @@
 ;; num/bits/test.cl — self-tests for num.bits (module num.bits.test)
 ;;
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
-;; `(mod test)`. Exercises every bitwise wrapper against known values via the
-;; in-language harness. Semantics are full 64-bit two's-complement (S91 native
-;; primitives) — the sign bit participates and `bit-not` is full-width.
+;; `(mod- test)`. Exercises every bitwise wrapper against known values.
+;; Semantics are full 64-bit two's-complement: the sign bit participates and
+;; `bit-not` is full-width.
 ;;
 ;; Reference values (decimal ↔ binary):
 ;;   12 = 0b1100   10 = 0b1010

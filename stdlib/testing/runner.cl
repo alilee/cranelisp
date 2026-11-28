@@ -20,7 +20,8 @@
 ;; `discover-tests`, and importing any name from this module (or from
 ;; `testing`) compiles them. `--run`, `--link`, `--test` and every test child
 ;; therefore refuse the program before it runs, even when it imports only a
-;; pure helper such as `run-one` and never calls discovery (REPL spec §16.6).
+;; helper such as `run-one` and never calls discovery (REPL spec §16.6).
+;; Definitions a batch program needs belong in `testing.assertions`.
 ;;
 ;; Spec: design/arch/test-discovery.md §4.3/§5/§6, plan-stdlib.md §3.3
 
@@ -33,17 +34,6 @@
 (import [collections.vec [vec-map vec-filter]])
 (import [collections.pair [first second]])
 (import [text.string [index-of]])
-
-;; ── check macro ──────────────────────────────────────────────────────
-;; Chains (Option String) assertions: returns the first Some (failure),
-;; short-circuiting. (check a b c) keeps the first failure, else the last value.
-
-(defmacro check "Chain assertions, returning the first failure"
-  ([x] x)
-  ([x & rest]
-    `(match ~x
-       [(Some __f__) (Some __f__)
-        None (check ~@rest)])))
 
 ;; ── Outcome ADT — a tally-able per-test result ───────────────────────
 
@@ -61,7 +51,7 @@
          [None       (Passed name)
           (Some why) (Failed name why)])]))
 
-;; ── Discovery sugar (FIXME 0273 §2) — no-arg / module-name normalise to Vec ──
+;; ── Discovery sugar — no-arg / module-name normalise to Vec ──────────
 ;; The canonical extern takes a (Vec String). `discover-here` normalises the
 ;; no-arg "current module" and module-name shapes to it; the body calls
 ;; `primitives/discover-tests` by FQ so the macro never recurses, and an empty

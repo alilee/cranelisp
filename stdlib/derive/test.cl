@@ -1,12 +1,9 @@
 ;; derive/test.cl — self-tests for derive (module derive.test)
 ;;
-;; The consumer module `plan-stdlib.md` §3.3 specifies. The derive macros
-;; cannot be exercised from an inline `(mod test …)`
-;; body in `derive.cl` itself: a `defmacro` is available only to the forms that
-;; FOLLOW it in the same module (spec §9.3.4), so a `(derive-Eq …)` call inside
-;; derive.cl's own submodule forms fails at expansion. A SEPARATE module that
-;; imports the macros and derives on its OWN ADTs is the correct test home —
-;; this file. It is the standing guard for the derive surface.
+;; The consumer module `plan-stdlib.md` §3.3 specifies. A `defmacro` is
+;; available only to the forms that follow it in the same module (spec §9.3.4),
+;; so the derive macros are exercised from this separate module, which imports
+;; them and derives on its own ADTs.
 ;;
 ;; USAGE CONTRACT exercised here: `derive-Eq`/`derive-Ord`/`derive-Display` take
 ;; a `deftype` sexp as their INTROSPECTION argument but do NOT define the type —
@@ -59,10 +56,8 @@
 (defn test-eq-enum-distinct [] :(Option String)
   (assert-false (= Off On)))
 
-;; CONFORMANCE GUARD (S115): `Eq` declares BOTH `=` and `!=`; `derive-Eq`
-;; emitted only `=`, so every use failed with "missing required method !=".
-;; This case does not merely check `!=`'s value — the module would not COMPILE
-;; without the emitted method.
+;; CONFORMANCE GUARD: `Eq` declares BOTH `=` and `!=`, so a derived impl must
+;; supply both. This module does not compile if `derive-Eq` omits `!=`.
 (defn test-eq-derives-neq [] :(Option String)
   (assert-true (!= Off On)))
 
@@ -112,10 +107,9 @@
 (defn test-ord-enum-gt [] :(Option String)
   (assert-true (> On Off)))
 
-;; CONFORMANCE GUARD (S115): `Ord` declares `<`, `>`, `<=` AND `>=`;
-;; `derive-Ord` emitted only `<` and `>`, so every use failed with "missing
-;; required method <=". As with `!=` above, the module would not COMPILE
-;; without the emitted methods.
+;; CONFORMANCE GUARD: `Ord` declares `<`, `>`, `<=` AND `>=`, so a derived
+;; impl must supply all four. This module does not compile if `derive-Ord`
+;; omits one.
 (defn test-ord-enum-le-when-equal [] :(Option String)
   (assert-true (<= Off Off)))
 

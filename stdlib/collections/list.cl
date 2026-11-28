@@ -42,11 +42,10 @@
     [Nil acc
      (Cons _ t) (length-acc t (add-i64 acc 1))]))
 
-;; `first`/`rest` are the Clojure-aligned list accessors (renamed from the
-;; S82 `head-of`/`tail-of`, per FIXME 0402). They are reached as
+;; `first`/`rest` are the Clojure-aligned list accessors. They are reached as
 ;; `collections.list/first` / `collections.list/rest` or via explicit
-;; import — NOT bare prelude (the bare names are reserved for the Phase-H
-;; seq trait, and pair `first` coexists in `collections.pair`; FIXME 0402).
+;; import, not the bare prelude: pair `first` coexists in `collections.pair`
+;; (plan-stdlib.md §1.5).
 
 (defn first "Get the first element of a list, or None if empty"
   [xs]
@@ -168,7 +167,7 @@
      (Cons h t) (str-concat " " (str-concat (show h) (show-rest t)))]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): exercises the list operations
+;; Backing file `collections/list/test.cl`: exercises the list operations
 ;; with the in-language harness. Tests reduce list values to Int/Bool first
 ;; (via `length`/`empty?`/`fold`) so assert-eq compares scalars.
 

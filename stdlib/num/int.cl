@@ -1,6 +1,6 @@
 ;; num/int.cl — Int operations
 ;;
-;; Integer-specific functions built on Ring 0 primitives.
+;; Integer-specific functions built on the Int primitives.
 ;; No remainder/modulus primitive exists, so rem is implemented
 ;; using truncated division: rem(a, b) = a - (a / b) * b
 ;;
@@ -48,7 +48,7 @@
     (if (gt-i64 x hi) hi x)))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): exercises the Int helpers with
+;; Backing file `num/int/test.cl`: exercises the Int helpers with
 ;; the in-language harness.
 
 (mod- test)  ;; body in int/test.cl (extraction-stable backing file, spec §8.2.5)

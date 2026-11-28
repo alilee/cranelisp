@@ -1,23 +1,19 @@
 ;; io/monad.cl — IO monadic interface
 ;;
-;; Core monadic operations for IO: pure, do, bind!.
+;; Sequencing macros for IO: do, bind!.
 ;;
-;; `pure` lifts a value into IO. `do` sequences IO actions via `bind`.
-;; `bind!` provides monadic bind sugar with bracket destructuring.
+;; `do` sequences IO actions via `bind`. `bind!` provides monadic bind sugar
+;; with bracket destructuring. Both expand to the `primitives/bind` primitive.
 ;;
-;; `bind` itself is a compiler-seeded inline primitive (in `primitives`).
+;; The lift is the `primitives/pure` primitive, which the prelude re-exports;
+;; this module does not define a second `pure`.
 ;;
 ;; Spec: 10-io.md §10.2-10.5, plan-stdlib.md §3.2
 
 (import [prelude []])
 
-(import [primitives [Pure]])
 (import [macros [SexpSym SexpStr SexpInt SexpFloat SexpBool SexpList SexpBracket
                  SCons SNil Sexp SList]])
-
-;; ── Functions ────────────────────────────────────────────────────────
-
-(defn pure "Lift a value into IO" [x] (Pure x))
 
 ;; ── Macros ───────────────────────────────────────────────────────────
 
@@ -25,8 +21,12 @@
   ([x] x)
   ([x &rest] `(primitives/bind ~x (fn [_] (do ~@rest)))))
 
-;; bind! remains inline — bracket destructuring validated at Ring 3.
 (defmacro bind! "Monadic bind sugar"
   ([[] body] body)
   ([[name expr &more] body]
     `(primitives/bind ~expr (fn [~name] (bind! [~@more] ~body)))))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; Backing file `io/monad/test.cl` (module `io.monad.test`).
+
+(mod- test)

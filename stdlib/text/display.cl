@@ -49,7 +49,7 @@
        (str-concat "Pair(" (str-concat (show u) (str-concat " " (str-concat (show v) ")"))))])))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): super-imports `show` and checks
+;; Backing file `text/display/test.cl`: super-imports `show` and checks
 ;; each primitive's rendering. HARNESS-FREE by necessity: `testing.assertions`
 ;; depends on `text.display` (for `assert-eq`'s `Display` bound), so importing
 ;; the harness here forms a load cycle

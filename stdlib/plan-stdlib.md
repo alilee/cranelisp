@@ -75,7 +75,8 @@ Status labels used below:
   - `str`;
   - `Option`, `Result` and `List` with their constructors, plus `empty?`;
   - the `list` and `vec` construction macros;
-  - threading, control, definition and IO-monad macros;
+  - threading, control, definition and IO-monad macros, plus the
+    `primitives/pure` lift;
   - the four scalar types `Int Bool Float String`, which bare type annotations
     need (spec §3.1).
 - Everything else is reached by explicit import.
@@ -100,8 +101,10 @@ The user may revisit this boundary. Promotion is a one-line `(export …)`.
 **Current.**
 
 - Users write the curated vocabulary (`+`, `=`, `<`, `show`, `str`, `count`)
-  rather than raw primitive names (`add-i64`, `vec-get`). The prelude re-exports
-  no raw primitive functions.
+  rather than raw primitive names (`add-i64`, `vec-get`). The prelude
+  re-exports no primitive function that has a curated name. `pure` is the
+  language's lift (spec §10.2) and has no curated alternative, so the prelude
+  re-exports `primitives/pure`.
 - Curation governs only which names are bare. It must not change reachability.
   Three invariants follow from spec §3.1, §8.8.1, §8.9.1 and §8.11.4:
   1. `primitives/<name>` stays reachable regardless of imports and prelude
@@ -145,11 +148,18 @@ The user may revisit this boundary. Promotion is a one-line `(export …)`.
   - `stdlib_all_public_modules_compile_and_run` compiles and runs every public
     module;
   - the `stdlib_core_io_*` and `stdlib_timeout_*` cases exercise `core.io`.
-- Coverage: 24 of the 38 non-prelude modules carry self-tests. Nine more are
-  shells that need none. Five definition-bearing modules have no self-tests:
+- Coverage: 25 of the 38 non-prelude modules carry self-tests. Nine more are
+  shells that need none. Four definition-bearing modules have no self-tests:
   `core.io`, `core.trace`, `derive.helpers` (exercised only through
-  `derive.test`), `io.monad` and `seq.lazy`. See §6.3.
-- One test header lists withheld cases: `core/syntax/test.cl`.
+  `derive.test`) and `seq.lazy`. See §6.2.
+- A discovered test is `(Fn [] (Option String))`, so it cannot run an IO
+  action. `core.io` therefore has no self-tests: every combinator returns an
+  IO action. Its evidence is the `stdlib_core_io_*` and `stdlib_timeout_*`
+  cells, which run `>>`, `map-io`, `when-io`, `unless-io`, `sequence-io` and
+  `timeout` in every mode. `io/monad/test.cl` covers only the forms that
+  expand without `bind`.
+- Two test headers list withheld cases: `core/syntax/test.cl` and
+  `io/monad/test.cl`.
 
 ## 3. Modules
 
@@ -192,12 +202,12 @@ stdlib/
 │                either.cl (t)   Either type + Eq/Ord/Display, operations
 │                parallel.cl (t) par-map, par-reduce, par-map-reduce
 ├── seq/      lazy.cl       lazy Seq with producers and consumers
-├── io/       monad.cl      pure, do, bind!
+├── io/       monad.cl (t)  do, bind!
 ├── core/     syntax.cl (t) SList and reader-annotation helpers for macro authors
 │             io.cl         IO combinators: >>, map-io, timeout, when-io, unless-io, sequence-io
 │             trace.cl      Trace re-exports + display (spec §11.5)
-└── testing/  assertions.cl (t) assert-eq, assert-true, assert-false
-              runner.cl (t)     check, discovery runner, Outcome/Tally reporting
+└── testing/  assertions.cl (t) assert-eq, assert-true, assert-false, check
+              runner.cl (t)     discovery runner, Outcome/Tally reporting (REPL only)
 ```
 
 The depth-1 shells `collections.cl`, `compare.cl`, `core.cl`, `fn.cl`, `io.cl`,
@@ -226,9 +236,13 @@ carry the rest.
   `collections.pair` re-export the `primitives`-seeded `Option`, `Result` and
   `Pair` rather than defining second types. Because the source is the same,
   duplicate imports deduplicate (spec §8.6.4).
+- **One `pure`.** The prelude re-exports the `primitives/pure` lift; `io.monad`
+  defines only `do` and `bind!`. A second library `pure` would make the bare
+  name ambiguous for a program that also imports `primitives/pure`. `IO` has
+  no constructors (spec §10.1), so library code lifts with `pure`.
 - **`Ord String` is deliberately absent.** Lexicographic order needs a
   code-point comparison primitive, and a substring-based order would be
-  silently wrong. `Eq String` exists. See §6.4.
+  silently wrong. `Eq String` exists. See §6.3.
 - **`num.bits`** applies full 64-bit two's-complement semantics over the native
   bitwise primitives (spec appendix A §A.3). `bit-shift-right` is arithmetic,
   and no unsigned shift exists.
@@ -251,7 +265,7 @@ carry the rest.
   [annotated S-expression architecture](../design/arch/annotated-sexp-node.md).
   `~@` expands to `macros/sconcat`, which the compiler seeds
   (`crates/cranelisp-frontend/src/quasiquote.rs`), so the stdlib does not
-  provide it. §6.5 records the stale spec wording.
+  provide it.
 - **`derive`.** `derive-Eq`/`-Ord`/`-Display` take a `deftype` form for
   introspection but do not define the type, so the type must already exist.
   The macros cannot be tested inside `derive.cl`'s own submodule, because a
@@ -259,6 +273,9 @@ carry the rest.
   consumer module `derive/test.cl` is therefore the test home. The dispatch
   form `derive` emits the `deftype` and its impls in one `begin`;
   `derive.test` exercises it.
+- **`testing`.** `testing.runner` references `discover-tests`, so it loads
+  only in the REPL. Anything a batch program needs, including `check`, lives
+  in `testing.assertions`.
 - **`core.io`.** `timeout` composes the `race` primitive with the `sleep` leaf.
   A timeout cancels the losing arm (spec §10.12.8–§10.12.9).
 - **Accessors.** A deftype-level field list mints accessors. A constructor-arm
@@ -387,34 +404,14 @@ Whichever option is selected must:
 - produce a narrow failing `test` reproduction if the compiler fails the
   chosen contract.
 
-The choice is independent of REPL definition presentation (FIXME 0863).
+The user deferred the choice on 2026-11-27. FIXME 0800 carries it.
 
-### 6.2 Restore `core.io` self-tests (FIXME 0907 item 2)
+### 6.2 Self-test gaps
 
-**Open.** FIXME 0907 is the gate: this obligation opens when its evidence cells
-are accepted. At that point, author `core/io/test.cl` with a `(mod- test)` in
-the parent, covering:
+**Open.** `core.trace` and `seq.lazy` have no self-tests. `derive.helpers` is
+covered only through `derive.test`.
 
-1. `>>` sequences two effects and discards the first result.
-2. `map-io` applies a pure function to an IO result.
-3. `when-io`: true runs the action; false yields `(Pure 0)`.
-4. `unless-io`: false runs the action; true yields `(Pure 0)`.
-5. `sequence-io` over `Nil`, and over a three-element list with order preserved.
-6. `timeout`: the winning arm gives `(Some v)`; the timer arm gives `None` and
-   cancels the loser.
-
-### 6.3 Self-test gaps
-
-**Open.** `core.trace`, `io.monad` and `seq.lazy` have no self-tests.
-`derive.helpers` is covered only through `derive.test`. `io.monad` has the
-highest value, because `pure`/`do`/`bind!` are prelude surface.
-
-### 6.4 `Ord String`
+### 6.3 `Ord String`
 
 **Open usability finding, no filing.** It needs a code-point ordering
 primitive (§3.3). A language-capability request is routed as an action.
-
-### 6.5 Stale spec wording
-
-**Open.** Spec §11.4 says `~@` requires `core.syntax/sconcat`. The expander
-emits `macros/sconcat` (§3.3). This is routed to `spec`.

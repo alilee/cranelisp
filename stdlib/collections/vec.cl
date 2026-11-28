@@ -17,12 +17,8 @@
 
 ;; ── Curated Clojure-aligned Vec verbs ────────────────────────────────
 ;; These wrap the raw `vec-*` primitives behind Clojure names so callers
-;; never need the bare primitive. `count`/`get`/`conj` are PROMOTED to the
-;; bare prelude (S86 de-leak — the curated surface needs a bare collection
-;; path now that the raw `vec-*` re-exports are gone). `assoc` stays
-;; module-qualified (reserved for a future Map `assoc`; FIXME 0402). The
-;; Phase-H collection trait will subsume `count`/`get`/`conj` under the
-;; same bare names.
+;; never need the bare primitive. All four stay module-qualified: the bare
+;; names are reserved until a collection trait owns them (spec §11.4a).
 
 (defn count "Number of elements in a Vec"
   [v] :Int
@@ -121,20 +117,9 @@
     (vec-zip-loop f va vb len (add-i64 i 1)
       (vec-push acc (f (vec-get va i) (vec-get vb i))))))
 
-;; NOTE(0488-family, S101 6b): the intended simplification
-;; `(vec-reduce vec-push va vb)` (builtin-as-value fold) is HELD. The bare
-;; standalone call works with that body, but it poisons COMPOSED use at the
-;; consuming turn: with the fold body, `(count (vec-concat [1 2] [3 4 5]))`
-;; from user code fails codegen "undefined function: count" (any imported
-;; generic applied over the result — `get` likewise). The loop body below
-;; composes fine. Re-attempt the fold body when the 0488 generic-value-use
-;; mono-instance defect class is fixed; the composed self-test rows in
-;; vec/test.cl (test-vec-concat-*) are the guard that will catch it.
-;; ALSO (6b follow-up): with the fold body the empty-vec rows
-;; (test-vec-concat-empty-*) fail TYPECHECK ("ambiguous type", even with
-;; a :(Vec Int) [] pin), which ABORTS cold-cache prelude compile / REPL
-;; startup — so a fold-body re-attempt fails loudly at startup, not just
-;; on composed calls. See FIXME 0488 §Addendum.
+;; The explicit loop is deliberate: a `(vec-reduce vec-push va vb)` body has
+;; failed composed use (`(count (vec-concat …))`) and empty-vec typechecking.
+;; The `test-vec-concat-*` rows in vec/test.cl guard both.
 (defn vec-concat "Concatenate two Vecs"
   [va vb]
   (vec-concat-loop va vb (vec-len vb) 0))
@@ -148,16 +133,11 @@
   [vv]
   (vec-reduce vec-concat [] vv))
 
-;; ── range (eager) — Stage C.1 gap G3 ─────────────────────────────────
+;; ── range (eager) ────────────────────────────────────────────────────
 ;; `(range lo hi)` builds the eager Vec [lo, lo+1, …, hi-1] — HALF-OPEN
 ;; (inclusive lo, EXCLUSIVE hi), matching Clojure's `(range start end)`.
-;; This is the highest-leverage adequacy gap (G3): it collapses the
-;; pervasive hand-threaded `(if (= i N) acc (helper (+ i 1) …))` index
-;; recursion in the exemplar into `(vec-reduce f init (range 0 N))` /
-;; `(vec-map f (range 0 N))`. `range` is NOT 0402-reserved, but it FEEDS the
-;; future collection trait's map/reduce — curating it here does not pull a
-;; bare `map`/`reduce` into the prelude (§11.4a caveat). Home: collections.vec
-;; (it produces a Vec; lives beside count/get/conj). Empty when hi <= lo.
+;; Empty when hi <= lo. `range` is not a reserved verb, and curating it here
+;; does not put a bare `map`/`reduce` in the prelude (spec §11.4a).
 
 (defn range "Eager Vec of ints [lo, hi) — inclusive lo, exclusive hi"
   [:Int lo :Int hi] :(Vec Int)
@@ -169,7 +149,7 @@
     (range-loop (add-i64 i 1) hi (vec-push acc i))))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod- test …)` submodule (S87 Stage C.2): exercises the curated Clojure
+;; Backing file `collections/vec/test.cl`: exercises the curated Clojure
 ;; verbs (count/get/conj/assoc) and the vec combinators with the harness.
 ;; Vec values reduce to Int scalars (via count/get/vec-reduce) for assert-eq.
 

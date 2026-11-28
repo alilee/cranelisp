@@ -18,11 +18,10 @@
 ;; `when`/`unless` return an `Option`: the body's value wrapped in `Some` when
 ;; the branch is taken, `None` otherwise.
 ;;
-;; The body MUST be wrapped. `(if ~test ~body None)` — the pre-S115 expansion —
-;; requires the two `if` branches to unify, so it only typechecked when the body
-;; was ALREADY an `(Option a)`; `(when true 5)` failed with "expected
-;; primitives/Int, got (primitives/Option t)". Wrapping makes the taken branch
-;; `(Option a)` for any body type `a`. Self-tested in `control/test.cl`.
+;; The body MUST be wrapped. `(if ~test ~body None)` requires the two `if`
+;; branches to unify, so it typechecks only when the body is already an
+;; `(Option a)`. Wrapping makes the taken branch `(Option a)` for any body
+;; type `a`. Self-tested in `control/test.cl`.
 
 (defmacro when "Conditional returning (Some body) when test holds, else None" [test body]
   `(if ~test (Some ~body) None))

@@ -3,18 +3,16 @@
 ;; Separate backing file (extraction-stable per spec §8.2.5). Parent declares
 ;; `(mod- test)`.
 ;;
-;; REGRESSION GUARD (S115): `when`/`unless` expanded to `(if ~test ~body None)`,
-;; which forces the two `if` branches to unify — so they only typechecked when
-;; the body was ALREADY an `(Option a)`. `(when true 5)` failed outright. Both
-;; macros are bare-exported by the prelude, so this was a user-facing break in
-;; the most visible stdlib surface. The `test-when-*-non-option-body` cases
-;; below are the specific guard: they pass a body that is NOT an Option.
+;; REGRESSION GUARD: an expansion `(if ~test ~body None)` forces the two `if`
+;; branches to unify, so `when`/`unless` would typecheck only when the body is
+;; already an `(Option a)`. The `test-*-non-option-body` cases pass a body that
+;; is NOT an Option.
 
 (import [super [when unless cond case]])
 (import [testing.assertions [assert-eq assert-true]])
 (import [primitives [Option Some None String Int Bool]])
 
-;; `(Option a)` has no Eq/Display impl, so unwrap before asserting.
+;; Unwrap to a scalar before asserting.
 (defn- unwrap-int "Unwrap (Option Int), defaulting to the given sentinel" [o :Int dflt] :Int
   (match o [(Some x) x _ dflt]))
 
@@ -32,7 +30,7 @@
 (defn test-when-false [] :(Option String)
   (assert-true (none? (when false 5))))
 
-;; The exact shape the pre-S115 expansion could not typecheck: a non-Option body.
+;; A non-Option body, which an unwrapped expansion cannot typecheck.
 (defn test-when-non-option-body [] :(Option String)
   (assert-eq "hi" (unwrap-str (when true "hi") "")))
 

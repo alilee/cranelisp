@@ -68,7 +68,7 @@
 (defn test-str-assoc-alias [] :(Option String)
   (assert-eq "aXc" (str-assoc "abc" 1 "X")))
 
-;; split / join — S117 R-3 language-level guards. These deliberately use only
+;; split / join — language-level guards. These deliberately use only
 ;; the public primitives and ordinary Vec access. The Rust runtime boundary is
 ;; an implementation detail and is not reproduced in stdlib.
 (defn test-split-nonempty [] :(Option String)

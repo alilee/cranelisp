@@ -13,7 +13,7 @@
 (import [prelude []])
 
 ;; `trace` is a root special form (no import needed); only the Trace ADT + its
-;; accessors are re-exported from `primitives` (FIXME 0266, user ruling 2026-06-04).
+;; accessors are re-exported from `primitives`.
 (export [primitives [Trace TraceCall name params result children nanos]])
 
 ;; Import what we need for our own definitions
