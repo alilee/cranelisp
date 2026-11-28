@@ -7,12 +7,9 @@ explicitly so their dependencies are visible.
 
 ## A two-file program
 
-<a id="current-io-spelling"></a>
-
-**Current IO spelling:** these examples use `primitives/Pure`, which the
-current compiler provides to wrap a result in IO. The specified public function
-[`primitives/pure`](../../spec/10-io.md#102-pure) is not implemented yet
-(ACT-1108); the examples retain the working spelling until that migration ships.
+These examples use the built-in function
+[`primitives/pure`](../../spec/10-io.md#102-pure) to lift a result into `IO`.
+The standard-library prelude re-exports it as `pure`.
 
 Create these two files in an empty project directory. `mathx.cl` defines a peer
 module; `app.cl` imports one of its public names:
@@ -29,11 +26,12 @@ module; `app.cl` imports one of its public names:
 ```clojure
 ;; app.cl
 (import [mathx [square]])
-(defn main [] (primitives/Pure (square 7)))
+(defn main [] (primitives/pure (square 7)))
 ```
 
 Run `cranelisp --run app` from that directory. It prints nothing and exits `49`:
-`Pure` returns the square without performing an effect. These are **two files**,
+`primitives/pure` lifts the square into an IO action that yields it without
+performing an effect. These are **two files**,
 not one source block to paste into the REPL. All examples below use this project
 unless another layout is given.
 
@@ -48,7 +46,7 @@ create `a/b.cl` with this complete program:
 <!-- sample: {"kind":"definition"} -->
 ```clojure
 ;; a/b.cl
-(defn main [] (primitives/Pure 7))
+(defn main [] (primitives/pure 7))
 ```
 
 `cranelisp --run a.b` resolves `a/b.cl` and exits `7`. A filesystem target such
@@ -65,7 +63,7 @@ create these two files:
 ```clojure
 ;; app.cl
 (mod helpers)
-(defn main [] (primitives/Pure (app.helpers/answer)))
+(defn main [] (primitives/pure (app.helpers/answer)))
 
 ;; app/helpers.cl
 (defn answer [] 7)
@@ -77,7 +75,7 @@ child alias also permits `helpers/answer`.
 
 You can also load that project from a REPL:
 
-<!-- sample: {"kind":"repl","files":{"app.cl":"(mod helpers)\n(defn main [] (primitives/Pure (app.helpers/answer)))\n","app/helpers.cl":"(defn answer [] 7)\n"}} -->
+<!-- sample: {"kind":"repl","files":{"app.cl":"(mod helpers)\n(defn main [] (primitives/pure (app.helpers/answer)))\n","app/helpers.cl":"(defn answer [] 7)\n"}} -->
 ```
 user> (import [app []])
 user> (app/main)
@@ -90,13 +88,17 @@ use `(import [helpers [answer]])` to bring its public function into scope.
 Declaring a child loads it; importing names determines which bare spellings you
 can use. The precise file lookup is [spec §8.2.5](../../spec/08-modules.md#825-file-resolution).
 
-**Library-child limitation (ACT-1096):** a library module's declared child can
-be replaced by a same-path project file or an earlier library search directory.
-Keep those paths distinct today; a declared child's file belongs beside its
-parent. How an independently resolved project child participates under a
-library parent remains open as
-[S124-Q14](../../spec/appendix-d-open-questions.md#s124-q14-can-a-project-file-be-a-child-of-a-library-resolved-parent).
+A declared child is loaded beside the file that supplied its parent. If the
+parent came from a library directory, a same-path project file or a file in an
+earlier library directory does not replace that child. See
+[declared-child lookup](../../spec/08-modules.md#825-file-resolution).
 
+**Avoid a root/child name collision across REPL turns.** After importing root
+`q` through bare `q`, do not enter a later `(mod q)` for child `user.q`. The
+specified ambiguous-import refusal, including keeping the proposed child out of
+the session, is not implemented yet (ACT-0995). Remove the naming collision;
+there is no root-addressing form that bypasses a same-named child. See
+[bare-name precedence and the pending refusal](../../spec/08-modules.md#81121-bare-name-precedence-current-module-relative-submodule-wins).
 
 `(mod- internal)` declares a private child, accessible within the declaring
 module's subtree. The inline form `(mod child ...forms...)` creates a child file
@@ -201,11 +203,10 @@ An export mount adds a public module route. Replace `api.cl` with this file:
 (export [(mathx math) [square]])
 ```
 
-In a fresh REPL, load `api` through a public name before using its mount:
+In a fresh REPL, refer directly through the mount; the compiler loads its owner:
 
 <!-- sample: {"kind":"repl","files":{"mathx.cl":"(defn square [:Int x] (primitives/mul-i64 x x))\n","api.cl":"(export [(mathx math) [square]])\n"}} -->
 ```
-user> (import [api [square]])
 user> (api.math/square 8)
 :primitives/Int 64
 ```
@@ -215,10 +216,8 @@ the name list also re-exports `square` directly from `api`. Renamed re-exports
 use the same `(original local)` entry shape as imports. See
 [spec §8.4](../../spec/08-modules.md#84-export).
 
-**Mount-loading limitation (ACT-1079):** a qualified reference through a mount
-can fail until its declaring module has loaded. An import of a real public
-name, as above, loads the owner; an empty import does not. A chain of mounts
-can require each owner to load first.
+Chained mounts also load their owners on demand. See
+[qualified-name loading](../../spec/08-modules.md#854-auto-loading).
 
 Distinct declarations can share a bare spelling. A call may select among them
 by context and type; if it remains ambiguous, qualify the declaration you mean.

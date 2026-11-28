@@ -58,8 +58,9 @@ handler must be a **direct leaf** over connection-local values:
   or the resource-free `sleep` timer — these are direct, inspectable leaves.
 - A **user function that returns IO**, placed in an effect position, is an *opaque
   footprint* the analysis cannot see into, so it **refuses to launch** and the
-  server silently falls back to serial. Keep pure helpers pure: in the example
-  above, `slow-ms : Request -> Int` and `safe-handle : Request -> Response` compute
+  server silently falls back to serial. Use helpers whose result types contain no
+  `IO`: in the example above, `slow-ms : Request -> Int` and
+  `safe-handle : Request -> Response` compute
   the *arguments* to the direct `sleep` / `send-conn` leaves — they are never
   themselves placed in an effect position.
 
@@ -68,7 +69,7 @@ and the launch falls out. The eligibility rule is specified in
 [`design/arch/effect-concurrency.md §4.1`](../../design/arch/effect-concurrency.md)
 and [`spec/10-io.md §10.12.7`](../../spec/10-io.md).
 
-This is the IO-effect sibling of the **pure-compute** parallelism documented in
+Computations whose result types contain no `IO` can also run in parallel. See
 [automatic parallelism](../getting-started.md#automatic-parallelism) and
 [parallel collections](parallel-collections.md). Both extract concurrency from
 independence; they run on different substrates (the reactor for I/O, rayon for CPU).
@@ -127,7 +128,7 @@ environment variable needed. Import them by name:
 
 <!-- sample: {"kind":"definition"} -->
 ```clojure
-(import [primitives [Pure bind sleep race select]])
+(import [primitives [pure bind sleep race select]])
 ```
 
 ### `race` — the faster branch wins
@@ -136,14 +137,14 @@ Define each branch as a named helper so it reads as a self-contained unit of wor
 
 <!-- sample: {"kind":"definition"} -->
 ```clojure
-(import [primitives [Pure bind sleep race]])
+(import [primitives [pure bind sleep race]])
 
-(defn fast [] (bind (sleep 50)  (fn [_] (Pure 111))))   ;; ready after ~50ms
-(defn slow [] (bind (sleep 300) (fn [_] (Pure 222))))   ;; ready after ~300ms
+(defn fast [] (bind (sleep 50)  (fn [_] (pure 111))))   ;; ready after ~50ms
+(defn slow [] (bind (sleep 300) (fn [_] (pure 222))))   ;; ready after ~300ms
 
 (defn main []
   (bind (race (fast) (slow))
-    (fn [r] (Pure r))))                                 ;; -> 111
+    (fn [r] (pure r))))                                 ;; -> 111
 ```
 
 <!-- sample: {"kind":"illustrative","reason":"Shell invocation and process status"} -->
@@ -162,14 +163,14 @@ never a List:
 
 <!-- sample: {"kind":"definition"} -->
 ```clojure
-(import [primitives [Pure bind sleep select]])
+(import [primitives [pure bind sleep select]])
 
-(defn fast [] (bind (sleep 50)  (fn [_] (Pure 7))))
-(defn slow [] (bind (sleep 300) (fn [_] (Pure 9))))
+(defn fast [] (bind (sleep 50)  (fn [_] (pure 7))))
+(defn slow [] (bind (sleep 300) (fn [_] (pure 9))))
 
 (defn main []
   (bind (select [(slow) (fast) (slow)])
-    (fn [r] (Pure r))))                                 ;; -> 7 (the fast branch)
+    (fn [r] (pure r))))                                 ;; -> 7 (the fast branch)
 ```
 
 <!-- sample: {"kind":"illustrative","reason":"Shell invocation and process status"} -->
@@ -198,14 +199,14 @@ standard library (run with `CRANELISP_LIB=stdlib`):
 <!-- sample: {"kind":"definition"} -->
 ```clojure
 (import [core.io [timeout]])
-(import [primitives [Pure bind sleep Some None]])
+(import [primitives [pure bind sleep Some None]])
 
 (defn main []
   (bind (timeout 10 (sleep 1000))     ;; 10ms deadline vs 1000ms of work
     (fn [r]
       (match r
-        [(Some v) (Pure 1)            ;; work won
-         None     (Pure 0)]))))       ;; deadline fired -> None
+        [(Some v) (pure 1)            ;; work won
+         None     (pure 0)]))))       ;; deadline fired -> None
 ```
 
 <!-- sample: {"kind":"illustrative","reason":"Shell library-path setup"} -->
@@ -222,14 +223,14 @@ won.
 
 <!-- sample: {"kind":"definition"} -->
 ```clojure
-(import [primitives [Pure bind sleep race]])
+(import [primitives [pure bind sleep race]])
 
-(defn work     [] (bind (sleep 300) (fn [_] (Pure 7))))    ;; the real work
-(defn deadline [] (bind (sleep 50)  (fn [_] (Pure 99))))   ;; 99 = "timed out"
+(defn work     [] (bind (sleep 300) (fn [_] (pure 7))))    ;; the real work
+(defn deadline [] (bind (sleep 50)  (fn [_] (pure 99))))   ;; 99 = "timed out"
 
 (defn main []
   (bind (race (work) (deadline))
-    (fn [r] (Pure r))))                                    ;; -> 99 (deadline won)
+    (fn [r] (pure r))))                                    ;; -> 99 (deadline won)
 ```
 
 <!-- sample: {"kind":"illustrative","reason":"Shell invocation and process status"} -->
@@ -268,17 +269,17 @@ branch is cancelled:
 <!-- sample: {"kind":"definition"} -->
 ```clojure
 (platform stdio)
-(import [primitives [Pure bind sleep race]])
+(import [primitives [pure bind sleep race]])
 (import [platform.stdio [print]])
 
 (defn slow-print []
-  (bind (sleep 1000) (fn [_] (bind (print "LATE") (fn [_] (Pure 0))))))
+  (bind (sleep 1000) (fn [_] (bind (print "LATE") (fn [_] (pure 0))))))
 (defn deadline []
-  (bind (sleep 10) (fn [_] (Pure 0))))
+  (bind (sleep 10) (fn [_] (pure 0))))
 
 (defn main []
   (bind (print "EARLY")
-    (fn [_] (bind (race (slow-print) (deadline)) (fn [_] (Pure 0))))))
+    (fn [_] (bind (race (slow-print) (deadline)) (fn [_] (pure 0))))))
 ```
 
 <!-- sample: {"kind":"illustrative","reason":"Shell cancellation walkthrough; definition loading does not execute main"} -->
@@ -337,7 +338,7 @@ The observable contract of all three is specified in
 
 ## Tracing concurrent code
 
-A trace evaluates pure work sequentially throughout its body and called
+A trace evaluates CPU work sequentially throughout its body and called
 functions. Its timings do not represent ordinary parallel execution. See
 [tracing](tracing.md) for coverage and result inspection.
 
@@ -378,8 +379,8 @@ state them plainly rather than imply production-unattended readiness.
 - [`exemplar/main.cl`](../../exemplar/main.cl) — the showcase web server with no
   `spawn` (the inferred fan-out).
 - [Automatic parallelism](../getting-started.md#automatic-parallelism) and
-  [parallel collections](parallel-collections.md) — the pure-compute sibling of the
-  inferred half.
+  [parallel collections](parallel-collections.md) — parallel computations whose
+  result types contain no `IO`.
 - [`spec/10-io.md §10.12`](../../spec/10-io.md) — the normative IO concurrency model:
   combinators (§10.12.8), structured cancellation (§10.12.9), reference patterns
   (§10.12.10).

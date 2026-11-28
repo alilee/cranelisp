@@ -8,15 +8,6 @@ with `/mod`.
 > **About the transcripts.** They were checked against the real binary with the
 > standard prelude loaded. The prompt's timing prefix is elided to `user>`.
 
-> **Source-loss warning — multi-signature functions (ACT-1068).** The current
-> REPL omits every multi-signature `defn` when it regenerates a module file.
-> Entering any successful definition can therefore delete an existing family
-> from that file, even one loaded from disk. Keep a separate copy of authored
-> source and use batch mode for modules containing these families until this
-> defect is fixed. Live calls working does not mean their source was saved.
-> See the [permanent persistence reproductions](../../tests/repl_persist.rs)
-> and [ACT-1068's evidence record](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests).
-
 ## Redefining at the prompt
 
 The REPL keeps the latest **successful** definition of each name. You can edit a
@@ -248,12 +239,31 @@ The name is resolved exactly as a module name in source is. See
 
 ## Persistence and failed turns
 
-The REPL saves your definitions to the module's backing file (`user.cl` for the
-default entry module) after each successful definition. A rejected redefinition
-never replaces the live definition or its saved source, and the REPL continues
-with unrelated work after the diagnostic. Reload and restart compile the saved
-source as it stands; they do not replay your edit history
-([`repl/spec.md §18.8`](../../repl/spec/18-redefinition.md#188-persistence-and-reload)).
+The REPL saves successful definitions to the module's backing file (`user.cl`
+for the default entry module). A multi-signature function is saved as one
+complete family. A rejected redefinition keeps the previous live definition
+and saved source; unrelated work can continue after its diagnostic.
+
+The saved unit is the **authored entry**: a written definition owns itself,
+while a macro call owns all the definitions it generates. The file keeps the
+macro call once, rather than writing its expanded definitions. To change a
+generated definition, edit its owning call in the file and reload; re-entering
+that same call is allowed only while it still produces every name it previously
+owned. See [macro-generated definitions](../../spec/09-macros.md#961-redefinition-of-macro-generated-definitions).
+
+A hand-written top-level `begin` at the prompt splits into separate saved
+entries for its members. A multi-module import similarly saves one entry per
+module specification, in written order. A successful redefinition replaces its
+entry in place; if a function newly uses a later macro, its saved position moves
+after that macro. See [source regeneration](../../repl/spec/15-session-persistence.md#154-regeneration-integrity).
+
+Reload and restart compile saved source again. They re-expand macro calls with
+the current macro definitions and materialize omitted trait defaults again;
+they do not replay the session's edit history or freeze its earlier expansions.
+See [persistence and reload](../../repl/spec/18-redefinition.md#188-persistence-and-reload).
+
+For verification and the remaining implementation limits, see the
+[S125 persistence evidence](../../tests/plan/s125-evidence-delta.md#20-w7-close).
 
 ### When saved source fails at startup
 

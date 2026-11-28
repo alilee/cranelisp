@@ -63,15 +63,26 @@ catalogue is
 
 #### Query an expression's type — `/type`
 
-Use `/type (+ 1 2)` to inspect an expression's type. For an installed name,
-`/sig name` lists its signatures. **Do not give `/type` a definition form on the
-current compiler:** it can install definitions, rewrite the backing file and
-crash the session (ACT-1089). The required answer is an error, `definition form
-has no type`, with nothing evaluated or defined; this correction is carried.
-Macro expressions have a separate carried limitation: `/type` can report an
-installed macro as undefined (ACT-1099), even when evaluating that expression
-works. Use `/expand` to inspect its source expansion and `/sig` for installed
-signatures. See [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory).
+Use `/type (+ 1 2)` to inspect an expression's type without evaluating it.
+Macro expressions are expanded for this query. Definition forms are rejected
+without installing a definition or rewriting its backing file. For an installed
+name, `/sig name` lists its signatures; `/expand` shows a macro's source expansion.
+See [REPL §3.1](../repl/spec/03-slash-commands.md#31-command-inventory).
+
+<!-- sample: {"kind":"definition","group":"type-query"} -->
+```clojure
+(defmacro twice [x] `(primitives/add-i64 ~x ~x))
+```
+
+<!-- sample: {"kind":"repl","group":"type-query"} -->
+```
+user> /type (+ 1 2)
+:primitives/Int
+user> /type (defn query-only [] 1)
+Error: type error at 0..22: a definition form has no type: `/type` takes one expression
+user> /type (twice 3)
+:primitives/Int
+```
 
 #### Recall language syntax — `/syntax`
 
@@ -95,11 +106,11 @@ can omit ordinary definitions that require expansion; a successfully loaded
 module or cache entry can contribute eligible ordinary definitions. Importing a
 module remains the authority for its complete contents.
 
-**An empty search is not proof that a function is absent.** The current index
-can omit a valid reachable module when its imports name a module that is not
-loaded or is still compiling (ACT-1092). Inspect or import a known module
-directly when search misses it. The reachability contract is
-[REPL §17.19](../repl/spec/17a-agent-language-awareness.md).
+The index can follow imports into modules that have not been loaded into the
+session. **An empty search is still not proof that a function is absent:**
+definitions requiring macro expansion can remain unindexed. Inspect or import a
+known module directly when search misses it. See the
+[reachability contract, REPL §17.19](../repl/spec/17a-agent-language-awareness.md).
 
 Search by **name** or by **type signature**, exact or partial:
 
@@ -517,14 +528,13 @@ excluded; compile-only settings need no runtime payload. The linked worker pool
 uses the machine's available core count. A linked program reads environment
 values only through a platform operation.
 
-The example uses the compiler's [current IO spelling](guide/modules.md#current-io-spelling),
-`primitives/Pure`; the specified `primitives/pure` function is not available yet.
-In a directory containing this complete `app.cl`:
+In a directory containing this complete `app.cl`, use
+[`primitives/pure`](../spec/10-io.md#102-pure) to lift the exit code into `IO`:
 
 <!-- sample: {"kind":"definition"} -->
 ```clojure
 ;; app.cl
-(defn main [] (primitives/Pure 7))
+(defn main [] (primitives/pure 7))
 ```
 
 `CRANELISP_RC_STATS=1 cranelisp --link -o app-bin app` produces an executable
@@ -543,7 +553,7 @@ ones (`CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH`) are covered inline above and i
 |---|---|
 | `CRANELISP_LIB` | Colon-separated list of extra lib directories, searched before `Cranelisp.toml` and `{project-root}/stdlib/`. See [the lib search path](#where-cranelisp-looks-for-libraries-cranelisptoml). |
 | `CRANELISP_PLATFORM_PATH` | Directory to find the platform DLL when no checked-in symlink is present (e.g. `target/debug`). See [getting-started](getting-started.md). | <!-- doc-check: literal reason="Example symbol or generated runtime path, not a source citation" -->
-| `CRANELISP_SPARK_BUDGET=N` | Caps how much pure computation runs in parallel at once (see [automatic parallelism](getting-started.md#automatic-parallelism)). `0` disables auto-parallelism entirely (everything runs serially). Unset uses a sensible default scaled to the number of cores. |
+| `CRANELISP_SPARK_BUDGET=N` | Caps how much CPU computation runs in parallel at once (see [automatic parallelism](getting-started.md#automatic-parallelism)). `0` disables auto-parallelism entirely (everything runs serially). Unset uses a sensible default scaled to the number of cores. |
 | `CRANELISP_NO_LENIENT=1` | Also disables auto-parallelism, forcing strictly serial left-to-right evaluation. Useful for a serial baseline when measuring or for debugging. |
 
 `CRANELISP_SPARK_BUDGET` and `CRANELISP_NO_LENIENT` are user-facing knobs over the

@@ -307,11 +307,11 @@ user> (show (Some 7))
 :primitives/String "Some(7)"
 ```
 
-For your own data types, import the `derive` macros together:
+For your own data types, import `derive`:
 
 <!-- sample: {"kind":"definition","group":"derive"} -->
 ```clojure
-(import [derive [*]])
+(import [derive [derive]])
 (derive [Eq Ord Display] (deftype Color Red Blue))
 ```
 
@@ -327,12 +327,11 @@ user> (show Blue)
 
 The combined form defines the type and generates implementations. The individual
 `derive-Eq`, `derive-Ord` and `derive-Display` macros take the description of an
-already defined type. Keep the companion macros in scope: selectively importing
-only `derive` currently fails during expansion
-([ACT-1100's evidence record](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests)).
-Use the verified glob form above. See
-[derive's source](../../stdlib/derive.cl), [consumer cases](../../stdlib/derive/test.cl)
-and [spec §7.13](../../spec/07-traits.md).
+already defined type. Selectively importing `derive` is enough: its expansion
+resolves companion macros in the defining module, without requiring you to
+import those helpers. See [macro definition-site names](../../spec/09-macros.md#934-macro-availability-and-definition-order),
+[derive's source](../../stdlib/derive.cl), and
+[spec §7.13](../../spec/07-traits.md).
 
 ## Default methods — a body instead of a return type
 

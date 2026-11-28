@@ -5,9 +5,9 @@ named definition `defn`. They differ in one place that trips up newcomers —
 **multiple arities** — so it is worth pinning down which form supports what.
 
 Read [getting started](../getting-started.md) first for expressions, annotations
-and REPL output. **Before editing a multi-signature function at the REPL, read
-the [source-loss warning](live-development.md): the current persistence path
-can delete these functions from your file (ACT-1068).**
+and REPL output. The REPL saves a multi-signature family as one definition;
+see [persistence](live-development.md#persistence-and-failed-turns) for how
+replacements and macro-generated definitions are saved.
 
 ## `fn` is single-arity
 

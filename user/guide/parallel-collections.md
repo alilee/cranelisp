@@ -88,7 +88,7 @@ user> (vec-flatten [[1 2] [] [3]])
 
 The same knobs that govern all automatic parallelism apply here:
 
-- `CRANELISP_SPARK_BUDGET=N` — cap how much pure work runs in parallel at once; `0`
+- `CRANELISP_SPARK_BUDGET=N` — cap how much CPU work runs in parallel at once; `0`
   disables auto-parallelism entirely.
 - `CRANELISP_NO_LENIENT=1` — force strictly serial evaluation (your sequential
   baseline).

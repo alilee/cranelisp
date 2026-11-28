@@ -87,7 +87,7 @@ not a settled guarantee; see [the open coverage questions](../../design/arch/tra
 ## Read timings as traced execution
 
 Evaluation is strict and sequential throughout a trace, including inside called
-functions. Independent pure work does not run in parallel there, and the
+functions. Independent CPU work does not run in parallel there, and the
 standard library's `par-map`, `par-reduce` and `par-map-reduce` run sequentially
 inside the trace too. Instrumentation and value formatting also cost time.
 Use traces to investigate calls and values; measure ordinary execution outside
