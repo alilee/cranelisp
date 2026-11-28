@@ -4,7 +4,7 @@
 > §27.8; `dev`, for
 > the module evidence of §5; `sprint`, sequencing it; `review`, checking
 > delivered evidence against it.
-> **Authority:** the [S125 sprint plan](../../sprints/SPRINT.md) scope,
+> **Authority:** the [S125 sprint plan](../../sprints/archive/sprint-125.md) scope,
 > architecture review and Phase 2 decisions; the user's rulings of
 > 2026-11-26 on FIXME 0694, ACT-1036 and ACT-1081; row IO-T of
 > [interfaces](../../design/arch/interfaces.md#opaque-io-row-io-t); the
@@ -1728,7 +1728,7 @@ states one:
 ## 27. Phase 6b: the settled delta (2026-11-27)
 
 **Authority:** the user's decisions at the 6a → 6b checkpoint
-([sprint plan](../../sprints/SPRINT.md), *Phase 6a outcome*); S125-Q10-R1;
+([sprint plan](../../sprints/archive/sprint-125.md), *Phase 6a outcome*); S125-Q10-R1;
 the [intrinsics audit](../../audits/cranelisp-intrinsics-s125.md) F1–F3; the
 [exemplar plan](../../exemplar/plan-exemplar.md), whose Phase 6b corrections
 section `dev` removed on delivery;

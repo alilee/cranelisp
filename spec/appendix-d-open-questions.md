@@ -398,7 +398,7 @@ guarantee; [§10.2](10-io.md#102-pure) explains the lifting name;
 [§10.7](10-io.md#107-effect-tracking) uses the result-type distinction;
 [§10.8](10-io.md#108-deferred-execution-task--trampoline) owns runtime
 execution. The approval is recorded in
-[Sprint 125 phase approvals](../sprints/SPRINT.md#phase-approvals).
+[archived Sprint 125 phase approvals](../sprints/archive/sprint-125.md#phase-approvals).
 
 ## S125-Q1: Can a declared-child edge close a module dependency cycle?
 
@@ -679,7 +679,7 @@ it does not introduce a new spelling. The refused-turn rule is confined to
 this ambiguous-import refusal.
 
 Authority: the Phase 5 checkpoint ruling recorded in
-[the sprint plan](../sprints/SPRINT.md#phase-approvals).
+[the archived Sprint 125 record](../sprints/archive/sprint-125.md#phase-approvals).
 [REPL §15.4](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
 and [§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
 refer to the language rule.

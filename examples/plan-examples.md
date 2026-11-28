@@ -321,9 +321,9 @@ the file it names.
 ### 4.7 S125 delivered teaching scope
 
 **2026-11-27, Phase 6b.** The user approved T125-1–6, including the IO
-reorganization. The [sprint](../sprints/SPRINT.md) and
+reorganization. The [closed sprint record](../sprints/archive/sprint-125.md) and
 [evidence delta §27.5](../tests/plan/s125-evidence-delta.md#275-training-what-test-reconciles-in-testsexamplesrs)
-carry coordination and harness obligations; this section records the current
+record coordination and harness obligations; this section records the current
 teaching scope.
 
 | Item | Delivered material |

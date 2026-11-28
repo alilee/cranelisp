@@ -1,67 +1,47 @@
 ---
 id: ACT-0995
-title: Settle REPL imports when a later turn declares a same-named child module
-status: deferred
+title: Refuse a later REPL child-module declaration that makes an earlier import ambiguous
+status: open
 priority: required
 from: sprint
-to: spec
-sprint: 122
+to: design
+sprint: 126
 filed_at: 2026-09-27
 refers_to:
   - spec/08-modules.md
-  - repl/spec/15-session-persistence.md
-  - repl/spec/18-redefinition.md
+  - spec/appendix-d-open-questions.md
+  - tests/plan/s125-evidence-delta.md
   - design/int/int.md
   - src/process_form/form_dispatch.rs
 ---
 
 ## Request
 
-The user deferred this question to the next increment on 2026-09-27. It does
-not block S122's same-cluster import-resolution correction. Obtain a language
-ruling before changing behavior or requirements.
+Implement the user's S125-Q10 ruling (2026-11-27): "(mod q) after (import [q])
+should be an error ambiguous import." The requirement is
+[§8.11.2.1](../../spec/08-modules.md#81121-bare-name-precedence-current-module-relative-submodule-wins),
+"Later REPL declaration after an import".
 
-Verified against §8.11.2–§8.11.2.1 of the module specification and §15.4 of
-the REPL persistence specification: declared children take precedence over
-root modules, and regenerated source must reproduce live-session values.
-Neither rule settles an import resolved in an earlier REPL turn before the
-child was declared. The current design retains that earlier binding; saved
-source places child declarations before imports, so reloading can change it.
+Example: root `q` defines `(defn g [] 99)` and child `user.q` defines
+`(defn g [] 11)`. In module `user`, `(import [q [g]])`, `(defn h [] (g))`, then
+`(mod q)`: the `(mod q)` turn is refused as an ambiguous import, and `(g)` and
+`(h)` keep answering from root `q`.
 
-Example: root module `q` defines `(defn g [] 99)` and child module `user.q`
-defines `(defn g [] 11)`. In module `user`, enter:
+Route: `design` on `src/` (replacing `design/int/int.md`'s REPL-turn-order
+residual), then `qa` settles the cell
+([S125 delta §26.2](../../tests/plan/s125-evidence-delta.md)), `test` writes it,
+`dev` on `src/` implements.
 
-```clojure
-(import [q [g]])
-(defn h [] (g))
-(mod q)
-```
-
-The retained-binding design leaves `(g)` and `(h)` returning 99 while
-`(q/g)` returns 11; reloading the regenerated source makes all three return
-11. This is a specification/design conflict, not yet a permanent executable
-reproduction.
-
-Present the consequences of rejecting the later declaration, retargeting
-future lookups, or retaining per-turn resolutions. Include already compiled
-callers and persistence in the decision. Also clarify how to address a
-single-segment root module when a same-named child takes precedence. Do not
-infer a ruling on conflicting imports from this action.
-
-## Related open question
-
-S122 review L2 and QA intake add a source-read lead, not an accepted carry:
-does a child declaration survive a failed REPL turn or removal on reload?
-Verified on 2026-09-27: `record_submodule_on_symbol_table` in
-`src/process_form/form_dispatch.rs` appends directly to the live table.
-The import resolver and enrollment subsequently read that declaration list.
-No harmful outcome has been reproduced, and callable/impl atomicity rules do
-not settle module-declaration lifetime. Assess this beside the deferred
-turn-order question; do not infer a language choice or an extended deferral.
+The refusal changes neither the session nor the backing source and retains no
+proposed child declaration; no form addresses a root `q` that a child captures
+(S125-Q10-R1, "1 agreed", same section). Verified 2026-11-27:
+`record_submodule_on_symbol_table` in `src/process_form/form_dispatch.rs`
+appends to the live table directly, so the refusal must precede or undo that
+append.
 
 ## Completion evidence
 
-Record the user's ruling in the canonical module and REPL requirements.
-Coordinate QA evidence and Binary/int design and implementation. Verification
-must distinguish live-session calls, already compiled callers and reload of
-the persisted source, with an unignored regression for any confirmed defect.
+The §26.2 cell GREEN for both import forms, with prior calls unchanged, no
+retained child declaration and the backing source unchanged; its control
+(`(mod q)` with no earlier import is accepted); a unit test at the refusal
+seam; the §8.11.2.1 band updated by `qa`.

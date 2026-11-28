@@ -277,7 +277,7 @@ established_by = "tests/AGENTS.md"
 
 [[document_class]]
 name = "sprint-delivery-documents"
-patterns = ["sprints/SPRINT.md", "sprints/SPRINT_TEMPLATE.md", "sprints/METHOD.md", "sprints/ROADMAP.md", "sprints/s123-*.md", "sprints/s124-*.md"]
+patterns = ["sprints/SPRINT.md", "sprints/SPRINT_TEMPLATE.md", "sprints/METHOD.md", "sprints/ROADMAP.md", "sprints/s123-*.md", "sprints/s124-*.md", "sprints/s125-*.md"]
 owner = "sprint"
 purpose = "Current sprint coordination, delivery method and roadmap documents under `sprints/`."
 established_by = "AGENTS.md"
@@ -410,7 +410,7 @@ disposition = "established"
 
 [[document_class]]
 name = "int-current-designs"
-patterns = ["design/int/environment.md", "design/int/agent.md", "design/int/bind-chain-analysis.md", "design/int/concurrency-architecture.md", "design/int/cranelisp-toml.md", "design/int/expansion-qualification-scope.md", "design/int/index-worker-isolation.md", "design/int/int.md", "design/int/io-integration.md", "design/int/macro-diagnostic-reanchoring.md", "design/int/macro-turn-ownership.md", "design/int/multi-sig-introspection.md", "design/int/observability.md", "design/int/private-submodule-import.md", "design/int/repl-lifecycle.md", "design/int/result-owner.md", "design/int/s117-conformance-recovery.md", "design/int/s122-closure.md", "design/int/session-persistence.md", "design/int/session-transaction.md", "design/int/signature-body-prepass.md", "design/int/step9-error-cascade.md", "design/int/terminal-styling.md", "design/int/test-runner.md", "design/int/persistent-workers.md", "design/int/concurrency/README.md"]
+patterns = ["design/int/environment.md", "design/int/agent.md", "design/int/bind-chain-analysis.md", "design/int/concurrency-architecture.md", "design/int/cranelisp-toml.md", "design/int/expansion-qualification-scope.md", "design/int/index-worker-isolation.md", "design/int/int.md", "design/int/io-integration.md", "design/int/macro-diagnostic-reanchoring.md", "design/int/macro-turn-ownership.md", "design/int/multi-sig-introspection.md", "design/int/observability.md", "design/int/private-submodule-import.md", "design/int/repl-lifecycle.md", "design/int/result-owner.md", "design/int/s117-conformance-recovery.md", "design/int/s122-closure.md", "design/int/s125-binary-clean.md", "design/int/session-persistence.md", "design/int/session-transaction.md", "design/int/signature-body-prepass.md", "design/int/step9-error-cascade.md", "design/int/terminal-styling.md", "design/int/test-runner.md", "design/int/persistent-workers.md", "design/int/concurrency/README.md"]
 owner = "design"
 purpose = "The master, subsystem and active feature designs for pipeline orchestration, compiler-internal scheduling, REPL/session, persistence, macro execution, host integration and observability."
 established_by = "design/int/AGENTS.md"
@@ -496,7 +496,7 @@ disposition = "established"
 
 [[document_class]]
 name = "qa-support-documents"
-patterns = ["tests/plan/0488-isolation.md", "tests/plan/agent-context-tuning.md", "tests/plan/agent-testing-strategy.md", "tests/plan/helpers.md", "tests/plan/helpers-api.md", "tests/plan/memory-safety-coverage.md", "tests/plan/risks.md", "tests/plan/s122-evidence-delta.md", "tests/plan/s123-carry-triage.md", "tests/plan/s123-evidence-delta.md", "tests/plan/s124-evidence-delta.md", "tests/plan/s122-document-checker-reconciliation/README.md"]
+patterns = ["tests/plan/0488-isolation.md", "tests/plan/agent-context-tuning.md", "tests/plan/agent-testing-strategy.md", "tests/plan/helpers.md", "tests/plan/helpers-api.md", "tests/plan/memory-safety-coverage.md", "tests/plan/risks.md", "tests/plan/s122-evidence-delta.md", "tests/plan/s123-carry-triage.md", "tests/plan/s123-evidence-delta.md", "tests/plan/s124-evidence-delta.md", "tests/plan/s125-evidence-delta.md", "tests/plan/s122-document-checker-reconciliation/README.md"]
 owner = "qa"
 purpose = "Current QA support contracts, active evidence and retained checker reconciliation."
 established_by = "tests/AGENTS.md"

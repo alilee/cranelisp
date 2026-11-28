@@ -2,7 +2,8 @@
 
 Designs for the S125 `src/` focus band, by `design`(int), Phase 3,
 2026-11-26. Source was read at `main` `4c844f62`; nothing here is in source.
-The scope is `sprints/SPRINT.md` §Scope and §Architecture review. Defect
+The scope was the sprint record's [§Scope](../../sprints/archive/sprint-125.md#scope)
+and [§Architecture review](../../sprints/archive/sprint-125.md#architecture-review-phase-2). Defect
 identifiers are rows of the
 [S124 evidence delta §14.15](../../tests/plan/s124-evidence-delta.md#1415-defects-carried-by-failing-tests).
 
