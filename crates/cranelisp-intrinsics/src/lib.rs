@@ -237,6 +237,9 @@ pub(crate) mod strand;
 pub(crate) mod reactor;
 
 #[cfg(test)]
+mod source_census;
+
+#[cfg(test)]
 mod test_child;
 
 // Root re-exports — only the names with a verified root-form Rust consumer.

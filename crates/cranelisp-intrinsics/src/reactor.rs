@@ -1513,10 +1513,11 @@ impl<'h> Supervisor<'h> {
         self.strands.borrow().is_empty()
     }
 
-    /// Spawn a detached strand: wrap `sub_tree` in the [`supervised`]
-    /// wrapper (owning the launched sub-tree, the cloned [`ReactorEnv`], and the
-    /// global-budget `permit` for its whole lifetime — RAII release on
-    /// completion/drop), and push it into the set (§2.11 step 3 / §2.12).
+    /// Spawn a detached strand: wrap `sub_tree` — the strand's own counted
+    /// reference — in the [`supervised`] wrapper (owning that reference, the
+    /// cloned [`ReactorEnv`], and the global-budget `permit` for its whole
+    /// lifetime — RAII release on completion/drop), and push it into the set
+    /// (§2.11 step 4 / §2.12).
     pub(crate) fn spawn(
         &self,
         sub_tree: i64,
@@ -1530,8 +1531,9 @@ impl<'h> Supervisor<'h> {
     }
 
     /// Drive every member strand once, removing each as it completes (a completed
-    /// strand has already disposed its result + released its permit + freed its sub-tree
-    /// inside its own body). Called by the executor each loop iteration (§2.12).
+    /// strand has already disposed its result and released its permit and its
+    /// sub-tree reference inside its own body). Called by the executor each loop
+    /// iteration (§2.12).
     ///
     /// The `RefCell` borrow is held only for the synchronous `poll_next` calls.
     /// (A *nested* launch — a launched strand that itself launches — would re-enter
@@ -1558,49 +1560,64 @@ impl<'h> Supervisor<'h> {
     }
 }
 
+/// The strand's one counted reference to its detached sub-tree (§2.11). It is
+/// adopted when the strand is spawned, so dropping the strand before it is ever
+/// polled, while it is suspended, or after it completes discharges exactly that
+/// reference (`ownership-and-disposal.md` §6.3).
+struct DetachedSubTree(std::mem::ManuallyDrop<crate::handle::Owned>);
+
+impl Drop for DetachedSubTree {
+    fn drop(&mut self) {
+        // SAFETY: `drop` runs once and nothing reads the field afterwards.
+        crate::drop::consume_io_tree(unsafe { std::mem::ManuallyDrop::take(&mut self.0) });
+    }
+}
+
 /// The supervised-strand wrapper (§2.12): run the launched sub-tree, dispose its
-/// result, free the detached sub-tree (`consume_io_tree` — the strand owns it,
-/// §2.11), and release the global-budget `permit` (RAII drop at scope end →
-/// frees a global slot → wakes a parked launch, §2.13).
+/// result, release the strand's reference to the sub-tree, and release the
+/// global-budget `permit` (RAII drop at scope end → frees a global slot → wakes a
+/// parked launch, §2.13). Both references are released by drop, so a strand
+/// dropped before completion releases them too.
 ///
 /// A Rust panic in the strand body is a runtime defect: it is caught here, so it
 /// cannot unwind into the executor, and ends the process
 /// (`process-lifecycle.md` §1.1).
-async fn supervised(
+fn supervised<'h>(
     sub_tree: i64,
     result_disposer: crate::io::ResultDisposer,
-    env: ReactorEnv<'_>,
+    env: ReactorEnv<'h>,
     strand: StrandId,
     global_permit: Permit,
-) {
-    let body = std::panic::AssertUnwindSafe(crate::io::run_io_trampoline_inner_async(
-        sub_tree,
-        &env,
-        strand,
-        result_disposer,
-    ));
-    match body.catch_unwind().await {
-        Ok(crate::io::TrampolineOutcome::Completed(result)) => {
-            result_disposer.dispose(result);
+) -> impl Future<Output = ()> + 'h {
+    // SAFETY: `launch_continue` minted this reference for the strand.
+    let sub_tree = DetachedSubTree(std::mem::ManuallyDrop::new(unsafe {
+        crate::handle::Owned::from_abi(sub_tree)
+    }));
+    async move {
+        let body = std::panic::AssertUnwindSafe(crate::io::run_io_trampoline_inner_async(
+            sub_tree.0.raw_for_read(),
+            &env,
+            strand,
+            result_disposer,
+        ));
+        match body.catch_unwind().await {
+            Ok(crate::io::TrampolineOutcome::Completed(result)) => {
+                result_disposer.dispose(result);
+            }
+            Ok(crate::io::TrampolineOutcome::Stopped) => {}
+            Err(payload) => {
+                let payload = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("<non-string panic payload>");
+                crate::panic::terminate(crate::panic::Fault::RuntimeDefect(payload));
+            }
         }
-        Ok(crate::io::TrampolineOutcome::Stopped) => {}
-        Err(payload) => {
-            let payload = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("<non-string panic payload>");
-            crate::panic::terminate(crate::panic::Fault::RuntimeDefect(payload));
-        }
+        emit_strand_event(StrandEvent::StrandCompleted { strand });
+        drop(sub_tree);
+        drop(global_permit);
     }
-    emit_strand_event(StrandEvent::StrandCompleted { strand });
-
-    // The strand owns its detached sub-tree (§2.11) — free it exactly once.
-    // SAFETY: the supervised strand owns its detached subtree.
-    crate::drop::consume_io_tree(unsafe { crate::handle::Owned::from_abi(sub_tree) });
-    // `global_permit` drops HERE (scope end) → frees a global-budget slot →
-    // FIFO-wakes a parked launch (§2.13). Explicit to document the release point.
-    drop(global_permit);
 }
 
 // ===========================================================================
@@ -2095,7 +2112,8 @@ where
 
         // Drain the supervisor (§2.12): drive every detached strand concurrently
         // with the top future, removing each as it completes (a completed strand
-        // has already run its policy + released its permit + freed its sub-tree).
+        // has already run its policy and released its permit and its sub-tree
+        // reference).
         supervisor.drive(&mut cx);
 
         // Return only when the top future is done, every detached strand has

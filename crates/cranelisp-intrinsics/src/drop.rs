@@ -206,7 +206,6 @@ enum IoDisposition {
 #[derive(Clone, Copy)]
 enum IoFieldKind {
     IoTree,
-    NonZeroIoTree,
     Closure,
     InlineIoBranches,
     IoBranchVec,
@@ -254,7 +253,7 @@ const POLL_FIELDS: &[IoField] = &[IoField {
 }];
 const LAUNCH_FIELDS: &[IoField] = &[IoField {
     offset: FIELD0_OFFSET,
-    kind: IoFieldKind::NonZeroIoTree,
+    kind: IoFieldKind::IoTree,
 }];
 const SELECT_FIELDS: &[IoField] = &[IoField {
     offset: FIELD0_OFFSET,
@@ -579,10 +578,6 @@ fn discharge_io_field(ptr: i64, field: IoField) {
             // the decoded node shape; the last-reference fence has completed.
             let value = owned_field(ptr, field.offset);
             consume_io_tree(value);
-        }
-        IoFieldKind::NonZeroIoTree => {
-            // SAFETY: same table-owned shape guarantee as the `IoTree` arm.
-            consume_io_tree(owned_field(ptr, field.offset));
         }
         IoFieldKind::Closure => {
             // SAFETY: same table-owned shape guarantee as the `IoTree` arm.

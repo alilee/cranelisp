@@ -488,7 +488,7 @@ impl Drop for SparkDepthGuard {
 ///
 /// Returns `1` if the **whole** batch was granted — the caller MUST then
 /// create+spark exactly `n` IVars, each of which releases one permit on
-/// completion via [`InFlightGuard`]'s drop. Returns `0` if over budget — the
+/// completion via `InFlightGuard`'s drop. Returns `0` if over budget — the
 /// caller MUST take the direct arm and allocate nothing.
 ///
 /// Also returns `0`, reserving nothing, while the calling thread holds the
@@ -595,7 +595,7 @@ pub extern "C" fn ivar_create(thunk: i64) -> i64 {
 /// [`spark_budget_try_reserve`] check emitted *before* the IVar was even
 /// allocated. By the time `ivar_spark` runs, the lenient arm has been chosen, so
 /// the only correct action is to spawn. The spawn task releases its one reserved
-/// spark-budget permit on completion (or unwind) via [`InFlightGuard`]'s drop.
+/// spark-budget permit on completion (or unwind) via `InFlightGuard`'s drop.
 ///
 /// # Safety
 /// `ivar` must be a valid base pointer to an IVar with rc > 0.

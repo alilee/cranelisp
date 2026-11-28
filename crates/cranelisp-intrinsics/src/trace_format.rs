@@ -1,5 +1,5 @@
 //! The codegen-baked **value formatter** for `(trace ...)` (the
-//! `DisplayDescriptor` ABI + [`cranelisp_trace_format`]).
+//! `DisplayDescriptor` ABI + [`cranelisp_trace_format`](crate::trace_format::cranelisp_trace_format)).
 //!
 //! Split out of `trace.rs` (HIGH-3, FIXME 0370). Its descriptor walk is the one
 //! self-contained, *pure* protocol in the trace machinery: a walk of a
@@ -11,11 +11,12 @@
 //! # DisplayDescriptor — the codegen-baked, self-contained value-render contract
 //!
 //! This is the cross-crate ABI between backend (the emitter — FIXME 0255) and
-//! intrinsics (the reader — [`cranelisp_trace_format`], below). Backend bakes one
-//! descriptor tree per traced param/result; `cranelisp_trace_format` walks it
-//! against the runtime heap value with ZERO symbol-table access and NO
-//! thread-local state. The full layout contract is documented on the types
-//! below — read it before touching either side.
+//! intrinsics (the reader —
+//! [`cranelisp_trace_format`](crate::trace_format::cranelisp_trace_format),
+//! below). Backend bakes one descriptor tree per traced param/result;
+//! `cranelisp_trace_format` walks it against the runtime heap value with ZERO
+//! symbol-table access and NO thread-local state. The full layout contract is
+//! documented on the types below — read it before touching either side.
 
 use std::ptr;
 

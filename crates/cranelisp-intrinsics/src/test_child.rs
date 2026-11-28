@@ -18,6 +18,8 @@ pub(crate) fn selected(name: &str) -> bool {
 /// How a child ended.
 pub(crate) struct Ending {
     pub(crate) code: Option<i32>,
+    /// The signal that killed the child, if one did.
+    pub(crate) signal: Option<i32>,
     pub(crate) stdout: String,
     pub(crate) stderr: String,
 }
@@ -71,9 +73,11 @@ fn command(path: &str, env: &[(&str, &str)]) -> Command {
 
 /// Run the child at libtest path `path` with `env`, capturing each stream.
 pub(crate) fn run(path: &str, env: &[(&str, &str)]) -> Ending {
+    use std::os::unix::process::ExitStatusExt;
     let out = command(path, env).output().expect("spawn child");
     Ending {
         code: out.status.code(),
+        signal: out.status.signal(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }

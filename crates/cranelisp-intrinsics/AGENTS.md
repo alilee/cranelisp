@@ -16,11 +16,14 @@ only what the next code-touching agent would otherwise re-derive from source.
 
 Most modules externalize their tests to `foo/tests.rs` via a trailing
 `#[cfg(test)] mod tests;` (the `#[path]` is implicit — the sibling dir):
-`alloc`, `catalog`, `diagnostics`, `drop`, `heap_string`, `io`, `io_observer`,
-`ivar`, `layout`, `panic`, `rc`, `reactor`, `runtime_switches`, `trace`,
-`trace_format`, and `vec_runtime`. `heap_access`, `io_guard`, and `strand` keep `mod tests { … }`
-inline in their `.rs` files; `lib.rs` also keeps the DEF-6 `host_callbacks`
-pin inline. `drop/rc_balance.rs` is a second test file under `drop/` holding
+`alloc`, `catalog`, `diagnostics`, `drop`, `handle`, `heap_string`, `io`,
+`io_guard`, `io_observer`, `ivar`, `layout`, `panic`, `rc`, `reactor`,
+`runtime_switches`, `trace`, `trace_format`, and `vec_runtime`. `heap_access`
+and `strand` keep `mod tests { … }` inline in their `.rs` files; `lib.rs` also
+keeps the DEF-6 `host_callbacks` pin inline. `test_child` (child-process cells)
+and `source_census` (the production-source walk behind the structural census
+tests in `handle` and `io_guard`) are `#[cfg(test)]` support modules; the walk
+excludes them and every `tests.rs`, so a token in test code never counts. `drop/rc_balance.rs` is a second test file under `drop/` holding
 the `assert_balanced` alloc==dealloc RC-leak assertions (the crate-internal
 stand-in for the retired `assert_rc_balanced`, FIXME 0129).
 

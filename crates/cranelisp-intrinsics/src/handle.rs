@@ -11,6 +11,11 @@ use std::marker::PhantomData;
 /// This wrapper is ABI-identical to the raw runtime word. It is deliberately
 /// neither [`Copy`] nor [`Clone`]: moving it into a consuming operation records
 /// the single discharge obligation in Rust's type system.
+///
+/// In debug builds (`debug_assertions`), dropping an `Owned` without discharge,
+/// storage or ABI transfer panics with a `LEAKED Owned heap handle` message
+/// naming the word, unless the thread is already panicking. Release builds have
+/// no `Drop` impl, so an abandoned `Owned` leaks its reference silently.
 #[repr(transparent)]
 #[must_use = "an Owned heap reference must be discharged (consumed, stored, or returned across the ABI shim) — dropping it on the floor leaks"]
 pub struct Owned(i64);

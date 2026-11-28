@@ -2050,6 +2050,146 @@ fn launch_supervisor_disposes_unobserved_owning_result_once() {
     );
 }
 
+// ---------------------------------------------------------------------
+// The `Launch` sub-tree — minted on force
+// (`design/intrinsics/ownership-and-disposal.md` §6.3). The sub-tree is a
+// ledgered `Effect`, so the ledger counts each strand's run of it and the one
+// discharge of its captures; the allocation counts balance the fixture.
+// ---------------------------------------------------------------------
+
+fn field_0(node: i64) -> i64 {
+    // SAFETY: every caller passes a live IO node it still owns.
+    unsafe { crate::heap_access::read_i64(node, FIELD_0_OFFSET) }
+}
+
+// spec: spec/10-io.md §10.8.1 — a `Launch` node forced twice on one reactor
+// drive spawns two strands that each run the sub-tree, and the force leaves
+// field 0 holding it. The node, both strands and the caller tree each release
+// their own reference, and the sub-tree is discharged once, after the last.
+#[test]
+fn launch_node_forced_twice_runs_its_subtree_in_each_strand_and_balances() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let ledger = ThunkLedger::default();
+    let sub = make_ledgered_effect_node(&ledger, 5);
+    let launch = make_launch_node(sub);
+    crate::rc::rc_inc(launch); // the second `Bind`'s reference
+    crate::rc::rc_inc(launch); // this test's reference, held past the run
+    let second = make_bind_node(launch, make_add_and_pure_closure(1));
+    let first = make_bind_node(launch, make_return_node_closure(second, false));
+
+    assert_eq!(cranelisp_run_io(first), 1);
+    assert_eq!(
+        ledger.calls(),
+        2,
+        "each force spawns a strand that runs the sub-tree"
+    );
+    assert_eq!(field_0(launch), sub, "a force writes nothing to the node");
+    assert_eq!(
+        ledger.discharges(),
+        0,
+        "the node keeps its own reference past both strands"
+    );
+
+    release_io(launch);
+    assert!(!crate::alloc::is_live(launch as usize));
+    assert_eq!(ledger.discharges(), 1);
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "the fixture balances"
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — forced once, then released structurally by the
+// caller: the strand and the node each release their own reference, so the
+// sub-tree is discharged exactly once and the fixture balances. The unforced
+// leg is `drop/tests.rs::consume_launch_node_frees_live_subtree`.
+#[test]
+fn launch_node_forced_once_balances_under_structural_release() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let ledger = ThunkLedger::default();
+    let sub = make_ledgered_effect_node(&ledger, 5);
+    let launch = make_launch_node(sub);
+
+    assert_eq!(
+        cranelisp_run_io(make_bind_node(launch, make_add_and_pure_closure(4))),
+        4
+    );
+    assert_eq!((ledger.calls(), ledger.discharges()), (1, 1));
+    assert!(!crate::alloc::is_live(launch as usize));
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "the fixture balances"
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — a strand dropped before it completes (the
+// supervisor's drop on drive-end) discharges exactly its own reference. Leg 1:
+// the node is still live, so the sub-tree survives the drop on the node's
+// reference and is discharged with the node.
+#[test]
+fn launched_strand_dropped_before_completion_releases_only_its_reference_node_live() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let ledger = ThunkLedger::default();
+    let sub = make_ledgered_effect_node(&ledger, 5);
+    let launch = make_launch_node(sub);
+
+    crate::reactor::block_on_reactor(async |env| {
+        assert_eq!(launch_continue(launch, env, StrandId::ROOT).await, 0);
+        env.supervisor.clear();
+    })
+    .unwrap();
+
+    assert_eq!(
+        (ledger.calls(), ledger.discharges()),
+        (0, 0),
+        "the dropped strand never ran, and the node still owns the sub-tree"
+    );
+    assert_eq!(field_0(launch), sub);
+    release_io(launch);
+    assert_eq!(ledger.discharges(), 1);
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "the fixture balances"
+    );
+}
+
+// spec: spec/10-io.md §10.8.1 — leg 2: the node is released before the strand
+// is dropped, so the strand's reference is the last and its drop discharges
+// the sub-tree once.
+#[test]
+fn launched_strand_dropped_before_completion_releases_only_its_reference_node_released() {
+    let allocs_before = crate::alloc::alloc_count();
+    let deallocs_before = crate::alloc::dealloc_count();
+    let ledger = ThunkLedger::default();
+    let sub = make_ledgered_effect_node(&ledger, 5);
+    let launch = make_launch_node(sub);
+
+    crate::reactor::block_on_reactor(async |env| {
+        assert_eq!(launch_continue(launch, env, StrandId::ROOT).await, 0);
+        release_io(launch);
+        assert_eq!(
+            ledger.discharges(),
+            0,
+            "the pending strand keeps the sub-tree after the node is gone"
+        );
+        env.supervisor.clear();
+    })
+    .unwrap();
+
+    assert_eq!((ledger.calls(), ledger.discharges()), (0, 1));
+    assert_eq!(
+        crate::alloc::alloc_count() - allocs_before,
+        crate::alloc::dealloc_count() - deallocs_before,
+        "the fixture balances"
+    );
+}
+
 #[test]
 fn child_launches_a_defective_strand() {
     if !selected("child_launches_a_defective_strand") {

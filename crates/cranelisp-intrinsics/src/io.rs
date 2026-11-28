@@ -550,20 +550,20 @@ async fn await_poll_node(
 }
 
 /// Interpret an `IO_TAG_LAUNCH` node — the launch-and-continue detach (§2.11).
-/// Fire-and-forget: the launched sub-tree (field 0) becomes a **supervised
+/// Fire-and-forget: the launched sub-tree (field 0) runs as a **supervised
 /// detached strand** that the continuation does **not** await; the node yields
 /// `Pure Unit` (`0`) immediately so the continuation runs at once.
 ///
-/// Steps (`design/intrinsics/reactor.md §2.11` / `io-trampoline.md §15`):
+/// Steps (`design/intrinsics/reactor.md §2.11`):
 /// 1. **Acquire a global-budget permit** for the new strand (§2.13). A free
 ///    global slot ⇒ proceed; an exhausted budget PARKS here (`.await`) — parking
 ///    the accept loop itself until an in-flight strand completes (backpressure).
 /// 2. **Mint a child strand id** and emit `StrandLaunched { strand, parent }`.
-/// 3. **Move the sub-tree out** of the node (read field 0, write the `0` sentinel
-///    back) so the node's null-guarded drop glue (`drop.rs` IO_TAG_LAUNCH arm) is
-///    a no-op — the strand now owns the sub-tree, no double-consume (§15.5).
-/// 4. **Spawn the supervised strand** owning the sub-tree + the global `Permit`
-///    (RAII-released on completion/drop) + a cloned `ReactorEnv`.
+/// 3. **Mint the strand's reference** to the sub-tree. The node keeps its own,
+///    so a force writes nothing to it and a later force runs the sub-tree again
+///    (`ownership-and-disposal.md` §6.3).
+/// 4. **Spawn the supervised strand** owning that reference + the global
+///    `Permit` (RAII-released on completion/drop) + a cloned `ReactorEnv`.
 /// 5. **Yield `Pure Unit`** — the launch never awaits the strand.
 async fn launch_continue(
     node: i64,
@@ -580,20 +580,17 @@ async fn launch_continue(
         parent,
     });
 
-    // 3. Move the sub-tree out: read field 0, then write the `0` sentinel back so
-    //    the node's drop glue (consume_io_tree IO_TAG_LAUNCH arm) does NOT also
-    //    free it — ownership transfers to the strand (the move-out contract,
-    //    io-trampoline.md §15.5).
+    // 3. Mint the strand's reference. The forcing lane's reference to the node
+    //    keeps the sub-tree's count at least one here, across the admission park.
+    // SAFETY: `node` is the live current `IO_TAG_LAUNCH` node; fields 0 and 1 are
+    // its sub-tree and result disposer.
     let sub_tree = unsafe { read_node_field(node, FIELD_0_OFFSET) };
     let result_disposer =
         ResultDisposer::from_raw(unsafe { read_node_field(node, FIELD_1_OFFSET) });
-    // SAFETY: `node` is the live current IO_TAG_LAUNCH node; field 0 is its only
-    // payload slot. Writing the `0` sentinel is the backend↔intrinsics move-out
-    // contract (§15.5) — without it node-drop would double-free the sub-tree.
-    unsafe { crate::heap_access::write_i64(node, FIELD_0_OFFSET, 0) };
+    crate::rc::rc_inc(sub_tree);
 
-    // 4. Hand ownership of the sub-tree + the global permit to a supervised strand
-    //    (it `consume_io_tree`s the sub-tree + releases the permit on end, §2.12).
+    // 4. The strand consumes that reference exactly once, on completion or drop
+    //    (§2.12).
     env.supervisor
         .spawn(sub_tree, result_disposer, env.clone(), child, global_permit);
 

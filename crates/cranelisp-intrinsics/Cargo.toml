@@ -3,13 +3,12 @@ name = "cranelisp-intrinsics"
 version = "0.1.0"
 edition = "2024"
 
-# Single-ABI + single-trampoline cutover (S96, `design/arch/platform-interface.md`
-# §6.8.0a): BOTH the `concurrency` (layout) and `concurrency-runtime` (reactor)
-# features are RETIRED. The reactor IS the runtime — `reactor`/`strand`, mio, and
-# futures are now UNCONDITIONAL. A pure-blocking program drains synchronously
-# through the one (async) trampoline and constructs no mio `Poll` (lazy reactor
-# init — `design/intrinsics/reactor.md`); lean-default is a RUNTIME property, not a
-# `#[cfg]` split.
+# The reactor is the runtime: `reactor`/`strand`, mio and futures are always
+# compiled in, with one ABI and one trampoline for every mode. Each top-level
+# drive constructs its reactor eagerly (one `mio::Poll` plus its waker), so a
+# pure-blocking program pays those syscalls but never turns the reactor.
+# Lean-default is a runtime property, not a `#[cfg]` split
+# (`design/intrinsics/reactor.md`).
 
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
@@ -17,8 +16,8 @@ cranelisp-platform = { path = "../cranelisp-platform" }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
-# Host-reactor runtime deps — now UNCONDITIONAL (the reactor is always linked;
-# §6.8.0a). `mio` = the epoll/kqueue/IOCP abstraction the `HostCtx` reactor drives;
-# `futures` = `join_all` for the `Par`-async overlap + task/waker glue.
+# Host-reactor runtime deps. `mio` = the epoll/kqueue/IOCP abstraction the
+# `HostCtx` reactor drives; `futures` = `join_all` for the `Par`-async overlap
+# + task/waker glue.
 mio = { version = "1", features = ["os-poll", "os-ext"] }
 futures = { version = "0.3" }

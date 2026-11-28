@@ -423,10 +423,9 @@ fn decision24_consume_io_pure_frees_node() {
 
 // spec: io-trampoline.md §16.5/§16.7 — consume_io_tree on an IO_TAG_SELECT (= 6)
 // node dec's the field-0 branch Vec, consuming EVERY branch IO sub-tree (winner +
-// losers, exactly once) and freeing the Vec struct + the node. No move-out, no
-// null-guard (the contrast with launch). RED on revert: without the `6 =>` arm the
-// node falls through to the `_` no-op and only the node is freed → the Vec + both
-// branches leak.
+// losers, exactly once) and freeing the Vec struct + the node. No move-out. RED
+// on revert: without the `6 =>` arm the node falls through to the `_` no-op and
+// only the node is freed → the Vec + both branches leak.
 #[test]
 fn consume_io_select_frees_branch_vec_and_all_branches() {
     let allocs = alloc_count();
@@ -748,12 +747,10 @@ fn decision24_consume_slist_skips_nullary() {
     assert_eq!(dealloc_count() - deallocs, 0);
 }
 
-// design: design/backend/io-trampoline.md §15.5/§15.6 — the null-guarded
-// IO_TAG_LAUNCH (=5) field-0 drop. An un-interpreted Launch node (field-0 holds a
-// live sub-tree, e.g. an unchosen `if`/`match` arm) frees the sub-tree via the
-// guarded recursive consume; a detached one (field-0 == 0 after the trampoline's
-// move-out, §15.5) is a no-op on field-0 (the supervised strand owns the sub-tree
-// and consumes it — no double-free).
+// design: design/intrinsics/ownership-and-disposal.md §6.3 — the `IO_TAG_LAUNCH`
+// (=5) node owns its field-0 sub-tree for its whole life, so its teardown
+// discharges it through the declared `IoTree` field, forced or not. This is the
+// unforced leg; the forced legs are in `io/tests.rs`.
 #[test]
 fn consume_launch_node_frees_live_subtree() {
     let allocs = alloc_count();
@@ -769,28 +766,9 @@ fn consume_launch_node_frees_live_subtree() {
     write_field(launch, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
 
     consume_io_tree(crate::handle::test_owned(launch));
-    // Null-guard sees a non-zero field-0 → recurse: BOTH the Launch node and the
-    // live sub-tree are freed (no leak).
+    // Both the Launch node and its sub-tree are freed (no leak).
     assert_eq!(alloc_count() - allocs, 2);
     assert_eq!(dealloc_count() - deallocs, 2);
-}
-
-#[test]
-fn consume_launch_node_detached_field0_sentinel_is_noop() {
-    let allocs = alloc_count();
-    let deallocs = dealloc_count();
-
-    // IO_TAG_LAUNCH node whose field-0 is the `0` sentinel (the trampoline moved
-    // the sub-tree into a supervised strand). The null-guard skips field-0; only
-    // the node itself is freed — no double-free of the strand-owned sub-tree.
-    let launch = alloc_slot(24);
-    write_field(launch, TAG_OFFSET, cranelisp_platform::IO_TAG_LAUNCH);
-    write_field(launch, FIELD0_OFFSET, 0);
-    write_field(launch, FIELD1_OFFSET, NON_OWNING_DISPOSER_SENTINEL);
-
-    consume_io_tree(crate::handle::test_owned(launch));
-    assert_eq!(alloc_count() - allocs, 1);
-    assert_eq!(dealloc_count() - deallocs, 1);
 }
 
 // ---------------------------------------------------------------------------

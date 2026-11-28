@@ -5,8 +5,8 @@
 //! `cranelisp_platform::call_effect_thunk`. A fault in foreign platform code —
 //! a Rust panic OR a hardware trap (SIGFPE/SIGILL/SIGBUS/SIGSEGV) — must NOT
 //! die by a raw signal; it must end the process with a dispatch-fault report.
-//! This module provides the single guard primitive
-//! [`force_effect_thunk_protected`].
+//! This module provides the force-site guard [`force_effect_thunk_protected`]
+//! and the trap guard [`run_trap_guarded`] it runs the platform call under.
 //!
 //! ## Two faults, two catch sites (FIXME 0327 Option A)
 //!
@@ -17,25 +17,24 @@
 //! `CLIO::effect*` thunk wrapper (`cranelisp-platform`), which converts a caught
 //! panic into an `EffectOutcome` value (`fault_cause` non-null) carried back
 //! across the C-ABI. This guard simply **reads** that signal: a non-null
-//! `fault_cause` ⇒ a dispatch fault. The host-side panic `catch_unwind`
-//! that step-3 used is GONE — there is nothing host-side to catch.
+//! `fault_cause` ⇒ a dispatch fault; there is nothing host-side to catch.
 //!
 //! **Hardware traps are still caught here.** A genuine SIGSEGV/FPE/ILL/BUS from
 //! foreign C code is process-global (delivered to the faulting thread regardless
 //! of which cdylib raised it), so the host `sigsetjmp`/signal-handler half still
-//! recovers it across the DLL boundary. That half is RETAINED unchanged. (A Rust
-//! null-deref now lands as a non-unwinding panic caught DLL-side, not a SIGSEGV.)
+//! recovers it across the DLL boundary. The handler is installed once per
+//! process and never restored; only the calling thread's armed jump context
+//! changes per call (`design/intrinsics/process-lifecycle.md` §1.8). (A Rust
+//! null-deref lands as a non-unwinding panic caught DLL-side, not a SIGSEGV.)
 //!
 //! ## Why the machinery lives here
 //!
 //! BC §4b invariant 14 + §5 invariant 9 place the guard at the **single force
 //! site** for every platform Effect in every mode (Principle 7 + Principle 6 —
 //! one guard, not per-DLL). The force site is intrinsics-owned (the trampoline,
-//! `crate::io`). The `invoke_jit_protected` precedent lived only in int; this is
-//! the intrinsics-side re-host of the same pattern (the guard infra is not
-//! shared between crates — int retains its own copy for the macro-expansion JIT
-//! call; this one guards the platform-Effect force). The machinery is
-//! `pub(crate)` — it is not a public-surface item.
+//! `crate::io`). It is the process's only writer of the trap dispositions: the
+//! binary writes none (`src/expander/trap_dispositions_tests.rs`). The
+//! machinery is `pub(crate)` — it is not a public-surface item.
 //!
 //! ## Outcome
 //!
@@ -54,7 +53,7 @@ use crate::panic::{Fault, terminate};
 /// - a **Rust panic** in the platform fn, caught DLL-side and signalled by a
 ///   non-null `EffectOutcome::fault_cause` (this guard reads the cause string);
 /// - a **hardware trap** (SIGFPE/SIGILL/SIGBUS/SIGSEGV) from foreign C code,
-///   recovered by the retained `sigsetjmp`/signal-handler half.
+///   recovered by [`run_trap_guarded`].
 ///
 /// [`EffectOutcome`]: cranelisp_platform::EffectOutcome
 ///
@@ -67,35 +66,12 @@ use crate::panic::{Fault, terminate};
 /// reference to that node — the contract `cranelisp_platform::call_effect_thunk`
 /// requires. The thunk is intact after the call, whatever its outcome.
 pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str) -> i64 {
-    // The host-side panic `catch_unwind` is GONE (FIXME 0327 Option A). A panic
-    // raised inside a platform DLL is caught by the DLL's OWN runtime in the
-    // `CLIO::effect*` thunk wrapper and returned across the C-ABI as an
-    // `EffectOutcome` — a foreign unwind never reaches here (it would abort).
-    // We keep ONLY the sigsetjmp/signal half: genuine hardware traps from
-    // foreign C code (SIGSEGV/FPE/ILL/BUS) are process-global, delivered to the
-    // faulting thread regardless of which cdylib raised them, so the host
-    // handler still catches them across the DLL boundary.
+    // A panic raised inside a platform DLL is caught by the DLL's own runtime
+    // and returned as an `EffectOutcome`; a foreign unwind never reaches here.
     //
-    // SAFETY: sigsetjmp/siglongjmp recover from hardware traps without unwinding
-    // through the platform `extern "C"` frames (which would be UB). sigsetjmp
-    // saves the execution context; a signal handler that calls siglongjmp
-    // returns control here with a non-zero value (the signal number).
-    let outcome: Result<cranelisp_platform::EffectOutcome, libc::c_int> = unsafe {
-        let sig = sigsetjmp(JMP_BUF.with(|buf| buf.get()), 1);
-        if sig != 0 {
-            // Reached here via siglongjmp from a signal handler.
-            Err(sig)
-        } else {
-            // Install trap handlers that siglongjmp back on fault.
-            let old_handlers = install_signal_handlers();
-            // SAFETY: the caller guarantees a live, borrowed thunk whose node it
-            // holds; the call returns an EffectOutcome.
-            let eo = cranelisp_platform::call_effect_thunk(thunk_ptr);
-            restore_signal_handlers(old_handlers);
-            Ok(eo)
-        }
-    };
-
+    // SAFETY: the caller guarantees a live, borrowed thunk whose node it
+    // holds; the call returns an EffectOutcome.
+    let outcome = run_trap_guarded(|| unsafe { cranelisp_platform::call_effect_thunk(thunk_ptr) });
     match outcome {
         // Clean force OR DLL-caught panic — distinguished by fault_cause.
         Ok(eo) => {
@@ -117,29 +93,68 @@ pub(crate) unsafe fn force_effect_thunk_protected(thunk_ptr: i64, fn_name: &str)
             }
         }
         // Hardware trap recovered via the signal/sigsetjmp half.
-        Err(sig) => {
-            let cause = match sig {
-                libc::SIGFPE => "arithmetic exception (division by zero)".to_string(),
-                libc::SIGILL => "illegal instruction".to_string(),
-                libc::SIGBUS => "bus error".to_string(),
-                libc::SIGSEGV => "segmentation fault".to_string(),
-                _ => format!("signal {sig}"),
-            };
-            terminate(Fault::Dispatch {
-                fn_name,
-                cause: &cause,
-            })
+        Err(trap) => terminate(Fault::Dispatch {
+            fn_name,
+            cause: &trap.cause(),
+        }),
+    }
+}
+
+/// The trap signal that ended a [`run_trap_guarded`] extent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TrapSignal(libc::c_int);
+
+impl TrapSignal {
+    /// The dispatch-fault cause text for this signal.
+    fn cause(self) -> String {
+        match self.0 {
+            libc::SIGFPE => "arithmetic exception (division by zero)".to_string(),
+            libc::SIGILL => "illegal instruction".to_string(),
+            libc::SIGBUS => "bus error".to_string(),
+            libc::SIGSEGV => "segmentation fault".to_string(),
+            sig => format!("signal {sig}"),
         }
     }
 }
 
+/// Run `f` under the trap guard: return its value, or the trap signal that
+/// interrupted it (`design/intrinsics/process-lifecycle.md` §1.8).
+///
+/// The first call in the process installs the guard's handler for the four trap
+/// signals; no later call writes a disposition. Each call arms only the calling
+/// thread, for the extent of `f`, by publishing a jump context held in its own
+/// frame, and restores the thread's previous context on return, so a nested
+/// call leaves its caller armed. A trap on a thread with no armed context is
+/// forwarded to the action the install found.
+///
+/// `f` must not unwind: a panic leaves through this frame with the context
+/// restored, but `f`'s frames are not a supported jump target.
+#[inline(never)]
+pub(crate) fn run_trap_guarded<T>(f: impl FnOnce() -> T) -> Result<T, TrapSignal> {
+    INSTALL.call_once(install_trap_handlers);
+    let mut context: SigJmpBuf = [0; std::mem::size_of::<SigJmpBuf>()];
+    let context: *mut SigJmpBuf = &mut context;
+    let _extent = ArmedExtent {
+        previous: ARMED_CONTEXT.get(),
+    };
+    // SAFETY: sigsetjmp/siglongjmp recover from hardware traps without unwinding
+    // through the platform `extern "C"` frames (which would be UB). sigsetjmp
+    // saves the execution context in this frame; the handler's siglongjmp
+    // returns here with the signal number. Nothing read after the jump is
+    // written between the two returns.
+    let sig = unsafe { sigsetjmp(context, 1) };
+    if sig != 0 {
+        return Err(TrapSignal(sig));
+    }
+    ARMED_CONTEXT.set(context);
+    Ok(f())
+}
+
 // ---------------------------------------------------------------------------
-// sigsetjmp/siglongjmp FFI + signal-handler infra
+// sigsetjmp/siglongjmp FFI and the process-wide trap handler.
 //
-// Mirrors `src/expander.rs::invoke_jit_protected` (the int-side protected JIT
-// call). The guard infra is not shared across crates — int keeps its own copy
-// for the macro-expansion JIT call; this copy guards the platform-Effect force
-// at the intrinsics force site (BC §4b invariant 14).
+// The disposition is process state, installed once; the jump context is thread
+// state, armed per call (`process-lifecycle.md` §1.8).
 // ---------------------------------------------------------------------------
 
 // On macOS/aarch64, sigjmp_buf is 196 bytes (jmp_buf + signal mask). We use a
@@ -164,194 +179,136 @@ unsafe extern "C" {
     fn siglongjmp(env: *mut SigJmpBuf, val: libc::c_int) -> !;
 }
 
-// Thread-local jump buffer for signal recovery during the Effect-thunk force.
-// Only accessed by the signal handler and `force_effect_thunk_protected` on the
-// same thread. Signal delivery for SIGFPE/SIGILL/SIGBUS/SIGSEGV is synchronous
-// (delivered to the thread that caused the trap).
+/// The signals the guard recovers.
+const TRAP_SIGNALS: [libc::c_int; 4] = [libc::SIGFPE, libc::SIGILL, libc::SIGBUS, libc::SIGSEGV];
+
+static INSTALL: std::sync::Once = std::sync::Once::new();
+
+/// The action each of [`TRAP_SIGNALS`] had before the install, in that order.
+/// It is recorded before any handler is installed, so the handler always finds
+/// it. A process writer that changes an action between the record and the
+/// install is not seen; nothing in this crate does.
+static PREVIOUS_ACTIONS: std::sync::OnceLock<[libc::sigaction; 4]> = std::sync::OnceLock::new();
+
 std::thread_local! {
-    static JMP_BUF: std::cell::UnsafeCell<SigJmpBuf> =
-        const { std::cell::UnsafeCell::new([0u8; std::mem::size_of::<SigJmpBuf>()]) };
+    /// The calling thread's armed jump context, or null. Const-initialized with
+    /// no destructor, so the handler's read is a plain thread-local load.
+    static ARMED_CONTEXT: std::cell::Cell<*mut SigJmpBuf> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
-/// Signal handler for SIGFPE/SIGILL/SIGBUS/SIGSEGV during the Effect-thunk force.
-///
-/// Uses siglongjmp to jump back to the sigsetjmp point, bypassing the platform
-/// `extern "C"` code frames entirely (unwinding through them would be UB).
-extern "C" fn signal_handler_longjmp(sig: libc::c_int) {
-    unsafe {
-        // Reset to the default handler to prevent infinite signal loops.
-        libc::signal(sig, libc::SIG_DFL);
-        siglongjmp(JMP_BUF.with(|buf| buf.get() as *mut SigJmpBuf), sig);
+/// One call's armed extent: restores the thread's previous context on exit.
+struct ArmedExtent {
+    previous: *mut SigJmpBuf,
+}
+
+impl Drop for ArmedExtent {
+    fn drop(&mut self) {
+        ARMED_CONTEXT.set(self.previous);
     }
 }
 
-/// Saved signal-handler state for restoration after the force.
-struct SavedSignalHandlers {
-    fpe: libc::sighandler_t,
-    ill: libc::sighandler_t,
-    bus: libc::sighandler_t,
-    segv: libc::sighandler_t,
+/// Record every signal's current action, then install the handler for each, so
+/// the handler finds the action it replaced from the moment it is installed.
+fn install_trap_handlers() {
+    let _ = PREVIOUS_ACTIONS.set(TRAP_SIGNALS.map(current_action));
+    TRAP_SIGNALS.into_iter().for_each(install_trap_handler);
 }
 
-/// Install trap handlers that siglongjmp on SIGFPE/SIGILL/SIGBUS/SIGSEGV.
-/// Returns the previously installed handlers for later restoration.
-fn install_signal_handlers() -> SavedSignalHandlers {
+/// The action installed for `sig`, read without changing it.
+fn current_action(sig: libc::c_int) -> libc::sigaction {
+    // SAFETY: a null new action makes `sigaction` a pure query into `action`.
     unsafe {
-        let handler = signal_handler_longjmp as *const () as libc::sighandler_t;
-        let fpe = libc::signal(libc::SIGFPE, handler);
-        let ill = libc::signal(libc::SIGILL, handler);
-        let bus = libc::signal(libc::SIGBUS, handler);
-        let segv = libc::signal(libc::SIGSEGV, handler);
-        SavedSignalHandlers {
-            fpe,
-            ill,
-            bus,
-            segv,
+        let mut action: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(sig, std::ptr::null(), &mut action);
+        action
+    }
+}
+
+/// Install the guard's handler for `sig`.
+fn install_trap_handler(sig: libc::c_int) {
+    // SAFETY: a zeroed `sigaction` with an empty mask, a valid `SA_SIGINFO`
+    // handler and valid flags is a well-formed argument.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = trap_handler as *const () as libc::sighandler_t;
+        action.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(sig, &action, std::ptr::null_mut());
+        #[cfg(test)]
+        if let Some(hook) = AFTER_HANDLER_INSTALL.get() {
+            hook(sig);
         }
     }
 }
 
-/// Restore previously saved signal handlers.
-fn restore_signal_handlers(saved: SavedSignalHandlers) {
-    unsafe {
-        libc::signal(libc::SIGFPE, saved.fpe);
-        libc::signal(libc::SIGILL, saved.ill);
-        libc::signal(libc::SIGBUS, saved.bus);
-        libc::signal(libc::SIGSEGV, saved.segv);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Fault-guard strategy tier (FIXME 0501)
-//
-// io_guard had ZERO unit coverage. The core `force_effect_thunk_protected`
-// needs a live platform Effect thunk (a DLL fixture), but the RETAINED
-// hardware-trap recovery half — the `sigsetjmp`/signal-handler/`siglongjmp`
-// mechanism (§io_guard "Hardware traps are still caught here") — IS unit-
-// testable in isolation. These tests exercise the strategy scenarios per
-// METHOD §2.2: the trap-recovery happy path, the four-signal install matrix,
-// and the install/restore round-trip negative (handlers must NOT be left
-// dangling). Each `#[test]` is its own nextest process, so mutating
-// process-global signal dispositions is isolated. Windows in which the real
-// trap handler is installed contain only straight-line, non-faulting reads.
-// spec: BC §4b invariant 14 — the single platform-Effect force-site guard.
-// ---------------------------------------------------------------------------
+/// A test hook run on the installing thread just after the handler for each
+/// signal is installed, to deliver a signal inside the install.
 #[cfg(test)]
-mod tests {
-    use super::*;
+static AFTER_HANDLER_INSTALL: std::sync::OnceLock<fn(libc::c_int)> = std::sync::OnceLock::new();
 
-    fn longjmp_handler_ptr() -> libc::sighandler_t {
-        signal_handler_longjmp as *const () as libc::sighandler_t
+/// The process-wide handler for [`TRAP_SIGNALS`]. A trap on a thread with an
+/// armed context disarms it and jumps there; any other trap is not the guard's
+/// and is forwarded.
+extern "C" fn trap_handler(
+    sig: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    let armed = ARMED_CONTEXT.replace(std::ptr::null_mut());
+    if !armed.is_null() {
+        // SAFETY: `armed` is the context of a `run_trap_guarded` frame still on
+        // this thread's stack; its extent ends only after clearing the slot.
+        unsafe { siglongjmp(armed, sig) };
     }
+    forward_unarmed_trap(sig, info, context);
+}
 
-    // complexity / positive: a SIGSEGV is recovered end-to-end through sigsetjmp
-    // + the installed handler + siglongjmp — the retained half the guard's Err
-    // arm relies on. The signal is delivered via `libc::raise` (synchronous, to
-    // this thread): it drives the identical handler -> siglongjmp path a genuine
-    // foreign-code hardware trap takes, without invoking memory UB (a real null
-    // deref is intercepted by Rust's own debug null-check + abort, and integer
-    // div-by-zero does not trap on aarch64 — neither reaches this handler).
-    #[test]
-    fn hardware_trap_recovers_via_sigsetjmp_handler() {
-        // SAFETY: mirrors `force_effect_thunk_protected`'s sigsetjmp dance; the
-        // handler resets the signal to SIG_DFL before siglongjmp, so no loop.
-        let recovered: libc::c_int = JMP_BUF.with(|buf| unsafe {
-            let sig = sigsetjmp(buf.get(), 1);
-            if sig != 0 {
-                // Reached via siglongjmp from the trap handler.
-                return sig;
-            }
-            let _old = install_signal_handlers();
-            // Deliver SIGSEGV to this thread; the installed handler siglongjmps back.
-            libc::raise(libc::SIGSEGV);
-            0 // unreachable — the handler jumps out.
-        });
-
-        // Tidy up: the trap path jumped out before restoring, and the handler
-        // reset SIGSEGV to SIG_DFL. Return every trap signal to the default so no
-        // stale-frame longjmp handler survives this test frame.
-        unsafe {
-            libc::signal(libc::SIGSEGV, libc::SIG_DFL);
-            libc::signal(libc::SIGFPE, libc::SIG_DFL);
-            libc::signal(libc::SIGILL, libc::SIG_DFL);
-            libc::signal(libc::SIGBUS, libc::SIG_DFL);
-        }
-
-        assert_eq!(
-            recovered,
-            libc::SIGSEGV,
-            "sigsetjmp + trap handler must recover the SIGSEGV and report the signal number",
-        );
-    }
-
-    // matrix / edge: install routes ALL FOUR trap signals (FPE/ILL/BUS/SEGV) to
-    // the guard's longjmp handler.
-    #[test]
-    fn install_covers_all_four_trap_signals() {
-        unsafe {
-            let o_fpe = libc::signal(libc::SIGFPE, libc::SIG_DFL);
-            let o_ill = libc::signal(libc::SIGILL, libc::SIG_DFL);
-            let o_bus = libc::signal(libc::SIGBUS, libc::SIG_DFL);
-            let o_segv = libc::signal(libc::SIGSEGV, libc::SIG_DFL);
-
-            // `_saved` (the prior dispositions install captured, all DFL here) is
-            // not needed — we restore the true originals directly below.
-            let _saved = install_signal_handlers();
-            // Read back each installed handler (swap DFL in, capture old). This
-            // window is straight-line with no faulting op.
-            let i_fpe = libc::signal(libc::SIGFPE, libc::SIG_DFL);
-            let i_ill = libc::signal(libc::SIGILL, libc::SIG_DFL);
-            let i_bus = libc::signal(libc::SIGBUS, libc::SIG_DFL);
-            let i_segv = libc::signal(libc::SIGSEGV, libc::SIG_DFL);
-
-            // Restore true originals.
-            libc::signal(libc::SIGFPE, o_fpe);
-            libc::signal(libc::SIGILL, o_ill);
-            libc::signal(libc::SIGBUS, o_bus);
-            libc::signal(libc::SIGSEGV, o_segv);
-
-            let expected = longjmp_handler_ptr();
-            for (name, got) in [
-                ("SIGFPE", i_fpe),
-                ("SIGILL", i_ill),
-                ("SIGBUS", i_bus),
-                ("SIGSEGV", i_segv),
-            ] {
-                assert_eq!(
-                    got, expected,
-                    "install must route {name} to the sigsetjmp trap handler"
-                );
+/// Deliver an unarmed trap as the action the install replaced would have: call
+/// a previous handler with the arguments it expects, ignore it if it was
+/// ignored, and otherwise restore the default action and re-raise, so the
+/// process dies on the signal.
+fn forward_unarmed_trap(sig: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
+    let previous = PREVIOUS_ACTIONS.get().and_then(|actions| {
+        TRAP_SIGNALS
+            .iter()
+            .position(|trap| *trap == sig)
+            .map(|index| actions[index])
+    });
+    match previous {
+        Some(action) if action.sa_sigaction == libc::SIG_IGN => {}
+        Some(action) if action.sa_sigaction != libc::SIG_DFL => {
+            if action.sa_flags & libc::SA_SIGINFO != 0 {
+                // SAFETY: an `SA_SIGINFO` action's handler has this signature.
+                let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
+                    unsafe { std::mem::transmute(action.sa_sigaction) };
+                handler(sig, info, context);
+            } else {
+                // SAFETY: a plain action's handler takes only the signal.
+                let handler: extern "C" fn(libc::c_int) =
+                    unsafe { std::mem::transmute(action.sa_sigaction) };
+                handler(sig);
             }
         }
-    }
-
-    // negative: install returns the PRIOR disposition and restore reverts it —
-    // the guard must NOT leave the trap handler dangling after the force. Proven
-    // on SIGFPE (never fires in straight-line code).
-    #[test]
-    fn install_returns_prior_and_restore_reverts() {
-        unsafe {
-            // Establish a known, non-default baseline for SIGFPE.
-            let true_orig = libc::signal(libc::SIGFPE, libc::SIG_IGN);
-
-            let saved = install_signal_handlers();
-            // Capture the installed handler, resetting FPE to the IGN baseline.
-            let installed = libc::signal(libc::SIGFPE, libc::SIG_IGN);
-            restore_signal_handlers(saved);
-            // Capture the post-restore handler, putting the true original back.
-            let restored = libc::signal(libc::SIGFPE, true_orig);
-
-            assert_eq!(
-                installed,
-                longjmp_handler_ptr(),
-                "install must set the sigsetjmp trap handler for SIGFPE (not the IGN baseline)",
-            );
-            assert_ne!(installed, libc::SIG_IGN);
-            assert_eq!(
-                restored,
-                libc::SIG_IGN,
-                "restore must revert SIGFPE to its saved (IGN) disposition, not leave the trap handler",
-            );
+        _ => {
+            // SAFETY: installing `SIG_DFL` is valid; the re-raised signal is
+            // blocked until this handler returns, then takes the default action.
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = libc::SIG_DFL;
+                libc::sigemptyset(&mut action.sa_mask);
+                libc::sigaction(sig, &action, std::ptr::null_mut());
+                libc::raise(sig);
+            }
         }
     }
 }
+
+/// The address of the guard's trap handler, as `sigaction` reports it.
+#[cfg(test)]
+fn trap_handler_address() -> libc::sighandler_t {
+    trap_handler as *const () as libc::sighandler_t
+}
+
+#[cfg(test)]
+mod tests;
