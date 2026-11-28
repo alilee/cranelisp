@@ -23,7 +23,7 @@
 //! - `with_special_forms` — special-form metadata at root `""`.
 //! - `with_builtin_type_names` — Int/Bool/Float/String/Vec in `primitives`.
 //! - `with_macros_sexp` — synthetic `macros` module (Sexp/SList ADTs + sconcat).
-//! - `with_io` — the `IO` ADT (Pure/Effect/Bind) + `bind` primitive.
+//! - `with_io` — the opaque, constructorless `IO` type + `bind`/`pure` primitives.
 //! - `with_primitives` — the Ring 0/1/3 primitive `Def`s
 //!   (arithmetic/comparison/bool/string/vec/quote-sexp) whose schemes match the
 //!   spec contract (Appendix A.2/A.3/A.5).
@@ -47,7 +47,7 @@ use cranelisp_types::TypeId;
 #[cfg(test)]
 use cranelisp_types::{
     Binding, CallableOrigin, ConstructorDef, Decl, FQTypeName, FieldDef, LinkerSymbol,
-    ModuleFullPath, Realization, Scheme, Span, SpecialFormRecord, Symbol, SynthSpec, TemplateBody,
+    ModuleFullPath, Realization, Scheme, Span, SpecialFormRecord, Symbol, TemplateBody,
     TemplateKind, Type, TypeDefInfo, TypeExpr, TypeName, TypeRecord, Visibility,
 };
 
@@ -85,8 +85,7 @@ use crate::scheme::mono;
 ///   `primitives/Int` etc.) and `Primitives` (`Option`/`Vec` schemes).
 /// - `MacrosSexp` must precede `Primitives` (`quote-sexp` references
 ///   `macros/Sexp`).
-/// - `Io` registers `primitives/Option`-independent IO ADT; order-free w.r.t.
-///   the others except it needs the `primitives` module to exist.
+/// - `Io` is order-free: its types name only `primitives/IO` itself.
 ///
 /// Option/Trace/TestResult assembly is NOT a preset — tests that need `Option`
 /// register it inline via their own `register_option` helpers (constructed
@@ -106,8 +105,8 @@ pub(crate) enum FixtureContent {
     Primitives,
     /// Synthetic `macros` module: `SList`/`Sexp` ADTs + `sconcat` (spec §9.1).
     MacrosSexp,
-    /// `IO` ADT (`Pure`/`Effect`/`Bind`) + `bind` primitive in `primitives`
-    /// (spec §10; backs IO exhaustiveness tests in adt.rs).
+    /// The opaque, constructorless `IO` type + `bind`/`pure` host-promised
+    /// primitives in `primitives` (spec §10.1–§10.2).
     Io,
 }
 
@@ -176,7 +175,7 @@ impl FixtureBuilder {
         self
     }
 
-    /// Add the `IO` ADT + `bind` preset.
+    /// Add the `IO` type + `bind`/`pure` preset.
     pub(crate) fn with_io(mut self) -> Self {
         self.contents.push(FixtureContent::Io);
         self
@@ -223,6 +222,7 @@ impl FixtureBuilder {
                 FixtureContent::Io => {
                     env.register_io_type(&mut state);
                     env.register_bind_primitive();
+                    env.register_pure_primitive();
                 }
                 FixtureContent::Primitives => {
                     seed_test_primitives(modules, next_id);
@@ -646,200 +646,54 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
-    /// Register the IO ADT in the `primitives` module.
-    ///
-    /// IO is an ordinary ADT with three constructors:
-    /// - `Pure` (tag=0): wraps a value — field `ioval` of type `a`
-    /// - `Effect` (tag=1): wraps a thunk — field `thunk` typed as `a`
-    /// - `Bind` (tag=2, internal): chains IO actions — fields `inner: (IO b)`,
-    ///   `cont: (Fn [b] (IO a))`, where `b` is an existential type var
-    ///
-    /// Pure and Effect are registered through `register_type_def()`.
-    /// Bind is added manually afterward as an internal constructor — it is
-    /// NOT registered in the symbol table (users cannot construct or match on it).
-    ///
-    /// See `design/typecheck/io-types.md` §2-3 for the full design rationale.
+    /// Register the opaque `IO` type in the `primitives` module: one parameter
+    /// `a` and no constructors, mirroring `src/bootstrap.rs::register_io_type`
+    /// (`design/typecheck/io-types.md` §2).
     fn register_io_type(&self, state: &mut CheckState) {
-        // Switch to the synthetic `primitives` module.
         let saved_module = state.current_module.clone();
         let primitives_path = ModuleFullPath::from("primitives");
-        if !self.modules.contains_key(&primitives_path) {
-            self.modules.insert(
-                primitives_path.clone(),
-                cranelisp_types::SymbolTable::<C, L>::new_with_params(primitives_path.clone()),
-            );
-        }
         self.ensure_module_exists(&primitives_path);
         state.current_module = primitives_path;
-
-        // Define Pure and Effect constructors via the normal registration path.
-        let io_ctors = vec![
-            // Pure (tag=0): field `ioval` of type `a`
-            ConstructorDef {
-                name: Symbol::from("Pure"),
-                docstring: Some("Lift a value into IO".to_string()),
-                fields: vec![FieldDef {
-                    name: Symbol::from("ioval"),
-                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
-                    span: Span::SYNTHETIC,
-                }],
-                span: Span::SYNTHETIC,
-            },
-            // Effect (tag=1): field `thunk` typed as `a` (see design doc §2 for why)
-            ConstructorDef {
-                name: Symbol::from("Effect"),
-                docstring: Some("Deferred effectful computation".to_string()),
-                fields: vec![FieldDef {
-                    name: Symbol::from("thunk"),
-                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
-                    span: Span::SYNTHETIC,
-                }],
-                span: Span::SYNTHETIC,
-            },
-        ];
 
         self.register_type_def(
             state,
             &TypeName::from("IO"),
             &Some("Deferred IO computation tree".to_string()),
             &[Symbol::from("a")],
-            &io_ctors,
+            &[],
             Visibility::Public,
             Span::SYNTHETIC,
         )
         .unwrap_or_else(|e| unreachable!("invariant: IO type registration failed: {e}"));
 
-        // Add Bind as an internal constructor (tag=2).
-        self.add_internal_bind_constructor();
-
-        // Restore the original module context.
         state.current_module = saved_module;
     }
 
-    /// Add the internal Bind constructor to the IO TypeDefInfo.
-    ///
-    /// Bind has fields with types involving an existential type variable `b`
-    /// that is independent of IO's type parameter `a`. HM inference cannot
-    /// express existentials, so Bind bypasses the normal constructor registration.
-    ///
-    /// The Bind constructor appears in `TypeDefInfo.constructors` for REPL
-    /// introspection (`/info IO` shows all three constructors) but is NOT
-    /// resolvable as a name in the type environment.
-    fn add_internal_bind_constructor(&self) {
-        // Allocate fresh type vars for the existential types.
+    /// Register `pure :: ∀a. (Fn [a] (IO a))` as a host-promised primitive in
+    /// `primitives`, mirroring `src/bootstrap.rs::register_pure_primitive`
+    /// (`design/typecheck/io-types.md` §5).
+    fn register_pure_primitive(&self) {
         let (_, a_id) = self.fresh_var_id();
-        let (_, b_id) = self.fresh_var_id();
-
-        // inner :: (IO b)
-        let io_b = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(b_id)]);
-        // cont :: (Fn [b] (IO a))
-        let io_a = Type::ADT(primitives_fqtn("IO"), vec![Type::Var(a_id)]);
-        let cont_ty = Type::Fn(vec![Type::Var(b_id)], Box::new(io_a));
-
-        // Per S70 retirement of `ConstructorInfo` + `ModuleEntry::Constructor`:
-        // The Bind constructor is now a `ModuleEntry::Def` with
-        // `kind: DefKind::Constructor { type_name, tag, field_count,
-        // internal: true }`. The name is appended to the IO TypeDef's
-        // constructor-name list. Bind is internal — `internal: true` excludes
-        // it from exhaustiveness checks and from user-visible introspection.
-        let io_fqtn = primitives_fqtn("IO");
-        let bind_param_names = vec![Symbol::from("inner"), Symbol::from("cont")];
-        let bind_field_count = 2;
-        let bind_ctor_scheme = Scheme {
-            type_vars: vec![a_id, b_id],
+        let pure_scheme = Scheme {
+            type_vars: vec![a_id],
             constraints: HashMap::new(),
             ty: Type::Fn(
-                vec![io_b.clone(), cont_ty.clone()],
-                Box::new(Type::ADT(io_fqtn.clone(), vec![Type::Var(a_id)])),
+                vec![Type::Var(a_id)],
+                Box::new(Type::ADT(primitives_fqtn("IO"), vec![Type::Var(a_id)])),
             ),
         };
-        let body_span = Span::SYNTHETIC;
-        let synth_params: Vec<(Symbol, Option<TypeExpr>)> = bind_param_names
-            .iter()
-            .cloned()
-            .map(|n| (n, None))
-            .collect();
-        let synth_body = cranelisp_types::Expr::ConstrADT {
-            type_name: io_fqtn.clone(),
-            tag: 2,
-            fields: bind_param_names
-                .iter()
-                .map(|n| cranelisp_types::Expr::var(n.clone(), body_span))
-                .collect(),
-            span: body_span,
-            inferred_type: None,
-        };
-
-        // Append Bind name to IO TypeDef's constructor list and register the
-        // ctor Def in primitives.
-        let primitives_path = ModuleFullPath::from("primitives");
-        let mut primitives_table = self
-            .modules
-            .get_mut(&primitives_path)
-            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
-        let (mut io_info, io_docstring) = match primitives_table.get("IO") {
-            Some(Binding {
-                declaration: Decl::Type(TypeRecord::Defined { info, docstring }),
-                ..
-            }) => (info.clone(), docstring.clone()),
-            _ => unreachable!("invariant: IO type should be registered first"),
-        };
-        io_info.constructors.push(Symbol::from("Bind"));
-        primitives_table
-            .remove_non_callable(&Symbol::from("IO"))
-            .unwrap_or_else(|e| unreachable!("IO fixture must be replaceable: {e}"));
-        primitives_table
-            .install_binding(
-                Symbol::from("IO"),
-                Binding::new(
-                    Decl::Type(TypeRecord::Defined {
-                        info: io_info,
-                        docstring: io_docstring,
-                    }),
-                    Visibility::Public,
-                ),
-            )
-            .unwrap_or_else(|e| unreachable!("IO fixture must reinstall: {e}"));
-        // Mirror the live `bootstrap.rs` shape: the `Bind` binding under
-        // `IO.Bind` (`member_key`), with bare `Bind` a candidate exposure onto
-        // it. This fixture stands in for the binary's seeds, so it must not
-        // store a sum ctor under its bare name
-        // (`design/arch/dotted-ctor-canonical-keys.md` §1).
-        let bind_canonical = cranelisp_types::member_key(&io_fqtn.name, "Bind");
-        primitives_table
-            .install_template(
-                bind_canonical.clone(),
-                bind_ctor_scheme,
-                bind_param_names,
-                Some("Chain IO actions (internal — constructed by bind primitive)".into()),
+        self.modules
+            .get_mut(&ModuleFullPath::from("primitives"))
+            .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"))
+            .install_host_promised(
+                Symbol::from("pure"),
+                pure_scheme,
+                vec![Symbol::from("x")],
+                Some("Lift a value into IO".into()),
                 0,
-                CallableOrigin::Ctor {
-                    type_name: io_fqtn.clone(),
-                    tag: 2,
-                    field_count: bind_field_count,
-                    internal: true,
-                    type_def: None,
-                },
-                TemplateBody::Synth(SynthSpec::new(cranelisp_types::DefnVariant {
-                    params: synth_params,
-                    body: synth_body,
-                    span: body_span,
-                })),
-                TemplateKind::Parametric,
-                Vec::new(),
                 Visibility::Public,
             )
-            .unwrap_or_else(|e| unreachable!("Bind template fixture must install: {e}"));
-        primitives_table
-            .expose_candidate(
-                Symbol::from("Bind"),
-                cranelisp_types::FQSymbol {
-                    module: io_fqtn.module.clone(),
-                    symbol: bind_canonical,
-                },
-                Visibility::Public,
-            )
-            .unwrap_or_else(|e| unreachable!("Bind alias fixture must install: {e}"));
+            .unwrap_or_else(|e| unreachable!("pure fixture must install: {e}"));
     }
 
     /// Register `bind` as an inline primitive in the `primitives` module.
@@ -1343,21 +1197,19 @@ mod tests {
         "parse-int",
     ];
 
-    /// Read constructor metadata (tag, field count, internal) from a Def entry's
-    /// `DefKind::Constructor`. Post-S70: per-ctor metadata lives on the Def, not
-    /// on a separate `ConstructorInfo`.
+    /// Read constructor metadata (tag, field count, type) from a constructor
+    /// callable's origin.
     fn read_ctor_kind(
         table: &cranelisp_types::SymbolTable,
         name: &str,
-    ) -> Option<(usize, usize, bool, FQTypeName)> {
+    ) -> Option<(usize, usize, FQTypeName)> {
         match &ctor_entry(table, name)?.callable()?.origin {
             CallableOrigin::Ctor {
                 tag,
                 field_count,
-                internal,
                 type_name,
                 ..
-            } => Some((*tag, *field_count, *internal, type_name.clone())),
+            } => Some((*tag, *field_count, type_name.clone())),
             _ => None,
         }
     }
@@ -1753,7 +1605,7 @@ mod tests {
         let macros_path = ModuleFullPath::from("macros");
         let macros_table = tf.modules.get(&macros_path).unwrap();
         if let Some(callable) = ctor_entry(&macros_table, "SNil").and_then(Binding::callable) {
-            let (_, _, _, _) = read_ctor_kind(&macros_table, "SNil").unwrap();
+            let (_, _, _) = read_ctor_kind(&macros_table, "SNil").unwrap();
             let CallableOrigin::Ctor {
                 tag, field_count, ..
             } = &callable.origin
@@ -1881,7 +1733,7 @@ mod tests {
                 *name,
                 "constructor at tag {i} should be {name}"
             );
-            let (tag, _, _, _) = read_ctor_kind(&macros_table, name)
+            let (tag, _, _) = read_ctor_kind(&macros_table, name)
                 .unwrap_or_else(|| panic!("{name} should be a Def(Constructor) in macros module"));
             assert_eq!(tag, i, "{name} should have tag {i}");
         }
@@ -2244,24 +2096,25 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // IO ADT type registration (Ring 4, spec §10.1, design/typecheck/io-types.md)
+    // Opaque `IO` and `pure` (spec §10.1–§10.2, design/typecheck/io-types.md §1–§2, §5)
     // -----------------------------------------------------------------------
 
-    // spec: 10-io §10.1 — IO type registered in primitives module
+    // spec: 10-io §10.1 — IO is registered in primitives with one parameter and
+    // no constructors (design/typecheck/io-types.md §2).
     #[test]
-    fn test_io_type_registered() {
+    fn test_io_type_registered_without_constructors() {
         let tf =
             TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
-        let info = tf.lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"));
-        assert!(info.is_some(), "IO type should be registered");
-        let info = info.unwrap();
-        assert_eq!(info.type_params.len(), 1, "IO has 1 type parameter");
-        assert_eq!(info.type_params[0].as_ref(), "a");
-        assert_eq!(
-            info.constructors.len(),
-            3,
-            "IO has 3 constructors: Pure, Effect, Bind"
+        let info = tf
+            .lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"))
+            .expect("IO type should be registered");
+        assert_eq!(info.name, primitives_fqtn("IO"));
+        assert_eq!(info.type_params, vec![Symbol::from("a")]);
+        assert!(
+            info.constructors.is_empty(),
+            "IO is opaque: no constructors, got {:?}",
+            info.constructors
         );
         assert_eq!(
             tf.lookup_type_def_docstring_in_module(&primitives_path, &TypeName::from("IO"))
@@ -2270,252 +2123,50 @@ mod tests {
         );
     }
 
-    // spec: 10-io §10.1 — Pure constructor: tag=0, field `ioval` of type `a`
+    // spec: 10-io §10.1 — no table holds an `IO` constructor binding under any
+    // key (design/typecheck/io-types.md §1).
     #[test]
-    fn test_pure_constructor() {
+    fn test_io_fixture_seeds_no_constructor_bindings() {
         let tf =
             TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
-
-        if let Some(callable) = ctor_entry(&primitives_table, "Pure").and_then(Binding::callable) {
-            if let CallableOrigin::Ctor {
-                tag,
-                field_count,
-                internal,
-                ..
-            } = &callable.origin
-            {
-                assert_eq!(*tag, 0, "Pure should be tag 0");
-                assert_eq!(*field_count, 1, "Pure has 1 field");
-                assert!(!*internal, "Pure is not internal");
-            } else {
-                panic!("Pure should be a constructor");
-            }
-            let scheme = &callable.arm.scheme;
-            let param_names = &callable.arm.param_names;
-            assert_eq!(param_names.len(), 1);
-            assert_eq!(param_names[0].as_ref(), "ioval");
-            assert_eq!(
-                scheme.type_vars.len(),
-                1,
-                "Pure should have 1 quantified var"
+        for key in ["Pure", "Effect", "Bind", "IO.Pure", "IO.Effect", "IO.Bind"] {
+            assert!(
+                primitives_table.get(key).is_none(),
+                "primitives must hold no `{key}` binding"
             );
-            // Pure :: forall [a]. (Fn [a] (IO a))
-            match &scheme.ty {
-                Type::Fn(params, ret) => {
-                    assert_eq!(params.len(), 1);
-                    assert!(
-                        matches!(params[0], Type::Var(_)),
-                        "param should be type var"
-                    );
-                    match ret.as_ref() {
-                        Type::ADT(name, args) => {
-                            assert_eq!(name.name.as_ref(), "IO");
-                            assert_eq!(args.len(), 1);
-                            assert_eq!(params[0], args[0], "param var should match IO's type arg");
-                        }
-                        _ => panic!("Pure return should be (IO a), got {:?}", ret),
-                    }
-                }
-                _ => panic!("Pure should have Fn type, got {:?}", scheme.ty),
-            }
-        } else {
-            panic!("Pure should be a Def(Constructor) entry in primitives module");
         }
     }
 
-    // spec: 10-io §10.1 — Effect constructor: tag=1, field `thunk` of type `a`
+    // spec: 10-io §10.2 — `pure` is a host-promised primitive typed from its
+    // scheme `∀a. (Fn [a] (IO a))` (design/typecheck/io-types.md §5).
     #[test]
-    fn test_effect_constructor() {
+    fn test_pure_primitive_registered() {
         let tf =
             TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
         let primitives_path = ModuleFullPath::from("primitives");
         let primitives_table = tf.modules.get(&primitives_path).unwrap();
-
-        if let Some(callable) = ctor_entry(&primitives_table, "Effect").and_then(Binding::callable)
-        {
-            if let CallableOrigin::Ctor {
-                tag,
-                field_count,
-                internal,
-                ..
-            } = &callable.origin
-            {
-                assert_eq!(*tag, 1, "Effect should be tag 1");
-                assert_eq!(*field_count, 1, "Effect has 1 field");
-                assert!(!*internal, "Effect is not internal");
-            } else {
-                panic!("Effect should be a constructor");
-            }
-            let scheme = &callable.arm.scheme;
-            let param_names = &callable.arm.param_names;
-            assert_eq!(param_names.len(), 1);
-            assert_eq!(param_names[0].as_ref(), "thunk");
-            assert_eq!(
-                scheme.type_vars.len(),
-                1,
-                "Effect should have 1 quantified var"
-            );
-            // Effect :: forall [a]. (Fn [a] (IO a))
-            match &scheme.ty {
-                Type::Fn(params, ret) => {
-                    assert_eq!(params.len(), 1);
-                    match ret.as_ref() {
-                        Type::ADT(name, args) => {
-                            assert_eq!(name.name.as_ref(), "IO");
-                            assert_eq!(args.len(), 1);
-                            assert_eq!(params[0], args[0]);
-                        }
-                        _ => panic!("Effect return should be (IO a)"),
-                    }
-                }
-                _ => panic!("Effect should have Fn type, got {:?}", scheme.ty),
-            }
-        } else {
-            panic!("Effect should be a Def(Constructor) entry in primitives module");
-        }
-    }
-
-    // spec: 10-io §10.1 — Bind constructor: tag=2, internal=true
-    //
-    // S70 retired `ConstructorInfo` + `ModuleEntry::Constructor`; the Bind
-    // constructor is now a `ModuleEntry::Def { kind: DefKind::Constructor {
-    // internal: true, .. }, .. }` in the primitives symbol table per the
-    // migration map (check.rs §"ConstructorInfo retired"). The `internal: true`
-    // discriminator (not absence-from-table) gates exhaustiveness checks and
-    // user-visible introspection. Bind's field types involving the existential
-    // type variable `b` live in the synthesised constructor scheme's Fn signature.
-    #[test]
-    fn test_bind_constructor_internal() {
-        let tf =
-            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
-        let primitives_path = ModuleFullPath::from("primitives");
-
-        // Bind name appears in IO's TypeDefInfo.constructors list at index 2.
-        let info = tf
-            .lookup_type_def_in_module(&primitives_path, &TypeName::from("IO"))
-            .unwrap();
-        assert_eq!(info.constructors[2].as_ref(), "Bind");
-
-        // The Bind Def carries tag, field_count, internal discriminator.
-        let primitives_table = tf.modules.get(&primitives_path).unwrap();
-        let (tag, field_count, internal, type_name) = read_ctor_kind(&primitives_table, "Bind")
-            .expect("Bind should be a Def(Constructor) in primitives");
-        assert_eq!(tag, 2, "Bind tag should be 2");
-        assert_eq!(field_count, 2, "Bind has 2 fields: inner, cont");
-        assert!(internal, "Bind must be internal");
-        assert_eq!(type_name.name.as_ref(), "IO");
-
-        // Inspect the synthesised Def: param_names + scheme.ty (Fn).
-        if let Some(callable) = ctor_entry(&primitives_table, "Bind").and_then(Binding::callable) {
-            let param_names = &callable.arm.param_names;
-            let scheme = &callable.arm.scheme;
-            assert_eq!(param_names.len(), 2);
-            assert_eq!(param_names[0].as_ref(), "inner");
-            assert_eq!(param_names[1].as_ref(), "cont");
-
-            // Bind scheme :: forall [a, b]. (Fn [(IO b) (Fn [b] (IO a))] (IO a))
-            match &scheme.ty {
-                Type::Fn(params, _ret) => {
-                    assert_eq!(params.len(), 2);
-                    // inner: (IO b)
-                    let inner_b = match &params[0] {
-                        Type::ADT(name, args) => {
-                            assert_eq!(name.name.as_ref(), "IO");
-                            assert_eq!(args.len(), 1);
-                            assert!(matches!(args[0], Type::Var(_)));
-                            args[0].clone()
-                        }
-                        _ => panic!("Bind.inner should be (IO b), got {:?}", params[0]),
-                    };
-                    // cont: (Fn [b] (IO a))
-                    match &params[1] {
-                        Type::Fn(cont_params, cont_ret) => {
-                            assert_eq!(cont_params.len(), 1);
-                            assert!(matches!(cont_params[0], Type::Var(_)));
-                            match cont_ret.as_ref() {
-                                Type::ADT(name, args) => {
-                                    assert_eq!(name.name.as_ref(), "IO");
-                                    assert_eq!(args.len(), 1);
-                                    assert!(matches!(args[0], Type::Var(_)));
-                                }
-                                _ => panic!("Bind.cont return should be (IO a)"),
-                            }
-                            // b in cont's param should match b in inner's IO type arg
-                            assert_eq!(
-                                cont_params[0], inner_b,
-                                "b should be the same type var in inner and cont"
-                            );
-                        }
-                        _ => panic!("Bind.cont should be Fn type, got {:?}", params[1]),
-                    }
-                }
-                _ => panic!("Bind scheme should be Fn, got {:?}", scheme.ty),
-            }
-        } else {
-            panic!("Bind should be a Def(Constructor) entry in primitives module");
-        }
-
-        // Bind is registered as a Constructor Def in primitives — the
-        // `internal: true` discriminator on `DefKind::Constructor` (not absence
-        // from the symbol table) gates user-visible introspection. Phase B
-        // Part 2b: `lookup_constructor_type` is current-module-only per
-        // Principle 17 (no universe walk), so the assertion probes the
-        // primitives module directly via `lookup_constructor_type_in_module`.
+        let callable = primitives_table
+            .get("pure")
+            .and_then(Binding::callable)
+            .expect("pure should be a callable in primitives");
         assert!(
-            tf.env()
-                .lookup_constructor_type_in_module(&primitives_path, "Bind")
-                .is_some(),
-            "Bind should be a Constructor entry in the primitives module \
-             (internal discriminator is on the Def, not absence from the table)"
+            matches!(callable.arm.life, Life::HostPromised),
+            "pure is slot-less and host-promised, like bind"
         );
-    }
-
-    // spec: 10-io §10.1 — Pure and Effect registered as constructors in primitives module
-    #[test]
-    fn test_io_constructors_in_primitives_module() {
-        let tf =
-            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
-        let primitives_path = ModuleFullPath::from("primitives");
-        let primitives_table = tf.modules.get(&primitives_path).unwrap();
-
-        assert!(
-            ctor_entry(&primitives_table, "Pure").is_some(),
-            "Pure should be in primitives module"
+        let scheme = &callable.arm.scheme;
+        let [a] = scheme.type_vars.as_slice() else {
+            panic!("pure quantifies exactly one variable, got {scheme:?}");
+        };
+        assert_eq!(
+            scheme.ty,
+            Type::Fn(
+                vec![Type::Var(*a)],
+                Box::new(Type::ADT(primitives_fqtn("IO"), vec![Type::Var(*a)]))
+            )
         );
-        assert!(
-            ctor_entry(&primitives_table, "Effect").is_some(),
-            "Effect should be in primitives module"
-        );
-
-        // IO type itself should be registered
-        assert!(
-            primitives_table.get("IO").is_some(),
-            "IO type should be in primitives module"
-        );
-    }
-
-    // spec: 10-io §10.1 — IO constructors in primitives module
-    #[test]
-    fn test_io_constructors_in_primitives() {
-        let tf =
-            TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io());
-        let prims_path = ModuleFullPath::from("primitives");
-        let prims_table = tf.modules.get(&prims_path).unwrap();
-        assert!(
-            ctor_entry(&prims_table, "Pure").is_some(),
-            "Pure should be in primitives module"
-        );
-        assert!(
-            ctor_entry(&prims_table, "Effect").is_some(),
-            "Effect should be in primitives module"
-        );
-        // NOT in user module without import
-        assert!(
-            ctor_entry(&tf.symbol_table(), "Pure").is_none(),
-            "Pure should NOT be bare in user"
-        );
+        assert!(callable.docstring.is_some(), "pure should have a docstring");
     }
 
     // -----------------------------------------------------------------------

@@ -851,21 +851,12 @@ where
     }
 
     /// Look up the parent type name for a constructor, rooted in
-    /// `module_path`.
-    ///
-    /// Per Principle 17 — current-module-only short-name lookup, with
-    /// per-symbol chain-follow on `Import`/`Reexport` entries. Returns the bare
-    /// TypeName of the parent type. A **single-ctor product** type resolves
-    /// through the `Def { kind: Constructor }` arm exactly like a sum ctor (S79
-    /// Option 3a): the product ctor's surviving entry under the `"Rectangle"`
-    /// key is the got-slotted ctor `Def`, whose `DefKind::Constructor.type_name`
-    /// names the parent type. There is no longer a separate
-    /// `TypeDef`-via-`constructor_scheme` path to consult.
-    ///
-    /// The former no-arg `lookup_constructor_type` sibling that defaulted its
-    /// root to `"user"` was deleted (S87-4, Principle 17/19 — no module is
-    /// privileged by name); the `#[cfg(test)]` convenience wrapper in
-    /// `test_support.rs` roots explicitly at `state.current_module`.
+    /// `module_path` (Principle 17: current-module lookup, following
+    /// candidate references to their terminal). Returns the bare name from the
+    /// terminal's `CallableOrigin::Ctor`; a product constructor resolves like a
+    /// sum constructor, through its callable binding under the type's name.
+    /// The only caller is the `test_support.rs` convenience wrapper.
+    #[cfg(test)]
     pub(crate) fn lookup_constructor_type_in_module(
         &self,
         module_path: &ModuleFullPath,
@@ -881,7 +872,7 @@ where
     }
 
     /// State-rooted constructor→parent-type resolve (S108 Wave-G §3.3 collapse
-    /// — a thin `DefKind::Constructor` projection over [`Self::scope_resolve`]).
+    /// — a thin `CallableOrigin::Ctor` projection over [`Self::scope_resolve`]).
     /// The prelude fallback (a primitives ADT ctor re-exported via the prelude
     /// resolving as a bare ctor) and the I-1 public-only filter are intrinsic to
     /// the scope resolve; a private prelude ctor does not leak.
@@ -905,87 +896,6 @@ where
                 CallableOrigin::Ctor { type_name, .. } => Some(type_name.name.clone()),
                 _ => None,
             })
-    }
-
-    /// Check whether a constructor is marked as internal (not user-constructable).
-    ///
-    /// Per Principle 17 — routes through the principled lookups above.
-    /// Module-rooted: pass the access root explicitly. The production gate
-    /// roots at `state.current_module` via [`Self::is_internal_constructor`];
-    /// tests root at the constructor's home module directly.
-    pub(crate) fn is_internal_constructor_check_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        ctor_name: &str,
-    ) -> bool {
-        let type_name = match self.lookup_constructor_type_in_module(module_path, ctor_name) {
-            Some(tn) => tn,
-            None => return false,
-        };
-        if let Some(info) = self.lookup_type_def_in_module(module_path, &type_name) {
-            // Per S70: per-ctor `internal` lives on `DefKind::Constructor.internal`;
-            // `TypeDefInfo.constructors` is `Vec<Symbol>`. Probe the named ctor's
-            // Def to read its kind discriminator.
-            for c_sym in &info.constructors {
-                if c_sym.as_ref() == ctor_name {
-                    // Chain-follow Import/Reexport entries to the constructor's
-                    // home Def (e.g. `Bind` imported into `user` resolves to the
-                    // `primitives` Constructor Def). A direct probe would return
-                    // the Import entry, not the Constructor, and miss the
-                    // `internal` discriminator.
-                    if let Some(entry) = self.resolve_entry_in_module(module_path, c_sym.as_ref())
-                        && let Some(callable) = entry.callable()
-                        && let CallableOrigin::Ctor { internal, .. } = &callable.origin
-                    {
-                        return *internal;
-                    }
-                    return false;
-                }
-            }
-        }
-        false
-    }
-
-    /// State-rooted variant of [`Self::is_internal_constructor_check_in_module`].
-    ///
-    /// Bare-name current-module gate with the implicit-prelude **fallback**
-    /// (S78 §2.7.5 — Chokepoint 1; FIXME 0317). Under §2 a re-exported
-    /// internal ctor (`Bind`/`Pure`/`Effect`) is no longer an `Import` entry in
-    /// the user table, so the `current_module`-rooted gate alone misses it and
-    /// the value/pattern resolution (which DOES fall back) would let the
-    /// internal ctor through. We mirror the value/pattern fallback: resolve the
-    /// ctor's terminal entry via [`Self::resolve_entry_scoped`] (which
-    /// already consults the prelude fallback under the ON bit and applies the
-    /// I-1 public-only filter), then read the canonical `internal` discriminator
-    /// off the terminal `DefKind::Constructor`. `Bind`/`Pure`/`Effect` are
-    /// registered `Visibility::Public` in `primitives`, so the I-1 filter does
-    /// NOT hide them — what rejects them is their `internal: true` discriminator,
-    /// reached through the fallback.
-    pub(crate) fn is_internal_constructor_check_with_state(
-        &self,
-        state: &CheckState,
-        ctor_name: &str,
-    ) -> bool {
-        // Current-module-only gate first (covers in-module and locally-imported
-        // ctors, plus product-type single-ctor cases routed through the
-        // chain-follow in `is_internal_constructor_check_in_module`).
-        if self.is_internal_constructor_check_in_module(&state.current_module, ctor_name) {
-            return true;
-        }
-        // The current-module gate returns `false` for both "found, not internal"
-        // and "not found". Under §2 the re-exported internal ctor is absent from
-        // the user table, so re-resolve through the prelude-aware terminal-entry
-        // path and read the `internal` discriminator off the canonical
-        // Constructor Def. `resolve_entry_scoped` already applies the
-        // prelude fallback (bit-gated, self-guarded) and the I-1 public
-        // filter, so a private prelude ctor never reaches here.
-        if let Some(entry) = self.resolve_entry_scoped(state, ctor_name)
-            && let Some(callable) = entry.callable()
-            && let CallableOrigin::Ctor { internal, .. } = &callable.origin
-        {
-            return *internal;
-        }
-        false
     }
 
     /// Open a single-module read view rooted at `module_path`.
@@ -3046,20 +2956,6 @@ where
             scalar_fastpath,
         };
         crate::resolve::resolve_type_expr(texpr, var_map, &ctx, span)
-    }
-
-    /// Check whether a constructor name refers to an internal constructor.
-    ///
-    /// Internal constructors (e.g. `Bind` for the IO type) cannot be
-    /// constructed or pattern-matched by user code.
-    pub(crate) fn is_internal_constructor(&self, state: &CheckState, name: &Symbol) -> bool {
-        // Strip module prefix for qualified names like "primitives/Bind"
-        let bare_name: &str = if let Some(slash_pos) = name.as_ref().find('/') {
-            &name.as_ref()[slash_pos + 1..]
-        } else {
-            name.as_ref()
-        };
-        self.is_internal_constructor_check_with_state(state, bare_name)
     }
 }
 

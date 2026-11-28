@@ -19,16 +19,6 @@ fn tf() -> TestFixture {
     TestFixture::with_content(FixtureBuilder::new())
 }
 
-/// Minimal fixture for the internal-constructor tests (FIXME 0243
-/// narrowing). These consult the seeded `IO` ADT in `primitives` (whose
-/// `Bind` constructor carries `internal: true`); `with_io()` seeds it and
-/// requires `with_builtin_type_names()` first (bootstrap order — IO's field
-/// types reference builtin scalars). Nothing heavier (special forms, the
-/// Ring 0/1/3 primitive `Def`s, the `macros` module) is consulted.
-fn tf_io() -> TestFixture {
-    TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io())
-}
-
 /// Test helper: create an FQTypeName in the "user" module (default current
 /// module for both `TestFixture::new()` and the narrowed `tf()`).
 fn user_fqtn(name: &str) -> FQTypeName {
@@ -2175,7 +2165,6 @@ fn test_build_constructor_scheme_nullary_mono() {
         name: Symbol::from("Red"),
         fields: vec![],
         docstring: None,
-        internal: false,
     };
     let adt_type = Type::ADT(user_fqtn("Color"), vec![]);
     let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
@@ -2200,7 +2189,6 @@ fn test_build_constructor_scheme_data_mono() {
             },
         ],
         docstring: None,
-        internal: false,
     };
     let adt_type = Type::ADT(user_fqtn("Point"), vec![]);
     let scheme = build_constructor_scheme(&ctor, &adt_type, &[]);
@@ -2225,7 +2213,6 @@ fn test_build_constructor_scheme_polymorphic() {
             ty: Type::Var(42),
         }],
         docstring: None,
-        internal: false,
     };
     let adt_type = Type::ADT(user_fqtn("Option"), vec![Type::Var(42)]);
     let scheme = build_constructor_scheme(&ctor, &adt_type, &[42]);
@@ -2237,107 +2224,5 @@ fn test_build_constructor_scheme_polymorphic() {
             vec![Type::Var(42)],
             Box::new(Type::ADT(user_fqtn("Option"), vec![Type::Var(42)]))
         )
-    );
-}
-
-// spec: 10-io §10.1 — is_internal_constructor returns true for internal ctors
-#[test]
-fn test_is_internal_constructor() {
-    let tc = tf_io();
-    let primitives_path = ModuleFullPath::from("primitives");
-    let env = tc.env();
-    // Bind carries `internal: true` on its `DefKind::Constructor`. Rooted
-    // at its home module (primitives), the check resolves the Constructor
-    // Def and reads the discriminator.
-    assert!(
-        env.is_internal_constructor_check_in_module(&primitives_path, "Bind"),
-        "Bind must be reported internal"
-    );
-    // Non-internal IO constructors return false.
-    assert!(!env.is_internal_constructor_check_in_module(&primitives_path, "Pure"));
-    assert!(!env.is_internal_constructor_check_in_module(&primitives_path, "Effect"));
-    // Unknown constructors return false.
-    assert!(!env.is_internal_constructor_check_in_module(&primitives_path, "NoSuchCtor"));
-}
-
-// spec: 10-io §10.1 — internal-ctor check chain-follows Import entries.
-//
-// Regression for the Wave-4c enforcement defect: when `Bind` is reachable
-// from a module via a glob import (the realistic shape — `user`/`test`
-// imports `primitives`), the `internal` discriminator must still be read
-// through the Import entry. A direct probe returned the Import (not the
-// Constructor Def) and silently reported `false`, so `(Bind …)` resolved
-// and compiled in user code.
-#[test]
-fn test_is_internal_constructor_through_import() {
-    use cranelisp_types::{FQSymbol, Symbol, Visibility};
-    let tc = tf_io();
-    let user_path = ModuleFullPath::from("user");
-    // Seed user-module Imports of `Bind` and its parent `IO` type from
-    // primitives — what a glob import of primitives materialises (both the
-    // constructor name and the type name land as Import entries).
-    {
-        let mut user_tbl = tc.modules.get_mut(&user_path).unwrap();
-        for (name, source) in [("Bind", "IO.Bind"), ("IO", "IO")] {
-            user_tbl
-                .expose_candidate(
-                    Symbol::from(name),
-                    FQSymbol {
-                        module: ModuleFullPath::from("primitives"),
-                        symbol: Symbol::from(source),
-                    },
-                    Visibility::Public,
-                )
-                .unwrap();
-        }
-    }
-    let env = tc.env();
-    assert!(
-        env.is_internal_constructor_check_in_module(&user_path, "Bind"),
-        "Bind imported into user must still be reported internal \
-             (chain-follow the Import to the primitives Constructor Def)"
-    );
-}
-
-// spec: 10-io §10.1 — exhaustiveness excludes internal constructors
-#[test]
-fn test_exhaustiveness_excludes_internal_constructors() {
-    let tc = tf_io();
-    let primitives_path = ModuleFullPath::from("primitives");
-    // IO has Pure (tag=0), Effect (tag=1), Bind (tag=2, internal).
-    // Exhaustiveness should only require Pure and Effect.
-    let covered = vec![Symbol::from("Pure"), Symbol::from("Effect")];
-    assert!(
-        tc.check_exhaustiveness_in_module(
-            &primitives_path,
-            &TypeName::from("IO"),
-            &covered,
-            false,
-            Span::SYNTHETIC,
-        )
-        .is_ok(),
-        "matching Pure + Effect should be exhaustive (Bind is internal)"
-    );
-
-    // Missing Effect should fail.
-    let covered = vec![Symbol::from("Pure")];
-    let err = tc
-        .check_exhaustiveness_in_module(
-            &primitives_path,
-            &TypeName::from("IO"),
-            &covered,
-            false,
-            Span::SYNTHETIC,
-        )
-        .unwrap_err();
-    assert!(
-        err.message().contains("Effect"),
-        "should report missing Effect, got: {}",
-        err.message()
-    );
-    // Should NOT mention Bind.
-    assert!(
-        !err.message().contains("Bind"),
-        "should not mention internal Bind"
     );
 }

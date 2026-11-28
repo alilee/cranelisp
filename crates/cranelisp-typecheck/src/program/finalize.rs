@@ -429,7 +429,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // S110 C-4 — re-settle any caller whose stored scheme was left spuriously
         // `Polymorphic` because the call in its body was an overloaded/multi-arity
         // dispatch DEFERRED past the FIXME-0349 re-generalize above. `(defn main []
-        // (Pure (h 7)))` calling `(defn h ([:Int x] x) …)` defers `(h 7)` at
+        // (pure (h 7)))` calling `(defn h ([:Int x] x) …)` defers `(h 7)` at
         // `infer.rs` (the `state.overloads` guard mints a fresh return var and
         // pushes a `pending_overload_resolution`); only `resolve_pending_overloads`
         // (just above) unifies that var with the selected variant's concrete `Int`

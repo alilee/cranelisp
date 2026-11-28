@@ -325,133 +325,117 @@ fn test_check_repl_expression() {
     assert!(result.display.as_ref().unwrap().scheme.is_none());
 }
 
-// spec: 10-io §10.1 — internal `Bind` constructor rejected in head position.
-//
-// `tc_with_prims()` glob-imports primitives into the `test` module, so
-// `Bind` is reachable exactly as it is in a real REPL/user module. The
-// application head must be rejected because `Bind` is internal. The
-// continuation arg is irrelevant — rejection happens at head resolution.
-#[test]
-fn test_internal_bind_constructor_rejected_in_head_position() {
+/// Parse and check `src` in a fresh `tc_with_prims()` fixture (the `test`
+/// module glob-imports `primitives`, so every `primitives` name is in scope).
+fn check_in_prims(src: &str) -> Result<crate::result::CheckResult, CranelispError> {
     let mut tc = tc_with_prims();
-    // (Bind (Pure 1) (Pure 2)) — only the head matters for this gate.
-    let input = TopLevel::Expr(Expr::Apply {
-        callee: Box::new(Expr::var(Symbol::from("Bind"), span(1, 5))),
-        args: vec![
-            Expr::Apply {
-                callee: Box::new(Expr::var(Symbol::from("Pure"), span(7, 11))),
-                args: vec![Expr::IntLit {
-                    value: 1,
-                    span: span(12, 13),
-                    inferred_type: None,
-                }],
-                span: span(6, 14),
-                resolved_call: None,
-                inferred_type: None,
-            },
-            Expr::Apply {
-                callee: Box::new(Expr::var(Symbol::from("Pure"), span(16, 20))),
-                args: vec![Expr::IntLit {
-                    value: 2,
-                    span: span(21, 22),
-                    inferred_type: None,
-                }],
-                span: span(15, 23),
-                resolved_call: None,
-                inferred_type: None,
-            },
-        ],
-        span: span(0, 24),
-        resolved_call: None,
-        inferred_type: None,
-    });
-    let err = tc
-        .check_repl_input_self(&input)
-        .expect_err("internal Bind constructor must be rejected in head position");
-    assert!(
-        err.message().contains("internal"),
-        "error should explain Bind is internal, got: {}",
-        err.message()
-    );
+    let sexps = cranelisp_frontend::parse(src).expect("parse");
+    let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+    tc.check_program_self(&program)
 }
 
-// spec: 10-io §10.1 — internal `Bind` constructor rejected in pattern position.
+/// Every spelling of an `IO` constructor: bare (reachable through the glob
+/// import), module-qualified, dotted, and qualified dotted.
+const IO_CTOR_SPELLINGS: &[&str] = &[
+    "Pure",
+    "Effect",
+    "Bind",
+    "primitives/Pure",
+    "primitives/Effect",
+    "primitives/Bind",
+    "IO.Pure",
+    "IO.Effect",
+    "IO.Bind",
+    "primitives/IO.Pure",
+    "primitives/IO.Bind",
+];
+
+// spec: 10-io §10.1 — `IO` is opaque: every spelling of an `IO` constructor
+// in expression position is an ordinary undefined name, not a gated one
+// (design/typecheck/io-types.md §1).
 #[test]
-fn test_internal_bind_constructor_rejected_in_pattern_position() {
-    let mut tc = tc_with_prims();
-    // (match (Pure 1) [(Bind a b) 0 _ 99])
-    let input = TopLevel::Expr(Expr::Match {
-        scrutinee: Box::new(Expr::Apply {
-            callee: Box::new(Expr::var(Symbol::from("Pure"), span(8, 12))),
-            args: vec![Expr::IntLit {
-                value: 1,
-                span: span(13, 14),
-                inferred_type: None,
-            }],
-            span: span(7, 15),
-            resolved_call: None,
-            inferred_type: None,
-        }),
-        arms: vec![
-            cranelisp_types::MatchArm {
-                pattern: cranelisp_types::Pattern::Constructor {
-                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("Bind")),
-                    bindings: vec![Symbol::from("a"), Symbol::from("b")],
-                    span: span(17, 27),
-                },
-                body: Expr::IntLit {
-                    value: 0,
-                    span: span(28, 29),
-                    inferred_type: None,
-                },
-                span: span(17, 29),
-            },
-            cranelisp_types::MatchArm {
-                pattern: cranelisp_types::Pattern::Wildcard { span: span(30, 31) },
-                body: Expr::IntLit {
-                    value: 99,
-                    span: span(32, 34),
-                    inferred_type: None,
-                },
-                span: span(30, 34),
-            },
-        ],
-        span: span(0, 35),
-        compiler_generated: false,
-        inferred_type: None,
-    });
-    let err = tc
-        .check_repl_input_self(&input)
-        .expect_err("internal Bind constructor must be rejected in pattern position");
-    assert!(
-        err.message().contains("internal"),
-        "error should explain Bind is internal, got: {}",
-        err.message()
-    );
+fn io_constructor_spellings_are_undefined_in_value_position() {
+    for spelling in IO_CTOR_SPELLINGS {
+        let err = check_in_prims(&format!("(defn f [] ({spelling} 1))"))
+            .expect_err(&format!("`{spelling}` must not resolve"));
+        let message = err.message();
+        assert!(
+            message.contains("undefined variable") && message.contains(spelling),
+            "`{spelling}` must be refused as an undefined name, got: {message}"
+        );
+        assert!(
+            !message.contains("internal"),
+            "`{spelling}` has no internal-constructor gate, got: {message}"
+        );
+    }
 }
 
-// spec: 10-io §10.2 — non-internal IO constructor `Pure` is accepted in
-// head position (the internal gate must not over-trigger on public ctors).
+// spec: 10-io §10.1 — no `IO` constructor spelling resolves in pattern
+// position; a bare arm on an `IO` scrutinee finds no `IO.Pure` key and no
+// bare candidate (design/typecheck/io-types.md §1).
 #[test]
-fn test_non_internal_constructor_accepted_in_head_position() {
+fn io_constructor_spellings_are_unknown_in_pattern_position() {
+    for spelling in IO_CTOR_SPELLINGS {
+        let err = check_in_prims(&format!(
+            "(defn f [:(IO Int) io] (match io [({spelling} x) 0 _ 1]))"
+        ))
+        .expect_err(&format!("pattern `{spelling}` must not resolve"));
+        let message = err.message();
+        assert!(
+            message.contains("unknown constructor in pattern") && message.contains(spelling),
+            "pattern `{spelling}` must be an unknown constructor, got: {message}"
+        );
+    }
+}
+
+// spec: 06-pattern-matching §6.2.2, 08-modules §8.6.6 — control for the two
+// refusal cells: a user sum type's constructors resolve in every spelling
+// the refusals use, in both positions.
+#[test]
+fn user_constructor_spellings_resolve_in_value_and_pattern_position() {
+    for spelling in ["Wrap", "test/Wrap", "Box2.Wrap", "test/Box2.Wrap"] {
+        check_in_prims(&format!(
+            "(deftype (Box2 a) Empty (Wrap [:a v]))
+             (defn f [] ({spelling} 1))
+             (defn g [b] (match b [({spelling} x) x Empty 0]))"
+        ))
+        .unwrap_or_else(|e| panic!("`{spelling}` must resolve: {}", e.message()));
+    }
+}
+
+// spec: 10-io §10.2 — a `pure` call resolves to the host-promised primitive
+// and is typed from its scheme (design/typecheck/io-types.md §5).
+#[test]
+fn pure_call_records_builtin_fn() {
     let mut tc = tc_with_prims();
-    // (Pure 1) — Pure is public; must typecheck cleanly.
-    let input = TopLevel::Expr(Expr::Apply {
-        callee: Box::new(Expr::var(Symbol::from("Pure"), span(1, 5))),
-        args: vec![Expr::IntLit {
-            value: 1,
-            span: span(6, 7),
-            inferred_type: None,
-        }],
-        span: span(0, 8),
-        resolved_call: None,
-        inferred_type: None,
-    });
-    let result = tc.check_repl_input_self(&input);
+    let sexps = cranelisp_frontend::parse("(defn f [] (pure 1))").expect("parse");
+    let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+    tc.check_program_self(&program)
+        .unwrap_or_else(|e| panic!("(pure 1) must check: {}", e.message()));
+
+    let resolutions: Vec<_> = tc.annotated_resolutions().into_values().collect();
     assert!(
-        result.is_ok(),
-        "public Pure constructor must be accepted, got: {:?}",
-        result.err().map(|e| e.message().to_string())
+        resolutions.iter().any(|r| matches!(
+            r,
+            cranelisp_types::ResolvedCall::BuiltinFn { name } if name.as_ref() == "pure"
+        )),
+        "the `pure` call must record BuiltinFn(pure), got {resolutions:?}"
+    );
+    let f = tc
+        .symbol_table()
+        .get("f")
+        .and_then(Binding::callable)
+        .cloned();
+    let scheme = f.expect("f is registered").arm.scheme;
+    assert_eq!(
+        scheme.ty,
+        Type::Fn(
+            vec![],
+            Box::new(Type::ADT(
+                FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO")),
+                vec![Type::Int]
+            ))
+        )
     );
 }
 

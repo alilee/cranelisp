@@ -16,16 +16,6 @@ fn tf() -> TestFixture {
     TestFixture::with_content(FixtureBuilder::new())
 }
 
-/// Fixture seeding the `IO` ADT in `primitives` (FIXME 0243 narrowing). The
-/// internal-constructor-gate tests publicly re-export `Bind` from
-/// `primitives` and chain-follow to read its `internal: true` discriminator,
-/// so the `primitives` `Bind` Constructor Def must actually exist —
-/// `with_io()` seeds it (and requires `with_builtin_type_names()` first,
-/// bootstrap order). Nothing heavier is consulted.
-fn tf_io() -> TestFixture {
-    TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names().with_io())
-}
-
 /// Fixture seeding builtin type names + the Ring 0/1/3 primitive `Def`s
 /// (FIXME 0243 narrowing). The trait-impl-resolution / dispatch-fallback
 /// tests glob-import `primitives` into a module and reference `add-i64` /
@@ -139,7 +129,6 @@ fn test_bare_module_has_root_contents_only() {
         "str-concat needs import"
     );
     assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
-    assert!(tf.symbol_table().get("Pure").is_none(), "Pure needs import");
     assert!(
         tf.symbol_table().get("SexpSym").is_none(),
         "SexpSym needs import"
@@ -1838,12 +1827,10 @@ fn prelude_private_trait_method_not_reachable() {
 // --- S78 §2 / FIXME 0317: constructor-resolution chokepoints fall back to
 // the implicit-prelude fallback ---
 //
-// The two ctor chokepoints the §2 work missed:
-//  - `lookup_constructor_type_with_state` (the pattern-ctor `exists` gate)
-//  - `is_internal_constructor_check_with_state` (the internal-ctor reject gate)
-// both rooted at `current_module` with no prelude-fallback retry. With the prelude
+// The pattern-ctor `exists` gate (`lookup_constructor_type_with_state`) was
+// rooted at `current_module` with no prelude-fallback retry. With the prelude
 // no longer flattened, a primitives ADT ctor re-exported through prelude is
-// not an Import entry in the user table, so these paths missed it.
+// not an Import entry in the user table, so that path missed it.
 
 // spec: 08-modules §8.6.4 — (a) a PUBLIC prelude ctor resolves in PATTERN
 // position via the prelude fallback. A bare ctor name absent from the
@@ -1968,88 +1955,14 @@ fn fq_sum_ctor_resolves_in_pattern_from_unimporting_module() {
     }
 }
 
-// spec: 10-io §10.1 + 08-modules §8.6.4 — (b) the internal-ctor reject gate
-// sees a PUBLIC-but-INTERNAL prelude ctor (`Bind`) through the fallback and
-// reports `internal: true`. `Bind` is registered `Visibility::Public` in
-// `primitives`; prelude PUBLICLY re-exports it; a user module reaching it via
-// the fallback must still have it rejected (its `internal: true` Constructor
-// discriminator, NOT its visibility, is the rejection).
-#[test]
-fn prelude_fallback_internal_ctor_gate_rejects_bind() {
-    let mut tf = tf_io();
-    // prelude PUBLICLY re-exports `Bind` from primitives (an Import edge,
-    // like `(export [primitives [*]])`).
-    tf.set_current_module(ModuleFullPath::from("prelude"));
-    tf.symbol_table_mut()
-        .expose_candidate(
-            Symbol::from("Bind"),
-            FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("IO.Bind"),
-            },
-            Visibility::Public,
-        )
-        .unwrap();
-    // Also re-export a NON-internal IO ctor `Pure` to prove the gate returns
-    // false for a reachable-but-not-internal ctor (not just "unreachable").
-    tf.symbol_table_mut()
-        .expose_candidate(
-            Symbol::from("Pure"),
-            FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("IO.Pure"),
-            },
-            Visibility::Public,
-        )
-        .unwrap();
-
-    let m = ModuleFullPath::from("app_bind");
-    tf.set_current_module(m.clone());
-    let state = CheckState::new(m.clone());
-
-    // Bit OFF: the user table has no `Bind`, so the gate misses it and (the
-    // §2 regression) fails to reject — false.
-    assert!(
-        !tf.env()
-            .is_internal_constructor_check_with_state(&state, "Bind"),
-        "bit OFF: `Bind` absent from the user table — gate cannot reject it"
-    );
-
-    // Bit ON: the gate falls back to prelude, chain-follows the re-export to
-    // the canonical primitives Constructor Def, and reads `internal: true`.
-    set_fallback_on(&tf, "app_bind");
-    assert!(
-        tf.env()
-            .is_internal_constructor_check_with_state(&state, "Bind"),
-        "bit ON: `Bind` is rejected as internal through the prelude fallback"
-    );
-    // A reachable-but-non-internal ctor (`Pure`) is NOT rejected.
-    assert!(
-        !tf.env()
-            .is_internal_constructor_check_with_state(&state, "Pure"),
-        "bit ON: `Pure` is reachable through the fallback but NOT internal"
-    );
-}
-
-// spec: 08-modules §8.6.4 — (c) bit OFF ⇒ no fallback for the ctor
-// chokepoints. With the bit absent/OFF, neither the pattern-ctor gate nor the
-// internal-ctor gate consults prelude.
+// spec: 08-modules §8.6.4 — (c) bit OFF ⇒ no fallback for the pattern-ctor
+// gate. With the bit absent/OFF, it does not consult prelude.
 #[test]
 fn prelude_fallback_ctor_chokepoints_off_when_bit_off() {
     use cranelisp_types::TypeName;
     let mut tf = tf();
-    // prelude PUBLICLY re-exports `Bind`, and defines a public ctor `Solo`.
+    // prelude defines a public ctor `Solo`.
     tf.set_current_module(ModuleFullPath::from("prelude"));
-    tf.symbol_table_mut()
-        .expose_candidate(
-            Symbol::from("Bind"),
-            FQSymbol {
-                module: ModuleFullPath::from("primitives"),
-                symbol: Symbol::from("IO.Bind"),
-            },
-            Visibility::Public,
-        )
-        .unwrap();
     tf.register_type_def_self(
         &TypeName::from("SoloT"),
         &None,
@@ -2075,11 +1988,6 @@ fn prelude_fallback_ctor_chokepoints_off_when_bit_off() {
             .lookup_constructor_type_with_state(&state, "Solo")
             .is_none(),
         "bit OFF: pattern-ctor gate must NOT fall back to prelude"
-    );
-    assert!(
-        !tf.env()
-            .is_internal_constructor_check_with_state(&state, "Bind"),
-        "bit OFF: internal-ctor gate must NOT fall back to prelude"
     );
 }
 

@@ -19,16 +19,15 @@ use cranelisp_types::{
 
 use crate::checker::{CheckState, TypeCheckEnv};
 
-/// Local typecheck-internal intermediate: a constructor with its resolved field
-/// types, used during `register_type_def` to build per-constructor `Def`
-/// entries. Not part of the cranelisp-types surface — the canonical store is
-/// the per-ctor `ModuleEntry::Def { kind: DefKind::Constructor, .. }` entry.
+/// A constructor with its resolved field types, turned into an
+/// `AdtCtorSpec` by `register_type_def_with_ctor_infos`. The canonical store
+/// is the constructor's callable binding, whose origin is
+/// `CallableOrigin::Ctor`.
 #[derive(Clone)]
 pub(crate) struct CtorBuild {
     pub name: Symbol,
     pub fields: Vec<FieldInfo>,
     pub docstring: Option<String>,
-    pub internal: bool,
 }
 
 impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
@@ -207,7 +206,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     c.name.clone(),
                     c.fields.clone(),
                     c.docstring.clone(),
-                    c.internal,
                 )
             })
             .collect();
@@ -407,7 +405,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             name: ctor.name.clone(),
             fields,
             docstring: ctor.docstring.clone(),
-            internal: false,
         })
     }
 
@@ -818,47 +815,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     location: ErrorLocation::from_span(span),
                 })?;
 
-        // Exclude internal constructors from exhaustiveness — user code cannot
-        // and need not cover them (design/typecheck/io-types.md §1). Per-ctor
-        // `internal` lives on `DefKind::Constructor.internal`; resolve each
-        // name to its Def in the type's defining module.
-        let ctor_internal_flags: Vec<(Symbol, bool)> = type_def
+        let all_ctors: std::collections::HashSet<String> = type_def
             .constructors
             .iter()
-            .map(|ctor_sym| {
-                // `dotted-ctor-registration.md` §4.2. A sum ctor's binding lives
-                // under the canonical `member_key(Type, Ctor)`; its bare spelling
-                // is only a candidate exposure. A bare-only probe would miss it,
-                // default `internal: false`, and require user matches on `IO` to
-                // cover the internal `Bind`. Probe the
-                // canonical key first, then the bare name, which serves the
-                // product dual-facet at the type-name key alone.
-                let internal = self
-                    .probe_module_entry_owned(
-                        &fq_type_name.module,
-                        member_key(&fq_type_name.name, ctor_sym.as_ref()).as_ref(),
-                    )
-                    .or_else(|| {
-                        self.resolve_terminal_entry_and_home(
-                            &fq_type_name.module,
-                            ctor_sym.as_ref(),
-                        )
-                        .map(|(e, _)| e)
-                    })
-                    .and_then(|e| {
-                        e.callable().and_then(|callable| match &callable.origin {
-                            CallableOrigin::Ctor { internal, .. } => Some(*internal),
-                            _ => None,
-                        })
-                    })
-                    .unwrap_or(false);
-                (ctor_sym.clone(), internal)
-            })
-            .collect();
-        let all_ctors: std::collections::HashSet<String> = ctor_internal_flags
-            .iter()
-            .filter(|(_, internal)| !*internal)
-            .map(|(name, _)| name.as_ref().to_string())
+            .map(|name| name.as_ref().to_string())
             .collect();
 
         // Normalise covered constructor names to their bare terminal segment so

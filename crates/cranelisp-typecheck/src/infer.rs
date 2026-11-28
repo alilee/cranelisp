@@ -379,15 +379,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // Reject internal constructors (e.g. Bind) — they cannot be
-        // constructed by user code, only by compiler-generated primitives.
-        if self.is_internal_constructor(state, &Symbol::from(name)) {
-            return Err(CranelispError::TypeError {
-                message: format!("cannot construct internal type constructor '{name}'"),
-                location: ErrorLocation::from_span(span),
-            });
-        }
-
         // Constrained polymorphic functions cannot be used as bare values
         // (spec §3.6.6). They must be called with arguments so concrete
         // types can be determined for monomorphisation.
@@ -1846,15 +1837,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         scrutinee_ty: &Type,
         span: Span,
     ) -> Result<(), CranelispError> {
-        // Reject internal constructors (e.g. Bind) in pattern matching.
-        // Internal constructors are implementation details not meant for user code.
-        if self.is_internal_constructor(state, name) {
-            return Err(CranelispError::TypeError {
-                message: format!("cannot match on internal type constructor '{name}'"),
-                location: ErrorLocation::from_span(span),
-            });
-        }
-
         // Trigger 3 (S70): populate `MethodResolutions.pattern_ctors` keyed
         // by `pat_span` (FQ-typed sidecar; the bare `Symbol` must not slip into
         // backend codegen). The pattern ctor name may be **dotted** (`Maybe.Some`,

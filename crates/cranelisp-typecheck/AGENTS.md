@@ -88,9 +88,10 @@ Canonical: spec §8.6; [`use-site-candidate-selection.md`](../../design/typechec
   lookup such as `lookup_type_def_in_module`: another type's constructor may
   share the spelling, and the scope resolve then reports it as ambiguous
   ([typecheck §3.3](../../design/typecheck/typecheck.md#33-cross-module-lookups)).
-- An internal constructor (`IO`'s `Bind`) is rejected by its `internal: true`
-  flag on `CallableOrigin::Ctor`, read through the fallback — not by
-  visibility. It is Public, so the public-only filter must not hide it.
+- No constructor is internal: visibility alone decides who may name one.
+  `IO` is opaque because it has no constructors, so its spellings miss through
+  the ordinary paths. Do not add a name-keyed gate or exhaustiveness exemption
+  ([IO typing §1](../../design/typecheck/io-types.md#1-constructors-and-opacity)).
 - A bare `/` or `//` is a value name, not a qualified reference. The
   non-empty-parts guard lives in `cranelisp-types`; file against `arch`
   rather than short-circuiting it here.

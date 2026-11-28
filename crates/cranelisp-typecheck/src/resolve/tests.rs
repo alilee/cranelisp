@@ -81,7 +81,6 @@ fn product_ctor_entry(name: &str, arity: usize) -> Entry {
                 type_name: test_fqtn(name),
                 tag: 0,
                 field_count: 0,
-                internal: false,
                 type_def: Some(Box::new(info)),
             },
             Realization::Body { view, code: None },

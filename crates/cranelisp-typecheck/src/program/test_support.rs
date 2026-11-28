@@ -120,7 +120,7 @@ pub(crate) fn make_defn(
 /// Narrowed (FIXME 0243) from `TestFixture::new()` (= `full()`) to the
 /// content the program-level pipeline tests in this file consume: builtin
 /// type names + the Ring 0/1/3 primitive `Def`s + the synthetic `macros`
-/// module + the IO ADT (`Bind`/`Pure`/`Effect` are referenced directly).
+/// module + the `IO` type with `bind`/`pure`.
 /// Only `with_special_forms()` is dropped — special forms are resolved at
 /// the AST level, never via symbol-table name lookup, and no test in this
 /// file probes the special-form entries. Bootstrap order requires

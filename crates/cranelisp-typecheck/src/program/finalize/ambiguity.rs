@@ -268,7 +268,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// **Why position-complete (the 0379 hole).** The old scanner only applied
     /// the verdict on `Expr::Let` binding values, but a free `Type::Var` reaches
     /// codegen through many NON-`let` value positions — a `match` scrutinee
-    /// (`(Pure (match (id Non) …))`), a fn-call arg, a vec element, a ctor field,
+    /// (`(pure (match (id Non) …))`), a fn-call arg, a vec element, a ctor field,
     /// an `if` branch, a `ParBind` binding. Those were recursed-into but not
     /// CHECKED, so an unpinned `(Option a)` in such a position slipped past both
     /// this check AND the backend codegen. The recursion was already complete (via

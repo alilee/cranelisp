@@ -423,20 +423,6 @@ impl TestFixture {
             .check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
     }
 
-    /// Check exhaustiveness in a specific module (test convenience).
-    pub fn check_exhaustiveness_in_module(
-        &self,
-        module_path: &ModuleFullPath,
-        type_name: &TypeName,
-        covered: &[Symbol],
-        has_wildcard: bool,
-        span: Span,
-    ) -> Result<(), CranelispError> {
-        let fqtn = cranelisp_types::FQTypeName::new(module_path.clone(), type_name.clone());
-        self.env()
-            .check_exhaustiveness_in_module(&fqtn, covered, has_wildcard, span)
-    }
-
     /// Fresh var (test convenience).
     pub fn fresh_var(&self) -> Type {
         self.env().fresh_var()
