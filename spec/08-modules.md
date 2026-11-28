@@ -75,7 +75,7 @@ In the REPL, an inline `(mod name ...)` writes the backing file and loads the su
 
 Declares `internal` as a private submodule, accessible only within the declaring module and its submodule subtree. Other modules MUST NOT import from or reference names in a private submodule. Surfacing a private submodule's symbol as an importable result — e.g. advertising it in a REPL `/search` row with an `(import …)` hint (`repl/spec/17a-agent-language-awareness.md §17.19.2`) — counts as such a reference and MUST NOT occur; a private submodule's names are not eligible for import from outside its subtree.
 
-### 8.2.5 File Resolution [S124 — partial: a declared child of a module found in a library directory is loaded from a same-path file earlier on the search path (tests/spec_08_modules::s124_declared_child_run_not_replaced_by_project_file, tests/spec_08_modules::s124_declared_child_link_not_replaced_by_project_file, tests/spec_08_modules::s124_declared_child_cached_not_replaced_by_new_project_file and tests/spec_08_modules::s124_declared_child_not_replaced_by_earlier_library_file fail; ACT-1096). Tested tests/spec_08_modules::bare_mod_decl_resolves_nested_child_for_entry_main, tests/spec_08_modules::s124_declared_child_project_module_override_control — a child under the project root, and a project module that replaces a library module with its own child]
+### 8.2.5 File Resolution [Tested+Neg tests/spec_08_modules::s124_declared_child_run_not_replaced_by_project_file, tests/spec_08_modules::s124_declared_child_link_not_replaced_by_project_file, tests/spec_08_modules::s124_declared_child_cached_not_replaced_by_new_project_file, tests/spec_08_modules::s124_declared_child_not_replaced_by_earlier_library_file, tests/spec_08_modules::bare_mod_decl_resolves_nested_child_for_entry_main, tests/spec_08_modules::s124_declared_child_project_module_override_control — a declared child resolves only beside its declaring file; a project-root `(mod helper)` whose child exists only in a library is refused (S125: tests/spec_08_modules::stdlib_module_compiles_and_runs asserts the superseded acceptance and is re-baselined)]
 
 When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file to the child directory path only:
 
@@ -251,7 +251,11 @@ Using `super` in a top-level module (one with no parent) MUST produce a compile-
 
 This is the standard way for test submodules to access the code under test.
 
-> **Known limitation — mutual-import deadlock.** `super` is supported for one-directional child → parent imports. If the parent module imports anything (directly or transitively) from a child that uses `(import [super ...])`, the compiler's form-by-form scheduler deadlocks during typechecking: the parent blocks on the child's signatures while the child (via `super`) blocks on the parent's. A conforming implementation MAY reject this configuration with a diagnostic, but MUST NOT silently produce a non-terminating compilation. Authors SHOULD NOT construct parent↔child mutual-import cycles. Under `--test` the compiler discovers every test module's tests itself ([REPL §0.2.2](../repl/spec/00-cli-invocation.md#022-test-mode---test-s122)), so no test submodule needs to reach its parent's tests. In the REPL, test submodules that need to enumerate their parent's symbols SHOULD use the `discover-tests` primitive (import-required and REPL-only; see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)) — it observes the parent's symbol table at runtime, returning late-bound callables, without requiring a `super` import, avoiding the deadlock entirely. Running a discovered test is simply invoking its callable; a panic ends the process (user ruling, 2026-11-15; §12.7), and there is no separate `run-test` builtin. See `design/arch/AGENTS.md` Decision 30 for the underlying pass-order constraint. A future language version may redesign the module-loading pass order to lift this restriction; no timeline is promised.
+A child's import of its parent is permitted when no dependency cycle results.
+A parent's `mod` declaration alone introduces no dependency edge (§8.10.1),
+so it does not make the child's `super` import cyclic. If the parent also
+imports from that child, directly or transitively, the resulting cycle MUST
+be refused under §8.10.2.
 
 ### 8.3.9 Multiple Module Import
 
@@ -623,7 +627,7 @@ The load-on-reference obligation is subject to the following normative edges.
 
 Name resolution converts source-level names into their definitions. An implementation MUST follow the resolution layers defined in this section.
 
-### 8.6.1 Resolution Layers
+### 8.6.1 Resolution Layers [Tested+Neg tests/spec_09_macros::s125_arg_scope_unimported_argument_refused_repl, tests/spec_09_macros::s125_arg_scope_unimported_argument_refused_run, tests/spec_09_macros::s125_arg_scope_bare_call_refused_control_repl, tests/spec_09_macros::s125_arg_scope_bare_call_refused_control_run, tests/spec_09_macros::s125_arg_scope_caller_import_control_repl, tests/spec_09_macros::s125_arg_scope_caller_import_control_run, tests/spec_09_macros::s125_arg_scope_template_dependency_control_repl, tests/spec_09_macros::s125_arg_scope_template_dependency_control_run — module scope is the caller's for a bare name written in a macro argument: a name the caller has not imported is refused though the macro's module imports it, and accepted once the caller imports it; the expansion's own reference still resolves]
 
 Resolution proceeds through three layers, in order:
 
@@ -868,7 +872,7 @@ Platform modules are loaded from dynamic libraries (DLLs) via the `platform` spe
 
 The platform name is resolved to a DLL file via the platform DLL search order (§8.11.3). This registers a synthetic module named `platform.stdio` containing the functions exported by the platform library. Every platform function MUST return `IO _`.
 
-A platform function is foreign native code: the compiler cannot inspect its body and therefore cannot verify whether it performs side effects. The compiler MUST trust the declared signature. A platform function whose declared type were pure (e.g. `(Fn [a] b)`) would be treated as pure by the typechecker — eligible for memoization, reordering, elision, and lenient/parallel sparking — while the foreign host is free to perform arbitrary effects. Treating unverifiable foreign code as pure is therefore unsound. The only sound treatment is to require every platform function to sequence its effects through `IO`, so the requirement is **unconditional** — not conditioned on whether the function "appears to" perform side effects. The platform ABI contract (§[10.10](10-io.md#1010-platform-abi-contract)) describes the corresponding C-ABI level. (A trusted-pure foreign-function escape hatch, if ever introduced, would be a separate explicit feature — never the default.)
+A platform function is foreign native code: the compiler cannot inspect its body and therefore cannot verify whether it performs side effects. The compiler MUST trust the declared signature. A platform function whose declared result type contained no `IO` (e.g. `(Fn [Int] Int)`) would be treated as an ordinary computation by the typechecker — eligible for memoization, reordering, elision, and lenient/parallel sparking — while the foreign host is free to perform arbitrary effects. Treating unverifiable foreign code as pure is therefore unsound. The only sound treatment is to require every platform function to sequence its effects through `IO`, so the requirement is **unconditional** — not conditioned on whether the function "appears to" perform side effects. The platform ABI contract (§[10.10](10-io.md#1010-platform-abi-contract)) describes the corresponding C-ABI level. (A trusted-pure foreign-function escape hatch, if ever introduced, would be a separate explicit feature — never the default.)
 
 Platform module names follow the pattern `platform.<name>`.
 
@@ -878,11 +882,17 @@ Synthetic modules are always known to the module system. Their names are seeded 
 
 ## 8.10 Module Compilation Order [Tested tests/spec_08_modules::module_cycle_detection_neg]
 
-### 8.10.1 Dependency Graph
+### 8.10.1 Dependency Graph [Tested tests/spec_08_modules::s124_declared_child_graph_batch_routes_agree, tests/spec_08_modules::s124_declared_child_graph_repl_orders_agree — a `mod` declaration alone is no edge (S125-Q1); S125 — the importing twin, whose import from the child is an edge, allocated (T-1081)]
 
-The implementation MUST construct a dependency graph from module declarations (`mod`, `import`, `export`, `platform`) and the implicit prelude import (§8.8.1), and compile modules in **topological order** -- dependencies before dependents. [Tested+Neg tests/spec_08_modules::prelude_dependency_without_opt_out_neg_rejected_as_cycle_in_every_mode, tests/spec_08_modules::prelude_dependency_with_null_import_runs_in_every_mode_control, tests/repl_persist::prelude_save_exporting_x_neg_refused_as_cycle_like_restart — the implicit prelude import as a graph edge, and a null import as none; the other declaration kinds are evidenced under §8.3–§8.5 and §8.10.2]
+The implementation MUST construct a dependency graph from module dependencies (`import`, `export`, `platform`) and the implicit prelude import (§8.8.1), and compile modules in **topological order** -- dependencies before dependents. [Tested+Neg tests/spec_08_modules::prelude_dependency_without_opt_out_neg_rejected_as_cycle_in_every_mode, tests/spec_08_modules::prelude_dependency_with_null_import_runs_in_every_mode_control, tests/repl_persist::prelude_save_exporting_x_neg_refused_as_cycle_like_restart — the implicit prelude import as a graph edge, and a null import as none; the other declaration kinds are evidenced under §8.3–§8.5 and §8.10.2]
 
-### 8.10.2 Circular Dependencies
+A `mod` declaration establishes containment, not a dependency edge. Importing
+from the declared child does introduce a dependency edge. For example, if
+`P` only declares `(mod c)`, `P.c` imports `z`, and `z` imports `P`, those
+relationships do not form a dependency cycle. If `P` also imports from `P.c`,
+the dependency chain `P → P.c → z → P` is a cycle and MUST be refused.
+
+### 8.10.2 Circular Dependencies [Tested+Neg tests/spec_08_modules::s124_declared_child_graph_neg_failed_module_evaluates_next_turn, tests/spec_08_modules::s124_declared_child_graph_batch_acyclic_control; S125 — a cycle through an import from a declared child, on every route, allocated (T-1081)]
 
 Circular dependencies MUST be detected and reported as a compile-time error. Two modules that mutually depend on each other (directly or transitively) cannot be compiled.
 
@@ -923,7 +933,7 @@ main.cl                 ; depends on prelude (implicit)
 
 The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
-### 8.11.2 Module Resolution Search Order [S124 — partial: a project file at the path of a library module's child is loaded in the child's place (tests/spec_08_modules::s124_declared_child_run_not_replaced_by_project_file, tests/spec_08_modules::s124_declared_child_link_not_replaced_by_project_file and tests/spec_08_modules::s124_declared_child_cached_not_replaced_by_new_project_file fail; ACT-1096) and is offered by `/search` (no cell yet: T-MOD-CHILD-INDEX). Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module, tests/spec_08_modules::s124_declared_child_project_module_override_control — the search order]
+### 8.11.2 Module Resolution Search Order [Tested+Neg tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module, tests/spec_08_modules::s124_declared_child_project_module_override_control, tests/search::s124_child_index_not_offering_project_file, tests/search::s124_child_index_offering_library_child, tests/search::s124_child_index_qualified_project_member_not_callable — the search order, and a project file at a library child's path is neither loaded nor offered]
 
 When resolving a module name to a file, the implementation MUST search in this order:
 
@@ -938,13 +948,23 @@ When `m` resolves to the library file `lib/m.cl`, a project file
 loaded, because it cannot be addressed from a fully-qualified name. Its
 presence alone MUST NOT be an error.
 
-#### 8.11.2.1 Bare-Name Precedence: Current-Module-Relative Submodule Wins [Tested+Neg tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module — within one compilation unit; a declaration in a later REPL turn is unsettled (ACT-0995)]
+#### 8.11.2.1 Bare-Name Precedence: Current-Module-Relative Submodule Wins [S126 — partial: Tested+Neg tests/spec_08_modules::import_and_export_of_undeclared_file_backed_child_resolve_to_root_module, tests/spec_08_modules::qualified_name_to_undeclared_registered_child_resolves_to_root_module, tests/spec_08_modules::project_root_shadows_stdlib — the precedence rule, unchanged by S125-Q10-R1, in `import`, `export`, alias and qualified position under `--run`: a declared child wins over the root module, also when the root was loaded first, and an undeclared file-backed child does not. The later-declaration refusal and its unchanged-state clause are unimplemented, no cell (ACT-0995; condition in the S125 evidence delta §26.2)]
 
 The search order above is **first-match**: the first tier that yields a file resolves the name, and later tiers are not consulted. This is normative in the one shape where two tiers can both match a bare name — the **dual-name shape**:
 
 > When a bare module name `name` is resolved from **inside** module `M`, and **both** a current-module-relative submodule `M.name` (tier 1, registered via `(mod name)` in `M`) **and** a root module `name` (tier 2, `{project_root}/name.cl`) exist, the resolution MUST bind the **submodule** `M.name`. The current-module-relative submodule wins; the root module is not consulted for that bare reference.
 
-This is the nearest-scope reading: a bare name inside a module first means "the submodule I declared," and only falls through to the project root and lib directories when no such submodule exists. It holds uniformly for every position that resolves a bare module name — `(import [name …])`, `(export [name …])`, and the `(mod name)`-registered reference itself — so a bare name never resolves to the submodule in one position and the root module in another within the same module `M`. To refer to the root module `name` from inside `M` when a submodule `M.name` also exists, name it by its own path (the root module `name` is reachable as the peer it is), not as a bare reference that tier 1 would capture first.
+This is the nearest-scope reading: a bare name inside a module first means "the submodule I declared," and only falls through to the project root and lib directories when no such submodule exists. It holds uniformly for every position that resolves a bare module name — `(import [name …])`, `(export [name …])`, and the `(mod name)`-registered reference itself — so a bare name never resolves to the submodule in one position and the root module in another within the same module `M`. No root-addressing form is provided to bypass this precedence. To address root `q` from inside `M` when child `M.q` captures bare `q`, the user MUST remove the naming collision. [S125 — no cell allocated: the sentence states that no form exists and adds no observable to the precedence rule, which the heading's cells evidence (S125 evidence delta §27.1)]
+
+**Later REPL declaration after an import.** If an earlier REPL turn in
+module `M` imported root module `q` through bare `q`, a later `(mod q)`
+declaring child `M.q` MUST be rejected as an ambiguous-import error. This
+applies to `(import [q])` and to an import selecting names from `q`, such as
+`(import [q [g]])`. [S126 — unimplemented, no cell (ACT-0995)]
+
+A turn refused by this ambiguous-import error MUST leave the session and its
+backing source unchanged; it MUST NOT retain the proposed child declaration.
+[S126 — unimplemented, no cell (ACT-0995; condition in the S125 evidence delta §26.2)]
 
 **Example.** Given a project with a root module `child.cl` **and** a submodule `parent.child` (declared by `(mod child)` inside `parent.cl`):
 

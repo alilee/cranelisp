@@ -2,7 +2,7 @@
 
 <a id="18-redefinition-semantics--dependent-recompilation-broken-symbols-and-the-frozen-world"></a>
 
-## 18. Redefinition Semantics — Guarded Publication and Stable Identities [S121]
+## 18. Redefinition Semantics — Guarded Publication and Stable Identities [S121] [S125 — the language §9.6.1 restriction and the shrinking re-entry refusal: see language §9.6.1's band] [S126 — the refusal of a later `(mod q)` after an import of `q`: see language §8.11.2.1's band]
 
 Redefinition is a later compilation cluster proposing a new definition for a
 canonical name that is already committed in the live session. A second form for
@@ -30,6 +30,20 @@ This guarantee does not promise an all-old or all-new generation snapshot for
 a computation already running or for calls occurring concurrently during
 publication.
 
+[Language §9.6.1](../../spec/09-macros.md#961-redefinition-of-macro-generated-definitions)
+governs redefinition of macro-generated definitions: it refuses replacement
+of a live generated definition by a later form, governs identical-call
+re-entry (including refusal when a redefined macro would drop a previously
+generated name), and accepts reload that drops the call and defines the name
+by hand. The declaration-class permissions below are subject to that rule.
+Persistence
+replaces the owning authored entry under §15.4 and §15.6: a written form owns
+itself, and a macro call owns all its generated definitions as one unit. A
+hand-written top-level `begin` entered at the REPL dissolves into member
+entries for persistence only; a macro-produced `begin` belongs to its macro
+call's entry (§15.4). This does not change the checking and publication
+atomicity specified here.
+
 Live redefinition of one canonical name MUST preserve its declaration class.
 Single-signature and multi-signature `defn` declarations are one callable class
 governed by §§18.1–18.3; macros, nominal types, and traits are separate declaration
@@ -38,6 +52,12 @@ declaration and backing source retained. Changing declaration class requires a
 persisted-source reload/restart or a new canonical name. This restriction does
 not change the distinct-canonical, same-spelling candidate rule in
 [`spec/08-modules.md` §8.6.4](../../spec/08-modules.md#864-module-scope-candidate-registration).
+
+These redefinition permissions do not authorize a later child declaration
+`(mod q)` after an earlier import of root `q` through bare `q`. Language
+[§8.11.2.1](../../spec/08-modules.md#81121-bare-name-precedence-current-module-relative-submodule-wins)
+governs that declaration's ambiguous-import refusal and the unchanged state of
+the refused turn.
 
 The future-only macro and trait-default template rules (§18.4, §18.6)
 deliberately leave already-generated definitions at their materialized bodies

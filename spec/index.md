@@ -25,7 +25,7 @@ This document specifies the Cranelisp programming language. It describes the syn
 Cranelisp is a statically typed, pure functional Lisp. Its design priorities are:
 
 - **Static types with inference**: Hindley-Milner type inference with traits, constrained polymorphism, and higher-kinded types. No type annotations are required for most programs.
-- **Purity via IO type**: Side effects are tracked in the type system via the `IO` type. Pure functions cannot perform IO.
+- **Purity and IO**: Calling a function performs no effect; effects are described by `IO` values and executed only by the runtime ([§3.2.3](03-types.md#323-io-type), [§10.8](10-io.md#108-deferred-execution-task--trampoline)).
 - **Clojure-flavored syntax**: S-expressions with square brackets for parameter lists and vector literals. Commas are whitespace.
 - **Self-documenting**: Every construct in the language produces useful feedback when queried — its type, value, or description.
 - **Clojure-inspired naming**: Where a standard library is provided, naming follows Clojure conventions where possible.

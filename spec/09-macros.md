@@ -165,7 +165,7 @@ Macro bodies are full Cranelisp expressions. They MAY use:
 - Recursive calls (including via helper functions)
 - All `Sexp` and `SList` constructors
 
-Macro bodies MUST NOT perform IO operations. They are pure functions from `Sexp` to `Sexp`.
+Macro bodies MUST NOT perform IO operations. Their result type is `Sexp`, not `IO Sexp`.
 
 ### 9.2.6 Multi-Clause Macros [Tested+Neg tests/spec_09_macros::defmacro_multi_clause_dispatch, src/expander.rs::no_matching_clause_error_reports_user_span_and_clause_arities]
 
@@ -286,11 +286,16 @@ Implementations SHOULD limit the number of expansion iterations to prevent infin
 ;; Fixed point reached (no more macros)
 ```
 
-### 9.3.4 Macro Availability and Definition Order [S124 — partial: an expansion that references a macro of its own module is refused unless the using module also imports that macro (tests/spec_09_macros::s124_macro_sibling_outerq_subject_repl, tests/spec_09_macros::s124_macro_sibling_outerq_subject_run, tests/spec_09_macros::s124_macro_sibling_outerq_subject_link, tests/spec_09_macros::s124_macro_sibling_outer_subject_repl, tests/spec_09_macros::s124_macro_sibling_outer_subject_run and tests/spec_09_macros::s124_macro_sibling_outer_subject_link fail; ACT-1100). Tested+Neg tests/s76_macro_availability::macro_used_before_defmacro_is_unresolved_neg, tests/s76_macro_availability::macro_defined_before_use_expands, tests/spec_09_macros::macro_persists_across_evals]
+### 9.3.4 Macro Availability and Definition Order [Tested+Neg tests/spec_09_macros::s125_q4_macro_private_outside_run, tests/spec_09_macros::s125_q4_macro_private_submodule_run, tests/spec_09_macros::s125_q4_macro_public_run, tests/spec_09_macros::s125_q4_function_private_outside_run, tests/spec_09_macros::s125_q4_function_private_submodule_run, tests/spec_09_macros::s125_q4_function_public_run, tests/spec_09_macros::s125_q4_macro_private_outside_repl, tests/spec_09_macros::s125_q4_macro_private_submodule_repl, tests/spec_09_macros::s125_q4_macro_public_repl, tests/spec_09_macros::s125_q4_function_private_outside_repl, tests/spec_09_macros::s125_q4_function_private_submodule_repl, tests/spec_09_macros::s125_q4_function_public_repl — a reference introduced by an expansion is checked against the caller's visibility (S125-Q4): a private macro or function of the defining module is refused outside its subtree and accepted inside it, and a public one is accepted, REPL and `--run`] [Tested tests/spec_09_macros::s124_macro_sibling_outerq_subject_repl, tests/spec_09_macros::s124_macro_sibling_outerq_subject_run, tests/spec_09_macros::s124_macro_sibling_outerq_subject_link, tests/spec_09_macros::s124_macro_sibling_outer_subject_repl, tests/spec_09_macros::s124_macro_sibling_outer_subject_run, tests/spec_09_macros::s124_macro_sibling_outer_subject_link, tests/spec_09_macros::s125_1100_expand_parity_preserves_user_argument — an expansion that calls a macro of its own module, bare or qualified, expands in a using module that imports only the outer macro, in every mode; a user argument stays as written] [Tested+Neg tests/s76_macro_availability::macro_used_before_defmacro_is_unresolved_neg, tests/s76_macro_availability::macro_defined_before_use_expands, tests/spec_09_macros::macro_persists_across_evals]
 
 **A macro MUST be defined before it is used, in source order.** Within a module (and within a REPL `(begin …)` cluster), a `defmacro` is available only to forms that *follow* its successful compilation checkpoint (§9.12.1). A use of a name that appears textually before its `defmacro`, or after a failed `defmacro` attempt for which no prior definition exists, is **not** a macro call: it is an ordinary reference that passes through to the AST builder, and fails name resolution there if the name is otherwise undefined. (This is the *defmacro-before-use* rule; it is the same rule whether the code runs in the REPL or in a batch file — see [Section 5.13.2](05-definitions.md#5132-repl-input-boundary-and-begin-clusters).) Once a checkpoint succeeds, a failure in a later form does not withdraw that macro.
 
 **A macro's expansion may reference only:** (a) definitions in modules that are **dependencies** of the macro's defining module — i.e. modules typechecked before it (the compiler typechecks-and-compiles such a dependency just-in-time when an expansion first needs it; per §8.5.4 lazy loading); and (b) **macros**, including macros defined earlier in the same module (macros are the compile-time layer and depend only on prior modules). **A macro's expansion MUST NOT reference a same-module non-macro definition** (a `defn`, `def`, `const`, `deftype` constructor, or trait method defined in the same module). Such definitions are processed *after* macro expansion (see the three-pass model, §9.12) and do not exist when the macro expands; a macro that needs a helper MUST place that helper in a dependency module, or inline the logic into the macro body.
+
+References introduced by a macro expansion MUST satisfy visibility from the
+caller's module (§8.7.3). An expansion that references a private macro of its
+defining module MUST be refused when invoked outside that module's subtree.
+Qualification conveys identity, not access; it does not bypass this check.
 
 The module dependency graph is **acyclic**: a dependency typechecked before a module cannot in turn depend on that module.
 
@@ -457,6 +462,29 @@ source-ordered compilation-checkpoint semantics as an authored `defmacro`;
 generation by macro expansion does not join it to a later non-macro publication
 cluster (§9.12.1).
 
+### 9.6.1 Redefinition of Macro-Generated Definitions [S125 — partial: a later written form or another call is refused, Tested+Neg tests/generated_definition_persistence::s125_q51_function_turn_redefinition_neg, tests/generated_definition_persistence::s125_q51_type_turn_redefinition_neg, tests/generated_definition_persistence::s125_q51_impl_turn_redefinition_neg, tests/generated_definition_persistence::s125_q52_arguments_neg, tests/generated_definition_persistence::s125_q52_other_macro_neg, tests/generated_definition_persistence::s125_q51_written_redefinition_control, tests/generated_definition_persistence::s125_q51_function_file_redefinition_neg, tests/generated_definition_persistence::s125_q51_type_file_redefinition_neg, tests/generated_definition_persistence::s125_q51_impl_file_redefinition_neg, tests/repl_persist::s125_w7_r2_generated_macro_turn_redefinition_refused, tests/repl_persist::s125_w7_r2_generated_macro_file_redefinition_refused — functions, types, impls and macros, generated at the REPL or by a file's call, the macro case through its checkpoint; identical re-entry replaces, Tested tests/generated_definition_persistence::s125_q52_same_replaces, tests/generated_definition_persistence::s125_q52_qualified_replaces; a shrinking re-entry is refused naming the dropped definition, with live definitions and backing file unchanged, Tested+Neg tests/generated_definition_persistence::s125_q9_shrinking_reentry_refused_without_changing_live_definitions_or_file, tests/generated_definition_persistence::s125_q9_superset_reentry_control, tests/generated_definition_persistence::s125_q9_unchanged_reentry_control; a reload whose file drops the call accepts a written definition, Tested+Neg tests/generated_definition_persistence::s125_q53_reload_retires_generated_origin, tests/generated_definition_persistence::s125_q53_one_file_duplicate_neg_run, tests/generated_definition_persistence::s125_q53_one_file_duplicate_neg_link, tests/generated_definition_persistence::s125_q53_one_file_duplicate_neg_reload — a file holding both the call and a written duplicate is refused in every mode. Named residual: a definition generated by a continuation resumed inside an expansion (S125 evidence delta §19.3)]
+
+A definition generated by a live macro call MUST NOT be redefined by a later
+form, including a different call to the same macro or a call to another macro.
+This restriction applies in REPL turns and within a reloaded file, even where
+ordinary redefinition, including `impl` hot reload (§5.4.5), would otherwise
+allow replacement.
+
+Identically re-entering a macro call at the REPL (same macro, same arguments)
+MAY replace the definitions previously generated by that call. If, after the
+macro is redefined, the identical call's new expansion would omit any name
+previously defined by that call, the re-entry MUST be refused with a diagnostic
+naming the definitions it would drop; the live definitions and backing file
+MUST remain unchanged. This refusal rule does not apply when the new expansion
+retains every previously defined name, with or without additional names. A call to the same macro with
+different arguments is refused if it would redefine a live generated
+definition. To change a generated definition otherwise, the user edits the
+generating macro call in its file and reloads the file.
+
+A reloaded file replaces the module. If it no longer contains the macro call,
+a hand-written definition of a previously generated name MUST be accepted
+under this rule: it is not a redefinition of a live generated definition.
+
 ## 9.7 SList Helper Functions [Uncovered S121]
 
 Macro authors typically need helper functions for `SList`. A standard library may provide functions such as the following; these optional library helpers are distinct from the public primitive `macros/sconcat` (§9.7.3), also used by unquote-splicing (§9.7.0).
@@ -609,6 +637,10 @@ reported at the `defmacro` form.
 
 ### 9.9.4 Runtime Error During Expansion
 
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
+
 If a macro function raises a runtime error during expansion (e.g., pattern match failure on an unexpected `Sexp` variant), the implementation MUST report this as a compile-time error at the macro call site.
 
 ```clojure
@@ -726,9 +758,9 @@ Note: `list` builds user-visible `List` values (using `Cons`/`Nil`), while `slis
 ```
 
 An illustrative IO-sequencing macro, expanding to `primitives/bind` and
-anonymous continuations (§10.4). All operands produce IO values. Pure expression
-sequencing instead uses nested `let` bindings; discarding a constructed IO
-value in `let` does not execute its effect (§10.8).
+anonymous continuations (§10.4). All operands produce IO values. Expression
+sequencing without executing IO values instead uses nested `let` bindings;
+discarding a constructed IO value in `let` does not execute its effect (§10.8).
 
 ```clojure
 (do (print "a") (print "b") (print "c"))
@@ -992,6 +1024,10 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 ```
 
 ## 9.12 Bootstrapping Order [Tested+Neg tests/spec_09_macros::macro_persists_across_evals, tests/s76_macro_availability::macro_generates_defmacro_available_to_later_use, tests/s76_macro_availability::generated_macro_checkpoint_is_not_replayed_after_later_dependency_gap_neg]
+
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
 
 **User ruling, 2026-11-15.** A runtime panic while executing a macro expansion ends the compiler process under [§12.7](12-runtime.md#127-error-model), including in the REPL and during embedded-agent validation. It is not converted into a recoverable expansion error.
 

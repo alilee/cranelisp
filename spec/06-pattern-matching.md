@@ -2,7 +2,7 @@
 
 This section defines the syntax, semantics, and type-checking rules for pattern matching in Cranelisp. Pattern matching is used to inspect algebraic data type values and bind their components to variables.
 
-## 6.1 Match Expression Syntax [Tested tests/spec_06_pattern_matching::match_enum_basic]
+## 6.1 Match Expression Syntax [S126 — nonconforming: a match with no constructor-pattern arm is accepted (S125-Q6); about 92 test programs use the refused form (S125 evidence delta §7). Tested tests/spec_06_pattern_matching::match_enum_basic]
 
 The `match` special form inspects a value (the **scrutinee**) against a series of **arms**, each consisting of a pattern and a body expression.
 
@@ -20,7 +20,10 @@ The scrutinee is any expression. Arms are listed inside square brackets as alter
    ...])
 ```
 
-A `match` expression MUST contain at least one arm.
+A `match` expression MUST contain at least one constructor-pattern arm
+(§6.2.1–§6.2.2). A match containing only wildcard and/or variable arms MUST
+be refused at compile time, for every scrutinee type. Use `let` to bind a
+value without inspecting a constructor.
 
 **Example:**
 
@@ -115,7 +118,7 @@ The wildcard pattern matches any value and binds nothing. It is typically used a
    _   "not red"])
 ```
 
-### 6.2.4 Variable Pattern [Tested+Neg tests/spec_06_pattern_matching::pattern_variable_binds_value, tests/dotted_binder_reject_0702.rs::match_dotted_var_pattern_rejected_binder_neg, tests/dotted_binder_reject_0702.rs::match_bare_var_pattern_accepts_twin_green]
+### 6.2.4 Variable Pattern [Tested+Neg tests/spec_06_pattern_matching::pattern_variable_binds_value, tests/dotted_binder_reject_0702.rs::match_dotted_var_pattern_rejected_binder_neg, tests/dotted_binder_reject_0702.rs::match_bare_var_pattern_accepts_twin_green] [S126 — tests/spec_06_pattern_matching::pattern_variable_binds_value uses a variable-only match, refused under §6.1]
 
 ```clojure
 name
@@ -144,10 +147,9 @@ A **dotted** symbol in head position of a pattern is always a constructor patter
    _        0])
 ; x is bound to 42 in the first arm
 
-;; Binding the entire scrutinee
-(match some-value
-  [result (+ result 1)])
-; 'result' binds to whatever some-value evaluates to
+;; Binding the entire value without constructor inspection uses let
+(let [result some-value]
+  (+ result 1))
 ```
 
 ## 6.3 Pattern Matching Semantics [Tested]
@@ -217,7 +219,7 @@ Every `match` expression MUST be statically guaranteed to handle all possible va
 
 ### 6.5.1 ADT Scrutinee Types [Tested+Neg tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg]
 
-When the scrutinee type resolves to a concrete ADT (a type defined via `deftype`), a `match` expression MUST be **exhaustive**: either every constructor of the ADT appears as a constructor pattern in at least one arm, or at least one arm uses a wildcard or variable pattern (which covers all remaining cases).
+When the scrutinee type resolves to a concrete ADT (a type defined via `deftype`), a `match` expression MUST satisfy §6.1's constructor-arm requirement and be **exhaustive**: either every constructor of the ADT appears as a constructor pattern in at least one arm, or at least one arm uses a wildcard or variable pattern (which covers all remaining cases).
 
 A non-exhaustive match on a concrete ADT type is a **compile-time error**. The error message MUST name the type and list the uncovered constructors.
 
@@ -236,31 +238,33 @@ A non-exhaustive match on a concrete ADT type is a **compile-time error**. The e
 (match c [Red 1 Green 2])
 ```
 
-### 6.5.2 Non-ADT Scrutinee Types [Tested+Neg tests/spec_06_pattern_matching::pattern_int_match_with_wildcard]
+### 6.5.2 Non-ADT Scrutinee Types [S126 — nonconforming: wildcard- and variable-only matches on non-ADT scrutinees are accepted (S125-Q6); was Tested+Neg tests/spec_06_pattern_matching::pattern_int_match_with_wildcard, which asserts the superseded rule]
 
-When the scrutinee type is not a concrete ADT — i.e., it is `Int`, `Bool`, `Float`, `String`, a function type, or a type variable — the type has no finite set of constructors that could be enumerated. In this case, a `match` expression MUST include at least one **wildcard pattern** (`_`) or **variable pattern** as a catch-all arm. A `match` on a non-ADT scrutinee type without a wildcard or variable pattern is a **compile-time error**.
-
-**Rationale:** Cranelisp has no panic/recovery mechanism. The language guarantees that well-typed programs do not encounter runtime match failure. Since non-ADT types cannot be fully enumerated by constructor patterns (there is no way to list all possible `Int` or `String` values as patterns), a catch-all arm is the only way to ensure exhaustiveness.
-
-**Example:**
+The constructor-arm requirement (§6.1) applies to non-ADT scrutinees too.
+A scrutinee type with no available constructor patterns, such as `Int`,
+`Bool`, `Float`, `String`, or a function type, cannot satisfy it: wildcard
+or variable arms alone MUST NOT make the match admissible. Literal patterns
+are not supported (§6.6.2). Use `let` for binding and `if` for conditional
+selection on these types.
 
 ```clojure
-;; VALID: variable pattern catches all Int values
-(match n
-  [x (+ x 1)])
+;; REFUSED: no constructor-pattern arm
+(match n [x (+ x 1)])
+(match s [_ "matched"])
+(match b [x (if x 1 0)])
 
-;; VALID: wildcard catches all String values
-(match s
-  [_ "matched"])
-
-;; VALID: variable pattern on Bool scrutinee
-(match b
-  [x (if x 1 0)])
+;; Bind without matching
+(let [x n] (+ x 1))
 ```
 
-Note: `Bool` is a primitive type, not an ADT defined via `deftype`. Since literal patterns are not supported (see Section 6.6.2), there is no way to write constructor patterns for `true` or `false`. A `match` on a `Bool` scrutinee MUST use a wildcard or variable pattern to satisfy exhaustiveness.
+A type variable constrained by a constructor pattern must resolve compatibly
+with that constructor (§6.4.1); it is not exempt from §6.1.
 
 ### 6.5.3 Runtime Safety Net [Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg]
+
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
 
 The runtime panic path ("match failed") remains in generated code as a safety net, but SHOULD be unreachable in programs that pass the exhaustiveness check.
 
@@ -294,9 +298,9 @@ reports `invalid pattern`).
    _ "other"])    ; compile-time error: invalid pattern
 ```
 
-Use `if` expressions, `case`, or constructor-based wrappers instead. To match
-on a scalar, bind it with a variable pattern and dispatch in the arm body (see
-[§6.5.2](#652-non-adt-scrutinee-types)).
+Use `if` expressions or constructor-based wrappers instead. For a scalar,
+use `let` to bind it and `if` to select a result; a variable-only match is
+refused under [§6.1](#61-match-expression-syntax).
 
 ### 6.6.3 No Or-Patterns [Tested tests/spec_06_pattern_matching::pattern_first_match_wins]
 

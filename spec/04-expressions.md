@@ -513,6 +513,10 @@ E |- (match scrutinee [pattern_i body_i ...]) => result
 
 ### 4.8.1 Evaluation Order [Tested tests/spec_06_pattern_matching::pattern_nullary_constructor, tests/spec_06_pattern_matching::nested_match_in_arm_body]
 
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
+
 1. The scrutinee is evaluated first, producing a value.
 2. Patterns are tested top-to-bottom against the scrutinee value.
 3. The first pattern that matches wins. Its body is evaluated in the current environment extended with any pattern bindings.
@@ -682,6 +686,10 @@ E |- [e1 e2 ... eN] => <Vec [v1, v2, ..., vN]> : (Vec T)
 
 ## 4.11 Evaluation Order Summary [S124 — partial rollup; was Tested (evidence delta §14.14, row 23)]
 
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
+
 Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are fully evaluated before their results are consumed. The evaluation order within each expression form is:
 
 | Form | Evaluation Order |
@@ -809,6 +817,10 @@ Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in th
 There is no `trace-nanos` function. The accessor name is `nanos`, matching the field name in the `TraceCall` definition.
 
 ### 4.12.5 Nested Trace [S124 — partial. Tested tests/trace::trace_nested_dynamic_raises_runtime_error — a form entered while its thread records. A form entered inside an unrecorded form (S124-Q18) has no cell: no fixture built from user commands makes a form unrecorded]
+
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
 
 A `(trace ...)` expression MUST NOT be evaluated while another `(trace ...)` is actively tracing on the same thread. An implementation MUST raise a runtime error when a `(trace ...)` form is entered while that thread is actively recording an enclosing `(trace ...)` body — whether the inner form appears lexically:
 

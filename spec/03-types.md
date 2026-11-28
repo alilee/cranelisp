@@ -62,7 +62,7 @@ The compiler-seeded `primitives/Option` has the shape
 use this type, independently of any library. Bare names require imports under
 §8.9.1. A local `Option` in an example does not replace the seeded type.
 
-### 3.2.3 IO Type [S124 — nonconforming; see §10.1 (ACT-1108)]
+### 3.2.3 IO Type [Tested+Neg — the opaque type at §10.1; an `IO` value in a non-`IO` position is refused at §10.1.2]
 
 ```
 IO(A)
@@ -70,7 +70,7 @@ IO(A)
 
 `IO` is an opaque built-in type representing an effectful computation that produces a value of type `A`. Its public operations and the prohibition on user construction and pattern matching are specified in [§10.1](10-io.md#101-io-type).
 
-`IO` is defined in the `primitives` module and participates in standard Hindley-Milner inference. Functions that perform side effects (printing, reading input, etc.) MUST return `IO`. Pure functions MUST NOT return `IO`.
+`IO` is defined in the `primitives` module and participates in standard Hindley-Milner inference. Evaluation never performs an effect. An effect occurs only when the runtime executes an `IO` value ([§10.8](10-io.md#108-deferred-execution-task--trampoline)), so every operation that describes an effect MUST have an `IO` result. “Pure” means that calling a function performs no effect; every Cranelisp function, including `print`, is pure in this sense.
 
 ### 3.2.4 Trace Type [Tested crates/cranelisp-typecheck/src/builtins.rs::test_vec_primitives_registered]
 
@@ -120,6 +120,10 @@ Result(A, B)
 `Result` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported into user scope: user code must import it explicitly (e.g., `(import [primitives [Result Ok Err]])`) or use qualified names (e.g., `primitives/Ok`). `catch-runtime-error` is removed (user ruling, 2026-11-15; §12.7); `Result` remains an ordinary error-value type. Both constructors carry data, so both are heap-allocated.
 
 ### 3.2.6 Pair Type [Tested tests/spec_03_types::vec_as_function_return_type]
+
+> **Superseded failure policy (2026-11-28):** the panic/runtime-error or
+> platform-failure policy below is subject to [S125-Q12](appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap).
+> The older wording is retained pending the next-sprint rewrite.
 
 ```
 Pair(A, B)
@@ -500,6 +504,7 @@ All elements MUST have the same type. The result is `Vec` applied to the element
 #### Match Expression
 
 ```
+at least one arm has a constructor pattern (§6.1)
 G |- scrut : T_scrut
 t_result = fresh_var()
 for each arm (pattern_i => body_i):
@@ -721,9 +726,9 @@ Primitive types (`Int`, `Bool`, `String`, `Float`) are rejected as HKT impl targ
 
 Kind checking is **implicit**. There is no explicit kind annotation syntax (e.g., `* -> *`). Instead, the arity of a constructor variable is determined by its usage in method signatures: if `f` appears as `(f a)`, it has arity 1; if as `(f a b)`, arity 2. Validation occurs at impl registration time when the target type's parameter count is checked against the expected arity.
 
-### 3.7.6 Dispatch
+### 3.7.6 Dispatch [S126 — a higher-kinded method with no constructor-bearing parameter is refused at its declaration (§7.2.2, S125-Q3): unimplemented, no cell]
 
-HKT trait methods dispatch through the standard trait resolution mechanism (see [Section 7](07-traits.md)). The dispatch parameter is determined by scanning the method's parameter types for the first one containing a constructor application. For `fmap`, the second parameter `(f a)` carries the constructor, so dispatch uses the second argument.
+HKT trait methods dispatch through the standard trait resolution mechanism (see [Section 7](07-traits.md)). The dispatch parameter is determined by scanning the method's parameter types for the first one containing a constructor application. For `fmap`, the second parameter `(f a)` carries the constructor, so dispatch uses the second argument. Every HKT method must have such a parameter; declaration-time refusal when none exists is specified in [§7.2.2](07-traits.md#722-method-signatures).
 
 HKT methods are **not** constrained polymorphic functions. Although the scheme carries constraints on constructor variables, the trait dispatch mechanism -- not monomorphisation -- resolves the concrete implementation. At every call site, the concrete type constructor is known.
 

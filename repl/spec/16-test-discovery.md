@@ -109,7 +109,7 @@ discover-tests :: (Fn [(Vec String)] (Vec (Pair String (Fn [] (Option String))))
 
 The primitive takes exactly one argument, an ordinary `(Vec String)` value of module-path strings — not a bare module path.
 
-The result MUST be the vector itself, not an `IO` action: discovery is pure-typed, and its result is treated notionally as a constant. Introspection is deliberately not modelled as an effect, so that test discovery does not require an introspective platform. The freshness requirement below still applies.
+The result MUST be the vector itself, not an `IO` action: discovery has a non-`IO` result type, and its result is treated notionally as a constant. Introspection is deliberately not modelled as an effect, so that test discovery does not require an introspective platform. The freshness requirement below still applies.
 
 Returns one `(Pair name callable)` per eligible `test-*` function:
 

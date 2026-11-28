@@ -156,8 +156,9 @@ concatenation. The general principle is recorded in
 [§8.8.3](08-modules.md#883-empty-prelude).
 ACT-1095 is resolved. Its claim was verified by opening §11.4, §9.7.0,
 `crates/cranelisp-frontend/src/quasiquote.rs` (`make_sconcat`),
-`stdlib/core/syntax.cl`, and `stdlib/plan-stdlib.md` §6.5: the expander emits
-`macros/sconcat`, while `core.syntax` defines no `sconcat`.
+`stdlib/core/syntax.cl`, and
+[the stdlib plan §3.3](../stdlib/plan-stdlib.md#33-module-notes): the expander
+emits `macros/sconcat`, while `core.syntax` defines no `sconcat`.
 
 **Closed remainder — S124-Q12-R1, user ruling, 2026-11-22.** Put to
 the user: `macros/sconcat` is a public primitive at the type it has today,
@@ -247,7 +248,7 @@ Examples use the [explicit scope convention](index.md#example-scope) and
 | CL05 | `Functor`, `fmap` | §3.7; §7.2, §7.7.5, §7.8; B introduction | User/library higher-kinded trait and collection implementations | **Library** — single-parameter HKT declaration and ADT implementations, including a thunk-based `Seq`. |
 | CL06 | `pure` | §3.2.3; §10.1–§10.2, §10.3 examples, §10.5–§10.8; §12.4; B.12–B.13 | Public interface to opaque built-in IO; no language constructor | **Language** — user ruling, 2026-11-22: `primitives/pure` is the public function; the constructor is private. |
 | CL07 | `bind` | §3.2.3; §9.10.5; §10.3–§10.5, §10.8, §10.12; §12.4; B introduction | Primitive IO composition in §10.3; the opaque-IO ruling removes §3.2.3's former library-definition claim | **Language** — `primitives/bind`; opaque IO composition cannot be implemented as a user ADT or by running a platform effect in user code. |
-| CL08 | `do` | §5.1.1; §9.10.4; §10.4, §10.5.3; §12.4–§12.5; B | Prelude macro and `do-build`; §9.10.4 shows nested `let`, §10.4 shows nested `bind` | **Library** — §10.4 and §9.10.4 illustrate IO sequencing over `primitives/bind`; nested `let` is pure-expression sequencing. |
+| CL08 | `do` | §5.1.1; §9.10.4; §10.4, §10.5.3; §12.4–§12.5; B | Prelude macro and `do-build`; §9.10.4 shows nested `let`, §10.4 shows nested `bind` | **Library** — §10.4 and §9.10.4 illustrate IO sequencing over `primitives/bind`; nested `let` sequences expressions without executing IO values. |
 | CL09 | `bind!` sugar | §9.10.5; §10.5, §10.12; §12.4; B.4, B.13 | Prelude macro, `bind!-fold`, `bind` and `fn`; §10.12 additionally requires compiler analysis of its chains | **Library** — §10.5 explicitly says library macro, not language requirement. Core scheduling is independently specified under CL10. |
 | CL10 | Automatic scheduling, resource ordering and launch rules expressed over `bind!` / `do` chains | §10.12.1–§10.12.10; §12.4.1, §12.4.3–§12.4.4, §12.5; C.3.2 | Language obligations name library sugar as the analysis/sequencing surface | **Language over core composition** — analyze expanded `primitives/bind` chains; no sugar recognition is required. |
 | CL11 | `cond` | §9.10.8; B introduction | Prelude macro, `cond-fold`; nested `if` expansion | **Library** — the user's explicit example in the 2026-11-21 ruling. |
@@ -375,26 +376,472 @@ owns the unrecorded root's shape and result.
 
 ## S124-Q19: May a pure function return an IO value?
 
-**Open — put to the user on 2026-11-22; no answer recorded.**
+**Closed — user ruling, 2026-11-26.** Put to the user: neither original
+option A (replace the prohibition with “Pure functions MUST NOT perform
+effects”) nor B (reserve “pure” for non-IO results) resolves the terminology
+collision. In normative text, “pure” means only that calling a function
+performs no effect; under §10.8 every Cranelisp function, including `print`,
+is pure. Evaluation never performs an effect: only runtime execution of an
+`IO` value does, so every operation describing an effect has an `IO` result.
+Where the intended distinction is a result type containing no `IO`, state
+that distinction explicitly; executing such a function's result cannot cause
+an effect. `primitives/pure` retains its conventional lifting name, which
+makes no separate claim about the function's purity. Answer, verbatim:
 
-**Problem.** [§3.2.3](03-types.md#323-io-type) states “Pure functions MUST NOT
-return `IO`.” [§10.2](10-io.md#102-pure) specifies `primitives/pure` as a
-function returning `(IO a)` without performing a side effect, and
-[§10.3.1](10-io.md#1031-semantics) says calling `bind` performs no effect.
-The return-type prohibition and effect-free construction therefore need a
-consistent account of purity. The requirement in §3.2.3 remains unchanged
-pending the user's ruling.
+> agree with the ruling
 
-**Options and tradeoffs.**
+Neither original option A nor B is adopted. The ruling distinguishes
+functional purity, absence of `IO` in a result type, and the function named
+`pure`. [§3.2.3](03-types.md#323-io-type) owns the terminology and evaluation
+rule; [§10.1.2](10-io.md#1012-purity-guarantee) owns the non-IO-result
+guarantee; [§10.2](10-io.md#102-pure) explains the lifting name;
+[§10.7](10-io.md#107-effect-tracking) uses the result-type distinction;
+[§10.8](10-io.md#108-deferred-execution-task--trampoline) owns runtime
+execution. The approval is recorded in
+[Sprint 125 phase approvals](../sprints/SPRINT.md#phase-approvals).
 
-- **A — the wording put to the user:** replace “Pure functions MUST NOT return
-  `IO`” with “Pure functions MUST NOT perform effects”. This distinguishes
-  constructing an IO value from executing its effects and permits the
-  effect-free construction described in §10.2 and §10.3.1. Related purity and
-  effect-tracking prose would need checking against that distinction.
-- **B — retain the return-type prohibition:** reserve “pure function” for
-  functions returning non-IO values, and describe effect-free IO construction
-  separately. This preserves §3.2.3 but requires consistent terminology for
-  functions that construct IO values without performing effects.
+## S125-Q1: Can a declared-child edge close a module dependency cycle?
 
-The user decides which meaning and wording govern; neither option is a ruling.
+**Closed — user ruling, 2026-11-26.** The user's words:
+
+> I don't [think a] child mod is necessarily a cycle until something is imported from it.
+
+[§8.10.1](08-modules.md#8101-dependency-graph) distinguishes containment
+from dependency: `mod` alone is not an edge; importing from the child is.
+[§8.3.8](08-modules.md#838-super-import) permits the child's import of
+its parent unless actual dependencies close a cycle, which §8.10.2 refuses.
+Thus `P` declaring `c`, `P.c` importing `z`, and `z` importing `P` is accepted
+when `P` does not depend on `P.c`.
+
+## S125-Q2: What do two impl forms for the same pair mean in one cluster?
+
+**Closed — user ruling, 2026-11-26.** The user's answer:
+
+> A
+
+The selected option refuses two `impl` forms for the same
+`(trait, target-type)` pair in one cluster; the whole cluster fails.
+[§5.4.5](05-definitions.md#545-implementation-semantics) records that
+refusal and retains whole-pair replacement on re-entry in a later turn.
+`sprint` routes the ruling to `qa` and `design` on typecheck for the
+[ACT-0985 item 1](../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md#request)
+handoff.
+
+## S125-Q3: May an HKT method carry its constructor variable only in its result?
+
+**Closed — user ruling, 2026-11-26.** The user's answer:
+
+> A, maybe B later
+
+[§7.2.2](07-traits.md#722-method-signatures) requires every HKT method to
+have a parameter whose type applies the constructor variable; a result-only
+occurrence is refused at the trait declaration.
+[§3.7.6](03-types.md#376-dispatch) links this admission rule to selection
+of the first constructor-bearing parameter. Result-directed dispatch (option B)
+is a non-normative future direction in
+[§7.12.2](07-traits.md#7122-future-extensions), not a current requirement.
+This concerns trait methods, not `primitives/pure`. `sprint` routes the ruling
+to `qa` and `design` on typecheck for
+[ACT-0985 item 3](../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md#request).
+
+## S125-Q4: Which module's visibility governs a macro-introduced private macro call?
+
+**Closed — user ruling, 2026-11-26.** The user's answer:
+
+> A
+
+[§9.3.4](09-macros.md#934-macro-availability-and-definition-order) applies
+the caller's visibility to macro-introduced references. An expansion referring
+to a private macro of its defining module is refused outside that module's
+subtree; qualification conveys identity, not access. The existing prohibition
+on same-module non-macro expansion references stands. `sprint` returns the
+ruling to `design` on `src/` and `qa` for the
+[binary design's open question](../design/int/s125-binary-clean.md#open-questions).
+
+## S125-Q5: May regeneration write a surviving macro-generated sibling as expanded source?
+
+**Closed — user ruling, 2026-11-26**, new option C. The user's answer:
+
+> C - redefinition of a macro-generated name is blocked.
+
+[§9.6.1](09-macros.md#961-redefinition-of-macro-generated-definitions)
+refuses redefinition of a live macro-generated definition by a later form,
+both in REPL turns and within a reloaded file. The user changes the generating
+macro call instead; the R1 and R2 rulings below settle same-call re-entry and
+reload that drops the call. Consequently the split-call regeneration case does
+not arise.
+[§5.4.5](05-definitions.md#545-implementation-semantics) makes hot reload
+subject to this restriction;
+[REPL §15.4 and §15.6](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+and [§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
+qualify their general replacement rules accordingly. The existing template
+re-expansion qualification remains distinct from same-call re-entry.
+
+`sprint` returns the changed regeneration premise to `design` on `src/` and
+`qa`, with the follow-up rulings below; it does not authorize either proposed
+split representation in the [binary design §4.2](../design/int/s125-binary-clean.md#42-authored-order-1005).
+
+## S125-Q5-R1: May re-entering the same macro call replace its generated definitions?
+
+**Closed — user ruling, 2026-11-26.**
+
+**Question.** May re-entering the same macro call replace the definitions
+previously generated by that call, or must the user edit the original call
+in the backing source and reload it?
+
+The user's answer:
+
+> yes
+
+[§9.6.1](09-macros.md#961-redefinition-of-macro-generated-definitions)
+permits re-entering the same macro call to replace its own generated
+definitions. A different form, including a different macro call or a call to
+another macro, remains a later form and cannot redefine a live generated name.
+
+**Clarification — user ruling, 2026-11-26.** The user's words:
+
+> we should strictly limit redefs for now. later we'll loosen it by recompiling dependent modules.
+
+At the REPL, same-call re-entry means an identical call: the same macro with
+the same arguments. A call to that macro with other arguments cannot replace
+its live generated definitions. Changing a generated definition otherwise
+requires editing the generating call in its file and reloading, as specified
+in §9.6.1.
+
+**Non-normative future direction.** The restriction is expected to loosen once
+dependent modules are recompiled on redefinition. This records no requirement
+for the future mechanism.
+
+## S125-Q5-R2: May reload drop a macro call and define a previously generated name by hand?
+
+**Closed — user ruling, 2026-11-26.**
+
+**Question.** If a reloaded file no longer contains the macro call and now
+defines a previously generated name by hand, is that refused?
+
+The user's answer:
+
+> accept
+
+[§9.6.1](09-macros.md#961-redefinition-of-macro-generated-definitions)
+accepts this case: the reloaded file replaces the module, so the hand-written
+definition is not a redefinition of a live generated one.
+[REPL §15.4 and §15.6](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+and [§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
+refer to the same rule. `sprint` returns both follow-up rulings to `design` on
+`src/` and `qa` for design and evidence planning.
+
+## S125-Q6: Must a match contain a constructor-pattern arm?
+
+**Closed — user ruling, 2026-11-26.** The user's answer:
+
+> refuse
+
+[§6.1](06-pattern-matching.md#61-match-expression-syntax) requires at
+least one constructor-pattern arm in every `match`, for every scrutinee
+type. Wildcard-only and variable-only matches are refused; §6.2.4 and
+§6.5.2 no longer illustrate them as accepted.
+[§10.1](10-io.md#101-io-type) links this general rule to the prohibition
+on matching IO, without introducing an IO-specific typechecking rule.
+
+The input was [QA's census §7](../tests/plan/s125-evidence-delta.md#7-census-match-forms-with-no-constructor-arm):
+no example, stdlib or exemplar program is affected; approximately 92 test
+programs are affected, subject to the census's stated parsing limits.
+The requirement stands now. Implementation is for a later sprint, likely
+S126; `sprint` owns recording that schedule and routing the corpus migration
+and evidence allocation to `qa`, `test` and `design` on typecheck.
+
+## S125-Q7: What is the unit of source persistence?
+
+**Closed — user ruling, 2026-11-27.**
+
+**Question.** Is the persistence unit the authored entry, identically for
+file-loaded and REPL-entered source: a written definition owns itself, a macro
+call owns everything its expansion defines, a top-level `begin` dissolves into
+member entries, and a multi-module `import` contributes one entry per module
+spec? Does regeneration write each entry once in authored order, replacing a
+redefined entry in place, so the backing file records authored entries rather
+than the exact grouping typed, while turn atomicity remains unchanged?
+
+The user's answer:
+
+> yes
+
+[REPL §15.4](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+records the entry model, ordering and normalization: a REPL turn follows the
+existing file entries; a REPL-entered `begin` member's position is its place
+in the `begin`. On the next save, those members and the module specs of a
+multi-module `import` become separate forms. S125-Q8 below retains the
+prohibition on hand-written top-level `begin` in file source. Files that are
+only loaded are never rewritten. The file is “a faithful record of the authored entries, in the
+order entered”.
+[REPL §15.6](../repl/spec/15-session-persistence.md#156-redefinition) and
+[§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
+apply replacement to the owning entry without changing checking or commit
+atomicity. [Language §9.6.1](09-macros.md#961-redefinition-of-macro-generated-definitions)
+already governs identical macro-call re-entry and editing the generating call
+in its file; it needs no change.
+
+`sprint` returns the changed obligations to `design` on `src/` and to `qa` for
+evidence reassessment, including the former begin-written-once expectations.
+Traceability annotations are left untouched for `qa` under this dispatch.
+
+## S125-Q8: Does authored-entry persistence admit a hand-written begin in a file?
+
+**Closed — user ruling, 2026-11-27.**
+
+**Question.** Does S125-Q7's authored-entry persistence model remove
+[language §9.6](09-macros.md#96-multi-form-expansion-begin)'s prohibition on a
+hand-written top-level `begin` in batch (file) source, or admit one in a
+REPL-backed file?
+
+The user's answer:
+
+> agree to keep the prohibition - that is consistent.
+
+§9.6's prohibition stands: a hand-written top-level `begin` MUST NOT appear
+in batch (file) source; an implementation SHOULD report an error.
+[REPL §15.4](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+limits authored-entry dissolution to a hand-written `begin` entered at the
+REPL. A `begin` produced by macro expansion belongs to that macro call's entry.
+Regeneration never writes a top-level `begin`, so regenerated files contain
+none. REPL §18 refers to the same distinction.
+
+## S125-Q9: May identical macro-call re-entry drop a previously generated definition?
+
+**Closed — user ruling, 2026-11-27.**
+
+**Question.** After a macro is redefined, may an identical re-entry of a macro
+call at the REPL replace its previous expansion if the new expansion no longer
+defines some name the previous expansion defined?
+
+The user's answer:
+
+> agree to refuse
+
+[Language §9.6.1](09-macros.md#961-redefinition-of-macro-generated-definitions)
+requires refusal, naming the definitions the new expansion would drop. The
+live definitions and backing file remain unchanged. A re-entry defining the
+same or a larger set of names is unaffected by this refusal rule.
+[REPL §15.4 and §15.6](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+and [§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
+refer to that rule.
+
+**Non-normative future direction.** Loosening redefinition through recompiling
+dependents may later allow a shrinking set of generated definitions. This
+records no requirement for that future mechanism.
+
+`sprint` returns both rulings to `design` on `src/` and to `qa` for design and
+evidence reassessment. Traceability annotations are left untouched under this
+dispatch.
+
+## S125-Q10: What happens to an earlier import when a later turn declares a same-named child?
+
+**Closed — user ruling, 2026-11-27:** "(mod q) after (import [q]) should be an error ambiguous import."
+Source: [ACT-0995](../sprints/actions/ACT-0995-repl-later-submodule-declaration-resolution.md).
+
+[§8.11.2.1](08-modules.md#81121-bare-name-precedence-current-module-relative-submodule-wins)
+requires the later child declaration to be rejected as an ambiguous import.
+This covers the action's scenario in module `user`: an earlier
+`(import [q [g]])` resolves to root `q`, then a later turn proposes `(mod q)`
+for child `user.q`. The declaration is rejected rather than accepted with
+retargeted imports or retained per-turn resolutions.
+[REPL §15.4](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+and [§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
+refer to this restriction; persistence ordering and redefinition permissions
+do not authorize that declaration.
+
+Verified against the action's `refers_to` specifications: language
+§8.11.2.1 and REPL §15.4, §15.6 and §18. Opened
+`design/int/int.md`'s REPL-turn-order residual and
+`src/process_form/form_dispatch.rs::record_submodule_on_symbol_table`;
+these remain design and source-read leads, not newly executed evidence.
+The companion decisions are recorded in S125-Q10-R1 below.
+
+**Handoff.** `sprint` returns the ruling to `design` on `src/` and `qa` for
+implementation and evidence through ACT-0995. Closing this ruling does not
+close that action's delivery obligations. Traceability annotations are left
+untouched under this dispatch.
+
+## S125-Q10-R1: Root addressing and child-declaration lifetime after the ambiguous-import refusal
+
+**Closed — user ruling, 2026-11-27:** "1 agreed" to both recommendations:
+
+- No root-addressing form is added. When child `M.q` captures bare `q`, the
+  user removes the collision to address root `q`.
+- A turn refused by the ambiguous-import error changes nothing and keeps no
+  proposed child declaration.
+
+Normative home:
+[§8.11.2.1](08-modules.md#81121-bare-name-precedence-current-module-relative-submodule-wins).
+This replaces that section's former advice to address the root by its own path;
+it does not introduce a new spelling. The refused-turn rule is confined to
+this ambiguous-import refusal.
+
+Authority: the Phase 5 checkpoint ruling recorded in
+[the sprint plan](../sprints/SPRINT.md#phase-approvals).
+[REPL §15.4](../repl/spec/15-session-persistence.md#154-regeneration-integrity)
+and [§18](../repl/spec/18-redefinition.md#18-redefinition-semantics--guarded-publication-and-stable-identities)
+refer to the language rule.
+
+**Handoff.** `sprint` routes both companion rulings through
+[ACT-0995](../sprints/actions/ACT-0995-repl-later-submodule-declaration-resolution.md)
+to `design` on `src/`, with `qa` reassessing evidence and `test` recording the
+minimal refusal reproduction and its unchanged-state checks before `dev`
+implements it. The action's open-companion passage and the evidence delta
+§26.2's exclusions require their owners' updates; closing this question does
+not close those delivery obligations. The two new obligations are marked
+uncovered; the existing bare-name precedence evidence is unchanged.
+
+## S125-Q11: What does explicit restoration of a module's last known good state restore?
+
+**Deferred — user ruling, 2026-11-27:** "defer as long as there is an action."
+Deferred to the existing
+[ACT-1009](../sprints/actions/ACT-1009-repl-restore-last-known-good.md);
+no normative change is made. The contract questions below remain for that
+action before implementation.
+The recorded user direction is “later we'll add a reset to last known good
+repl function”; neither a command spelling nor its recovery contract is ruled.
+
+**Problem.** [REPL §14.4–§14.6](../repl/spec/14-file-watching.md#144-error-blocking)
+clears failed module definitions, preserves the failed saved edit, and locks
+code turns until recompilation leaves no module failed. There is no automatic
+last-known-good fallback. [§15.2](../repl/spec/15-session-persistence.md#152-session-restore)
+restores current saved source at startup, and
+[§18.8](../repl/spec/18-redefinition.md#188-persistence-and-reload) recompiles
+current authored source rather than interactive history. Neither specifies the
+proposed explicit operation; keeping old code alive internally is not a
+user-visible restoration contract.
+
+**Options and tradeoffs.** The ruling needs to identify the recoverable state
+and the effect on saved work and dependents:
+
+- **Restore the module's latest successfully compiled authored source in this
+  session, then use ordinary reload and dependent rebuilding.** This bounds
+  recovery to one module and keeps source and runtime aligned, but recovery
+  may fail against changed dependencies. Decide what happens if this session
+  has never compiled that module successfully, including after startup failure.
+- **Restore a last successfully compiling program checkpoint, including the
+  affected dependency set.** This can recover a mutually compatible set of
+  sources, but rolls back more work and needs a clear checkpoint boundary and
+  availability policy, including whether checkpoints survive restart.
+- **Restore runtime state while leaving the failed file in place.** This keeps
+  the saved edit immediately available but deliberately separates source and
+  runtime; it would require a user-approved exception to the current lock and
+  no-fallback policy, plus a rule for subsequent saves and regeneration.
+
+For either source-restoring choice, should the operation preserve the failed
+saved edit separately before replacing it, or explicitly discard it? Preserving
+it permits recovery of the user's work but needs a discoverable destination;
+discarding it is simpler but loses that edit. Unsaved editor buffers are a
+separate concern: decide whether the command acts only on saved files and
+reports that limit, or requires coordination with the editor.
+
+Should restoring one module merely attempt the ordinary dependent rebuild,
+leaving the session locked while any other module still fails, or is recovery
+all-or-nothing across the chosen checkpoint? A failed restoration also needs a
+defined outcome for the attempted files and the remaining lock.
+
+**Handoff.** `sprint` retains ACT-1009 for the deferred work and obtains these
+user decisions when it resumes, before `spec` changes the normative contract.
+`design` on `src/` then chooses snapshot representation and command realization,
+and `qa` allocates recovery and edit-preservation evidence.
+Current failed-reload behavior and `/reset` are unchanged; this question does
+not authorize implementation or automatic file replacement.
+
+## S125-Q12: What happens when a macro clause raises an otherwise unspecified hardware trap?
+
+**Closed — user ruling, 2026-11-28, option A for compiler/runtime defects.**
+Source: the user's conversation with `sprint` on 2026-11-28, supplied in the
+Sprint 125 Phase 6b `spec` dispatch. This ruling goes beyond the original
+question about otherwise unspecified hardware traps in macro clauses.
+
+### User's words
+
+> Our expected behaviour should be primitives are robust and won't crash (returns Option), or allows UB (ie. crash to OS) ... clear naming ('unchecked') for the second.
+
+> For unchecked ... the programmer brought it upon themselves with the code selection.
+
+> For now, we could offer no unchecked primitives — future requirement for when use-cases demand those last few cycles.
+
+> There is no requirement for graceful crashes — only requirements to make crashing impossible or provide a compiler warning when calling functions that are not robust all the way down (some kind of tainted).
+
+> We want to assign responsibility for graceful failure to the platform designer, and the pure language should assume it, not guard against it.
+
+### Agreed ruling
+
+1. Every primitive offered by the language is robust: it does not crash for
+   an operation's failure, and reports failure through its type (for example,
+   `Option`). No unchecked primitives are offered now. Primitives named
+   `unchecked-…`, permitting undefined behavior including a crash to the
+   operating system, are a **future requirement**, triggered by use cases
+   demanding the last few cycles; selecting them places responsibility on
+   the programmer.
+2. A compiler warning for a function from which an unchecked primitive is
+   reachable through its calls is a **future requirement together with those
+   primitives**, not work to build now. Recursion alone does not trigger the
+   warning. There is no general requirement for graceful crashes.
+3. Runtime panics are removed as a language category. This supersedes the
+   2026-11-15 ruling in [§12.7.2](12-runtime.md#1272-runtime-panics),
+   “A runtime panic MUST report its message and terminate the process”.
+   Today's `div-i64` with a zero divisor and `vec-get`/`vec-set` out of bounds
+   become robust forms when the work is implemented. This record does not
+   choose their replacement signatures.
+4. On stack exhaustion or failed allocation, the implementation **SHOULD**
+   emit a one-line diagnostic naming the cause, where the platform permits,
+   at no cost to execution that does not fail. This is not a MUST. An
+   operating-system out-of-memory kill, such as Linux overcommit followed by
+   `SIGKILL`, cannot be diagnosed. Stack exhaustion is not a runtime panic,
+   and recursion does not acquire the future unchecked-call warning.
+5. Graceful failure in platform code is the platform designer's responsibility;
+   the pure language assumes it and does not guard against platform failure.
+   The dispatch-fault report currently described by
+   [§12.7.6](12-runtime.md#1276-interaction-with-io-model) remains
+   implementation behavior, not a language requirement.
+6. A compiler or runtime defect may end the process on its signal, without a
+   language reporting or recovery guarantee: **option A** of the original
+   S125-Q12 question. This includes otherwise unspecified hardware traps in
+   compiled macro clauses. S125-Q12 is closed; it is not an open recovery-policy
+   question.
+
+### Superseded text and next-sprint rewrite
+
+This entry governs where the older text conflicts with the ruling. The local
+pointers mark that text as superseded; its requirement prose and coverage tags
+are retained pending the rewrite, not reaffirmed. Recording the ruling does
+not assert that the compiler already implements it.
+
+The rewrite belongs to the next sprint, on an action **to be filed by `sprint`**.
+The sections opened and identified for that work are:
+
+| Home | Required reconciliation |
+|---|---|
+| [§12.7](12-runtime.md#127-error-model), including §12.7.1–§12.7.9 and their subsections | Replace the panic category, sources, arithmetic failure policy, mode/format/exit rules, platform obligations and detached-strand panic policy. Review the compile-time-error boundary (§12.7.1) for consistency. |
+| [Appendix A.3](appendix-a-builtins.md#a3-primitive-functions-host-implemented) | Reconcile the primitive catalog, especially `div-i64`, `vec-get` and `vec-set`, with robust failure types; do not offer unchecked variants now. |
+| [§9.9.4](09-macros.md#994-runtime-error-during-expansion), [§9.12](09-macros.md#912-bootstrapping-order) | Reconcile expansion-time “runtime error” and process-ending panic rules with the removal of panics and the defect signal policy. |
+| [§4.12.5](04-expressions.md#4125-nested-trace) | Reconcile the nested-trace “runtime error”; this ruling does not choose its replacement behavior. |
+| [§3.2.6](03-types.md#326-pair-type) | Remove the test-discovery explanation's panic-exit premise. |
+| [§4.8.1](04-expressions.md#481-evaluation-order), [§6.5.3](06-pattern-matching.md#653-runtime-safety-net) | Reconcile failed-match panic language and the generated safety net with the removal of the panic category. |
+| [§4.11](04-expressions.md#411-evaluation-order-summary), [§12.4.1](12-runtime.md#1241-strict-evaluation), [§12.4.3](12-runtime.md#1243-lenient-evaluation) | Remove the concurrent-panic reporting policy and its references. |
+| [§12.4.4](12-runtime.md#1244-structured-control-combinators-and-cancellation), [§10.12.5](10-io.md#10125-runtime-mechanism), [§10.12.7–§10.12.10](10-io.md#10127-launch-and-continue-detached-effects) | Reconcile empty-`select` failure, detached-strand/process-exit rules, cancellation's panic terminology and server-pattern explanations. The replacement empty-`select` interface is not chosen here. |
+
+**Handoff.** `sprint` files and schedules the next-sprint rewrite and realization
+work, including the future unchecked-primitives/warning requirement as future
+scope. After the approved prose and interfaces are settled, `qa` reassesses
+coverage and `test` follows the affected claims; `arch`/`design` and `dev` own
+realization. REPL requirements and other roles' artifacts need corresponding
+owner review through `sprint`; this dispatch edits only `spec/`. No tests are
+run and no coverage judgment is made here.
+
+## S125 leads answered by existing text
+
+These dispositions identify existing obligations; they introduce no ruling
+or change to requirement prose or coverage annotations.
+
+| Lead and verified provenance | Existing answer and governing text | Handoff through `sprint` |
+|---|---|---|
+| ACT-0985 item 2: an expanded `begin` places an `impl` before its type | Forward reference is permitted within the same non-macro cluster. [§9.6](09-macros.md#96-multi-form-expansion-begin) treats emitted forms as separate top-level forms; [§9.12](09-macros.md#912-bootstrapping-order) explicitly includes macro-generated definitions in registration before body checking. [§5.13.1–§5.13.2](05-definitions.md#5131-functions-types-traits-and-implementations) and [§8.10.4](08-modules.md#8104-definition-execution-order) apply the forward-reference rule to the fully expanded cluster. This does not admit a forward reference needed during macro execution. | `qa` reassesses the action's refusal expectation and cited negative test; `test` owns any test repair. No new normative question. |
+| ACT-0985 item 4: a constraint on a non-`Self` trait-method variable | A caller-chosen variable remains quantified after the impl's `Self` substitution. [§3.3.2](03-types.md#332-a-constraint-is-a-checkable-claim-at-a-quantified-position) requires a constrained written variable at any quantified position to remain abstract during body checking; it gives no impl-body exception. [§5.4.5](05-definitions.md#545-implementation-semantics) checks bodies against the instantiated trait signature, and [§7.3.6](07-traits.md#736-inline-constraints-on-type-arguments) identifies non-`Self` variables as method-level. Body narrowing to a concrete type is therefore rejected; caller instantiation remains valid. | `qa` investigates the source-read lead with a discriminating reproduction; `design` on typecheck follows the existing requirement. |
+| Binary design: top-level `(primitives/pure (primitives/pure 1))` | [REPL §1.2.1](../repl/spec/01-display-format.md#121-io-expression-results) executes the outer action, then displays its returned payload under type `a`. Here that payload is `(primitives/IO primitives/Int)`, displayed as `#io` under [REPL §1.5](../repl/spec/01-display-format.md#15-value-display) and [§12.9.1](12-runtime.md#1291-format-by-type). The output is `Executing IO…` followed by `:(primitives/IO primitives/Int) #io`. It does not recursively execute the returned IO value. A result-owner refusal is an implementation/design mismatch, not an alternative display contract. | `design` on `src/` reconciles the reported result-owner restriction; `qa` allocates evidence. |
+| Binary design: a private dependency index drops macros and consequently cannot index an importer until the dependency is loaded or cached | [REPL §17.19 R10](../repl/spec/17a-agent-language-awareness.md#1719-importable-symbol-search--search--pillar-3) forbids omission merely because a dependency is unloaded or compiling. The expansion allowance and [§17.19.5](../repl/spec/17a-agent-language-awareness.md#17195-robustness--searching-the-library-must-never-crash-the-repl) explicitly retain that limit. An import naming a macro is not itself execution of expansion; dropping that name privately does not authorize session-dependent omission of otherwise indexable ordinary definitions. Actual definitions whose indexing requires expansion remain within the allowance. | `design` on `src/` reconciles the private-index design with R10; complete semantic indexing still waits on ACT-0952, not on this question. |
+| Backend design: unary `pure` has no partial application | [§10.2.3](10-io.md#1023-examples) agrees with [§4.6.3](04-expressions.md#463-auto-currying): fewer supplied arguments produce a residual closure, with no positive minimum on the supplied count. [§2.3.6](02-grammar.md#236-function-application) permits zero supplied arguments. For unary `pure`, `n = 1`, `k = 0`: `(primitives/pure)` is the zero-supplied-argument partial application; `(primitives/pure x)` is full application. A bare function value is a separate use. | `design` on backend/typecheck and `qa` reassess the no-partial-form premise against the general rule; a proposed exclusion of zero-argument currying would require a separate user-approved semantic change. |

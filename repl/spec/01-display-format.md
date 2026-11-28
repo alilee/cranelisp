@@ -260,7 +260,7 @@ as a field of an outer ADT MUST likewise recurse to its constructor form.
 Value semantics (construct / match / extract) are independent of representation
 [Tested tests/display_exact.rs::r5_value_layout_construct_match_extract_is_sound].
 
-### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [Tested+Neg tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata]
+### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [Tested+Neg tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata] [Tested+Neg tests/repl_introspection::s125_resid_display_unused_user_type_parameter, tests/repl_introspection::s125_resid_display_unused_result_type_parameter, tests/repl_introspection::s125_resid_display_pinned_values_control, tests/repl_introspection::s125_resid_display_ambiguous_field_refused_control — a value whose constructor does not use the unresolved type parameter displays its fields after its polymorphic type, with no internal marker; a field of unresolved type is still refused as ambiguous]
 
 A **result-only-polymorphic value** is a value whose finalised type is polymorphic with no concrete instantiation forced by the surrounding context — e.g. a bare `None` (type `∀a. (Option a)`) or a bare empty literal `[]` (type `∀a. (Vec a)`) entered alone at the prompt. Such a value has **no concrete runtime representation** to show: under the slot⟺concrete model it is *slot-less* (`UserFnState::Polymorphic`) — it has no GOT slot and is not compiled as a runtime value.
 

@@ -243,7 +243,7 @@ con_var        = lowercase_symbol
 
 The trait head is wrapped in parentheses with a lowercase type constructor variable.
 
-**Higher-kinded methods are exempt from the occurrence rule ([§7.1.1](#711-the-self-type), [S115]).** A conventional trait's methods must each mention the implementing type (`self`); an HKT's methods do not — they dispatch on the applied constructor variable `(f a)` instead, which is the head variable and therefore *is* the implementing-type occurrence in the higher-kinded sense. `self` has no role in an HKT method signature. The requirement that bites here is §7.2.1's instead: the head variable MUST be **applied** at least once.
+**Higher-kinded methods are exempt from the occurrence rule ([§7.1.1](#711-the-self-type), [S115]).** A conventional trait's methods must each mention the implementing type (`self`); an HKT's methods do not — they dispatch on the applied constructor variable `(f a)` instead, which is the head variable and therefore *is* the implementing-type occurrence in the higher-kinded sense. `self` has no role in an HKT method signature. The head variable must be applied (§7.2.1), and each method must have a parameter carrying that application (§7.2.2).
 
 ```clojure
 (deftrait (Functor f) "Mappable container"
@@ -259,7 +259,12 @@ The arity of a constructor variable is determined by its usage in method signatu
 
 **Application is what makes the head higher-kinded.** A parenthesized head is the higher-kinded form **only if** its head variable is applied at least once. A parenthesized head whose variable is never applied is malformed (§7.1) — there is no "kind-`*` trait with a head type variable"; conventional traits use the bare head and `self`.
 
-### 7.2.2 Method Signatures
+### 7.2.2 Method Signatures [S126 — a method whose constructor variable occurs only in its result is refused at the declaration (S125-Q3): unimplemented, no cell]
+
+Each higher-kinded trait method MUST take at least one parameter whose type
+contains an application of the trait's constructor variable. A method whose
+constructor variable occurs only in its result MUST be refused at the trait
+declaration. Dispatch uses the first such parameter (§3.7.6).
 
 In an HKT trait, all method parameters use named params with explicit type annotations (bare names would default to the implementing type, which is a type constructor -- not useful as a value type):
 
@@ -558,7 +563,7 @@ For HKT methods, the mangled name uses the bare constructor name (e.g., `Functor
 
 For polymorphic impl specializations, the mangled name includes the concrete inner types (e.g., `Display.show$Option$Int`).
 
-### 7.4.2a Same-Named Methods and Disambiguation [Uncovered S122 — partial: `Trait.method` call tests/spec_07_traits::trait_qualified_method_call_dispatches, tests/spec_07_traits::trait_method_bare_call_and_qualified_value_dispatch, tests/spec_05_definitions::impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::trait_qualified_primitive_operator_collapses_to_builtin, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_pinned_dispatches; imported-trait dotted access tests/spec_08_modules::imported_trait_dotted_method_resolves_via_import_and_prelude_reexport, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::dotted_trait_method_dispatches_through_imported_trait_head; selection and ambiguity among same-named methods of different traits remain untested, including this section's `Text.render`/`Debug.render` example and its ambiguous bare `(render 1)`, and dispatch-index selection (ACT-1001 P-2)]
+### 7.4.2a Same-Named Methods and Disambiguation [Uncovered S122 — partial: `Trait.method` call tests/spec_07_traits::trait_qualified_method_call_dispatches, tests/spec_07_traits::trait_method_bare_call_and_qualified_value_dispatch, tests/spec_05_definitions::impl_method_named_like_field_accessor_bare_call_is_ambiguous_neg, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::trait_qualified_primitive_operator_collapses_to_builtin, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_unpinned_is_ambiguous_neg, tests/spec_07_traits::trait_qualified_nullary_return_dispatch_pinned_dispatches; imported-trait dotted access tests/spec_08_modules::imported_trait_dotted_method_resolves_via_import_and_prelude_reexport, crates/cranelisp-typecheck/src/traits/dispatch/tests.rs::dotted_trait_method_dispatches_through_imported_trait_head; selection and ambiguity among same-named methods of different traits remain untested, including this section's `Text.render`/`Debug.render` example and its ambiguous bare `(render 1)`, and dispatch-index selection (design/typecheck/traits.md §11, the bare-name dispatch-index scan)]
 
 Different traits MAY define methods with the same name, and multiple such methods MAY be visible under one unqualified spelling. Ordinary argument, result, annotation, and surrounding expected-type constraints select the declaration when exactly one candidate remains (§8.6.5). If several same-named methods remain compatible, the use is ambiguous and MUST be qualified.
 
@@ -1006,6 +1011,7 @@ language is to be stabilized before expanding to multi-parameter traits;
 
 | Feature | Description |
 |---|---|
+| Result-directed HKT dispatch | Select an implementation from the result constructor, allowing methods with no constructor-bearing parameter; a future direction only, not current method admission (§7.2.2) |
 | Default methods on HKT traits | Extend default implementations to higher-kinded traits |
 | Deriving additional traits | Extend `derive` beyond `Eq`, `Ord`, `Display` |
 | Supertraits | Declare that one trait requires another (e.g., `Ord` requires `Eq`) |
