@@ -164,7 +164,9 @@ the driver:
   settled, so a re-reached demand derives the same key.
 - **Standing rule.** The windows are an enumerated set. A new `pass4_monomorphise`
   invocation at another settlement point is an architectural event. File it to `arch`
-  for the class ruling rather than adding it (`design/arch/fixmes/0776-arch-settlement-seam-multiplicity-register-row.md`).
+  rather than adding it; `arch` judges it under
+  [Principle 26](../arch/principles/26-record-from-settled-state.md), which governs
+  what a window may read, and no general seam rule exists beyond this local one.
   The auto-curry drain's seams are the sibling instance
   (`design/typecheck/auto-curry.md` §1.2).
 

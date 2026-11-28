@@ -334,8 +334,8 @@ qualified walk, so existing semantics decide. The public surface does not change
   - The auto-curry arity guard reads the same resolution for a callee that
     has already been typed as a value. It drops the gap, because it is a
     probe.
-- The dotted and bare arms are unchanged. The internal-constructor gate still
-  reads the name with its qualifier removed; see §11.
+- The dotted and bare arms are unchanged. No constructor gate precedes them:
+  `IO`'s constructors are absent, not internal ([IO typing §1](io-types.md#1-constructors-and-opacity)).
 - Quasiquote templates lower to `macros/SCons` and `macros/SNil` in both
   positions (`crates/cranelisp-frontend/src/synth.rs`). A pattern template
   therefore resolves as its value-position template does, including through
@@ -1266,7 +1266,7 @@ never walks alias segments or spells an alias key itself, fixtures included
 | Dotted constructor registration | `dotted-ctor-registration.md` | Current |
 | Auto-currying | `auto-curry.md` | Current |
 | AST annotation, resolution carriers and publication | `ast-annotation.md` | Current |
-| IO typing | `io-types.md` | Current, as built; the opaque `IO` that `spec/10-io.md` §10.1 requires is carried compiler work |
+| IO typing | `io-types.md` | Current: the opaque, constructorless `IO` (row IO-T, S125) |
 | Importable-symbol signature match | `signature-match.md` | Current |
 | Ownership inference | `ownership-inference.md` | Current; governed by `design/arch/ownership-inference.md` |
 
@@ -1277,14 +1277,6 @@ are listed in `design/typecheck/AGENTS.md` §"Redirections".
 ---
 
 ## 11. Open design items
-
-- **Exhaustiveness internal-constructor fallback.** After a canonical member-key
-  miss, `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module`
-  still scope-resolves the
-  constructor spelling. Its default `internal = false` is correct for current
-  product constructors. Falsifier: an `internal: true` product constructor
-  with a contested spelling; users cannot construct one today. Convergence
-  can use the raw-key fallback already used by `instantiate_ctor`.
 
 - **Principle 26 classification of the remaining producer surface** (§9.7).
 - **Declaration-level forward reference within a cluster.** Spec §5.13.1 and
@@ -1310,14 +1302,6 @@ are listed in `design/typecheck/AGENTS.md` §"Redirections".
   failing cell. The repair would project the failure through the §3.5 stacked
   bound's step; no new gap variant is needed, because the `Type` gap only
   requests a load (§7.3.2).
-- **The internal-constructor gate reads a qualified pattern's bare name.**
-  `check_constructor_pattern` first asks whether the name, with its qualifier
-  removed, names an internal constructor in the current module's scope. It
-  does not use the constructor that §3.5 resolves. A qualified `(m/Bind v)` of
-  an ordinary constructor could therefore be rejected because the prelude's
-  internal `Bind` is in scope. The resolved constructor's origin already
-  carries the flag. This is a source-read lead, not executed. The trigger is a
-  failing cell.
 - **A private qualified member yields a generic miss, not a visibility
   error.** `resolve_qualified` returns a visibility violation as `Err`, but
   its only production caller, the §3.5 walk, discards it; only unit tests
@@ -1366,14 +1350,25 @@ are listed in `design/typecheck/AGENTS.md` §"Redirections".
 
 ---
 
-## 12. Designed changes not yet in source (S124)
+## 12. Designed changes not yet in source
 
-None. The S124 rows T1–T7 are in source and are current design in their home
-documents: T5 in §7.3.2, T7 in [traits §3.0.1](traits.md#301-the-writer-side-record).
-Row C, census-attributed producer corrections, has nothing to correct: the census
-read zero from every program at `128255fc`
-([S124 evidence delta §14.5](../../tests/plan/s124-evidence-delta.md)), and the rule
-that scopes a later attribution is
-[producer obligations §5.3](non-concrete-producer-obligations.md#53-waiting-on-census-output-and-the-rule-that-scopes-it).
-The value-position primitive note formerly here is
+**A constructor-pattern arm in every match (S126).** Spec §6.1, as ruled on
+2026-11-26 (S125-Q6), requires every `match` to contain at least one
+constructor-pattern arm, for every scrutinee type. A match whose arms are only
+wildcards and variables is a located compile-time error.
+
+- **Where it is checked.** `infer.rs::infer_match` checks the arms' pattern shapes
+  syntactically, before inference and exhaustiveness. It reads no scrutinee type and
+  names no type, so it covers `IO` (`io-types.md` §1.1) without an IO-specific
+  rule.
+- **What it affects.** About 92 test programs use the refused form, as the annotation on
+  `spec/06-pattern-matching.md` §6.1 records
+  ([S125 evidence delta](../../tests/plan/s125-evidence-delta.md) §7), so the change-set needs their migration to
+  `let`.
+- **Owners.** `spec` carries the `[S126]` annotations, and `qa` schedules the
+  evidence.
+
+The S124 rows T1–T7 are in source: T5 is §7.3.2, and T7 is
+[traits §3.0.1](traits.md#301-the-writer-side-record). The value-position primitive
+note formerly here is
 [AST annotation §2.1](ast-annotation.md#21-recording-the-resolution-verdicts).

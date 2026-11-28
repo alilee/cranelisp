@@ -101,9 +101,11 @@ each, and makes the discipline a required input. Two operations have such a set:
   §11.8.10), whose standing rule routes any new window to `arch` for a class
   ruling.
 
-Whether that rule becomes a general principle is `arch`'s open decision
-(`design/arch/fixmes/0776-arch-settlement-seam-multiplicity-register-row.md`);
-this design does not presume it.
+These local sets are the rule. `arch` declined a general seam principle (S125):
+[Principle 24](../arch/principles/24-resolve-once.md) and
+[Principle 26](../arch/principles/26-record-from-settled-state.md) already govern
+the re-derivation and settlement classes, and a universal seam registry would
+repeat these per-operation controls.
 
 ### 3.2 Evidence and its boundary
 

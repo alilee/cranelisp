@@ -14,7 +14,7 @@ Neighbouring designs this one uses without restating:
 | Concrete versus template constructors and accessors, and re-synthesis | [`non-concrete-producer-obligations.md`](non-concrete-producer-obligations.md) |
 | Bare constructor selection in value and pattern position | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7 |
 | `TypeExpr → Type` resolution and type-argument arity | [`type-expr-resolver-convergence.md`](type-expr-resolver-convergence.md) |
-| Internal constructors (`IO`'s `Bind`) and `IO`'s constructors as built | [`io-types.md`](io-types.md) §1–§3 |
+| `IO` as a constructorless type, and why no constructor is gated | [`io-types.md`](io-types.md) §1–§2 |
 
 ## 1. Registration
 
@@ -99,17 +99,16 @@ rather than produced by re-checking a body
 
 `infer.rs::check_constructor_pattern`:
 
-1. Rejects an internal constructor.
-2. Resolves a dotted, bare or module-qualified name to one constructor through
+1. Resolves a dotted, bare or module-qualified name to one constructor through
    `resolve_constructor_entry`. A module-qualified name resolves by the qualified
    walk value position uses (`typecheck.md` §3.5). A bare name with several
    candidates is selected by the scrutinee type, or held as a pending pattern use
    until inference settles it
    (`dotted-ctor-registration.md` §3.3; `use-site-candidate-selection.md` §7).
-3. Instantiates the constructor afresh for the arm (`instantiate_ctor`) and records
+2. Instantiates the constructor afresh for the arm (`instantiate_ctor`) and records
    the resolved storage identity for the pattern span in
    `MethodResolutions.pattern_ctors`.
-4. Unifies with the scrutinee: a nullary constructor takes no bindings and its type
+3. Unifies with the scrutinee: a nullary constructor takes no bindings and its type
    unifies with the scrutinee; a data constructor needs one binding per field, its
    result type unifies with the scrutinee, and each binding takes its field type.
 
@@ -133,8 +132,12 @@ have settled, `infer_match` checks a match whose scrutinee is a concrete ADT:
 
 - the covered constructors are the settled `pattern_ctors` identities belonging to
   the scrutinee's type, never the as-written names;
-- a wildcard or variable pattern covers everything;
-- internal constructors are excluded, so user code need not cover them;
+- a wildcard or variable pattern covers everything. Spec §6.1 also requires at
+  least one constructor-pattern arm in every match, for every scrutinee type. That
+  rule is scheduled for S126 and is not yet in source
+  ([`typecheck.md` §12](typecheck.md#12-designed-changes-not-yet-in-source));
+- every constructor `TypeDefInfo.constructors` lists must be covered; no
+  constructor is exempt, and a type with none (`IO`) is trivially covered;
 - `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module` compares
   by constructor name within the
   type's home module and reports the missing constructors sorted, for

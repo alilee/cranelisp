@@ -21,7 +21,7 @@ without restating:
 | `SymbolEntry`, `Binding`, `NameCandidate`, settlement funnels | `design/arch/symbol-table-lifecycle.md` §3, §4, §5.8, §5.9 |
 | Selecting one declaration from a bare spelling's candidates, value and pattern | [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §5, §7, §9 |
 | Concrete versus template constructors and their re-synthesis | [`non-concrete-producer-obligations.md`](non-concrete-producer-obligations.md) |
-| Constructor schemes, the product dual facet, internal constructors | [`adt.md`](adt.md) §"Constructor Scheme Generation", §"Product Type Handling"; [`io-types.md`](io-types.md) §1 |
+| Constructor schemes, the product dual facet; `IO` as a constructorless type | [`adt.md`](adt.md) §"Constructor Scheme Generation", §"Product Type Handling"; [`io-types.md`](io-types.md) §1 |
 
 Section numbers are cited from source and sibling designs; retired numbers are
 not reused, so gaps are deliberate. The file name predates the subject name
@@ -31,8 +31,9 @@ and is kept because it is cited.
 
 - A **sum or enum constructor** has exactly one declaration: the canonical
   callable binding keyed `member_key(Type, Ctor)` (`Maybe.Some`) in the type's
-  home module, carrying `CallableOrigin::Ctor` (owning type, tag, internal
-  flag).
+  home module, carrying `CallableOrigin::Ctor` (owning type, tag and field count).
+  No constructor is flagged internal; who may name one is decided by
+  visibility alone.
 - The bare spelling (`Some`) is a `NameCandidate` reference to that binding,
   carrying the `deftype`'s visibility. It is not a second callable, adds no
   slot and no compiled function.
@@ -238,9 +239,8 @@ bypass the parent.
 `Color.Red : Color`; `Maybe.Some : (Fn [a] (Maybe a))`; a trait head yields
 the method's constrained scheme, as its bare spelling would. First-class use needs
 no branch: the canonical binding is an ordinary callable whose lifecycle state
-is carried by `Life`, not inferred by the resolver. The internal-constructor
-and constrained-value guards in `infer_var` reach the same terminal and read
-`internal` from its origin.
+is carried by `Life`, not inferred by the resolver. The constrained-value guard
+in `infer_var` reaches the same terminal.
 
 ### 3.3 Pattern position and the auto-curry guard
 
@@ -293,8 +293,9 @@ instead, those routes could reach a member the carrier route rejects
 
 ## 4. Exhaustiveness — `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module`
 
-`TypeDefInfo.constructors` keeps bare display names, so two readers there must
-account for canonical keying.
+`TypeDefInfo.constructors` keeps bare display names, so the covered-name reader
+must account for canonical keying. The declared side is read by name from that
+list alone; no per-constructor binding is probed.
 
 ### 4.1 Covered-constructor normalisation
 
@@ -302,14 +303,6 @@ Covered pattern names reduce to their terminal segment after both separators —
 the `/` module prefix, then the `.` type prefix — before comparison with the
 declared names. Without the `.` step a total match written with dotted arms is
 reported non-exhaustive.
-
-### 4.2 Internal-constructor probe
-
-Each declared constructor's `internal` flag is read from the canonical
-`member_key(Type, Ctor)` binding first, then from the bare key for the product
-facet (the only bare fallback `dotted-ctor-canonical-keys.md` §1 admits). A
-bare-only probe would miss every sum constructor, default `internal: false`,
-and force user matches on `IO` to cover `Bind`/`Pure`/`Effect`.
 
 Exhaustiveness runs after every constructor site in the match has settled and
 must not consume the as-written bare names
@@ -375,11 +368,6 @@ Typecheck's own readers and their disposition:
   are [`use-site-candidate-selection.md`](use-site-candidate-selection.md) §2,
   §7 and §9; implementation is `dev`'s under that design, with no further
   design decision owed here.
-- **Stale rationale in source.** Comments and rustdoc on the constructor path
-  still name the retired `Def`/`DefKind::Constructor` shape where source now
-  reads `CallableOrigin::Ctor`: the `CtorBuild` rustdoc and the §4.2 probe
-  comment in `adt.rs`, and the constructor-to-type lookup rustdoc in
-  `checker.rs`. Repair is `dev`'s.
 
 ## 9. Cross-references
 
@@ -402,7 +390,8 @@ Typecheck's own readers and their disposition:
 | §1.1 bare alias and collision arms | §1.1 — alias and registration-time poison retired for candidate exposure |
 | §1.2 recognizer recommendation | §1.2, as built |
 | §1.3 accessor-owner bookkeeping and rename | §1.3 and §8 |
-| §4 items 1–2 | §4.1–§4.2 |
+| §4 items 1–2 | §4.1; item 2's probe was §4.2 |
+| §4.2 internal-constructor probe | Deleted with row IO-T (S125); no constructor is internal |
 | §5 Obligations A and B | §5; authority is arch §2 |
 | §6 cross-crate census and writer inventory | §6; inventory is arch §1 and §3 |
 | §8 Phase-4 `/repl` coordination item | Retired: listing is settled by construction (§6) |
