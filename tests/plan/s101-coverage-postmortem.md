@@ -9,7 +9,7 @@ wave).
 **Why this record is retained.** The `callees` completeness contract in
 [§2.1](#21-the-callees-completeness-contract-tests-specified-here-land-with-wave-2)
 is the cited `// spec:` authority of the typecheck `callees` and ambiguity unit
-tiers and of the `dependency_sort` unit in `src/save.rs`; the §3 matrix is the
+tiers and of the save writer's `dependency_sort` unit (deleted in S125); the §3 matrix is the
 provenance of the `tests/vec_query_value_use.rs` cells. The
 [S101 coverage audit](coverage-audit-s101.md) widens this analysis and supersedes
 the §3.3 rule. Everything else here is history.
@@ -41,7 +41,7 @@ S101 transaction needs the complete edge set; the incomplete one silently
 under-approximates the affected set.
 
 **Why coverage missed it.** `callees` is **populated by convention and consumed by
-degrading consumers**. Its two pre-S101 consumers — `save.rs::dependency_sort`
+degrading consumers**. Its two pre-S101 consumers — the save writer's `dependency_sort` (deleted in S125)
 (`save.rs:816`, emission ordering for `user.cl` regeneration) and the
 macro-resolution densification walk (`process_form/macro_resolution.rs`) — treat a
 missing edge as "no constraint": `dependency_sort` falls back to `seq` order, the
@@ -129,7 +129,7 @@ correctness contract, and does any consumer FAIL (vs degrade) when it is violate
 |---|---|---|---|
 | `scheme` | **Contracted.** Typecheck output; every call site resolves against it | Wrong scheme ⇒ type errors/wrong inference — loud, e2e-visible | SOUND — self-enforcing |
 | `kind` (incl. `got_slot` on callable variants) | **Contracted structurally** (S83/FIXME 0356: callability-by-representation; `callable_got_slot()` single read-through) | Missing slot on a callable kind is unconstructable | SOUND — Principle 20 exemplar |
-| `callees` | **CONVENTION (the 0470 find).** Doc says "populated by finalize_check_result" — no completeness statement | `save.rs::dependency_sort` falls back to `seq`; macro-resolution walk silently doesn't traverse; **S101 transaction would silently under-recompile** | **DEFECT-CLASS — contract tests specified below (§2.1)** |
+| `callees` | **CONVENTION (the 0470 find).** Doc says "populated by finalize_check_result" — no completeness statement | the save writer's `dependency_sort` (deleted in S125) falls back to `seq`; macro-resolution walk silently doesn't traverse; **S101 transaction would silently under-recompile** | **DEFECT-CLASS — contract tests specified below (§2.1)** |
 | `ast` | **Semi-contracted.** Decision 22 predicate `ast.is_some()` gates codegen-compilability | Absent-when-owed ⇒ symbol never compiles — loud. But a *stale* ast after redefinition would silently regenerate wrong `user.cl` source | MOSTLY SOUND; staleness leg rides §15.4 round-trip tests (`repl_persist.rs`) |
 | `codegen_view` | **Contracted** (concrete-boundary arc: no `Var` representable; backend consumes non-optionally) | Absent ⇒ codegen cannot proceed — loud | SOUND — structural |
 | `code` | `#[serde(skip)]`, session-only | `None` when pages still referenced = the §1.2 find — the consumer (a call through a stale pointer) CRASHES rather than degrades, but only across suspension | Category 2 — routed to `/arch` (§1.2) |
@@ -175,7 +175,7 @@ as the 0470 resolution:
 3. **Uniformity.** All positions record the same `Vec<FQSymbol>` carrier —
    call-position and value-position edges are indistinguishable to consumers
    (the 0470 resolution shape; `sprints/archive/sprint-101.md` FIXME table).
-4. **Consumer-audit guards** (gate note 2): `save.rs::dependency_sort` emission
+4. **Consumer-audit guards** (gate note 2): the save writer's `dependency_sort` (deleted in S125) emission
    order unchanged under the denser edge set (existing `repl_persist.rs` round-trips for
    `repl/spec/15-session-persistence.md` §15.4 are the e2e cover; `/dev` adds the unit assertion on
    `dependency_sort` directly); `macro_resolution.rs:491` walk terminates and

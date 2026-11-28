@@ -88,7 +88,7 @@ Surface: Binary/int (`src/save.rs`, `src/process_form.rs`, watcher reload).
 | P5 | SL-2/F3 [G-8]: a declaration record stays stale after a successful reload | L | The next regeneration writes the old declaration over the edit | Fixed in S122 ([bounded adequacy](#persistence-p3-p4-and-p5--bounded-adequacy-2026-09-28)). §14.8 forbids the field-type reload that carried the fence, so the fence moves to a docstring-only reload (RB-2(b)) | No further correction |
 | P6 | Redefining one member of a shared `begin` keeps the old sibling in the record [G-8] | L | A stale sibling is written back | A review note; never observed | Carried inside ACT-1005 (K8; approved 2026-09-30) |
 | P7 | §15.4 rules 2 and 4 against [design §1.3](../../design/int/session-persistence.md#13-section-order) [G-8] | Spec–design conflict, read in both; T4 observed a trait written before a type entered earlier | Regeneration reorders the user's file. The header order is `mod`, `platform`, `import`, `export`, where rule 4 requires platforms, submodules, exports, imports. Each kind follows in alphabetical order, where rule 2 requires authorship order. Round trip holds | No cell observes rules 2–4, so rule 6 stays partial. Rule 4 names a `declare-platform` form the language lacks | **Carried** to S123/S124 with ACT-1005 (user, 2026-09-30; first deferral). Rules 2 and 4 stand; the as-built grouping is an accepted interim nonconformance. Falsifier: regenerate a file whose definitions were entered in interleaved kinds, and find them grouped |
-| P8 | [ACT-0994](../../sprints/actions/ACT-0994-cached-load-claim-reregistration-intake.md) [G-6]: a cached load completes against a later registration | L | Possibly a stale body after an edit during a cached load | Unobserved. RR-1's 2000-session evidence is separate | Carried (K8; approved 2026-09-30) |
+| P8 | ACT-0994 [G-6]: a cached load completes against a later registration | L | Possibly a stale body after an edit during a cached load | Unobserved. RR-1's 2000-session evidence is separate | Carried (K8; approved 2026-09-30) |
 
 ### Final disposition proposal (2026-09-30)
 
@@ -128,7 +128,7 @@ Evidence currency, checked 2026-09-30 against later deliveries:
 
 | Package | Items | Class | Impact | Minimum remaining work | Gate |
 |---|---|---|---|---|---|
-| K1 Batch missing entry | C1 [ACT-1004](../../sprints/actions/ACT-1004-batch-missing-entry-diagnostic-intake.md): `--run` and `--link` on a missing entry file report `entry module has no 'main' function` (`src/exe.rs::validate_main`), where CLI §0.5.5 rule 2 requires the missing file named | S | The commonest invocation mistake gets a misleading error | `test`: one RED per mode, with the passing `--test` leg as control. `dev`(src): one missing-source check shared by batch callers, with its unit, keeping the REPL's empty-module start. `review`(src), then bounded QA adequacy | None; the requirement is approved and no API changes |
+| K1 Batch missing entry | C1 ACT-1004: `--run` and `--link` on a missing entry file report `entry module has no 'main' function` (`src/exe.rs::validate_main`), where CLI §0.5.5 rule 2 requires the missing file named | S | The commonest invocation mistake gets a misleading error | `test`: one RED per mode, with the passing `--test` leg as control. `dev`(src): one missing-source check shared by batch callers, with its unit, keeping the REPL's empty-module start. `review`(src), then bounded QA adequacy | None; the requirement is approved and no API changes |
 | K2 Ownership measurement | R2: 0907 balance cell (`Functor IO` instance); 0934 (heap payload in an unrun `Bind`); ACT-0974 (`str-len` and siblings as function values; candidate double discharge); ACT-0976 (residue after a macro runtime error). R3: 0694 Class I | L/E | Leak, double discharge or heap corruption in ordinary programs | One `test` visit, evidence only: a marginal pair per R2 item on the detection-proven harness, and one bounded Class I characterisation under load with an armed allocator mode, recording run count and load. A balanced pair retires its item. A confirmed imbalance becomes a committed RED and is carried (K7) unless it is a double discharge, use-after-free or corruption; QA then returns it as a fix-now item with its attribution | None for the evidence. A new fix-now item needs the user's approval |
 | K3 Truthful records | Owner retirements: 0745, 0868, 0889 (narrow it; keep the 46 as the record), 0789, 0906, 0708 and ACT-0965 item 1 (`dev`/`design`/`arch`); 0914, 0815, 0841 (QA, after their mirrors); ACT-1002 (fix committed in `63605970`); ACT-0958, after `design`(backend) drops it from 0915's `refers_to`. `test`: the present-tense framing in `tests/spec_08_modules.rs`, the exemplar `<= 1_400` cell, and `fixed=S122/<sha>` on the 18 unstamped markers (the sha of `63605970` or `e4062202` where the fix is committed there; the next commit otherwise). ACT-0986 item 2: `spec` makes the §16.5 example runnable; frontend `dev` corrects one test citation. QA adds the reactor-panic member to 0694. `design`(int) reconciles the pending-review wording in its status record. The 0907 refusal face retires with the stale text routed under Later phases | E | Stale records misroute later work and overstate open defects | Mechanical edits by each owner, verified against source as the first act; no behaviour change, no new evidence | None |
 | K4 Phase-5 exit evidence | The committed final tree after K1–K3 | Acceptance evidence | — | Fresh `cargo nextest run --no-fail-fast`, the agent lane through its launcher, the public-API guard, citation checks and the document checker, with provenance. Every RED must trace to an open filing | The user's Phase 5 → 6a approval |
@@ -137,12 +137,12 @@ Evidence currency, checked 2026-09-30 against later deliveries:
 
 | Package | Items | Class | Why carry | Minimum work when resumed | Gates | Deferral |
 |---|---|---|---|---|---|---|
-| K5 Names read by their written spelling | N1 ACT-0997 (closed): renamed import and export entries are rejected at parse, including the §8.3.5 self-rename (`module_extract.rs` still calls `expect_symbol`). N2 [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md) P-3: `impl_check.rs::resolve_impl_trait_ref` still maps `Ambiguous` to `unknown trait`, dropping the §8.6.5 alternatives. N3: P-2, [ACT-0985](../../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md), [ACT-0987](../../sprints/actions/ACT-0987-trait-dispatch-and-impl-rigidity-intake.md), [ACT-1003](../../sprints/actions/ACT-1003-contested-type-deftype-echo-intake.md) and `typecheck.md` §11 residuals | N1 D; N2 D (diagnostic only; the rejection is correct); N3 L | One mechanism (a reader resolves the written spelling) recurring four times in S122; N1 needs a public `ImportNames` change. No memory-safety face; renaming has a workaround | `test`: N1 and N2 REDs and one N3 probe basket. `design`(typecheck): converge readers on the canonical key. `arch`: the `ImportNames` packet, carrying the persistence impl-identity obligation | N1: inter-crate API user gate | First (filed S122); `typecheck.md` §11 residuals unknown |
-| K6 Platform admission | C2 ACT-0973 (closed S124; the requirement is in [the IO specification](../../spec/10-io.md)): a `platform` form in a non-entry module is skipped (`process_form/platform.rs` says "silently ignored per §10.9.1"; §10.9.1 requires a compile-time error). C3 [ACT-0979](../../sprints/actions/ACT-0979-platform-function-type-rejection.md) and [0933](../../design/arch/fixmes/0933-platform-sig-residual-type-var-must-refuse-at-mint.md): `require_io_return` checks only the `IO` return. C4 Q12: `got_data_symbol_name` collision between a module `platform-x` and a platform `hx` | S (C4 static only) | Reached only by platform or library authors; C3 needs a spec answer; C4 needs contrived names | `test`: REDs with entry and root-level controls. `dev`(src): one gate at the mint. `arch`: C4 falsifier fixture | C3: `spec` question (does "contain" extend through a named ADT's fields?). C4: user naming decision if a loader rule is chosen | ACT-0973, ACT-0979: first. 0933 (S119), Q12: unknown |
+| K5 Names read by their written spelling | N1 ACT-0997 (closed): renamed import and export entries are rejected at parse, including the §8.3.5 self-rename (`module_extract.rs` still calls `expect_symbol`). N2 ACT-1001 P-3: `impl_check.rs::resolve_impl_trait_ref` still maps `Ambiguous` to `unknown trait`, dropping the §8.6.5 alternatives. N3: P-2, [ACT-0985](../../sprints/actions/ACT-0985-typecheck-forward-reference-and-hkt-intake.md), ACT-0987, ACT-1003 (closed S125) and `typecheck.md` §11 residuals | N1 D; N2 D (diagnostic only; the rejection is correct); N3 L | One mechanism (a reader resolves the written spelling) recurring four times in S122; N1 needs a public `ImportNames` change. No memory-safety face; renaming has a workaround | `test`: N1 and N2 REDs and one N3 probe basket. `design`(typecheck): converge readers on the canonical key. `arch`: the `ImportNames` packet, carrying the persistence impl-identity obligation | N1: inter-crate API user gate | First (filed S122); `typecheck.md` §11 residuals unknown |
+| K6 Platform admission | C2 ACT-0973 (closed S124; the requirement is in [the IO specification](../../spec/10-io.md)): a `platform` form in a non-entry module is skipped (`process_form/platform.rs` says "silently ignored per §10.9.1"; §10.9.1 requires a compile-time error). C3 ACT-0979 (closed S125) and FIXME 0933 (closed S125): `require_io_return` checks only the `IO` return. C4 Q12: `got_data_symbol_name` collision between a module `platform-x` and a platform `hx` | S (C4 static only) | Reached only by platform or library authors; C3 needs a spec answer; C4 needs contrived names | `test`: REDs with entry and root-level controls. `dev`(src): one gate at the mint. `arch`: C4 falsifier fixture | C3: `spec` question (does "contain" extend through a named ADT's fields?). C4: user naming decision if a loader rule is chosen | ACT-0973, ACT-0979: first. 0933 (S119), Q12: unknown |
 | K7 Runtime concurrency | R1 ACT-0977: launched work is not cancelled with its launching context (§10.12.7 item 5; item 6 drain unevidenced). R4: ACT-0975 (closed S124 on fence F-0975), ACT-0981 (closed at S124; Git history). Any K2 non-memory-unsafe RED | R1 S; R4 L | R1 is an approved requirement whose realization needs `arch` and `design`(intrinsics) and a new completion witness; R4 faces are a rejected program or invisible lost parallelism | `test`: R1 RED on synthetic leaves with a winning-branch control and a completion witness, then `arch` → `design`(intrinsics) → `dev`. R4: probes against their falsifiers | R1: any public or schema change follows the API gate | First (filed S122) |
-| K8 Persistence leads | P6 (redefining one member of a shared `begin` keeps the old sibling), folded into ACT-1005's literal-cluster cases. P8 [ACT-0994](../../sprints/actions/ACT-0994-cached-load-claim-reregistration-intake.md) | L | Never observed; P6 shares ACT-1005's regeneration writer | Falsifiers: redefine one member and regenerate; edit during a cached load | None | First |
+| K8 Persistence leads | P6 (redefining one member of a shared `begin` keeps the old sibling), folded into ACT-1005's literal-cluster cases. P8 ACT-0994 | L | Never observed; P6 shares ACT-1005's regeneration writer | Falsifiers: redefine one member and regenerate; edit during a cached load | None | First |
 | K9 Diagnostics and discovery | C5 [0915](../../design/arch/fixmes/0915-codegen-diagnostic-exposes-mangled-doubled-internal-subjects.md): doubled prefix, `0..0` span, mangled subject in codegen diagnostics. C6 ACT-0986 (closed) item 1: in-language `discover-tests` excludes a mistyped test without the warning REPL §16.1 requires (`discover_eligible_tests` discards it); the host runner warns | S | C5 has no public trigger after G-7 and ACT-0999. C6 needs an extern warning channel (`arch`/`design`) | C5: `design`(backend, int) with the falsifier "any public codegen error". C6: a RED, then the warning channel. The requirement stands; the user may instead narrow it through `spec` | C6 narrowing would be a requirement change | 0915 (S118): unknown. ACT-0986: first |
-| K10 Run-dependent residual | [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) Class II, Class III, the inverse-polarity member and the reactor panic | E | Attribution needs load-shaped experiments; no member has reproduced on the current source | Class II D2/D3 experiment at the publication boundary; captured isolation-versus-load runs for the rest | None | Unknown; open since S114. If `sprint`'s history shows two prior deferrals, METHOD §2.4.5 sign-off applies |
+| K10 Run-dependent residual | 0694 Class II, Class III, the inverse-polarity member and the reactor panic | E | Attribution needs load-shaped experiments; no member has reproduced on the current source | Class II D2/D3 experiment at the publication boundary; captured isolation-versus-load runs for the rest | None | Unknown; open since S114. If `sprint`'s history shows two prior deferrals, METHOD §2.4.5 sign-off applies |
 | K11 Assurance maintenance | Evidence tails 0761, 0785, 0811, 0848, 0857, 0863, 0891, 0900, 0903, 0929, 0931, 0747, into [ACT-0962](../../sprints/actions/ACT-0962-coverage-assurance-and-shared-standard.md)'s deferred coverage increment. One public-API baseline batch through `arch`: ACT-0955 (approved format), ACT-0963 item 2, ACT-0971. QA's L-B1 corpus decision. Formatting drift and clippy warnings in the types and platform crates | E | No compiler acceptance authority; the baseline batch needs one user confirmation of a non-empty generated diff | Per filing | Baseline batch: non-empty-diff user confirmation | 0747, 0761, 0891: at least the second (each records an earlier deferral); ACT-0955: first (in S122 scope); others unknown. METHOD §2.4.5 sign-off applies where a count reaches three |
 
 #### Later phases (S122 work, not carries)
@@ -202,10 +202,10 @@ follow the rule above: "unknown" means no count was recorded.
 | Item | Class | Package | Filing | First S123 act | Deferral |
 |---|---|---|---|---|---|
 | Cancellation face: a losing `select` or `race` branch holding a `Pure` with a heap payload | E | K7 | FIXME 0934 (closed S124 on fence F-0934) | `test`: one armed executing balance observation of the losing heap-payload branch. `concurrency_fanout::fresh_select_in_continuation_rc_balanced` covers a scalar payload only | This face: first. The filing, open since S119: unknown |
-| 0694 Class I, beside the K10 members | E | K10 | [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) | Bounded attribution: the scrub mode, a single-threaded run at identical load, and the `--link` and REPL faces; otherwise an explicit user residual disposition | Unknown; open since S114 |
+| 0694 Class I, beside the K10 members | E | K10 | 0694 | Bounded attribution: the scrub mode, a single-threaded run at identical load, and the `--link` and REPL faces; otherwise an explicit user residual disposition | Unknown; open since S114 |
 | Worker requeue refused once | L | K10 | ACT-1025 (resolved S123) | `dev`(src): the source read and the self-attributing pool assertion; QA classifies | First |
 | Exemplar warm solve retains 51 | D, ordinary leak | K7 | ACT-1018 | The ordinary-leak rule's use is confirmed. The RED stays committed and un-ignored; `test` reduces it to a stranded type and site | First |
-| Match-arm branch push reads +2 | L, ordinary leak | K7 | [ACT-1022](../../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md) | `test` commits the `MarginalPair` the filing names; QA attributes | First |
+| Match-arm branch push reads +2 | L, ordinary leak | K7 | ACT-1022 | `test` commits the `MarginalPair` the filing names; QA attributes | First |
 | Unreadable entry file | L | — | [ACT-1019](#act-1019--unreadable-entry-file-closed) | `spec` locates or asks for the requirement; `test` then reduces | First |
 | Dotted CLI entry target file mapping | L (requirements disagree) | — | ACT-1020, closed S123 | `spec` returns the user's answer; `test` then reduces | First |
 | Tail-argument ownership and alias shadowing, with leads L2–L7, L9 and L10 (`design/backend/ownership-codegen.md` §13.3) | ACT-1030 D, memory-unsafe (use-after-free); ACT-1029 and the leads L | — | ACT-1031 (closed), over ACT-1029 (closed) and ACT-1030 (closed) | The [L6 and R1 cells](#act-1029-r1-probe--t0-control-fault-and-redesigned-delta-2026-09-30), halves observed separately; then the remaining leads against their falsifiers | First |
@@ -300,7 +300,7 @@ with no source edits since. Every probe ran in a fresh scratch directory under
     prefixes. Both are recorded in ACT-1017. Its user-approved carry is
     unchanged.
 - **F2 (training), `main` refusal location: confirmed defect, filed as
-  [ACT-1036](../../sprints/actions/ACT-1036-main-return-refusal-synthetic-location-intake.md).**
+  ACT-1036 (since carried by its failing test).**
   - `src/exe.rs::classify_main_return_type` raises its codegen-category
     refusal at `Span::SYNTHETIC`.
   - Batch output is `p.cl:1:1: error: codegen error at 0..0: main must return …`,
@@ -488,10 +488,10 @@ dated record is in its filing.
 | Item | Result | Disposition |
 |---|---|---|
 | ACT-0974 ([retained record](#retained-records-of-the-deleted-filings)) | **Double discharge, with a use-after-free face.** A closure wrapper for any of the six only-read String externs releases an argument the consuming shim already consumed. Direct-call and user-function-value controls pass. The one curried shape probed balances | **Returned to the user for a fix decision; not carried.** The user approved the fix on 2026-09-30 ([class delta](#act-0974-extern-entry-convention--prepared-evidence-delta-2026-09-30)). The proposed owner is `dev`(backend), realizing the already-designed repair in `non-concrete-release-contract.md` §7.6. No API change is expected. The REDs are `string_primitive_value_discharge`'s minimal and family cells |
-| [0907](../../design/arch/fixmes/0907-io-bind-existential-ctor-defeats-canonical-glue-derivation.md) balance cell | Balanced: marginal +3/+3, residual 0 | Balance obligation retired. The filing stays open for its Phase 6a/6b text and introspection items |
+| 0907 balance cell | Balanced: marginal +3/+3, residual 0 | Balance obligation retired. The filing stays open for its Phase 6a/6b text and introspection items |
 | FIXME 0934 (closed S124 on fence F-0934) | Unrun `Bind` balanced: marginal +6/+6, residual 0 | Unrun-`Bind` face retired. The filing narrows to the losing-branch cancellation face, which no package names. `sprint` asks the user: carry it (K7) or do it in S122 |
 | ACT-0976 (closed) | Ordinary leak: residual +2 (the argument tree), with no seam violation | RED retained and carried under K7, first deferral. It asserts §12.3.1, not a Rule 3 protocol regression |
-| [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md) Class I | Not reproduced in 600 loaded runs (620 in total) across unarmed, RC-dec-check and quarantine arms | Unattributed; absence neither attributes nor retires it. `sprint` asks the user to add it to the K10 carry |
+| 0694 Class I | Not reproduced in 600 loaded runs (620 in total) across unarmed, RC-dec-check and quarantine arms | Unattributed; absence neither attributes nor retires it. `sprint` asks the user to add it to the K10 carry |
 | ACT-1018 (from K3) | The exemplar's exact-balance cell reads 51 retained against a warm premise of 0, deterministic across two runs | New intake. RED retained and carried under K7 by the ordinary-leak rule, first deferral. `sprint` confirms this use of the rule with the user |
 
 **Coverage attribution (ACT-0974).** Value-position ownership evidence used
@@ -522,7 +522,7 @@ Review dispositions:
 
 - **Basis.** `e4062202` plus `fefd41e8…`, re-hashed. QA ran no Cargo; the
   executed evidence is the `dev` and `test` logs cited in
-  [ACT-1004](../../sprints/actions/ACT-1004-batch-missing-entry-diagnostic-intake.md).
+  ACT-1004.
 - **Discrimination.**
   - The `--run` and `--link` cells went RED before the fix for the intended
     reason (`no 'main'`), then GREEN.
@@ -1224,7 +1224,7 @@ observation and attribution.
   replaces the intake's proposal. The intake left the in-place-COW-exempt row
   unprotected, which the design shows is a use-after-free.
 - **Companion lead.**
-  [ACT-1022](../../sprints/actions/ACT-1022-match-arm-branch-push-residual-lead.md)
+  ACT-1022
   is P1, a +2 ordinary leak with no recursion. It is recorded without
   investigation.
 
@@ -2818,7 +2818,7 @@ regression; qualified calls failed before the G-7 fix.
   shared function at the lowest layer. The remaining risk is that a drain
   passes a spelling other than the written one. That is covered only by the
   diagnostic partial-application leg in the
-  [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md)
+  ACT-1001
   basket; it does not gate acceptance.
 - **Review A1, precedence.** Review predicted that typing, eager dispatch and
   the carrier disagree when an imported `T` meets a prelude-defined `T`. The
@@ -2870,7 +2870,7 @@ regression; qualified calls failed before the G-7 fix.
 - **Allocated.** P-1 gets one permanent RED from `test`, with a prelude-only
   control, a qualified control and a discriminating bare-head control that
   settles the locus. Its specification is in
-  [ACT-1001](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md#p-1-allocation--test).
+  ACT-1001.
   The user has not ruled fix or defer.
 - **Routed.** For P-2, `design` rules whether the dispatch index is read only
   from the canonical declaration, and the user rules on cells for §7.4.2a
@@ -5654,7 +5654,7 @@ Advisory and unallocated; each awaits its owner:
   first full run with `reactor suspended with no armed interest`. It passed
   alone and in the final run. No cache is involved: each run uses a fresh
   tempdir. It joins the unattributed run-dependent members of
-  [0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md);
+  0694;
   QA's filing edit is outside this dispatch's write scope.
 - Unchanged: the `startup_latency` before/after run, if restore-time closure
   hashing is questioned, and the trait-home reverse-dependency question, which
@@ -8087,7 +8087,7 @@ not an acceptance condition.
 ### ACT-1001 P-1 fix readiness — 2026-09-28
 
 The user ruled fix. The full allocation is in
-[ACT-1001 P-1 readiness](../../sprints/actions/ACT-1001-dotted-trait-member-residual-leads-intake.md#p-1-readiness--2026-09-28).
+ACT-1001 P-1 readiness.
 
 - **Locus.** The prelude-precedence mechanism is refuted by the bare-head
   control. The locus stays `checker.rs::dotted_member_identity`, where
@@ -8221,7 +8221,7 @@ own pattern meaning.
 | `infer.rs` match covered-ctor projection | Drops covered constructors | M3 |
 | `crates/cranelisp-typecheck/src/adt.rs::check_exhaustiveness_in_module` | `unknown type in match` without a wildcard | M3 |
 | `infer.rs::check_constructor_pattern` scrutinee-directed head gate (`scope_resolve` on the type name) | A contested bare pattern loses scrutinee-directed resolution | M4, if `design` includes it; otherwise a residual with this falsifier |
-| `checker.rs::is_internal_constructor_check_in_module` | Fails open | None: `is_internal_constructor_check_with_state` reads `internal` off the terminal constructor |
+| typecheck's module-scope internal-constructor gate (deleted in S125 W5) | Fails open | None: `is_internal_constructor_check_with_state` reads `internal` off the terminal constructor |
 | `checker.rs::fqtn_for_type` | — | None: test-only |
 | `builtins.rs` bootstrap reads of `SList`, `Sexp`, `IO` | — | None: user code cannot register into `macros` or `primitives` |
 | Backend `context.rs::lookup_type_def` | — | Raw FQ-keyed probe; the bare projection is a candidate, not a binding. Composition is observed by T1 |
@@ -8332,7 +8332,7 @@ and a trigger.
     ACT-1002 world, is rejected as ambiguous or resolves to the other type.
 - **The warm-REPL deftype echo** omits `; match:` for the contested type. This
   is new intake,
-  [ACT-1003](../../sprints/actions/ACT-1003-contested-type-deftype-echo-intake.md).
+  ACT-1003 (closed S125).
   It is outside the pattern readers this correction covers, and it neither
   blocks nor reopens ACT-1002.
 
@@ -8652,7 +8652,7 @@ Replace each cell's `// defect:` line:
 - Both P3 cells:
   `// defect: class=partial-record-update locus=src/process_form.rs::process_regular_form_with_origin found=S122 owner=/dev — the pass-2 record writer runs before typecheck and the commit gate, and a rejection does not restore the record` <!-- doc-check: literal reason="Defect locus as it stood at S122; 98ea54a0 removed the function" -->
 - P4:
-  `// defect: class=enumeration-miss locus=src/save.rs::authored_keys found=S122 owner=/dev — rehydration keys no top-level macro call, so definitions a cached module's macro call produced have no record`
+  `// defect: class=enumeration-miss locus=src/save.rs (the rehydration keying `authored_keys`, removed in S125) found=S122 owner=/dev — rehydration keys no top-level macro call, so definitions a cached module's macro call produced have no record`
 
 ### Limits
 
@@ -10358,7 +10358,7 @@ confirmed requirement is incomplete correction, not accepted debt.
 | Fresh load where the prelude reaches `x` only by `export` or qualified reference reports an unresolved name, not the cycle | **In scope; must be corrected now.** Not accepted | Spec §8.5.4 item 6: a qualified reference closing a cycle MUST be reported as a circular dependency naming the path, and MUST NOT surface as an unresolved name. §8.10.1 puts `export` in the graph, and the ruling in §8.8.1 admits no reach exception. PD-2's restart-parity leg already requires a session and a restart to report the same cycle |
 | An own-source failure before the type pass (Pass 0 resolution, Pass 1 expansion) records no failure dependency | **In scope; must be corrected now.** Not accepted | REPL §14.2 step 4: dependents of a changed module MUST be recompiled whatever stage their failure reached. ACT-1011's own-source condition covers this. A missing imported name is the most common way a dependent fails against its dependency |
 | Declared children are kept out of every cycle graph; spec §8.10.1 lists `mod` with no direction | **No ambiguity for this correction; no cell** | §8.3.8 makes a child's `super` import legal. An edge from parent to child would therefore make every `super` import a cycle, so that reading is excluded. The ruling did not change `mod`. Spec may clarify the wording; that change is not blocking |
-| A declared child of a prelude dependency compiles against the in-flight prelude | **Unrelated intake:** [ACT-1015](../../sprints/actions/ACT-1015-declared-child-reads-in-flight-prelude-intake.md) | The behaviour predates the ruling, and this correction does not change it. It is a suspected §8.8.2 and §8.10.3 order violation, and possibly a fresh-load/reload divergence. Phase 5 disposes of it (METHOD §2.4.1). It does not gate ACT-1014 |
+| A declared child of a prelude dependency compiles against the in-flight prelude | **Unrelated intake:** ACT-1015 | The behaviour predates the ruling, and this correction does not change it. It is a suspected §8.8.2 and §8.10.3 order violation, and possibly a fresh-load/reload divergence. Phase 5 disposes of it (METHOD §2.4.1). It does not gate ACT-1014 |
 
 The design's fourth residual, the entry's degraded re-drive, was not judged.
 

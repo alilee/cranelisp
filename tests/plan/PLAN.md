@@ -68,9 +68,10 @@ separates delivered wiring from unresolved document conformance.
   lists any run-dependent guard separately by name. A run-dependent guard is
   a defect signal to attribute under the
   [failing-test discipline](../AGENTS.md#failing-test-discipline-migrated-from-the-retired-ledger),
-  never a member of the exact count;
-  [suite-count provenance 0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md)
-  is the open record of the last such guard.
+  never a member of the exact count. The last such family (FIXME 0694) was
+  closed as residuals by the user on 2026-11-26; each member reopens on a
+  recurrence of its recorded signature
+  ([S125 evidence §2.2](s125-evidence-delta.md#22-legacy-fixmes)).
 - A leak attribution separates a program-independent residual from the leak
   by scaling the workload: a delta invariant under N is residual, a delta
   that scales with N is the leak. Measure it as a marginal pair under
@@ -273,12 +274,15 @@ the fine-grained forward/back trace; this plan does not duplicate every name.
 
 ## Active allocation and unresolved evidence
 
-[S124 evidence](s124-evidence-delta.md) owns the current sprint's allocation:
+[S125 evidence](s125-evidence-delta.md) owns the current sprint's opening
+reading, hygiene-band dispositions and allocation.
+[S124 evidence](s124-evidence-delta.md) owns S124's allocation and the
+carried-defect register:
 the opening failing set, the ACT-1034 attribution, the reproductions for
 the carried defects and the frontend audit, and the
 [state of the evidence after each wave](s124-evidence-delta.md#14-the-standing-state),
 with the failing set and what each correction wave still owes. [S123 evidence](s123-evidence-delta.md)
-owns the previous sprint's allocation, including the evidence the S123 panic,
+owns S123's allocation, including the evidence the S123 panic,
 agent and environment rulings re-point. [S122 evidence](s122-evidence-delta.md) owns the prior per-stream
 allocation, executing checkpoints, bounded closures and remaining gates; its
 [acceptance reconciliation](s122-evidence-delta.md#phase-5-acceptance-reconciliation-2026-09-27)
@@ -288,12 +292,10 @@ its old matrix changes current acceptance. Retained [S121 evidence](s121-test-pl
 and [S118 evidence](s118-test-plan.md) supply specific prior witnesses when the
 active allocation cites them; they are not fresh source censuses.
 
-- The exact-RC generator's linked nested-data/closure-capture remainder is
-  tracked by [filing0761](../../design/arch/fixmes/0761-qa-exact-rc-balance-lane-owning-type-by-position-matrix.md)
-  and the S122 allocation. Do not widen this into a full mode matrix.
-- [Suite-count provenance0694](../../design/arch/fixmes/0694-qa-suite-count-nonreproducible-two-interleaving-dependent-guards.md)
-  remains an independent record; a later green suite does not reconstruct its
-  missing historical attribution.
+- The exact-RC generator's linked nested-data and closure-capture faces run
+  in `tests/rc_escape_release_0763.rs` (shape F under both modes) and
+  `tests/capture_drop_glue_strands_nested_heap_0760.rs` (its linked face).
+  Do not widen this into a full mode matrix.
 - The 0859 `ProjectionOf` production-witness obligation is retired unexecuted
   under the 2026-09-01 user disposition recorded at the
   [primitives R-2 evidence boundary](../../design/primitives/primitives.md#r-2-evidence-boundary--accepted-with-a-revival-trigger),
@@ -544,14 +546,14 @@ reuse. Retirement needs the citing owners to move their citations first.
   [expansion qualification](../../design/int/expansion-qualification-scope.md),
   [the export-closure gate](../../design/int/int.md#67-public-candidate-exposure--the-export-closure-gate),
   [enforcement matrices](../../design/frontend/enforcement-matrices.md)), or
-  a filing carrying its own subject (0694, 0811 and 0857 open; 0708 and 0745
-  resolved in S122).
+  a filing carrying its own subject (0857 open; 0708 and 0745 resolved in S122,
+  0694 and 0811 in S125).
   Their standing rules are in §Standing coverage audit and §Traceability;
   their unlanded observation is the §15.2 persistence rows in §Active
   allocation. Their attributions, wave rulings and counts
   are dated S113/S114 and do not describe current status; the 0720 exemplar
   attribution in the S114 plan was later falsified by re-measurement
-  ([0811](../../design/arch/fixmes/0811-attribution-closed-on-the-repro-never-re-measured-at-source.md)),
+  (FIXME 0811, in Git history),
   while its reduced repro stands in
   [ADT-wrapped supersede](../adt_wrapped_supersede_leak_0720.rs). The S113
   assessment's ranking and depth recommendation were consumed by the

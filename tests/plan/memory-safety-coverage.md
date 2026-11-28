@@ -443,6 +443,16 @@ not assertion counts.
   (`tests/gen_ownership_flows.rs`) supplies composition coverage beyond the
   curated files.
 
+**Named residual: an unattributed heap-corruption abort** (FIXME 0694
+Class I, closed as a residual by the user on 2026-11-26).
+`macro_expansion_interior_alias_double_free::macro_clause_interior_alias_double_free_run`
+aborted once in S115 with glibc `free(): chunks in smallbin corrupted`,
+killed by a signal. It has not recurred: 600 loaded runs with and without
+quarantine and the stale-release trap (S122), and every full run since.
+*Falsifier:* any recurrence of that abort, in that cell or another, reopens
+it as a memory-safety defect for attribution. The capture is the
+[S115 record](s115-test-plan.md), §9.5.
+
 ---
 
 ## §6. Delivered increment and standing hooks
