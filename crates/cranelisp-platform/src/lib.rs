@@ -348,10 +348,14 @@ pub const IO_TAG_PAR: i64 = 3;
 pub const IO_TAG_EFFECT_POLL: i64 = 4;
 
 /// Launch-and-continue node (the effect-concurrency launch slice, S96 Chunk B).
-/// A thin single-field IO node: field-0 is the **detached IO sub-tree** (the
-/// launched effect). The trampoline's `IO_TAG_LAUNCH` arm moves the sub-tree into
-/// a supervised strand and yields `Pure Unit`, so the continuation runs without
-/// awaiting it (fire-and-forget, spec §10.12.7). Constructed by the backend's
+/// A thin IO node: field-0 is the **launched IO sub-tree**, field-1 its detached
+/// result disposer. The node owns one counted reference to the sub-tree for its
+/// whole life. Each force of the trampoline's `IO_TAG_LAUNCH` arm mints a new
+/// counted reference for a supervised strand, writes nothing to the node, and
+/// yields `Pure Unit`, so the continuation runs without awaiting the strand
+/// (fire-and-forget, spec §10.12.7) and a later force can launch the sub-tree
+/// again. The node keeps its sub-tree until teardown releases it
+/// (`design/intrinsics/ownership-and-disposal.md §6.3`). Constructed by the backend's
 /// `compile_launch` (the literal `5`), consumed by the reactor trampoline +
 /// `consume_io_tree`. An in-process backend↔intrinsics convention — the node is
 /// host-built and host-interpreted, never crossing the platform DLL ABI (no
@@ -365,9 +369,9 @@ pub const IO_TAG_LAUNCH: i64 = 5;
 /// passes its Vec literal through). The trampoline's `IO_TAG_SELECT` arm runs all
 /// branches concurrently on the reactor, yields the **first-ready** winner's value,
 /// and **drops the losers** (cancellation = future-drop, releasing their permits +
-/// reactor interest). The node owns the Vec for the whole tree lifetime — there is
-/// **no move-out and no null-guard** (select never detaches), so its drop glue is a
-/// plain `consume_vec_with(field0, consume_io_tree)`. Constructed by the backend's
+/// reactor interest). The node owns the Vec for the whole tree lifetime and a
+/// force writes nothing to it, so its drop glue is a plain
+/// `consume_vec_with(field0, consume_io_tree)`. Constructed by the backend's
 /// `compile_select`/`compile_race` (the literal `6`), consumed by the reactor
 /// trampoline + `consume_io_tree`. An in-process backend↔intrinsics convention —
 /// host-built and host-interpreted, never crossing the platform DLL ABI (no
