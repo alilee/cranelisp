@@ -9,7 +9,7 @@ Governing inputs, not restated here:
 - [Type-drop glue identity](../arch/interfaces.md#type-drop-glue-identity-and-address-boundary)
   — `drop_glue_symbol_name` and `ConcreteType::result_root`.
 - [IO-node ownership on force](../arch/total-concreteness.md#ownership-on-force--io-values-are-reusable-user-ruling-2026-09-21)
-  — what reference the program driver hands back for a `Pure` payload.
+  — what reference the program driver hands back for a forced `IO` value.
 - [Typecheck's residual-parameter defaulting](../typecheck/non-concrete-producer-obligations.md#3-values-residual-parameter-defaulting)
   — why a result's codegen type can be concrete when its display type is not.
 - `design/arch/safety-invariants.md` R15 and `design/arch/bounded-contexts.md` §6.
@@ -26,9 +26,11 @@ Every successful execution result crosses from generated code into exactly one
 program driver through the result's final observation, then releases the value
 exactly once through backend's canonical glue for its concrete type.
 
-1. The driver returns a word with its static result type. For `IO a`, the
-   driver forces the tree and hands over the `Pure` payload; the owned type is
-   `a`. The unwrap happens once, at the driver boundary.
+1. The driver returns a word for a program of static result type `T`. For
+   `T = IO a`, the driver forces the tree and hands over the value it yields;
+   the owned type is `a`, which may itself be `IO b`. The owner takes `T` and
+   performs that one hop itself (`driver_result_type`, `src/result_owner.rs`);
+   no caller unwraps before it.
 2. Int determines the **release key** once, from the producer's codegen type
    (§1.1.1), and classifies that key once (§1.1). A scalar or value-layout
    result needs no release. Failing to obtain a key is an invariant error,
@@ -115,8 +117,12 @@ driver outcome
        -> consumed
 ```
 
-- Construction consumes the clean outcome value and its carried type, and
-  refuses an `IO a` type outright, so a second IO unwrap is unconstructable.
+- Construction consumes the clean outcome value and the program's static
+  type, and takes the one `IO` hop itself, beside the release key's one
+  `result_root()` hop (§1.1.1). A payload that is itself `IO b` is an
+  ordinary owning result. A second unwrap is unconstructable because each
+  projection takes one hop and is called once; an `is_io` refusal would add no
+  protection and would reject that legitimate payload.
 - The owning arm holds a `GlueTarget`: the address together with the `Code`
   that keeps it mapped. The inert arm holds no callable target.
 - Observation borrows the value; finalization consumes or disarms the owner.
@@ -271,8 +277,10 @@ armed across that boundary.
   prompt. The REPL turn, EOF flush and agent submit each call it.
 - Definition, bare-symbol and `DisplayValue` displays did not come from an
   executed result and create no owner.
-- No formatter has an `IO` branch. `OwnedProgramResult::new` refuses `IO a`, so
-  a future direct caller cannot build a second IO owner.
+- No formatter unwraps `IO`. A payload of type `IO b` displays `#io`
+  ([display format §1.5](../../repl/spec/01-display-format.md)); a display-side
+  unwrap would be a second IO owner re-running the effect on the displayed
+  word.
 
 #### 4.2.1 A command that measures its own turn drives the release itself
 
@@ -341,23 +349,26 @@ is total, and no type is supplied by default.
   show that both earlier sources cannot be absent at once, so the chain
   ends in the scheme result rather than a default; that decides the
   question structurally (safety register row R18).
-- **`/type`** reads the same scheme result (`lift_expr_type`). After a
-  successful check, `__expr` is absent only through an invariant
-  violation. That is a located error, never a printed `:Int`
-  (`typecheck_only`, `src/repl/commands.rs`). No value or release is
+- **`/type`** reads the same scheme result from the staged `__expr`,
+  which it never commits (`type_of_expression`,
+  `src/process_form/type_query.rs`). After a successful check, `__expr`
+  is absent only through an invariant violation. That is a located error,
+  never a printed `:Int`. No value or release is
   involved, so the only face is a wrong display.
 - **Module rows** (`dev`(`src/`)): an `__expr` with no display type and no
   inferred body type takes its scheme's result, and an `IO` scheme selects
   forcing; `/type` with no `__expr` after a clean check returns the located
   error.
 
-### 4.4 `Pure` and non-IO results
+### 4.4 `IO` and non-IO results
 
 The program driver forces the result's IO tree and hands int one owned
-reference to the `Pure` payload, as the IO-node ownership contract defines. The
+reference to the value it yields, as the IO-node ownership contract defines. The
 owner releases that reference with glue for `a` — never glue for `IO a`, and
 never an intrinsics `consume_*` function; the IO node's own teardown is the
-runtime's.
+runtime's. When `a` is itself `IO b`, the reference is an unforced node,
+released through backend's canonical glue for `IO b` (`GlueShape::Io`) like
+any other owning result; there is no `IO`-specific release branch.
 
 Non-IO expression execution enters the same constructor with its own type, so
 REPL evaluation and entry `main` obey one rule.

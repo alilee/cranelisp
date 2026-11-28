@@ -63,7 +63,7 @@ the boundary conflict to `/arch` and update this doc accordingly.
 
 > **Why int is the largest surface.** int integrates everything. It owns three internal cadences (compilation, REPL, watcher), four observability sinks (scheduler trace, IO trace, GOT trace, introspection store), the only `Code` carrier instantiation site, the gap-orchestration crossing point, the slash-command surface, the cache writer, the file watcher, the line editor, the CLI, the `--link` driver, the prelude loader, and the error formatter. By design, int has the most subordinate docs and the largest LOC count.
 
-> **Audit reconciliation.** Open integration audit points are carried by [ACT-0965](../../sprints/actions/ACT-0965-src-audit-residuals.md). References below to older assessments are historical rationale recoverable from Git; they do not establish current implementation status.
+> **Audit reconciliation.** No integration audit point is open: the S121 and S87 points are disposed in [S125 binary clean §7](s125-binary-clean.md#7-filings). References below to older assessments are historical rationale recoverable from Git; they do not establish current implementation status.
 
 ---
 
@@ -504,8 +504,7 @@ A `false` at a dep site is a silent divergence: the dep lands in the unprioritis
 
 #### 6.1.1 A missing entry source file
 
-Status: **implemented 2026-09-30** (K1,
-[ACT-1004](../../sprints/actions/ACT-1004-batch-missing-entry-diagnostic-intake.md))
+Status: **implemented 2026-09-30** (K1, ACT-1004, since closed by `qa`)
 in `register_entry_module`; review found no blocking or required finding, and
 QA judged the evidence adequate
 ([K1 adequacy](../../tests/plan/s122-evidence-delta.md#k1--bounded-adequacy-2026-09-30)).
@@ -851,7 +850,7 @@ turn and every body-bearing concrete target still lacking code — synthesised c
 accessors and monomorphic instances — so a constructor used as a value has a populated GOT
 slot.
 
-**Macro-turn heap ownership** — the marshal/invoke boundary inside Pass-1 expansion (`src/expander.rs::invoke_clause` + `src/marshal.rs`) follows `design/int/macro-turn-ownership.md`. The clause ABI is pinned all-Owned at clause preparation; the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, retained or released by int); the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. A trapped or panicking invocation forfeits its one transferred argument tree. On a clause-reported runtime error, int discards the returned word without release; no bound is claimed for that residue (Rules 3–4). No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
+**Macro-turn heap ownership** — the marshal/invoke boundary inside Pass-1 expansion (`src/expander.rs::invoke_clause` + `src/marshal.rs`) follows `design/int/macro-turn-ownership.md`. The clause ABI is pinned all-Owned at clause preparation; the marshaller produces **single-owner** argument trees and **transfers** them by crossing the C ABI (nothing is protected, retained or released by int); the expansion result is an **owned** word int observes via `runtime_to_sexp` and then discharges exactly once through `cranelisp_intrinsics::consume_sexp`. A clause that panics or traps does not return: the process ends, and int installs no signal handler and recovers nothing (Rule 8). No marshal handle outlives its invocation frame, which keeps the protocol orthogonal to both the immediate macro publication checkpoint and its source-continuation retry.
 
 ### 6.3 Gap production
 
@@ -1679,8 +1678,8 @@ direct `super` import of row 1 would be a cycle, which §8.3.8 accepts. The
 spec does not say whether §8.3.8's acceptance covers only a child's direct
 dependency on its parent, or means a `mod` declaration never closes a cycle
 back to the declaring parent. This design does not answer that question.
-Whatever the answer, the outcome must not depend on the route
-([ACT-1081](../../sprints/actions/ACT-1081-module-graph-through-a-declared-child-is-accepted-or-refused-by-load-route-intake.md)).
+Whatever the answer, the outcome must not depend on the route (ACT-1081,
+since closed by `qa`).
 
 **Route independence** (ACT-1081; designed 2026-11-18; rules 1 and 2 built
 at `b8b6df58`, corrected at `9580856a`; the restored-parent leg of rule 1 is
@@ -2390,9 +2389,8 @@ asks, for a module `A` with the bit on, whether the prelude reaches `A`:
   identity.
 - **Declared children stay out of the walk**, as out of every cycle graph. A
   declared child of a prelude dependency that fails on a prelude name keeps
-  its own error; that shape is
-  [ACT-1015](../../sprints/actions/ACT-1015-declared-child-reads-in-flight-prelude-intake.md)'s
-  intake (an unconfirmed lead, carried to S123), not a cycle.
+  its own error; that shape was ACT-1015's intake (an unconfirmed lead,
+  since closed by `qa`), not a cycle.
 - **Deterministic and mode-uniform.** The walk reads files and the failed
   module's identity, not scheduler or session state, so the report does not
   depend on interleaving. `--run`, `--link`, REPL startup and a restart share
@@ -2555,8 +2553,10 @@ End to end:
 
 **Status: landed at `42e6d929` (rows D3, D10); the two regeneration
 corrections (*Regeneration*) at `74aa7a52`.** A qualified reference through a
-mount whose owner is not loaded is designed below and not scheduled
-(ACT-1079). The carrier is packet
+mount whose owner is not loaded is designed below and joins S125's
+focus band (defect 1079;
+[S125 §5.4](s125-binary-clean.md#54-a-reference-through-a-mount-loads-its-owner-1079)
+confirms the mechanism in source). The carrier is packet
 row D3 ([import and export entries](../arch/interfaces.md#import-and-export-entries)):
 a names list is `None`, `Glob` or `Specific` of `ImportEntry` values, each a
 `Name { source, local }` or a `MemberGlob(parent)`, and `ExportSpec` gains its
@@ -2765,7 +2765,7 @@ one record.
   |---|---|---|---|
   | Live turn: the staged introspection record, the turn receipt and the definition result | the turn's built `impl` | the staging table's record, which typecheck upserts on success | REPL turn, fresh file load, whole-file rebuild on reload |
   | Rehydration (`save.rs::rehydrate_introspection_from_source`) | the backing file's `impl` forms, built as today | the table's persisted records, which carry the label | cache restore, fresh declaration load |
-  | Regeneration (`save.rs::generate_impls`) | — | the module's records, enumerated | every path |
+  | Regeneration (`save.rs::generate_definitions`) | — | the module's records, enumerated | every path |
   | Definition echo and impl lookup (`src/repl/format.rs`) | — | the record named by the result's identity | every path |
 
   The rebuild prologue and the redefinition gate already key records by
@@ -4319,9 +4319,9 @@ carried.
 built at `f2317af0`, atomic object publication at `3dbc3db5`, and the
 failure record with the `--link` refusal at `79a8c94c`. One generation
 therefore holds within a process. The cache owner (*One cache owner*,
-below) is designed 2026-11-18 and not built: whether it is built waits on
-the user ([ACT-1085](../../sprints/actions/ACT-1085-two-processes-on-one-project-directory-can-mix-cache-generations-intake.md)),
-so one generation across processes does not hold. The refusal's location
+below; ACT-1085, closed by `qa`) is built in S125 (`src/cache.rs`, the
+project directory's owner lock), so a second process on the same project
+uses a private directory. The refusal's location
 (*Under `--link`*, below) also waits on the user. Private to `src/`. No
 inter-crate public API, carrier, persisted field, schema or ABI change, except
 as the refusal's location states.
@@ -4418,8 +4418,8 @@ as the refusal's location states.
     which goes to `arch` and the user's gate. A located rendering would
     have to invent a form, so this design does not propose one.
   - `dev` builds nothing for the location until both are decided.
-- **One cache owner per project directory** (designed; not built; waits on
-  the user, ACT-1085).
+- **One cache owner per project directory** (built in S125; ACT-1085,
+  closed by `qa`).
   - *What governs two processes today.* Nothing does. The REPL's session
     lock is an in-session admission rule over failed modules
     ([REPL lifecycle §1.3.1](repl-lifecycle.md#131-session-lock)); it is
@@ -4491,14 +4491,11 @@ as the refusal's location states.
     `src/` outside `ObjectCache`, or an object written straight to its final
     path, is a review reject (§12.1, item 20). *Measured* by REPRO-1083 and
     the module rows below.
-  - *Across processes: no grade.* Nothing excludes a second process, so the
-    invariant is not held between processes; the hazard is *asserted with
-    the falsifiers above* (*One cache owner*), and `qa` carries it as
-    ACT-1085. If the owner is built, the rule becomes structural within the
-    binary, because the session constructs its one `ObjectCache` at a single
-    site that decides the directory. Exclusion between processes would then
-    rest on the operating system's advisory lock, still asserted with the
-    same falsifiers.
+  - *Across processes: asserted.* With the owner built (S125), the rule is
+    structural within the binary, because the session constructs its one
+    `ObjectCache` at a single site that decides the directory. Exclusion
+    between processes rests on the operating system's advisory lock,
+    asserted with the falsifiers above (*One cache owner*).
 - **Warm-start cost.** One file removal per `.meta` write, and one flush and
   rename per object written, all on a nice worker. The owner adds one lock
   call per session. The restore and validation read nothing more. A module
@@ -4552,7 +4549,7 @@ as the refusal's location states.
     (`lifecycle.rs`).
   - Stay green: the rows built at `f2317af0`, and
     `a_stored_meta_overwrite_is_read_by_the_next_validation`.
-- **What `dev` builds if the user decides for the owner** (ACT-1085;
+- **What `dev` built for the owner** (S125; ACT-1085;
   `src/session_v4/lifecycle.rs`, `src/cache.rs`). Module row: with one
   session alive on a project root, a second session on the same root uses a
   private directory, and leaves the project's cache files byte for byte as
@@ -5065,7 +5062,9 @@ carries the rule; this list is the review checklist.
     rejection (`session-transaction.md` §0).
 17. **A second program-result releaser or an unguarded release target** — a
     release key re-derived from the observed type, a raw glue address without
-    its `Code` owner, or an `IO` branch in a formatter (`result-owner.md` §7).
+    its `Code` owner, or an `IO`-specific release or ownership branch in a
+    formatter (`result-owner.md` §7). The `#io` display marker reads no
+    memory and decides no ownership, so it is not such a branch.
 18. **A second bare-module-name rule** — deciding what a bare `import` or
     `export` module name refers to from symbol-table registration, a file probe
     or form order. Reading a persisted spelling as an absolute module outside
@@ -5081,6 +5080,13 @@ carries the rule; this list is the review checklist.
     `.o` written straight to its final path, or a session that reads or
     writes the project's cache directory without holding its owner lock
     ([§7.7](#77-one-generation-beside-an-entry-act-1083)).
+21. **An orchestration function left over budget when opened** — a change
+    that opens a function over `src/AGENTS.md`'s ~100-line budget, such as
+    `compile_and_publish_prepared`, `load_cached_module_via_linker` or
+    `link_by_name`, leaves it either decomposed into cohesive steps or with a
+    recorded exception in `src/AGENTS.md` that names what keeps it whole.
+    The design of the change states which. No extraction campaign is
+    implied; a function nobody opens is not touched ([S125 binary clean §7](s125-binary-clean.md#7-filings)).
 
 ---
 
@@ -5134,6 +5140,31 @@ dispositions never executed, and on files since deleted.
 The S121 C6 visit delivered most of its bundles; these obligations remain open
 in source. Each owning filing stays the tracker; this list is the design intent.
 
+- **S125 (designed 2026-11-26, Phase 3; not in source at `4c844f62`).**
+  [The binary clean and green](s125-binary-clean.md) designs the focus band:
+  - opaque `IO` (row IO-T): `IO` is seeded with no constructors, and
+    `primitives/pure` is a host-promised built-in. Step 3 carries the
+    backend's lowering and schema walk and two platform-schema
+    regenerations;
+  - `/type` as a check-only turn;
+  - display through row D-1 and one marker classifier;
+  - the persistence selector, authored order and cache agreement, and the
+    S125-Q5 refusal to redefine a macro-generated definition;
+  - the anchored module-file resolver, per-expansion qualification, a
+    complete index, and a reference through a mount loading its owner
+    (1079, designed in §6.13);
+  - commit planning's read order (1090) and the costed 1087 control. Both
+    left S125 with the trace deferral (user, 2026-11-26), and are designed
+    but not scheduled;
+  - Defect A: caller text inside a macro argument is never qualified
+    ([expansion qualification §2.7](expansion-qualification-scope.md#27-caller-text-is-never-qualified),
+    built in Phase 6b), and its `--run` location
+    ([reanchoring §2.2](macro-diagnostic-reanchoring.md#22-attribution-in-a-multi-form-cluster), designed).
+
+  When each lands, its substance folds into the subject document named
+  there: session persistence §§1.3 and 1.4, expansion qualification §1,
+  index isolation §3.1, and §7.6.4 here.
+
 - **S124 (designed 2026-11-16, Phase 3).** Designed to the user's Phase 2
   rulings and the 2026-11-17 approvals of rows D8, R10-9, D10 and D11 and
   rulings on S124-Q4 to Q6, and the 2026-11-17 approval of row R10-10, the
@@ -5180,7 +5211,7 @@ in source. Each owning filing stays the tracker; this list is the design intent.
     every older sidecar is a miss.
     - *Carried past S124, not scheduled:* ACT-1079, ACT-1068, ACT-1005,
       ACT-1062's display reader, ACT-1081's outcome clause, ACT-1082, the
-      cache owner (ACT-1085) and the location of the `--link` refusal. Each
+      cache owner (ACT-1085, built in S125) and the location of the `--link` refusal. Each
       stays recorded on its failing test or its filing; the items below
       that name them record designs, not schedule.
   - The location of the batch `discover-tests` refusal (ACT-1036's last
@@ -5206,7 +5237,7 @@ in source. Each owning filing stays the tracker; this list is the design intent.
       (ACT-1082, [§6.3.1](#631-locating-a-gap-at-its-reference-site)), at
       `arch` and the user's gate;
     - Face 1's fresh-load gap (§6.11, *Failed dependency*).
-  - *Designed, waiting on the user:* the cache owner (ACT-1085, §7.7), the
+  - *Designed, waiting on the user:* the
     location of the `--link` refusal of a stopped object pass (§7.7), and
     ACT-1036's residual, a macro-produced function restored from cache that
     a `discover-tests` refusal reports at `0..0`
@@ -5594,15 +5625,15 @@ in source. Each owning filing stays the tracker; this list is the design intent.
   `cranelisp_types::module_alias_key`'s, but the private mint must delete so the
   one types-owned mint is the only key source (§12.1 reject 4). It deletes in
   the S124 D3 change-set, which adds the second alias writer (§6.13).
-- **Located platform-signature refusal (FIXME 0933).** A manifest signature
-  whose checked type retains a free type variable is refused structurally:
+- **Located platform-signature refusal.** A manifest signature whose checked
+  type retains a free type variable is refused structurally:
   `SymbolTable::install_platform` requires a concrete type, and
-  `register_platform_in_tc` wraps the refusal as a load error naming the
-  platform module and function. Int owns the frame: the refusal must stay a
-  diagnosed load error, never a panic, and should name the offending leaf. No
-  test pins this refusal, and whether the current text names the leaf is
-  unverified; the filing stays open until a platform-module unit row shows a
-  concrete signature registering and a bare-lowercase-leaf signature refusing.
+  `platform::platform_install_error` reports that refusal as a load error
+  naming the platform function and quoting its written signature
+  ([total concreteness](../arch/total-concreteness.md) §3.5). It stays a
+  diagnosed load error, never a panic. Unit rows:
+  `src/platform/tests.rs::platform_sig_with_type_variable_is_refused_quoting_the_signature`
+  and its concrete control.
 - **Load-boundary lifecycle validation.** The cache decoder treats only an
   instance-key mismatch as stale ([restoration parity](#75-restoration-parity)). Whether other invalid decoded
   lifecycle states can restore is unmeasured. The falsifier is a decoded table

@@ -379,8 +379,9 @@ Backend has delivered the separate Q4 returned-alias correction through its
 selected-arm parameter carrier and compilation-local match-owner outcome. The
 affected backend set passes 19/19 and the existing public macro pair passes 2/2
 in run `0ce70208-1654-41a3-887f-89431a0b7b84`; independent review found no
-material defect. Preserve that pair and the explicit trap forfeiture in final
-integrated evidence.
+material defect. Preserve that pair in final integrated evidence. A trap no
+longer returns to the host, so the "no cleanup after a trap" record is
+superseded by [macro-turn ownership Rule 8](macro-turn-ownership.md#rule-8--a-failing-clause-ends-the-process-int-recovers-nothing).
 
 ## 4. Result root and truthful `/mem`
 

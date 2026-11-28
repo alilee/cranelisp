@@ -31,6 +31,16 @@ definition.
 
 ### 1.3 Section order
 
+> **Designed to replace §§1.3 and 1.4 (S125; not in source).** This order
+> and §1.4's dependency sort do not meet repl §15.4 rules 2 and 4
+> (ACT-1005). The replacement is the authored entry (user, 2026-11-27):
+> one record and one written form per entry, a top-level `begin` dissolved
+> at entry, one definitions sequence by position. Its selector covers
+> ACT-1068 and ACT-1101. §2.4's shared-form records and the `begin` split
+> retire with it. It is
+> [the binary clean and green](s125-binary-clean.md) §4; fold it in here
+> when it lands.
+
 Sections are emitted in a fixed order, separated by blank lines:
 
 0. the module preamble (`module_preamble`, re-emitted byte-stably);

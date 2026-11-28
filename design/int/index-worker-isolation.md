@@ -35,6 +35,12 @@ never writes one (§3.3).
 
 ### 3.1 Private tables and aliases
 
+> **Designed change (S125; not in source).** A dependency that is absent or
+> unpublished in the copy no longer skips the module (ACT-1092). The private
+> substrate gains the dependency's table, from live, a validated `.meta` or
+> a private index from source; a dependency still compiling defers the
+> module. See [the binary clean and green](s125-binary-clean.md) §5.3.
+
 `checked_typecheck_module` builds a private deep clone of the live symbol
 tables, with the indexed module starting empty, and a fresh alias map.
 `index_typecheck_into_private` runs import and export installation, macro

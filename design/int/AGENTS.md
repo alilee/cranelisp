@@ -64,7 +64,7 @@ listed in `int.md` §16.0, and the standing review rejects in `int.md` §12.1.
 | `session-persistence.md` | Save/regenerate. The cache artefact, cache-hit flow, restoration parity and `Code` carrier are `int.md` §§5 and 7. |
 | `io-integration.md` | The host program driver, `main` validation, and platform-DLL load orchestration (search, ABI gate, registration, layout-hash gate). |
 | `result-owner.md` | The one program-result owner across REPL, `--run`, cache-hit and linked startup: observe, then release exactly once through canonical type glue. |
-| `macro-turn-ownership.md` | The macro-clause invocation protocol: the declared all-Owned clause ABI, single-owner argument transfer by ABI crossing, and exactly-once result discharge through `consume_sexp`. |
+| `macro-turn-ownership.md` | The macro-clause invocation protocol: the declared all-Owned clause ABI, single-owner argument transfer by ABI crossing, exactly-once result discharge through `consume_sexp`, and no trap recovery at the clause call (Rule 8). |
 | `bind-chain-analysis.md` | The compile-time automatic-IO-scheduling pass (`spec/10-io.md` §10.12), including how it reads a platform function's scheduling class (`design/int/bind-chain-analysis.md` §4). |
 | `step9-error-cascade.md` | Module failure: scheduler cascade, the user-visible error chain and REPL recovery. Spec-traced tests cite §4.1 and §4.2. |
 | `observability.md` | The trace and event sinks. |
@@ -79,10 +79,11 @@ listed in `int.md` §16.0, and the standing review rejects in `int.md` §12.1.
 
 | Doc | Subject |
 |---|---|
+| `s125-binary-clean.md` | The S125 focus band, designed and not yet in source: opaque `IO`'s bootstrap side (a constructorless `IO` and a host-promised `pure`, row IO-T), `/type` as a check-only turn, display through D-1, persistence (with the S125-Q5 refusal to redefine a macro-generated definition), module-file resolution, per-expansion qualification, index completeness, a mount's owner loaded on reference (1079), commit-planning read order and the costed 1087 control (both left S125 with the trace deferral) and the band's filing dispositions. §8 is delivered and lives in `macro-turn-ownership.md` Rule 8; it keeps the S125-Q12 trap question. |
 | `s117-conformance-recovery.md` | The prepared-turn transaction (prepare → whole-batch codegen → publish, one cadence for eval and worker), its presentation readers, and the source-ordered macro checkpoint (§1.1.2/§2.1). |
 | `index-worker-isolation.md` | The index-feed isolation contract (background half; the foreground export-closure gate is `int.md` §6.7). |
 | `macro-diagnostic-reanchoring.md` | Synthetic-span diagnostics over macro output relocate to the origin form; paired with `design/frontend/binder-head-reject.md`. |
-| `expansion-qualification-scope.md` | `qualify_expanded_sexp` is scope-aware, skipping value-level binder slots. |
+| `expansion-qualification-scope.md` | Qualification of one foreign macro's expansion: free references the macro wrote only, skipping binders, quoted data and the caller's passed-through text (§2.7, designed S125). |
 | `multi-sig-introspection.md` | Multi-signature introspection: one line per arm, each with its own constraints (§2.4). |
 | `private-submodule-import.md` | Private submodule import refusal, with its open unloaded-parent case. |
 | `test-runner.md` | `--test` and the crate-private runner it shares with `/run-tests` and `/run-all-tests`: selection, the one eligibility scan, prepare/execute/report, test-result release and the batch refusal of `discover-tests`. Implemented and verified, except the S123 test child that restarts after a panic (§6.5). The child is built and checked against source. It awaits review, the suite run, and a `dev` change: the reason of a non-panic fail must carry the fault's cause (§6.5, *The cause of a fail*). The location of the batch `discover-tests` refusal (§7.3) is built and awaits review and the suite run. |

@@ -1,8 +1,8 @@
 # Macro-turn ownership protocol
 
 **Owner:** `design` (int). **Status:** current contract, verified against source
-on 2026-09-21. **Subordinate to:** [`int.md`](int.md) §6.2.
-**Seam:** `src/expander.rs::invoke_clause`, `invoke_jit_protected` and
+on 2026-09-21; Rules 3, 4 and 8 on 2026-11-28. **Subordinate to:** [`int.md`](int.md) §6.2.
+**Seam:** `src/expander.rs::invoke_clause` and
 `src/marshal.rs`; the clause-preparation pin in `src/process_form/macro_clause.rs`.
 
 Governing inputs, not restated here:
@@ -78,6 +78,9 @@ exit.
   `SList` spine. A bare nullary tag is not a cell (Rule 6).
 - An early return partway through building a tree trips the debug drop-bomb at
   that frame.
+- **The one retained reference** is §2.7's provenance witness: a second count
+  on each argument symbol's `HeapString`, held by `invoke_clause` and not by the
+  marshaller's tree (Rule 2's provenance exception).
 
 ### Rule 2 — no marshalled cell is protected
 
@@ -100,36 +103,26 @@ input. Rule 1 gives the clause exactly that input. The five pins in
 Deep-copying the arguments or the result would not help: the arguments are
 already a disjoint copy, and the aliasing arises inside the clause.
 
+**Provenance exception.** For the extent
+of one `invoke_clause`, the host holds one counted reference on each argument
+symbol's string. It is the witness by which
+[expansion qualification §2.7](expansion-qualification-scope.md#27-caller-text-is-never-qualified)
+recognises caller text. It is a real reference with a named holder, released
+exactly once on every return path, and it is not a protective increment. A
+string has no children, so the 0638 asymmetry cannot arise. The clause still
+receives a single-owner tree in which every `Sexp` and `SList` cell is at
+RC = 1.
+
 ### Rule 3 — the argument tree is discharged by crossing the ABI
 
-`invoke_clause` moves the argument `Owned` by value into
-`invoke_jit_protected`, which converts it with `Owned::into_raw` at the call.
-**Crossing the C ABI is the discharge.** After the call begins, int holds no
-argument reference.
+`invoke_clause` converts the argument `Owned` with `Owned::into_raw` at the
+clause call. **Crossing the C ABI is the discharge.** After the call begins, int
+holds no argument reference.
 
 - Nothing is released at turn exit, so there is no turn-exit ordering question
   and no aliasing analysis.
-- **A trapped or panicking invocation forfeits the argument tree.** When the
-  clause traps (`SIGFPE`, `SIGILL` or `SIGBUS`, recovered by `siglongjmp`) or
-  panics, ownership has already left int and the JIT frames are abandoned. Int
-  releases nothing: any host cleanup would be a double-free or a traversal of a
-  possibly corrupt tree. This is a named, bounded residual: at most one argument
-  tree per failed expansion, which the user sees as an error.
-- **A clause-reported runtime error is a different path, with no bound.**
-  `runtime/panic` records the error in a thread-local and *returns*; the
-  panicking function alone returns a dummy `0`, skipping its own compiled
-  cleanup, and its callers continue normally. The clause may therefore still
-  return an ordinary word to int. Int discards that word without release
-  (Rule 4). Whatever the panicking frame owned is not released, and the
-  discarded result word is not released; neither quantity is bounded here.
-- Zero-residue claims extend to neither path, and an instrument must not
-  attribute either residue to a regression of this protocol.
-- **S123 target (designed 2026-11-15, not implemented).** A runtime panic ends
-  the process in the runtime's funnel, so the clause-reported path above and
-  its Rule 4 slot check retire. A panic during expansion ends the process
-  (user ruling, 2026-11-15), so nothing replaces them
-  ([io-integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)).
-  The signal-trap forfeit stays.
+- A clause that panics or traps does not return to int (Rule 8), so no
+  failure path needs a release either.
 
 ### Rule 4 — the result tree is owned by int and discharged exactly once
 
@@ -147,11 +140,6 @@ argument reference.
   reference.
 - The unmarshaller is a reader. There is exactly one releaser, and it lives in
   intrinsics. Int must not grow a second traversal.
-- On a clause-reported runtime error, `invoke_jit_protected` checks
-  `take_runtime_error()` before returning the word, so `invoke_clause` never
-  wraps it. The word is discarded without release: the clause continued past a
-  dummy `0`, so the word is not a trustworthy tree to traverse. This joins the
-  Rule 3 runtime-error residual.
 
 ### Rule 5 — `src/marshal.rs` owns no RC primitive
 
@@ -180,6 +168,48 @@ the invocation, not a macro publication checkpoint or source-processing attempt
 `ExecutableMacroClause.owner: Code` and `invoke_clause`'s code lease are a
 code-lifetime guard (**Principle 22**), not a heap handle.
 
+
+### Rule 8 — a failing clause ends the process; int recovers nothing
+
+The clause call is a plain `extern "C"` call. Int installs no signal handler,
+holds no jump target and has no recovery arm around it.
+
+- **A panic** ends the process in the runtime's funnel (spec §9.12, §12.7.2;
+  [io integration §1.2](io-integration.md#12-a-runtime-panic-ends-the-process-the-host-side)).
+- **A hardware trap** (`SIGFPE`, `SIGILL`, `SIGBUS`, `SIGSEGV`) reaches the
+  process's installed action. That is intrinsics' guard once a platform effect
+  has run, and the prior action before then. The guard does not own an unarmed
+  trap and forwards it to the prior action
+  ([process lifecycle §1.8](../intrinsics/process-lifecycle.md#18-the-trap-guard-one-disposition-armed-per-thread)),
+  so the outcome is the same before and after the first platform force.
+  - *Stack exhaustion* reaches the Rust runtime's overflow handler, which
+    reports and aborts. The spec makes it a runtime panic with the
+    `error: runtime panic:` report (§12.7.2.1, §12.7.5), so the report text is
+    a known nonconformance in every mode, not only here. It is `qa`'s to
+    evidence.
+  - *Any other trap* comes from a compiler or runtime defect, and ends the
+    process on its signal. Whether that outcome is required behaviour is
+    [S125-Q12](../../spec/appendix-d-open-questions.md#s125-q12-what-happens-when-a-macro-clause-raises-an-otherwise-unspecified-hardware-trap),
+    which the user holds. An answer that needs a report or recovery is a new
+    `arch` row: intrinsics would publish its guard and the binary would call
+    it. Int must not regain a guard of its own.
+- **Intrinsics' guard is the process's one writer of the four dispositions**
+  (bounded contexts §4b invariant 14). A second writer here would reinstall
+  the guard's handler without `SA_SIGINFO` and `SA_ONSTACK`. While a clause
+  call was in flight, it could also take a platform trap raised on another
+  thread.
+- **No ownership residue to bound.** The argument tree crossed with the call
+  (Rule 3), and the process does not survive the failure, so neither the
+  forfeited tree nor the abandoned frames are a leak of this protocol.
+
+| Property | Grade |
+|---|---|
+| No binary production code writes the four dispositions | *Measured* by D5, proven to detect |
+| A clause call leaves every trap disposition as it found it | *Measured* by D6 |
+| A clause failure is never turned into a recoverable expansion error | *Structural*: no jump target or recovery arm exists. D5 keeps it so |
+| A clause trap has the same outcome before and after the first platform force | *Measured* by intrinsics' unarmed-trap cells (§1.8 cells 3 and 4) |
+| Third-party code writes none of the four after startup | *Asserted, with a named falsifier*: after a REPL session that runs an effect and a macro, one of the four actions belongs to neither intrinsics' guard nor the Rust runtime |
+| No platform context is armed on a thread while a clause runs | *Asserted, with a named falsifier*: a platform force in flight on the expanding thread |
 ---
 
 ## 5. Rejected alternatives
@@ -228,10 +258,32 @@ Balance and aliasing are pinned by:
   `single_owner_completeness_over_cell_kinds`,
   `args_slist_spine_is_single_owner`).
 
-The Rule-3 trap forfeit has no zero-residue test. What is structural is that int
-cannot release the argument after the move: the handle is moved into the call
-and cannot be named afterwards. The Rule-3 runtime-error residual has no test
-and no bound.
+What is structural in Rule 3 is that int cannot release the argument after the
+move: the handle is moved into the call and cannot be named afterwards.
+
+Rule 8 is pinned by two cells in `src/expander/trap_dispositions_tests.rs`:
+
+- **D5 — the workspace trap-disposition census**
+  (`trap_dispositions_are_written_only_by_the_intrinsics_guard`).
+  - *Scope.* The production source of every member in the root
+    `Cargo.toml`, including the platform DLLs that load into the process.
+  - *Rule.* Outside intrinsics' guard module, a `signal` or `sigaction` call,
+    in either the `libc` or the `nix` spelling, must name a recognised
+    non-trap constant. An unrecognised or non-literal signal fails.
+  - *Exclusions and detection proof.* Test-only files are outside the scope,
+    because they may set sentinel actions. The planted writers prove that the
+    census detects. `src/sched_dump.rs`'s `SIGUSR1` is the negative leg.
+  - *If the guard module moves,* the census admission moves in the same
+    change-set.
+- **D6 — a clause call leaves the dispositions unchanged**
+  (`macro_clause_call_leaves_trap_dispositions_unchanged`).
+  - *Setup.* A re-executed child installs sentinel `SA_SIGINFO | SA_ONSTACK`
+    actions on the four signals.
+  - *Action and observation.* It expands one macro, then compares each
+    action's handler and flags in both directions.
+  - *Why it suffices.* With one installer, the order of a macro call and a
+    platform force cannot matter. The sentinel stands in for whichever
+    installer came first.
 
 No `cranelisp-types`, schema or `public-api.txt` change is involved: `expander`
 and `marshal` are crate-private in a binary.
@@ -276,8 +328,8 @@ Further constraints:
    pairs through the ordinary publication seam. Marshal handles never join
    them.
 2. A publication failure restores any touched GOT cell while candidate code
-   owners are alive. Rule 3's trap forfeit is independent: neither path cleans
-   up the other's resource.
+   owners are alive. A failing clause call is independent of it: it ends the
+   process (Rule 8), so neither cleans up the other's resource.
 3. A `ResolutionGap` parks source continuation only. No marshalled value, JIT
    owner, checked candidate world or invocation frame survives the retry.
 

@@ -228,8 +228,10 @@ never sees a panic, chooses no panic status and formats no panic text.
     session misses the cache for those modules, just as after `SIGKILL`.
     Cache writes replace files atomically by temp-and-rename (arch §1.7).
 - **Macro expansion ends the process on a panic** (user ruling, 2026-11-15).
-  The expander keeps its signal recovery, because signals are not panics, and
-  loses only its slot read. Accepted consequences: a panicking macro in a
+  The expander reads no error slot and recovers no signal: a clause that
+  panics or traps does not return
+  ([macro-turn ownership Rule 8](macro-turn-ownership.md#rule-8--a-failing-clause-ends-the-process-int-recovers-nothing)).
+  Accepted consequences: a panicking macro in a
   backing file ends REPL startup each time until the file is edited, and a
   model proposal that expands a panicking macro ends the REPL during silent
   validation ([agent §16.1](agent.md#161-the-dry-run)).
