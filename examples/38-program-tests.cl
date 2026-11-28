@@ -86,7 +86,7 @@
      (Some _) 0]))
 
 (defn main []
-  (Pure
+  (pure
     (add-i64 (passed (test-addition))
       (add-i64 (passed (test-division-truncates))
         (add-i64 (passed (test-concat))

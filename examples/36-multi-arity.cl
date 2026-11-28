@@ -117,7 +117,7 @@
 ;; and returns cleanly, with the same exit code under `--run` and
 ;; `--link`.
 (defn main []
-  (Pure
+  (pure
     (add-i64 (check-arity-one)
       (add-i64 (check-arity-two)
         (add-i64 (check-arity-three)

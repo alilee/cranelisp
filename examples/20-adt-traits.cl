@@ -245,7 +245,7 @@
 
 (defn main []
   (if (check-nested-display)
-    (Pure
+    (pure
       (add-i64 (check-color-eq-same)
         (add-i64 (check-color-eq-diff)
           (add-i64 (check-color-eq-all)
@@ -268,4 +268,4 @@
                                             (add-i64 (check-point-show-neg)
                                               (add-i64 (check-find-color)
                                                        (check-describe)))))))))))))))))))))))
-    (Pure 0)))
+    (pure 0)))

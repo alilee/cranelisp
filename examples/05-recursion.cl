@@ -55,9 +55,9 @@
 ;; This checksum can miss compensating errors or changes by multiples of
 ;; 256; it does not prove that each individual result is correct.)
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (fact 5)
       (add-i64 (fact-acc 10 1)
         (add-i64 (fib 10)

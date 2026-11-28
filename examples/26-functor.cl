@@ -104,20 +104,20 @@
 ;; This is example 21's `map-io`, written as an instance.
 (impl (Functor f) (Functor IO)
   (defn fmap [f io]
-    (bind io (fn [x] (Pure (f x))))))
+    (bind io (fn [x] (pure (f x))))))
 
 ;; fmap over IO: the functions apply to the value the action yields
 (defn check-fmap-io []
-  (fmap double (fmap inc (Pure 20))))                      ;; -> (IO 42)
+  (fmap double (fmap inc (pure 20))))                      ;; -> (IO 42)
 
 ;; Expected: 42 + 99 + 42 + 22 + 99 + 42 + 1 + 42 = 389
 ;; The process EXIT CODE is the low byte of that sum: 389 mod 256 = 133.
 (defn main []
   ;; check-fmap-io is an IO action, so main binds its result before
-  ;; adding it to the pure checks and wrapping the sum in `Pure`.
+  ;; adding it to the non-IO checks and lifting the sum with `pure`.
   (bind (check-fmap-io)
     (fn [io-result]
-      (Pure
+      (pure
         (add-i64 io-result
           (add-i64 (check-fmap-some)
             (add-i64 (check-fmap-none)

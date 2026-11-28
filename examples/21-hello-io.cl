@@ -1,22 +1,23 @@
 ;; 21-hello-io.cl -- Introduction to the IO model
 ;;
-;; Cranelisp tracks side effects through the IO type. A function that
-;; performs IO returns (IO a) instead of plain a, making effects visible
-;; in the type system. The compiler enforces this -- pure functions cannot
-;; accidentally perform IO.
+;; IO is an opaque built-in type: an (IO a) value describes a deferred
+;; computation that yields an a. Evaluation never performs an effect.
+;; Calling a function, including print, returns a value without performing
+;; IO. Effects occur only when the runtime executes an IO value.
 ;;
-;; This example introduces the IO primitives step by step:
+;; This example introduces the public operations step by step:
 ;;
-;;   1. Pure   -- lift a value into IO (no actual effect)
-;;   2. bind   -- chain IO actions, threading values between them
-;;   3. Helper combinators built from Pure and bind
-;;   4. Platform IO -- actual side effects via (platform stdio), and
-;;      why an IO value can be run more than once
+;;   1. pure   -- lift a value into IO without adding an effect
+;;   2. bind   -- sequence IO actions, passing results to continuations
+;;   3. Conditional IO -- both branches return the same IO type
+;;   4. Helper combinators built from pure and bind
+;;   5. Helper functions that return IO
+;;   6. Recursive composition of IO actions
+;;   7. Platform IO -- console output, and reusing an IO value
 ;;
-;; When main returns (IO a), the runtime's trampoline forces the IO
-;; tree and extracts the inner value. So (Pure 42) as main's return
-;; produces 42 as the program result. Effect nodes (from platform
-;; functions like print) execute their side effects during forcing.
+;; When main returns (IO a), the runtime executes that computation and
+;; obtains its result. Returning (pure 42) yields 42 without an effect.
+;; Returning a print action describes output that occurs during execution.
 ;;
 ;; Running:
 ;;   ./target/debug/cranelisp --run examples/21-hello-io.cl
@@ -31,25 +32,31 @@
 ;; This must appear before any platform function imports.
 (platform stdio)
 
-;; IO constructors and bind live in the `primitives` module.
+;; The built-in functions pure and bind live in `primitives`.
 ;; Platform functions live in `platform.stdio`.
-(import [primitives [Pure bind]])
+(import [primitives [pure bind]])
 (import [platform.stdio [print]])
 
 
-;; === Part 1: Pure -- lifting values into IO ===
+;; === Part 1: pure -- lifting values into IO ===
 
-;; Pure wraps any value in an IO context. No effect occurs.
-;; Type: Pure :: (Fn [a] (IO a))
+;; primitives/pure is a built-in function that lifts a value into IO.
+;; Executing its result yields that value without performing an effect.
+;; Type: pure :: (Fn [a] (IO a))
+;;
+;; The name is conventional for this lift. A function whose result type
+;; contains no IO differs from a function returning an IO description.
+;; IO has no public constructors, and you cannot pattern-match on it.
+;; Use bind to receive an action's result in a continuation returning IO.
 
 (defn check-pure-int []
-  ;; (Pure 42) creates an (IO Int) value.
-  ;; Roundtrip through bind to prove we can extract the value.
-  (bind (Pure 42) (fn [x] (Pure x))))            ;; -> 42
+  ;; (pure 42) creates an (IO Int) value.
+  ;; The continuation receives 42 when the runtime executes this action.
+  (bind (pure 42) (fn [x] (pure x))))            ;; -> 42
 
-;; Pure works with any type -- Bool, String, etc.
+;; pure works with any type -- Bool, String, etc.
 (defn check-pure-bool []
-  (bind (Pure true) (fn [b] (Pure (if b 1 0))))) ;; -> 1
+  (bind (pure true) (fn [b] (pure (if b 1 0))))) ;; -> 1
 
 
 ;; === Part 2: bind -- chaining IO actions ===
@@ -59,62 +66,66 @@
 ;;
 ;; It takes an IO action and a continuation. The continuation
 ;; receives the inner value of the first action and returns
-;; a new IO action. bind constructs a Bind node in the IO tree;
-;; the runtime trampoline evaluates the chain iteratively.
+;; a new IO action. Calling bind only composes them. During execution,
+;; the runtime runs the first action, calls the continuation with its
+;; result, then runs the action the continuation returns. The result
+;; stays in IO: bind cannot turn an (IO a) into a plain a.
 
 (defn check-bind-simple []
-  ;; Extract 10 from (Pure 10), add 5, wrap result in Pure.
-  (bind (Pure 10) (fn [x] (Pure (add-i64 x 5)))))  ;; -> 15
+  ;; Receive 10, add 5, and lift the result with pure.
+  (bind (pure 10) (fn [x] (pure (add-i64 x 5)))))  ;; -> 15
 
 (defn check-bind-chain []
   ;; Chain three steps: start with 1, add 10, then add 100.
-  (bind (Pure 1)
+  (bind (pure 1)
     (fn [a]
-      (bind (Pure (add-i64 a 10))
+      (bind (pure (add-i64 a 10))
         (fn [b]
-          (Pure (add-i64 b 100)))))))             ;; -> 111
+          (pure (add-i64 b 100)))))))             ;; -> 111
 
 (defn check-bind-multi-ref []
   ;; The continuation can reference earlier bindings (closures).
   ;; Here we bind three values and combine them all at the end.
-  (bind (Pure 1)
+  (bind (pure 1)
     (fn [a]
-      (bind (Pure 2)
+      (bind (pure 2)
         (fn [b]
-          (bind (Pure 3)
+          (bind (pure 3)
             (fn [c]
-              (Pure (add-i64 a (add-i64 b c))))))))))  ;; -> 6
+              (pure (add-i64 a (add-i64 b c))))))))))  ;; -> 6
 
 
 ;; === Part 3: Conditional IO ===
 
 ;; Because IO is a regular type, if-expressions work naturally.
 ;; Both branches must return the same type -- (IO a) -- so the
-;; "do nothing" branch uses Pure to wrap a default value.
+;; "do nothing" branch uses pure to lift a default value. Returning a
+;; plain integer in that branch would give mismatched branch types.
 
 (defn check-bind-with-if []
-  (bind (Pure 10)
+  (bind (pure 10)
     (fn [x]
       (if (gt-i64 x 5)
-        (Pure (add-i64 x 100))                   ;; x > 5: add 100
-        (Pure x)))))                              ;; -> 110
+        (pure (add-i64 x 100))                   ;; x > 5: add 100
+        (pure x)))))                              ;; -> 110
 
 (defn check-conditional-io []
   ;; Choose between two IO paths based on a condition.
-  (bind (Pure 7)
+  (bind (pure 7)
     (fn [x]
       (bind (if (gt-i64 x 10)
-              (Pure (mul-i64 x 2))                ;; big: double
-              (Pure (add-i64 x 3)))               ;; small: add 3
+              (pure (mul-i64 x 2))                ;; big: double
+              (pure (add-i64 x 3)))               ;; small: add 3
         (fn [y]
-          (Pure (add-i64 y 1)))))))               ;; -> 11
+          (pure (add-i64 y 1)))))))               ;; -> 11
 
 
-;; === Part 4: Building combinators from Pure and bind ===
+;; === Part 4: Building combinators from pure and bind ===
 ;;
 ;; The standard library provides combinators like >>, map-io,
-;; when-io, etc. Here we build them from scratch to show that
-;; Pure and bind are the only primitives you need.
+;; when-io, etc. Here we build then and map-io from the public functions
+;; pure and bind. We compose IO values without inspecting their internals;
+;; platform operations supply actions that describe actual effects.
 
 ;; then: run two IO actions in sequence, keep the second result.
 ;; In the standard library this is called `>>`.
@@ -122,21 +133,21 @@
   (bind a (fn [_] b)))
 
 (defn check-then []
-  ;; (then (Pure 999) (Pure 42)) discards 999, keeps 42.
-  (bind (then (Pure 999) (Pure 42))
-    (fn [x] (Pure (add-i64 x 8)))))              ;; -> 50
+  ;; (then (pure 999) (pure 42)) discards 999, keeps 42.
+  (bind (then (pure 999) (pure 42))
+    (fn [x] (pure (add-i64 x 8)))))              ;; -> 50
 
-;; map-io: apply a pure function to the result of an IO action.
-;; This avoids writing (bind io (fn [x] (Pure (f x)))) everywhere.
+;; map-io: apply a function whose result contains no IO to the result of an IO action.
+;; This avoids writing (bind io (fn [x] (pure (f x)))) everywhere.
 (defn map-io [f io-val]
-  (bind io-val (fn [x] (Pure (f x)))))
+  (bind io-val (fn [x] (pure (f x)))))
 
 (defn square [n] (mul-i64 n n))
 
 (defn check-map-io []
-  ;; map-io square (Pure 5) -> (IO 25), then add 1 -> 26.
-  (bind (map-io square (Pure 5))
-    (fn [x] (Pure (add-i64 x 1)))))              ;; -> 26
+  ;; Squaring the action's result yields 25, then adding 1 yields 26.
+  (bind (map-io square (pure 5))
+    (fn [x] (pure (add-i64 x 1)))))              ;; -> 26
 
 
 ;; === Part 5: Returning IO from helper functions ===
@@ -144,27 +155,27 @@
 ;; Functions that return IO compose naturally with bind.
 
 (defn add-io [x y]
-  (Pure (add-i64 x y)))
+  (pure (add-i64 x y)))
 
 (defn check-io-helpers []
-  (bind (Pure 10)
+  (bind (pure 10)
     (fn [a]
-      (bind (Pure 20)
+      (bind (pure 20)
         (fn [b]
           (add-io a b))))))                       ;; -> 30
 
 
 ;; === Part 6: IO with recursion ===
 
-;; Recursive functions can build IO trees. The trampoline
+;; Recursive functions can compose IO actions. The trampoline
 ;; evaluates bind chains iteratively, so deep chains don't
 ;; overflow the call stack.
 
 (defn sum-io [n]
   (if (eq-i64 n 0)
-    (Pure 0)
+    (pure 0)
     (bind (sum-io (sub-i64 n 1))
-      (fn [rest] (Pure (add-i64 n rest))))))
+      (fn [rest] (pure (add-i64 n rest))))))
 
 (defn check-sum-io []
   (sum-io 10))                                   ;; 1+2+...+10 = 55
@@ -173,8 +184,8 @@
 ;; === Part 7: Platform IO -- real side effects ===
 
 ;; Now we use the stdio platform to perform actual IO. The `print`
-;; function takes a String and returns (IO Int). When the trampoline
-;; forces an Effect node, the side effect (writing to stdout) executes.
+;; function takes a String and returns (IO Int). Calling print performs
+;; no output. The runtime writes to stdout when it executes the action.
 ;;
 ;; print :: (Fn [String] (IO Int))
 ;; The return value is 0 (number of bytes is an implementation detail).
@@ -195,13 +206,13 @@
 (defn check-print-with-result []
   ;; Print a message, then return a computed value.
   ;; bind sequences the effect, then the continuation produces
-  ;; a pure result. The trampoline returns the final Pure value.
+  ;; a lifted result. Executing the composed action yields 42.
   ;; Side effect: writes "Computing..." to stdout, returns 42.
   (bind (print "Computing...")
-    (fn [_] (Pure 42))))
+    (fn [_] (pure 42))))
 
 (defn greet [name]
-  ;; Functions that call print inherit the IO return type.
+  ;; Returning the action from print gives greet an IO result too.
   ;; greet :: (Fn [String] (IO Int))
   ;; IO propagates through the call graph automatically.
   (print name))
@@ -212,11 +223,11 @@
 
 (defn check-reuse []
   ;; An IO value describes an effect; it is not the effect itself.
-  ;; Naming it with let runs nothing. Each time the value is sequenced,
-  ;; its effect runs again, so the same value may be used repeatedly.
+  ;; Calling print and naming its result with let runs nothing. Each time
+  ;; the runtime executes the value in the sequence, its effect runs again, so the same value may be used repeatedly.
   ;; Side effect: writes "again" to stdout twice, then returns 7.
   (let [again (print "again")]
-    (bind again (fn [_] (bind again (fn [_] (Pure 7)))))))
+    (bind again (fn [_] (bind again (fn [_] (pure 7)))))))
 
 
 ;; --- Expected output ---
@@ -254,7 +265,7 @@
 ;;   again
 ;;   again
 
-(defn main []
+(defn check-introduction []
   (bind (check-pure-int) (fn [r1]
   (bind (check-pure-bool) (fn [r2]
   (bind (check-bind-simple) (fn [r3]
@@ -272,7 +283,7 @@
   (bind (check-print-with-result) (fn [r14]
   (bind (check-greet) (fn [r15]
   (bind (check-reuse) (fn [r16]
-    (Pure (add-i64 r1
+    (pure (add-i64 r1
       (add-i64 r2
         (add-i64 r3
           (add-i64 r4
@@ -288,3 +299,19 @@
                               (add-i64 r14
                                 (add-i64 r15 r16))))))))))))))))
   )))))))))))))))))))))))))))))))))
+
+;; Recursive application: emit one line per step, then finish.
+;; Each recursive call is in the continuation of the preceding print.
+(defn print-countdown [n]
+  (if (eq-i64 n 0)
+    (print "go!")
+    (bind (print (int-to-string n))
+      (fn [_] (print-countdown (sub-i64 n 1))))))
+
+;; Append 3, 2, 1, go! to the seven stdout lines above.
+;; Countdown returns 0, so the sum remains 506 and the exit remains 250.
+(defn main []
+  (bind (check-introduction)
+    (fn [total]
+      (bind (print-countdown 3)
+        (fn [last] (pure (add-i64 total last)))))))

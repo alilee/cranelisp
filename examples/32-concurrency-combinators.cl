@@ -43,8 +43,8 @@
 ;; no environment variable. (Disable the INFERRED half with
 ;; CRANELISP_NO_LENIENT=1; it does not affect these explicit combinators.)
 
-;; The combinators live in the `primitives` module alongside Pure/bind.
-(import [primitives [Pure bind sleep race select]])
+;; The combinators live in the `primitives` module alongside pure/bind.
+(import [primitives [pure bind sleep race select]])
 
 
 ;; === Branch helpers ===
@@ -56,34 +56,34 @@
 ;; A "timeout sentinel" of 99 marks a deadline branch winning (= timed out),
 ;; distinguishable from any real result value.
 
-;; Completes immediately -- a Pure is ready on the first trampoline turn.
+;; Completes immediately: executing (pure 1) yields 1 without an effect.
 (defn quick []
-  (Pure 1))                                  ;; -> 1, instantly
+  (pure 1))                                  ;; -> 1, instantly
 
 ;; "Fast work": parks 50 ms, then yields 111.
 (defn fast-work []
-  (bind (sleep 50) (fn [_] (Pure 111))))     ;; -> 111 after ~50ms
+  (bind (sleep 50) (fn [_] (pure 111))))     ;; -> 111 after ~50ms
 
 ;; "Slow work": parks 300 ms, then yields 222.
 (defn slow-work []
-  (bind (sleep 300) (fn [_] (Pure 222))))    ;; -> 222 after ~300ms
+  (bind (sleep 300) (fn [_] (pure 222))))    ;; -> 222 after ~300ms
 
 ;; "Work" for the timeout demos: parks 50 ms, then yields a real result 7.
 (defn io-quick []
-  (bind (sleep 50) (fn [_] (Pure 7))))       ;; -> 7 after ~50ms
+  (bind (sleep 50) (fn [_] (pure 7))))       ;; -> 7 after ~50ms
 
 ;; "Slow work" for the timeout demos: parks 300 ms, then yields 7.
 (defn io-slow []
-  (bind (sleep 300) (fn [_] (Pure 7))))      ;; -> 7 after ~300ms
+  (bind (sleep 300) (fn [_] (pure 7))))      ;; -> 7 after ~300ms
 
 ;; A LONG deadline (300 ms) -- the work usually beats it. Yields the
 ;; timeout sentinel 99 if it ever wins.
 (defn deadline-long []
-  (bind (sleep 300) (fn [_] (Pure 99))))     ;; -> 99 after ~300ms
+  (bind (sleep 300) (fn [_] (pure 99))))     ;; -> 99 after ~300ms
 
 ;; A SHORT deadline (50 ms) -- slow work loses to it. Yields sentinel 99.
 (defn deadline-short []
-  (bind (sleep 50) (fn [_] (Pure 99))))      ;; -> 99 after ~50ms
+  (bind (sleep 50) (fn [_] (pure 99))))      ;; -> 99 after ~50ms
 
 
 ;; === Test 1: race -- an immediately-ready branch always wins ===
@@ -95,7 +95,7 @@
 
 (defn check-race-immediate-wins []
   (bind (race (quick) (slow-work))
-    (fn [r] (Pure (if (eq-i64 r 1) 1 0)))))  ;; winner = quick (1) -> pass 1
+    (fn [r] (pure (if (eq-i64 r 1) 1 0)))))  ;; winner = quick (1) -> pass 1
 
 
 ;; === Test 2: race -- the faster of two delayed branches wins ===
@@ -106,7 +106,7 @@
 
 (defn check-race-faster-wins []
   (bind (race (fast-work) (slow-work))
-    (fn [r] (Pure (if (eq-i64 r 111) 1 0))))) ;; winner = fast-work (111) -> pass 1
+    (fn [r] (pure (if (eq-i64 r 111) 1 0))))) ;; winner = fast-work (111) -> pass 1
 
 
 ;; === Test 3: select -- n-ary race over a Vec of branches ===
@@ -131,7 +131,7 @@
 
 (defn check-select-first-wins []
   (bind (select [(slow-work) (fast-work) (slow-work)])
-    (fn [r] (Pure (if (eq-i64 r 111) 1 0))))) ;; winner = fast-work (111) -> pass 1
+    (fn [r] (pure (if (eq-i64 r 111) 1 0))))) ;; winner = fast-work (111) -> pass 1
 
 
 ;; === Test 4: timeout PATTERN -- work completes before the deadline ===
@@ -142,7 +142,7 @@
 
 (defn check-timeout-completes []
   (bind (race (io-quick) (deadline-long))
-    (fn [r] (Pure (if (eq-i64 r 7) 1 0)))))   ;; work won -> result 7 -> pass 1
+    (fn [r] (pure (if (eq-i64 r 7) 1 0)))))   ;; work won -> result 7 -> pass 1
 
 
 ;; === Test 5: timeout PATTERN -- the deadline fires, work is cancelled ===
@@ -155,7 +155,7 @@
 
 (defn check-timeout-fires []
   (bind (race (io-slow) (deadline-short))
-    (fn [r] (Pure (if (eq-i64 r 99) 1 0)))))  ;; deadline won -> sentinel 99 -> pass 1
+    (fn [r] (pure (if (eq-i64 r 99) 1 0)))))  ;; deadline won -> sentinel 99 -> pass 1
 
 
 ;; === Test 6: sleep -- the timer leaf the rest are built on ===
@@ -164,7 +164,7 @@
 ;; continuation runs AFTER the timer fires, proving the park-then-resume.
 
 (defn check-sleep-resumes []
-  (bind (sleep 50) (fn [_] (Pure 42))))       ;; continuation ran -> 42, then check below
+  (bind (sleep 50) (fn [_] (pure 42))))       ;; continuation ran -> 42, then check below
 
 
 ;; --- Verify all results ---
@@ -184,5 +184,5 @@
   (bind (check-timeout-completes) (fn [d]
   (bind (check-timeout-fires) (fn [e]
   (bind (check-sleep-resumes) (fn [r6]
-    (Pure (add-i64 a (add-i64 b (add-i64 c (add-i64 d (add-i64 e (if (eq-i64 r6 42) 1 0)))))))
+    (pure (add-i64 a (add-i64 b (add-i64 c (add-i64 d (add-i64 e (if (eq-i64 r6 42) 1 0)))))))
   )))))))))))))

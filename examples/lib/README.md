@@ -40,8 +40,8 @@ The stdlib is learned from the stdlib docs, not from this directory.
 
 - **`prelude.cl`** loads implicitly for every example and contains no
   definitions. It only re-exports `primitives` names such as `add-i64`, `:Int`
-  and `Pure`. Anything implicitly in scope is in scope for `01-integers.cl`,
-  so a definition here would break the cumulative rule.
+  and the built-in function `pure`. Anything implicitly in scope is in scope
+  for `01-integers.cl`, so a definition here would break the cumulative rule.
 - **Every other module is imported explicitly by name**, for example
   `(import [operators [Num +]])`. The import line tells the reader which
   earlier lesson the example stands on.

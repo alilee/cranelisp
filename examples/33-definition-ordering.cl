@@ -12,7 +12,9 @@
 ;;   (defn step [x] (mul-i64 x 3))  ;; Illegal together in one file.
 ;;
 ;; Live replacement happens across separate REPL inputs, after the earlier
-;; definition has been committed. Source order inside a file is different:
+;; authored definition has been committed. A macro-generated name belongs
+;; to its generating call; a direct defn cannot replace it. Example 18's
+;; REPL exercise explores that boundary. Source order inside a file differs:
 ;; all the calls below use the one definition of each name.
 ;;
 ;; Expected exit code: 6, one per passing check.
@@ -63,9 +65,9 @@
 (defn check-impl-forward-chain []
   (if (eq-i64 (twice-boxed-size (Box 5)) 100) 1 0))
 
-;; main returns the six pass counts in IO, using Pure as in example 21.
+;; main returns the six pass counts in IO, using pure as in example 21.
 (defn main []
-  (Pure
+  (pure
     (add-i64 (check-direct)
       (add-i64 (check-forward-call)
         (add-i64 (check-forward-chain)

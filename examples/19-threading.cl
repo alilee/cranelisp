@@ -212,9 +212,9 @@
 ;; Total: 16+21+(-7)+42+(-40)+90+13+1+7+(-7)+150+100 = 386
 
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-thread-first-basic)
       (add-i64 (check-thread-first-chain)
         (add-i64 (check-thread-first-bare)

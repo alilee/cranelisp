@@ -74,7 +74,7 @@
   (add-i64 x (sub-i64 (work 1000000 0) 1000000)))       ;; -> x, after real work
 
 ;; --- Cheap split point: midpoint of the half-open range [lo, hi) ------------
-;; Pure integer arithmetic -- cheap, so never sparked, and safely RECOMPUTED in
+;; Integer arithmetic -- cheap, so never sparked, and safely RECOMPUTED in
 ;; each half rather than bound once.
 (defn mid-of [:Int lo :Int hi]
   (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))
@@ -163,5 +163,5 @@
         pair-total (mul-i64 (pair-sum (fmap heavy (Pair 39 39))) 4)]  ;; 4*78 = 312
     ;; The recursive divide-and-conquer reduce and the general par-map agree.
     (if (eq-i64 dc-total pair-total)
-        (Pure dc-total)                                   ;; -> 312  (exit 56)
-        (Pure 0))))
+        (pure dc-total)                                   ;; -> 312  (exit 56)
+        (pure 0))))

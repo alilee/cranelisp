@@ -109,7 +109,7 @@
 ;; value for the runtime to execute. The continuation preserves the total.
 (defn main []
   (let [sequence bind
-        with-total (sequence (Pure
+        with-total (sequence (pure
             (add-i64 (check-inc)
               (add-i64 (check-partial-one)
                 (add-i64 (check-partial-two)
@@ -118,4 +118,4 @@
                       (add-i64 (check-curry-as-arg)
                         (add-i64 (check-closure-curry)
                                  (check-operator-partial))))))))))]
-    (with-total (fn [total] (Pure total)))))
+    (with-total (fn [total] (pure total)))))

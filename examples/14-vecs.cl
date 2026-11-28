@@ -111,9 +111,9 @@
 ;; Expected: 5 + 60 + 99 + 6 + 3 + 6 + 300 + 62 + 8 + 40 + 4 = 593
 ;; Exit code is the low byte of main's return: 593 mod 256 = 81.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-literal)
       (add-i64 (check-get)
         (add-i64 (check-set)

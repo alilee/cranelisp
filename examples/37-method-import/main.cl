@@ -26,7 +26,7 @@
 ;; The entry module names the primitives it uses (a subdirectory entry is its
 ;; own project root, so it inherits no ancestor prelude -- keeps the example
 ;; free-standing, spec/08-modules.md §8.3).
-(import [primitives [Int Pure add-i64 mul-i64 eq-i64]])
+(import [primitives [Int pure add-i64 mul-i64 eq-i64]])
 
 ;; Import the METHODS `describe` and `blank`, plus the two TYPES -- but NOT the
 ;; trait `Describe`. This is the whole point: `Describe` is never in this
@@ -78,7 +78,7 @@
 ;; Sum of pass counts: 1 + 1 + 1 + 1 + 1 = 5. Every sub-test contributes 1 on
 ;; success, so any dispatch regression lowers the exit code below 5.
 (defn main []
-  (Pure
+  (pure
     (add-i64 (check-unary-shape)
       (add-i64 (check-unary-circle)
         (add-i64 (check-nullary-shape)

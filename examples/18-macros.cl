@@ -31,6 +31,33 @@
 (defn check-inc []
   (my-inc 41))                                           ;; -> 42
 
+;; REPL exercise (enter each line in a fresh session using examples/lib,
+;; not as batch source). First enter the my-inc declaration above:
+;;   /type (my-inc 41)
+;;   /type (defn hidden [] 1)
+;;   hidden
+;; The first prints :primitives/Int. /type refuses a definition; hidden
+;; remains undefined. Type inspection does not save a definition.
+;;
+;; Generated-definition exercise, in a second fresh session:
+;;   (defmacro two [] '(begin (defn p [] 1) (defn q [] 2)))
+;;   (two)
+;;   (defn p [] 9)
+;;   (p)
+;;   (two)
+;;   (defmacro two [] '(defn p [] 1))
+;;   (two)
+;;   (q)
+;; Direct replacement is refused and p stays 1. Identical-call re-entry
+;; succeeds. After the macro changes, re-entry that would drop q is refused;
+;; q stays 2. Inspect user.cl: the authored macro and one (two) call are
+;; saved, not expanded defns, and the refused (defn p [] 9) is absent.
+;; Before quitting, restore the original two-definition macro above. Quit,
+;; restart the same session, then call (p) and (q): they return 1 and 2.
+;; Saved source is re-expanded on restart; restoring the macro makes that
+;; source describe both names again. See spec/09-macros.md §9.6.1 and
+;; repl/spec.md §§15.4, 15.6, 18 for ownership and persistence.
+
 ;; --- Control flow macros ---
 
 ;; when: evaluate body if condition is true, return 0 otherwise.
@@ -143,6 +170,11 @@
 (defn check-sum-3 []
   (my-sum 10 12 20))                                     ;; -> 42
 
+;; Visibility still applies across modules (spec/09-macros.md §9.3.4).
+;; A public macro cannot grant its caller access to a private macro in the
+;; defining module: expansion outside that module's subtree is refused.
+;; Qualifying the private name does not grant access.
+
 ;; --- Macros composing with other macros ---
 
 ;; Macros can expand to code that uses other macros.
@@ -170,9 +202,9 @@
 ;; Expected: 42+42+0+99 + 1+0+0+0+1 + 42+60+0+5 + 42+42+42+42 + 42+99 = 601
 ;; The process EXIT CODE is the low byte of that sum: 601 mod 256 = 89.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-inc)
       (add-i64 (check-when-true)
         (add-i64 (check-when-false)

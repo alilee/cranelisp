@@ -19,8 +19,9 @@ language is broken, and a reader cannot tell which of the two of you is wrong.
    change that breaks an example is a suspected defect routed to `qa`, not a
    reason to quietly drop the example.
 3. **Self-verifying `main`.** Every example defines `main` returning
-   `(Pure <Int>)`. The documented exit — the low byte of that Int — is pinned
-   in `tests/examples.rs` (owned by `test`). Any other exit, including 0, is a
+   `(IO Int)`, using the built-in `pure` to lift its final integer. The
+   documented exit — the low byte of that Int — is pinned in
+   `tests/examples.rs` (owned by `test`). Any other exit, including 0, is a
    failure. The target form sums one pass per sub-test. Many existing examples
    still sum values instead, a gap recorded in `plan-examples.md` §4.4.
    Name sub-test helpers `check-`. A `test-` name makes a function a test
@@ -60,17 +61,20 @@ bash tests/scripts/build-link-prereqs.sh
   export CRANELISP_PLATFORM_PATH="$repo/target/debug"
   cd "$scratch" || exit 1
   compiler="$repo/target/debug/cranelisp"
+  printf 'Ada\nLove\nlace\nhello\n' > "$scratch/input.txt"
   for f in [0-9]*.cl 16-modules/main.cl 37-method-import/main.cl; do
+    input=/dev/null
+    if [ "$f" = 24-io-echo.cl ]; then input="$scratch/input.txt"; fi
     find . -type d -name .cranelisp-cache -prune -exec rm -rf {} +
-    "$compiler" --run "$f" </dev/null >run.log 2>&1
+    "$compiler" --run "$f" <"$input" >run.log 2>&1
     echo "$f cold run => $?"
-    "$compiler" --run "$f" </dev/null >run.log 2>&1
+    "$compiler" --run "$f" <"$input" >run.log 2>&1
     echo "$f warm run => $?"
     # --link rejects --no-cache; remove caches only in this private copy.
     find . -type d -name .cranelisp-cache -prune -exec rm -rf {} +
     for cell in cold warm; do
       if "$compiler" --link -o "$scratch/linked" "$f" >link.log 2>&1; then
-        "$scratch/linked" </dev/null >run.log 2>&1
+        "$scratch/linked" <"$input" >run.log 2>&1
         echo "$f $cell link => $?"
       else
         echo "$f $cell link FAILED"; cat link.log
@@ -81,6 +85,9 @@ bash tests/scripts/build-link-prereqs.sh
 )
 ```
 
+- **Scripted input:** 24 receives `Ada`, `Love`, `lace`, `hello`, each with
+  a newline, then EOF; it exits 4. Also replay it with closed stdin: exit 1.
+  Its comments state both transcripts. No test-capture host queue is needed.
 - **Test mode:** 38 must report four `ok` lines and exit 0.
 - **Free-standing lookup:** keep `CRANELISP_LIB` unset and
   `CRANELISP_NO_ENV=1`. Library directories are an additive union

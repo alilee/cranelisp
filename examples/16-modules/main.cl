@@ -11,7 +11,14 @@
 ;; "main.shapes". Functions, types, and constructors from another module
 ;; are accessed using the fully-qualified module path: module-path/name.
 ;;
-;;   (mod math)                       ;; loads nested child main/math.cl
+;;   ;; Declaring a child establishes its place in the module tree. Importing
+;; names establishes a dependency and brings those names into scope; it is
+;; not a child declaration. An empty import, such as (import [unused []]),
+;; loads and resolves nothing (spec/08-modules.md §8.3.7).
+;; Interactive declaration in a later REPL turn is a separate boundary;
+;; this lesson teaches a file whose declarations are present at load time.
+
+(mod math)                       ;; loads nested child main/math.cl
 ;;   (main.math/double 21)            ;; calls main.math module's double
 ;;   (main.shapes/Point 3 4)          ;; constructs main.shapes' Point type
 ;;
@@ -29,7 +36,7 @@
 ;; entry in a subdirectory is its own project root, so it does not pick up
 ;; an ancestor lib-dir prelude — every module names the primitives it uses,
 ;; keeping the example free-standing per spec/08-modules.md §8.3.)
-(import [primitives [Pure add-i64 sub-i64]])
+(import [primitives [pure add-i64 sub-i64]])
 
 ;; --- Using functions from the main.math module ---
 
@@ -71,9 +78,9 @@
 ;; The process exit code is the low byte of that Int, so the observed
 ;; exit is 303 mod 256 = 47.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (low byte preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-double)
       (add-i64 (check-triple)
         (add-i64 (check-square)

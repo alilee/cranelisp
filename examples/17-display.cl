@@ -1,6 +1,6 @@
 ;; 17-display.cl -- User-defined traits and the Display pattern
 ;;
-;; Example 15 showed built-in traits (Num, Eq, Ord) for operator dispatch.
+;; Example 15 declared Num, Eq and Ord for operator dispatch.
 ;; This example shows how to define your own traits with deftrait and
 ;; implement them for different types with impl.
 ;;
@@ -132,9 +132,9 @@
 
 ;; Expected: 1+1+1+1+1+42+42+1+1+5+5+75 = 176
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-show-int)
       (add-i64 (check-show-neg)
         (add-i64 (check-show-bool)

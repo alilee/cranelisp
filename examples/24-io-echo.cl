@@ -1,168 +1,56 @@
-;; 24-io-echo.cl -- Reading input with read-line
+;; 24-io-echo.cl -- Scripted input, transformation and exhaustion
 ;;
-;; Examples 21-23 showed print (output). This example introduces
-;; read-line (input) and combines both for an echo program.
+;; 21 sequences output; 22 changes where output goes. Now read-line
+;; returns (IO String), and bind supplies the line to the next action.
+;; This lesson uses stdio so a shell can supply input without a host API:
 ;;
-;;   read-line :: (Fn [] (IO String))
+;;   printf 'Ada\nLove\nlace\nhello\n' | \
+;;     ./target/debug/cranelisp --run examples/24-io-echo.cl
 ;;
-;; read-line returns an IO action that, when forced, reads one line of
-;; text. Combined with bind and print, this enables interactive programs.
-;;
-;; This example uses the test-capture platform, which returns pre-queued
-;; strings from read-line instead of reading from the console. With an
-;; empty queue, read-line returns "". Swap test-capture for stdio to get
-;; real console input.
-;;
-;; The pattern for read-then-process is:
-;;
-;;   (bind (read-line) (fn [input]
-;;     ... use input ...))
-;;
-;; Running:
-;;   ./target/debug/cranelisp --run examples/24-io-echo.cl
-;;   (examples/lib/platforms/ ships host-correct symlinks for the
-;;    test-capture DLL, so no environment variable is required.)
+;; Expected stdout: hello, Ada / Lovelace / you said: hello /
+;; no input received (one line each). Exit: 4, one per passing check.
+;; With closed stdin, all five reads are empty: stdout is hello, / an
+;; empty line / no input received / no input received, and exit is 1.
+;; read-line returns "" on exhaustion; an empty line has the same value.
+;; test-capture (22) instead needs its host to queue input; its queue
+;; utilities are not callable Cranelisp platform functions.
 
-(platform test-capture)
-(import [primitives [Pure bind]])
-(import [platform.test-capture [print read-line]])
+(platform stdio)
+(import [primitives [pure bind]])
+(import [platform.stdio [print read-line]])
 
-
-;; === Part 1: Basic read-line ===
-
-;; read-line returns (IO String). We bind it to get the string value.
-;; With test-capture and an empty input queue, read-line returns "".
-
-(defn check-read-line-type []
-  ;; Verify read-line works by checking we can bind its result.
-  ;; Empty input -> str-len "" = 0. Add 1 to prove the bind ran.
+;; Transform the first line before writing it. The check observes what
+;; was read, rather than adding a constant to an empty string's length.
+(defn check-greeting []
   (bind (read-line)
-    (fn [input] (Pure (add-i64 (str-len input) 1))))) ;; -> 1
+    (fn [name]
+      (bind (print (str-concat "hello, " name))
+        (fn [_] (pure (if (str-eq name "Ada") 1 0)))))))
 
-
-;; === Part 2: Echo -- read then print ===
-
-;; The echo pattern: read a line, then print it back.
-;; This chains read-line and print with bind.
-
-(defn echo-once []
-  ;; Read a line, print it, return the length of what was read.
-  (bind (read-line)
-    (fn [input]
-      (bind (print input)
-        (fn [_] (Pure (add-i64 (str-len input) 1)))))))
-
-(defn check-echo []
-  ;; Reads "" (empty queue), prints "", returns 0+1=1.
-  (echo-once))                                        ;; -> 1
-
-
-;; === Part 3: Read and transform ===
-
-;; Read input, transform it with a pure function, then print the result.
-
-(defn echo-with-greeting []
-  ;; Prepend "hello, " to the input and print it.
-  ;; Return the length of the greeting.
-  (bind (read-line)
-    (fn [input]
-      (let [greeting (str-concat "hello, " input)]
-        (bind (print greeting)
-          (fn [_] (Pure (str-len greeting))))))))
-
-(defn check-echo-greeting []
-  ;; Reads "" -> greeting is "hello, " -> length 7.
-  (echo-with-greeting))                               ;; -> 7
-
-
-;; === Part 4: Multiple reads ===
-
-;; Chain multiple read-line calls. Each bind unwraps one IO String.
-
-(defn read-two-and-combine []
-  ;; Read two lines, concatenate them, print the result.
-  ;; Return length of combined string + 1.
+;; Nested continuations keep the first line available after the next read.
+(defn check-combine []
   (bind (read-line)
     (fn [first]
       (bind (read-line)
         (fn [second]
-          (let [combined (str-concat first second)]
-            (bind (print combined)
-              (fn [_] (Pure (add-i64 (str-len combined) 1))))))))))
+          (let [joined (str-concat first second)]
+            (bind (print joined)
+              (fn [_] (pure (if (str-eq joined "Lovelace") 1 0))))))))))
 
-(defn check-read-two []
-  ;; Both reads return "". Combined is "". Length 0 + 1 = 1.
-  (read-two-and-combine))                             ;; -> 1
-
-
-;; === Part 5: Prompt-read-respond pattern ===
-
-;; A common interactive pattern: print a prompt, read input, respond.
-
-(defn prompt-and-echo []
-  ;; Print a prompt, read input, print a welcome message.
-  ;; Return the length of the welcome message.
-  (bind (print "Enter your name:")
-    (fn [_]
-      (bind (read-line)
-        (fn [name]
-          (let [welcome (str-concat "Welcome, " name)]
-            (bind (print welcome)
-              (fn [_] (Pure (str-len welcome))))))))))
-
-(defn check-prompt []
-  ;; Prints "Enter your name:", reads "" (empty queue),
-  ;; prints "Welcome, " (9 chars), returns 9.
-  (prompt-and-echo))                                  ;; -> 9
-
-
-;; === Part 6: Conditional on input ===
-
-;; Read input and branch based on its content.
-
-(defn respond-to-input []
-  ;; Check if input is empty. Print an appropriate message.
-  ;; Return 1 if input was empty, 2 if non-empty.
+;; Both branches return IO. An empty input does not cause an exception.
+(defn respond []
   (bind (read-line)
-    (fn [input]
-      (if (eq-i64 (str-len input) 0)
-        (bind (print "no input received")
-          (fn [_] (Pure 1)))
-        (bind (print (str-concat "you said: " input))
-          (fn [_] (Pure 2)))))))
+    (fn [line]
+      (if (eq-i64 (str-len line) 0)
+        (bind (print "no input received") (fn [_] (pure 0)))
+        (bind (print (str-concat "you said: " line))
+          (fn [_] (pure 1)))))))
 
-(defn check-respond-empty []
-  ;; Empty queue -> read-line returns "" -> length 0 -> "no input received"
-  (respond-to-input))                                 ;; -> 1
-
-
-;; --- Expected results ---
-;;
-;; check-read-line-type:  1
-;; check-echo:            1
-;; check-echo-greeting:   7
-;; check-read-two:        1
-;; check-prompt:          9
-;; check-respond-empty:   1
-;;
-;; Total: 1 + 1 + 7 + 1 + 9 + 1 = 20
-;;
-;; Note: With the test-capture platform and an empty input queue,
-;; all read-line calls return "". With the stdio platform, the program
-;; would block waiting for console input. To make this example
-;; interactive, change (platform test-capture) to (platform stdio)
-;; and update the import to [platform.stdio [print read-line]].
-
+;; Script: greeting=1, combine=1, nonempty response=1, exhausted response=1.
+;; Closed stdin: 0 + 0 + 0 + 1 = 1. No prompt or human input is required.
 (defn main []
-  (bind (check-read-line-type) (fn [r1]
-  (bind (check-echo) (fn [r2]
-  (bind (check-echo-greeting) (fn [r3]
-  (bind (check-read-two) (fn [r4]
-  (bind (check-prompt) (fn [r5]
-  (bind (check-respond-empty) (fn [r6]
-    (Pure (add-i64 r1
-      (add-i64 r2
-        (add-i64 r3
-          (add-i64 r4
-            (add-i64 r5 r6))))))
-  )))))))))))))
+  (bind (check-greeting) (fn [a]
+  (bind (check-combine) (fn [b]
+  (bind (respond) (fn [c]
+  (bind (respond) (fn [empty]
+    (pure (add-i64 a (add-i64 b (add-i64 c (if (eq-i64 empty 0) 1 0))))))))))))))

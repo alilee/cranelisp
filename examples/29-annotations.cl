@@ -173,9 +173,9 @@
 
 ;; Expected: 7 + 1 + 42 + 5 + 64 + 1 = 120
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (disambiguate-int)
       (add-i64 (disambiguate-float)
         (add-i64 (constrain-return)

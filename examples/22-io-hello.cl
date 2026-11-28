@@ -1,6 +1,6 @@
 ;; 22-io-hello.cl -- Testable IO with the test-capture platform
 ;;
-;; Example 21 introduced the IO model (Pure, bind, combinators) and used
+;; Example 21 introduced the IO model (pure, bind, combinators) and used
 ;; the `stdio` platform to write to the console. This example does NOT
 ;; re-teach those primitives -- it introduces ONE new idea: a *different
 ;; platform* that captures `print` output in memory instead of writing it
@@ -14,10 +14,8 @@
 ;; buffer -- which is exactly what you want when running a program under
 ;; test, where interactive console IO is unavailable or undesirable.
 ;;
-;; This is the same separation the test suite relies on: examples 21-24
-;; run unattended in CI, so an IO example that needs a human to read the
-;; console would be unverifiable. test-capture makes IO programs
-;; deterministic and self-checking.
+;; 24 returns to stdio with scripted input. Piping known lines makes
+;; that lesson runnable without a person at the console.
 ;;
 ;; Running:
 ;;   ./target/debug/cranelisp --run examples/22-io-hello.cl
@@ -28,8 +26,8 @@
 ;; writes into an in-memory buffer rather than the console.
 (platform test-capture)
 
-;; The IO constructors are unchanged -- only the platform differs.
-(import [primitives [Pure bind]])
+;; The public IO operations are unchanged -- only the platform differs.
+(import [primitives [pure bind]])
 (import [platform.test-capture [print]])
 
 
@@ -38,7 +36,7 @@
 ;; Under test-capture, `print` still has type (Fn [String] (IO Int)) and
 ;; still returns 0. The difference is purely in *where* the bytes go.
 (defn check-captured-hello []
-  ;; Effect: appends "hello, world" to the capture buffer (not the console).
+  ;; Captured output: appends "hello, world" to the capture buffer (not the console).
   (print "hello, world"))                            ;; -> 0
 
 
@@ -58,9 +56,9 @@
 ;; out through the IO chain. This is the shape every testable IO program
 ;; takes: do some effects, then report a checkable result.
 (defn check-effect-then-result []
-  ;; Effect: captures "computing...". Result: 99.
+  ;; Captured output: captures "computing...". Result: 99.
   (bind (print "computing...")
-    (fn [_] (Pure 99))))                              ;; -> 99
+    (fn [_] (pure 99))))                              ;; -> 99
 
 
 ;; --- Expected results ---
@@ -81,5 +79,5 @@
   (bind (check-captured-hello) (fn [r1]
   (bind (check-captured-sequence) (fn [r2]
   (bind (check-effect-then-result) (fn [r3]
-    (Pure (add-i64 r1 (add-i64 r2 r3)))
+    (pure (add-i64 r1 (add-i64 r2 r3)))
   )))))))

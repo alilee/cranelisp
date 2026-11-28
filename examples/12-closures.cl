@@ -88,9 +88,9 @@
 ;; Expected: 6 + 42 + 42 + 6 + 42 + 10 + 42 + 42 + 10 + 10 + 11 = 263
 ;; The process EXIT CODE is the low byte of that sum: 263 mod 256 = 7.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-immediate)
       (add-i64 (check-let-lambda)
         (add-i64 (check-zero-param)

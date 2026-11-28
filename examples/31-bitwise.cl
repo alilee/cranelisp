@@ -139,9 +139,9 @@
 
 ;; Expected total: 19 passing sub-tests.
 (defn main []
-  ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
-  ;; return `IO _`. The inner Int is the exit code (preserved).
-  (Pure
+  ;; Lift the combined result with the built-in function pure, giving main
+  ;; an (IO Int) result. The runtime uses the Int's low byte as the exit code.
+  (pure
     (add-i64 (check-and)
       (add-i64 (check-or)
         (add-i64 (check-xor)

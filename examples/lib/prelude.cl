@@ -13,5 +13,5 @@
 (export [primitives [str-concat str-eq str-len char-at
                      int-to-string float-to-string bool-to-string]])
 (export [primitives [vec-len vec-get vec-set vec-push]])
-;; Pure packages the integer result used by each example's main.
-(export [primitives [Pure]])
+;; pure packages the integer result used by each example's main.
+(export [primitives [pure]])
