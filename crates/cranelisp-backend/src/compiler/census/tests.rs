@@ -48,7 +48,6 @@ fn origin(partition: Partition) -> CallableOrigin {
             type_name: bx,
             tag: 0,
             field_count: 1,
-            internal: false,
             type_def: None,
         },
         Partition::Accessor => CallableOrigin::Accessor {
@@ -535,7 +534,6 @@ fn product_table(short: bool) -> SymbolTable {
                         type_name: fqtn,
                         tag: 0,
                         field_count: 1,
-                        internal: false,
                         type_def,
                     },
                     synth(&fields),

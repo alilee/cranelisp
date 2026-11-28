@@ -980,7 +980,6 @@ pub(crate) fn install_ctor_fixture(
                 type_name,
                 tag,
                 field_count,
-                internal: false,
                 type_def,
             },
             Realization::Body { view, code: None },
@@ -1469,7 +1468,6 @@ pub(crate) fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
                 type_name: fqtn.clone(),
                 tag,
                 field_count,
-                internal: false,
                 type_def: None,
             },
             Realization::Body {

@@ -780,7 +780,6 @@ mod tests {
                             type_name: fq.clone(),
                             tag,
                             field_count: fields.len(),
-                            internal: false,
                             type_def: None,
                         },
                         TemplateBody::Synth(SynthSpec::new(DefnVariant {

@@ -62,7 +62,6 @@ fn register_product_named(
             type_name: fqtn(module, name),
             tag: 0,
             field_count: field_types.len(),
-            internal: false,
             type_def: Some(Box::new(type_def)),
         },
         Realization::Body {
@@ -128,7 +127,6 @@ fn register_parametric_product(
             type_name: fqtn(module, name),
             tag: 0,
             field_count: field_types.len(),
-            internal: false,
             type_def: Some(Box::new(type_def)),
         },
         TemplateBody::Synth(SynthSpec::new(DefnVariant {
@@ -414,5 +412,139 @@ fn schema_walk_pairs_an_out_of_order_product_by_declared_parameter() {
     assert!(
         text.contains("(P 0 ((y primitives/String) (x primitives/Int)))"),
         "fields take their declared parameters' arguments; got:\n{text}",
+    );
+}
+
+// ── IO's layout is the ABI, as Vec's is (S125 opaque IO, row IO-T) ─────────
+
+/// `primitives/IO` as the bootstrap installs it under row IO-T: one type
+/// parameter and no constructors.
+fn register_constructorless_io(tables: &DashMap<ModuleFullPath, SymbolTable>) {
+    let m = ModuleFullPath::from("primitives");
+    let mut st = tables
+        .remove(&m)
+        .map(|(_, t)| t)
+        .unwrap_or_else(|| SymbolTable::new(m.clone()));
+    crate::test_support::install_type_fixture(
+        &mut st,
+        Symbol::from("IO"),
+        cranelisp_types::TypeDefInfo {
+            name: fqtn("primitives", "IO"),
+            type_params: vec![Symbol::from("a")],
+            constructors: vec![],
+        },
+    );
+    tables.insert(m, st);
+}
+
+fn io_of(payload: Type) -> Type {
+    Type::ADT(fqtn("primitives", "IO"), vec![payload])
+}
+
+// spec: design/backend/io-trampoline.md §1.5 — a platform effect
+//       `(Fn [] (primitives/IO shapes/Rectangle))` roots `Rectangle` alone: `IO`
+//       is never a root and never a schema entry.
+#[test]
+fn io_result_root_yields_its_payload_and_no_io_entry() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    register_constructorless_io(&tables);
+    register_product(&tables, "shapes", "Rectangle", vec![Type::Int, Type::Int]);
+    let rect = Type::ADT(fqtn("shapes", "Rectangle"), vec![]);
+
+    let plat = ModuleFullPath::from("platform.shapes");
+    let mut pt = SymbolTable::new(plat.clone());
+    pt.install_platform(
+        Symbol::from("make-rectangle"),
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![], Box::new(io_of(rect.clone()))),
+        },
+        vec![],
+        None,
+        0,
+        cranelisp_types::SchedulingClass::Sequential,
+        false,
+        0,
+        Visibility::Public,
+    )
+    .expect("install platform-effect fixture");
+    tables.insert(plat.clone(), pt);
+
+    let roots = platform_effect_roots(tables.get(&plat).unwrap().value());
+    assert_eq!(roots, vec![rect], "IO is not a root; its payload is");
+    let text = generate_schema(&tables, &roots);
+    assert!(!text.contains("primitives/IO"), "no IO key; got:\n{text}");
+    assert!(
+        text.contains("(shapes/Rectangle"),
+        "payload entry; got:\n{text}"
+    );
+}
+
+// spec: design/backend/io-trampoline.md §1.5 — an ADT reached only
+//       through an `IO`-typed field of another ADT is in the closure.
+#[test]
+fn adt_reached_only_through_an_io_field_is_in_the_closure() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    register_constructorless_io(&tables);
+    register_product(&tables, "shapes", "Inner", vec![Type::Int]);
+    register_product_named(
+        &tables,
+        "shapes",
+        "Holder",
+        vec![Symbol::from("action")],
+        vec![io_of(Type::ADT(fqtn("shapes", "Inner"), vec![]))],
+    );
+
+    let root = Type::ADT(fqtn("shapes", "Holder"), vec![]);
+    let text = generate_schema(&tables, &[root]);
+    assert!(
+        text.contains("(shapes/Inner"),
+        "Inner joins the closure through Holder's IO field; got:\n{text}"
+    );
+    assert!(
+        !text.contains("\n  ((primitives/IO") && !text.contains("\n  (primitives/IO"),
+        "IO is not an entry; got:\n{text}"
+    );
+}
+
+// spec: design/backend/io-trampoline.md §1.5 — `Vec` output is
+//       byte-identical: no `Vec` entry, the element walked, a `Vec` field
+//       rendered in its applied form.
+#[test]
+fn vec_schema_output_is_unchanged() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    register_product_named(
+        &tables,
+        "geometry",
+        "Point",
+        vec![Symbol::from("x")],
+        vec![Type::Int],
+    );
+    let point = Type::ADT(fqtn("geometry", "Point"), vec![]);
+    let vec_of = |t: Type| Type::ADT(fqtn("primitives", "Vec"), vec![t]);
+    register_product_named(
+        &tables,
+        "shapes",
+        "Path",
+        vec![Symbol::from("points")],
+        vec![vec_of(point.clone())],
+    );
+
+    let mut roots = Vec::new();
+    collect_adt_roots(
+        &Type::Fn(
+            vec![vec_of(Type::ADT(fqtn("shapes", "Path"), vec![]))],
+            Box::new(Type::Int),
+        ),
+        &mut roots,
+    );
+    assert_eq!(roots, vec![Type::ADT(fqtn("shapes", "Path"), vec![])]);
+    let text = generate_schema(&tables, &roots);
+    let body = text.split_once('\n').expect("header line").1;
+    assert_eq!(
+        body,
+        "(schema\n  (geometry/Point\n    (Point 0 ((x primitives/Int))))\n  \
+         (shapes/Path\n    (Path 0 ((points (Vec geometry/Point))))))",
     );
 }

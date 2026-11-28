@@ -78,7 +78,7 @@ where
     /// plain ownership transfer (identical to how `compile_launch` stores its
     /// detached sub-tree and `compile_par_bind` stores its branch pointers,
     /// Decision 20/24). The node owns the Vec for the whole tree lifetime; there
-    /// is **no move-out and no null-guard** (select never detaches, §16.5) — the
+    /// is no detach and no per-force reference (select never detaches, §16.5) — the
     /// node + its branches are reclaimed uniformly by `consume_io_tree`'s
     /// `IO_TAG_SELECT` arm (`consume_vec_with(field0, consume_io_tree)`).
     fn compile_select_node(

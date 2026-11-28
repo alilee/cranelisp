@@ -8,8 +8,9 @@
 // `IO_TAG_BIND` node linking it to a continuation closure that ignores the
 // (discarded `Pure Unit`) launch result and evaluates the continuation.
 //
-// See `design/backend/io-trampoline.md §15` (the launch node + bake + the
-// move-out RC contract) and `design/intrinsics/reactor.md §2.11` (the runtime detach).
+// See `design/backend/io-trampoline.md §15` (the launch node + bake + the RC
+// contract: the node owns its sub-tree and each force mints the strand's
+// reference, §15.5) and `design/intrinsics/reactor.md §2.11` (the runtime detach).
 // The launch node is the structural twin of the `Par` node in `Bind(Par(..),
 // cont)` (`par_bind.rs`) — the trampoline's "inner yields a value, pop the
 // continuation" contract is reused verbatim; `Launch`'s value is always `Unit`.
@@ -48,10 +49,12 @@ where
     /// RC follows the constructor convention (Decision 20/24): ownership transfer,
     /// no inc on store. The launched sub-tree (rc=1 temporary) moves into the
     /// Launch node's field 0; the continuation (rc=1) and Launch node move into
-    /// the Bind node's fields. The Launch node's field-0 drop is **null-guarded**
-    /// (`design/backend/io-trampoline.md §15.5`) — realized by the
-    /// `consume_io_tree` `IO_TAG_LAUNCH` arm (intrinsics) reading the `0` sentinel
-    /// the trampoline writes back after moving the sub-tree into the strand.
+    /// the Bind node's fields. The Launch node owns that sub-tree reference for
+    /// its whole life: each force mints the strand's own reference and writes
+    /// nothing to the node, and `runtime/free_io_node`'s `Launch` row releases
+    /// field 0 unconditionally at teardown. The backend emits no `Launch`-specific
+    /// glue (`design/backend/io-trampoline.md §15.5`,
+    /// `design/intrinsics/ownership-and-disposal.md §6.3`).
     pub(crate) fn compile_launch_continue(
         &mut self,
         node: &MonoExpr,

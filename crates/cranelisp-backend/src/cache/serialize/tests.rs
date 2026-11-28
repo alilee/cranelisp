@@ -82,7 +82,7 @@ fn result_context_instances_round_trip_complete_links() {
     // Bump tripwire: the round trip below is version-agnostic, so this literal
     // exists only to make a `CACHE_SCHEMA_VERSION` change re-read this cell.
     // Advance it once the version-log entry for the new epoch is written.
-    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 36);
+    assert_eq!(super::super::CACHE_SCHEMA_VERSION, 37);
     let table = result_context_instances();
     let bytes = serialise_meta(&table, super::super::CACHE_SCHEMA_VERSION).unwrap();
     let loaded = deserialise_meta(
@@ -532,6 +532,52 @@ fn cache_v27_meta_rejected_after_shadowed_param_reach_correction() {
         // Crucially NOT Ok(table): honouring a v27 sidecar resurrects a
         // `ModeSummary` the pre-fix walker computed under a shadowed binder.
         other => panic!("v27 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"),
+    }
+}
+
+/// S125 opaque-`IO` bump guard (36 -> 37): a sidecar stamped at 36 can hold a
+/// `primitives/IO.Pure` constructor entry that no longer exists. Its serde
+/// shape still loads (the removed `internal` flag is an ignored field), so
+/// only the version refuses it.
+// spec: design/backend/backend.md §9 (the approved 36 -> 37 bump); tests/plan/s125-evidence-delta.md IO-7
+#[test]
+fn cache_v36_meta_naming_io_pure_rejected_after_opaque_io() {
+    let io = FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("IO"));
+    let mut table = SymbolTable::new(ModuleFullPath::from("primitives"));
+    crate::test_support::install_ctor_fixture(
+        &mut table,
+        Symbol::from(cranelisp_types::member_key(&io.name, "Pure").as_ref()),
+        Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::ADT(io.clone(), vec![Type::Int])),
+            ),
+        },
+        vec![Symbol::from("value")],
+        io,
+        0,
+        1,
+        None,
+        None,
+        None,
+    );
+    let bytes = serialise_meta(&table, 36).unwrap();
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("IO.Pure"),
+        "the stale sidecar names the removed constructor"
+    );
+
+    let meta_path = Path::new("primitives.meta.json");
+    match deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, meta_path) {
+        Err(CacheStale::SchemaMismatch {
+            found, expected, ..
+        }) => {
+            assert_eq!(found, 36);
+            assert_eq!(expected, super::super::CACHE_SCHEMA_VERSION);
+        }
+        other => panic!("a v36 sidecar must be a cache miss, got {other:?}"),
     }
 }
 

@@ -88,6 +88,30 @@ where
         Ok(self.builder.ins().func_addr(types::I64, glue_ref))
     }
 
+    /// The `Pure` node over the owned operand of `primitives/pure`, whose type
+    /// is `payload_ty`. The glue word is derived from that type, so it cannot
+    /// disagree with the payload (`non-concrete-release-contract.md` §5.3). The node takes the
+    /// operand; no RC is emitted.
+    pub(crate) fn emit_pure_node(
+        &mut self,
+        operands: &[Value],
+        payload_ty: &ConcreteType,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let &[payload] = operands else {
+            return Err(CranelispError::CodegenError {
+                message: format!("pure requires 1 argument, got {}", operands.len()),
+                location: ErrorLocation::from_span(span),
+            });
+        };
+        let glue = self.result_disposer_for_type(payload_ty.clone(), span)?;
+        self.emit_adt_construct(
+            cranelisp_platform::IO_TAG_PURE as usize,
+            &[payload, glue],
+            span,
+        )
+    }
+
     pub(crate) fn emit_bind_node(
         &mut self,
         inner: Value,
@@ -108,7 +132,10 @@ where
             alloc_id,
             HeapAdt::payload_size(3) as i64,
         );
-        let tag = self.builder.ins().iconst(types::I64, 2);
+        let tag = self
+            .builder
+            .ins()
+            .iconst(types::I64, cranelisp_platform::IO_TAG_BIND);
         heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
         heap::heap_store(&mut self.builder, inner, node, HeapAdt::field_offset(0));
         heap::heap_store(

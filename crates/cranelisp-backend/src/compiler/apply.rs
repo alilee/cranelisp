@@ -11,8 +11,8 @@ use cranelift_module::Module;
 
 use crate::heap::HeapCategory;
 use cranelisp_types::{
-    CallableOrigin, ConcreteType, CranelispError, ErrorLocation, FQSymbol, FQTypeName, HeapHeader,
-    Life, MonoExpr, ResolvedCall, Span, Symbol, VarRef,
+    CallableOrigin, ConcreteType, CranelispError, ErrorLocation, FQSymbol, HeapHeader, Life,
+    MonoExpr, ResolvedCall, Span, Symbol, VarRef,
 };
 
 use crate::heap;
@@ -43,37 +43,6 @@ const EFFECT_FN_NAME_ABS_OFFSET: i64 =
 
 const PURE_GLUE_ABS_OFFSET: i64 = HeapAdt::field_offset(1) as i64;
 const _: () = assert!(PURE_GLUE_ABS_OFFSET == 32);
-
-fn pure_payload_type<'a>(
-    type_name: &FQTypeName,
-    tag: usize,
-    constructed_type: &'a ConcreteType,
-    authored_field_count: usize,
-) -> Result<Option<&'a ConcreteType>, CranelispError> {
-    let is_pure = type_name.module.as_ref() == "primitives"
-        && type_name.name.as_ref() == "IO"
-        && tag as i64 == cranelisp_platform::IO_TAG_PURE;
-    if !is_pure {
-        return Ok(None);
-    }
-    let ConcreteType::ADT(actual_name, args) = constructed_type else {
-        return Err(CranelispError::CodegenError {
-            message: format!(
-                "Pure construction has non-ADT concrete result type '{constructed_type:?}'"
-            ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
-    };
-    if actual_name != type_name || args.len() != 1 || authored_field_count != 1 {
-        return Err(CranelispError::CodegenError {
-            message: format!(
-                "Pure construction requires one concrete IO argument and one authored field; got type '{constructed_type:?}' and {authored_field_count} fields"
-            ),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
-    }
-    Ok(args.first())
-}
 
 fn platform_io_payload_type(
     callable_type: &cranelisp_types::Type,
@@ -130,44 +99,6 @@ impl EvaluatedOperands {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn append_runtime_ctor_fields<M, C, L>(
-    builder: &mut FunctionBuilder,
-    module: &mut M,
-    glue: &mut crate::drop_glue::DropGlueRegistry,
-    symbol_tables: &dashmap::DashMap<
-        cranelisp_types::ModuleFullPath,
-        cranelisp_types::SymbolTable<C, L>,
-    >,
-    type_name: &FQTypeName,
-    tag: usize,
-    constructed_type: &ConcreteType,
-    authored_fields: &[Value],
-    span: Span,
-) -> Result<Vec<Value>, CranelispError>
-where
-    M: Module,
-    C: cranelisp_types::CodeStore,
-    L: cranelisp_types::LinkerStore,
-{
-    let Some(payload_type) =
-        pure_payload_type(type_name, tag, constructed_type, authored_fields.len())?
-    else {
-        return Ok(authored_fields.to_vec());
-    };
-
-    let glue_id = glue.request_if_owning(module, symbol_tables, payload_type.clone(), span)?;
-    let glue_value = if let Some(glue_id) = glue_id {
-        let glue_ref = module.declare_func_in_func(glue_id, builder.func);
-        builder.ins().func_addr(types::I64, glue_ref)
-    } else {
-        builder.ins().iconst(types::I64, 0)
-    };
-    let mut fields = authored_fields.to_vec();
-    fields.push(glue_value);
-    Ok(fields)
-}
-
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -190,7 +121,6 @@ where
         // direct call (that carrier is on the callee `Var` node, read in
         // `compile_var_apply`).
         apply_target: Option<&FQSymbol>,
-        apply_type: Option<&cranelisp_types::Type>,
     ) -> Result<Value, CranelispError> {
         // An ordinary Apply must never lower a macro's private clause body.
         // Check the exact typecheck-selected storage key before TCO, sparking,
@@ -351,7 +281,6 @@ where
                             span,
                             resolved_call,
                             apply_target,
-                            apply_type,
                             saved_tail,
                         );
                         this.sparked_args = saved_spark;
@@ -368,7 +297,6 @@ where
                             span,
                             resolved_call,
                             apply_target,
-                            apply_type,
                             saved_tail,
                         )
                     },
@@ -387,7 +315,6 @@ where
             span,
             resolved_call,
             apply_target,
-            apply_type,
             saved_tail,
         )
     }
@@ -407,7 +334,6 @@ where
         // S110 W1: the Apply-span dispatch carrier (§1.1). Consumed by the
         // `resolved_call`-present path (`compile_resolved_call`).
         apply_target: Option<&FQSymbol>,
-        apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
@@ -431,9 +357,7 @@ where
             ..
         } = callee
         {
-            return self.compile_var_apply(
-                node, name, *var_span, callee, args, span, apply_type, saved_tail,
-            );
+            return self.compile_var_apply(node, name, *var_span, callee, args, span, saved_tail);
         }
 
         // Callee is not a variable: a computed closure value.
@@ -553,7 +477,7 @@ where
     }
 
     /// The `ResolvedCall::BuiltinFn` arm (S111 R5 §2.3). A linear guard chain:
-    /// the four inline-effect interceptors (`bind`/`select`/`race`/`sleep`), the
+    /// the inline IO combinator interceptors ([`IoCombinator`]), the
     /// vec-op and trace-accessor intercepts, then the three heavy dispatch
     /// classes (`compile_extern_primitive_call` / `compile_platform_or_direct_extern_call`
     /// / `compile_inline_ring0_call`), each delegating.
@@ -572,7 +496,7 @@ where
         // The inline IO combinators ([`IoCombinator`]), intercepted and lowered
         // here rather than dispatched. Each arm mints a new IO node at rc=1 that
         // takes its owned operands. The match is exhaustive by construction: a
-        // fifth combinator must decide its lowering here or it does not compile.
+        // new combinator must decide its lowering here or it does not compile.
         if let Some(combinator) = IoCombinator::from_builtin_name(op_name.as_ref()) {
             return match combinator {
                 IoCombinator::Bind => {
@@ -603,6 +527,13 @@ where
                 IoCombinator::Sleep => {
                     self.in_tail_position = saved_tail;
                     self.compile_sleep(node, span)
+                }
+                // `pure`'s argument is the `a` of `(IO a)`: its own type is
+                // the payload type.
+                IoCombinator::Pure => {
+                    let arg_vals = self.compile_operands(node)?.values;
+                    self.in_tail_position = saved_tail;
+                    self.emit_pure_node(&arg_vals, args[0].ty(), span)
                 }
             };
         }
@@ -1015,7 +946,6 @@ where
         callee: &MonoExpr,
         args: &[MonoExpr],
         span: Span,
-        apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
     ) -> Result<Value, CranelispError> {
         // === Locals-BEFORE-keyed-read (S110 W1, FIXME 0619 item 2 — the §1.1
@@ -1072,7 +1002,7 @@ where
                 .map_err(|short| short.refusal(fq, span))?,
             None => None,
         };
-        if let Some((fqtn, meta)) = callee_ctor {
+        if let Some((_, meta)) = callee_ctor {
             let field_count = meta.fields.len();
             if args.len() != field_count {
                 return Err(CranelispError::CodegenError {
@@ -1088,28 +1018,7 @@ where
             // drop glue releases heap-typed fields when the ADT itself dies.
             let arg_vals = self.compile_operands(node)?.values;
             self.in_tail_position = saved_tail;
-            // The Apply result is the authoritative instantiated constructor
-            // result. Older hand-built test/embedding ASTs may omit it; retain
-            // the established parent-ADT fallback for ordinary constructors.
-            // `Pure` cannot use that fallback because its hidden glue word is
-            // selected from the concrete `T` in `IO T`; the central helper
-            // rejects the resulting argument-less `IO` shape loudly.
-            let constructed_ty = apply_type
-                .and_then(|ty| ConcreteType::from_type(ty).ok())
-                .filter(|ty| matches!(ty, ConcreteType::ADT(name, _) if name == &fqtn))
-                .unwrap_or_else(|| ConcreteType::ADT(fqtn.clone(), vec![]));
-            let emitted_fields = append_runtime_ctor_fields(
-                &mut self.builder,
-                self.module,
-                self.glue,
-                self.ctx.symbol_tables,
-                &fqtn,
-                meta.tag,
-                &constructed_ty,
-                &arg_vals,
-                span,
-            )?;
-            return self.emit_adt_construct(meta.tag, &emitted_fields, span);
+            return self.emit_adt_construct(meta.tag, &arg_vals, span);
         }
 
         // S5/S7 — user function (keyed): moded consuming convention (§3.1). A bare
@@ -1961,28 +1870,12 @@ where
         node: &MonoExpr,
         tag: usize,
         span: Span,
-        ty: &ConcreteType,
     ) -> Result<Value, CranelispError> {
         // Consuming-compile fields (nullary → empty), then route through the
         // single core emitter. `emit_adt_construct` handles the nullary
         // (`iconst tag`) and data (`alloc + tag + stores`) arms.
         let field_vals = self.compile_operands(node)?.values;
-        let emitted_fields = if let ConcreteType::ADT(type_name, _) = ty {
-            append_runtime_ctor_fields(
-                &mut self.builder,
-                self.module,
-                self.glue,
-                self.ctx.symbol_tables,
-                type_name,
-                tag,
-                ty,
-                &field_vals,
-                span,
-            )?
-        } else {
-            field_vals
-        };
-        self.emit_adt_construct(tag, &emitted_fields, span)
+        self.emit_adt_construct(tag, &field_vals, span)
     }
 
     /// The single ADT-construct emitter — both paths route through here.
@@ -2268,21 +2161,25 @@ fn is_vec_primitive(name: &str) -> bool {
     matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
 }
 
-/// The four inline IO combinators: the CLOSED set of `BuiltinFn` carriers whose
-/// lowering compiles its own arguments as IO sub-trees and MINTS a new IO node
-/// at rc=1, rather than dispatching a value call through the generic apply path.
+/// The inline IO combinators: the CLOSED set of host-promised `BuiltinFn`
+/// carriers whose lowering MINTS a new IO node inline at rc=1, rather than
+/// dispatching a value call through the generic apply path.
 ///
 /// **This is the one classification of that fact** (Principle 07), and the enum
 /// IS the totality claim — adding a combinator is a non-exhaustive-match
-/// compile error at every reader, never a silent claim at one of them. Two
+/// compile error at every reader, never a silent claim at one of them. Three
 /// readers consume it:
 ///
 /// 1. **The lenient apply-argument spark exclusion** (`compile_apply`,
-///    `lenient-eval.md` §2.5). These arguments are IO computations the
-///    trampoline runs, NOT values to force on the rayon spark pool — sparking
-///    them is semantically wrong.
+///    `lenient-eval.md` §2.5). `bind`, `race` and `select` take IO
+///    computations the trampoline runs, NOT values to force on the rayon spark
+///    pool — sparking them is semantically wrong. `sleep` and `pure` take a
+///    value; a unary call never meets the at-least-two spark gate, so excluding
+///    them changes nothing.
 /// 2. **`compile_builtin_fn_call`'s interceptors**, matched exhaustively — the
 ///    lowerings themselves.
+/// 3. **[`HostPromisedLowering::of_symbol`]**, so a first-class use reaches the
+///    same lowering through `lower_host_promised`.
 ///
 /// Identity comes from the `BuiltinFn` CARRIER, never the callee's spelling
 /// (Principle 24): an `Apply` spelled `bind` that resolved to a user binding is
@@ -2293,6 +2190,7 @@ pub(crate) enum IoCombinator {
     Select,
     Race,
     Sleep,
+    Pure,
 }
 
 impl IoCombinator {
@@ -2305,6 +2203,7 @@ impl IoCombinator {
             "select" => Self::Select,
             "race" => Self::Race,
             "sleep" => Self::Sleep,
+            "pure" => Self::Pure,
             _ => return None,
         })
     }
@@ -2399,6 +2298,9 @@ where
                 self.compile_select(operands, disposer, span)
             }
             HostPromisedLowering::Io(IoCombinator::Sleep) => self.emit_sleep_node(operands, span),
+            HostPromisedLowering::Io(IoCombinator::Pure) => {
+                self.emit_pure_node(operands, first()?, span)
+            }
             HostPromisedLowering::TraceAccessor(abi_name) => {
                 self.compile_extern_call(abi_name, operands, span)
             }

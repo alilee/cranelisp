@@ -217,12 +217,6 @@ where
             })?;
 
         let vec_elem = vec_query_elem_from_fn_type(fn_type);
-        let ctor_result = fn_type
-            .and_then(|ty| ConcreteType::from_type(ty).ok())
-            .and_then(|ty| match ty {
-                ConcreteType::Fn(_, result) => Some(*result),
-                _ => None,
-            });
         let operand_types = fn_type
             .and_then(|ty| ConcreteType::from_type(ty).ok())
             .and_then(|ty| match ty {
@@ -235,7 +229,6 @@ where
             arity,
             span,
             vec_elem.as_ref(),
-            ctor_result.as_ref(),
             target_fq,
             operand_types.as_deref(),
         )?;
@@ -430,7 +423,6 @@ where
         arity: usize,
         span: Span,
         vec_elem: Option<&ConcreteType>,
-        ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives `emit_wrapper_call`'s
         // S10/S15/S16/S17 keyed reads.
         target_fq: Option<&FQSymbol>,
@@ -494,7 +486,6 @@ where
                 &user_params,
                 span,
                 vec_elem,
-                ctor_result,
                 target_fq,
             )?;
             builder.ins().return_(&[result]);
@@ -529,7 +520,6 @@ where
         user_params: &[Value],
         span: Span,
         vec_elem: Option<&ConcreteType>,
-        ctor_result: Option<&ConcreteType>,
         // S110 W2 (§4): the target's STORAGE key — drives the S15 summary, S16
         // ctor-as-value, S17 vec-query, and S10 GOT-entry keyed reads. `None` for
         // a target with no carrier (a target in this unit still finds its slot in
@@ -563,10 +553,7 @@ where
                 .map_err(|short| short.refusal(fq, span))?,
             None => None,
         };
-        if let Some((fqtn, ctor_info)) = target_ctor {
-            let adt_ty = ctor_result
-                .cloned()
-                .unwrap_or_else(|| ConcreteType::ADT(fqtn.clone(), vec![]));
+        if let Some((_, ctor_info)) = target_ctor {
             let alloc_id = self
                 .ctx
                 .alloc_func_id
@@ -574,23 +561,12 @@ where
                     message: "runtime/alloc not declared (need declare_intrinsics)".into(),
                     location: ErrorLocation::from_span(span),
                 })?;
-            let emitted_fields = crate::compiler::apply::append_runtime_ctor_fields(
-                builder,
-                self.module,
-                self.glue,
-                self.ctx.symbol_tables,
-                &fqtn,
-                ctor_info.tag,
-                &adt_ty,
-                user_params,
-                span,
-            )?;
             return emit_adt_construct_into(
                 builder,
                 self.module,
                 alloc_id,
                 ctor_info.tag,
-                &emitted_fields,
+                user_params,
                 span,
             );
         }
@@ -716,7 +692,6 @@ where
                         all_args,
                         span,
                         vec_elem,
-                        None,
                         Some(&method_fq),
                     );
                 }
@@ -784,7 +759,6 @@ where
                                     all_args,
                                     span,
                                     vec_elem,
-                                    None,
                                     Some(&prim_fq),
                                 );
                             }
@@ -807,15 +781,7 @@ where
 
         // No trait resolution, or resolution didn't match — call by name via the
         // plain-fn carrier (S10/S15).
-        self.emit_wrapper_call(
-            builder,
-            target_name,
-            all_args,
-            span,
-            vec_elem,
-            None,
-            target_fq,
-        )
+        self.emit_wrapper_call(builder, target_name, all_args, span, vec_elem, target_fq)
     }
 
     /// The host-promised target of a partial application, keyed by the

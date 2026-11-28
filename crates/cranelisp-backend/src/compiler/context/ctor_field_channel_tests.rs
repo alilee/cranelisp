@@ -91,7 +91,6 @@ fn install_type(
                     type_name: fqtn(name),
                     tag,
                     field_count: fields.len(),
-                    internal: false,
                     type_def: None,
                 },
                 TemplateBody::Synth(SynthSpec::new(DefnVariant {

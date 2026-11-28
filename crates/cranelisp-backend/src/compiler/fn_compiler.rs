@@ -362,10 +362,8 @@ where
                 span,
                 resolved_call,
                 dispatch,
-                ty,
                 ..
             } => {
-                let apply_type = ty.to_type();
                 let apply_target = match dispatch {
                     ApplyRef::Dispatch(fq) => Some(fq),
                     ApplyRef::ViaCallee => None,
@@ -377,7 +375,6 @@ where
                     *span,
                     resolved_call.as_deref(),
                     apply_target,
-                    Some(&apply_type),
                 )
             }
             MonoExpr::Match {
@@ -402,9 +399,7 @@ where
                 span,
                 ..
             } => self.compile_launch_continue(expr, launched, continuation, *span),
-            MonoExpr::ConstrADT { tag, span, ty, .. } => {
-                self.compile_constr_adt(expr, *tag, *span, ty)
-            }
+            MonoExpr::ConstrADT { tag, span, .. } => self.compile_constr_adt(expr, *tag, *span),
         }
     }
 

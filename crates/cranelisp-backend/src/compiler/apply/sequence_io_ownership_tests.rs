@@ -265,7 +265,6 @@ fn install_list_fixture(table: &mut SymbolTable) {
                 type_name: list.clone(),
                 tag: 0,
                 field_count: 0,
-                internal: false,
                 type_def: Some(Box::new(info.clone())),
             },
             TemplateBody::Synth(SynthSpec::new(DefnVariant {
@@ -300,7 +299,6 @@ fn install_list_fixture(table: &mut SymbolTable) {
                 type_name: list,
                 tag: 1,
                 field_count: 2,
-                internal: false,
                 type_def: Some(Box::new(info)),
             },
             TemplateBody::Synth(SynthSpec::new(DefnVariant {

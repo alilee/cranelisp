@@ -1,5 +1,5 @@
 //! S97 — the lenient apply-argument spark pre-pass MUST exclude the inline IO
-//! combinators (`bind` / `select` / `race` / `sleep`).
+//! combinators (`bind` / `select` / `race` / `sleep` / `pure`).
 //!
 //! Pins the seam of the `race`-with-inline-`bind`-lambda-branch lambda-name
 //! collision (`tests/regression.rs::
@@ -22,14 +22,14 @@ fn builtin(name: &str) -> ResolvedCall {
 }
 
 /// The spark exclusion's reading of the shared classification
-/// (`compile_apply`): excluded iff the carrier is one of the four.
+/// (`compile_apply`): excluded iff the carrier is an inline IO combinator.
 fn is_io_combinator_call(resolved_call: Option<&ResolvedCall>) -> bool {
     IoCombinator::of_call(resolved_call).is_some()
 }
 
 #[test]
 fn io_combinators_are_excluded_from_the_spark_pre_pass() {
-    for name in ["bind", "select", "race", "sleep"] {
+    for name in ["bind", "select", "race", "sleep", "pure"] {
         assert!(
             is_io_combinator_call(Some(&builtin(name))),
             "`{name}` compiles its own IO-sub-tree args and MUST be excluded from \
@@ -43,7 +43,7 @@ fn io_combinators_are_excluded_from_the_spark_pre_pass() {
 fn non_combinator_builtins_and_other_calls_are_not_excluded() {
     // An ordinary builtin (a genuine value-arg apply) still goes through the
     // spark pre-pass — the exclusion must be narrow.
-    for name in ["add-i64", "vec-get", "foo", "Pure"] {
+    for name in ["add-i64", "vec-get", "foo", "str-len"] {
         assert!(
             !is_io_combinator_call(Some(&builtin(name))),
             "`{name}` is not an inline IO combinator — it must NOT be excluded"

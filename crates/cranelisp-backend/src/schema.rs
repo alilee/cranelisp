@@ -34,7 +34,7 @@
 //! differ would over-couple them (Principle 6).
 //!
 //! This module is the home of the shared rule that types a constructor's
-//! fields at an instantiation ([`ctor_field_types_at`]); `trace_codegen`
+//! fields at an instantiation (`ctor_field_types_at`); `trace_codegen`
 //! consumes it so the rule lives once.
 //!
 //! # One generator, multiple callers
@@ -245,6 +245,18 @@ where
 
 const VEC_TYPE_NAME: &str = "Vec";
 
+/// The type arguments of a type whose layout is the ABI, or `None` for any
+/// other type. `Vec` and `primitives/IO` are such types: never a schema entry
+/// or a root, with their type arguments walked. `IO`'s node family is governed
+/// by `ABI_VERSION` and built and read through `CLIO`, and `IO` has no
+/// constructors to list.
+fn abi_layout_args(ty: &Type) -> Option<&[Type]> {
+    match ty {
+        Type::ADT(fqtn, args) if fqtn.name.as_ref() == VEC_TYPE_NAME || ty.is_io() => Some(args),
+        _ => None,
+    }
+}
+
 /// Render a `Type` as a `FieldType` S-expression leaf/applied form
 /// (platform-interface.md §5.5.2):
 ///
@@ -312,8 +324,8 @@ struct SchemaEntry {
 /// For each root `Type::ADT(fqtn, args)`: read its constructors (named + typed
 /// fields, concrete-substituted), add the entry keyed by the structured type
 /// expression, and recurse into every field type that is itself an ADT (scalar
-/// leaves and `Vec` element scalars terminate). `Vec(elem)` is NOT a schema
-/// entry of its own (its layout is the ABI), but its element type IS walked so a
+/// leaves terminate). A type whose layout is the ABI ([`abi_layout_args`]) is
+/// NOT a schema entry of its own, but its type arguments ARE walked, so a
 /// `(Vec shapes/Point)` field pulls `Point` into the closure.
 ///
 /// Deterministic + cycle-safe: a key already in the map is not re-walked.
@@ -329,20 +341,17 @@ where
     let mut stack: Vec<Type> = roots.to_vec();
 
     while let Some(ty) = stack.pop() {
-        // Only ADTs (excluding Vec, whose layout is the ABI) are schema entries.
+        // Only ADTs whose layout is not the ABI are schema entries.
+        if let Some(args) = abi_layout_args(&ty) {
+            stack.extend(args.iter().cloned());
+            continue;
+        }
         let Type::ADT(fqtn, args) = &ty else {
-            // Walk into Vec elements / Fn results via the generic field walk
-            // below; scalars terminate.
+            // Walk into Fn results via the generic field walk; scalars
+            // terminate.
             push_nested(&ty, &mut stack);
             continue;
         };
-        if fqtn.name.as_ref() == VEC_TYPE_NAME {
-            // Vec is not an entry; walk its element.
-            if let Some(elem) = args.first() {
-                stack.push(elem.clone());
-            }
-            continue;
-        }
         let key = type_key_sexpr(fqtn, args);
         if out.contains_key(&key) {
             continue;
@@ -366,16 +375,14 @@ where
 
 /// Push the ADT-reaching sub-types of a field type onto the walk stack.
 fn push_nested(ty: &Type, stack: &mut Vec<Type>) {
-    match ty {
-        Type::ADT(fqtn, args) => {
-            if fqtn.name.as_ref() == VEC_TYPE_NAME {
-                if let Some(elem) = args.first() {
-                    push_nested(elem, stack);
-                }
-            } else {
-                stack.push(ty.clone());
-            }
+    if let Some(args) = abi_layout_args(ty) {
+        for a in args {
+            push_nested(a, stack);
         }
+        return;
+    }
+    match ty {
+        Type::ADT(..) => stack.push(ty.clone()),
         Type::Fn(params, ret) => {
             for p in params {
                 push_nested(p, stack);
@@ -496,22 +503,23 @@ where
     roots
 }
 
-/// Collect ADT-typed roots from a type (scalars and `Vec` itself excluded; a
-/// `Vec`'s element ADT IS a root). Deduplicates structurally.
+/// Collect ADT-typed roots from a type (scalars and the [`abi_layout_args`]
+/// types themselves excluded; their argument ADTs ARE roots). Deduplicates
+/// structurally.
 fn collect_adt_roots(ty: &Type, roots: &mut Vec<Type>) {
+    if let Some(args) = abi_layout_args(ty) {
+        for a in args {
+            collect_adt_roots(a, roots);
+        }
+        return;
+    }
     match ty {
-        Type::ADT(fqtn, args) => {
-            if fqtn.name.as_ref() == VEC_TYPE_NAME {
-                if let Some(elem) = args.first() {
-                    collect_adt_roots(elem, roots);
-                }
-            } else {
-                if !roots.contains(ty) {
-                    roots.push(ty.clone());
-                }
-                for a in args {
-                    collect_adt_roots(a, roots);
-                }
+        Type::ADT(_, args) => {
+            if !roots.contains(ty) {
+                roots.push(ty.clone());
+            }
+            for a in args {
+                collect_adt_roots(a, roots);
             }
         }
         Type::Fn(params, ret) => {
