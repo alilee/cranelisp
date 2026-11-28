@@ -17,18 +17,21 @@ needing any of those goes to `arch`.
 Section numbers are stable: tests, the crate memory and sibling designs cite
 them.
 
-**Evidence status.** The modes, the A1–A4 release faces, the fault-plant
-protocol (§7) and its eight detection triplets are in source, none `#[ignore]`d.
-The end-to-end M3 cell and its clean control are in
-`tests/intrinsics_m3_detection_s116.rs`. **Two limits bound any grade:**
+**Evidence status.** M1, M2, M3 and A1–A4 are detection-proven instruments:
+each has a §7.3 triplet on the production allocation funnel in
+`crates/cranelisp-intrinsics/src/diagnostics/tests.rs`, none `#[ignore]`d, and
+M3's exit path has an end-to-end cell and clean control in
+`tests/intrinsics_m3_detection_s116.rs`. `qa` grades them in the
+[S125 regrade](../../tests/plan/s125-evidence-delta.md#23-r8s-diagnostic-modes-regraded);
+that grades the instruments, not R8, whose property is measured on a program
+only where a lane arms a mode. **Three limits bound the grade:**
 
 - the M3 over-free row proves report polarity and atexit wiring, not a real
   double free (§7.2);
 - the A2/A3/A4 release faces prove header *plausibility*, not that a pointer is
-  a base (§7.5).
-
-**Open:** FIXME 0857 (`qa`) regrades R8 against this evidence, carrying both
-limits.
+  a base (§7.5);
+- the triplets run under the debug test profile, so the release faces are
+  unmeasured in a release build.
 
 ---
 
@@ -65,10 +68,9 @@ Nothing new is tracked.
 
 All three are off by default, read their switch once per process through a
 cached `LazyLock`, and live in Rust bodies, so every execution mode behaves the
-same. Each reads the process environment today. Once the runtime switch
-source is built, the value comes from it: the process environment in the
-compiler, and the value baked at `--link` in a linked program
-([`process-lifecycle.md`](process-lifecycle.md) §2).
+same. Each switch comes from the one runtime switch source: the process
+environment in the compiler, and the value baked at `--link` in a linked
+program ([`process-lifecycle.md`](process-lifecycle.md) §2).
 
 ### M1 — no-reuse quarantine
 
@@ -106,8 +108,8 @@ compiler, and the value baked at `--link` in a linked program
   located hard failure, never a `Result`.
 - `CRANELISP_ALLOC_PARITY_DUMP` prints the ledger at exit and continues.
   `CRANELISP_RC_STATS` only prints counts.
-- **After a fault termination the hard check stands down** (S123,
-  [`process-lifecycle.md`](process-lifecycle.md) §1.4). A panic leaks
+- **After a fault termination the hard check stands down**
+  ([`process-lifecycle.md`](process-lifecycle.md) §1.4). A panic leaks
   frame-owned values by permission, so when the terminator's claim is held the
   check prints one not-checked line and neither aborts nor changes the exit
   status.
@@ -152,10 +154,11 @@ tag is not a heap pointer.
 - Both faces emit the prefix `[CRANELISP RC/ALLOC SEAM VIOLATION]`.
 - **The backend's pre-decrement check `runtime/rc_dec_check` judges every
   word at or above the nullary threshold that is not a live tracked
-  allocation as stale.** It has no exemption for an immortal header. Its one
-  false stop, a stack-placed value's release (ACT-1049), leaves with stack
-  placement in S124 ([ownership codegen](../backend/ownership-codegen.md) §4),
-  so the check keeps a single verdict and no value class it must skip.
+  allocation as stale.** It has no exemption for an immortal header: every
+  construction allocates on the RC heap
+  ([ownership codegen](../backend/ownership-codegen.md) §4), so no stack-placed
+  value reaches it and the check keeps a single verdict with no value class
+  to skip.
 
 ## 6. What the modes detect
 
@@ -409,10 +412,14 @@ for each fact:
   (`crates/cranelisp-intrinsics/src/drop/tests.rs` guards it).
 - **`vec_runtime::{LEN_OFFSET, CAP_OFFSET, DATA_PTR_OFFSET}`** is the Vec
   layout authority; `drop.rs` imports it rather than copying it (same guard).
-- **The layout owners are [heap layout](heap-layout.md) §1.** At `4b58ab93`
-  `drop.rs` still defines the ADT field offsets and
-  `CLOSURE_DROP_GLUE_OFFSET`, derived from `HeapHeader::SIZE`, and `ivar.rs`
-  imports the closure offset; heap layout §3 moves both to `alloc`.
+- **The layout owners are [heap layout](heap-layout.md) §1.** `drop.rs`
+  derives its ADT tag and field offsets from `alloc::HeapAdt` and its
+  closure drop-glue offset from `alloc::HeapClosure`; `ivar.rs` takes its
+  closure offset from `HeapClosure`. `drop/tests.rs` pins the derived values
+  to their owners, and the crate-wide census
+  (`no_layout_offset_is_defined_outside_its_owner` in
+  `crates/cranelisp-intrinsics/src/alloc/tests.rs`) rejects an
+  offset defined outside its owner.
 - **There is no counter-reset seam.** `reset_counts` and `bytes_peak` are gone,
   because a reset would erase M3's only evidence. The counters are
   process-lifetime (bounded-context §4b, invariant 8). `alloc/tests.rs` guards

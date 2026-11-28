@@ -28,7 +28,7 @@ module's constants and writes no offset of its own.
 | Header | `alloc_size`, `rc` | `cranelisp_types::HeapHeader` | everything below |
 | String | header, `len`, bytes | `heap_string::HeapString` | unchanged |
 | Vec | header, `len`, `cap`, `data_ptr`; separate buffer | `vec_runtime` | `drop`, `io`, `trace_format`, the backend, the binary's display and test runner; primitives only through `vec_runtime`'s functions, never its offsets |
-| Data-constructor ADT | header, `tag`, fields | `alloc::HeapAdt` (§2) | `alloc_with_tag`, `drop`, `io` (IO nodes have this shape), `trace`, `trace_format`, the backend, primitives' marshalling, the binary's display and test runner |
+| Data-constructor ADT | header, `tag`, fields | `alloc::HeapAdt` (§2) | `alloc_with_tag`, `drop`, `io` (IO nodes have this shape), `trace`, `trace_format`, the backend, primitives' marshalling, the binary's display, test runner and macro marshalling |
 | Closure | header, `code_ptr`, `drop_glue_ptr`, captures | `alloc::HeapClosure` (§2) | `drop`, `ivar`, `io`, the backend, the binary's test runner |
 | IVar cell | header, `state`, `value`, `thunk` | `ivar`, private | `ivar` only |
 | `TraceCall` | an ADT with five fields | `trace`, derived from `HeapAdt::field_offset` | `trace` only |
@@ -98,7 +98,7 @@ replacement for `HeapVec::payload_size`.
   format. The regenerated diff is the exact figure.
 - **The consumer edges the row approves.** Backend → `alloc::{HeapAdt,
   HeapClosure}` and `vec_runtime::PAYLOAD_SIZE`; root → `alloc::HeapAdt`
-  (`src/display.rs`, `src/session_v4/test_runner/run.rs`) and
+  (`src/display.rs`, `src/session_v4/test_runner/run.rs`, `src/marshal.rs`) and
   `alloc::HeapClosure` (`src/session_v4/test_runner.rs`, which writes the
   closure layout as literals today); primitives → `alloc::HeapAdt`
   (`marshal.rs`). Each crate already depends on intrinsics.
@@ -143,11 +143,16 @@ These changes land in the same change-set as §2 and have no public effect:
   literal evades a census of named constants. *Falsifier:* a `heap_access`
   call or pointer addition with a literal 16, 24 or 32 against an ADT, closure
   or Vec base.
-- **Outside this crate.** The backend's copies are deleted by its half.
-  `cranelisp-primitives`' `marshal.rs` restates the ADT payload and field
-  offsets, against BC §4b invariant 2. R10-9 approves its edge to `HeapAdt`;
-  designing and scheduling that convergence is `design`(primitives)'s and
-  `sprint`'s. The binary's test-runner literals are int's.
+- **Outside this crate.** The backend defines no copy. The binary's test
+  runner and macro marshaller read `HeapAdt` and `vec_runtime`; the
+  marshaller's tests `cell_offsets_are_the_heap_adt_layout` and
+  `marshalled_cells_have_the_heap_adt_layout` (in `src/marshal.rs`) pin it to
+  the owner. One copy remains, outside this crate's census:
+  `crates/cranelisp-primitives/src/marshal.rs` derives the ADT tag and field
+  offsets from `HeapHeader::SIZE` and a local stride, against BC §4b
+  invariant 2. R10-9 approves its edge to `HeapAdt`; the convergence is
+  [ACT-1114](../../sprints/actions/ACT-1114-primitives-marshal-derives-adt-layout-locally.md),
+  `design`(primitives)'s.
 
 ## 5. Order
 

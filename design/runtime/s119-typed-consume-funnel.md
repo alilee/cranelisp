@@ -294,14 +294,7 @@ consume_io_tree, consume_closure, dec_shallow_io}`; `trace::consume_trace_call`
   in, so the change lands with backend's value-only `CACHE_SCHEMA_VERSION` bump
   ([module caching §14.2](../backend/module-caching.md#142-cache_schema_version-ownership)).
 
-## 9. Open obligation
-
-- **The `Drop` profile-conditionality rustdoc is absent.** The settled baseline
-  ruling calls for rustdoc naming that `Owned`'s drop bomb exists only under
-  `debug_assertions`; `handle.rs` does not say so. Owner: `dev` (intrinsics).
-  Rustdoc only; no public-API or baseline delta.
-
-## 10. Potential extensions, with triggers
+## 9. Potential extensions, with triggers
 
 - **Deriving intrinsics extern facts from `intrinsics_table()`**, a
   **callback-scoped `from_abi` borrow**, and **narrowing `rc_inc`** — triggers
@@ -312,7 +305,7 @@ consume_io_tree, consume_closure, dec_shallow_io}`; `trace::consume_trace_call`
   (`crates/cranelisp-platform/src/lib.rs`) — triggered only if one handle must
   cross between the runtime pair and platform code.
 
-## 11. Principles applied
+## 10. Principles applied
 
 - **7** — one token derives both shim wrapping and ABI-kind data.
 - **18 and 20** — the move checker and the `Owned` type replace the "discharge
@@ -327,7 +320,7 @@ consume_io_tree, consume_closure, dec_shallow_io}`; `trace::consume_trace_call`
   beyond the minimal sketch (§2.3).
 - **8** — the raw `i64` shim is the permanent ABI boundary, not a bridge.
 
-## 12. References
+## 11. References
 
 - [Intrinsics ownership and disposal](../intrinsics/ownership-and-disposal.md)
   — the delivered funnel, teardown walks and module evidence.

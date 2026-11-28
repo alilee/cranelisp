@@ -258,11 +258,12 @@ that nothing joins. The backend's independence analysis bakes the node
 1. acquires a global-budget permit (§2.13). An exhausted budget parks the
    launching strand, which is how an accept loop feels backpressure;
 2. mints a child strand and emits `StrandLaunched { strand, parent }`;
-3. **moves the sub-tree out**: it reads field 0 and writes the `0` sentinel, so
-   the node's null-guarded drop glue does not free it (`io-trampoline.md` §15.5).
-   It also reads the result disposer from field 1;
-4. spawns the supervised strand, which owns the sub-tree, the disposer, the
-   global permit and a cloned `ReactorEnv`;
+3. **mints the strand's reference**: it reads field 0 and takes one new counted
+   reference to the sub-tree, leaving the node untouched, so the same node can
+   be forced again ([`ownership-and-disposal.md`](ownership-and-disposal.md)
+   §6.3). It also reads the result disposer from field 1;
+4. spawns the supervised strand, which owns its reference to the sub-tree, the
+   disposer, the global permit and a cloned `ReactorEnv`;
 5. yields `Unit` at once.
 
 | | `Par` (§2.6) | Launch (§2.11) |
@@ -285,7 +286,9 @@ Each supervised strand:
   the executor;
 - on success disposes the result through its disposer and emits
   `StrandCompleted`;
-- consumes its detached sub-tree exactly once, then drops its global permit.
+- holds its reference to the sub-tree in a drop guard, so the reference is
+  released exactly once whether the strand completes or is dropped first, and
+  drops its global permit the same way.
 
 **No failure policy (S123; `spec/12-runtime.md` §12.7.9).** A language panic
 in a strand ends the process where it is raised. A Rust panic caught by the

@@ -202,6 +202,7 @@ one was removed. The crate has none of the following, and none should return:
 The dispatch guard stays. It is still the one place that turns a faulting
 platform thunk (a Rust panic payload or a caught hardware signal) into a
 reported termination instead of a raw signal death. It calls the terminator.
+Its signal half is §1.8.
 
 ### 1.4 Exit-time diagnostics
 
@@ -286,6 +287,88 @@ seams they need:
   [`diagnostic-modes.md`](diagnostic-modes.md) §7.6. The detection proof is a
   terminator that returns instead of exiting, which turns the ordering and
   one-report cells red.
+
+### 1.8 The trap guard: one disposition, armed per thread
+
+`spec/12-runtime.md` §12.7.6 requires a hardware trap in platform code to end
+the process with one report line and a non-signal exit, whichever other
+threads are inside platform code at the time. The signal disposition is
+process state and the jump context is thread state, so only thread state
+changes per call. `io_guard.rs::run_trap_guarded` is the guard;
+`force_effect_thunk_protected` runs `call_effect_thunk` inside it and maps a
+returned signal to the dispatch fault.
+
+- **One install, never restored.** The first guarded call installs the handler
+  for `SIGFPE`, `SIGILL`, `SIGBUS` and `SIGSEGV` exactly once per process (a
+  `Once`), with `sigaction`, `SA_SIGINFO` and `SA_ONSTACK`. `SA_ONSTACK` lets a
+  trap from stack exhaustion reach the handler on the alternate stack Rust's
+  runtime gives its threads.
+- **The previous actions are recorded before any handler is installed.** The
+  install first reads all four actions with a query-only `sigaction` (a null
+  new action), then installs. So from the moment the handler is live it can
+  find the action it replaced, including for a trap delivered during the
+  install itself. A process writer that changes an action between the record
+  and the install is not seen; nothing in the workspace writes one (below).
+- **The jump context lives on the calling frame.** Each guarded call places its
+  jump buffer in its own frame and publishes a pointer to it in a thread-local
+  slot for the extent of the closure. A drop guard puts the slot's previous
+  value back on return, so a nested call on one thread leaves its caller armed.
+  The slot is a const-initialized cell with no destructor, so the handler reads
+  it with a plain thread-local load.
+- **The handler's one decision.** If this thread's slot holds a context, the
+  handler clears it and jumps there, and the call returns the signal.
+  Otherwise the trap is not the guard's, and the handler forwards it to the
+  recorded action: it calls a previous handler with the arguments that action
+  expects, ignores it if it was ignored, or restores the default and re-raises,
+  so the process dies on the signal as it would without the guard. That
+  default-action restore, on a path that ends the process, is the guard's only
+  disposition write after the install.
+- **Concurrent traps.** Two armed threads that trap together each jump to their
+  own context and enter the terminator; the claim admits one report
+  (§1.1–§1.2).
+- **The closure must not unwind.** A panic leaves through the guard with the
+  slot restored, but the closure's frames are not a supported jump target.
+
+**One writer in the workspace.** Intrinsics owns the four dispositions
+([BC §4b invariant 14](../arch/bounded-contexts.md#4b-intrinsics-cratescranelisp-intrinsics);
+[interfaces, one trap guard](../arch/interfaces.md#one-trap-guard-row-tg-1)).
+The binary runs its macro clauses under no trap guard and writes no
+disposition ([binary design §8](../int/s125-binary-clean.md#8-the-macro-clause-runs-under-no-binary-trap-guard-f2)).
+Two censuses keep it so, at two grains:
+
+- the workspace census, `src/expander/trap_dispositions_tests.rs`, admits only
+  this crate's guard module as a writer in any workspace member;
+- the crate census in `io_guard/tests.rs` pins the writer sites *inside* the
+  guard module by function — the install, the default-action forward and the
+  query — so a per-call restore added to the guard module itself fails, which
+  the workspace census, admitting the whole module, cannot see. Its planted
+  writer is the detection proof.
+
+**Grades.**
+
+| Property | Grade |
+|---|---|
+| A guarded call's return never removes another thread's protection | *Structural* within the workspace: after the one install no code path writes the dispositions, kept so by the two censuses, each with a planted-writer detection proof |
+| An armed trap on any thread is reported, overlapping or not | *Measured* by `tests/platform_errors.rs::overlapping_platform_trap_reports_fault_without_signal_death` and its non-overlapping control, and by the two-thread cell below |
+| An unarmed trap behaves as it would without the guard | *Measured* by the forwarding cells below |
+| Reading the slot in the handler is async-signal-safe | *Asserted, with a named falsifier*: a target where a const-initialized, destructor-free thread-local is lazily allocated on first access |
+
+**Unit evidence**, in `crates/cranelisp-intrinsics/src/io_guard/tests.rs`;
+the cells that write dispositions run in re-executed children
+([`diagnostic-modes.md`](diagnostic-modes.md) §7.6):
+
+- a trap inside a guarded extent returns its signal, and the install routes all
+  four signals to the guard;
+- thread A's guarded call returns while thread B is still guarded, and B's trap
+  is recovered, with the order fixed by barriers;
+- after a guarded call returns, each signal's installed action is still the
+  guard's;
+- an unarmed trap under a default action kills the child by the signal;
+- an unarmed trap reaches a previous `SA_SIGINFO` handler with its arguments,
+  including one delivered during the install;
+- a trap in an outer extent after an inner call returns is recovered by the
+  outer call;
+- the crate census and its planted writer.
 
 ---
 

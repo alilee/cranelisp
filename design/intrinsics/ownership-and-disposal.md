@@ -35,13 +35,13 @@ Out of scope here: reactor scheduling and executor lifetime
 4. An IO node is deallocated in exactly one place (§6).
 5. The trampoline never inspects a reference count to choose an ownership story
    (§7).
-6. Forcing a published `Pure` or `Effect` node leaves it in the ownership
-   state it had before: a `Pure` force *mints* the consumer's reference rather
-   than moving the node's own (§6.1), and an `Effect` force *borrows* the thunk
-   rather than consuming it (§6.2). Their words are written only while the node
-   is fresh and unpublished. `Launch` and `EffectPoll` are outside this
-   invariant: `Launch` writes its field-0 sentinel after publication, and both
-   are separate intake (`total-concreteness.md` §3.4).
+6. Forcing a published node leaves it in the ownership state it had before. A
+   `Pure` force *mints* the consumer's reference rather than moving the node's
+   own (§6.1); an `Effect` force *borrows* the thunk rather than consuming it
+   (§6.2); a `Launch` force *mints* the strand's reference to its sub-tree
+   (§6.3). No node word is written after publication. `EffectPoll` writes no
+   node word either, but its force re-enters one mutable state closure; that
+   closure's reuse is §6.4's.
 
 ## 2. The typed handle vocabulary
 
@@ -203,17 +203,14 @@ other row, `Pure` and `Effect` included, is a plain declared field list under
 | `Bind` (2) | inner@24, cont@32 | discharge both | **none** — both transferred to `current` / `cont_stack` |
 | `Par` (3) | count@24, branches@32.. | branch block | branch block |
 | `EffectPoll` (4) | state closure@24 | closure | closure |
-| `Launch` (5) | sub-tree@24 (`0` = detached) | sub-tree if non-zero | sub-tree if non-zero |
+| `Launch` (5) | sub-tree@24 (the disposer@32 is a scalar address) | sub-tree (§6.3) | **identical** — the sub-tree is never transferred |
 | `Select` (6) | carrier `Vec`@24 | branch vector | branch vector |
 
 ### 6.1 The `Pure` payload witness — retain on force
 
-> **Status (2026-09-21).** Implemented in the working tree and reviewed with
-> no blocking finding. QA accepted the correction evidence: IOR-2 balances,
-> and the `Reserved` arm has executing evidence and a detection proof (§8).
-> Integration remains pending. The rule replaces an atomic *claim* whose second force
-> refused a reused IO value, against the reuse rule under "Task Tree
-> Construction" in `spec/10-io.md`.
+A reused IO value forces each time it runs ("Task Tree Construction" in
+`spec/10-io.md`), so forcing a `Pure` node must leave the node able to yield
+its payload again.
 
 The ABI-10 `Pure` node carries a witness word at field 1 describing what field 0
 owes: `Scalar` (`0`) — a scalar or value-flattened payload owing nothing — or
@@ -273,12 +270,18 @@ a non-fresh one, and the branch's caller-owned root for a `Par`/`Select` branch
 under its structured join. A live `Pure` node holds one counted reference to an
 `Owned(glue)` payload, so the payload's count is at least one when the inc runs
 — the mint is on a live object, and it needs no ordering beyond the node
-publication that already makes reading field 0 sound. **Named failure of the
-precondition:** the pre-existing *severed join* residual (`total-concreteness.md`
-§3.4; [`reactor.md`](reactor.md) §2.21), where a cancelled `Select` loser with
-an in-flight rayon bridge detaches a worker that can read a node the root has
-already torn down, then read and increment freed memory. This design neither
-creates nor cures it; it stays `qa` intake.
+publication that already makes reading field 0 sound.
+
+**A cancelled blocking branch keeps the precondition.** When a `Select` loser
+is cancelled while its rayon worker is still walking the branch, the caller's
+tree reference stays live until that worker's lease drops
+([`reactor.md`](reactor.md) §2.21), so the worker never reads a node the root
+has torn down. The bridge-join lifecycle cell measures the hold, and its
+early-lease-release plant proves the cell detects a premature teardown (both
+in `crates/cranelisp-intrinsics/src/reactor/tests.rs`). *Residual:* the join is a live count,
+not a type, so it is measured rather than structural. A worker blocked in a
+non-pre-emptible foreign call delays teardown without bound; that is a
+liveness cost, not a lifetime hazard.
 
 **The mint is the exact inverse of the discharge.** Read at source, 2026-09-21.
 `DropGlueRegistry::request_if_owning` declines exactly `NeverHeap` and `Value`,
@@ -335,12 +338,7 @@ walk.
 
 ### 6.2 The `Effect` thunk — borrowed on force, discharged at teardown
 
-> **Status (2026-09-21).** Implemented and independently reviewed against the
-> approved ABI-11 surface (`total-concreteness.md` §3.4). Module lifetime tests
-> and public Effect reuse pass; QA accepted the evidence. The user confirmed
-> the generated baseline on 2026-09-21. Integration remains pending.
-
-The platform owns the thunk's representation, its per-force wrapper and its
+The ABI-11 surface is `total-concreteness.md` §3.4. The platform owns the thunk's representation, its per-force wrapper and its
 destructor containment (`design/platform/platform.md` §4.2). This crate decides
 when the thunk is called and when it is discharged. It never names the stored
 type.
@@ -371,10 +369,8 @@ Each lane's last use of the node comes before its decrement, and the teardown
 fence acquires every such decrement. Teardown also runs only after the bridge
 join has ordered a worker's exit ([`reactor.md`](reactor.md) §2.21). Together
 these order every force's effect on the captures before the capture destructors
-run, on whichever thread releases the node. The named failure is the same
-severed-join residual as §6.1: a detached worker could call a thunk that root
-teardown has already discharged. This design neither creates nor cures it; it
-stays `qa` intake.
+run, on whichever thread releases the node. A cancelled blocking branch is
+covered by the same bridge join and carries the same residual as §6.1.
 
 **The guard handoff.** `io_guard`'s protected force keeps its call and its
 signal guard unchanged. Its safety precondition changes from "a thunk not yet
@@ -392,14 +388,97 @@ discharges it.
   would put a `sigsetjmp` on a release path to protect captures that are today
   only `i64`s and `CLOwned` host references. *Trigger:* a platform capture that
   owns a foreign resource whose destructor can trap.
-- On the abort path of §7 the unreleased fresh node leaks its thunk and its
-  captures with it. The direction stays leak-only. The repair belongs to that
-  path, not here.
+- A fault ends the process without releasing the frame's owners (§7), so a
+  fresh node's thunk and captures are never discharged. That is a permitted
+  leak (`spec/12-runtime.md` §12.7.8), never a double discharge.
 
 **Grade.** The one-discharge rule is structural where §4's mechanism is: one
 declared field, one dispatcher, one teardown tail. That no force overlaps
-discharge is *asserted*, inheriting §6.1's lane-lifetime argument and its named
-failure. The module evidence is listed in §8.
+discharge is *asserted* from §6.1's lane-lifetime argument; its one
+cross-thread case, a cancelled blocking branch, is *measured* by the bridge-join
+cells of §6.1. The module evidence is listed in §8.
+
+### 6.3 The `Launch` sub-tree — minted on force
+
+A reused IO value forces each time it runs (`spec/10-io.md` §10.8.1; safety
+register R20), so a `Launch` force must leave the node able to detach its
+sub-tree again.
+
+**The rule is §6.1's.** The node owns one counted reference to its sub-tree
+for its whole life. A force takes a *new* reference for the supervised strand
+and leaves field 0 untouched:
+
+1. After the global-budget admission and the strand mint
+   ([`reactor.md`](reactor.md) §2.11 steps 1–2), the arm reads field 0 and the
+   result disposer at field 1.
+2. It takes one counted reference to the sub-tree through the blessed inc entry
+   point (§3), as the `Pure` force does, and hands that reference to
+   `supervisor.spawn`. The strand holds that reference in a drop guard and
+   releases it exactly once, whether it completes or is dropped first
+   ([`reactor.md`](reactor.md) §2.12).
+3. It writes nothing to the node.
+
+Teardown discharges field 0 under both dispositions through the declared-field
+mechanism of §4, with the same kind as `Bind`'s inner tree. The row has no
+zero test: the backend always constructs the node with a live sub-tree
+(`compile_launch`), and no runtime writer leaves a zero, so `0` is not a state
+of this row (Principle 20). The `Launch` row is a plain declared field list,
+like `Pure` and `Effect`.
+
+**Ownership proof for the mint.** The forcing lane holds a counted reference to
+the node across the whole arm, including the admission park in step 1, so the
+node's own reference keeps the sub-tree's count at least one when the inc runs.
+The `Launch` arm runs only on the reactor thread (`reactor.md` §4: the
+synchronous stepper does not interpret it), so two forces of one node are
+interleaved on one thread, never parallel. Each takes its own reference; with
+no write there is nothing to order between them.
+
+**The strand needs no new rule.** The trampoline never reads a count to pick an
+ownership story (invariant 5), so a sub-tree with count above one runs as any
+caller tree does: fresh-`Bind` descent acquires before it releases (§7). The
+strand and the node each release their own reference, in either order.
+
+**Cost, derived.** One atomic increment per launch, and one decrement when the
+node's teardown releases its reference. That is the price of a conforming
+force (`spec/10-io.md` §10.8.1). The trigger to measure is a launch-dense corpus
+regression attributable to this arm.
+
+**Grades.**
+
+| Property | Grade |
+|---|---|
+| A second force of one `Launch` node runs the sub-tree again | *Measured* by T-F3 and by the module cells of §8 |
+| The node and each strand discharge the sub-tree once each | *Measured* by the §8 balance cells |
+| No write to a published `Launch` node | *Asserted, with a named falsifier*: any non-construction store to a `Launch` node's field in intrinsics (R20's falsifier). The arm makes none |
+
+### 6.4 The `EffectPoll` state closure — a confirmed reuse defect
+
+`await_poll_node` writes no node word. It takes one extra counted reference to
+the state closure for the life of the effect, and the poll function re-enters
+the closure's state on every poll. Nothing resets that state per force, so a
+force of a reused leaf starts from the state a previous force left.
+
+**Confirmed defect, open and carried** (safety register R20; the `EffectPoll`
+row of `total-concreteness.md` §3.4;
+[evidence delta §28.2](../../tests/plan/s125-evidence-delta.md#282-reuse-of-a-poll-shape-leaf-reproduced-sequential-and-in-flight)). A leaf that keeps
+its phase in the closure's result slot, as the timer leaves do, does not
+interpret a second force as the first (`spec/10-io.md` §10.8.1):
+
+- a second sequential force finds the slot set and completes at once without
+  suspending —
+  `tests/spec_10_io.rs::run_mode_reused_poll_leaf_suspends_on_each_sequential_force`
+  is the failing guard;
+- two forces in flight together on a capacity-1 token are not serialised
+  (`spec/10-io.md` §10.12.4.1) —
+  `tests/spec_10_io.rs::run_mode_reused_poll_leaf_in_flight_capacity_one_serialises`
+  is the failing guard.
+
+A leaf that keeps no phase in the closure reuses correctly
+(`tests/spec_10_io.rs::run_mode_reused_read_line_reads_each_input_with_fresh_control`).
+Both forces run on the reactor thread, so the shared closure is not a data
+race. The state-closure contract between the backend, this crate and platform
+authors is `arch`'s; this crate makes no interior change until that contract
+says what a second force starts from.
 
 ## 7. Trampoline ownership transitions
 
@@ -448,9 +527,7 @@ cancelled path too: the frame's release discharges the node's reference while
 
 **No fault path returns through the loop.** An arm that faults ends the
 process ([`process-lifecycle.md`](process-lifecycle.md) §1.3), so the frame
-never releases its owners on a fault. The removed abort return disarmed the
-frame and leaked the fresh `current` node and its un-popped continuations; it
-must not return. Values a terminated process never releases are leaks, which
+never releases its owners on a fault, and no arm may return after one. Values a terminated process never releases are leaks, which
 `spec/12-runtime.md` §12.7.8 permits.
 
 **Result-handoff disposal authority.** A tree does not own a value already
@@ -510,22 +587,23 @@ Module-tier evidence and its detection limits:
   was released once with its exact value, against a winner control; and
 - the unique-parent and shared-parent fresh-`Bind` pair in `io/tests.rs`, which
   must return `73`, free the unique parent and its fields, observe the retained
-  parent and both fields live before final release, and balance.
+  parent and both fields live before final release, and balance; and
+- the bridge-join lifecycle cell and its early-release plant in
+  `reactor/tests.rs` (§6.1); and
+- the `Launch` cells in `io/tests.rs`: a node forced twice runs its sub-tree
+  in each of two strands and balances; a node forced once balances under
+  structural release, with the unforced leg in `drop/tests.rs`; and a strand
+  dropped before it completes releases only its own reference, both with the
+  node still live and after the node's release.
 
 Module attribution and public acceptance are distinct, and both belong to
-[`qa`'s plan](../../tests/plan/s122-evidence-delta.md). That plan records the
-typed-funnel runtime checkpoint closed on 2026-09-11 with its stated limits.
-For IO reuse:
+[`qa`'s plan](../../tests/plan/s122-evidence-delta.md). For IO reuse:
 
-- IOR-1 (a reused `Pure` yields its value on each force) is green.
-- IOR-2 now passes with zero marginal residual after the backend scope-result
-  retain correction; its mechanism was observed in pre-fix CLIF.
-- Effect reuse passes. The corrected unforced-capture safety fence keeps a
-  host owner so the final free is visible to host counters; it passes restored
-  and fails with teardown deliberately omitted. The old counter reading did
-  not discriminate release from leak.
-- The abort-path leak (§7) and the severed-join residual (§6.1) remain `qa`
-  intake.
+- IOR-1 (a reused `Pure` yields its value on each force) and IOR-2 (it
+  balances, with zero marginal residual) pass.
+- Effect reuse passes. Its unforced-capture safety fence keeps a host owner so
+  the final free is visible to host counters, and fails with teardown
+  deliberately omitted.
 
 ## 9. Potential extensions, with triggers
 
